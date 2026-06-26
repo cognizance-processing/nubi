@@ -19,7 +19,8 @@
  * Calls /api/v1/security/jwt-issuers (JwksIssuersBackendAgent).
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState } from 'react'
+import { useAsyncLoad } from '../../../hooks/useAsyncLoad.js'
 import {
   ShieldCheck,
   Plus,
@@ -346,9 +347,18 @@ function IssuerForm({ initial, onSave, onCancel, saving, saveError }) {
 // ---------------------------------------------------------------------------
 
 export default function SecuritySettings() {
-  const [issuers, setIssuers] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState(null)
+  const { data: issuersData, loading, error: loadErrorObj, reload: load } = useAsyncLoad(listJwtIssuers, [])
+  // Local mirror enables optimistic updates after create/edit/delete without refetching.
+  // Seeded from remote data on first successful load; null until then.
+  const [localIssuers, setLocalIssuers] = useState(null)
+
+  const issuers = localIssuers ?? (Array.isArray(issuersData) ? issuersData : [])
+  const loadError = !loading && loadErrorObj ? (loadErrorObj?.message ?? 'Failed to load JWT issuers.') : null
+
+  // Seed local mirror when remote data first arrives (or after a forced reload)
+  if (!loading && issuersData !== null && localIssuers === null) {
+    setLocalIssuers(Array.isArray(issuersData) ? issuersData : [])
+  }
 
   // Form state
   const [formMode, setFormMode] = useState(null) // null | 'create' | 'edit'
@@ -359,21 +369,6 @@ export default function SecuritySettings() {
 
   // Delete state
   const [deleting, setDeleting] = useState(null) // issuer id | null
-
-  const load = useCallback(async () => {
-    setLoading(true)
-    setLoadError(null)
-    try {
-      const data = await listJwtIssuers()
-      setIssuers(data)
-    } catch (err) {
-      setLoadError(err?.message ?? 'Failed to load JWT issuers.')
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => { load() }, [load])
 
   function openCreate() {
     setEditTarget(null)
@@ -399,13 +394,13 @@ export default function SecuritySettings() {
     try {
       if (formMode === 'edit' && editTarget?.id) {
         const updated = await updateJwtIssuer(editTarget.id, payload)
-        setIssuers((prev) =>
-          prev.map((iss) => (iss.id === editTarget.id ? { ...iss, ...updated } : iss)),
+        setLocalIssuers((prev) =>
+          (prev ?? issuers).map((iss) => (iss.id === editTarget.id ? { ...iss, ...updated } : iss)),
         )
         setSavedId(editTarget.id)
       } else {
         const created = await createJwtIssuer(payload)
-        setIssuers((prev) => [...prev, created])
+        setLocalIssuers((prev) => [...(prev ?? issuers), created])
         setSavedId(created?.id ?? null)
       }
       closeForm()
@@ -422,7 +417,7 @@ export default function SecuritySettings() {
     setDeleting(id)
     try {
       await deleteJwtIssuer(id)
-      setIssuers((prev) => prev.filter((iss) => iss.id !== id))
+      setLocalIssuers((prev) => (prev ?? issuers).filter((iss) => iss.id !== id))
     } catch (err) {
       window.alert(err?.message ?? 'Failed to delete issuer.')
     } finally {

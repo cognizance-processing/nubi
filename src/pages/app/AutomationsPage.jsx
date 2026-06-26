@@ -51,6 +51,7 @@ import { get, post, put, del } from '../../lib/api.js'
 import { useUi } from '../../contexts/UiContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
+import { toast } from '../../components/ui/Toast.jsx'
 
 // ---------------------------------------------------------------------------
 // API helpers
@@ -243,39 +244,6 @@ function SectionLabel({ children, icon: Icon, className = 'mb-2' }) {
 
 function SkeletonCard() {
   return <div className="bg-surface rounded-xl border border-border h-20 animate-pulse" />
-}
-
-// ---------------------------------------------------------------------------
-// Toast
-// ---------------------------------------------------------------------------
-
-function Toast({ toast, onDismiss }) {
-  useEffect(() => {
-    if (!toast) return
-    const t = setTimeout(onDismiss, 4000)
-    return () => clearTimeout(t)
-  }, [toast, onDismiss])
-
-  if (!toast) return null
-  const isError = toast.type === 'error'
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className={`
-        fixed bottom-5 left-1/2 -translate-x-1/2 z-[80]
-        flex items-center gap-2
-        px-4 py-3 rounded-2xl shadow-xl text-sm font-medium
-        border max-w-sm w-[calc(100vw-2rem)] animate-in fade-in slide-in-from-bottom-2 duration-200
-        ${isError
-          ? 'bg-red-600 text-white border-red-700'
-          : 'bg-emerald-600 text-white border-emerald-700'}
-      `}
-    >
-      {isError ? <AlertTriangle size={16} /> : <Check size={16} strokeWidth={3} />}
-      {toast.message}
-    </div>
-  )
 }
 
 // ---------------------------------------------------------------------------
@@ -714,7 +682,7 @@ function JobModal({ initial, onSave, onClose, saving }) {
 // Flow row
 // ---------------------------------------------------------------------------
 
-function FlowRow({ flow, onChanged, onToast, canWrite }) {
+function FlowRow({ flow, onChanged, canWrite }) {
   const [expanded, setExpanded] = useState(false)
   const [running, setRunning] = useState(false)
   const [toggling, setToggling] = useState(false)
@@ -727,13 +695,13 @@ function FlowRow({ flow, onChanged, onToast, canWrite }) {
     setRunning(true)
     try {
       await runFlowNow(flow.id)
-      onToast?.(`Started "${flow.name}"`, 'success')
+      toast.success(`Started "${flow.name}"`)
       onChanged?.()
       setExpanded(true)
     } catch (err) {
-      onToast?.(err.message ?? 'Run failed', 'error')
+      toast.error(err.message ?? 'Run failed')
     } finally { setRunning(false) }
-  }, [flow, onChanged, onToast])
+  }, [flow, onChanged])
 
   const handleToggle = useCallback(async () => {
     setToggling(true)
@@ -741,9 +709,9 @@ function FlowRow({ flow, onChanged, onToast, canWrite }) {
       await setFlowEnabled(flow.id, !enabled)
       onChanged?.()
     } catch (err) {
-      onToast?.(err.message ?? 'Update failed', 'error')
+      toast.error(err.message ?? 'Update failed')
     } finally { setToggling(false) }
-  }, [flow, enabled, onChanged, onToast])
+  }, [flow, enabled, onChanged])
 
   const nextRel = fmtRelative(flow.next_run_at)
   const lastRel = fmtRelative(flow.last_run_at)
@@ -839,7 +807,7 @@ function FlowRow({ flow, onChanged, onToast, canWrite }) {
 // Job card
 // ---------------------------------------------------------------------------
 
-function JobCard({ job, onToast, onDeleted, onViewRuns, canWrite }) {
+function JobCard({ job, onDeleted, onViewRuns, canWrite }) {
   const [running, setRunning] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -848,24 +816,24 @@ function JobCard({ job, onToast, onDeleted, onViewRuns, canWrite }) {
     setRunning(true)
     try {
       await runJobNow(job.id)
-      onToast?.(`Started "${job.name}"`, 'success')
+      toast.success(`Started "${job.name}"`)
     } catch (err) {
-      onToast?.(err.message ?? 'Run failed', 'error')
+      toast.error(err.message ?? 'Run failed')
     } finally { setRunning(false) }
-  }, [job, onToast])
+  }, [job])
 
   const handleDelete = useCallback(async () => {
     setDeleting(true)
     try {
       await deleteJob(job.id)
-      onToast?.(`Deleted "${job.name}"`, 'success')
+      toast.success(`Deleted "${job.name}"`)
       onDeleted?.()
     } catch (err) {
-      onToast?.(err.message ?? 'Delete failed', 'error')
+      toast.error(err.message ?? 'Delete failed')
       setDeleting(false)
       setConfirmDelete(false)
     }
-  }, [job, onToast, onDeleted])
+  }, [job, onDeleted])
 
   const lastRel = fmtRelative(job.last_run_at)
   const nextRel = fmtRelative(job.next_run_at)
@@ -1021,9 +989,6 @@ export default function AutomationsPage() {
   const [savingJob, setSavingJob] = useState(false)
   const [runsJob, setRunsJob] = useState(null) // job whose runs to show
 
-  // Toast
-  const [toast, setToast] = useState(null)
-  const showToast = useCallback((message, type = 'success') => setToast({ message, type }), [])
 
   const fetchFlows = useCallback(async () => {
     setFlowsLoading(true); setFlowsError(null)
@@ -1059,13 +1024,13 @@ export default function AutomationsPage() {
         catch { throw new Error('Report config must be valid JSON') }
       }
       await createJob({ name: form.name, kind: form.kind, target, schedule: form.schedule, enabled: form.enabled })
-      showToast(`Created "${form.name}"`, 'success')
+      toast.success(`Created "${form.name}"`)
       setShowJobModal(false)
       fetchJobs()
     } catch (err) {
-      showToast(err.message ?? 'Failed to create automation', 'error')
+      toast.error(err.message ?? 'Failed to create automation')
     } finally { setSavingJob(false) }
-  }, [fetchJobs, showToast])
+  }, [fetchJobs])
 
   const isLoading = flowsLoading || jobsLoading
   const totalCount = flows.length + jobs.length
@@ -1160,7 +1125,7 @@ export default function AutomationsPage() {
           {!flowsLoading && !flowsError && flows.length > 0 && (
             <div className="space-y-3">
               {flows.map(flow => (
-                <FlowRow key={flow.id} flow={flow} onChanged={fetchFlows} onToast={showToast} canWrite={canWrite} />
+                <FlowRow key={flow.id} flow={flow} onChanged={fetchFlows} canWrite={canWrite} />
               ))}
             </div>
           )}
@@ -1245,7 +1210,6 @@ export default function AutomationsPage() {
                 <JobCard
                   key={job.id}
                   job={job}
-                  onToast={showToast}
                   onDeleted={fetchJobs}
                   onViewRuns={(j) => setRunsJob(j)}
                   canWrite={canWrite}
@@ -1285,8 +1249,6 @@ export default function AutomationsPage() {
         )}
       </SlideOver>
 
-      {/* ── Toast ───────────────────────────────────────────────────────── */}
-      <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>
   )
 }

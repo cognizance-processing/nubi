@@ -25,8 +25,6 @@ import {
   Loader2,
   AlertTriangle,
   RefreshCw,
-  CheckCircle,
-  XCircle,
   ShieldCheck,
   Eye,
   EyeOff,
@@ -35,45 +33,7 @@ import {
 import { Link } from 'react-router-dom'
 import { listSecrets, createSecret, deleteSecret } from '../../lib/secrets.js'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
-
-// ---------------------------------------------------------------------------
-// Toast notification
-// ---------------------------------------------------------------------------
-
-function Toast({ message, type, onDismiss }) {
-  useEffect(() => {
-    if (!message) return
-    const t = setTimeout(onDismiss, 4000)
-    return () => clearTimeout(t)
-  }, [message, onDismiss])
-
-  if (!message) return null
-
-  const isError = type === 'error'
-  return (
-    <div
-      className={[
-        'fixed bottom-5 left-1/2 -translate-x-1/2 z-[60]',
-        'flex items-center gap-2.5 px-4 py-3 rounded-2xl shadow-xl',
-        'text-sm font-medium max-w-sm w-[calc(100vw-2rem)]',
-        'border transition-all duration-300',
-        isError
-          ? 'bg-red-600 text-white border-red-700'
-          : 'bg-green-600 text-white border-green-700',
-      ].join(' ')}
-      role="status"
-    >
-      {isError
-        ? <XCircle size={16} strokeWidth={2.5} className="shrink-0" />
-        : <CheckCircle size={16} strokeWidth={2.5} className="shrink-0" />
-      }
-      <span className="flex-1">{message}</span>
-      <button onClick={onDismiss} className="shrink-0 opacity-70 hover:opacity-100 transition-opacity">
-        <X size={14} strokeWidth={2.5} />
-      </button>
-    </div>
-  )
-}
+import { toast } from '../../components/ui/Toast.jsx'
 
 // ---------------------------------------------------------------------------
 // Delete confirm dialog
@@ -393,11 +353,6 @@ export default function SecretsPage() {
   const [deleteLoading, setDeleteLoading] = useState(false)
   const [deleteError, setDeleteError]   = useState(null)
 
-  const [toast, setToast] = useState(null)
-
-  const showToast = useCallback((message, type = 'success') => setToast({ message, type }), [])
-  const dismissToast = useCallback(() => setToast(null), [])
-
   // ---------------------------------------------------------------------------
   // Fetch secrets
   // ---------------------------------------------------------------------------
@@ -428,8 +383,8 @@ export default function SecretsPage() {
       if (exists) return prev.map(s => s.name === secret.name ? secret : s)
       return [...prev, secret]
     })
-    showToast(`Secret "${secret.name}" saved`)
-  }, [showToast])
+    toast.success(`Secret "${secret.name}" saved`)
+  }, [])
 
   // ---------------------------------------------------------------------------
   // Delete
@@ -443,7 +398,7 @@ export default function SecretsPage() {
       await deleteSecret(deleteTarget)
       setSecrets(prev => prev.filter(s => s.name !== deleteTarget))
       setDeleteTarget(null)
-      showToast(`Secret "${deleteTarget}" deleted`)
+      toast.success(`Secret "${deleteTarget}" deleted`)
     } catch (err) {
       setDeleteError(err.message ?? 'Delete failed. Please try again.')
     } finally {
@@ -575,12 +530,6 @@ export default function SecretsPage() {
         />
       )}
 
-      {/* Toast */}
-      <Toast
-        message={toast?.message}
-        type={toast?.type}
-        onDismiss={dismissToast}
-      />
     </div>
   )
 }

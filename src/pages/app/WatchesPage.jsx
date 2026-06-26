@@ -52,6 +52,7 @@ import {
   listMetrics,
 } from '../../lib/watches.js'
 import { listIntegrations } from '../../lib/integrationsApi.js'
+import { toast } from '../../components/ui/Toast.jsx'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -133,7 +134,7 @@ function StatePill({ state }) {
 // WatchRow — one watch in the list
 // ---------------------------------------------------------------------------
 
-function WatchRow({ watch, metricName, canWrite, onEdit, onDeleted, onToast }) {
+function WatchRow({ watch, metricName, canWrite, onEdit, onDeleted }) {
   const [evaluating, setEvaluating] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -157,13 +158,13 @@ function WatchRow({ watch, metricName, canWrite, onEdit, onDeleted, onToast }) {
     const ok = await deleteWatch(watch.id)
     setDeleting(false)
     if (ok) {
-      onToast?.(`Deleted "${watch.name}".`)
+      toast.success(`Deleted "${watch.name}".`)
       onDeleted?.(watch.id)
     } else {
-      onToast?.('Delete failed — check the console.')
+      toast.error('Delete failed — check the console.')
       setConfirmDelete(false)
     }
-  }, [watch.id, watch.name, onDeleted, onToast])
+  }, [watch.id, watch.name, onDeleted])
 
   // Last state: prefer the live evaluate result, else the watch's stored state.
   const lastState = result?.state ?? watch.last_state ?? watch.config?.last_state ?? null
@@ -701,24 +702,6 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
 }
 
 // ---------------------------------------------------------------------------
-// Toast
-// ---------------------------------------------------------------------------
-
-function Toast({ message, onDone }) {
-  useEffect(() => {
-    if (!message) return undefined
-    const t = setTimeout(onDone, 2600)
-    return () => clearTimeout(t)
-  }, [message, onDone])
-  if (!message) return null
-  return (
-    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[80] px-4 py-2 rounded-lg bg-fg text-bg text-xs font-medium shadow-lg">
-      {message}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // WatchesPage
 // ---------------------------------------------------------------------------
 
@@ -734,7 +717,6 @@ export default function WatchesPage() {
 
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState(null)
-  const [toast, setToast] = useState(null)
 
   const metricNameById = useMemo(() => {
     const map = {}
@@ -772,7 +754,7 @@ export default function WatchesPage() {
       }
       return [saved, ...prev]
     })
-    setToast(editing ? 'Watch updated.' : 'Watch created.')
+    toast.success(editing ? 'Watch updated.' : 'Watch created.')
   }, [editing, load])
 
   const handleDeleted = useCallback((id) => {
@@ -863,7 +845,6 @@ export default function WatchesPage() {
                 canWrite={canWrite}
                 onEdit={handleEdit}
                 onDeleted={handleDeleted}
-                onToast={setToast}
               />
             ))}
           </div>
@@ -879,7 +860,6 @@ export default function WatchesPage() {
         onSaved={handleSaved}
       />
 
-      <Toast message={toast} onDone={() => setToast(null)} />
     </div>
   )
 }

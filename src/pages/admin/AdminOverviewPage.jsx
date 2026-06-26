@@ -6,7 +6,6 @@
  * bundle light), and a countries summary from the geo endpoint.
  */
 
-import { useEffect, useState } from 'react'
 import {
   Users,
   Building2,
@@ -26,6 +25,7 @@ import {
   ErrorState,
   EmptyState,
 } from './AdminUI.jsx'
+import { useAsyncLoad } from '../../hooks/useAsyncLoad.js'
 
 const STATS = [
   { key: 'users', label: 'Users', icon: Users },
@@ -38,31 +38,22 @@ const STATS = [
 ]
 
 export default function AdminOverviewPage() {
-  const [overview, setOverview] = useState(null)
-  const [geo, setGeo] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [reloadKey, setReloadKey] = useState(0)
-
-  useEffect(() => {
-    let cancelled = false
-    async function load() {
-      setLoading(true)
-      const [ov, g] = await Promise.all([getAdminOverview(), getAdminGeoSummary()])
-      if (cancelled) return
-      setOverview(ov)
-      setGeo(g)
-      setLoading(false)
-    }
-    load()
-    return () => { cancelled = true }
-  }, [reloadKey])
+  const { data: pageData, loading, reload } = useAsyncLoad(
+    async () => {
+      const [overview, geo] = await Promise.all([getAdminOverview(), getAdminGeoSummary()])
+      return { overview, geo }
+    },
+    []
+  )
+  const overview = pageData?.overview ?? null
+  const geo = pageData?.geo ?? null
 
   if (loading) return <LoadingState />
   if (!overview) {
     return (
       <ErrorState
         message="Could not load the admin overview."
-        onRetry={() => setReloadKey((k) => k + 1)}
+        onRetry={reload}
       />
     )
   }

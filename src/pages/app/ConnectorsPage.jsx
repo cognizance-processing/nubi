@@ -56,6 +56,7 @@ import {
 } from '../../data/connectors.js'
 import { provisionLakehouse, formatBytes } from '../../lib/lakehouse.js'
 import { DynamicForm } from './connectorForms.jsx'
+import { toast } from '../../components/ui/Toast.jsx'
 
 // ---------------------------------------------------------------------------
 // API helpers
@@ -821,46 +822,6 @@ function DeleteDialog({ connector, loading, error, onCancel, onConfirm }) {
 }
 
 // ---------------------------------------------------------------------------
-// Toast notification
-// ---------------------------------------------------------------------------
-
-function Toast({ message, type, onDismiss }) {
-  useEffect(() => {
-    if (!message) return
-    const t = setTimeout(onDismiss, 4000)
-    return () => clearTimeout(t)
-  }, [message, onDismiss])
-
-  if (!message) return null
-
-  const isError = type === 'error'
-  return (
-    <div
-      className={`
-        fixed bottom-5 left-1/2 -translate-x-1/2 z-[60]
-        flex items-center gap-2.5 px-4 py-3 rounded-2xl shadow-xl
-        text-sm font-medium max-w-sm w-[calc(100vw-2rem)]
-        border transition-all duration-300
-        ${isError
-          ? 'bg-red-600 text-white border-red-700'
-          : 'bg-green-600 text-white border-green-700'
-        }
-      `}
-      role="status"
-    >
-      {isError
-        ? <XCircle size={16} strokeWidth={2.5} className="shrink-0" />
-        : <CheckCircle size={16} strokeWidth={2.5} className="shrink-0" />
-      }
-      <span className="flex-1">{message}</span>
-      <button onClick={onDismiss} className="shrink-0 opacity-70 hover:opacity-100 transition-opacity">
-        <X size={14} strokeWidth={2.5} />
-      </button>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // ConnectorsPage — main component
 // ---------------------------------------------------------------------------
 
@@ -894,18 +855,9 @@ export default function ConnectorsPage() {
   const [testingId, setTestingId]     = useState(null)
   const [testResults, setTestResults] = useState({}) // { [id]: result }
 
-  // Toast
-  const [toast, setToast] = useState(null) // { message, type }
-
   // Managed-lakehouse provisioning (the "Use Nubi managed lakehouse" choice in
   // the Add-connector picker). Provisions a new managed-lake connector in place.
   const [provisioningLake, setProvisioningLake] = useState(false)
-
-  const showToast = useCallback((message, type = 'success') => {
-    setToast({ message, type })
-  }, [])
-
-  const dismissToast = useCallback(() => setToast(null), [])
 
   // ---------------------------------------------------------------------------
   // Fetch connectors
@@ -994,11 +946,11 @@ export default function ConnectorsPage() {
         // Older contract returns only status — refetch to pick up the new row.
         await fetchConnectors()
       }
-      showToast('Managed lakehouse provisioned')
+      toast.success('Managed lakehouse provisioned')
       closeSlide()
     } catch (err) {
       // Surface via toast — the picker has no inline error slot of its own.
-      showToast(err?.message ?? 'Provisioning failed. Please try again.', 'error')
+      toast.error(err?.message ?? 'Provisioning failed. Please try again.')
     } finally {
       setProvisioningLake(false)
     }
@@ -1017,7 +969,7 @@ export default function ConnectorsPage() {
         const body = { name, config, secret: Object.keys(secret).length ? secret : undefined }
         const updated = await updateConnector(editTarget.id, body)
         setConnectors(prev => prev.map(c => c.id === editTarget.id ? updated : c))
-        showToast('Connector updated')
+        toast.success('Connector updated')
       } else {
         // POST — full body. The picker submits the backend factory type
         // directly (e.g. object storage → 'duckdb_storage'); no client-side
@@ -1029,7 +981,7 @@ export default function ConnectorsPage() {
         // Dedupe by id — re-adding the virtual demo connector returns its fixed
         // sentinel id, which may already be present in the list.
         setConnectors(prev => [...prev.filter(c => c.id !== created.id), created])
-        showToast('Connector added')
+        toast.success('Connector added')
       }
       closeSlide()
     } catch (err) {
@@ -1051,7 +1003,7 @@ export default function ConnectorsPage() {
       await deleteConnector(deleteTarget.id)
       setConnectors(prev => prev.filter(c => c.id !== deleteTarget.id))
       setDeleteTarget(null)
-      showToast('Connector deleted')
+      toast.success('Connector deleted')
     } catch (err) {
       setDeleteError(err.message ?? 'Delete failed. Please try again.')
     } finally {
@@ -1069,16 +1021,16 @@ export default function ConnectorsPage() {
       const result = await testConnector(id)
       setTestResults(prev => ({ ...prev, [id]: result }))
       if (result.ok) {
-        showToast('Connection verified successfully')
+        toast.success('Connection verified successfully')
       } else {
-        showToast(`Test failed: ${result.checked}`, 'error')
+        toast.error(`Test failed: ${result.checked}`)
       }
     } catch (err) {
       setTestResults(prev => ({
         ...prev,
         [id]: { ok: false, checked: err.message ?? 'Test failed', layers: {} },
       }))
-      showToast(err.message ?? 'Test failed', 'error')
+      toast.error(err.message ?? 'Test failed')
     } finally {
       setTestingId(null)
     }
@@ -1251,12 +1203,6 @@ export default function ConnectorsPage() {
         />
       )}
 
-      {/* Toast */}
-      <Toast
-        message={toast?.message}
-        type={toast?.type}
-        onDismiss={dismissToast}
-      />
     </div>
   )
 }
