@@ -1,12 +1,17 @@
 # Flows — orchestration
 
-![Build, schedule, and monitor multi-step data pipelines in Nubi](illustration:FlowOrchestration)
-
 Flows is Nubi's built-in workflow orchestrator. A flow is a set of **cells** — SQL queries, Python scripts, or Markdown notes — wired into a directed acyclic graph. Nubi runs them in dependency order, retrying failures, caching results, and keeping durable run history.
 
 You work on a flow in **three views**: as a **notebook** (a top-to-bottom list of cells), as a **canvas** (a visual DAG), or as **code** (a file tree — `flow.py` plus one file per cell). They are three windows onto the same flow — flip between them at any time without losing anything.
 
+<table><tr>
+<td width="50%"><img src="screenshots/flows-light.png" alt="Flows canvas — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/flows-dark.png" alt="Flows canvas — dark"><br><sub>Dark</sub></td>
+</tr></table>
+
 > Flow compute is metered. Cell previews and durable runs consume **compute units** drawn from your org's usage wallet. Designing in the notebook with small previews is cheap; large durable runs and materializations cost more. See [Billing and usage](/docs/billing-and-usage).
+>
+> **New to Nubi?** [Getting Started](/docs/getting-started) has a beginner-friendly overview of the whole app. [UI Tour](/docs/ui-tour) describes the Flows surface in the context of the sidebar and app shell.
 
 ---
 
