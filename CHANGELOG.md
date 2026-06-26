@@ -20,6 +20,14 @@ Conventions:
   `POST /metrics/{id}/revert/{v}` (restore + record as new version; requires
   `author:metric`). Mirrors the flow versioning pattern. Migration:
   `0023_metric_spec_versions.sql`.
+- **Schema-drift detection.** Column-level schema change detection for all
+  observed datasets: added, removed, and type-changed columns are detected
+  automatically after each query execution (best-effort, fire-and-forget — never
+  blocks the query path). Read surfaces: `GET /health/drift` (org-level, with
+  optional `?dataset_key=` filter) and `GET /health/drift/{dataset_key}`
+  (per-dataset history + current snapshot). Emits a `SCHEMA_DRIFT` outbound
+  webhook event on every detected change. First observation stores a baseline
+  snapshot with no events. Migration `0024_schema_drift.sql`.
 - **MCP — full integration.** Nubi as an MCP server (`POST /mcp`, JSON-RPC
   `initialize`/`tools/list`/`tools/call`, ~14 built-in tools) **and** a per-org
   external MCP server registry (`/mcp/servers` CRUD) so an embedding host can

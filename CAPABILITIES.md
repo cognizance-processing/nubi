@@ -55,7 +55,7 @@ own. Embed/viewer tokens are exempt from usage metering.
 | Estate graph | ✅ | `GET /health/estate` | [data-health](docs/data-health.md) |
 | Freshness **write** path (populated on flow success) | ✅ | listener wired at startup | [data-health](docs/data-health.md) |
 | Health reads via embed tokens | ✅ | `verified_identity` (embed + first-party) | [data-health](docs/data-health.md) |
-| **Schema-drift detection / event API** (column add/remove/type-change) | 🗓️ | — (output-schema mismatch is logged + `X-Nubi-Schema` header only) | — |
+| **Schema-drift detection / event API** (column add/remove/type-change) | ✅ | `GET /health/drift`, `GET /health/drift/{key}`, `SCHEMA_DRIFT` webhook event | [data-health](docs/data-health.md) |
 
 ## D. Lineage
 

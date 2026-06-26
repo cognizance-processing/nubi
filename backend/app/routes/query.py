@@ -1798,6 +1798,29 @@ async def query(
     except Exception:  # noqa: BLE001 — webhooks must never break the query path.
         pass
 
+    # ── 6d. Schema-drift detection (best-effort, fire-and-forget) ─────────────
+    # Extract column metadata from the Arrow result and schedule drift detection
+    # in the background.  Never blocks or breaks the query path.
+    # We only probe when there is an org AND a registered/named dataset key so
+    # we have a stable identity to snapshot against.
+    _drift_dataset_key = getattr(registered, "id", None) or (
+        effective_datastore_id or None
+    )
+    if org_id and _drift_dataset_key and arrow_table is not None:
+        try:
+            from app.health.schema_drift import detect_schema_drift as _detect_drift  # noqa: PLC0415
+
+            _live_cols = [
+                {"name": arrow_table.schema.field(i).name,
+                 "type": str(arrow_table.schema.field(i).type)}
+                for i in range(arrow_table.schema.num_fields)
+            ]
+            asyncio.ensure_future(
+                _detect_drift(str(org_id), str(_drift_dataset_key), _live_cols)
+            )
+        except Exception:  # noqa: BLE001 — drift detection must never break the query
+            pass
+
     # ── 7. Stream the response with MISS header ───────────────────────────────
     # WARN-mode output-schema mismatch (A4): surface an advisory header so the
     # caller can detect the contract drift without the request failing.  STRICT

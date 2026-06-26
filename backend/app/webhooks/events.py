@@ -37,6 +37,7 @@ FRESHNESS_STALE = "freshness_stale"
 QUERY_FAILED = "query_failed"
 FLOW_COMPLETED = "flow_completed"
 QUERY_EXECUTED = "query_executed"
+SCHEMA_DRIFT = "schema_drift"
 
 ALL_EVENT_TYPES: tuple[str, ...] = (
     WATCH_BREACH,
@@ -44,6 +45,7 @@ ALL_EVENT_TYPES: tuple[str, ...] = (
     QUERY_FAILED,
     FLOW_COMPLETED,
     QUERY_EXECUTED,
+    SCHEMA_DRIFT,
 )
 
 
@@ -221,5 +223,33 @@ def emit_query_executed(
             "subject": subject,
             "datasource_id": datasource_id,
             "row_count": row_count,
+        },
+    )
+
+
+def emit_schema_drift(
+    org_id: str | None,
+    *,
+    dataset_key: str | None,
+    changes: list[dict],
+) -> None:
+    """Emit ``schema_drift`` when columns are added, removed, or type-changed.
+
+    Fields
+    ------
+    dataset_key:
+        The org-scoped dataset identifier that drifted.
+    changes:
+        List of drift dicts, each with keys:
+        ``change_type`` ('added'/'removed'/'type_changed'),
+        ``column_name``, ``from_type`` (None for 'added'),
+        ``to_type`` (None for 'removed').
+    """
+    emit_event(
+        SCHEMA_DRIFT,
+        org_id,
+        {
+            "dataset_key": dataset_key,
+            "changes": changes,
         },
     )

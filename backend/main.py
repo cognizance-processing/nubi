@@ -281,6 +281,11 @@ import app.routes.demo_parquet  # noqa: F401, E402
 # generic /{resource} catch-all in resources.py.
 import app.routes.health  # noqa: F401, E402
 
+# Import schema-drift route (GET /health/drift, /health/drift/{dataset_key})
+# BEFORE resources so the /health/drift prefix routes are registered ahead of
+# the generic /{resource} catch-all in resources.py.
+import app.routes.drift  # noqa: F401, E402
+
 # Import MCP route (registry CRUD + Nubi-as-MCP-server endpoint) BEFORE
 # resources so the /mcp prefix routes register ahead of the generic
 # /{resource} catch-all in resources.py.
