@@ -1168,8 +1168,8 @@ def test_is_valid_event_type_empty_string_returns_false():
 
 
 def test_all_event_types_tuple_has_five_items():
-    # Updated: QUERY_EXECUTED was added as the 5th event type.
-    assert len(ALL_EVENT_TYPES) == 5
+    # Updated: QUERY_EXECUTED was the 5th event type; SCHEMA_DRIFT added as 6th.
+    assert len(ALL_EVENT_TYPES) == 6
 
 
 # ===========================================================================

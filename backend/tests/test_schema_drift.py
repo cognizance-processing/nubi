@@ -118,7 +118,10 @@ def test_diff_type_changed():
 # ---------------------------------------------------------------------------
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # asyncio.run creates a fresh loop per call — robust under the full suite on
+    # Python 3.13 (get_event_loop() raises "no current event loop" once another
+    # test has closed the default loop).
+    return asyncio.run(coro)
 
 
 # 1. First observation -> snapshot stored, no events
