@@ -1,16 +1,19 @@
 # Connectors
 
-![Connect any data source — SQL databases, cloud warehouses, file storage, and custom APIs](illustration:ConnectorSdk)
-
 A **connector** links Nubi to one of your data sources — a Postgres database, a BigQuery project, a Snowflake warehouse, a Parquet file in S3, or any of 20+ supported types. Once added, you can browse its tables, run queries against it, build dashboards, and reference it in flows. Nubi queries your source on demand and caches results; it does not copy your data.
 
 Connectors live on the **Connectors** page (`/connectors` in the app sidebar). Credentials you enter are encrypted at rest with AES-256-GCM and are never shown again after you save them.
+
+> **New to Nubi?** [Getting Started](/docs/getting-started) walks you through adding your first connector. [UI Tour](/docs/ui-tour) describes the Connectors page and the Data browser in the context of the app shell.
 
 ---
 
 ## The Connectors page
 
-![The Connectors page — one card per source, with View data and Test actions and at-rest encryption noted in the header](/docs/screenshots/connectors.png)
+<table><tr>
+<td width="50%"><img src="screenshots/connectors-light.png" alt="Connectors — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/connectors-dark.png" alt="Connectors — dark"><br><sub>Dark</sub></td>
+</tr></table>
 
 Open **Connectors** from the sidebar. The page shows:
 
@@ -195,7 +198,10 @@ The Demo data connector always tests green (it has no secret and runs in-process
 
 ## Browsing a connector's data
 
-![The Data Browser — searchable table list with row counts on the left, a 50-row preview grid on the right](/docs/screenshots/data-browser.png)
+<table><tr>
+<td width="50%"><img src="screenshots/data-light.png" alt="Data browser — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/data-dark.png" alt="Data browser — dark"><br><sub>Dark</sub></td>
+</tr></table>
 
 Click **View data** on any connector card to open the **Data Browser** (`/connectors/:id/data`). This lets you explore the source without writing any SQL:
 

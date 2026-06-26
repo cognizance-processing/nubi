@@ -4,15 +4,18 @@ A Nubi dashboard is a grid of **widgets** — KPIs, charts, tables, filters, and
 
 Under the hood every dashboard is a single JSON document — a `DashboardSpec`. The editor, the AI chat panel, the Code panel, and the embed pipeline all share it as the source of truth, so anything you build by clicking can be exported as code, and anything the AI writes can be edited by hand.
 
-![Drag widgets onto a live grid canvas, configure encodings, and preview instantly](illustration:DashboardCanvas)
+> **New to Nubi?** [Getting Started](/docs/getting-started) walks you from zero to your first live dashboard step by step. [UI Tour](/docs/ui-tour) covers every page in the app shell.
 
 ---
 
 ## The dashboards page
 
-Open **Dashboards** from the sidebar to see all boards in the active project.
+<table><tr>
+<td width="50%"><img src="screenshots/dashboards-light.png" alt="Dashboards — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/dashboards-dark.png" alt="Dashboards — dark"><br><sub>Dark</sub></td>
+</tr></table>
 
-![The dashboards page — a responsive card grid with search, sort, and per-board actions](screenshots/dashboard.png)
+Open **Dashboards** from the sidebar to see all boards in the active project.
 
 - Boards render as a responsive **card grid** — one column on phones, two on small screens, three on desktop. Each card shows the board name plus a meta line: the widget count, or **HTML board** for legacy HTML boards.
 - **New dashboard** (top-right) opens a blank editor.
@@ -27,7 +30,10 @@ If you have read-only access to the organisation, create/edit/delete actions are
 
 ## The editor at a glance
 
-![The dashboard editor — board canvas on the left, Add widget panel on the right, toolbar in the top bar](screenshots/editor.png)
+<table><tr>
+<td width="50%"><img src="screenshots/editor-light.png" alt="Dashboard editor — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/editor-dark.png" alt="Dashboard editor — dark"><br><sub>Dark</sub></td>
+</tr></table>
 
 The editor is a single full-height workspace. Its toolbar lives in the app's top bar:
 
@@ -266,7 +272,10 @@ A dashboard variable carries an optional `mode` of `'scan'` or `'slice'` (per `C
 
 Every saved board renders as a full page at `/d/:id` — no editor chrome, just the dashboard. This is the URL you share with viewers.
 
-![A published dashboard rendered at /d/:id](/docs/screenshots/dashboard-view.png)
+<table><tr>
+<td width="50%"><img src="screenshots/dashboard-view-light.png" alt="Dashboard live view — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/dashboard-view-dark.png" alt="Dashboard live view — dark"><br><sub>Dark</sub></td>
+</tr></table>
 
 - Members who can write see an **Edit in editor →** link above the board; viewers get a clean read-only render.
 - Spec boards render through the same engine as the editor's Preview; older HTML boards still render via the legacy HTML path.

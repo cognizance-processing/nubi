@@ -4,6 +4,25 @@ This document is the **stable public contract** for the Nubi web-component embed
 kit. Hosts pin to a specific bundle version; breaking changes are gated behind a
 new major version number. The current version is **v1**.
 
+## Explore — the embedded components in action
+
+Before wiring up the embedding SDK in your own application, you can experience every Nubi web component live inside the app itself. Open **Explore** (`/explore`) in the sidebar — it embeds `<nubi-metric-explorer>` as a first-class app surface, so you can pick a governed metric, apply dimensions, choose a time grain, and see results as a chart and table without writing SQL or leaving the app.
+
+<table><tr>
+<td width="50%"><img src="screenshots/explore-light.png" alt="Explore — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/explore-dark.png" alt="Explore — dark"><br><sub>Dark</sub></td>
+</tr></table>
+
+Explore demonstrates:
+
+- **`<nubi-metric-explorer>`** — metric picker, dimension toggles, time grain selector, and the governed query run.
+- **`<nubi-chart>`** — the result rendered as a chart (bar/line/area auto-detected from the metric's grain).
+- **`<nubi-table>`** — the result as a paginated data table below the chart.
+
+When you embed these same components in your own app via the SDK, the experience your users see mirrors what you see in Explore. Use it to prototype dimension combinations and metric selections before committing them to a host page.
+
+---
+
 ## Stability and deprecation
 
 - Fields and events marked here are stable for the lifetime of v1.

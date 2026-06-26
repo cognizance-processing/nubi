@@ -4,13 +4,16 @@ The **Queries** workspace is Nubi's SQL IDE. Write SQL against any connector, tu
 
 Open it from the sidebar (route `/queries`).
 
-![Write SQL and see results instantly in the browser](illustration:QueryWorkspace)
+> **New to Nubi?** [Getting Started](/docs/getting-started) has a beginner-friendly walkthrough of running and saving your first query. [UI Tour](/docs/ui-tour) describes the Queries surface in the context of the app shell.
+
+<table><tr>
+<td width="50%"><img src="screenshots/queries-light.png" alt="Queries — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/queries-dark.png" alt="Queries — dark"><br><sub>Dark</sub></td>
+</tr></table>
 
 ---
 
 ## The layout
-
-![The query workspace running a registered query — Monaco SQL editor, results grid, and the registry list on the right](/docs/screenshots/queries-editor.png)
 
 On a desktop screen the page has two parts:
 
