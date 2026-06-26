@@ -272,6 +272,20 @@ def _tool_run_query(
                     )
             resolved_sql, positional_params = resolve_named_params(resolved_sql, resolved)
     elif sql is not None:
+        # SECURITY: ad-hoc SQL requires author:sql scope — same gate as query.py.
+        # Embed tokens and restricted first-party tokens (kind!="access" or missing
+        # author:sql) must NOT be able to execute arbitrary SQL via the tool path.
+        from app.auth.scopes import has_scope, SCOPE_AUTHOR_SQL  # noqa: PLC0415
+
+        tool_scopes: list[str] = claims.get("scope") or []
+        tool_kind: str = claims.get("kind", "access")
+        if tool_kind != "access" or not has_scope(tool_scopes, SCOPE_AUTHOR_SQL):
+            raise AppError(
+                "insufficient_scope",
+                "Token does not carry the required scope: author:sql — "
+                "raw SQL execution via the AI tool path is not permitted without this scope.",
+                403,
+            )
         resolved_sql = sql
     else:
         raise AppError("invalid_tool_input", "Either query_id or sql must be provided.", 400)

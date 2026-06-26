@@ -367,13 +367,34 @@ class TestRunQueryTool:
         )
 
     def test_run_query_adhoc_sql(self):
+        # Ad-hoc SQL requires author:sql scope (security gate added in audit-55).
+        # Use full admin claims that include this scope.
+        admin_claims = {
+            "kind": "access",
+            "sub": "test-admin",
+            "policies": {},
+            "scope": ["read:*", "author:sql", "author:metric"],
+        }
         result = execute_tool(
             "run_query",
             {"sql": "SELECT 42 AS answer"},
-            _empty_claims(),
+            admin_claims,
         )
         assert result["row_count"] == 1
         assert result["rows"][0]["answer"] == 42
+
+    def test_run_query_adhoc_sql_blocked_without_author_scope(self):
+        """Ad-hoc SQL must be blocked for tokens without author:sql scope."""
+        from app.errors import AppError
+
+        with pytest.raises(AppError) as exc_info:
+            execute_tool(
+                "run_query",
+                {"sql": "SELECT 42 AS answer"},
+                _empty_claims(),  # only read:* — no author:sql
+            )
+        assert exc_info.value.status == 403
+        assert exc_info.value.code == "insufficient_scope"
 
     def test_run_query_unknown_query_id_raises(self):
         from app.errors import AppError

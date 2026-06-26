@@ -247,13 +247,15 @@ async def mcp_endpoint(
         arguments: dict[str, Any] = params.get("arguments") or {}
 
         # Build first-party claims — mirrors ai_chat exactly.
+        # SECURITY: pass the identity's ACTUAL scope, never hard-code write:*
+        # which would escalate a read-only or embed token to writer level.
         org_id = await _get_user_org(str(user["id"]), repo)
         claims: dict[str, Any] = {
-            "kind": "access",
+            "kind": identity.kind,
             "sub": str(user.get("id", "")),
             "org": org_id,
             "policies": dict(identity.policies or {}),
-            "scope": ["read:*", "write:*"],
+            "scope": list(identity.scope or []),
         }
 
         try:
