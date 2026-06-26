@@ -31,6 +31,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, model_validator
 
+from app.audit import record_audit as _record_audit
 from app.auth.deps import current_user
 from app.auth.roles import require_writer_default
 from app.errors import AppError
@@ -515,6 +516,16 @@ async def create_connector(
     secret_dict = body.secret.to_dict()
     await _secret_store().put(datastore_id, org_id, secret_dict)
 
+    # Audit — fire-and-forget; POPIA-safe (no secrets/credentials in summary).
+    await _record_audit(
+        org_id=org_id,
+        actor_user_id=str(user["id"]),
+        actor_kind="access",
+        action="connector.create",
+        resource_type="connector",
+        resource_id=str(datastore_id),
+        summary={"name": body.name, "connector_type": body.type},
+    )
     return _sanitise(row)
 
 
@@ -697,6 +708,16 @@ async def update_connector(
     if body.secret is not None and not body.secret.is_empty():
         await _secret_store().put(connector_id, org_id, body.secret.to_dict())
 
+    # Audit — fire-and-forget; POPIA-safe (no secrets/credentials in summary).
+    await _record_audit(
+        org_id=org_id,
+        actor_user_id=str(user["id"]),
+        actor_kind="access",
+        action="connector.update",
+        resource_type="connector",
+        resource_id=connector_id,
+        summary={"name": str(row.get("name") or "")},
+    )
     return _sanitise(row)
 
 
@@ -763,6 +784,17 @@ async def delete_connector(
         # may raise if the entry is already gone — that is acceptable.
         pass
 
+    # Audit — fire-and-forget; POPIA-safe (no secrets in summary).
+    connector_type = (existing.get("config") or {}).get("connector_type", "")
+    await _record_audit(
+        org_id=org_id,
+        actor_user_id=str(user["id"]),
+        actor_kind="access",
+        action="connector.delete",
+        resource_type="connector",
+        resource_id=connector_id,
+        summary={"connector_type": connector_type},
+    )
     return Response(status_code=204)
 
 

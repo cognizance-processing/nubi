@@ -45,6 +45,9 @@ from app.repos.base import VALID_RESOURCES
 from app.repos.provider import get_repo, Repo
 from app.routes import api_router
 
+# Audit (fire-and-forget — never breaks a mutation path)
+from app.audit import record_audit as _record_audit
+
 # ── Sub-router ────────────────────────────────────────────────────────────────
 router = APIRouter(tags=["resources"])
 
@@ -315,6 +318,18 @@ async def create_resource(
     # — minting a version on every CRUD write double-counts the checkpoint chain.)
     if _is_versionable(resource):
         row["author_kind"] = author_kind(claims)
+
+    # Audit — fire-and-forget; POPIA-safe metadata only (no row data).
+    resource_singular = resource.rstrip("s")
+    await _record_audit(
+        org_id=org_id,
+        actor_user_id=str(user["id"]),
+        actor_kind="access",
+        action=f"{resource_singular}.create",
+        resource_type=resource_singular,
+        resource_id=str(row.get("id") or ""),
+        summary={"name": str(row.get("name") or "")},
+    )
     return row
 
 
@@ -411,6 +426,18 @@ async def update_resource(
     if _is_versionable(resource):
         row["author_kind"] = author_kind(claims)
         row["deduped"] = False
+
+    # Audit — fire-and-forget; POPIA-safe metadata only (no row data).
+    resource_singular = resource.rstrip("s")
+    await _record_audit(
+        org_id=org_id,
+        actor_user_id=str(user["id"]),
+        actor_kind="access",
+        action=f"{resource_singular}.update",
+        resource_type=resource_singular,
+        resource_id=id,
+        summary={"name": str(row.get("name") or "")},
+    )
     return row
 
 
@@ -431,6 +458,18 @@ async def delete_resource(
     deleted = await repo.delete(resource, org_id, id)
     if not deleted:
         raise AppError("not_found", f"{resource[:-1].capitalize()} not found.", 404)
+
+    # Audit — fire-and-forget; POPIA-safe metadata only (no row data).
+    resource_singular = resource.rstrip("s")
+    await _record_audit(
+        org_id=org_id,
+        actor_user_id=str(user["id"]),
+        actor_kind="access",
+        action=f"{resource_singular}.delete",
+        resource_type=resource_singular,
+        resource_id=id,
+        summary={},
+    )
 
     # Best-effort cleanup of versions + environment pointers (polymorphic
     # tables — no FK cascade from the resource row).

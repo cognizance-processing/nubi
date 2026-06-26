@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from app.audit import record_audit as _record_audit
 from app.auth.deps import current_user, verified_identity
 from app.auth.roles import require_writer_default
 from app.auth.verify import VerifiedIdentity
@@ -98,6 +99,16 @@ async def create_mcp_server(
         enabled=body.enabled,
         created_by=user["id"],
     )
+    # Audit — fire-and-forget; POPIA-safe (no auth_token in summary).
+    await _record_audit(
+        org_id=org_id,
+        actor_user_id=str(user["id"]),
+        actor_kind="access",
+        action="mcp_server.create",
+        resource_type="mcp_server",
+        resource_id=str(row.get("id") or ""),
+        summary={"name": body.name, "transport": body.transport},
+    )
     return _strip_secrets(row)
 
 
@@ -149,6 +160,16 @@ async def update_mcp_server(
     row = await get_mcp_store().update(server_id, org_id, **update_kwargs)
     if row is None:
         raise AppError("mcp_server_not_found", "MCP server not found.", 404)
+    # Audit — fire-and-forget; POPIA-safe (no auth_token in summary).
+    await _record_audit(
+        org_id=org_id,
+        actor_user_id=str(user["id"]),
+        actor_kind="access",
+        action="mcp_server.update",
+        resource_type="mcp_server",
+        resource_id=server_id,
+        summary={"name": str(row.get("name") or "")},
+    )
     return _strip_secrets(row)
 
 
@@ -165,6 +186,16 @@ async def delete_mcp_server(
     deleted = await get_mcp_store().delete(server_id, org_id)
     if not deleted:
         raise AppError("mcp_server_not_found", "MCP server not found.", 404)
+    # Audit — fire-and-forget; POPIA-safe.
+    await _record_audit(
+        org_id=org_id,
+        actor_user_id=str(user["id"]),
+        actor_kind="access",
+        action="mcp_server.delete",
+        resource_type="mcp_server",
+        resource_id=server_id,
+        summary={},
+    )
 
 
 # ---------------------------------------------------------------------------

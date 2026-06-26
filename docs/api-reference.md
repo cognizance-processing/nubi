@@ -1823,3 +1823,70 @@ table = reader.read_all()
 |---|---|---|
 | ![Swagger UI](screenshots/api-swagger.png) | `/docs` Swagger UI in development mode | This page |
 | ![Arrow response](screenshots/api-arrow-response.png) | Network tab showing `application/vnd.apache.arrow.stream` response | This page |
+
+---
+
+## Audit log
+
+Org-scoped action audit trail. Records metadata only — no row data, no PII,
+no secret material (POPIA-compliant). Entries are written fire-and-forget by
+every mutation path; a failed write never breaks the mutation.
+
+Auth: first-party bearer token required; caller must be **owner or admin**
+(approver role). Viewers and members receive **403**.
+
+### `GET /audit`
+
+Returns paginated audit entries for the caller's org, newest-first.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `resource_type` | string | Filter to a resource type (e.g. `board`, `connector`) |
+| `action` | string | Filter to an action (e.g. `board.create`, `connector.delete`) |
+| `actor` | string | Filter to a specific actor_user_id |
+| `since` | ISO-8601 | Lower bound on `at` (inclusive) |
+| `until` | ISO-8601 | Upper bound on `at` (inclusive) |
+| `limit` | int 1–200 | Page size (default 50) |
+| `offset` | int | Page offset (default 0) |
+
+**Response shape:**
+
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "org_id": "uuid",
+      "actor_user_id": "uuid",
+      "actor_kind": "access",
+      "action": "board.create",
+      "resource_type": "board",
+      "resource_id": "uuid",
+      "summary": { "name": "My Board" },
+      "at": "2026-06-26T10:00:00+00:00"
+    }
+  ],
+  "total": 42,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+**Status codes:** 200 OK · 401 Unauthenticated · 403 Insufficient role (not owner/admin).
+
+### `GET /audit/{resource_type}/{resource_id}`
+
+Same shape as `GET /audit` but pre-filtered to a single resource's history.
+
+**Status codes:** 200 OK · 401 Unauthenticated · 403 Insufficient role.
+
+### Covered mutations
+
+| Resource | Covered actions |
+|---|---|
+| boards, queries, datastores, widgets, canvases | `.create`, `.update`, `.delete` (via generic `/{resource}` CRUD) |
+| connectors | `connector.create`, `connector.update`, `connector.delete` |
+| mcp_server | `mcp_server.create`, `mcp_server.update`, `mcp_server.delete` |
+| secret | `secret.set`, `secret.delete` |

@@ -13,6 +13,7 @@ Conventions:
 ## [Unreleased]
 
 ### Added
+<<<<<<< HEAD
 - **Metric spec version history + revert.** Every metric create or update
   snapshots the spec as an immutable version. New routes:
   `GET /metrics/{id}/versions` (list, newest first),
@@ -28,6 +29,17 @@ Conventions:
   (per-dataset history + current snapshot). Emits a `SCHEMA_DRIFT` outbound
   webhook event on every detected change. First observation stores a baseline
   snapshot with no events. Migration `0024_schema_drift.sql`.
+- **Unified action audit-log.** Org-scoped `audit_log` table (migration
+  `0025_audit_log.sql`) records metadata-only entries for every mutation:
+  create/update/delete on boards, queries, datastores, widgets, canvases,
+  connectors, MCP servers, and secrets. A central `record_audit()` writer
+  (`app/audit.py`) is fire-and-forget — a DB write failure never breaks the
+  mutation path. Read API: `GET /audit` (paginated; filter by
+  `resource_type`/`action`/`actor`/`since`/`until`) and
+  `GET /audit/{resource_type}/{resource_id}` — both gated to owner/admin
+  (approver role); unauthenticated 401, non-approver 403; cross-org isolation
+  enforced (org_id always from the verified token). POPIA-safe: `summary` holds
+  metadata only — no row data, SQL literals, PII, or credentials.
 - **MCP — full integration.** Nubi as an MCP server (`POST /mcp`, JSON-RPC
   `initialize`/`tools/list`/`tools/call`, ~14 built-in tools) **and** a per-org
   external MCP server registry (`/mcp/servers` CRUD) so an embedding host can
@@ -86,9 +98,10 @@ Conventions:
   misconfigured host issuer cannot mint write/admin/raw-SQL capability.
 
 ### Notes
-- **Not yet shipped (tracked in [CAPABILITIES.md](./CAPABILITIES.md)):** active
-  schema-drift detection/event API; a consolidated cross-mutation audit-log read
-  API; spec version/revert for metrics (boards already have it via environments).
+- All capabilities KeyOne flagged as roadmap are now shipped (metric versioning,
+  schema-drift detection, unified audit-log). Remaining 🟡 in
+  [CAPABILITIES.md](./CAPABILITIES.md): flow-scoped environment *write* aliases
+  (env write is available today under the `/environments` routes).
 
 ---
 
