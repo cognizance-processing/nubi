@@ -1547,6 +1547,110 @@ List environments and their materialisation watermarks for a flow.
 
 ---
 
+## Variables
+
+Project variables are persistent, org/project-scoped key/value pairs used to
+store configuration and runtime state (e.g. dashboard defaults, feature flags,
+per-project settings).  They are readable by any authenticated member and
+writable by members with the **writer** role.
+
+**Scoping:** Each variable belongs to an org and optionally a project.  The
+effective scope is resolved from the `X-Org-Id` header (with membership
+check) and `X-Project-Id` / `?project_id=` query parameter.  A project
+variable and an org-global variable with the same key never collide.
+Cross-org access always returns 404 — no information leak.
+
+---
+
+### `GET /variables`
+
+List all variables for the caller's org in the resolved project scope.
+
+**Auth:** Reader role.
+
+**Response `200`:**
+```json
+[
+  {
+    "key": "default_region",
+    "value": "us-east-1",
+    "org_id": "<org-id>",
+    "project_id": "<project-id or null>",
+    "updated_by": "<user-id>",
+    "updated_at": "2026-01-01T00:00:00Z"
+  }
+]
+```
+
+---
+
+### `GET /variables/{key}`
+
+Fetch a single variable by key within the caller's resolved org + project scope.
+
+**Path parameters:**
+
+| Param | Type | Description |
+|---|---|---|
+| `key` | string | Variable key (case-sensitive). |
+
+**Response `200`:** Variable row (same shape as the list entry above).
+
+**Errors:**
+- `404 not_found` — variable not found in the caller's org+scope (also returned for cross-org keys — no leak).
+
+---
+
+### `PUT /variables/{key}`
+
+Upsert a variable's value.  Creates the variable if it does not exist; updates
+the value if it does.  The project scope is resolved from the request body's
+`project_id` field (when set) or from the request context (`X-Project-Id` /
+`?project_id=` / default project); org-global when none resolves.
+
+**Auth:** Writer role (`require_writer`).
+
+**Path parameters:**
+
+| Param | Type | Description |
+|---|---|---|
+| `key` | string | Variable key (case-sensitive). |
+
+**Request body:**
+```json
+{
+  "value": <any JSON value>,
+  "project_id": "<optional project id — overrides header/query scope>"
+}
+```
+
+**Response `200`:** Updated variable row.
+
+**Errors:**
+- `403 insufficient_role` — caller is a viewer (read-only member).
+
+---
+
+### `DELETE /variables/{key}`
+
+Delete a variable.
+
+**Auth:** Writer role.
+
+**Path parameters:**
+
+| Param | Type | Description |
+|---|---|---|
+| `key` | string | Variable key to delete. |
+
+**Response:** `204 No Content` on success.
+
+**Errors:**
+- `403 insufficient_role` — caller is a viewer.
+- `404 not_found` — variable not found in the caller's org+scope.
+
+---
+
 ## Error codes reference
 
 | Code | HTTP | When |

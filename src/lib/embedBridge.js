@@ -35,9 +35,87 @@
 const BRIDGE_FN_NAME = '__nubiSpaGetToken'
 
 /**
+ * Scopes that the backend grants to every first-party HS256 session token that
+ * carries no explicit `scope` claim (see _FIRST_PARTY_SCOPES in
+ * backend/app/auth/verify.py).  We mirror them here so that client-side
+ * cosmetic gating in the web components sees the same set the server applies.
+ *
+ * SECURITY NOTE: this never changes what the server will accept — the backend
+ * validates scopes independently.  These are purely for client-side UI gating
+ * (show/hide controls) inside the shadow DOM.  The server remains the sole
+ * authority.
+ */
+const _SPA_FIRST_PARTY_SCOPES = 'read:* edit:* author:sql author:metric'
+
+/**
+ * Inject the standard first-party scope claim into a JWT payload for
+ * client-side cosmetic capability gating.
+ *
+ * The SPA session token is an HS256 first-party token whose payload carries
+ * no `scope` claim — the backend applies `_FIRST_PARTY_SCOPES` as a default
+ * only at verification time.  The embed web components decode scopes from the
+ * JWT payload client-side (without verifying the signature) to decide whether
+ * to enable authoring controls.  Without this injection they always see an
+ * empty scope list and render READ-ONLY even though the server would accept
+ * `author:metric` requests from the same token.
+ *
+ * This function:
+ *  1. Base64url-decodes the JWT payload.
+ *  2. Sets `scope` to `_SPA_FIRST_PARTY_SCOPES` if and only if the payload
+ *     carries no `scope` / `scopes` / `scp` claim (i.e. this is a plain
+ *     first-party token, not an already-scoped embed or agent token).
+ *  3. Re-encodes the payload and returns a new `header.payload.signature`
+ *     string.  The signature stays the same; `decodeScopes()` never verifies
+ *     it, so the injected claim is read correctly.
+ *
+ * Returns the original token unchanged on any parse error so we never break
+ * the auth flow.
+ *
+ * @param {string | null} token
+ * @returns {string | null}
+ */
+function injectSpaScopes(token) {
+  if (!token) return token
+  try {
+    const parts = token.split('.')
+    if (parts.length !== 3) return token
+
+    // Decode payload (no signature verification needed here).
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4)
+    const payload = JSON.parse(atob(padded))
+
+    // Only inject when the token carries no scope claim (plain first-party
+    // session token).  Restricted tokens (agent sandbox, embed) already
+    // carry explicit scope lists — don't overwrite them.
+    if (payload.scope || payload.scopes || payload.scp) return token
+
+    // Inject the first-party default scope set.
+    payload.scope = _SPA_FIRST_PARTY_SCOPES
+
+    // Re-encode payload (base64url, no padding).
+    const newPayload = btoa(JSON.stringify(payload))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '')
+
+    return `${parts[0]}.${newPayload}.${parts[2]}`
+  } catch {
+    // Never break the auth flow on parse errors.
+    return token
+  }
+}
+
+/**
  * Install a `window[name]` callback that the embed web components can call to
  * obtain the SPA's current session JWT.  Safe to call multiple times —
  * subsequent calls with the same name simply overwrite the previous callback.
+ *
+ * The returned token has the first-party scope set injected into its payload
+ * (see `injectSpaScopes`) so that client-side cosmetic gating inside the web
+ * components (e.g. the `author:metric` check in `<nubi-metric-explorer>`)
+ * correctly enables authoring controls when the SPA session has full access.
+ * The server still verifies all requests independently.
  *
  * @param {() => string | null | Promise<string | null>} getTokenFn
  *   Synchronous or async function returning the current access token.
@@ -47,7 +125,10 @@ const BRIDGE_FN_NAME = '__nubiSpaGetToken'
  */
 export function registerSpaTokenBridge(getTokenFn, name = BRIDGE_FN_NAME) {
   if (typeof window !== 'undefined') {
-    window[name] = getTokenFn
+    window[name] = async () => {
+      const token = await getTokenFn()
+      return injectSpaScopes(token)
+    }
   }
   return name
 }
