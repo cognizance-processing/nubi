@@ -47,6 +47,16 @@ describe('<nubi-lineage> — sample fallback', () => {
     expect(el.shadowRoot).toBeTruthy()
   })
 
+  test('no-backend path renders sample immediately — never stuck on Loading', async () => {
+    // Widget has no backend attr; must never stay on Loading spinner
+    await nextTick(5)
+    const loading = el.shadowRoot.querySelector('.nubi-loading')
+    expect(loading).toBeNull()
+    // Must have DAG nodes rendered instead
+    const nodes = el.shadowRoot.querySelectorAll('.ln-node')
+    expect(nodes.length).toBeGreaterThan(0)
+  })
+
   test('sample fallback shows SAMPLE badge', async () => {
     await nextTick(5)
     const badge = el.shadowRoot.querySelector('.nubi-badge.sample')

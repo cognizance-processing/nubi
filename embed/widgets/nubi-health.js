@@ -620,67 +620,96 @@ class NubiHealth extends HTMLElement {
     this._ac = ac
 
     this._ensureScaffold()
+
+    const hasBackend = this.hasAttribute('backend')
+    const datasetKey = this.getAttribute('dataset-key')
+
+    // If no explicit backend attribute, skip directly to sample fallback — never fetch, never spin.
+    if (!hasBackend) {
+      if (ac.signal.aborted) return
+      if (this.hasAttribute('no-sample-fallback')) {
+        this._showError('No backend configured')
+        return
+      }
+      const sample = makeSampleHealth()
+      this._renderHealth(
+        { score: sample.score, grade: sample.grade, reasons: sample.reasons, datasets: sample.datasets },
+        sample.datasets,
+        true,
+      )
+      this.dispatchEvent(new CustomEvent('nubi:widget-ready', {
+        bubbles: true, composed: true,
+        detail: { score: sample.score, grade: sample.grade, datasets: sample.datasets.length, renderer: 'health' },
+      }))
+      return
+    }
+
     this._showLoading()
 
-    const backend    = this._backend()
-    const datasetKey = this.getAttribute('dataset-key')
+    const backend = this._backend()
 
     let token = null
     try { token = await resolveToken(this) } catch (_) { /* ignore */ }
     if (ac.signal.aborted) return
 
-    if (backend) {
-      try {
-        // Fetch score and freshness in parallel
-        const scorePath = datasetKey
-          ? `/api/v1/health/score?dataset_key=${encodeURIComponent(datasetKey)}`
-          : '/api/v1/health/score'
+    // Bound the fetch with a timeout so it never hangs indefinitely
+    const timeout = setTimeout(() => ac.abort(), 8000)
 
-        const freshnessPath = datasetKey
-          ? `/api/v1/health/freshness/${encodeURIComponent(datasetKey)}`
-          : '/api/v1/health/freshness'
+    try {
+      // Fetch score and freshness in parallel
+      const scorePath = datasetKey
+        ? `/api/v1/health/score?dataset_key=${encodeURIComponent(datasetKey)}`
+        : '/api/v1/health/score'
 
-        const [rawScore, rawFreshness] = await Promise.all([
-          fetchJson(backend, scorePath, token, ac.signal),
-          fetchJson(backend, freshnessPath, token, ac.signal).catch(() => null),
-        ])
-        if (ac.signal.aborted) return
+      const freshnessPath = datasetKey
+        ? `/api/v1/health/freshness/${encodeURIComponent(datasetKey)}`
+        : '/api/v1/health/freshness'
 
-        // Normalise score response
-        let scoreData
-        if (datasetKey) {
-          // Single dataset response
-          scoreData = aggregateScores([rawScore])
-        } else {
-          const results = Array.isArray(rawScore) ? rawScore : (rawScore.datasets || [rawScore])
-          scoreData = aggregateScores(results)
+      const [rawScore, rawFreshness] = await Promise.all([
+        fetchJson(backend, scorePath, token, ac.signal),
+        fetchJson(backend, freshnessPath, token, ac.signal).catch(() => null),
+      ])
+      clearTimeout(timeout)
+      if (ac.signal.aborted) return
+
+      // Normalise score response
+      let scoreData
+      if (datasetKey) {
+        // Single dataset response
+        scoreData = aggregateScores([rawScore])
+      } else {
+        const results = Array.isArray(rawScore) ? rawScore : (rawScore.datasets || [rawScore])
+        scoreData = aggregateScores(results)
+      }
+
+      // Normalise freshness response
+      let freshnessRecords = []
+      if (rawFreshness) {
+        if (Array.isArray(rawFreshness)) {
+          freshnessRecords = rawFreshness
+        } else if (rawFreshness.datasets) {
+          freshnessRecords = rawFreshness.datasets
+        } else if (rawFreshness.dataset_key) {
+          freshnessRecords = [rawFreshness]
         }
+      }
 
-        // Normalise freshness response
-        let freshnessRecords = []
-        if (rawFreshness) {
-          if (Array.isArray(rawFreshness)) {
-            freshnessRecords = rawFreshness
-          } else if (rawFreshness.datasets) {
-            freshnessRecords = rawFreshness.datasets
-          } else if (rawFreshness.dataset_key) {
-            freshnessRecords = [rawFreshness]
-          }
-        }
-
-        this._renderHealth(scoreData, freshnessRecords, false)
-        this.dispatchEvent(new CustomEvent('nubi:widget-ready', {
-          bubbles: true, composed: true,
-          detail: {
-            score:    scoreData.score,
-            grade:    scoreData.grade,
-            datasets: scoreData.datasets.length,
-            renderer: 'health',
-          },
-        }))
-        return
-      } catch (err) {
-        if (err.name === 'AbortError') return
+      this._renderHealth(scoreData, freshnessRecords, false)
+      this.dispatchEvent(new CustomEvent('nubi:widget-ready', {
+        bubbles: true, composed: true,
+        detail: {
+          score:    scoreData.score,
+          grade:    scoreData.grade,
+          datasets: scoreData.datasets.length,
+          renderer: 'health',
+        },
+      }))
+      return
+    } catch (err) {
+      clearTimeout(timeout)
+      if (err.name === 'AbortError') {
+        // Timeout or disconnect — fall through to sample
+      } else {
         console.warn('[nubi-health] fetch failed:', err.message)
         this.dispatchEvent(new CustomEvent('nubi:widget-error', {
           bubbles: true, composed: true,
@@ -693,14 +722,17 @@ class NubiHealth extends HTMLElement {
       }
     }
 
-    if (ac.signal.aborted) return
-
-    if (this.hasAttribute('no-sample-fallback')) {
-      this._showError('No backend configured')
+    if (ac.signal.aborted && this.hasAttribute('no-sample-fallback')) {
+      this._showError('Request timed out')
       return
     }
 
-    // Sample fallback
+    if (this.hasAttribute('no-sample-fallback')) {
+      this._showError('Could not load health data')
+      return
+    }
+
+    // Sample fallback (fetch failed or timed out)
     const sample = makeSampleHealth()
     this._renderHealth(
       { score: sample.score, grade: sample.grade, reasons: sample.reasons, datasets: sample.datasets },

@@ -447,42 +447,67 @@ class NubiLineage extends HTMLElement {
     this._ac = ac
 
     this._ensureScaffold()
+
+    const hasBackend = this.hasAttribute('backend')
+    const nodeId  = this.getAttribute('node-id')
+    const hops    = Math.min(20, Math.max(1, parseInt(this.getAttribute('hops') || '2', 10)))
+
+    // If no explicit backend attribute, skip directly to sample fallback — never fetch, never spin.
+    if (!hasBackend) {
+      if (ac.signal.aborted) return
+      if (this.hasAttribute('no-sample-fallback')) {
+        this._showError('No backend configured')
+        return
+      }
+      const sample = makeSampleDag()
+      this._renderDag(sample, true)
+      this.dispatchEvent(new CustomEvent('nubi:widget-ready', {
+        bubbles: true, composed: true,
+        detail: { nodes: sample.nodes.length, edges: sample.edges.length, renderer: 'lineage' },
+      }))
+      return
+    }
+
     this._showLoading()
 
     const backend = this._backend()
-    const nodeId  = this.getAttribute('node-id')
-    const hops    = Math.min(20, Math.max(1, parseInt(this.getAttribute('hops') || '2', 10)))
 
     let token = null
     try { token = await resolveToken(this) } catch (_) { /* ignore */ }
     if (ac.signal.aborted) return
 
-    if (backend) {
-      try {
-        const path = nodeId
-          ? `/api/v1/lineage/dag/${encodeURIComponent(nodeId)}?hops=${hops}`
-          : '/api/v1/lineage/dag'
+    // Bound the fetch with a timeout so it never hangs indefinitely
+    const timeout = setTimeout(() => ac.abort(), 8000)
 
-        const raw = await fetchJson(backend, path, token, ac.signal)
-        if (ac.signal.aborted) return
+    try {
+      const path = nodeId
+        ? `/api/v1/lineage/dag/${encodeURIComponent(nodeId)}?hops=${hops}`
+        : '/api/v1/lineage/dag'
 
-        // The neighbourhood response has a different shape — normalise it
-        let dag
-        if (nodeId && raw.node) {
-          // Expand neighbourhood into flat DAG
-          dag = _normaliseDagNeighbourhood(raw)
-        } else {
-          dag = _normaliseDag(raw)
-        }
+      const raw = await fetchJson(backend, path, token, ac.signal)
+      clearTimeout(timeout)
+      if (ac.signal.aborted) return
 
-        this._renderDag(dag, false)
-        this.dispatchEvent(new CustomEvent('nubi:widget-ready', {
-          bubbles: true, composed: true,
-          detail: { nodes: dag.nodes.length, edges: dag.edges.length, renderer: 'lineage' },
-        }))
-        return
-      } catch (err) {
-        if (err.name === 'AbortError') return
+      // The neighbourhood response has a different shape — normalise it
+      let dag
+      if (nodeId && raw.node) {
+        // Expand neighbourhood into flat DAG
+        dag = _normaliseDagNeighbourhood(raw)
+      } else {
+        dag = _normaliseDag(raw)
+      }
+
+      this._renderDag(dag, false)
+      this.dispatchEvent(new CustomEvent('nubi:widget-ready', {
+        bubbles: true, composed: true,
+        detail: { nodes: dag.nodes.length, edges: dag.edges.length, renderer: 'lineage' },
+      }))
+      return
+    } catch (err) {
+      clearTimeout(timeout)
+      if (err.name === 'AbortError') {
+        // Timeout or disconnect — fall through to sample
+      } else {
         console.warn('[nubi-lineage] fetch failed:', err.message)
         this.dispatchEvent(new CustomEvent('nubi:widget-error', {
           bubbles: true, composed: true,
@@ -495,14 +520,17 @@ class NubiLineage extends HTMLElement {
       }
     }
 
-    if (ac.signal.aborted) return
-
-    if (this.hasAttribute('no-sample-fallback')) {
-      this._showError('No backend configured')
+    if (ac.signal.aborted && this.hasAttribute('no-sample-fallback')) {
+      this._showError('Request timed out')
       return
     }
 
-    // Sample fallback
+    if (this.hasAttribute('no-sample-fallback')) {
+      this._showError('Could not load lineage data')
+      return
+    }
+
+    // Sample fallback (fetch failed or timed out)
     const sample = makeSampleDag()
     this._renderDag(sample, true)
     this.dispatchEvent(new CustomEvent('nubi:widget-ready', {
