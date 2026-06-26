@@ -17,12 +17,9 @@ to ensure get_provider() always returns NullProvider during the suite.
 
 from __future__ import annotations
 
-import asyncio
-import os
 import threading
 import uuid
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 import pytest_asyncio

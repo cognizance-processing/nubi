@@ -562,7 +562,6 @@ async def _build_lake_connector(
     from app.connectors.duckdb_storage import (  # noqa: PLC0415
         DuckDBStorageConnector,
         _detect_scheme,
-        _get_creds,
     )
 
     cfg: dict = dict(row.get("config") or {})

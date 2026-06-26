@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import uuid
 from copy import deepcopy
-from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import patch
 
@@ -39,7 +38,6 @@ from app.jobs.report import (
     send_report,
 )
 from app.jobs.store import InMemoryJobStore, set_job_store
-from app.queries.registry import QueryRegistry, get_query_registry
 from app.repos.memory import InMemoryRepo
 from app.repos.provider import set_repo
 

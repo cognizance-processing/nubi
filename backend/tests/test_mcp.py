@@ -28,13 +28,13 @@ import os
 import secrets
 import uuid
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.ai.mcp import MCPServer, MCPToolDef, MCPClientError, call_tool_sync, list_tools_sync
+from app.ai.mcp import MCPServer, MCPToolDef, call_tool_sync, list_tools_sync
 from app.ai.agent import run_agent
 from app.ai.provider import NullProvider
 from app.auth.jwt import mint_access_token
@@ -379,7 +379,6 @@ async def test_mcp_registry_create_metadata_ip_blocked(mcp_client):
 async def test_mcp_cross_org_isolation():
     """Org A cannot retrieve org B's servers (store is org-scoped)."""
     from app.mcp.store import McpServerStore
-    import asyncio
 
     store = McpServerStore()
     org_a = str(uuid.uuid4())
@@ -446,7 +445,6 @@ def test_agent_nullprovider_deterministic():
 
 def test_agent_mcp_tool_dispatch_in_loop():
     """Agent dispatches an MCP namespaced tool when returned by a mock provider."""
-    from unittest.mock import MagicMock
 
     from app.ai.agent import _run_real_provider_loop
     from app.ai.provider import LLMProvider
@@ -483,7 +481,6 @@ def test_agent_mcp_tool_dispatch_in_loop():
 def test_agent_mcp_schemas_included_in_system_prompt():
     """combined_tool_schemas is consulted when org is present in claims."""
     from app.ai.agent import _tool_use_system_prompt
-    from app.ai.mcp_tools import get_mcp_tool_schemas
 
     org_id = str(uuid.uuid4())
     claims = _empty_claims(org_id=org_id)

@@ -20,11 +20,10 @@ import hashlib
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any
 from unittest.mock import patch, AsyncMock
 
 import pytest
-import pytest_asyncio
 
 # ── env bootstrap ─────────────────────────────────────────────────────────────
 os.environ.setdefault("DATABASE_URL", "postgresql://fake:fake@localhost/fake")

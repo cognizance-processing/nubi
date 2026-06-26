@@ -956,7 +956,6 @@ class TestSecurityRegressions:
 
     def test_script_in_html_still_rejected_normally(self):
         """Normal <script> rejection still works after the fail-closed fix."""
-        from app.dashboards.render_canvas import _sanitize_for_render
         # A doc with a script tag must still raise (existing behaviour preserved).
         with pytest.raises((ValueError, Exception)):
             # Either via sanitize directly (if validator is live) or via render.
@@ -1040,7 +1039,6 @@ class TestNubiTextFilterXssSanitization:
         # The raw angle brackets must not appear as unescaped HTML.
         # After stripping tags, the remaining text (e.g. "Revenue  1000  profit  500")
         # must not contain unescaped <> that could be confused with tags.
-        import re as _re
         # No raw unescaped tag-like constructs from the inner text.
         # The "&amp;" in the source becomes "&" after tag-stripping, then "&amp;" in output.
         assert "<script" not in result.lower()

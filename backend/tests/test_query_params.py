@@ -323,7 +323,7 @@ async def test_token_claim_reserved_name_rejected(params_client):
     set names like 'policies', 'user_id', 'sub', 'org', 'org_id', etc. because
     those come from the verified token and are controlled by the issuer.
     """
-    from app.queries.registry import QueryParam, get_query_registry
+    from app.queries.registry import get_query_registry
 
     client, user_id = params_client
     registry = get_query_registry()

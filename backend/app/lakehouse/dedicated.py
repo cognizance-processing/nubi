@@ -131,8 +131,6 @@ def _gcs_client(creds: dict[str, str]):
         from google.cloud import storage as gcs_storage  # noqa: PLC0415
 
         if creds:
-            import json  # noqa: PLC0415
-
             from google.oauth2 import service_account  # noqa: PLC0415
 
             sa_info = creds if isinstance(creds.get("type"), str) else None

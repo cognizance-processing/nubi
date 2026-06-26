@@ -41,9 +41,8 @@ itself is sync).  No asyncpg / FastAPI needed.
 from __future__ import annotations
 
 import os
-import tempfile
 from typing import Any
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pyarrow as pa
 import pytest

@@ -35,10 +35,9 @@ Design notes
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
-from app.ai.grounding import build_catalog, build_prompt, ground
+from app.ai.grounding import ground
 from app.ai.provider import LLMProvider, NullProvider
 
 # ---------------------------------------------------------------------------

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -44,7 +44,6 @@ os.environ.setdefault("NUBI_SECRETS_KEY", Fernet.generate_key().decode())
 
 from tests.security.conftest_helpers import (  # noqa: E402
     mint_access_token,
-    mint_embed_token,
     STATIC_JWKS,
     HOST_ISS,
     HOST_AUD,

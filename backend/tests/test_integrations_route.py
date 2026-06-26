@@ -46,7 +46,6 @@ import app.routes.integrations  # noqa: F401
 from app.notify.integrations import (
     InMemoryIntegrationStore,
     channels_for_org,
-    get_integration_store,
     set_integration_store_for_tests,
     split_secret,
 )

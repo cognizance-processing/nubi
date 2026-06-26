@@ -27,7 +27,7 @@ from __future__ import annotations
 import os
 import socket
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -52,7 +52,6 @@ os.environ.setdefault("COOKIE_SECURE", "false")
 os.environ.setdefault("ENV", "test")
 
 from app.webhooks import delivery, events  # noqa: E402
-from app.webhooks.models import InMemoryWebhookStore  # noqa: E402
 
 _ORG = str(uuid.uuid4())
 _USER = str(uuid.uuid4())

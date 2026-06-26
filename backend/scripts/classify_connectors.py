@@ -523,10 +523,9 @@ async def _apply_plan(plans: list[dict[str, Any]], database_url: str) -> None:
     database_url:
         DSN for the target database (asyncpg format).
     """
-    import asyncio
     import asyncpg  # type: ignore[import]
 
-    from app.connectors.secret_store import InMemorySecretStore, PgSecretStore
+    from app.connectors.secret_store import PgSecretStore
 
     # Use a temporary PgSecretStore bound to the provided pool.
     pool = await asyncpg.create_pool(dsn=database_url, min_size=1, max_size=3)

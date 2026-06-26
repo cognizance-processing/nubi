@@ -25,7 +25,6 @@ import os
 import secrets
 
 import pytest
-import pytest_asyncio
 
 from cryptography.exceptions import InvalidTag
 
@@ -196,7 +195,7 @@ def test_tampered_nonce_raises_invalid_tag():
 
 def test_key_rotation_old_version_still_decryptable():
     """After adding key v2 as current, old v1 blobs are still decryptable."""
-    from app.security.crypto import encrypt, decrypt, encrypt_json, decrypt_json
+    from app.security.crypto import encrypt, decrypt
 
     key_v1 = _random_b64_key()
     key_v2 = _random_b64_key()

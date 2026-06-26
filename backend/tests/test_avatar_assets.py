@@ -17,7 +17,6 @@ Coverage
 from __future__ import annotations
 
 import os
-import tempfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import os
 from io import BytesIO
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pyarrow as pa
@@ -41,7 +40,6 @@ from tests.security.conftest_helpers import (  # noqa: E402
     HOST_ISS,
     HOST_AUD,
     EMBED_ORIGIN,
-    KID,
 )
 
 

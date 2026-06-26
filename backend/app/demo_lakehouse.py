@@ -165,7 +165,6 @@ def provision_demo_parquet(
         return None
 
     import pyarrow as pa  # noqa: PLC0415
-    import pyarrow.compute as pc  # noqa: PLC0415
     import pyarrow.parquet as pq  # noqa: PLC0415
 
     from app.lakehouse.managed import project_demo_prefix  # noqa: PLC0415

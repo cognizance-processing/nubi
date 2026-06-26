@@ -56,7 +56,6 @@ os.environ.setdefault("ENV", "test")
 # ---------------------------------------------------------------------------
 
 from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 from jwt.algorithms import RSAAlgorithm
 import jwt as pyjwt

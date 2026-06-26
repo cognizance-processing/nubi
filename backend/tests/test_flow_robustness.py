@@ -36,10 +36,8 @@ Coverage
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -50,8 +48,7 @@ from app.flows.events import (
     register_flow_listener,
     unregister_flow_listener,
 )
-from app.flows.executor import TaskContext, execute_task
-from app.flows.registry import get_task_kind_registry, reset_for_tests
+from app.flows.registry import reset_for_tests
 from app.flows.runtime import (
     advance_readiness,
     drain_flow_run,

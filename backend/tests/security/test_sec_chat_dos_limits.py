@@ -21,14 +21,11 @@ The NullProvider / offline path is used throughout so no LLM API key is needed.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import os
 from typing import Any
 from unittest.mock import patch
 
 import pytest
-import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
@@ -250,7 +247,6 @@ class TestTurnTokenBudget:
         We use a mock provider that always returns a tool call JSON so the loop
         would otherwise run max_steps times. With a tiny budget, it must stop early.
         """
-        from app.ai.agent import _run_real_provider_loop
         from app.ai.provider import LLMProvider
 
         call_count = 0

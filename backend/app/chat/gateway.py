@@ -49,7 +49,7 @@ import hmac
 import hashlib
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from app.errors import AppError

@@ -65,7 +65,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from app.git.flow_files import flow_dir, load_flow_files, serialize_flow_files
+from app.git.flow_files import load_flow_files, serialize_flow_files
 
 # ---------------------------------------------------------------------------
 # Constants / kind mapping

@@ -19,11 +19,8 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.auth.jwt import mint_access_token
-from app.metrics.registry import MetricRegistry, get_metric_registry, reset_for_tests as _reset_metric_reg
 from app.metrics.versions import (
     InMemoryMetricVersionStore,
-    get_metric_version_store,
-    reset_metric_version_store_for_tests,
     set_metric_version_store,
 )
 from app.repos.memory import InMemoryRepo

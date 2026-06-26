@@ -24,7 +24,6 @@ Coverage
 from __future__ import annotations
 
 import csv
-import io
 import json
 import os
 from datetime import datetime, timezone

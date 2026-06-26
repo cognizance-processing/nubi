@@ -26,7 +26,6 @@ import hmac
 import json
 import os
 import time
-from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest

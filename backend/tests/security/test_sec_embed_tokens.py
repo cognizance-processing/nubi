@@ -22,8 +22,6 @@ import base64
 import json
 import os
 from datetime import datetime, timedelta, timezone
-from io import BytesIO
-from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -43,7 +41,6 @@ os.environ.setdefault("ENV", "test")
 
 from tests.security.conftest_helpers import (  # noqa: E402
     mint_embed_token,
-    mint_access_token,
     STATIC_JWKS,
     HOST_ISS,
     HOST_AUD,

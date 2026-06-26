@@ -22,7 +22,6 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
-from unittest.mock import AsyncMock, patch
 
 import pyarrow as pa
 import pyarrow.ipc as pa_ipc

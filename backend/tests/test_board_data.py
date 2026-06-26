@@ -33,9 +33,7 @@ Coverage
 from __future__ import annotations
 
 import asyncio
-import io
 import os
-import struct
 import uuid
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -59,7 +57,7 @@ from app.dashboards.board_data import (
     resolve_provider_data,
     tables_to_multi_ipc_stream,
 )
-from app.dashboards.spec import DataProvider, DashboardSpec, ProviderResult, Widget, WidgetSource
+from app.dashboards.spec import DataProvider, ProviderResult
 from app.errors import AppError
 from app.repos.memory import InMemoryRepo
 from app.repos.provider import set_repo
@@ -452,7 +450,6 @@ async def test_flow_provider_list_flows_called_at_most_once(repo: InMemoryRepo) 
         # pre-fetch) regardless of provider count.
         #
         # Re-import to pick up any module-level references.
-        import importlib
 
         import app.dashboards.board_data as _bd_mod
 
@@ -1198,7 +1195,6 @@ async def test_materialized_mode_returns_result_when_present(repo: InMemoryRepo)
     """
     import io as _io
     import pyarrow as pa
-    from app.flows.store import InMemoryFlowStore
     import app.flows.store as _fs_mod
 
     # Build a flow-backed board spec.
@@ -1789,7 +1785,6 @@ def test_tables_to_bytes_backstop_fires_when_ipc_overhead_exceeds_estimate() -> 
     schema metadata.  Set max_bytes just above tbl.nbytes (0) but below the
     actual IPC stream size.  The pre-estimate passes; the backstop must catch it.
     """
-    import app.dashboards.board_data as _bd_mod
 
     # An empty table with many string-typed columns: tbl.nbytes == 0 but the
     # IPC stream encodes all column names + types in the schema message.
@@ -2757,7 +2752,6 @@ async def test_flow_provider_result_tables_are_row_capped(repo: InMemoryRepo) ->
                 result = [fake_task_run]
                 return result[:limit] if limit is not None else result
 
-        from app.flows.store import get_flow_store as _orig_get_flow_store
 
         with (
             patch("app.features.enforce_quota", side_effect=_fake_enforce_quota),
@@ -2959,10 +2953,8 @@ async def test_concurrent_inline_base_cte_executions_are_thread_safe(
     the correct rows for its own query.
     """
     import duckdb
-    import pyarrow as pa
 
     from app.connectors.duckdb_conn import DuckDBConnector
-    from app.dashboards.board_data import _execute_with_lock, _get_connector_lock
 
     # Build a real shared DuckDB connection with two tables — simulates the
     # demo singleton.
@@ -3294,7 +3286,6 @@ async def test_huge_run_task_runs_are_bounded(repo: InMemoryRepo) -> None:
     * When the store returns more than _MAX_TASK_RUNS rows the result is
       truncated to at most _MAX_TASK_RUNS entries (the cap fires).
     """
-    import io as _io
     import app.dashboards.board_data as _bd_mod
     import app.flows.store as _fs_mod
 

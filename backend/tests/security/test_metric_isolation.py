@@ -23,7 +23,7 @@ from __future__ import annotations
 import os
 import uuid
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -44,9 +44,7 @@ os.environ.setdefault("ENV", "test")
 
 from app.errors import AppError  # noqa: E402
 from app.metrics.versions import (  # noqa: E402
-    InMemoryMetricVersionStore,
     reset_metric_version_store_for_tests,
-    set_metric_version_store,
 )
 
 
@@ -96,7 +94,6 @@ class TestDeleteMetricOrgScoping:
         NOT the un-scoped variant.
         """
         import asyncio
-        from app.routes.metrics import delete_metric
         from app.metrics.registry import get_metric_registry
         from app.metrics.models import MetricDefinition, Measure
 
@@ -200,7 +197,7 @@ class TestDeleteMetricOrgScoping:
 async def _invoke_delete_metric(identity, metric_id, org_id):
     """Invoke the delete_metric handler body with a real execute mock."""
     from app.metrics.registry import get_metric_registry
-    from app.routes.metrics import _require_first_party_write, _caller_org, _resolve_metric
+    from app.routes.metrics import _require_first_party_write
 
     _require_first_party_write(identity)
 
@@ -229,7 +226,6 @@ async def _invoke_delete_metric(identity, metric_id, org_id):
 async def _invoke_delete_metric_with_execute(fake_execute, metric_id, org_id):
     """Invoke the exact org-scoped UPDATE path from delete_metric."""
     with patch("app.db.execute", new=fake_execute):
-        from app.routes.metrics import delete_metric as _dm  # noqa: PLC0415
         from app.metrics.registry import get_metric_registry
 
         get_metric_registry().unregister(metric_id)

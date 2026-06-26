@@ -14,7 +14,6 @@ Coverage
 
 from __future__ import annotations
 
-import json
 import socket
 from contextlib import contextmanager
 from typing import Any
@@ -23,7 +22,7 @@ from unittest.mock import MagicMock, patch
 import pyarrow as pa
 import pytest
 
-from app.connectors.http_json import HttpJsonConnector, _records_to_arrow, _navigate_record_path
+from app.connectors.http_json import HttpJsonConnector, _records_to_arrow
 from app.connectors.plan import PhysicalPlan
 from app.connectors.registry import get_connector_registry
 from app.errors import AppError

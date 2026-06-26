@@ -1319,7 +1319,6 @@ class TestDemoQueryMapHeuristic:
         """A DuckDB connector with sample+system flags but no provenance marker
         is NOT classified as a demo connector by the heuristic.
         """
-        from app.routes.demo_parquet import demo_query_map as _demo_query_map
 
         client, alice_id, org_id, repo = connectors_client
 

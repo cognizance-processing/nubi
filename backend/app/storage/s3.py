@@ -26,7 +26,6 @@ Omitting all keys causes boto3 to use its default credential chain (env vars,
 from __future__ import annotations
 
 import io
-import os
 from typing import BinaryIO
 
 from app.storage.base import StorageClient

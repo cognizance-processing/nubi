@@ -29,15 +29,13 @@ Coverage
 
 from __future__ import annotations
 
-import os
 import uuid
 from typing import Any
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-import pytest_asyncio
 
 from app.connectors.duckdb_conn import setup_s3_httpfs
 from app.repos.memory import InMemoryRepo
@@ -350,7 +348,7 @@ def test_sql_to_parquet_calls_setup_s3_httpfs_for_s3_sql(tmp_path, monkeypatch):
     COPY will fail (no real S3), but we only need to confirm the setup call
     happens.
     """
-    from unittest.mock import MagicMock, patch  # noqa: PLC0415
+    from unittest.mock import patch  # noqa: PLC0415
 
     from app.routes.datasets import _sql_to_parquet  # noqa: PLC0415
 
@@ -439,7 +437,7 @@ def test_infer_schema_from_parquet_forwards_cfg_to_setup_s3_httpfs():
     when the path is s3://, so org-level credentials are honoured instead of
     only the process environment.
     """
-    from unittest.mock import MagicMock, patch  # noqa: PLC0415
+    from unittest.mock import patch  # noqa: PLC0415
 
     from app.routes.datasets import _infer_schema_from_parquet  # noqa: PLC0415
 

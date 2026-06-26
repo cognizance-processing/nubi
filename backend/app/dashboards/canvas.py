@@ -295,7 +295,6 @@ def validate_canvas_doc(doc: CanvasDoc, *, org_id: str | None = None) -> tuple[b
         Soft warnings are prefixed with ``[warn]``.
     """
     from app.ai.dashboard import (  # noqa: PLC0415
-        ALLOWED_WIDGET_TAGS as _DASH_ALLOWED,
         validate_dashboard_html as _validate_html,
     )
 

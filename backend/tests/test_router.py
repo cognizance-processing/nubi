@@ -20,7 +20,6 @@ Coverage
 
 from __future__ import annotations
 
-import pytest
 
 from app.compute.router import ComputePlacementRouter, _DEFAULT_BROWSER_ROW_CAP
 

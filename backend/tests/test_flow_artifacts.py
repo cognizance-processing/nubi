@@ -20,7 +20,6 @@ Coverage
 
 from __future__ import annotations
 
-import asyncio
 import pickle
 from datetime import datetime, timezone
 from typing import Any
@@ -31,9 +30,7 @@ from app.flows.artifacts import (
     InMemoryArtifactStore,
     ObjectStoreArtifactStore,
     evict_run_artifact_count,
-    evict_run_artifacts,
     get_artifact,
-    get_artifact_store,
     is_handle,
     make_handle,
     put_artifact,
@@ -933,7 +930,6 @@ def test_subprocess_tampered_spool_blob_rejected():
     """
     import os  # noqa: PLC0415
     import tempfile  # noqa: PLC0415
-    import unittest.mock  # noqa: PLC0415
     from app.flows.executor import TaskContext  # noqa: PLC0415
     from app.flows.artifacts import (  # noqa: PLC0415
         InMemoryArtifactStore,

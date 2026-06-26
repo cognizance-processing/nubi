@@ -21,10 +21,8 @@ Covers
 from __future__ import annotations
 
 import os
-from typing import Any
 from unittest.mock import AsyncMock, patch
 
-import pyarrow as pa
 import pytest
 import pytest_asyncio
 

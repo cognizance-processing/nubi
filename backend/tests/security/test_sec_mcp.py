@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any
 
 import pytest
 

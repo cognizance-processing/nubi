@@ -3,7 +3,6 @@ import pytest
 from app.metrics.explain import (
     build_dimension_breakdown,
     build_explain_result,
-    MemberContribution,
     _member_contributions,
     _explanatory_power,
     _safe_delta,

@@ -2057,7 +2057,6 @@ def preview_cell(
         top level is the result of *target_key* specifically.
     """
     from app.flows.executor import TaskContext, execute_task  # noqa: PLC0415
-    from app.vars.store import load_vars_namespace  # noqa: PLC0415
 
     if claims is None:
         claims = {}
@@ -2839,8 +2838,6 @@ async def _execute_claimed_task_run(
         Pre-resolved secrets dict ``{name: plaintext}``.  When ``None``, they
         are resolved lazily via ``_resolve_secrets``.
     """
-    from app.flows.executor import TaskContext, execute_task  # noqa: PLC0415
-    from app.vars.store import load_vars_namespace  # noqa: PLC0415
 
     task_run_id = task_run["id"]
     flow_run_id = task_run["flow_run_id"]

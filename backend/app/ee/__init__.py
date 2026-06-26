@@ -32,7 +32,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from fastapi import FastAPI
+    from fastapi import FastAPI  # noqa: F401 — referenced in docstrings; kept for IDE type-narrowing
 
 logger = logging.getLogger(__name__)
 

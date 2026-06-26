@@ -27,7 +27,6 @@ import pytest
 from app.compute.kernel_interface import (
     CellResourceRequest,
     KernelTier,
-    MAP_MAX_CONCURRENCY,
     acquire_map_slot,
     release_map_slot,
     reset_map_semaphore,
@@ -1110,11 +1109,9 @@ async def test_map_fanout_add_task_runs_batched():
     - The store's add_task_runs is called in multiple chunks, each <= batch_size.
     - No single call receives more rows than the configured batch_size.
     """
-    import app.flows.runtime as rt
     from app.flows.runtime import _add_task_runs_batched, _expand_map_children
     from app.flows.store import InMemoryFlowStore
     from app.flows.registry import reset_for_tests
-    from unittest.mock import AsyncMock, patch
 
     reset_for_tests()
     store = InMemoryFlowStore()
@@ -1747,7 +1744,6 @@ async def test_lookup_map_item_uses_get_task_run_by_key():
     """
     from app.flows.runtime import _lookup_map_item
     from app.flows.store import InMemoryFlowStore
-    from unittest.mock import AsyncMock, patch
 
     store = InMemoryFlowStore()
 

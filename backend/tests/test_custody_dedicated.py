@@ -519,8 +519,6 @@ async def test_cmek_kms_mode_records_key_id(provider, monkeypatch):
 @pytest.mark.asyncio
 async def test_demo_seed_writes_readable_parquet(provider, monkeypatch, tmp_path):
     """Bug-1 regression: demo seed writes unencrypted parquet readable by DuckDB."""
-    import io
-    import struct
 
     from app.config import get_settings
 
@@ -532,7 +530,6 @@ async def test_demo_seed_writes_readable_parquet(provider, monkeypatch, tmp_path
 
     # Stub out the heavy seed_data import so the test stays hermetic.
     import pyarrow as pa
-    import pyarrow.parquet as pq
 
     fake_table = pa.table({"id": [1, 2, 3], "value": ["a", "b", "c"]})
     fake_datasets = {"sales": {"orders": fake_table}}
@@ -651,7 +648,7 @@ async def test_get_provider_dedicated_construction_failure_raises(
     import unittest.mock as mock
 
     from app.config import get_settings
-    from app.lakehouse.managed import PrefixIsolatedProvider, get_provider
+    from app.lakehouse.managed import get_provider
 
     lake_dir = str(tmp_path / "lake3")
     os.makedirs(lake_dir)
@@ -818,7 +815,7 @@ async def test_ingest_open_session_client_cmek_raises(monkeypatch, tmp_path, fak
     import app.routes.ingest  # noqa: F401 — ensure route is registered
 
     from app.config import get_settings
-    from app.lakehouse.managed import ManagedLakehouseError, MANAGED_MARKER, lake_prefix
+    from app.lakehouse.managed import MANAGED_MARKER, lake_prefix
     from app.repos.memory import InMemoryRepo as _Repo
     from app.repos.provider import set_repo as _set_repo
     from app.lakehouse.ingest_session import InMemoryIngestSessionStore, set_ingest_session_store

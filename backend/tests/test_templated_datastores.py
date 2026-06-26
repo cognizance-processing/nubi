@@ -35,7 +35,6 @@ import os
 import secrets
 
 import pytest
-import pytest_asyncio
 
 # ---------------------------------------------------------------------------
 # Test-key helpers (mirrors test_connector_secrets.py pattern)

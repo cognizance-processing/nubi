@@ -18,7 +18,6 @@ from __future__ import annotations
 import hashlib
 import json
 
-import pytest
 
 from app.connectors.cache_key import (
     CACHE_KEY_VERSION,

@@ -31,7 +31,7 @@ from __future__ import annotations
 import importlib
 import uuid
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -442,7 +442,6 @@ class TestExportNonBlocking:
     @pytest.mark.asyncio
     async def test_pdf_render_uses_to_thread(self, export_setup):
         """export.pdf dispatches render_board_svg via asyncio.to_thread."""
-        import asyncio  # noqa: PLC0415
 
         client, user_id, org_id, board_id, repo = export_setup
 

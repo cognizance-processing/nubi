@@ -25,9 +25,7 @@ import os
 from typing import Any
 
 import pyarrow as pa
-import pyarrow.compute as pc
 import pytest
-import sqlglot
 
 # Environment bootstrap (must happen before any app imports).
 os.environ.setdefault("DATABASE_URL", "postgresql://fake:fake@localhost/fake")
@@ -808,7 +806,6 @@ class TestPlannerHelpers:
 
     def test_make_range_predicates_gte_lt(self):
         from app.connectors.planner import _make_range_predicates
-        import sqlglot.expressions as exp
         nodes = _make_range_predicates("amount", {"gte": 100, "lt": 500})
         assert len(nodes) == 2
         types = {type(n).__name__ for n in nodes}
@@ -941,7 +938,6 @@ class TestRouteHierarchicalExpansion:
     def test_no_hierarchy_column_passes_through_unchanged(self):
         """A column with no hierarchy entry passes through as-is (NO regression)."""
         from app.connectors.planner import expand_rls_policies, plan
-        from app.connectors.duckdb_conn import DuckDBConnector
         from app.connectors.rls_hierarchy import (
             InMemoryHierarchyResolver, set_hierarchy_resolver, reset_for_tests,
         )

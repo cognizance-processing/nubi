@@ -42,7 +42,7 @@ def _get_fernet() -> "Fernet":  # type: ignore[name-defined]  # noqa: F821
     RuntimeError
         If ``NUBI_SECRETS_KEY`` is unset or is not a valid Fernet key.
     """
-    from cryptography.fernet import Fernet, InvalidToken  # noqa: PLC0415
+    from cryptography.fernet import Fernet  # noqa: PLC0415
 
     raw = os.environ.get("NUBI_SECRETS_KEY", "").strip()
     if not raw:

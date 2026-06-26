@@ -14,12 +14,10 @@ from __future__ import annotations
 
 import time
 from io import BytesIO
-from unittest.mock import patch
 
 import pyarrow as pa
 import pyarrow.ipc as pa_ipc
 import pytest
-import pytest_asyncio
 
 # conftest.py sets environment variables before any app import.
 # We deliberately import app modules INSIDE test functions / fixtures to let

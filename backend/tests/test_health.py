@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -81,7 +80,6 @@ async def health_client(app, fake_db):
 @pytest_asyncio.fixture
 async def health_client_b(app, fake_db):
     """Second org client for cross-org isolation tests."""
-    from app.health.store import get_freshness_store
     from app.repos.memory import InMemoryRepo
     from app.repos.provider import set_repo
 

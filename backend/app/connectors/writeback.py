@@ -803,7 +803,6 @@ async def submit_writeback(
     dict
         The write-back record (new or existing).
     """
-    import asyncio  # noqa: PLC0415
     import inspect  # noqa: PLC0415
 
     # ── Idempotency check ─────────────────────────────────────────────────────
@@ -928,7 +927,6 @@ async def approve_writeback(
     AppError("invalid_state_transition", 409)
         When the record is not in ``pending_approval`` state.
     """
-    import asyncio  # noqa: PLC0415
     import inspect  # noqa: PLC0415
 
     _VALID_ACTIONS = {"approve", "reject", "edit"}

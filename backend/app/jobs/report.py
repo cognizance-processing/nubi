@@ -382,7 +382,7 @@ def _render_pdf(board: dict[str, Any], params: dict[str, Any]) -> bytes:
     """
     from datetime import datetime, timezone
     from app.pdf import (
-        Pdf, text_width, truncate,
+        Pdf, truncate,
         PAGE_W, PAGE_H, MARGIN, CONTENT_W,
         NAVY, TEAL, INK, MUTED, HAIR, ZEBRA,
     )
@@ -578,7 +578,6 @@ def resolve_board_sync(
     import asyncio
 
     from app.repos.provider import get_repo
-    from app.errors import AppError
 
     async def _fetch() -> dict[str, Any] | None:
         repo = get_repo()

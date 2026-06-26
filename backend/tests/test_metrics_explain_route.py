@@ -15,7 +15,6 @@ endpoint can execute real queries against the demo connector.
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio

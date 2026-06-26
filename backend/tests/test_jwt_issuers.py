@@ -15,7 +15,6 @@ from __future__ import annotations
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 import pytest
 
@@ -372,14 +371,11 @@ async def test_token_without_org_claim_rejected(_clean_store):
 
 def _make_app_with_fake_user(org_id: str, user_id: str):
     """Build a FastAPI test app with stub auth and an InMemory store."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
 
-    from app.auth.deps import current_user, verified_identity
+    from app.auth.deps import current_user
     from app.repos.memory import InMemoryRepo
     from app.repos.provider import set_repo
     from app.security.issuers_store import InMemoryIssuersStore, set_issuers_store
-    from app.routes import api_router
     import app.routes.jwt_issuers  # ensure routes are registered  # noqa: F401
 
     # Fresh store per call.

@@ -18,7 +18,6 @@ All tests are offline and require only matplotlib + pyarrow (already in requirem
 
 from __future__ import annotations
 
-import sys
 
 import pytest
 
