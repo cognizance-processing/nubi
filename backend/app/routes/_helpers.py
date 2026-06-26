@@ -10,12 +10,22 @@ Available helpers
     when it is absent.  Preserves exact error codes and messages per call-site
     via the ``error_code`` and ``detail`` keyword arguments.
 
-``resolved_ctx``
+``resolved_ctx_scoped``  (preferred for header-aware routes)
     FastAPI dependency that resolves ``(user_id, org_id)`` via
     ``resolve_org_id`` (honours ``X-Org-Id`` header, verifies membership).
     Use ONLY on handlers that currently call ``resolve_org_id``; never as a
-    substitute for the ``get_user_org`` / ``_get_user_org`` variant (different
-    security semantics — ``get_user_org`` ignores ``X-Org-Id``).
+    substitute for the ``get_user_org`` / ``_get_user_org`` variant.
+
+``resolved_ctx_default``  (preferred for default-org routes)
+    FastAPI dependency that resolves ``(user_id, org_id)`` via
+    ``get_user_org`` (ignores ``X-Org-Id`` — uses the user's default org).
+    Use ONLY on handlers that currently call ``get_user_org`` / ``_get_user_org``.
+    NEVER use this as a substitute for ``resolved_ctx_scoped`` — different
+    security semantics.
+
+``resolved_ctx``
+    Alias for ``resolved_ctx_scoped`` kept for backwards compatibility with
+    any call-sites that imported the original name.
 """
 
 from __future__ import annotations
@@ -27,7 +37,7 @@ from fastapi import Depends, Request
 from app.auth.deps import current_user
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
-from app.routes._org import resolve_org_id
+from app.routes._org import get_user_org, resolve_org_id
 
 
 # ---------------------------------------------------------------------------
@@ -79,10 +89,10 @@ async def get_or_404(
 
 
 # ---------------------------------------------------------------------------
-# Dedup 2: resolved_ctx
+# Dedup 2a: resolved_ctx_scoped  (header-aware, honours X-Org-Id)
 # ---------------------------------------------------------------------------
 
-async def resolved_ctx(
+async def resolved_ctx_scoped(
     request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
@@ -110,3 +120,45 @@ async def resolved_ctx(
     user_id = str(user["id"])
     org_id = await resolve_org_id(user_id, repo, request)
     return user_id, org_id
+
+
+# ---------------------------------------------------------------------------
+# Dedup 2b: resolved_ctx_default  (default-org, ignores X-Org-Id)
+# ---------------------------------------------------------------------------
+
+async def resolved_ctx_default(
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> tuple[str, str]:
+    """FastAPI dependency: resolve ``(user_id, org_id)`` via ``get_user_org``.
+
+    Implements the default-org resolution: always uses the user's default
+    (first) org regardless of any ``X-Org-Id`` header.  This matches the
+    behaviour of the ``get_user_org`` / ``_get_user_org`` pattern used by
+    connectors, bridges, flows, mcp, jwt_issuers, etc.
+
+    IMPORTANT / SECURITY
+    --------------------
+    Use this dependency ONLY on handlers that currently call
+    ``get_user_org(str(user["id"]), repo)`` / ``_get_user_org(...)`` directly.
+    Do NOT use it to replace ``resolve_org_id`` call sites — those honour
+    ``X-Org-Id`` by design and switching them here would silently drop the
+    membership check, allowing cross-org access via header.
+
+    Returns
+    -------
+    tuple[str, str]
+        ``(user_id, org_id)`` — both are UUID strings.
+    """
+    user_id = str(user["id"])
+    org_id = await get_user_org(user_id, repo)
+    return user_id, org_id
+
+
+# ---------------------------------------------------------------------------
+# Backwards-compat alias: resolved_ctx → resolved_ctx_scoped
+# ---------------------------------------------------------------------------
+
+#: Alias kept for call-sites that imported the original ``resolved_ctx`` name.
+#: New code should use ``resolved_ctx_scoped`` explicitly.
+resolved_ctx = resolved_ctx_scoped
