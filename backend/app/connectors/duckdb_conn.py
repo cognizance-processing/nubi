@@ -139,6 +139,31 @@ def harden_connection(
             continue
 
 
+def open_duckdb_readonly(db_path: str) -> "_duckdb_t.DuckDBPyConnection":
+    """Open *db_path* read-only and apply defence-in-depth hardening.
+
+    Convenience wrapper used by routes that open an on-disk DuckDB file for
+    read-only query execution.  Equivalent to::
+
+        import duckdb
+        conn = duckdb.connect(database=db_path, read_only=True)
+        harden_connection(conn, disable_external_access=True)
+
+    The returned connection is owned by the caller — close it when done.
+    """
+    try:
+        import duckdb  # noqa: PLC0415
+    except ImportError as exc:
+        raise AppError(
+            "driver_unavailable",
+            "DuckDB is not installed.  Add 'duckdb>=1.0' to requirements.txt.",
+            status=500,
+        ) from exc
+    conn = duckdb.connect(database=db_path, read_only=True)
+    harden_connection(conn, disable_external_access=True)
+    return conn
+
+
 def setup_s3_httpfs(
     conn: "_duckdb_t.DuckDBPyConnection",
     cfg: "dict | None" = None,

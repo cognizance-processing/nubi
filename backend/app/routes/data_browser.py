@@ -35,7 +35,7 @@ from fastapi.encoders import jsonable_encoder
 from app.auth.deps import current_user
 from app.auth.roles import require_writer_default
 from app.connectors.arrow_io import ipc_stream_from_bytes, table_to_ipc_bytes
-from app.connectors.duckdb_conn import DuckDBConnector, setup_s3_httpfs
+from app.connectors.duckdb_conn import DuckDBConnector, open_duckdb_readonly, setup_s3_httpfs
 from app.connectors.plan import PhysicalPlan
 from app.errors import AppError
 from app.repos.provider import get_repo, Repo
@@ -194,14 +194,7 @@ def _build_duckdb_connector(cfg: dict[str, Any]) -> DuckDBConnector:
     """
     db_path = cfg.get("database") or cfg.get("path")
     if db_path and db_path != ":memory:" and not db_path.startswith("s3://"):
-        import duckdb as _duckdb
-
-        _conn = _duckdb.connect(database=db_path, read_only=True)
-        try:
-            _conn.execute("SET enable_external_access=false")
-        except Exception:
-            pass
-        return DuckDBConnector(_conn)
+        return DuckDBConnector(open_duckdb_readonly(db_path))
 
     # In-memory path (also used for s3:// Parquet datasets and multi-table views):
     # 1. Create a fresh in-memory connection.

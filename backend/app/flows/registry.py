@@ -305,13 +305,9 @@ def _resolve_flow_connector(
     if ctype == "duckdb":
         _db_path = cfg.get("database") or cfg.get("path")
         if _db_path and _db_path != ":memory:":
-            import duckdb  # noqa: PLC0415
-            _conn = duckdb.connect(database=_db_path, read_only=True)
-            try:
-                _conn.execute("SET enable_external_access=false")
-            except Exception:  # noqa: BLE001
-                pass
-            connector = factory(_conn)
+            from app.connectors.duckdb_conn import open_duckdb_readonly  # noqa: PLC0415
+
+            connector = factory(open_duckdb_readonly(_db_path))
         else:
             connector = factory()
     elif ctype == "postgres":

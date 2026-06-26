@@ -48,6 +48,7 @@ from app.errors import AppError
 from app.metrics.registry import ensure_persisted_metric, get_metric_registry
 from app.repos.provider import get_repo
 from app.routes import api_router
+from app.routes._org import require_not_embed
 
 logger = logging.getLogger("nubi.watches")
 
@@ -101,8 +102,7 @@ def _require_read_scope(identity: VerifiedIdentity) -> None:
 
 
 def _require_first_party_write(identity: VerifiedIdentity) -> None:
-    if identity.kind == "embed":
-        raise AppError("forbidden", "Embed tokens cannot manage watches.", 403)
+    require_not_embed(identity, "manage watches")
     _require_read_scope(identity)
 
 

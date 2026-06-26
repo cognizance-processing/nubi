@@ -19,12 +19,16 @@ importing it can never perturb route ordering.
 from __future__ import annotations
 
 import contextvars
+from typing import TYPE_CHECKING
 
 from fastapi import Request
 
 from app.db import fetchrow
 from app.errors import AppError
 from app.repos.provider import Repo
+
+if TYPE_CHECKING:
+    from app.auth.verify import VerifiedIdentity
 
 # When the caller authenticated with a long-lived API key, the key is bound to
 # the org it was minted for. ``current_user`` records that org id here so the
@@ -274,3 +278,24 @@ async def resolve_project_filter(org_id: str, request: Request) -> str | None:
     # list-shaped projects query, which keeps headerless lists scoped under
     # fetchrow-level test doubles that only serve list queries.
     return await resolve_org_default_project_id(org_id)
+
+
+# ── Embed-token write guard ───────────────────────────────────────────────────
+
+
+def require_not_embed(identity: "VerifiedIdentity", action: str) -> None:
+    """Raise 403 when *identity* is an embed token.
+
+    Embed tokens are read-only by design; any mutation endpoint should call
+    this helper at its top to block embed callers before any business logic
+    runs.  *action* is interpolated into the error message so it is surfaced
+    to API clients without requiring them to diff error codes::
+
+        require_not_embed(identity, "create canvases")
+        # → AppError("forbidden", "Embed tokens cannot create canvases.", 403)
+
+    The check is intentionally the only thing this function does so it remains
+    trivially auditable — one line, one branch.
+    """
+    if identity.kind == "embed":
+        raise AppError("forbidden", f"Embed tokens cannot {action}.", 403)

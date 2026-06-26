@@ -2151,15 +2151,11 @@ async def register_query(
     """
     import re as _re
 
-    from app.errors import AppError as _AppError
+    from app.errors import AppError as _AppError  # noqa: PLC0415
+    from app.routes._org import require_not_embed as _require_not_embed  # noqa: PLC0415
 
     # Only first-party (kind='access') identities may write to the registry.
-    if identity.kind == "embed":
-        raise _AppError(
-            "forbidden",
-            "Embed tokens cannot register queries.",
-            403,
-        )
+    _require_not_embed(identity, "register queries")
 
     # Scope gate — require at least a read scope (first-party tokens carry read:*).
     _scopes = identity.scope

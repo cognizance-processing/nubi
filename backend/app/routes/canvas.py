@@ -42,6 +42,7 @@ from app.auth.verify import VerifiedIdentity
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
+from app.routes._org import require_not_embed
 
 logger = logging.getLogger("nubi.routes.canvas")
 
@@ -320,8 +321,7 @@ async def create_canvas(
     )
 
     # SECURITY: embed tokens must never create resources.
-    if identity.kind == "embed":
-        raise AppError("forbidden", "Embed tokens cannot create canvases.", 403)
+    require_not_embed(identity, "create canvases")
 
     org_id = await _get_org(user)
 
@@ -404,8 +404,7 @@ async def update_canvas(
     )
 
     # SECURITY: embed tokens must never update resources.
-    if identity.kind == "embed":
-        raise AppError("forbidden", "Embed tokens cannot update canvases.", 403)
+    require_not_embed(identity, "update canvases")
 
     org_id = await _get_org(user)
     fields: dict[str, Any] = {}
@@ -491,8 +490,7 @@ async def schedule_canvas(
     from app.flows.store import get_flow_store  # noqa: PLC0415
 
     # SECURITY: embed tokens must never schedule resources.
-    if identity.kind == "embed":
-        raise AppError("forbidden", "Embed tokens cannot schedule canvases.", 403)
+    require_not_embed(identity, "schedule canvases")
 
     org_id = await _get_org(user)
 
@@ -634,8 +632,7 @@ async def delete_canvas(
     design and must never be able to create, mutate, or delete resources.
     """
     # SECURITY: embed tokens must never delete resources.
-    if identity.kind == "embed":
-        raise AppError("forbidden", "Embed tokens cannot delete canvases.", 403)
+    require_not_embed(identity, "delete canvases")
 
     org_id = await _get_org(user)
     deleted = await repo.delete("canvases", org_id, canvas_id)
