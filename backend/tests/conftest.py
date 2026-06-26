@@ -537,6 +537,20 @@ def _reset_state():
         except Exception:
             pass
 
+        # ── RLS hierarchy resolver (global singleton; reset to NullResolver) ───
+        try:
+            from app.connectors.rls_hierarchy import reset_for_tests as _reset_hier
+            _reset_hier()
+        except Exception:
+            pass
+
+        # ── Schema-drift store (global singleton; reset to None) ──────────────
+        try:
+            from app.health.schema_drift import reset_for_tests as _reset_drift
+            _reset_drift()
+        except Exception:
+            pass
+
     _do_reset()
     yield
     _do_reset()

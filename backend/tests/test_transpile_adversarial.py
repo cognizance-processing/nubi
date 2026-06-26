@@ -80,7 +80,7 @@ def _transpile(client, sql: str, from_d: str, to_d: str):
     """Synchronous transpile helper — returns the response."""
     import asyncio
 
-    return asyncio.get_event_loop().run_until_complete(
+    return asyncio.run(
         client.post(
             "/api/v1/transpile",
             json={"sql": sql, "from_dialect": from_d, "to_dialect": to_d},

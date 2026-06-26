@@ -35,20 +35,19 @@ class TestNullHierarchyResolver:
 
     def test_resolve_returns_empty(self):
         resolver = NullHierarchyResolver()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             resolver.resolve("org-A", "region", "Western Cape")
         )
         assert result == []
 
     def test_resolve_any_org_dimension_value_returns_empty(self):
         resolver = NullHierarchyResolver()
-        loop = asyncio.get_event_loop()
-        assert loop.run_until_complete(resolver.resolve("", "", "")) == []
-        assert loop.run_until_complete(resolver.resolve("x", "y", "z")) == []
+        assert asyncio.run(resolver.resolve("", "", "")) == []
+        assert asyncio.run(resolver.resolve("x", "y", "z")) == []
 
     def test_expand_policy_returns_scalar_unchanged(self):
         resolver = NullHierarchyResolver()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             resolver.expand_policy("org-A", "region", "Cape Town")
         )
         # No children → scalar passes through unchanged
@@ -56,7 +55,7 @@ class TestNullHierarchyResolver:
 
     def test_expand_policy_integer_scalar(self):
         resolver = NullHierarchyResolver()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             resolver.expand_policy("org-A", "store_id", 42)
         )
         assert result == 42
@@ -71,20 +70,19 @@ class TestInMemoryHierarchyResolver:
 
     def setup_method(self):
         self.resolver = InMemoryHierarchyResolver()
-        self.loop = asyncio.get_event_loop()
 
     def test_add_and_resolve(self):
-        self.loop.run_until_complete(
+        asyncio.run(
             self.resolver.add("org-1", "region", "Western Cape", ["10", "11", "12"])
         )
-        result = self.loop.run_until_complete(
+        result = asyncio.run(
             self.resolver.resolve("org-1", "region", "Western Cape")
         )
         assert result == ["10", "11", "12"]
 
     def test_add_sync_and_resolve(self):
         self.resolver.add_sync("org-1", "region", "Eastern Cape", ["20", "21"])
-        result = self.loop.run_until_complete(
+        result = asyncio.run(
             self.resolver.resolve("org-1", "region", "Eastern Cape")
         )
         assert result == ["20", "21"]
@@ -92,17 +90,17 @@ class TestInMemoryHierarchyResolver:
     def test_resolve_returns_copy_not_reference(self):
         """Returned list must be independent — mutations cannot corrupt the store."""
         self.resolver.add_sync("org-1", "region", "GP", ["1", "2", "3"])
-        result1 = self.loop.run_until_complete(
+        result1 = asyncio.run(
             self.resolver.resolve("org-1", "region", "GP")
         )
         result1.append("INJECTED")
-        result2 = self.loop.run_until_complete(
+        result2 = asyncio.run(
             self.resolver.resolve("org-1", "region", "GP")
         )
         assert "INJECTED" not in result2
 
     def test_resolve_unknown_key_returns_empty(self):
-        result = self.loop.run_until_complete(
+        result = asyncio.run(
             self.resolver.resolve("org-1", "region", "Nonexistent")
         )
         assert result == []
@@ -110,7 +108,7 @@ class TestInMemoryHierarchyResolver:
     def test_cross_org_isolation(self):
         """org-A's children must NOT appear when querying org-B."""
         self.resolver.add_sync("org-A", "region", "Cape Town", ["10", "11"])
-        result = self.loop.run_until_complete(
+        result = asyncio.run(
             self.resolver.resolve("org-B", "region", "Cape Town")
         )
         assert result == []
@@ -118,14 +116,14 @@ class TestInMemoryHierarchyResolver:
     def test_expand_policy_with_children_returns_list(self):
         """When children exist, expand_policy returns the child list (→ IN predicate)."""
         self.resolver.add_sync("org-1", "region", "Western Cape", ["10", "11"])
-        result = self.loop.run_until_complete(
+        result = asyncio.run(
             self.resolver.expand_policy("org-1", "region", "Western Cape")
         )
         assert result == ["10", "11"]
 
     def test_expand_policy_without_children_returns_scalar(self):
         """No children registered → original scalar returned (→ equality predicate)."""
-        result = self.loop.run_until_complete(
+        result = asyncio.run(
             self.resolver.expand_policy("org-1", "region", "Unknown Region")
         )
         assert result == "Unknown Region"
@@ -134,7 +132,7 @@ class TestInMemoryHierarchyResolver:
         """expand_policy str-ifies the value before lookup; matching key → list."""
         # We seed with str key "99"; calling with int 99 str-ifies to "99"
         self.resolver.add_sync("org-1", "store_id", "99", ["100", "101"])
-        result = self.loop.run_until_complete(
+        result = asyncio.run(
             self.resolver.expand_policy("org-1", "store_id", 99)
         )
         assert result == ["100", "101"]
@@ -142,17 +140,17 @@ class TestInMemoryHierarchyResolver:
     def test_clear_removes_all_data(self):
         self.resolver.add_sync("org-1", "region", "Cape Town", ["1", "2"])
         self.resolver.clear()
-        result = self.loop.run_until_complete(
+        result = asyncio.run(
             self.resolver.resolve("org-1", "region", "Cape Town")
         )
         assert result == []
 
     def test_add_overwrites_existing_key(self):
         self.resolver.add_sync("org-1", "region", "GP", ["old_1"])
-        self.loop.run_until_complete(
+        asyncio.run(
             self.resolver.add("org-1", "region", "GP", ["new_1", "new_2"])
         )
-        result = self.loop.run_until_complete(
+        result = asyncio.run(
             self.resolver.resolve("org-1", "region", "GP")
         )
         assert result == ["new_1", "new_2"]
@@ -162,7 +160,7 @@ class TestInMemoryHierarchyResolver:
         children = ["a", "b"]
         self.resolver.add_sync("org-1", "dim", "parent", children)
         children.append("c")  # mutate caller's list
-        result = self.loop.run_until_complete(
+        result = asyncio.run(
             self.resolver.resolve("org-1", "dim", "parent")
         )
         assert "c" not in result
@@ -170,15 +168,15 @@ class TestInMemoryHierarchyResolver:
     def test_multiple_dimensions_are_independent(self):
         self.resolver.add_sync("org-1", "region", "WC", ["10", "11"])
         self.resolver.add_sync("org-1", "city", "WC", ["cape_town", "stellenbosch"])
-        region = self.loop.run_until_complete(self.resolver.resolve("org-1", "region", "WC"))
-        city = self.loop.run_until_complete(self.resolver.resolve("org-1", "city", "WC"))
+        region = asyncio.run(self.resolver.resolve("org-1", "region", "WC"))
+        city = asyncio.run(self.resolver.resolve("org-1", "city", "WC"))
         assert region == ["10", "11"]
         assert city == ["cape_town", "stellenbosch"]
 
     def test_empty_child_list_stored_and_expand_policy_returns_scalar(self):
         """An empty child list means 'no expansion' — scalar passes through."""
         self.resolver.add_sync("org-1", "region", "Nowhere", [])
-        result = self.loop.run_until_complete(
+        result = asyncio.run(
             self.resolver.expand_policy("org-1", "region", "Nowhere")
         )
         # Empty list is falsy → expand_policy returns original scalar
@@ -200,7 +198,7 @@ class TestDbHierarchyResolver:
         ])
 
         resolver = DbHierarchyResolver(pool=mock_pool)
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             resolver.resolve("org-1", "region", "Western Cape")
         )
 
@@ -218,7 +216,7 @@ class TestDbHierarchyResolver:
         mock_pool.fetch = AsyncMock(return_value=[])
 
         resolver = DbHierarchyResolver(pool=mock_pool)
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             resolver.resolve("org-1", "region", "Unknown")
         )
         assert result == []
@@ -232,7 +230,7 @@ class TestDbHierarchyResolver:
         ])
 
         resolver = DbHierarchyResolver(pool=mock_pool)
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             resolver.expand_policy("org-1", "region", "Parent")
         )
         assert result == ["X", "Y"]
@@ -242,7 +240,7 @@ class TestDbHierarchyResolver:
         mock_pool.fetch = AsyncMock(return_value=[])
 
         resolver = DbHierarchyResolver(pool=mock_pool)
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             resolver.expand_policy("org-1", "region", "Solo Region")
         )
         assert result == "Solo Region"

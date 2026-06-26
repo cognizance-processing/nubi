@@ -199,7 +199,7 @@ class TestDetectSchemaDrift:
         reset_for_tests()
 
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     def test_first_observation_stores_snapshot_no_events(self):
         cols = [{"name": "id", "type": "integer"}]

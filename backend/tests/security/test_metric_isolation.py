@@ -135,7 +135,7 @@ class TestDeleteMetricOrgScoping:
                     if False else patch("app.db.execute", new=fake_execute),
             ):
                 # We need to test the actual body, so just call it directly
-                asyncio.get_event_loop().run_until_complete(
+                asyncio.run(
                     _invoke_delete_metric(identity, SLUG_SHARED, ORG_A)
                 )
         finally:
@@ -173,7 +173,7 @@ class TestDeleteMetricOrgScoping:
         registry.register(metric)
 
         try:
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 _invoke_delete_metric_with_execute(
                     fake_execute, SLUG_SHARED + "_2", ORG_A
                 )

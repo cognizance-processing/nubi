@@ -55,7 +55,7 @@ def _make_sales_table() -> pa.Table:
 
 def _run(coro):
     """Run an async coroutine synchronously (for non-async tests)."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 # ---------------------------------------------------------------------------

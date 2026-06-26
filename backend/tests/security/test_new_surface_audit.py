@@ -225,7 +225,7 @@ class TestMCPCrossOrgIsolationStore:
 
         with patch("app.mcp.store.fetchrow" if hasattr(store, "_fetchrow") else "app.db.fetchrow",
                    new=mock_fetchrow):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 store.get_by_id(server_id, org_b)
             )
         assert result is None, (
@@ -489,14 +489,14 @@ class TestGovernanceRLSPolicies:
         resolver.add_sync(org_b, "region", "WC", ["99"])
 
         # Resolving for org_b must return org_b's children, not org_a's.
-        children_b = asyncio.get_event_loop().run_until_complete(
+        children_b = asyncio.run(
             resolver.resolve(org_b, "region", "WC")
         )
         assert children_b == ["99"], (
             f"SECURITY: org_b hierarchy should have [99], got {children_b}"
         )
         # Resolving for org_a must return org_a's children.
-        children_a = asyncio.get_event_loop().run_until_complete(
+        children_a = asyncio.run(
             resolver.resolve(org_a, "region", "WC")
         )
         assert children_a == ["10", "11", "12"], (
@@ -540,7 +540,7 @@ class TestGovernanceRLSPolicies:
         import asyncio
 
         resolver = NullHierarchyResolver()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             resolver.resolve("any_org", "region", "WC")
         )
         assert result == [], "NullHierarchyResolver must always return [] (fail-safe)"
