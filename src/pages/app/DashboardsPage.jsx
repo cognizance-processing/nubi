@@ -67,6 +67,7 @@ import { useUi } from '../../contexts/UiContext.jsx'
 import { useEnv } from '../../contexts/EnvContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
+import { useAsyncLoad } from '../../hooks/useAsyncLoad.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -509,9 +510,6 @@ function EmptyBoards({ hasFilter, onClearFilter, onAskAI, canWrite }) {
 // ---------------------------------------------------------------------------
 
 export default function DashboardsPage() {
-  const [boards, setBoards] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
   const [search, setSearch] = useState('')
   const [sort, setSort] = useState('recent')
 
@@ -562,37 +560,21 @@ export default function DashboardsPage() {
     // Not inside UiProvider — ignore
   }
 
-  const fetchBoards = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const data = await api.get('/boards')
-      const list = Array.isArray(data)
-        ? data
-        : Array.isArray(data?.boards)
-        ? data.boards
-        : []
-      setBoards(list)
-    } catch (err) {
-      setError(err.message ?? 'Failed to load dashboards')
-    } finally {
-      setLoading(false)
-    }
-  // projectId change triggers a refetch — api.js client sends X-Project-Id automatically
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const { data: boardsData, loading, error, reload: reloadBoards } = useAsyncLoad(async () => {
+    const data = await api.get('/boards')
+    return Array.isArray(data) ? data : Array.isArray(data?.boards) ? data.boards : []
   }, [projectId])
-
-  useEffect(() => { fetchBoards() }, [fetchBoards])
+  const boards = boardsData ?? []
 
   const handleDeleted = useCallback((id) => {
-    setBoards(prev => prev.filter(b => b.id !== id))
     setSelected(prev => {
       if (!prev.has(id)) return prev
       const next = new Set(prev)
       next.delete(id)
       return next
     })
-  }, [])
+    reloadBoards()
+  }, [reloadBoards])
 
   const filtered = boards
     .filter(b => b.name?.toLowerCase().includes(search.toLowerCase()))
@@ -668,7 +650,7 @@ export default function DashboardsPage() {
     const deleted = bulkDialog.ids.length - failed
     setBulkBusy(false)
     clearSelection()
-    await fetchBoards()
+    reloadBoards()
     if (failed > 0) {
       setBulkError(
         `Deleted ${deleted} of ${bulkDialog.ids.length} dashboards — ${failed} failed. The list has been refreshed.`
@@ -778,8 +760,8 @@ export default function DashboardsPage() {
       {!loading && error && (
         <ErrorState
           icon={<LayoutDashboard size={22} />}
-          message={error}
-          onRetry={fetchBoards}
+          message={error?.message ?? String(error)}
+          onRetry={reloadBoards}
         />
       )}
 
@@ -801,7 +783,7 @@ export default function DashboardsPage() {
               key={board.id}
               board={board}
               onDeleted={handleDeleted}
-              onRestored={fetchBoards}
+              onRestored={reloadBoards}
               canWrite={canWrite}
               environments={environments}
               strictEnv={strictEnv}

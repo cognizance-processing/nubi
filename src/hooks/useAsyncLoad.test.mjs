@@ -99,3 +99,67 @@ describe('useAsyncLoad logic', () => {
   })
 
 })
+
+// ---------------------------------------------------------------------------
+// Reload-on-mutation behaviour (mirrors SecretsPage / ConnectorsPage / etc.)
+// ---------------------------------------------------------------------------
+//
+// After a mutation (create / delete) the migrated components call reload()
+// which triggers a fresh fetch. We simulate that pattern here: the load fn
+// is called, a mutation happens, reload() fires another load, and the caller
+// sees the updated data from the second call.
+
+describe('reload-on-mutation pattern', () => {
+
+  test('reload fetches fresh data after mutation', async () => {
+    // Simulate a list that changes after one write.
+    let serverItems = ['a', 'b']
+
+    const loadFn = async () => [...serverItems]
+
+    // First load — simulates initial mount.
+    const first = await runLoad(loadFn)
+    assert.deepStrictEqual(first.data, ['a', 'b'])
+
+    // Mutation (e.g. deleteSecret) runs server-side; list shrinks.
+    serverItems = ['a']
+
+    // reload() fires a second load — caller sees updated list.
+    const second = await runLoad(loadFn)
+    assert.deepStrictEqual(second.data, ['a'])
+    assert.strictEqual(second.loading, false)
+    assert.strictEqual(second.error, null)
+  })
+
+  test('reload reflects creation (list grows after add)', async () => {
+    let serverItems = []
+
+    const loadFn = async () => [...serverItems]
+
+    const first = await runLoad(loadFn)
+    assert.deepStrictEqual(first.data, [])
+
+    // Mutation: new secret/connector created.
+    serverItems = [{ name: 'MY_KEY', created_at: '2026-01-01' }]
+
+    const second = await runLoad(loadFn)
+    assert.strictEqual(second.data.length, 1)
+    assert.strictEqual(second.data[0].name, 'MY_KEY')
+  })
+
+  test('stale reload ignored when unmounted mid-flight', async () => {
+    let serverItems = ['x']
+
+    const slowLoad = async () => {
+      await new Promise(r => setTimeout(r, 10))
+      return [...serverItems]
+    }
+
+    // Simulate the component unmounting (ignore=true) before the reload resolves.
+    const result = await runLoad(slowLoad, { ignore: true })
+    // Stale result should be discarded.
+    assert.strictEqual(result.data, null)
+    assert.strictEqual(result.loading, true)
+  })
+
+})

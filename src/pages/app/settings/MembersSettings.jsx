@@ -9,7 +9,7 @@
  *   listInvites / createInvite / revokeInvite / inviteLink
  */
 
-import { useEffect, useState, useCallback } from 'react'
+import { useState } from 'react'
 import {
   Loader2,
   Trash2,
@@ -31,6 +31,7 @@ import {
   revokeInvite,
   inviteLink,
 } from '../../../lib/members.js'
+import { useAsyncLoad } from '../../../hooks/useAsyncLoad.js'
 import { SettingsPageHeader, SettingsCard, PrimaryButton, inputCls } from './SettingsUI.jsx'
 import { isValidEmail } from '../../../shell/shellLogic.js'
 
@@ -61,9 +62,20 @@ export default function MembersSettings() {
   const canManage = MANAGE_ROLES.includes(currentRole)
   const isPersonal = !orgId || orgId === 'personal'
 
-  const [members, setMembers] = useState([])
-  const [invites, setInvites] = useState([])
-  const [loading, setLoading] = useState(true)
+  const { data: membersData, loading, reload: refreshMembers } = useAsyncLoad(
+    async () => {
+      if (!orgId || orgId === 'personal') return { members: [], invites: [] }
+      const [m, inv] = await Promise.all([
+        listMembers(orgId),
+        canManage ? listInvites(orgId) : Promise.resolve([]),
+      ])
+      return { members: m, invites: inv }
+    },
+    [orgId, canManage]
+  )
+  const members = membersData?.members ?? []
+  const invites = membersData?.invites ?? []
+
   const [err, setErr] = useState(null)
   const [busyRow, setBusyRow] = useState(null)
 
@@ -72,33 +84,19 @@ export default function MembersSettings() {
   const [inviting, setInviting] = useState(false)
   const [copiedToken, setCopiedToken] = useState(null)
 
-  const refresh = useCallback(async () => {
-    if (!orgId || orgId === 'personal') return
-    setLoading(true)
-    const [m, inv] = await Promise.all([
-      listMembers(orgId),
-      canManage ? listInvites(orgId) : Promise.resolve([]),
-    ])
-    setMembers(m)
-    setInvites(inv)
-    setLoading(false)
-  }, [orgId, canManage])
-
-  useEffect(() => { refresh() }, [refresh])
-
   const ownerCount = members.filter((m) => m.role === 'owner').length
 
   async function changeRole(m, role) {
     if (role === m.role) return
     setErr(null); setBusyRow(m.user_id)
-    try { await updateMemberRole(orgId, m.user_id, role); await refresh() }
+    try { await updateMemberRole(orgId, m.user_id, role); refreshMembers() }
     catch (e) { setErr(e?.message ?? 'Failed to update role.') }
     finally { setBusyRow(null) }
   }
 
   async function handleRemove(m) {
     setErr(null); setBusyRow(m.user_id)
-    try { await removeMember(orgId, m.user_id); await refresh() }
+    try { await removeMember(orgId, m.user_id); refreshMembers() }
     catch (e) { setErr(e?.message ?? 'Failed to remove member.') }
     finally { setBusyRow(null) }
   }
@@ -106,14 +104,14 @@ export default function MembersSettings() {
   async function sendInvite(e) {
     e.preventDefault()
     setErr(null); setInviting(true)
-    try { await createInvite(orgId, inviteEmail.trim(), inviteRole); setInviteEmail(''); await refresh() }
+    try { await createInvite(orgId, inviteEmail.trim(), inviteRole); setInviteEmail(''); refreshMembers() }
     catch (e2) { setErr(e2?.message ?? 'Failed to create invite.') }
     finally { setInviting(false) }
   }
 
   async function handleRevoke(inv) {
     setErr(null); setBusyRow(inv.id)
-    try { await revokeInvite(orgId, inv.id); await refresh() }
+    try { await revokeInvite(orgId, inv.id); refreshMembers() }
     catch (e) { setErr(e?.message ?? 'Failed to revoke invite.') }
     finally { setBusyRow(null) }
   }

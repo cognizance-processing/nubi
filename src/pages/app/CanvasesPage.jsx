@@ -13,6 +13,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
+import { useAsyncLoad } from '../../hooks/useAsyncLoad.js'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   ExternalLink,
@@ -405,9 +406,6 @@ function EmptyCanvases({ hasFilter, onClearFilter, canWrite }) {
 // ---------------------------------------------------------------------------
 
 export default function CanvasesPage() {
-  const [canvases, setCanvases] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
   const [search, setSearch] = useState('')
   const [sort, setSort] = useState('recent')
 
@@ -427,31 +425,15 @@ export default function CanvasesPage() {
   const projectId = activeProject?.id
   const canWrite = useCanWrite()
 
-  const fetchCanvases = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const data = await api.get('/canvases')
-      const list = Array.isArray(data)
-        ? data
-        : Array.isArray(data?.canvases)
-        ? data.canvases
-        : []
-      setCanvases(list)
-    } catch (err) {
-      setError(err.message ?? 'Failed to load canvases')
-    } finally {
-      setLoading(false)
-    }
-  // projectId change triggers a refetch — the api.js client sends X-Project-Id
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const { data: canvasesData, loading, error, reload: reloadCanvases } = useAsyncLoad(async () => {
+    const data = await api.get('/canvases')
+    return Array.isArray(data) ? data : Array.isArray(data?.canvases) ? data.canvases : []
   }, [projectId])
-
-  useEffect(() => { fetchCanvases() }, [fetchCanvases])
+  const canvases = canvasesData ?? []
 
   const handleDeleted = useCallback((id) => {
-    setCanvases(prev => prev.filter(c => c.id !== id))
-  }, [])
+    reloadCanvases()
+  }, [reloadCanvases])
 
   const filtered = canvases
     .filter(c => c.name?.toLowerCase().includes(search.toLowerCase()))
@@ -513,8 +495,8 @@ export default function CanvasesPage() {
       {!loading && error && (
         <ErrorState
           icon={<FileCode2 size={22} />}
-          message={error}
-          onRetry={fetchCanvases}
+          message={error?.message ?? String(error)}
+          onRetry={reloadCanvases}
         />
       )}
 
