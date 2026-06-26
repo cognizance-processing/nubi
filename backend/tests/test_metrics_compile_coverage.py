@@ -35,6 +35,35 @@ from app.metrics.models import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+import contextlib
+import importlib
+
+
+@contextlib.contextmanager
+def _patched_compile_cap(env_var: str, value: str):
+    """Temporarily lower a compile-governance cap (a module-level constant read
+    at import) by setting *env_var* and reloading ``app.metrics.compile``.
+
+    The env is restored BEFORE the final reload in the ``finally`` block so the
+    module constant returns to its default — reloading while the env is still
+    patched (the previous, buggy pattern) re-read the low cap and leaked it into
+    later tests in the full suite.
+    """
+    import app.metrics.compile as compile_mod
+
+    _old = os.environ.get(env_var)
+    os.environ[env_var] = value
+    importlib.reload(compile_mod)
+    try:
+        yield compile_mod
+    finally:
+        if _old is None:
+            os.environ.pop(env_var, None)
+        else:
+            os.environ[env_var] = _old
+        importlib.reload(compile_mod)
+
+
 def _revenue_metric(**overrides) -> MetricDefinition:
     kwargs = dict(
         id="revenue",
@@ -81,44 +110,41 @@ class TestGovernanceResourceCaps:
             compile_metric(metric, _mq(filters=(f,)))
         assert exc_info.value.code == "in_list_too_large"
 
-    def test_too_many_tc_entries_raises(self, monkeypatch):
-        """Exceed the _MAX_TC_ENTRIES cap."""
-        monkeypatch.setenv("NUBI_MAX_TC_ENTRIES", "2")
-        import importlib
-        import app.metrics.compile as compile_mod
-        importlib.reload(compile_mod)
-        metric = _revenue_metric()
-        # Reimport compile_metric after reload
-        from app.metrics.compile import compile_metric as _cm
-        comparisons = tuple(
-            TimeComparison(measure="revenue", kind="prior_period")
-            for _ in range(3)
-        )
-        mq = _mq(
-            time_grain="month",
-            time_comparisons=comparisons,
-            filters=(MetricFilter(field="created_at", op=">=", value="2024-01-01"),),
-        )
-        with pytest.raises(MetricError) as exc_info:
-            _cm(metric, mq)
-        assert exc_info.value.code == "too_many_tc_entries"
-        importlib.reload(compile_mod)  # restore
+    def test_too_many_tc_entries_raises(self):
+        """Exceed the _MAX_TC_ENTRIES cap.
 
-    def test_top_n_exceeds_max_raises(self, monkeypatch):
-        monkeypatch.setenv("NUBI_MAX_TOP_N", "5")
-        import importlib
-        import app.metrics.compile as compile_mod
-        importlib.reload(compile_mod)
-        from app.metrics.compile import compile_metric as _cm
-        metric = _revenue_metric()
-        mq = _mq(
-            dimensions=("region",),
-            top_n=TopN(dimension="region", n=10),
-        )
-        with pytest.raises(MetricError) as exc_info:
-            _cm(metric, mq)
-        assert exc_info.value.code == "bad_top_n"
-        importlib.reload(compile_mod)  # restore
+        The cap is a module-level constant read at import; we set the env, reload,
+        and ALWAYS restore the env BEFORE the final reload in ``finally`` so the
+        module constant returns to its default (a reload while the env is still
+        patched would re-read the low cap and leak it to later tests).
+        """
+        with _patched_compile_cap("NUBI_MAX_TC_ENTRIES", "2") as compile_mod:
+            from app.metrics.compile import compile_metric as _cm
+            metric = _revenue_metric()
+            comparisons = tuple(
+                TimeComparison(measure="revenue", kind="prior_period")
+                for _ in range(3)
+            )
+            mq = _mq(
+                time_grain="month",
+                time_comparisons=comparisons,
+                filters=(MetricFilter(field="created_at", op=">=", value="2024-01-01"),),
+            )
+            with pytest.raises(MetricError) as exc_info:
+                _cm(metric, mq)
+            assert exc_info.value.code == "too_many_tc_entries"
+
+    def test_top_n_exceeds_max_raises(self):
+        with _patched_compile_cap("NUBI_MAX_TOP_N", "5"):
+            from app.metrics.compile import compile_metric as _cm
+            metric = _revenue_metric()
+            mq = _mq(
+                dimensions=("region",),
+                top_n=TopN(dimension="region", n=10),
+            )
+            with pytest.raises(MetricError) as exc_info:
+                _cm(metric, mq)
+            assert exc_info.value.code == "bad_top_n"
 
 
 # ---------------------------------------------------------------------------
