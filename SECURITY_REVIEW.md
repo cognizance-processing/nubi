@@ -178,3 +178,44 @@ Threat model: **malicious tenant / compromised read-only token**.
 1. **C12 — Lineage DAG returns global seed-query graph (LOW / BY DESIGN):** `GET /lineage/dag` and `GET /lineage` build the DAG from the in-process query registry, which is populated from seed queries at startup (not org-filtered). All registered queries and metrics are visible to any authenticated user. In the current deployment model the query registry holds platform-level query definitions that are not org-specific (they don't contain org data, just SQL templates and table references). If org-specific queries are added to the registry in a future milestone, the DAG route must be extended to filter by the caller's org. Documented but not changed — the design intent (per `lineage.py` docstring) acknowledges this.
 2. **C13 — Lineage `POST /lineage/plan` and `POST /lineage/cell` accept user-supplied SQL for analysis (LOW):** These endpoints accept raw SQL/FlowSpec dicts for pure AST analysis (no execution). The SQL is parsed by sqlglot but never executed against a live DB. Injection in the SQL input is inert (pure text transform). The risk is DoS via huge/nested SQL — sqlglot has no explicit size cap. Future hardening: add an input-size limit (e.g. `len(body.sql) > 500_000 → 400`).
 3. **C14 — MCP outbound DNS rebinding window (FIXED — commit `security/close-residuals`):** `app/ai/mcp.py` now calls `resolve_and_pin` immediately before calling `streamablehttp_client`, and injects a `_McpPinnedTransport` (httpcore `AsyncConnectionPool` targeting the pinned IP) via the SDK's `httpx_client_factory` parameter. TLS SNI and `Host` header are preserved. A secondary fail-closed check inside `_build_mcp_pinned_client_factory` rejects any private pinned IP. Full connect-to-pinned-IP pinning is ACHIEVED: the MCP SDK's `httpx_client_factory` callback is exactly the extension point needed, so the transport-level limitation noted in the prior audit does not apply. Zero-TTL rebinding is fully closed. Covered by 23 new tests in `tests/security/test_sec_mcp_dns_rebind.py`.
+
+---
+
+## 2026-06-26 — Adversarial Audit: Metric Isolation + Version History (audit-55)
+
+Independent adversarial pass over the metric versioning surface introduced in `feat/embed-bi-substrate`:
+`app/routes/metrics.py`, `app/metrics/versions.py`, and the `/metrics/{id}/versions`, `/metrics/{id}/revert/{v}`, and `DELETE /metrics/{id}` routes.
+
+Threat model: **first-party token from Org A knowing Org B's metric slug**.
+
+### Findings
+
+| # | Area | Severity | Exploit | Fix | Test |
+|---|------|----------|---------|-----|------|
+| D1 | **`DELETE /metrics/{id}` — DB UPDATE not org-scoped** | **MEDIUM** | `DELETE /metrics/{metric_id}` clears the `config.metric` block from the backing query with `WHERE config->'metric'->>'slug' = $1` — no `org_id` filter. A first-party token from Org A who knows Org B's metric slug (e.g. a common slug like `revenue_metric`) could wipe Org B's metric definition (making it un-queryable) while authenticated as Org A. The in-memory registry unregister was also unguarded. `_require_first_party_write` is correctly gated but cannot prevent this because it only checks scope, not org ownership of the target metric. | **FIXED** in `app/routes/metrics.py`: (1) `delete_metric` now resolves `org_id` via `_caller_org` and asserts the metric belongs to the caller's org via `_resolve_metric` before unregistering. (2) The DB UPDATE now includes `AND org_id = $1::uuid` as the first predicate, scoping the clear to the caller's org only. The unscoped fallback path (no-DB / `org_id=None`) is preserved for test compatibility. | `test_metric_isolation.py::TestDeleteMetricOrgScoping` (2 tests): asserts org-scoped SQL is used and org_id is the first param. |
+| D2 | **`GET /metrics/{id}/versions` — in-memory fallback not org-scoped** | **LOW** | `list_metric_versions`, `get_metric_version`, and `revert_metric_to_version` all try the Pg path first (correctly org-scoped). When the Pg path returns empty or `org_id` is None, they fall back to the global `InMemoryMetricVersionStore` which is keyed by `metric_id` only. Two orgs sharing the same metric slug (e.g. `revenue`) would see each other's version history and specs through this fallback. In the revert path, Org A could revert to Org B's snapshotted metric spec. | **FIXED** in `app/routes/metrics.py`: all three version endpoints now filter the in-memory fallback by `org_id` when available — records with a different `org_id` are dropped before returning. The `_capture_metric_version` helper always stores the caller's org_id (or the zero-UUID sentinel for org-less tokens), so no cross-org record should ever appear in the primary path; the filter is defence-in-depth. | `test_metric_isolation.py::TestMetricVersionStoreOrgFiltering` (4 tests): D2a–D2d. |
+| D3 | `DELETE /metrics/{id}` — `author:metric` gate | — (verified safe) | Verified `_require_first_party_write` rejects embed tokens (403) and first-party tokens lacking `author:metric` (403). Only first-party tokens with the explicit scope pass. | No change needed. | `::TestDeleteMetricAuthGate` (3 tests). |
+| D4 | Cross-org metric read via `_resolve_metric` | — (verified safe) | `_resolve_metric` checks `metric_belongs_to_org` (DB-scoped) after a registry hit, then falls back to `ensure_persisted_metric` (org-scoped DB query). A metric owned by Org B is invisible to Org A (404). | No change needed. | `::TestResolveMetricOrgIsolation` (2 tests). |
+| D5 | `GET /auth/scope` — `VerifiedIdentity` annotation without import | — (verified safe) | `auth.py` uses `VerifiedIdentity` as a type annotation on the `scope` route but does not import it. With `from __future__ import annotations` (PEP 563), FastAPI does not evaluate annotation strings at route registration — the `Depends(verified_identity)` default argument drives DI correctly. The annotation is purely documentary. Confirmed by inspection: route registers and handles requests normally. | No change needed. | Confirmed by manual code path analysis. |
+| D6 | `GET /health/drift` — embed tokens get 404 | — (verified safe / by design) | `drift.py`'s `_resolve_org` calls `get_user_org(identity.user_id, ...)` which fails for embed tokens (their `sub` is not a DB user) with `AppError("org_not_found", 404)`. This is intentional: drift is a first-party internal monitoring endpoint and should not be accessible to embed tokens. Fail-closed. | No change needed. | Behaviour correct by design. |
+| D7 | Audit log — POPIA contract | — (verified safe) | `record_audit` docstring and all callers reviewed. No PII, SQL text, row data, or secrets in any `summary` dict. MCP server create/update summaries contain only `{name, transport}` — no `auth_token`. | No change needed. | Docstring contract enforced by code review. |
+| D8 | `/access-grants` — org-scoped, admin-gated writes | — (verified safe) | GET is org-scoped via `get_user_org`. POST/DELETE require `require_approver_default`. `delete` is `AND org_id = $2::uuid` scoped. `effective_for_subject` filters expired grants in Python as defence-in-depth. | No change needed. | Existing `test_scope_resolution.py` and `test_new_surface_audit.py` cover the grant path. |
+
+### Fixed vs documented
+
+* **Fixed (1 MEDIUM):** D1 — `DELETE /metrics/{id}` DB UPDATE now includes `org_id` predicate. `delete_metric` now resolves and checks caller org before clearing.
+* **Fixed (1 LOW):** D2 — in-memory version store fallback now filters by `org_id` in all three version endpoints (`list_metric_versions`, `get_metric_version`, `revert_metric_to_version`).
+* **Documented / verified safe (D3–D8):** 6 additional invariants found correct and pinned by 11 new regression tests in `tests/security/test_metric_isolation.py`.
+
+### Test results
+
+```
+cd backend && pytest tests/security -q 2>&1 | tail -6
+# 625 passed, 2 warnings in 133.67s
+```
+
+### Residual risk
+
+1. **In-memory version store (test/dev only):** the `InMemoryMetricVersionStore` is the test double. In production, `pg_list_metric_versions` / `pg_get_metric_version` (org-scoped) always succeed when the DB is healthy, so the fallback path is only exercised in no-DB test environments. The fix closes the gap even there.
+2. **`DELETE /metrics` does not audit-log the deletion (LOW / informational):** the route clears the metric block but does not call `record_audit`. Other metric mutations (MCP create/update) are audited. Future hardening: add an audit record for metric deletes.
+3. **All prior residual risks from C12–C14 remain unchanged.**

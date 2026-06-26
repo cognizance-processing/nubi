@@ -661,6 +661,7 @@ async def update_metric(
 @api_router.delete("/metrics/{metric_id}")
 async def delete_metric(
     metric_id: str,
+    request: Request,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict:
     """Stop exposing the metric: unregister it + clear the backing query's block.
@@ -670,18 +671,36 @@ async def delete_metric(
     SQL — which the author may still want as a plain query — survives. The metric
     id (slug) simply stops resolving. ``metric_id`` is the slug. Best-effort: the
     in-memory unregister alone makes the route effective in a no-DB context.
+
+    SECURITY (audit-55): the DB UPDATE is org-scoped via org_id so a first-party
+    token from Org A cannot clear Org B's metric definition by supplying Org B's
+    slug.  The in-memory registry unregister is also guarded by the preceding
+    ``_resolve_metric`` existence+org check.
     """
     _require_first_party_write(identity)
+    # Org-scope check: raises 404 if the metric does not belong to the caller's org.
+    org_id = await _caller_org(identity, request)
+    await _resolve_metric(metric_id, org_id)
 
     get_metric_registry().unregister(metric_id)
     try:
-        from app.db import execute
+        from app.db import execute  # noqa: PLC0415
 
-        await execute(
-            "UPDATE queries SET config = config - 'metric', updated_at = now() "
-            "WHERE config->'metric'->>'slug' = $1",
-            metric_id,
-        )
+        if org_id:
+            # Org-scoped UPDATE — only clears the metric block in this org's queries.
+            await execute(
+                "UPDATE queries SET config = config - 'metric', updated_at = now() "
+                "WHERE org_id = $1::uuid AND config->'metric'->>'slug' = $2",
+                org_id,
+                metric_id,
+            )
+        else:
+            # No org resolvable (e.g. test no-DB path) — unscoped as before.
+            await execute(
+                "UPDATE queries SET config = config - 'metric', updated_at = now() "
+                "WHERE config->'metric'->>'slug' = $1",
+                metric_id,
+            )
     except Exception:  # noqa: BLE001 — clearing the block is best-effort.
         pass
     return {"id": metric_id, "deleted": True}
@@ -1488,12 +1507,20 @@ async def list_metric_versions(
         pg_list_metric_versions,
     )
 
-    # Try Pg first; fall back to in-memory store.
+    # Try Pg first; fall back to in-memory store (org-filtered when org_id known).
     versions: list[dict] = []
     if org_id:
         versions = await pg_list_metric_versions(metric_id, org_id)
     if not versions:
-        versions = await get_metric_version_store().list_metric_versions(metric_id)
+        # SECURITY (audit-55): filter the in-memory fallback by org_id so that
+        # a slug collision across orgs cannot expose another org's version history.
+        # Records written by _capture_metric_version always carry the caller's org_id
+        # (or the sentinel UUID — never another real org's id).
+        raw = await get_metric_version_store().list_metric_versions(metric_id)
+        if org_id:
+            versions = [v for v in raw if v.get("org_id") == org_id]
+        else:
+            versions = raw
 
     versions_desc = list(reversed(versions))
     return {
@@ -1543,7 +1570,12 @@ async def get_metric_version(
     if org_id:
         ver = await pg_get_metric_version(metric_id, org_id, version_num)
     if ver is None:
-        ver = await get_metric_version_store().get_metric_version(metric_id, version_num)
+        # SECURITY (audit-55): org-filter the in-memory fallback to prevent
+        # cross-org version spec disclosure when two orgs share a slug.
+        candidate = await get_metric_version_store().get_metric_version(metric_id, version_num)
+        if candidate is not None and org_id and candidate.get("org_id") != org_id:
+            candidate = None  # belongs to a different org — treat as not found
+        ver = candidate
     if ver is None:
         raise AppError(
             "not_found",
@@ -1601,7 +1633,12 @@ async def revert_metric_to_version(
     if org_id:
         ver = await pg_get_metric_version(metric_id, org_id, version_num)
     if ver is None:
-        ver = await get_metric_version_store().get_metric_version(metric_id, version_num)
+        # SECURITY (audit-55): org-filter the in-memory fallback to prevent
+        # reverting to a spec from a different org's metric with the same slug.
+        candidate = await get_metric_version_store().get_metric_version(metric_id, version_num)
+        if candidate is not None and org_id and candidate.get("org_id") != org_id:
+            candidate = None  # belongs to a different org — treat as not found
+        ver = candidate
     if ver is None:
         raise AppError(
             "not_found",
