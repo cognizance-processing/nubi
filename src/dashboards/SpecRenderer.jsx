@@ -386,43 +386,35 @@ function CrossFilterProviderWrapper({ onCrossFilter, onTabChange, children }) {
  * navigate event (data-point click). Receives { type, var, value, tabId }.
  * Useful for parent frames / embed integrations.
  */
-// Inner component — ASSUMES `spec` is non-null (the null-guard lives in the
-// thin wrapper below). Because the early return is gone, every hook here runs
-// unconditionally on every render, satisfying the Rules of Hooks even as `spec`
-// transitions undefined → loaded (async fetch / embed hydration).
-function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, onVariableChange, onCrossFilter, forceBreakpoint, activeTabId, onTabChange, editMode = false }) {
-  const cols = spec.layout?.cols ?? 12
-  const rowHeight = spec.layout?.row_height ?? 60
-  const allWidgets = spec.widgets ?? []
+// ---------------------------------------------------------------------------
+// SpecRendererBody — runs INSIDE <VariableProvider>
+// ---------------------------------------------------------------------------
+//
+// All hooks that require VariableValuesContext (useResolvedParams, useProviderData
+// via useResolvedParams internally) live here. The 8×useResolvedParams +
+// 8×useProviderData calls are unconditional and in fixed order (Rules of Hooks).
+//
+// Props are forwarded from SpecRendererInner after it has computed the
+// VariableProvider seed values and mounted the provider.
 
-  // ── Auto-refresh / polling ──────────────────────────────────────────────
-  // spec.refresh.interval_ms (or spec.refresh_interval_ms) enables board-level
-  // polling.  The epoch counter is exposed via RefreshContext so widgets can
-  // include it in their fetch deps and re-query on each tick.
-  const refreshIntervalMs = spec.refresh?.interval_ms ?? spec.refresh_interval_ms ?? null
-  const [refreshEpoch, setRefreshEpoch] = useState(0)
-  useAutoRefresh({
-    intervalMs: refreshIntervalMs,
-    onRefresh:  () => setRefreshEpoch(e => e + 1),
-    enabled:    !editMode,   // never auto-refresh in the editor canvas
-  })
-
-  // Breakpoint thresholds + per-breakpoint column counts. lg/md default to the
-  // spec column count; sm stacks into a single column. New per-breakpoint cols
-  // fields (cols_md / cols_sm) override the defaults when a spec sets them.
-  const breakpoints = { lg: 1200, md: 768, sm: 480 }
-  const colsByBp = {
-    lg: cols,
-    md: spec.layout?.cols_md ?? cols,
-    sm: spec.layout?.cols_sm ?? 1,
-  }
-
+function SpecRendererBody({
+  spec,
+  boardId,
+  allWidgets,
+  cols,
+  colsByBp,
+  rowHeight,
+  refreshEpoch,
+  forceBreakpoint,
+  activeTabId,
+  onTabChange,
+  onCrossFilter,
+  editMode,
+}) {
   // Partition widgets by effective placement (SHARED CONTRACT):
   //   'drawer' → slide-over panel, grouped by drawer_group ('filters' or 'dg_*')
   //   'header' → horizontal filter bar above the grid (ordered by widget.order)
   //   'grid'   → the main GridCanvas (default)
-  // The legacy drawer:true flag still resolves to 'drawer' via effectivePlacement,
-  // so a spec with no placement-tagged widgets partitions exactly as before.
   const { widgets, headerWidgets, drawerGroups } = useMemo(() => {
     const grid = []
     const header = []
@@ -447,22 +439,13 @@ function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, 
   // -------------------------------------------------------------------------
   // Tabs (SHARED CONTRACT)
   // -------------------------------------------------------------------------
-  // The renderer is controlled when an onTabChange callback is supplied; the
-  // activeTabId prop is then the source of truth. Without a callback it falls
-  // back to uncontrolled internal state. The effective tab resolves as:
-  //   activeTabId ?? internalState ?? spec.tabs[0]?.id
-  // When spec.tabs is empty/absent there are no tabs and behavior is identical
-  // to before (no TabBar, no widget filtering).
   const tabs = Array.isArray(spec.tabs) ? spec.tabs : []
   const firstTabId = tabs[0]?.id ?? null
   const [internalTabId, setInternalTabId] = useState(null)
   const effectiveTabId = activeTabId ?? internalTabId ?? firstTabId
   const setTab = onTabChange ?? setInternalTabId
 
-  // Filter grid widgets down to the active tab. A widget belongs to the active
-  // tab when its tab_id matches the effective tab, OR its tab_id is null/absent
-  // and the effective tab is the first tab (null === first tab). With no tabs
-  // every widget passes through unchanged.
+  // Filter grid widgets down to the active tab.
   const tabbedWidgets = useMemo(() => {
     if (tabs.length === 0) return widgets
     return widgets.filter((w) => {
@@ -473,8 +456,7 @@ function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [widgets, effectiveTabId, firstTabId, tabs.length])
 
-  // Header (filter-bar) widgets, tab-scoped exactly like grid widgets, then
-  // sorted by widget.order ascending (pos is ignored for header placement).
+  // Header (filter-bar) widgets, tab-scoped + sorted by widget.order ascending.
   const tabbedHeaderWidgets = useMemo(() => {
     const scoped = tabs.length === 0
       ? headerWidgets
@@ -491,40 +473,19 @@ function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, 
     ? (spec.drawer?.title || 'Filters')
     : (widgets.find(w => w.props?.drilldown_group === openDrawer)?.props?.title || 'Drill down')
 
-  // Build the initial values for the VariableProvider:
-  //   spec.variables defaults  (lowest precedence)
-  //   + initialVariables prop  (URL params / embed token — higher precedence)
-  //
-  // NOTE: embed-token-locked params should be passed in initialVariables with
-  // the locked values. The DashboardViewPage is responsible for ensuring that
-  // locked params from an embed token cannot be overridden by URL params.
-  // A future embed integration should populate initialVariables from the token
-  // and strip the same keys from the URL before passing the remainder here.
-  const variableDefaults = useMemo(
-    () => ({
-      ...buildVariableDefaults(spec.variables),
-      ...initialVariables,
-    }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [JSON.stringify(spec.variables), JSON.stringify(initialVariables)],
-  )
-
   const layouts = useMemo(
     () => buildLayouts({ ...spec, widgets: tabbedWidgets }, cols, colsByBp),
-    // Rebuild when grid widgets or the per-breakpoint overrides change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [tabbedWidgets, cols, colsByBp.md, colsByBp.sm, JSON.stringify(spec.responsive)],
   )
 
-  // Measure the container width via a ResizeObserver so breakpoint selection
-  // tracks the live layout (replaces RGL's useContainerWidth hook).
+  // Measure the container width via a ResizeObserver.
   const containerRef = useRef(null)
   const [width, setWidth] = useState(1200)
 
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
-    // Seed from the current measurement before the observer fires.
     setWidth(el.clientWidth || 1200)
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -536,11 +497,7 @@ function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, 
     return () => ro.disconnect()
   }, [])
 
-  // The breakpoint actually being rendered: forced (editor preview frame) or
-  // derived from the container width (public viewer). Used to (a) pick the grid's
-  // active layout + column count so it matches the editor, and (b) filter out
-  // widgets hidden at this breakpoint so the rendered children match the
-  // (already-filtered) layout array.
+  const breakpoints = { lg: 1200, md: 768, sm: 480 }
   const renderBreakpoint = forceBreakpoint ?? getBreakpointFromWidth(breakpoints, width || 1200)
   const visibleWidgets = tabbedWidgets.filter(w => !isHiddenAt(w, renderBreakpoint))
   const visibleWidgetsById = useMemo(
@@ -548,14 +505,10 @@ function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, 
     [visibleWidgets],
   )
 
-  // The active breakpoint's layout + column count.
   const activeLayout = layouts[renderBreakpoint] ?? layouts.lg
   const activeCols = colsByBp[renderBreakpoint] ?? cols
 
-  // Grid flexibility options (spec.layout.*) — compaction mode, gap & padding.
-  // GridCanvas takes a single scalar `gap` for both axes (margin_x/margin_y are
-  // symmetric in practice) and a {x,y} padding object.
-  const compactionMode = spec.layout?.compaction ?? 'free'   // default: free-place (preserves authored positions)
+  const compactionMode = spec.layout?.compaction ?? 'free'
   const gap = Array.isArray(spec.layout?.margin)
     ? (spec.layout.margin[0] ?? 12)
     : (spec.layout?.margin_x ?? 12)
@@ -566,17 +519,9 @@ function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, 
   const bgStyle = useMemo(() => backgroundToCss(spec.background), [JSON.stringify(spec.background)])
 
   // ── BET-3 DataProvider wiring ──────────────────────────────────────────────
-  // Build a map: widgetId → Arrow table slice (for widgets bound to a provider).
-  // Widgets using legacy query_id / metric get null (their own fetch path runs).
-  //
-  // VIEWERS-NEVER-METERED invariant: we call useProviderData once PER PROVIDER
-  // (not once per widget), so a provider with N bound widgets makes exactly one
-  // server call. The named result slices are then distributed to each widget.
-  //
-  // Implementation: because React hooks cannot be called conditionally or inside
-  // loops, we use fixed-count slots (up to MAX_PROVIDERS). Each slot resolves its
-  // own provider params via useResolvedParams (a hook that reads the VariableStore
-  // context established by the VariableProvider wrapping SpecRendererInner).
+  // useResolvedParams reads VariableValuesContext — this component is rendered
+  // INSIDE <VariableProvider> so the context is available.
+  // Fixed 8 slots, unconditional, in fixed order — satisfies Rules of Hooks.
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const boardProviders = useMemo(() => Array.isArray(spec.data) ? spec.data : [], [JSON.stringify(spec.data)])
@@ -591,16 +536,7 @@ function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(boardProviders)])
 
-  // boardId: prefer the explicit prop (from DashboardViewPage) and fall back to
-  // spec._boardId (for embed contexts that inject it into the spec object).
-  const boardId = boardIdProp ?? spec._boardId ?? null
-
-  // Resolve each provider's params object against the variable store.
-  // useResolvedParams reads VariableValuesContext (available here because
-  // SpecRendererInner is rendered inside <VariableProvider>).
-  // Fixed hook calls — no conditionals — one per slot.
-  // (All 8 calls are unconditional and at the top level of the component, which
-  // satisfies the Rules of Hooks regardless of how many providers are active.)
+  // 8× useResolvedParams (unconditional, fixed order)
   const resolvedP0 = useResolvedParams(providerSlots[0]?.params ?? {})
   const resolvedP1 = useResolvedParams(providerSlots[1]?.params ?? {})
   const resolvedP2 = useResolvedParams(providerSlots[2]?.params ?? {})
@@ -610,7 +546,7 @@ function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, 
   const resolvedP6 = useResolvedParams(providerSlots[6]?.params ?? {})
   const resolvedP7 = useResolvedParams(providerSlots[7]?.params ?? {})
 
-  // One useProviderData call per slot (fixed count = no conditional hooks).
+  // 8× useProviderData (unconditional, fixed order)
   const slot0 = useProviderData(boardId, providerSlots[0]?.id ?? null, resolvedP0, refreshEpoch)
   const slot1 = useProviderData(boardId, providerSlots[1]?.id ?? null, resolvedP1, refreshEpoch)
   const slot2 = useProviderData(boardId, providerSlots[2]?.id ?? null, resolvedP2, refreshEpoch)
@@ -631,10 +567,6 @@ function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, 
     return results
   }, [boardProviders, slot0, slot1, slot2, slot3, slot4, slot5, slot6, slot7])
 
-  // Build widgetId → Arrow table slice map.
-  // A widget bound to provider P + result R gets providerResults[P].tables[R].
-  // JSON.stringify(allWidgets) avoids stale closure over spec.widgets array reference
-  // (mirrors the existing pattern used throughout this component for stable deps).
   const widgetProviderTableMap = useMemo(() => {
     const map = {}
     for (const w of allWidgets) {
@@ -650,29 +582,15 @@ function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, 
   }, [JSON.stringify(allWidgets), providerResults])
   // ── End BET-3 DataProvider wiring ─────────────────────────────────────────
 
-  // Stable per-cell renderer. GridCanvas's renderGridItem useCallback depends on
-  // renderItem, so an inline arrow here would rebuild it every render and remount
-  // the entire widget subtree on any SpecRenderer state change (width/ResizeObserver,
-  // tab switch, variable change). Memoize so it only rebuilds when the visible
-  // widget set or editMode actually changes. (setOpenDrawer is a stable state
-  // setter; included for lint correctness. styleToCss / WidgetComponent are
-  // module-level and need no dep.)
+  // Stable per-cell renderer.
   const renderItem = useCallback((item) => {
     const widget = visibleWidgetsById.get(item.i)
     if (!widget) return null
-    // When a widget declares its own style (incl. transparent bg) don't
-    // force the opaque default surface — let the style win.
     const customStyle = styleToCss(widget.style)
     const hasCustomBg = customStyle && (
       'background' in customStyle || 'backgroundColor' in customStyle || 'backgroundImage' in customStyle
     )
-    // Filter widgets contain absolutely-positioned dropdown popovers.
-    // overflow-hidden clips those dropdowns (even when portaled, a stacking
-    // ancestor with overflow:hidden can suppress the portal's z-index in some
-    // browsers). Use overflow-visible for filter cells so open dropdowns
-    // are never clipped; the portal approach (W3-B) makes this fully safe.
     const isFilter = widget.type === 'filter'
-    // BET-3: look up the resolved provider table slice for this widget (if any).
     const providerTable = widgetProviderTableMap[widget.id] ?? null
     return (
       <div
@@ -689,90 +607,177 @@ function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, 
   }, [visibleWidgetsById, editMode, setOpenDrawer, widgetProviderTableMap])
 
   return (
-    <VariableProvider initialValues={variableDefaults} onVariableChange={onVariableChange}>
-      <RefreshContext.Provider value={refreshEpoch}>
-      <CrossFilterProviderWrapper onCrossFilter={onCrossFilter} onTabChange={setTab}>
-      <div
-        className="w-full"
-        ref={containerRef}
-        style={bgStyle ? { ...bgStyle, padding: 16, borderRadius: 12 } : undefined}
-      >
-        {(spec.title || hasFilters) && (
-          <div className="flex items-center justify-between px-1 mb-4 gap-3">
-            {spec.title && (
-              <h2 className="text-xl font-bold font-display text-fg leading-tight">{spec.title}</h2>
-            )}
-            {hasFilters && (
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => setOpenDrawer('filters')}
-                className="shrink-0"
-                aria-label={`Open ${spec.drawer?.title || 'Filters'} panel`}
-              >
-                <span aria-hidden="true" className="text-xs">⚲</span>
-                {spec.drawer?.title || 'Filters'}
-                <span className="text-xs opacity-60">({drawerGroups.filters.length})</span>
-              </Button>
-            )}
-          </div>
-        )}
-        {tabs.length > 1 && (
-          <div className="mb-4">
-            <TabBar
-              tabs={tabs}
-              activeTabId={effectiveTabId}
-              onChange={setTab}
-              tabBar={spec.tabBar}
-            />
-          </div>
-        )}
-        {tabbedHeaderWidgets.length > 0 && (
-          <div className="nubi-filter-bar flex flex-wrap items-end gap-3 px-1 pb-4 mb-4 border-b border-border">
-            {tabbedHeaderWidgets.map((w) => (
-              <div
-                key={w.id}
-                // Header filters are compact: auto width (not full grid cells).
-                // overflow-visible so filter dropdown popovers are not clipped.
-                className="min-w-[10rem] max-w-xs overflow-visible"
-              >
-                <WidgetComponent widget={w} onOpenDrawer={setOpenDrawer} editMode={editMode} />
-              </div>
-            ))}
-          </div>
-        )}
-        {tabbedWidgets.length === 0 ? (
-          <div className="border-2 border-dashed border-border rounded-2xl bg-surface/50">
-            <EmptyState
-              title="No widgets"
-              description="This dashboard has no widgets to display."
-              compact
-            />
-          </div>
-        ) : (
-          <GridCanvas
-            layout={activeLayout.filter(item => visibleWidgetsById.has(item.i))}
-            cols={activeCols}
-            rowHeight={rowHeight}
-            gap={gap}
-            padding={padding}
-            width={width}
-            draggable={false}
-            resizable={false}
-            compaction={compactionMode}
-            renderItem={renderItem}
+    <RefreshContext.Provider value={refreshEpoch}>
+    <CrossFilterProviderWrapper onCrossFilter={onCrossFilter} onTabChange={setTab}>
+    <div
+      className="w-full"
+      ref={containerRef}
+      style={bgStyle ? { ...bgStyle, padding: 16, borderRadius: 12 } : undefined}
+    >
+      {(spec.title || hasFilters) && (
+        <div className="flex items-center justify-between px-1 mb-4 gap-3">
+          {spec.title && (
+            <h2 className="text-xl font-bold font-display text-fg leading-tight">{spec.title}</h2>
+          )}
+          {hasFilters && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setOpenDrawer('filters')}
+              className="shrink-0"
+              aria-label={`Open ${spec.drawer?.title || 'Filters'} panel`}
+            >
+              <span aria-hidden="true" className="text-xs">⚲</span>
+              {spec.drawer?.title || 'Filters'}
+              <span className="text-xs opacity-60">({drawerGroups.filters.length})</span>
+            </Button>
+          )}
+        </div>
+      )}
+      {tabs.length > 1 && (
+        <div className="mb-4">
+          <TabBar
+            tabs={tabs}
+            activeTabId={effectiveTabId}
+            onChange={setTab}
+            tabBar={spec.tabBar}
           />
-        )}
-      </div>
-      <SlideOver
-        open={openDrawer != null}
-        title={drawerTitle}
-        widgets={openDrawer != null ? (drawerGroups[openDrawer] ?? []) : []}
-        wide={openDrawer != null && openDrawer !== 'filters'}
-        onClose={() => setOpenDrawer(null)}
+        </div>
+      )}
+      {tabbedHeaderWidgets.length > 0 && (
+        <div className="nubi-filter-bar flex flex-wrap items-end gap-3 px-1 pb-4 mb-4 border-b border-border">
+          {tabbedHeaderWidgets.map((w) => (
+            <div
+              key={w.id}
+              className="min-w-[10rem] max-w-xs overflow-visible"
+            >
+              <WidgetComponent widget={w} onOpenDrawer={setOpenDrawer} editMode={editMode} />
+            </div>
+          ))}
+        </div>
+      )}
+      {tabbedWidgets.length === 0 ? (
+        <div className="border-2 border-dashed border-border rounded-2xl bg-surface/50">
+          <EmptyState
+            title="No widgets"
+            description="This dashboard has no widgets to display."
+            compact
+          />
+        </div>
+      ) : (
+        <GridCanvas
+          layout={activeLayout.filter(item => visibleWidgetsById.has(item.i))}
+          cols={activeCols}
+          rowHeight={rowHeight}
+          gap={gap}
+          padding={padding}
+          width={width}
+          draggable={false}
+          resizable={false}
+          compaction={compactionMode}
+          renderItem={renderItem}
+        />
+      )}
+    </div>
+    <SlideOver
+      open={openDrawer != null}
+      title={drawerTitle}
+      widgets={openDrawer != null ? (drawerGroups[openDrawer] ?? []) : []}
+      wide={openDrawer != null && openDrawer !== 'filters'}
+      onClose={() => setOpenDrawer(null)}
+    />
+    </CrossFilterProviderWrapper>
+    </RefreshContext.Provider>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// SpecRendererInner
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {{
+ *   spec: object,
+ *   initialVariables?: Record<string, unknown>,
+ *   onVariableChange?: (name: string, value: unknown) => void,
+ *   onCrossFilter?: (event: { type: string, var: string|null, value: unknown, tabId: string|null }) => void,
+ * }} props
+ *
+ * Computes the VariableProvider seed values, then mounts:
+ *   <VariableProvider>
+ *     <SpecRendererBody />   ← provider-resolution hooks live here (inside the provider)
+ *   </VariableProvider>
+ *
+ * This fixes the crash where useResolvedParams was called outside VariableProvider.
+ */
+// Inner component — ASSUMES `spec` is non-null (the null-guard lives in the
+// thin wrapper below). Because the early return is gone, every hook here runs
+// unconditionally on every render, satisfying the Rules of Hooks even as `spec`
+// transitions undefined → loaded (async fetch / embed hydration).
+function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, onVariableChange, onCrossFilter, forceBreakpoint, activeTabId, onTabChange, editMode = false }) {
+  const cols = spec.layout?.cols ?? 12
+  const rowHeight = spec.layout?.row_height ?? 60
+  const allWidgets = spec.widgets ?? []
+
+  // ── Auto-refresh / polling ──────────────────────────────────────────────
+  // spec.refresh.interval_ms (or spec.refresh_interval_ms) enables board-level
+  // polling.  The epoch counter is exposed via RefreshContext so widgets can
+  // include it in their fetch deps and re-query on each tick.
+  const refreshIntervalMs = spec.refresh?.interval_ms ?? spec.refresh_interval_ms ?? null
+  const [refreshEpoch, setRefreshEpoch] = useState(0)
+  useAutoRefresh({
+    intervalMs: refreshIntervalMs,
+    onRefresh:  () => setRefreshEpoch(e => e + 1),
+    enabled:    !editMode,   // never auto-refresh in the editor canvas
+  })
+
+  const colsByBp = {
+    lg: cols,
+    md: spec.layout?.cols_md ?? cols,
+    sm: spec.layout?.cols_sm ?? 1,
+  }
+
+  // boardId: prefer the explicit prop (from DashboardViewPage) and fall back to
+  // spec._boardId (for embed contexts that inject it into the spec object).
+  const boardId = boardIdProp ?? spec._boardId ?? null
+
+  // Build the initial values for the VariableProvider:
+  //   spec.variables defaults  (lowest precedence)
+  //   + initialVariables prop  (URL params / embed token — higher precedence)
+  //
+  // NOTE: embed-token-locked params should be passed in initialVariables with
+  // the locked values. The DashboardViewPage is responsible for ensuring that
+  // locked params from an embed token cannot be overridden by URL params.
+  // A future embed integration should populate initialVariables from the token
+  // and strip the same keys from the URL before passing the remainder here.
+  const variableDefaults = useMemo(
+    () => ({
+      ...buildVariableDefaults(spec.variables),
+      ...initialVariables,
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(spec.variables), JSON.stringify(initialVariables)],
+  )
+
+  // SpecRendererBody (rendered as a child of VariableProvider) handles all hooks
+  // that require VariableValuesContext: useResolvedParams, useProviderData, plus
+  // the full render/return tree.
+  return (
+    <VariableProvider initialValues={variableDefaults} onVariableChange={onVariableChange}>
+      <SpecRendererBody
+        spec={spec}
+        boardId={boardId}
+        allWidgets={allWidgets}
+        cols={cols}
+        colsByBp={colsByBp}
+        rowHeight={rowHeight}
+        refreshEpoch={refreshEpoch}
+        forceBreakpoint={forceBreakpoint}
+        activeTabId={activeTabId}
+        onTabChange={onTabChange}
+        onCrossFilter={onCrossFilter}
+        editMode={editMode}
       />
-      </CrossFilterProviderWrapper>
-      </RefreshContext.Provider>
     </VariableProvider>
   )
 }
