@@ -4,8 +4,8 @@
  * Org info + members table + projects table (read-only).
  */
 
-import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { getAdminOrg } from '../../lib/admin.js'
 import {
@@ -17,32 +17,18 @@ import {
   EmptyState,
 } from './AdminUI.jsx'
 import { fmtDate } from './format.js'
+import { useAsyncLoad } from '../../hooks/useAsyncLoad.js'
 
 export default function AdminOrgDetailPage() {
   const { id } = useParams()
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [reloadKey, setReloadKey] = useState(0)
-
-  useEffect(() => {
-    let cancelled = false
-    async function load() {
-      setLoading(true)
-      const result = await getAdminOrg(id)
-      if (cancelled) return
-      setData(result)
-      setLoading(false)
-    }
-    load()
-    return () => { cancelled = true }
-  }, [id, reloadKey])
+  const { data, loading, reload } = useAsyncLoad(() => getAdminOrg(id), [id])
 
   if (loading) return <LoadingState />
   if (!data?.org) {
     return (
       <ErrorState
         message="Could not load this organization."
-        onRetry={() => setReloadKey((k) => k + 1)}
+        onRetry={reload}
       />
     )
   }
