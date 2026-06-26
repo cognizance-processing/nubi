@@ -333,6 +333,93 @@ metric, dimensions, and time grain, then runs the governed metric query via
 
 ---
 
+### `<nubi-lineage>`
+
+Interactive dependency DAG visualisation. Fetches from `GET /api/v1/lineage/dag`
+(full graph) or `GET /api/v1/lineage/dag/{node-id}?hops=N` (neighbourhood view)
+and renders a columnar SVG layout (table → query → metric columns, nodes as
+rounded rectangles, edges as curved paths).
+
+| Attribute | Required | Meaning |
+|-----------|----------|---------|
+| `get-token` / `token` | — | Bearer JWT |
+| `backend` | No | API base URL. Default `http://localhost:8000`. |
+| `theme` | No | `"dark"` (default) / `"light"`. |
+| `node-id` | No | When set, fetches the neighbourhood of this node id instead of the full DAG. |
+| `hops` | No | Traversal depth when `node-id` is set (default `2`, max `20`). |
+| `no-sample-fallback` | No | Boolean. When present, shows an error state instead of sample data on failure. |
+
+**Events emitted:**
+- `nubi:select` — `{ node }` — user clicked a DAG node. `node` is the full node
+  object `{ id, type, name, tables, outputs, columns }`.
+- `nubi:widget-ready` — `{ nodes, edges, renderer: "lineage" }` — data loaded.
+- `nubi:widget-error` — `{ message }` — fetch failed.
+
+**Sample fallback:** when no backend is configured or the request fails, the
+widget renders a 4-node / 3-edge sample DAG (orders → revenue query → revenue
+metric) so demo pages always display content.
+
+**Example:**
+
+```html
+<!-- Full DAG -->
+<nubi-lineage get-token="getMyToken" backend="https://api.example.com"></nubi-lineage>
+
+<!-- Neighbourhood of a single node, 3 hops -->
+<nubi-lineage
+  get-token="getMyToken"
+  backend="https://api.example.com"
+  node-id="revenue_metric"
+  hops="3"
+></nubi-lineage>
+```
+
+---
+
+### `<nubi-health>`
+
+Data-health score + freshness dashboard widget. Fetches health scores from
+`GET /api/v1/health/score` and freshness from `GET /api/v1/health/freshness`
+(or the `?dataset_key=` single-dataset variants) and renders:
+
+- A circular gauge showing the overall score and grade letter (averaged across
+  datasets when showing multiple).
+- A reasons list from the score response.
+- A freshness table with RAG status dots (green = fresh, amber = stale < 24 h,
+  red = stale > 24 h).
+
+| Attribute | Required | Meaning |
+|-----------|----------|---------|
+| `get-token` / `token` | — | Bearer JWT |
+| `backend` | No | API base URL. Default `http://localhost:8000`. |
+| `theme` | No | `"dark"` (default) / `"light"`. |
+| `dataset-key` | No | When set, filters score and freshness to a single dataset. |
+| `no-sample-fallback` | No | Boolean. When present, shows an error state instead of sample data. |
+
+**Events emitted:**
+- `nubi:widget-ready` — `{ score, grade, datasets, renderer: "health" }` — data
+  loaded. `datasets` is an array of `{ dataset_key, score, grade, fresh, last_updated, status }`.
+- `nubi:widget-error` — `{ message }` — fetch failed.
+
+**Sample fallback:** renders sample health data (4 datasets, mixed fresh/stale
+statuses) when no backend is configured or the request fails.
+
+**Example:**
+
+```html
+<!-- All datasets for the org -->
+<nubi-health get-token="getMyToken" backend="https://api.example.com"></nubi-health>
+
+<!-- Single dataset health card -->
+<nubi-health
+  get-token="getMyToken"
+  backend="https://api.example.com"
+  dataset-key="raw/orders"
+></nubi-health>
+```
+
+---
+
 ## DOM events (outbound contract)
 
 All events bubble and are `composed: true` so they pierce shadow DOM boundaries
@@ -350,8 +437,10 @@ document.querySelector('nubi-query-editor').addEventListener('nubi:run', e => {
 | `nubi:run` | `{ sql?, queryId?, metricId?, dimensions?, timeGrain?, params? }` | query-editor, metric-explorer |
 | `nubi:save` | `{ queryId?, sql?, name? }` | query-editor |
 | `nubi:dirty` | `{ dirty: boolean }` | query-editor |
-| `nubi:select` | `{ column?, value?, row?, dimension?, member?, delta?, direction?, share? }` | table, metric-explorer, explain |
-| `nubi:error` | `{ message: string, code?: string }` | all components |
+| `nubi:select` | `{ column?, value?, row?, dimension?, member?, delta?, direction?, share?, node? }` | table, metric-explorer, explain, lineage |
+| `nubi:widget-ready` | `{ rows?, renderer: string, nodes?, edges?, score?, grade?, datasets? }` | kpi, lineage, health |
+| `nubi:widget-error` | `{ message: string }` | kpi, lineage, health |
+| `nubi:error` | `{ message: string, code?: string }` | query-editor, metric-explorer, explain |
 
 ---
 

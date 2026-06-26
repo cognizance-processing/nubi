@@ -311,3 +311,14 @@ windows by computing per-dimension member delta contributions.
 | 400 | `unknown_dimension` | A name in `dimensions` is not declared on the metric |
 | 400 | `no_time_dimension` | The metric has no `time_dimension`; period comparison requires one |
 | 404 | (org scope) | Metric exists in another org (same 404 as a missing metric — no cross-org existence leak) |
+
+---
+
+## Metric lineage — `GET /metrics/{id}/lineage`
+
+Returns the full input-column lineage for a metric: which physical tables and
+columns feed the measure, plus any derived measure formulas.
+
+See [docs/lineage.md](lineage.md) for the complete lineage API reference
+including `GET /lineage/dag`, `GET /lineage/dag/{node_id}?hops=`, and
+`GET /lineage/query/{id}`.

@@ -33,7 +33,12 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 | [**Flows**](/docs/flows) | Cell-based orchestrator with 3 cell types (SQL, Python, Note); notebook and canvas (DAG) views; retries, durable run history, scheduling, cross-cell data references |
 | [**Semantic layer, data apps & close-the-loop**](/docs/semantic-and-data-apps) | Governed metric definitions; derived/ratio measures; time intelligence; dynamic top-N; pre-agg rollups; Flows as a data-app engine (per-cell resources, stochastic seeds, artifact channel, sweep/backfill, triggers, write-back); Canvas (HTML-native sibling to Dashboards); the close-the-loop architecture |
 | [**Metrics reference**](/docs/metrics-reference) | Agent/MCP reference for declaring and querying governed metrics via `POST /metrics/{id}/query` |
+| [**Lineage**](/docs/lineage) | Inter-model dependency DAG (`GET /lineage/dag`), metric lineage, flow/cell column lineage |
+| [**Data Health**](/docs/data-health) | Freshness registry (`GET /health/freshness`), weighted health scoring (`GET /health/score`), estate graph |
+| [**Transformation**](/docs/transformation) | Flow spec version history + revert, env pinning, `POST /transpile` (SQL dialect conversion) |
+| [**Governance**](/docs/governance) | RLS policy schema (scalar/list/range), hierarchical scope expansion, authoring scopes (`author:sql`, `author:metric`) |
 | [**AI, Chat & MCP**](/docs/ai-and-mcp) | Grounded ask, agentic chat, 14 agent tools, MCP server (15 tools), Slack/WhatsApp gateway |
+| [**MCP integration**](/docs/mcp) | Host integration contract: registering external MCP servers, agent tool dispatch, Nubi as MCP server (JSON-RPC, tool catalog, auth) |
 | [**Embedding**](/docs/embedding) | JWT minting (RS256/ES256), per-viewer RLS, token-locked params, `<nubi-dashboard>` |
 | [**Embed API v1**](/docs/embed-api) | Versioned public contract for the web-component kit — all attributes, events, 25-token theme contract, capability gating, `NubiContext` cross-filter bus |
 | [**Organization & Settings**](/docs/organization-settings) | Members, roles and invites; integrations; usage; project settings and the Git connection |
