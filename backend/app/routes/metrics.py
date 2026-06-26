@@ -802,6 +802,22 @@ async def execute_metric_query(
     # ── 3. SECURITY: RLS claims from the VERIFIED identity ONLY (like /query) ─
     claims = {"policies": identity.policies}
 
+    # ── E.2: Hierarchical RLS expansion (org-scoped, fail-closed) ────────────
+    # Mirrors the identical block in _resolve_request_plan (query.py).
+    # Expand scalar policy values that have children in access_hierarchy for
+    # this org so a token with region="Gauteng" auto-expands to child cities.
+    # Security: org_id is the caller's verified org (from token/DB — never
+    # request body); fail-closed (keep original on error); zero-cost when no
+    # hierarchy is configured (NullHierarchyResolver makes no DB call).
+    if identity.policies and org_id:
+        try:
+            from app.connectors.planner import expand_rls_policies as _expand_rls
+
+            _expanded_policies = await _expand_rls(dict(identity.policies), org_id)
+            claims = {"policies": _expanded_policies}
+        except Exception:  # noqa: BLE001 — fail-closed: keep original policy.
+            pass
+
     # ── 4. Plan (RLS predicates injected at the AST level) ───────────────────
     # Parse/emit in the compiled-metric dialect (see metric_dialect note above)
     # so the planner preserves QUALIFY natively and never truncates a top-N.

@@ -800,6 +800,13 @@ def _serialize_flow_run(run: dict[str, Any]) -> dict[str, Any]:
         "duration_s": duration_s,
         "error": run.get("error"),
         "created_at": _dt_iso(run.get("created_at")),
+        # Audit/reproducibility: the resolved params at trigger time (JSONB).
+        # Exposed here (run-detail and list) so callers can audit what values
+        # were actually used — same fields returned by GET /{id}/lineage.
+        # None when the run pre-dates the params_snapshot column (back-compat).
+        "params_snapshot": run.get("params_snapshot"),
+        "code_version": run.get("code_version"),
+        "seed": run.get("seed"),
     }
 
 

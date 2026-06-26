@@ -728,6 +728,37 @@ async def _resolve_request_plan(
     # ── SECURITY: RLS policies from the VERIFIED identity only ───────────────
     claims = {"policies": identity.policies}
 
+    # ── E.2: Hierarchical RLS expansion (org-scoped, fail-closed) ────────────
+    # Expand any scalar policy value that has registered children in the
+    # access_hierarchy table (e.g. region="Gauteng" → store_ids [1,2,3]).
+    # Security contract:
+    #   - org_id comes from the VERIFIED token (identity.org) or a trusted DB
+    #     lookup — never from the request body.
+    #   - Fail-closed: if expansion raises, keep the ORIGINAL (narrower) policy
+    #     dict so we never widen access on error.
+    #   - Zero cost when no hierarchy is configured: NullHierarchyResolver
+    #     (the default) returns [] immediately and expand_policy returns the
+    #     scalar unchanged — no DB call is made.
+    #   - List/range-dict policies pass through unexpanded (already explicit).
+    if identity.policies:
+        try:
+            from app.connectors.planner import expand_rls_policies as _expand_rls
+            # Resolve org_id from the token (embed) or DB (first-party).
+            # Same helper used below for rollup routing — no second lookup.
+            _expand_org_id: str | None = (
+                identity.org
+                if identity.kind == "embed"
+                else (await _resolve_caller_org(identity, get_repo()))[0]
+            )
+            if _expand_org_id:
+                _expanded_policies = await _expand_rls(
+                    dict(identity.policies), _expand_org_id
+                )
+                claims = {"policies": _expanded_policies}
+            # If org is None (unscoped/demo), skip expansion — no hierarchy data.
+        except Exception:  # noqa: BLE001 — fail-closed: keep original policy.
+            pass
+
     # ── NAMED PARAM + {{ vars.* }} RESOLUTION ────────────────────────────────
     effective_params: list = list(body.params)
 
