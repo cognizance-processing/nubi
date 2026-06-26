@@ -57,11 +57,15 @@ Below the selectors is the main nav. The active item shows a tinted background a
 
 | Item | Route | What you'll do there |
 |------|-------|----------------------|
+| **Overview** | `/overview` | Executive at-a-glance view: workspace stat cards (connectors, queries, dashboards, flows), a data-health panel (overall score + RAG freshness dots per dataset), and a recent-activity feed (most recently updated dashboards and flows). The health panel links directly to the data-health detail when any dataset is stale. |
+| **Workqueue** | `/workqueue` | "Needs attention" inbox, grouped into three sections: **Alerts** (active watches — any that have fired show a "breached" chip); **Flow runs** (recent failed or running flow runs with direct links to each run); and **Stale data** (datasets whose freshness status is `stale` from `GET /health/freshness`). When everything is healthy all three sections are empty and a green "All clear" banner is shown. |
 | **Home** | `/home` | Setup progress, stat cards, quick-access grid, and recent dashboards and flows. |
 | **Connectors** | `/connectors` | Add and manage data sources (Postgres, BigQuery, HTTP/JSON, and more). |
 | **Data** | `/data` | Browse and explore your connectors' data: pick a connector, search its tables, then flip between **Data** (rows) and **Schema** (columns) tabs. |
 | **Queries** | `/queries` | Author SQL in a Monaco editor, run queries, and save registered queries. |
+| **Explore** | `/explore` | Metric explorer: select a metric, apply dimension filters, choose a time grain, and view results as a chart and table — no SQL required. |
 | **Dashboards** | `/dashboards` | View, search, and open live dashboards. |
+| **Canvases** | `/canvases` | HTML-native companion to dashboards — freeform layout with `<nubi-kpi>` / `<nubi-table>` / `<nubi-chart>` elements bound to registered queries. |
 | **Flows** | `/flows` | Build multi-step pipelines — cells arranged as a canvas or notebook. |
 | **Watches** | `/watches` | Proactive metric alerts: a watch monitors a governed metric against a threshold or change-over-time rule, and on breach sends an AI explanation to a notify channel. |
 | **Automations** | `/automations` | Schedule flows and jobs to run on a cron schedule. |
@@ -115,6 +119,78 @@ Nubi ships both themes.
 - **Switch:** open the account menu (top-right avatar) and click **Light mode** or **Dark mode**.
 - **First visit:** Nubi follows your operating-system preference until you pick one explicitly.
 - **Sticky:** once you choose, it's remembered across sessions and the OS default is no longer followed.
+
+---
+
+## Overview (`/overview`)
+
+Overview is the first item in the primary nav. It is the executive at-a-glance
+landing page for a workspace that is already set up.
+
+**Stat cards** — a row of four count cards: Connectors, Queries, Dashboards, Flows.
+Each card links to the corresponding section. Counts are fetched from
+`GET /connectors`, `GET /query/registry`, `GET /boards`, and `GET /flows`.
+
+**Data health panel** — fetches the overall health score from
+`GET /health/score` (score 0–100 + letter grade + human-readable reasons) and
+the freshness list from `GET /health/freshness`. Each dataset is shown as a RAG
+dot (green / amber / red) with its key and last-success timestamp. A "View all"
+link opens the full data-health detail. When score data is unavailable the panel
+degrades gracefully to an empty state.
+
+**Recent activity** — the two most recently updated dashboards and the two most
+recently updated flows, each as a clickable card showing name and relative
+timestamp.
+
+**Quick-action buttons** — prominent shortcuts: "New dashboard", "New flow", and
+"Ask AI" (opens the chat panel).
+
+All fetches are independently wrapped in error boundaries so a single 404 or
+empty payload never crashes the page. This page calls no AI endpoints and
+applies no org gating — it is always available to any authenticated user.
+
+APIs called by Overview:
+- `GET /api/v1/connectors`
+- `GET /api/v1/query/registry` (or `/queries`)
+- `GET /api/v1/boards`
+- `GET /api/v1/flows`
+- `GET /api/v1/health/score`
+- `GET /api/v1/health/freshness`
+
+---
+
+## Workqueue (`/workqueue`)
+
+Workqueue is the second item in the primary nav — a "needs attention" inbox
+that surfaces actionable items in one place.
+
+Three sections, each independent (a failure in one section never hides the others):
+
+**Alerts** — every active watch (from `GET /watches`). Watches where the
+`enabled` flag is true are surfaced; the UI adds a "Breached" chip to any watch
+whose latest run indicates a threshold breach. Links to the Watches section for
+each item.
+
+**Flow runs** — recent failed or still-running runs. Fetches `GET /flows` for
+the org, then for each flow fetches `GET /flows/{id}/runs` (capped to avoid
+N+1 fan-out). Only runs with `state == "failed"` or `state == "running"` are
+shown. Each row shows the flow name, run state chip (red for failed, blue for
+running), and relative timestamp. Clicking a row opens the flow detail.
+
+**Stale data** — all datasets whose `status == "stale"` from
+`GET /health/freshness`. Each row shows the dataset key, the last success
+timestamp (or "never"), and the expected interval. Clicking a row opens the
+data-health detail view.
+
+**Empty state** — when all three sections are empty (no failed runs, no active
+alerts, no stale datasets) the page shows a green "All clear — nothing needs
+attention" banner.
+
+APIs called by Workqueue:
+- `GET /api/v1/watches`
+- `GET /api/v1/flows`
+- `GET /api/v1/flows/{id}/runs` (per flow, capped)
+- `GET /api/v1/health/freshness`
 
 ---
 

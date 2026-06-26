@@ -1006,6 +1006,547 @@ cache entry.
 
 ---
 
+## Data Health
+
+All data-health endpoints require a valid Bearer token. Routes are org-scoped:
+a dataset key belonging to another org returns `404` (not `403`) to prevent
+information leakage.
+
+### `GET /health/freshness`
+
+Return the pre-computed freshness row for every dataset in the caller's org.
+Single indexed scan on `org_id` — no live computation.
+
+**Auth:** Any valid token (first-party or embed JWT with a read scope).
+
+**Response `200`:**
+```json
+{
+  "org_id": "org-uuid",
+  "datasets": [
+    {
+      "dataset_key": "raw/orders",
+      "status": "fresh",
+      "last_success_at": "2026-06-26T05:00:00Z",
+      "expected_interval_s": 86400,
+      "stale_at": "2026-06-27T05:00:00Z"
+    }
+  ]
+}
+```
+
+**Errors:** `404` — no freshness records for the org.
+
+---
+
+### `GET /health/freshness/{dataset_key}`
+
+Return the pre-computed freshness row for one dataset. Single primary-key
+lookup: O(1), read SLO target < 5 ms p99.
+
+**Auth:** Any valid token with a read scope.
+
+**Path parameters:**
+
+| Param | Type | Description |
+|---|---|---|
+| `dataset_key` | string | Dataset key (may contain `/`). |
+
+**Response `200`:**
+```json
+{
+  "dataset_key": "raw/orders",
+  "status": "fresh",
+  "last_success_at": "2026-06-26T05:00:00Z",
+  "expected_interval_s": 86400,
+  "stale_at": "2026-06-27T05:00:00Z"
+}
+```
+
+**Errors:** `404 DATASET_NOT_FOUND` — unknown key or cross-org attempt.
+
+---
+
+### `GET /health/score`
+
+Compute weighted health scores (0–100) for all datasets in the org, or for a
+single dataset when `?dataset_key=` is supplied. Scores combine three weighted
+dimensions: freshness (default 0.50), completeness (0.30), availability (0.20).
+
+**Auth:** Any valid token with a read scope.
+
+**Query parameters:**
+
+| Param | Default | Description |
+|---|---|---|
+| `dataset_key` | — | Optional. Filter to a single dataset key. |
+
+**Response `200` (single dataset when `?dataset_key=` is set):**
+```json
+{
+  "dataset_key": "raw/orders",
+  "score": 87,
+  "grade": "B",
+  "dimensions": [
+    { "name": "freshness",     "score": 100, "status": "fresh",   "reason": "fresh: updated 1h ago", "weight": 0.5 },
+    { "name": "completeness",  "score":  90, "status": "ok",      "reason": "ok",                    "weight": 0.3 },
+    { "name": "availability",  "score": 100, "status": "ok",      "reason": "ok",                    "weight": 0.2 }
+  ],
+  "reasons": ["freshness: fresh"],
+  "weights_used": { "freshness": 0.5, "completeness": 0.3, "availability": 0.2 }
+}
+```
+
+**Response `200` (org-wide, when no `?dataset_key=`):**
+```json
+{
+  "org_id": "org-uuid",
+  "datasets": [ /* array of per-dataset score objects */ ],
+  "default_weights": { "freshness": 0.5, "completeness": 0.3, "availability": 0.2 }
+}
+```
+
+**Errors:** `404 DATASET_NOT_FOUND` — unknown key when `?dataset_key=` is set.
+
+---
+
+### `GET /health/estate`
+
+Return a source → raw → model → feature flow map annotated with each node's
+health and freshness status. Composed from the flows store and the freshness
+registry. When the full lineage DAG is available, edges include
+`lineage_confirmed: true`.
+
+**Auth:** Any valid token with a read scope.
+
+**Response `200`:**
+```json
+{
+  "org_id": "org-uuid",
+  "nodes": [
+    {
+      "key": "raw/orders",
+      "type": "raw",
+      "status": "fresh",
+      "last_success_at": "2026-06-26T05:00:00Z",
+      "expected_interval_s": 86400
+    }
+  ],
+  "edges": [
+    { "source_key": "raw/orders", "target_key": "model/revenue", "flow_id": "...", "lineage_confirmed": true }
+  ],
+  "lineage_module_present": true
+}
+```
+
+Node types: `source`, `raw`, `model`, `feature` (inferred from key prefix
+conventions: `source/`, `raw/`, `ingest/` → `raw`; `model/`, `transform/` →
+`model`; `metric/`, `feature/`, `agg/` → `feature`; otherwise `source`).
+
+---
+
+## Lineage DAG
+
+All lineage endpoints require a valid first-party Bearer token (`current_user`).
+
+### `GET /lineage/dag`
+
+Return the full inter-model dependency DAG (queries + metrics + tables) for the
+caller's org.
+
+**Auth:** First-party Bearer token.
+
+**Response `200`:**
+```json
+{
+  "nodes": [
+    { "id": "query:revenue", "type": "query", "name": "Revenue", "tables": ["orders"], "outputs": ["revenue"], "columns": {} }
+  ],
+  "edges": [
+    { "from": "table:orders", "to": "query:revenue", "via": "select" }
+  ]
+}
+```
+
+---
+
+### `GET /lineage/dag/{node_id}?hops=N`
+
+Return the upstream/downstream neighbourhood of a single DAG node.
+
+**Auth:** First-party Bearer token.
+
+**Path parameters:**
+
+| Param | Type | Description |
+|---|---|---|
+| `node_id` | string | Id of the query, metric, or table node (may contain `/`). |
+
+**Query parameters:**
+
+| Param | Default | Max | Description |
+|---|---|---|---|
+| `hops` | `3` | `20` | Maximum traversal depth. |
+
+**Response `200`:**
+```json
+{
+  "node_id": "query:revenue",
+  "node": { "id": "query:revenue", "type": "query", "name": "Revenue", "tables": [...], "outputs": [...], "columns": {} },
+  "hops": 3,
+  "upstream": ["table:orders"],
+  "downstream": ["metric:revenue"]
+}
+```
+
+**Errors:** `404 node_not_found` — unknown node id.
+
+---
+
+### `GET /metrics/{id}/lineage`
+
+Return the column-level lineage for a single governed metric: input columns,
+upstream source tables, and per-derived-measure formula decomposition.
+
+**Auth:** Any valid token with a read scope. Org-scoped — cross-org metric id
+returns `404`.
+
+**Response `200`:**
+```json
+{
+  "metric_id": "revenue",
+  "name": "Revenue",
+  "measure": { "name": "revenue", "agg": "sum", "expr": "amount" },
+  "formula": [],
+  "input_columns": [
+    { "table": "orders", "column": "amount" },
+    { "table": "orders", "column": "created_at" }
+  ],
+  "upstream": ["orders"]
+}
+```
+
+**Errors:** `404 metric_not_found` — unknown metric or cross-org attempt.
+
+---
+
+## SQL Transpilation
+
+### `POST /transpile`
+
+Transpile SQL from one dialect to another using sqlglot. Pure AST transform —
+no data access, no filesystem or network I/O. Auth required; no org scoping.
+
+**Auth:** Any valid first-party Bearer token.
+
+**Request body:**
+```json
+{
+  "sql": "SELECT DATE_TRUNC('month', created_at), SUM(amount) FROM orders GROUP BY 1",
+  "from_dialect": "postgres",
+  "to_dialect": "bigquery"
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `sql` | Yes | Non-empty SQL string. |
+| `from_dialect` | Yes | Source dialect (see allowlist below). |
+| `to_dialect` | Yes | Target dialect (see allowlist below). |
+
+**Dialect allowlist:** `bigquery`, `clickhouse`, `databricks`, `duckdb`,
+`drill`, `hive`, `mysql`, `oracle`, `postgres` (alias: `postgresql`), `presto`,
+`redshift`, `snowflake`, `spark`, `spark2`, `sqlite`, `trino`, `tsql`.
+
+**Response `200`:**
+```json
+{ "sql": "SELECT DATE_TRUNC(created_at, MONTH), SUM(amount) FROM orders GROUP BY 1" }
+```
+
+**Errors:**
+- `400 unknown_dialect` — `from_dialect` or `to_dialect` not in the allowlist.
+- `400 bad_request` — `sql` is empty.
+- `400 parse_error` — sqlglot failed to parse or transpile.
+
+---
+
+## MCP
+
+### MCP server registry — `/mcp/servers`
+
+Org-scoped CRUD for external MCP servers your agent loop can call. Auth tokens
+are never returned after creation (stripped server-side).
+
+**Auth for writes (POST / PUT / DELETE):** First-party Bearer token, writer role.
+**Auth for reads (GET):** Any valid first-party Bearer token.
+
+#### `GET /mcp/servers`
+
+List all MCP servers registered for the caller's org. Secret fields (`auth_token`) are stripped.
+
+**Response `200`:** `[{id, org_id, name, url, transport, enabled, created_by, created_at, updated_at}]`
+
+---
+
+#### `POST /mcp/servers`
+
+Register a new external MCP server.
+
+**Request body:**
+```json
+{
+  "name": "Internal tools MCP",
+  "url": "https://tools.example.com/mcp",
+  "transport": "http",
+  "auth_token": "secret-bearer",
+  "enabled": true
+}
+```
+
+| Field | Required | Default | Description |
+|---|---|---|---|
+| `name` | Yes | — | Display name. |
+| `url` | Yes | — | MCP server URL. Validated by SSRF guard. |
+| `transport` | No | `"http"` | Transport type (`"http"`). |
+| `auth_token` | No | `null` | Bearer token sent to the external server. Encrypted at rest; never returned. |
+| `enabled` | No | `true` | Disabled servers are skipped by the agent loop. |
+
+**Response `201`:** Server record (no `auth_token`).
+
+**Errors:** `400` — SSRF guard blocked the URL.
+
+---
+
+#### `GET /mcp/servers/{server_id}`
+
+Return one MCP server record (no secrets).
+
+**Response `200`:** Server record.
+
+**Errors:** `404 mcp_server_not_found`.
+
+---
+
+#### `PUT /mcp/servers/{server_id}`
+
+Partially update an MCP server. All fields are optional; omitted fields are left unchanged.
+
+**Request body (all optional):**
+```json
+{ "name": "New name", "url": "https://new.example.com/mcp", "transport": "http", "auth_token": "new-secret", "enabled": false }
+```
+
+**Response `200`:** Updated server record (no `auth_token`).
+
+**Errors:** `400` — SSRF guard blocked the URL. `404 mcp_server_not_found`.
+
+---
+
+#### `DELETE /mcp/servers/{server_id}`
+
+Delete an MCP server.
+
+**Response `204`:** No content.
+
+**Errors:** `404 mcp_server_not_found`.
+
+---
+
+### Nubi as MCP server — `POST /mcp`
+
+Exposes Nubi's own tool registry to external MCP clients (Claude Desktop,
+Claude Code, etc.) via JSON-RPC 2.0 over a single HTTP POST. Auth is a
+first-party Bearer JWT — the same token kind used by `/ai/chat`.
+
+**Auth:** First-party Bearer token (`current_user` + `verified_identity`). The
+caller's org and RLS scope are resolved from the token and passed to tool
+execution — never hard-coded or escalated.
+
+**Request body:** JSON-RPC 2.0 envelope.
+
+Three methods are supported:
+
+#### `initialize`
+
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": { "tools": {} },
+    "serverInfo": { "name": "nubi", "version": "1.0.0" }
+  }
+}
+```
+
+#### `tools/list`
+
+```json
+{ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "tools": [
+      { "name": "run_query", "description": "...", "inputSchema": { ... } }
+    ]
+  }
+}
+```
+
+The tool list is drawn from the same 14-tool registry used by `/ai/chat` and
+is org-scoped.
+
+#### `tools/call`
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "run_query",
+    "arguments": { "query_id": "revenue", "params": { "region": "EMEA" } }
+  }
+}
+```
+
+**Response (success):**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "content": [{ "type": "text", "text": "{\"rows\": [...]}" }],
+    "isError": false
+  }
+}
+```
+
+**Response (tool error):**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "content": [{ "type": "text", "text": "error detail" }],
+    "isError": true
+  }
+}
+```
+
+Tool calls run in a thread (`asyncio.to_thread`). The caller's scope from the
+verified token is forwarded verbatim — embed tokens cannot access this endpoint
+(only `current_user` tokens are accepted). RLS policy claims are forwarded from
+`verified_identity`.
+
+**Protocol errors (unknown method, parse error):** Standard JSON-RPC error
+object (`{ "error": { "code": -32601, "message": "Method not found" } }`).
+
+---
+
+## Flow versions, revert, and environments
+
+### `GET /flows/{id}/versions`
+
+List all spec versions for a flow (newest first). Specs are excluded from the
+list for compactness; fetch a specific version to get the full spec.
+
+**Auth:** Any valid first-party Bearer token. Org-scoped.
+
+**Response `200`:**
+```json
+{
+  "flow_id": "flow-uuid",
+  "versions": [
+    { "id": "ver-uuid", "version": 3, "created_by": "user-uuid", "created_at": "2026-06-26T10:00:00Z" },
+    { "id": "ver-uuid", "version": 2, "created_by": "user-uuid", "created_at": "2026-06-25T09:00:00Z" },
+    { "id": "ver-uuid", "version": 1, "created_by": "user-uuid", "created_at": "2026-06-24T08:00:00Z" }
+  ]
+}
+```
+
+**Errors:** `404` — flow not found or cross-org.
+
+---
+
+### `GET /flows/{id}/versions/{v}`
+
+Fetch the full spec snapshot for version `v`.
+
+**Auth:** Any valid first-party Bearer token. Org-scoped.
+
+**Response `200`:**
+```json
+{
+  "id": "ver-uuid",
+  "flow_id": "flow-uuid",
+  "org_id": "org-uuid",
+  "version": 2,
+  "spec": { "version": 1, "tasks": [...] },
+  "created_by": "user-uuid",
+  "created_at": "2026-06-25T09:00:00Z"
+}
+```
+
+The `spec` field has `__owner_policies__` stripped before returning (security).
+
+**Errors:** `404` — flow not found, cross-org, or version number not found.
+
+---
+
+### `POST /flows/{id}/revert/{v}`
+
+Revert a flow's spec to a prior version. The current spec is snapshotted as a
+new version first (so revert is undoable), then the target version's spec is
+applied as the live spec. The caller's RLS policies are re-snapshotted onto the
+reverted spec.
+
+**Auth:** First-party Bearer token. Writer role required.
+
+**Response `200`:** Updated flow record (same shape as `GET /flows/{id}`).
+
+**Errors:** `404` — flow or version not found.
+
+---
+
+### `GET /flows/{id}/environments`
+
+List environments and their materialisation watermarks for a flow.
+
+**Auth:** Any valid first-party Bearer token. Org-scoped. Viewer-friendly (read-only).
+
+**Response `200`:**
+```json
+{
+  "flow_id": "flow-uuid",
+  "environments": [
+    {
+      "key": "prod",
+      "watermarks": { "model/revenue": "2026-06-26T05:00:00Z" }
+    },
+    {
+      "key": "dev",
+      "watermarks": {}
+    }
+  ]
+}
+```
+
+**Errors:** `404` — flow not found or cross-org.
+
+---
+
 ## Error codes reference
 
 | Code | HTTP | When |
