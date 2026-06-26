@@ -44,9 +44,11 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
+from app.auth.roles import get_org_role
 from app.db import execute, fetch, fetchrow
 from app.errors import AppError
 from app.repos import projects as projects_repo
+from app.repos.provider import Repo, get_repo
 from app.routes import api_router
 
 # ── Sub-router ────────────────────────────────────────────────────────────────
@@ -685,19 +687,18 @@ async def remove_member(
     org_id: str,
     member_id: str,
     user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
 ) -> None:
     """Remove a member (owner/admin only). Only an owner can remove an owner, and
     the last owner cannot be removed."""
     manager = await _require_manage(str(user["id"]), org_id)
-    target = await fetchrow(
-        "SELECT role FROM org_members WHERE org_id = $1::uuid AND user_id = $2::uuid",
-        org_id, member_id,
-    )
-    if target is None:
+    # Use the canonical get_org_role helper instead of an inline fetchrow.
+    target_role = await get_org_role(member_id, org_id, repo)
+    if target_role is None:
         raise AppError("not_found", "Member not found.", 404)
-    if target["role"] == "owner" and manager["role"] != "owner":
+    if target_role == "owner" and manager["role"] != "owner":
         raise AppError("forbidden", "Only an owner can remove an owner.", 403)
-    if target["role"] == "owner" and await _count_owners(org_id) <= 1:
+    if target_role == "owner" and await _count_owners(org_id) <= 1:
         raise AppError("invalid_request", "Cannot remove the last owner of the org.", 400)
     await execute(
         "DELETE FROM org_members WHERE org_id = $1::uuid AND user_id = $2::uuid",

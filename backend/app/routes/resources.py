@@ -44,6 +44,7 @@ from app.errors import AppError
 from app.repos.base import VALID_RESOURCES
 from app.repos.provider import get_repo, Repo
 from app.routes import api_router
+from app.routes._helpers import get_or_404
 
 # Audit (fire-and-forget — never breaks a mutation path)
 from app.audit import record_audit as _record_audit
@@ -348,9 +349,10 @@ async def get_resource(
     """
     _require_valid_resource(resource)
     org_id = await resolve_org_id(str(user["id"]), repo, request)
-    row = await repo.get(resource, org_id, id)
-    if row is None:
-        raise AppError("not_found", f"{resource[:-1].capitalize()} not found.", 404)
+    row = await get_or_404(
+        repo, resource, org_id, id,
+        detail=f"{resource[:-1].capitalize()} not found.",
+    )
 
     # ``?env=<key>``: serve the version pinned to that environment (boards /
     # queries only); draft + resolved_version=null when nothing is pinned.
@@ -402,9 +404,10 @@ async def update_resource(
     # skip the DB write so retries add no noise.  Checked against the resource's
     # current config (NOT the env-version chain — see _config_is_unchanged).
     if body.config is not None and _is_versionable(resource):
-        existing = await repo.get(resource, org_id, id)
-        if existing is None:
-            raise AppError("not_found", f"{resource[:-1].capitalize()} not found.", 404)
+        existing = await get_or_404(
+            repo, resource, org_id, id,
+            detail=f"{resource[:-1].capitalize()} not found.",
+        )
         name_unchanged = body.name is None or body.name == existing.get("name")
         if name_unchanged and _config_is_unchanged(existing.get("config"), body.config):
             existing["author_kind"] = author_kind(claims)

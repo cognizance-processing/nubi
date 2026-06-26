@@ -57,6 +57,7 @@ from app.git import env_sync
 from app.repos import projects as projects_repo
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
+from app.routes._helpers import get_or_404
 from app.routes._org import resolve_org_default_project_id, resolve_org_id
 
 # ── Sub-router ────────────────────────────────────────────────────────────────
@@ -152,10 +153,13 @@ async def _require_resource(
         if flow is None or str(flow["org_id"]) != str(org_id):
             raise AppError("not_found", "Flow not found.", 404)
         return flow
-    row = await repo.get(_KIND_RESOURCE[kind], org_id, resource_id)
-    if row is None:
-        raise AppError("not_found", f"{kind.capitalize()} not found.", 404)
-    return row
+    return await get_or_404(
+        repo,
+        _KIND_RESOURCE[kind],
+        org_id,
+        resource_id,
+        detail=f"{kind.capitalize()} not found.",
+    )
 
 
 def _draft_config(kind: str, row: dict[str, Any]) -> dict[str, Any]:
