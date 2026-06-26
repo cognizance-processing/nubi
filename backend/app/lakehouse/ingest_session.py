@@ -46,12 +46,15 @@ State machine
     (idempotent).
 ``aborted``: the session was aborted; staging was cleaned up.
 
-Production TODO
----------------
-Replace ``InMemoryIngestSessionStore`` with a ``PgIngestSessionStore``
-that uses ``INSERT … ON CONFLICT DO NOTHING`` and CAS via ``WHERE state = $N``
-— the same pattern as ``PgWritebackStore``.  No DB migration is added in this
-branch; the sidecar provides partial durability in the meantime.
+Storage implementations
+-----------------------
+Both implementations are provided:
+
+- ``InMemoryIngestSessionStore`` — hermetic default (no DB; used in tests and
+  when the DB pool is unavailable at startup).
+- ``PgIngestSessionStore`` — asyncpg-backed production store (migration 0017),
+  using ``INSERT … ON CONFLICT DO NOTHING`` and CAS via ``WHERE state = $N``,
+  the same pattern as ``PgWritebackStore``.
 """
 
 from __future__ import annotations
