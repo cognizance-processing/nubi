@@ -28,6 +28,67 @@ Error responses use the envelope `{ "error": "<code>", "message": "<text>" }`.
 
 ---
 
+## Scope & access grants
+
+### `GET /auth/scope`
+
+Resolve the caller's effective RLS scope from the **verified token** (works for
+first-party **and** embed tokens). Hosts call this to discover what a token is
+authorised to see, without re-deriving it themselves.
+
+**Auth:** Any valid token.
+
+**Response `200`:**
+```json
+{
+  "org": "<org_id>",
+  "scope": ["read:*"],
+  "policies": { "region": "Gauteng" },
+  "effective_policies": { "region": ["Gauteng", "JHB", "PTA"] },
+  "expanded": true
+}
+```
+
+- `policies` — raw policy claim from the verified token.
+- `effective_policies` — hierarchy-expanded **and** merged with any non-expired
+  `access_grants` for the caller's subject, normalised to `{dimension: [values]}`.
+- `expanded` — `true` when `effective_policies` differs from `policies`.
+
+Policies/org come from the token only (a request body is ignored). Resolution is
+org-scoped and **fails closed** — on error it returns the narrower raw policies,
+never a widened set.
+
+---
+
+### `GET /access-grants`
+
+List grants for a subject in the caller's org.
+
+**Auth:** Any org member. **Query:** `subject_type` (`user`|`role`|`embed_sub`),
+`subject_id`.
+
+**Response `200`:** `{ "grants": [{ id, subject_type, subject_id, dimension, value, expires_at, created_at }] }`
+
+### `POST /access-grants`
+
+Create (or refresh) a grant. **Auth:** owner/admin only.
+
+**Body:** `{ "subject_type", "subject_id", "dimension", "value", "expires_at"? }`
+**Response `201`:** `{ "grant": { ... } }`
+
+### `DELETE /access-grants/{id}`
+
+Delete a grant within the caller's org. **Auth:** owner/admin only.
+A grant id belonging to another org (or absent) returns **404** (not 403).
+**Response:** `204`.
+
+> Grants are org-scoped and merged into `GET /auth/scope`'s `effective_policies`.
+> See [governance.md](./governance.md) for the cardinality cap
+> (`NUBI_RLS_MAX_POLICY_VALUES`, default 5000) that fails closed on oversized
+> policies.
+
+---
+
 ## Metrics (semantic layer)
 
 ### `GET /metrics`

@@ -219,6 +219,10 @@ import app.routes.datasets  # noqa: F401, E402
 # /{resource} catch-all in resources.py.
 import app.routes.admin  # noqa: F401, E402
 
+# Import access-grants routes (/access-grants) — org-scoped governance store
+# feeding GET /auth/scope. Registered before the generic /{resource} catch-all.
+import app.routes.access_grants  # noqa: F401, E402
+
 # Import environments + versions routes (/projects/{id}/environments,
 # /environments/*, /versions/*) BEFORE resources so they register ahead of the
 # generic /{resource} catch-all in resources.py.

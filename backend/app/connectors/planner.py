@@ -81,6 +81,47 @@ _NAMED_PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")
 
 
 # ---------------------------------------------------------------------------
+# RLS policy cardinality cap (fail-closed)
+# ---------------------------------------------------------------------------
+
+
+def _max_policy_values() -> int:
+    """Return the configured RLS policy cardinality cap (``NUBI_RLS_MAX_POLICY_VALUES``).
+
+    Read lazily from settings so tests can monkeypatch the value.  Falls back to
+    the default ceiling if settings are unavailable for any reason (fail-safe to
+    a finite bound — never unbounded).
+    """
+    try:
+        from app.config import get_settings  # noqa: PLC0415
+
+        return int(get_settings().NUBI_RLS_MAX_POLICY_VALUES)
+    except Exception:  # noqa: BLE001 — never let config errors widen the cap
+        return 5000
+
+
+def _enforce_policy_cardinality(column: str, count: int) -> None:
+    """Fail-closed if *count* values for *column* exceed the configured cap.
+
+    Applied to both explicit IN-list policies and hierarchy-expansion output.
+    Raises ``AppError("rls_policy_too_large", 400)`` — we NEVER silently
+    truncate (which would drop predicates and thereby WIDEN the rows a caller
+    can see) and NEVER execute an unbounded IN list.
+    """
+    cap = _max_policy_values()
+    if count > cap:
+        raise AppError(
+            "rls_policy_too_large",
+            (
+                f"RLS policy for column '{column}' resolves to {count} values, "
+                f"exceeding the configured cap of {cap} "
+                f"(NUBI_RLS_MAX_POLICY_VALUES)."
+            ),
+            status=400,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
@@ -146,6 +187,9 @@ def _make_in_predicate(column: str, values: list) -> exp.Expression:
             this=exp.Literal.number(1),
             expression=exp.Literal.number(0),
         )
+    # Cardinality cap (fail-closed): reject an oversized IN list rather than
+    # truncate it (truncation would widen access) or emit an unbounded list.
+    _enforce_policy_cardinality(column, len(values))
     lhs = exp.Column(this=exp.Identifier(this=column, quoted=False))
     return exp.In(
         this=lhs,
@@ -513,12 +557,23 @@ async def expand_rls_policies(
     resolver = get_hierarchy_resolver()
     expanded: dict[str, Any] = {}
     for col, val in policies.items():
-        if isinstance(val, (list, dict)):
-            # Already an IN-list or range — pass through unchanged.
+        if isinstance(val, list):
+            # Already an IN-list — pass through, but enforce the cardinality cap
+            # here too so an oversized token-supplied list fails closed at
+            # expansion time (not only at predicate-build time).
+            _enforce_policy_cardinality(col, len(val))
+            expanded[col] = val
+        elif isinstance(val, dict):
+            # Range band — pass through unchanged.
             expanded[col] = val
         else:
             # Scalar — attempt hierarchy expansion.
-            expanded[col] = await resolver.expand_policy(org_id, col, val)
+            result = await resolver.expand_policy(org_id, col, val)
+            # Hierarchy expansion may blow a scalar up into a large child list;
+            # enforce the cap on the expansion OUTPUT (fail-closed).
+            if isinstance(result, list):
+                _enforce_policy_cardinality(col, len(result))
+            expanded[col] = result
     return expanded
 
 

@@ -33,7 +33,7 @@ from app.auth.cookies import (
     set_refresh_cookie,
 )
 from app.auth.denylist import get_token_denylist
-from app.auth.deps import current_user
+from app.auth.deps import current_user, verified_identity
 from app.auth.google import (
     build_authorize_url,
     exchange_code,
@@ -454,6 +454,52 @@ async def me(
     payload["is_superadmin"] = is_superadmin
 
     return {"user": payload}
+
+
+@router.get("/scope")
+async def scope(
+    identity: VerifiedIdentity = Depends(verified_identity),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Return the caller's resolved RLS scope (first-party AND embed tokens).
+
+    The host (or a host's frontend) calls this to discover what an embed/first-
+    party token is actually authorised to see — without trusting the host to
+    re-derive it.  Returns::
+
+        {
+          "org": "<org_id>",
+          "scope": ["read:*", ...],
+          "policies": {"region": "Gauteng"},
+          "effective_policies": {"region": ["Gauteng", "JHB", "PTA"]},
+          "expanded": true
+        }
+
+    - ``policies`` is the RAW policy claim from the verified token.
+    - ``effective_policies`` is hierarchy-expanded (``expand_rls_policies``) and
+      merged with any non-expired ``access_grants`` for the caller's subject,
+      normalised to ``{dimension: [values]}``.
+    - ``expanded`` is true when ``effective_policies`` differs from the raw.
+
+    SECURITY: policies/scope/org come ONLY from the verified token (never the
+    request body).  Resolution is org-scoped and FAILS CLOSED — on any error it
+    returns the narrower raw policies, never a widened set.
+    """
+    from app.access.scope import resolve_scope  # noqa: PLC0415
+
+    # For first-party tokens the org is usually pinned at request time via
+    # membership rather than carried in the token; resolve it the same way the
+    # rest of the app does so the scope reflects the org the caller operates in.
+    # The org is STILL derived from server-side state (token / membership), not
+    # the request body.
+    if not identity.org and identity.kind == "access":
+        try:
+            identity.org = await get_user_org(str(identity.user_id), repo)
+        except AppError:
+            # Org-less caller (mid-onboarding) — resolve_scope returns raw.
+            pass
+
+    return await resolve_scope(identity)
 
 
 @router.get("/me/invites")

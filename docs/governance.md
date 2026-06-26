@@ -92,6 +92,84 @@ region = "Western Cape"
 
 ---
 
+## Scope-resolution endpoint — `GET /auth/scope`
+
+A host (or a host frontend) calls `GET /api/v1/auth/scope` to discover what a
+token — first-party **or** embed — is actually authorised to see, without having
+to re-derive it. The endpoint resolves the caller's scope **from the verified
+token only**:
+
+```json
+{
+  "org": "<org_id>",
+  "scope": ["read:*"],
+  "policies": { "region": "Gauteng" },
+  "effective_policies": { "region": ["Gauteng", "JHB", "PTA"] },
+  "expanded": true
+}
+```
+
+- `policies` — the **raw** policy claim carried by the verified token.
+- `effective_policies` — the raw policies **hierarchy-expanded** (via
+  `expand_rls_policies`) **and merged** with any non-expired `access_grants` for
+  the caller's subject, normalised to `{dimension: [values]}`.
+- `expanded` — `true` when `effective_policies` differs from the raw policies.
+
+**Security contract:**
+
+- Org, scope, and policies come **only** from the verified token — a request
+  body is ignored.
+- Resolution is **org-scoped** (hierarchy lookup and grant merge both filter on
+  the token's org).
+- **Fail-closed:** on any resolution error the endpoint returns the narrower raw
+  policies — it never widens the effective set.
+
+---
+
+## Access grants — `/access-grants`
+
+`access_grants` (migration 0022) is the optional "user → scope assignment" store:
+org-scoped grants of a `(dimension, value)` pair to a subject (`user` / `role` /
+`embed_sub`), with an optional `expires_at`. A host may either mint policies
+directly into the embed token **or** store grants here and let `GET /auth/scope`
+merge them in (token policies ∪ stored grants, per dimension).
+
+| Method | Path | Gate |
+| --- | --- | --- |
+| `GET` | `/access-grants?subject_type=&subject_id=` | any org member |
+| `POST` | `/access-grants` | owner/admin |
+| `DELETE` | `/access-grants/{id}` | owner/admin |
+
+**Security contract:**
+
+- Every operation is scoped to the caller's org (resolved server-side — never
+  from the request body). The `POST` body sets the grant **target**; it can
+  never set the caller's own scope.
+- Writes are gated to approver roles (owner/admin), mirroring `/admin/*`.
+- A grant id belonging to another org (or absent) returns **404, not 403**, so a
+  grant's existence is not enumerable across tenants.
+- The planner never reads `access_grants` directly — only `GET /auth/scope` does,
+  and only for the caller's own subject.
+
+---
+
+## RLS policy cardinality cap
+
+`NUBI_RLS_MAX_POLICY_VALUES` (default **5000**) is a hard ceiling on the number
+of values a **single** RLS policy may resolve to. It applies to:
+
+- the number of values in an explicit **IN-list** policy, and
+- the **output of hierarchy expansion** for a scalar policy.
+
+When the count exceeds the cap the planner **fails closed** with
+`AppError("rls_policy_too_large", …, 400)`. This is deliberate: silently
+truncating the list would **drop predicates and widen** the rows a caller can
+see, and an unbounded IN list is a DoS / pathological-plan risk. Large-tenant
+deployments may raise the cap intentionally via the setting. Enforced in
+`_make_in_predicate` and `expand_rls_policies`.
+
+---
+
 ## Authoring scopes
 
 Authoring scopes gate write/authoring capabilities. They are carried in the

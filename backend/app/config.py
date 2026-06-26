@@ -93,6 +93,16 @@ class Settings(BaseSettings):
     # ── Runtime environment ──────────────────────────────────────────────────
     ENV: str = "production"  # e.g. "development", "test", "production"
 
+    # ── RLS policy cardinality cap ───────────────────────────────────────────
+    # Hard ceiling on the number of values a single RLS policy may resolve to —
+    # applied to both an explicit IN-list policy AND the output of hierarchy
+    # expansion. When the count exceeds this cap the planner FAILS CLOSED
+    # (AppError "rls_policy_too_large", 400) rather than silently truncating
+    # (which would widen access) or executing an unbounded IN list (which would
+    # be a DoS / pathological-plan risk). Configurable so large-tenant
+    # deployments can raise it deliberately.
+    NUBI_RLS_MAX_POLICY_VALUES: int = 5000
+
     # ── Jobs scheduler ───────────────────────────────────────────────────────
     # Set JOBS_SCHEDULER_ENABLED=true to activate the background tick that runs
     # due jobs on the interval below.  Defaults to False so tests and normal dev

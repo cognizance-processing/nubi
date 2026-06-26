@@ -13,6 +13,18 @@ Conventions:
 ## [Unreleased]
 
 ### Added
+- **Scope-resolution endpoint — `GET /auth/scope`.** Resolves the caller's
+  effective RLS scope from the **verified token only** (first-party AND embed
+  tokens): returns raw `policies`, hierarchy-expanded + grant-merged
+  `effective_policies` (`{dimension: [values]}`), `scope`, `org`, and an
+  `expanded` flag. Org-scoped and fail-closed (returns narrower raw policies on
+  any resolution error — never widens).
+- **Access-grants store — `/access-grants`.** Wires the existing `access_grants`
+  table (migration 0022) to org-scoped CRUD: `GET` (list for a subject), `POST`
+  (create), `DELETE /{id}`. Writes are gated to owner/admin; cross-org ids return
+  404 (not 403). Non-expired grants for the caller's subject are merged into
+  `GET /auth/scope`'s `effective_policies` (token policies ∪ stored grants).
+  Optional companion to host-minted token claims (`app/access/grants_store.py`).
 - **Metric spec version history + revert.** Every metric create or update
   snapshots the spec as an immutable version. New routes:
   `GET /metrics/{id}/versions` (list, newest first),
@@ -90,6 +102,12 @@ Conventions:
   container with type-coloured nodes.
 
 ### Security
+- **RLS policy cardinality cap.** New setting `NUBI_RLS_MAX_POLICY_VALUES`
+  (default 5000) caps the number of values a single RLS policy may resolve to —
+  both an explicit IN-list and the output of hierarchy expansion. Over-cap
+  policies **fail closed** with `AppError("rls_policy_too_large", 400)` rather
+  than silently truncating (which would widen access) or emitting an unbounded
+  IN list. Enforced in `_make_in_predicate` / `expand_rls_policies`.
 - MCP outbound HTTP is pinned to the SSRF-validated resolved IP (closes a
   DNS-rebinding window); MCP `tools/call` takes scope from the verified token
   (no privilege escalation) and gates raw SQL on `author:sql`.

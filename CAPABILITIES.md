@@ -41,6 +41,9 @@ own. Embed/viewer tokens are exempt from usage metering.
 | RLS via **embed-token** claims (scalar/list/range) | ✅ | embed JWT `policies` claim | [embedding](docs/embedding.md) |
 | Hierarchical parent→child policy expansion (auto, in query path) | ✅ | `expand_rls_policies` wired into `/query` + `/metrics/{id}/query` | [governance](docs/governance.md) |
 | Claim-native host-mode tenancy (org from JWT claim) | ✅ | issuer `host_mode`; tokens stripped to read-only | [embedding](docs/embedding.md) |
+| Scope-resolution endpoint (authorize host writes) | ✅ `GET /auth/scope` | resolves token policies → effective (hierarchy + grants), org-scoped, fail-closed | [governance](docs/governance.md) |
+| User→scope assignment store | ✅ `/access-grants` (optional — host may mint claims instead) | org-scoped CRUD, admin-gated, merged into `/auth/scope` | [governance](docs/governance.md) |
+| Policy cardinality cap | ✅ | `NUBI_RLS_MAX_POLICY_VALUES` (default 5000); over-cap IN-list/expansion fails closed (400) | [governance](docs/governance.md) |
 
 > Hosts can pass scalar/list/range **and** hierarchical (parent-value) RLS via
 > embed-token `policies` today — Nubi expands parents to children server-side,
