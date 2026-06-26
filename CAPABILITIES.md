@@ -32,6 +32,15 @@ rate-limited — default **120 req/min** per org (`NUBI_RATELIMIT_QUERY_RPM`), b
 1.5×, Redis-backed across workers. No per-query timeout beyond the data source's
 own. Embed/viewer tokens are exempt from usage metering.
 
+**Chat / AI cost-DoS limits ✅** — chat and AI endpoints are protected by three
+independent guards: (1) a dedicated rate-limit class (`NUBI_RATELIMIT_CHAT_RPM`,
+default 20 rpm, burst 1.5×, same Redis-backed bucket as other classes); (2) an
+aggregate per-turn token budget (`NUBI_CHAT_TURN_TOKEN_BUDGET`, default 16 000
+tokens across all agent steps — loop stops cleanly when hit, no crash); and (3) a
+per-turn timeout (`NUBI_CHAT_TURN_TIMEOUT_S`, default 90 s — streaming endpoints
+emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
+[ai-and-mcp](docs/ai-and-mcp.md) for env-var reference.
+
 ## B. Row-level security & tenancy
 
 | Capability | Status | Contract | Docs |

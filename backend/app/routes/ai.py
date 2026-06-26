@@ -63,9 +63,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import uuid
 from typing import Any, Literal
+
+
+def _ai_turn_timeout() -> float:
+    """Per-turn timeout in seconds for AI agent endpoints. Override with NUBI_CHAT_TURN_TIMEOUT_S."""
+    try:
+        return float(os.environ.get("NUBI_CHAT_TURN_TIMEOUT_S", "90"))
+    except (ValueError, TypeError):
+        return 90.0
 
 from fastapi import Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -833,9 +842,20 @@ async def ai_chat(
 
     # Offload the blocking run_agent call (LLM loop + tool execution)
     # to a thread so the asyncio event loop is not blocked.
-    result = await asyncio.to_thread(
-        run_agent, messages, provider, claims, max_steps=8, model=body.model
-    )
+    # Wrap in a per-turn timeout so a misbehaving provider can't hold the
+    # connection open indefinitely (cost-DoS / resource-exhaustion guard).
+    timeout_s = _ai_turn_timeout()
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(run_agent, messages, provider, claims, max_steps=8, model=body.model),
+            timeout=timeout_s,
+        )
+    except asyncio.TimeoutError:
+        raise AppError(
+            "turn_timeout",
+            f"The AI turn exceeded the {timeout_s:.0f}s time limit. Please try a simpler query.",
+            504,
+        )
 
     await _record_ai_call(_user, org_id, endpoint="ai_chat")
 
@@ -886,6 +906,8 @@ async def ai_chat_stream(
     }
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
 
+    timeout_s = _ai_turn_timeout()
+
     def _sync_events():
         try:
             for ev in run_agent_stream(messages, provider, claims, max_steps=8, model=body.model):
@@ -896,8 +918,34 @@ async def ai_chat_stream(
     async def _event_stream():
         # Iterate the blocking generator in a threadpool so tool calls / pacing
         # sleeps never block the event loop.
-        async for chunk in iterate_in_threadpool(_sync_events()):
-            yield chunk
+        # Apply a per-turn timeout so a slow/runaway provider can't hold the
+        # SSE connection open indefinitely (cost-DoS guard).
+        inner = iterate_in_threadpool(_sync_events())
+        deadline = asyncio.get_event_loop().time() + timeout_s
+        try:
+            while True:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError()
+                try:
+                    chunk = await asyncio.wait_for(inner.__anext__(), timeout=remaining)
+                    yield chunk
+                except StopAsyncIteration:
+                    break
+        except asyncio.TimeoutError:
+            yield (
+                "data: "
+                + _json.dumps(
+                    {
+                        "type": "error",
+                        "message": (
+                            f"Turn timeout ({timeout_s:.0f}s) exceeded. "
+                            "The response was cut short."
+                        ),
+                    }
+                )
+                + "\n\n"
+            )
 
     return StreamingResponse(
         _event_stream(),
