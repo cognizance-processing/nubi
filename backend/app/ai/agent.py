@@ -57,6 +57,7 @@ Signature (locked — M22 codes against it)
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from typing import Any, Iterator
@@ -64,6 +65,20 @@ from typing import Any, Iterator
 from app.ai.provider import LLMProvider, NullProvider
 from app.ai.tools import execute_tool, tool_schemas
 from app.errors import AppError
+
+# Aggregate per-turn token budget for the agent loop.
+# Each provider.complete() call in the loop is treated as consuming approximately
+# _AGENT_TOKENS_PER_STEP tokens (LLM call = prompt + completion; we conservatively
+# count each step as _MAX_TOKENS to stay under budget even without real usage data).
+# Override with NUBI_CHAT_TURN_TOKEN_BUDGET; default 16000.
+_AGENT_TOKENS_PER_STEP = 4096  # conservative per-step estimate
+
+
+def _agent_turn_budget() -> int:
+    try:
+        return int(os.environ.get("NUBI_CHAT_TURN_TOKEN_BUDGET", "16000"))
+    except (ValueError, TypeError):
+        return 16000
 
 # ---------------------------------------------------------------------------
 # MCP-aware tool dispatch (lazy import to avoid circular deps at module load)
@@ -297,11 +312,22 @@ def _run_real_provider_loop(
     transcript: list[dict[str, Any]] = []
     actions: list[dict[str, Any]] = []
 
+    budget = _agent_turn_budget()
+    tokens_used = 0  # aggregate conservative count across all steps
+
     steps = 0
     final_reply: str | None = None
     # One extra completion budget beyond max_steps so the model can produce a
     # final text answer immediately after its last permitted tool call.
     while steps <= max_steps:
+        # Aggregate token budget check — stop before burning more.
+        if tokens_used >= budget:
+            final_reply = (
+                f"Turn token budget ({budget}) reached after approximately "
+                f"{tokens_used} tokens. Here is what was gathered so far."
+            )
+            break
+
         prompt = _render_conversation(messages, transcript)
         try:
             # Only pass ``model`` when explicitly requested so existing
@@ -316,6 +342,10 @@ def _run_real_provider_loop(
             raise
         except Exception:  # noqa: BLE001 — provider failure → terminate gracefully.
             break
+
+        # Count this completion step toward the aggregate budget (conservative
+        # estimate: prompt chars/4 + _AGENT_TOKENS_PER_STEP for completion).
+        tokens_used += max(len(prompt) // 4, 0) + _AGENT_TOKENS_PER_STEP
 
         call = _parse_tool_call(reply_text)
         if call is None:
@@ -706,9 +736,24 @@ def _stream_real_provider_loop(
     transcript: list[dict[str, Any]] = []
     actions: list[dict[str, Any]] = []
 
+    budget = _agent_turn_budget()
+    tokens_used = 0  # aggregate conservative count across all steps
+
     steps = 0
     final_reply: str | None = None
     while steps <= max_steps:
+        # Aggregate token budget check — stop before burning more.
+        if tokens_used >= budget:
+            yield {
+                "type": "error",
+                "message": (
+                    f"Turn token budget ({budget}) reached after approximately "
+                    f"{tokens_used} tokens. Response truncated."
+                ),
+            }
+            final_reply = _synthesise_reply(actions)
+            break
+
         prompt = _render_conversation(messages, transcript)
         try:
             # Only pass ``model`` when explicitly requested (backward-compat).
@@ -722,6 +767,9 @@ def _stream_real_provider_loop(
             raise
         except Exception:  # noqa: BLE001 — provider failure → terminate.
             break
+
+        # Count this completion step toward the aggregate budget.
+        tokens_used += max(len(prompt) // 4, 0) + _AGENT_TOKENS_PER_STEP
 
         call = _parse_tool_call(reply_text)
         if call is None:

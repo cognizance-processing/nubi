@@ -404,6 +404,73 @@ CREATE INDEX IF NOT EXISTS idx_mcp_servers_org_enabled ON mcp_servers (org_id, e
 
 ---
 
+## Cost-DoS limits (operators)
+
+Chat and AI endpoints run LLM calls, which have real monetary cost. Three
+independent guards prevent a single misbehaving client from exhausting
+the LLM budget or holding server connections open indefinitely.
+
+### 1. Rate limit — `NUBI_RATELIMIT_CHAT_RPM`
+
+All chat and AI endpoints (`/chat/stream`, `/ai/chat`, `/ai/chat/stream`,
+`/ai/ask`, `/ai/dashboard`, `/ai/sql`, `/ai/canvas`, `/ai/canvas/edit`) share
+a dedicated rate-limit bucket, separate from the query and auth buckets.
+
+| Env var | Default | Notes |
+|---|---|---|
+| `NUBI_RATELIMIT_CHAT_RPM` | `20` | Max requests per minute per IP. |
+| `NUBI_RATELIMIT_BURST_FACTOR` | `1.5` | Burst ceiling = rpm × factor (e.g. 30 at the default 20 rpm). |
+| `NUBI_RATELIMIT_ENABLED` | `true` | Set `false` to disable entirely (dev/test). |
+
+Requests over the cap receive `HTTP 429` with a `Retry-After` header and the
+error body `{"error": {"code": "RATE_LIMIT_EXCEEDED", ...}}`. The bucket is
+Redis-backed when `REDIS_URL` is set (global across workers/machines) and
+falls back to an in-process approximation otherwise.
+
+### 2. Aggregate per-turn token budget — `NUBI_CHAT_TURN_TOKEN_BUDGET`
+
+Both the dashboard-editor chat loop (`app/chat/llm.py`, up to 6 steps × 4096
+tokens each) and the AI agent loop (`app/ai/agent.py`, up to 8 steps) track
+cumulative token usage across all steps in a single turn. When the total
+reaches the budget, the loop stops immediately and emits a clean truncation
+event rather than continuing to spend.
+
+| Env var | Default | Notes |
+|---|---|---|
+| `NUBI_CHAT_TURN_TOKEN_BUDGET` | `16000` | Total tokens allowed per turn across all steps. |
+
+On the streaming paths the truncation appears as a `{"type": "error",
+"message": "Turn token budget …"}` SSE event followed by stream close. On the
+non-streaming path the loop exits and a synthesised reply is returned from the
+steps completed so far.
+
+The NullProvider offline path (no LLM key configured) is unaffected: it
+follows a deterministic scripted sequence that consumes no real tokens.
+
+### 3. Per-turn timeout — `NUBI_CHAT_TURN_TIMEOUT_S`
+
+The SSE streaming generators for `/chat/stream` and `/ai/chat/stream` are
+wrapped with `asyncio.wait_for` so a slow or stalled provider cannot hold the
+HTTP connection open indefinitely. The non-streaming `/ai/chat` endpoint is
+also wrapped.
+
+| Env var | Default | Notes |
+|---|---|---|
+| `NUBI_CHAT_TURN_TIMEOUT_S` | `90` | Max seconds for a complete turn. |
+
+On timeout, streaming endpoints emit a `{"type": "error", "message": "Turn
+timeout …"}` SSE event and close the stream cleanly (no abrupt disconnect).
+The non-streaming endpoint returns `HTTP 504` with
+`{"error": {"code": "turn_timeout", ...}}`.
+
+> **Note on SSE and proxies.** The timeout guard wraps the async generator
+> at the application layer, not at the network layer. A reverse proxy (nginx,
+> Fly, Cloudflare) may impose its own read timeout; set those to at least
+> `NUBI_CHAT_TURN_TIMEOUT_S + 10s` to avoid premature 504s from the proxy
+> before the application timeout fires.
+
+---
+
 ## Related
 
 - [Dashboards](/docs/dashboards) — widget types, chart types, and the editor.

@@ -12,6 +12,32 @@ Conventions:
 
 ## [Unreleased]
 
+### Security
+
+- **Chat cost-DoS limits.** Three independent guards now protect all chat and
+  AI endpoints (`/chat/stream`, `/ai/chat`, `/ai/chat/stream`, `/ai/ask`,
+  `/ai/dashboard`, `/ai/sql`, `/ai/canvas`, `/ai/canvas/edit`) from runaway
+  LLM spend and resource exhaustion:
+  1. **Rate limit** — a dedicated `chat` rate-limit class
+     (`NUBI_RATELIMIT_CHAT_RPM`, default 20 rpm, burst 1.5×, Redis-backed)
+     returns `HTTP 429 + Retry-After` when the cap is hit. Separate from the
+     existing `query` and `auth` buckets.
+  2. **Aggregate per-turn token budget** — the dashboard-editor chat loop
+     (`app/chat/llm.py`) and the AI agent loop (`app/ai/agent.py`) now track
+     cumulative token usage across all steps in a turn and stop cleanly when
+     `NUBI_CHAT_TURN_TOKEN_BUDGET` (default 16 000) is reached, emitting a
+     `{"type": "error", "message": "Turn token budget … reached"}` SSE event
+     on the streaming path or a synthesised reply on the non-streaming path.
+  3. **Per-turn timeout** — SSE generators for `/chat/stream` and
+     `/ai/chat/stream` are wrapped with `asyncio.wait_for`; on expiry a clean
+     `{"type": "error", "message": "Turn timeout …"}` SSE event is emitted and
+     the stream closes. The non-streaming `/ai/chat` returns `HTTP 504` with
+     `{"error": {"code": "turn_timeout"}}`. Default `NUBI_CHAT_TURN_TIMEOUT_S`
+     = 90 s.
+  The NullProvider offline path is unaffected by the token budget (no real LLM
+  spend). Existing step cap (`_MAX_STEPS=6`/`max_steps=8`) and per-call token
+  cap (`_MAX_TOKENS=4096`) are preserved as inner guards.
+
 ### Added
 - **Metric spec version history + revert.** Every metric create or update
   snapshots the spec as an immutable version. New routes:

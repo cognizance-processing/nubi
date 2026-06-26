@@ -37,6 +37,7 @@ persist it and send the terminal ``message`` event.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Iterator
 
 from app.chat.tools import openai_tool_specs, execute_tool
@@ -44,6 +45,15 @@ from app.chat.tools import openai_tool_specs, execute_tool
 # Hard cap on agentic iterations so a misbehaving model can't loop forever.
 _MAX_STEPS = 6
 _MAX_TOKENS = 4096
+
+# Aggregate per-turn token budget (sum across ALL steps in one turn).
+# Prevents cost-DoS when max_steps × per-call tokens would burn unbounded spend.
+# Default: 16000 tokens per turn. Override with NUBI_CHAT_TURN_TOKEN_BUDGET.
+def _turn_token_budget() -> int:
+    try:
+        return int(os.environ.get("NUBI_CHAT_TURN_TOKEN_BUDGET", "16000"))
+    except (ValueError, TypeError):
+        return 16000
 
 _SYSTEM_PROMPT = """\
 You are Nubi's dashboard assistant, embedded in a Cursor-like editor.
@@ -177,7 +187,21 @@ def _stream_real(
         *history,
     ]
 
+    budget = _turn_token_budget()
+    tokens_used = 0  # aggregate across all steps in this turn
+
     for _step in range(_MAX_STEPS):
+        # Check aggregate budget before starting a new step.
+        if tokens_used >= budget:
+            yield {
+                "type": "error",
+                "message": (
+                    f"Turn token budget ({budget}) reached after {tokens_used} tokens "
+                    "across steps. Conversation truncated."
+                ),
+            }
+            return
+
         chunks: list[Any] = []
 
         response_iter = litellm.completion(
@@ -210,6 +234,19 @@ def _stream_real(
             message = rebuilt.choices[0].message
         except (AttributeError, IndexError):
             return
+
+        # Accumulate tokens from this step's usage metadata (when available).
+        try:
+            usage = rebuilt.usage
+            if usage is not None:
+                step_tokens = (
+                    (getattr(usage, "total_tokens", None) or 0)
+                    or (getattr(usage, "prompt_tokens", 0) or 0)
+                    + (getattr(usage, "completion_tokens", 0) or 0)
+                )
+                tokens_used += step_tokens
+        except Exception:  # noqa: BLE001
+            pass
 
         finish_reason = rebuilt.choices[0].finish_reason
         raw_tool_calls = getattr(message, "tool_calls", None) or []

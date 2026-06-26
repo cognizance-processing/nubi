@@ -38,7 +38,9 @@ Export: ``router``
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -48,6 +50,14 @@ from pydantic import BaseModel
 from app.auth.deps import current_user
 from app.chat.gateway import handle_inbound
 from app.errors import AppError
+
+
+def _chat_turn_timeout() -> float:
+    """Per-turn timeout in seconds. Override with NUBI_CHAT_TURN_TIMEOUT_S."""
+    try:
+        return float(os.environ.get("NUBI_CHAT_TURN_TIMEOUT_S", "90"))
+    except (ValueError, TypeError):
+        return 90.0
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -265,9 +275,32 @@ async def chat_stream(
             if not errored:
                 yield _sse({"type": "error", "message": f"persist_failed: {exc}"})
 
+    timeout_s = _chat_turn_timeout()
+
     async def _event_stream():
-        async for chunk in iterate_in_threadpool(_sync_events()):
-            yield chunk
+        """Yield SSE chunks, aborting cleanly if the turn exceeds the timeout."""
+        inner = iterate_in_threadpool(_sync_events())
+        deadline = asyncio.get_event_loop().time() + timeout_s
+        try:
+            while True:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError()
+                try:
+                    chunk = await asyncio.wait_for(inner.__anext__(), timeout=remaining)
+                    yield chunk
+                except StopAsyncIteration:
+                    break
+        except asyncio.TimeoutError:
+            yield _sse(
+                {
+                    "type": "error",
+                    "message": (
+                        f"Turn timeout ({timeout_s:.0f}s) exceeded. "
+                        "The response was cut short."
+                    ),
+                }
+            )
 
     return StreamingResponse(
         _event_stream(),

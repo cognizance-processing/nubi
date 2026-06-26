@@ -66,11 +66,13 @@ fast path; the ``_cleanup`` sweep (run rarely) holds a threading.Lock.
 
 Route classes
 ~~~~~~~~~~~~~
-Requests are classified into one of three buckets (or SKIP):
+Requests are classified into one of four buckets (or SKIP):
 
     auth        /api/v1/auth/*
     query       /api/v1/query*
     flow-run    /api/v1/flows/*/run  or  /api/v1/flows/run-cell
+    chat        /api/v1/chat/stream, /api/v1/ai/chat*, /api/v1/ai/ask,
+                /api/v1/ai/dashboard, /api/v1/ai/sql, /api/v1/ai/canvas*
     (skip)      /health, /api/v1/health, /embed/*, /assets/*
                 and everything else (no-op)
 
@@ -103,6 +105,7 @@ Configuration (NUBI_RATELIMIT_* env vars)
     NUBI_RATELIMIT_AUTH_RPM         auth route RPM cap, default 30
     NUBI_RATELIMIT_QUERY_RPM        query route RPM cap, default 120
     NUBI_RATELIMIT_FLOWRUN_RPM      flow-run route RPM cap, default 60
+    NUBI_RATELIMIT_CHAT_RPM         chat/AI route RPM cap, default 20
     NUBI_RATELIMIT_BURST_FACTOR     burst multiplier (bucket depth = cap * factor),
                                     default 1.5 — allow short bursts above the
                                     steady-state rate before throttling kicks in
@@ -173,6 +176,7 @@ class _Config:
         "auth_rpm",
         "query_rpm",
         "flowrun_rpm",
+        "chat_rpm",
         "burst_factor",
     )
 
@@ -196,13 +200,16 @@ class _Config:
         self.auth_rpm = max(1, _int_env("NUBI_RATELIMIT_AUTH_RPM", default=30) // workers)
         self.query_rpm = max(1, _int_env("NUBI_RATELIMIT_QUERY_RPM", default=120) // workers)
         self.flowrun_rpm = max(1, _int_env("NUBI_RATELIMIT_FLOWRUN_RPM", default=60) // workers)
+        # Chat/AI endpoints are expensive (LLM cost per turn) — default 20 rpm,
+        # burst 1.5× (30 burst ceiling).  Set NUBI_RATELIMIT_CHAT_RPM to override.
+        self.chat_rpm = max(1, _int_env("NUBI_RATELIMIT_CHAT_RPM", default=20) // workers)
         self.burst_factor = _float_env("NUBI_RATELIMIT_BURST_FACTOR", default=1.5)
         self._loaded = True
 
     # Allow attribute reads without explicitly calling _load(): trigger the lazy
     # load BEFORE reading (config fields don't exist until _load runs).
     def __getattribute__(self, name: str):  # type: ignore[override]
-        if name not in ("_loaded", "_load") and not object.__getattribute__(self, "_loaded"):
+        if name not in ("_loaded", "_load", "__slots__") and not object.__getattribute__(self, "_loaded"):
             object.__getattribute__(self, "_load")()
         return object.__getattribute__(self, name)
 
@@ -413,11 +420,32 @@ _SKIP_PREFIXES = (
 def _classify(path: str) -> tuple[str | None, int]:
     """Return (route_class, rpm) or (None, 0) to skip.
 
-    route_class values: 'auth', 'query', 'flow-run'
+    route_class values: 'auth', 'query', 'flow-run', 'chat'
     """
     for pfx in _SKIP_PREFIXES:
         if path == pfx or path.startswith(pfx):
             return None, 0
+
+    # Chat/AI: the streaming chat editor and the AI agentic endpoints.
+    # These trigger LLM calls (high cost) so they get their own conservative
+    # cap (NUBI_RATELIMIT_CHAT_RPM, default 20/min, burst 1.5×).
+    # Covers:
+    #   POST /api/v1/chat/stream          — streaming editor chat (SSE)
+    #   POST /api/v1/ai/chat              — agentic chat (non-streaming)
+    #   POST /api/v1/ai/chat/stream       — agentic chat (streaming SSE)
+    #   POST /api/v1/ai/ask               — text-to-SQL
+    #   POST /api/v1/ai/dashboard         — dashboard generation
+    #   POST /api/v1/ai/sql               — SQL generation
+    #   POST /api/v1/ai/canvas            — canvas generation
+    #   POST /api/v1/ai/canvas/edit       — canvas edit
+    if path == "/api/v1/chat/stream" or (
+        path.startswith("/api/v1/ai/") and path not in (
+            "/api/v1/ai/context",
+            "/api/v1/ai/dashboard/schema",
+            "/api/v1/ai/canvas/schema",
+        ) and not path.endswith("/schema")
+    ):
+        return "chat", _cfg.chat_rpm
 
     # Flow-run: POST /api/v1/flows/<id>/run, /api/v1/flows/run-cell,
     #           /api/v1/flows/<id>/backfill, /api/v1/flows/<id>/sweep
@@ -625,10 +653,11 @@ def register_ratelimit(app: FastAPI) -> None:
     app.add_middleware(RateLimitMiddleware)
     logger.debug(
         "ratelimit: middleware registered (enabled=%s auth_rpm=%s "
-        "query_rpm=%s flowrun_rpm=%s burst_factor=%s)",
+        "query_rpm=%s flowrun_rpm=%s chat_rpm=%s burst_factor=%s)",
         _cfg.enabled,
         _cfg.auth_rpm,
         _cfg.query_rpm,
         _cfg.flowrun_rpm,
+        _cfg.chat_rpm,
         _cfg.burst_factor,
     )
