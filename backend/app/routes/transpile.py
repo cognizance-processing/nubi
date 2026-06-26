@@ -84,8 +84,14 @@ async def transpile_sql(
     if not sql_in:
         raise AppError("bad_request", "sql must not be empty.", 400)
 
+    # Map allowlisted aliases to the names sqlglot actually recognises
+    # (e.g. "postgresql" → "postgres") so an accepted dialect never 400s deep
+    # inside sqlglot with an opaque "Unknown dialect" error.
+    _alias = {"postgresql": "postgres"}
     try:
-        result = sqlglot.transpile(sql_in, read=from_d, write=to_d, pretty=False)
+        result = sqlglot.transpile(
+            sql_in, read=_alias.get(from_d, from_d), write=_alias.get(to_d, to_d), pretty=False
+        )
     except sqlglot.errors.SqlglotError as exc:
         raise AppError("parse_error", f"SQL parse/transpile error: {exc}", 400)
     except Exception as exc:  # noqa: BLE001

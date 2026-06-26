@@ -340,20 +340,12 @@ class TestDialectAlias:
                 "to_dialect": "duckdb",
             },
         )
-        # postgresql passes the allowlist check (no 'unknown_dialect' error).
-        # sqlglot itself does not recognize 'postgresql' as a dialect name (it
-        # uses 'postgres') so this results in a 400 parse_error from sqlglot,
-        # NOT a 400 unknown_dialect. This documents a real bug:
-        # ALLOWED_DIALECTS contains 'postgresql' but sqlglot rejects it.
-        if resp.status_code == 400:
-            data = resp.json()
-            # Must NOT be unknown_dialect (allowlist accepted it)
-            assert _error_code(data) != "unknown_dialect", (
-                "postgresql should pass the allowlist check — "
-                "if 400, it must be parse_error from sqlglot"
-            )
-        else:
-            assert resp.status_code == 200
+        # 'postgresql' is an accepted alias and is mapped to 'postgres' before
+        # sqlglot runs, so it transpiles successfully (regression guard for the
+        # fixed alias bug — previously it passed the allowlist then 400'd inside
+        # sqlglot with an opaque "Unknown dialect" error).
+        assert resp.status_code == 200, resp.text
+        assert "orders" in resp.json()["sql"].lower()
 
 
 # ---------------------------------------------------------------------------

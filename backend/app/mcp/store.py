@@ -339,8 +339,13 @@ class McpServerStore:
                 server_id,
                 org_id,
             )
-            # asyncpg returns e.g. "DELETE 1" or "DELETE 0".
-            return status.endswith("1") or (not status.endswith("0"))
+            # asyncpg returns e.g. "DELETE 1" or "DELETE 0" — parse the row count
+            # and report success only when a row was actually removed (don't
+            # assume success on an unexpected status string).
+            parts = str(status).split()
+            if len(parts) >= 2 and parts[-1].isdigit():
+                return int(parts[-1]) > 0
+            return False
         except Exception as exc:  # noqa: BLE001
             logger.warning("mcp_store.delete: %s", exc)
             return False

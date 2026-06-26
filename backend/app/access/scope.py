@@ -49,10 +49,15 @@ def _as_value_list(value: Any) -> list[str]:
     - dict (range band) → ``[]`` (ranges are not value-enumerable; they stay in
       ``policies`` but are not merged into the value-list ``effective_policies``).
     """
+    if value is None:
+        # A null policy value is not an enumerable constraint — omit the
+        # dimension rather than emitting the literal string "None" (which would
+        # inject `col IN ('None')`).
+        return []
     if isinstance(value, dict):
         return []
     if isinstance(value, list):
-        return [str(v) for v in value]
+        return [str(v) for v in value if v is not None]
     return [str(value)]
 
 

@@ -65,8 +65,11 @@ class TestAsValueList:
     def test_empty_dict_returns_empty_list(self):
         assert _as_value_list({}) == []
 
-    def test_none_scalar_becomes_none_string(self):
-        assert _as_value_list(None) == ["None"]
+    def test_none_value_omitted_not_stringified(self):
+        # A null policy value must NOT become the literal string "None"
+        # (which would inject `col IN ('None')`); it is omitted instead.
+        assert _as_value_list(None) == []
+        assert _as_value_list(["a", None, "b"]) == ["a", "b"]
 
 
 # ---------------------------------------------------------------------------
