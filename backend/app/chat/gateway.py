@@ -631,7 +631,7 @@ def handle_inbound(
     if effective_query_id:
         claims = {**claims, "query_id": effective_query_id}
 
-    # ── 4. Call the M21 agent (lazy import — agent may not exist yet) ─────
+    # ── 4. Call the M21 agent (lazy import — honours test patches) ────────
     # Use sys.modules directly so that test patches (patch.dict on sys.modules)
     # are honoured even after the real module has been loaded.
     import sys as _sys  # noqa: PLC0415
@@ -641,9 +641,11 @@ def handle_inbound(
         _agent_module = _sys.modules["app.ai.agent"]
         run_agent = _agent_module.run_agent
     except (ImportError, AttributeError, KeyError):
-        # M21 not yet present — fall back to a stub that echoes the text.
+        # Defensive fallback: app.ai.agent failed to import (e.g. in a stripped
+        # environment or a test that unloads the module).  In normal production
+        # and tests the try-branch succeeds; this branch should not trigger.
         def run_agent(messages, provider_, claims_, *, max_steps=8):  # type: ignore[misc]
-            return {"reply": f"[stub] {text}", "actions": []}
+            return {"reply": f"[agent unavailable] {text}", "actions": []}
 
     messages = [{"role": "user", "content": text}]
     agent_result = run_agent(messages, provider, claims, max_steps=8)
