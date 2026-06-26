@@ -357,18 +357,18 @@ export const BASE_STYLES = /* css */ `
     white-space: nowrap;
     flex-shrink: 0;
   }
-  .nubi-badge.sample { background: #422006; color: #fed7aa; }
-  .nubi-badge.live   { background: #064e3b; color: #6ee7b7; }
-  .nubi-badge.error  { background: #450a0a; color: #fca5a5; }
-  .nubi-badge.webgl  { background: #1e1b4b; color: #a5b4fc; }
-  .nubi-badge.svg    { background: #1e3a5f; color: #93c5fd; }
+  .nubi-badge.sample { background: color-mix(in srgb, var(--nubi-warning, #f59e0b) 15%, var(--nubi-bg-2, #1a1f2e)); color: var(--nubi-warning, #f59e0b); }
+  .nubi-badge.live   { background: color-mix(in srgb, var(--nubi-success, #10b981) 15%, var(--nubi-bg-2, #1a1f2e)); color: var(--nubi-success, #10b981); }
+  .nubi-badge.error  { background: color-mix(in srgb, var(--nubi-error, #ef4444) 15%, var(--nubi-bg-2, #1a1f2e)); color: var(--nubi-error, #ef4444); }
+  .nubi-badge.webgl  { background: color-mix(in srgb, var(--nubi-primary, #6366f1) 15%, var(--nubi-bg-2, #1a1f2e)); color: var(--nubi-primary, #6366f1); }
+  .nubi-badge.svg    { background: color-mix(in srgb, #3b82f6 15%, var(--nubi-bg-2, #1a1f2e)); color: #3b82f6; }
 
   .nubi-sample-note {
     font-size: 11px;
-    color: #f97316;
+    color: var(--nubi-warning, #f97316);
     padding: 3px 10px 4px;
-    background: #1a1208;
-    border-bottom: 1px solid #7c2d12;
+    background: color-mix(in srgb, var(--nubi-warning, #f97316) 10%, var(--nubi-bg, #0f1117));
+    border-bottom: 1px solid color-mix(in srgb, var(--nubi-warning, #f97316) 25%, var(--nubi-bg, #0f1117));
     text-align: center;
     display: none;
   }

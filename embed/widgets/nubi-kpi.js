@@ -352,8 +352,9 @@ class NubiKpi extends HTMLElement {
     } else {
       badge.style.display = 'none'
       note.style.display  = 'none'
+      // Sublabel: show query-id in a subtle way, or omit if not set
       const qid = this.getAttribute('query-id')
-      this._shadow.querySelector('.kpi-sublabel').textContent = qid ? `query: ${qid}` : 'data'
+      this._shadow.querySelector('.kpi-sublabel').textContent = qid ? qid : ''
     }
 
     // ── Target / RAG rendering ───────────────────────────────────────────────

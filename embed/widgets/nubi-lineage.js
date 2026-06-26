@@ -60,12 +60,12 @@ function makeSampleDag() {
 
 const COL_ORDER = ['table', 'source', 'raw', 'query', 'metric', 'feature', 'model']
 
-const NODE_W = 140
-const NODE_H = 44
-const COL_GAP = 80
-const ROW_GAP = 20
-const PAD_X = 20
-const PAD_Y = 20
+const NODE_W = 120
+const NODE_H = 40
+const COL_GAP = 60
+const ROW_GAP = 14
+const PAD_X = 16
+const PAD_Y = 16
 
 /**
  * Compute an SVG layout for the given nodes + edges.
@@ -102,7 +102,7 @@ function computeLayout(nodes, _edges) {
 
   const svgW = x - COL_GAP + PAD_X
 
-  return { nodePositions, svgW, svgH }
+  return { nodePositions, svgW, svgH, numCols: cols.length }
 }
 
 // ---------------------------------------------------------------------------
@@ -152,10 +152,21 @@ const LINEAGE_STYLES = /* css */ `
     flex: 1;
     overflow: auto;
     position: relative;
+    min-height: 0;
   }
 
+  /* SVG scales to fit when small; scrolls when large */
   .ln-svg {
     display: block;
+    /* fit-to-width for small DAGs */
+    width: 100%;
+    height: auto;
+    min-width: 200px;
+  }
+  .ln-svg.ln-overflow {
+    /* large DAGs: natural size, let .ln-body scroll */
+    width: auto;
+    height: auto;
   }
 
   /* Node rects */
@@ -166,8 +177,6 @@ const LINEAGE_STYLES = /* css */ `
     fill: var(--nubi-bg-2, #1a1f2e);
     stroke: var(--nubi-border, #2d3748);
     stroke-width: 1.5;
-    rx: 6;
-    ry: 6;
     transition: fill 0.12s, stroke 0.12s;
   }
   .ln-node:hover rect {
@@ -198,20 +207,41 @@ const LINEAGE_STYLES = /* css */ `
     opacity: 0.7;
   }
 
-  /* Type-based node accent colors */
-  .ln-node[data-type="table"] rect    { stroke: var(--nubi-success, #10b981); }
-  .ln-node[data-type="source"] rect   { stroke: var(--nubi-success, #10b981); }
-  .ln-node[data-type="raw"] rect      { stroke: var(--nubi-success, #10b981); }
-  .ln-node[data-type="metric"] rect   { stroke: var(--nubi-primary, #6366f1); }
-  .ln-node[data-type="feature"] rect  { stroke: var(--nubi-primary, #6366f1); }
-  .ln-node[data-type="model"] rect    { stroke: var(--nubi-warning, #f59e0b); }
+  /* Type-based node fill tints — distinct but consistent */
+  .ln-node[data-type="table"] rect,
+  .ln-node[data-type="source"] rect,
+  .ln-node[data-type="raw"] rect {
+    fill: color-mix(in srgb, var(--nubi-success, #10b981) 8%, var(--nubi-bg-2, #1a1f2e));
+    stroke: var(--nubi-success, #10b981);
+  }
+  .ln-node[data-type="query"] rect {
+    fill: color-mix(in srgb, var(--nubi-warning, #f59e0b) 8%, var(--nubi-bg-2, #1a1f2e));
+    stroke: var(--nubi-warning, #f59e0b);
+  }
+  .ln-node[data-type="metric"] rect,
+  .ln-node[data-type="feature"] rect {
+    fill: color-mix(in srgb, var(--nubi-primary, #6366f1) 8%, var(--nubi-bg-2, #1a1f2e));
+    stroke: var(--nubi-primary, #6366f1);
+  }
+  .ln-node[data-type="model"] rect {
+    fill: color-mix(in srgb, var(--nubi-warning, #f59e0b) 8%, var(--nubi-bg-2, #1a1f2e));
+    stroke: var(--nubi-warning, #f59e0b);
+  }
 
-  /* Edges */
+  /* type label color cues */
+  .ln-node[data-type="table"] .ln-node-type,
+  .ln-node[data-type="source"] .ln-node-type,
+  .ln-node[data-type="raw"] .ln-node-type    { fill: var(--nubi-success, #10b981); opacity: 0.9; }
+  .ln-node[data-type="query"] .ln-node-type  { fill: var(--nubi-warning, #f59e0b); opacity: 0.9; }
+  .ln-node[data-type="metric"] .ln-node-type,
+  .ln-node[data-type="feature"] .ln-node-type { fill: var(--nubi-primary, #6366f1); opacity: 0.9; }
+
+  /* Edges — smooth bezier curves */
   .ln-edge {
     fill: none;
     stroke: var(--nubi-border, #2d3748);
     stroke-width: 1.5;
-    opacity: 0.7;
+    opacity: 0.6;
   }
 
   /* Column headers */
@@ -348,15 +378,29 @@ class NubiLineage extends HTMLElement {
       return
     }
 
-    const { nodePositions, svgW, svgH } = computeLayout(nodes, edges)
+    const { nodePositions, svgW, svgH, numCols } = computeLayout(nodes, edges)
 
-    // Build SVG string (safe — all user strings are escaped)
+    const vbW = Math.max(svgW, 200)
+    const vbH = Math.max(svgH, 120)
+
+    // Build SVG (safe — all user strings escaped via createTextNode)
     const ns = 'http://www.w3.org/2000/svg'
     const svg = document.createElementNS(ns, 'svg')
     svg.setAttribute('class', 'ln-svg')
-    svg.setAttribute('width', String(Math.max(svgW, 200)))
-    svg.setAttribute('height', String(Math.max(svgH, 160)))
-    svg.setAttribute('viewBox', `0 0 ${Math.max(svgW, 200)} ${Math.max(svgH, 160)}`)
+    // Always set viewBox for proper scaling; width/height controlled by CSS
+    svg.setAttribute('viewBox', `0 0 ${vbW} ${vbH}`)
+    // Set natural pixel dimensions so the browser knows aspect ratio
+    svg.setAttribute('width', String(vbW))
+    svg.setAttribute('height', String(vbH))
+    // Preserve aspect ratio when scaling to fit width
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet')
+
+    // Small DAG threshold: ≤ 4 columns fits comfortably at demo widths → fit-to-width
+    // Larger DAGs get scroll (ln-overflow class disables the width:100% CSS rule)
+    const SMALL_DAG_COL_THRESHOLD = 5
+    if (numCols >= SMALL_DAG_COL_THRESHOLD) {
+      svg.classList.add('ln-overflow')
+    }
 
     // Draw edges first (behind nodes)
     for (const edge of (edges || [])) {
@@ -368,11 +412,14 @@ class NubiLineage extends HTMLElement {
       const y1 = src.y + src.h / 2
       const x2 = dst.x
       const y2 = dst.y + dst.h / 2
-      const cx = (x1 + x2) / 2
+      // Smooth cubic bezier: control points at 60% of the horizontal gap
+      const cpOffset = (x2 - x1) * 0.6
+      const cx1 = x1 + cpOffset
+      const cx2 = x2 - cpOffset
 
       const path = document.createElementNS(ns, 'path')
       path.setAttribute('class', 'ln-edge')
-      path.setAttribute('d', `M${x1},${y1} C${cx},${y1} ${cx},${y2} ${x2},${y2}`)
+      path.setAttribute('d', `M${x1},${y1} C${cx1},${y1} ${cx2},${y2} ${x2},${y2}`)
       svg.appendChild(path)
     }
 
@@ -386,29 +433,32 @@ class NubiLineage extends HTMLElement {
       g.setAttribute('data-type', node.type || 'query')
       g.setAttribute('data-id', node.id)
       g.setAttribute('tabindex', '0')
+      g.setAttribute('role', 'button')
+      g.setAttribute('aria-label', String(node.name || node.id))
 
       const rect = document.createElementNS(ns, 'rect')
       rect.setAttribute('x', String(pos.x))
       rect.setAttribute('y', String(pos.y))
       rect.setAttribute('width', String(pos.w))
       rect.setAttribute('height', String(pos.h))
-      rect.setAttribute('rx', '6')
-      rect.setAttribute('ry', '6')
+      rect.setAttribute('rx', '5')
+      rect.setAttribute('ry', '5')
 
-      // Node label (truncated)
+      // Node label (truncated to fit node width)
+      const maxChars = Math.floor(pos.w / 7)
+      const nameStr = String(node.name || node.id)
+      const labelStr = nameStr.length > maxChars ? nameStr.slice(0, maxChars - 1) + '…' : nameStr
+
       const label = document.createElementNS(ns, 'text')
       label.setAttribute('class', 'ln-node-label')
       label.setAttribute('x', String(pos.x + pos.w / 2))
-      label.setAttribute('y', String(pos.y + pos.h / 2 - 6))
-      const labelText = document.createTextNode(
-        String(node.name || node.id).slice(0, 18) + (String(node.name || node.id).length > 18 ? '…' : '')
-      )
-      label.appendChild(labelText)
+      label.setAttribute('y', String(pos.y + pos.h / 2 - 5))
+      label.appendChild(document.createTextNode(labelStr))
 
       const typeLbl = document.createElementNS(ns, 'text')
       typeLbl.setAttribute('class', 'ln-node-type')
       typeLbl.setAttribute('x', String(pos.x + pos.w / 2))
-      typeLbl.setAttribute('y', String(pos.y + pos.h / 2 + 9))
+      typeLbl.setAttribute('y', String(pos.y + pos.h / 2 + 8))
       typeLbl.appendChild(document.createTextNode(node.type || ''))
 
       g.appendChild(rect)
