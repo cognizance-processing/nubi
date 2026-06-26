@@ -600,8 +600,10 @@ async def create_metric(
 
     get_metric_registry().register(metric)
 
-    # Snapshot version 1 for this new metric.
-    await _capture_metric_version(canonical_id, identity, metric.to_dict())
+    # Snapshot version 1 for this new metric (store the *resolved* org so the
+    # org-scoped version reads match — identity.org is None for first-party).
+    _capture_org = await _caller_org(identity, request)
+    await _capture_metric_version(canonical_id, identity, _capture_org, metric.to_dict())
 
     return metric.to_dict()
 
@@ -647,8 +649,9 @@ async def update_metric(
     await _persist_metric(metric, identity, request)
     get_metric_registry().register(metric)
 
-    # Snapshot the updated spec as a new version.
-    await _capture_metric_version(metric_id, identity, metric.to_dict())
+    # Snapshot the updated spec as a new version (resolved org — see create_metric).
+    _capture_org = await _caller_org(identity, request)
+    await _capture_metric_version(metric_id, identity, _capture_org, metric.to_dict())
 
     return metric.to_dict()
 
@@ -1425,6 +1428,7 @@ async def get_metric_lineage(
 async def _capture_metric_version(
     metric_id: str,
     identity: VerifiedIdentity,
+    org_id: str,
     spec: dict,
 ) -> None:
     """Snapshot *spec* as the next version for *metric_id*.
@@ -1433,10 +1437,12 @@ async def _capture_metric_version(
     write to the ``metric_spec_versions`` Pg table. Errors are swallowed —
     version capture must never break the write path.
 
-    ``identity.user_id`` is used as ``created_by``; ``identity.org`` is used
-    as ``org_id`` when available (embed tokens carry it directly; first-party
-    tokens fall back to the sentinel placeholder which routes will never expose
-    via the org-scoped list/get endpoints).
+    ``org_id`` MUST be the caller's *resolved* org (the same value the org-scoped
+    list/get/revert routes derive via ``_caller_org``) so that the in-memory
+    org filter (audit-55) matches on read. For first-party tokens ``identity.org``
+    is ``None``, so callers resolve the org explicitly and pass it here — never
+    rely on ``identity.org`` for the stored value, or first-party versions become
+    invisible to their own org's reads. ``identity.user_id`` is ``created_by``.
     """
     from app.metrics.versions import (  # noqa: PLC0415
         get_metric_version_store,
@@ -1444,7 +1450,7 @@ async def _capture_metric_version(
     )
 
     store = get_metric_version_store()
-    org_id = identity.org or "00000000-0000-0000-0000-000000000000"
+    org_id = org_id or "00000000-0000-0000-0000-000000000000"
     user_id = str(identity.user_id) if identity.user_id else None
 
     try:
@@ -1662,7 +1668,8 @@ async def revert_metric_to_version(
     await _persist_metric(metric, identity, request)
     get_metric_registry().register(metric)
 
-    # Record the revert as a new version entry so it appears in the audit trail.
-    await _capture_metric_version(metric_id, identity, metric.to_dict())
+    # Record the revert as a new version entry so it appears in the audit trail
+    # (org_id resolved above at the top of this handler).
+    await _capture_metric_version(metric_id, identity, org_id, metric.to_dict())
 
     return metric.to_dict()
