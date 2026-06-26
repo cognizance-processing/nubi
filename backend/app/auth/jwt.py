@@ -65,6 +65,19 @@ def mint_access_token(
         }
         payload.update(filtered)
 
+    # A first-party login session carries no explicit scope claim; the verifier
+    # applies ``_FIRST_PARTY_SCOPES`` as the default at verification time. Encode
+    # that default explicitly when the caller didn't set one, so client-side
+    # consumers that decode the JWT to gate UI (e.g. embed components deciding
+    # whether to show authoring controls) see the *real* granted scopes. The
+    # signature stays valid and the server's effective scope is unchanged
+    # (restricted embed/agent tokens always pass an explicit scope and are
+    # therefore untouched).
+    if not any(k in payload for k in ("scope", "scopes", "scp")):
+        from app.auth.verify import _FIRST_PARTY_SCOPES  # noqa: PLC0415
+
+        payload["scope"] = list(_FIRST_PARTY_SCOPES)
+
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=_ALGORITHM)
 
 

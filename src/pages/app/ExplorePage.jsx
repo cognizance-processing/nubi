@@ -86,15 +86,14 @@ export default function ExplorePage() {
   const explorerRef = useEmbedRef(theme)
   const explainRef  = useEmbedRef(theme)
 
-  // Example date range for the explain panel (last 30 days vs prior 30 days).
-  const now    = new Date()
-  const d30    = new Date(now); d30.setDate(d30.getDate() - 30)
-  const d60    = new Date(now); d60.setDate(d60.getDate() - 60)
-
-  const currentStart    = d30.toISOString().split('T')[0]
-  const currentEnd      = now.toISOString().split('T')[0]
-  const comparisonStart = d60.toISOString().split('T')[0]
-  const comparisonEnd   = d30.toISOString().split('T')[0]
+  // Date range for the explain panel. The demo dataset is historical, so the
+  // dogfood compares H2 vs H1 of the demo year (this is where retail_nsv has
+  // data) — current = Jul–Dec, comparison = Jan–Jun. A real deployment would
+  // pass live, today-relative windows here.
+  const currentStart    = '2024-07-01'
+  const currentEnd      = '2024-12-31'
+  const comparisonStart = '2024-01-01'
+  const comparisonEnd   = '2024-06-30'
 
   // Ref callback: apply theme immediately when the element is inserted into
   // the DOM (before the first paint).
@@ -157,6 +156,7 @@ export default function ExplorePage() {
             get-token={GET_TOKEN_FN}
             backend={BACKEND_BASE}
             theme={theme}
+            metric-id="demo_revenue"
             style={{ flex: 1, display: 'flex', flexDirection: 'column' }}
           />
         </div>
@@ -186,7 +186,7 @@ export default function ExplorePage() {
             get-token={GET_TOKEN_FN}
             backend={BACKEND_BASE}
             theme={theme}
-            metric-id="revenue"
+            metric-id="retail_nsv"
             current-start={currentStart}
             current-end={currentEnd}
             comparison-start={comparisonStart}
