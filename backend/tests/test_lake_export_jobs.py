@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import uuid
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -46,7 +46,6 @@ from app.repos.memory import InMemoryRepo
 from app.repos.provider import set_repo
 from app.routes.lake_export import (
     InMemoryExportJobStore,
-    get_export_job_store,
     run_one_export_job,
     set_export_job_store,
     _run_export_core,

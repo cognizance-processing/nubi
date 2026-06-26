@@ -24,7 +24,6 @@ rows so there is no network access.
 
 from __future__ import annotations
 
-import asyncio
 import os
 import threading
 from unittest.mock import MagicMock, patch
@@ -323,7 +322,7 @@ async def test_get_frozen_view_meters_embed_session(repo: InMemoryRepo, tmp_path
 
     First-party ('access') tokens must NOT trigger metering.
     """
-    from unittest.mock import AsyncMock, call
+    from unittest.mock import AsyncMock
 
     from app.auth.verify import VerifiedIdentity
     from app.routes.snapshot import get_frozen_view
@@ -414,7 +413,6 @@ async def test_get_frozen_view_no_meter_for_first_party(repo: InMemoryRepo, tmp_
     from unittest.mock import AsyncMock
 
     from app.auth.verify import VerifiedIdentity
-    from app.repos.memory import InMemoryRepo
     from app.routes.snapshot import get_frozen_view
 
     base_uri = "file://" + str(tmp_path)
@@ -589,8 +587,6 @@ async def test_rls_warning_emitted_when_no_policies_on_datastore_board(
     This is the key test for Item 3: capturing a full-data view on a
     multi-tenant board must log a WARNING so the decision is auditable.
     """
-    import logging
-    import warnings
 
     from unittest.mock import patch
 

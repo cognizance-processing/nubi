@@ -82,7 +82,6 @@ import io
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
-from fastapi.responses import StreamingResponse
 
 from app.auth.deps import current_user
 from app.config import get_settings
@@ -251,7 +250,7 @@ async def export_board_pdf(
     AppError("node_not_found", 503)
         When Node.js is not available for SVG rendering.
     """
-    from app.dashboards.spec import DashboardSpec, get_export_config, validate_spec  # noqa: PLC0415
+    from app.dashboards.spec import get_export_config, validate_spec  # noqa: PLC0415
     from app.dashboards.svg_render import render_board_svg  # noqa: PLC0415
     from app.embedding.render_pdf import render_board_pdf, svg_page_size_px  # noqa: PLC0415
 

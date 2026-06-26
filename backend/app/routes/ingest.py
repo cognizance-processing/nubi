@@ -95,7 +95,6 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import Response
 
 from app.auth.deps import current_user
 from app.errors import AppError

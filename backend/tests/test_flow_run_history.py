@@ -16,7 +16,6 @@ Coverage
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -614,7 +613,6 @@ async def test_list_flow_runs_route_has_limit_query_param():
 def test_list_flow_runs_route_query_bounds():
     """list_flow_runs route must enforce ge=1, le=500 on the limit param."""
     import app.routes.flows as flows_mod
-    from fastapi import Query as FQuery
     import inspect
 
     # Inspect the route's Query defaults rather than calling the route directly.
@@ -884,8 +882,6 @@ async def test_list_task_runs_with_limit_applied():
 
     run = await materialize_flow_run(store, flow, {}, "manual", NOW)
     # Add extra task_run records directly to simulate a large map fan-out.
-    import uuid as _uuid
-    from datetime import timezone as _tz
     extra = [
         {
             "task_key": f"child_{i}",
@@ -1081,7 +1077,6 @@ def test_get_task_run_logs_uses_targeted_lookup():
 async def test_get_task_run_logs_returns_404_for_missing_key():
     """get_task_run_logs must raise 404 when get_task_run_by_key returns None."""
     from app.flows.store import InMemoryFlowStore
-    from app.errors import AppError
 
     store = InMemoryFlowStore()
     flow = await _make_flow(store, spec={

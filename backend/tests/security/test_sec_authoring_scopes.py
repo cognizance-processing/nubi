@@ -26,15 +26,10 @@ Test strategy
 
 from __future__ import annotations
 
-import json
 import os
-from datetime import datetime, timedelta, timezone
 from io import BytesIO
-from typing import Any
-from unittest.mock import AsyncMock, patch
 
 import pytest
-import pytest_asyncio
 import pyarrow.ipc as pa_ipc
 
 # ---------------------------------------------------------------------------
@@ -59,7 +54,6 @@ from tests.security.conftest_helpers import (  # noqa: E402
     HOST_ISS,
     HOST_AUD,
     EMBED_ORIGIN,
-    KID,
 )
 
 

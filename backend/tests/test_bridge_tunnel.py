@@ -26,10 +26,8 @@ from __future__ import annotations
 import asyncio
 import struct
 import uuid
-from typing import Any
 
 import pytest
-import pytest_asyncio
 
 from app.bridges.protocol import (
     FrameError,

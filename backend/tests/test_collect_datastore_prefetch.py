@@ -30,7 +30,6 @@ os.environ.setdefault("JWT_SECRET", "test-jwt-secret-that-is-at-least-32-bytes-l
 import pytest
 
 from app.dashboards.collect import collect_board_data, collect_canvas_data
-from app.errors import AppError
 from app.queries.registry import get_query_registry
 from app.repos.memory import InMemoryRepo
 from app.repos.provider import set_repo

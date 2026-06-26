@@ -32,7 +32,6 @@ from typing import Any
 
 import duckdb
 import pytest
-import pytest_asyncio
 
 from app.connectors.preagg import (
     RollupCandidate,
@@ -40,7 +39,7 @@ from app.connectors.preagg import (
     build_rollup,
 )
 from app.connectors.planner import plan, route_to_rollup_shape
-from app.connectors.query_log import QueryLog, extract_shape
+from app.connectors.query_log import QueryLog
 from app.flows.registry import get_task_kind_registry, reset_for_tests as reset_flow_registry
 from app.flows.spec import validate_flow_spec, flow_spec_is_valid
 from app.flows.store import InMemoryFlowStore, set_flow_store
@@ -219,7 +218,6 @@ class TestPreaggRefreshHandler:
         )
 
         # Patch the module-level singletons the handler uses.
-        import app.preagg.scheduler as sched_mod  # noqa: PLC0415
         import app.connectors.query_log as ql_mod  # noqa: PLC0415
 
         original_get_registry = None

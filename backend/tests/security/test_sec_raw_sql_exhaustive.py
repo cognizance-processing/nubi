@@ -34,10 +34,8 @@ SCOPE_AUTHOR_SQL / SCOPE_AUTHOR_METRIC constants
 from __future__ import annotations
 
 import os
-from io import BytesIO
 
 import pytest
-import pytest_asyncio
 
 # ---------------------------------------------------------------------------
 # Env bootstrap

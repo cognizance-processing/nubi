@@ -11,7 +11,6 @@ Coverage
 from __future__ import annotations
 
 import pytest
-import pytest_asyncio
 
 from seed_data.generators import DATASET_TABLES
 

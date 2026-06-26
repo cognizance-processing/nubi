@@ -22,7 +22,6 @@ from io import BytesIO
 import pyarrow as pa
 import pyarrow.ipc as pa_ipc
 import pytest
-import pytest_asyncio
 
 # ---------------------------------------------------------------------------
 # Environment bootstrap — must happen BEFORE any app import.

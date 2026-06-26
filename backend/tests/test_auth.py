@@ -18,15 +18,11 @@ If the fake is insufficient for a test it is marked with
 from __future__ import annotations
 
 import hashlib
-import os
-import time
 from datetime import datetime, timedelta, timezone
-from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import jwt
 import pytest
-import pytest_asyncio
 
 # ============================================================================
 # Section A — Pure-unit tests (no DB, no HTTP, no fixtures needed)

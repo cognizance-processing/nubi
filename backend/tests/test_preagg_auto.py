@@ -877,8 +877,6 @@ class TestBuildRollupForMetric:
 
         Parsed against DuckDB so we also confirm the emitted SQL is valid.
         """
-        import duckdb  # noqa: PLC0415
-        import sqlglot  # noqa: PLC0415
         from app.metrics.models import Measure, MetricDefinition  # noqa: PLC0415
 
         metric = MetricDefinition(
@@ -919,7 +917,6 @@ class TestBuildRollupForMetric:
         executable by DuckDB (result-level correctness).
         """
         import duckdb  # noqa: PLC0415
-        import sqlglot  # noqa: PLC0415
         from app.metrics.models import Dimension, Measure, MetricDefinition  # noqa: PLC0415
 
         metric = MetricDefinition(
@@ -1783,7 +1780,6 @@ class TestRollupRegistryEviction:
 
     def test_env_override_sets_cap(self, monkeypatch) -> None:
         """NUBI_ROLLUP_REGISTRY_MAX env var controls the default cap."""
-        import importlib  # noqa: PLC0415
         import app.connectors.preagg as preagg_mod  # noqa: PLC0415
 
         monkeypatch.setenv("NUBI_ROLLUP_REGISTRY_MAX", "2")
@@ -3055,7 +3051,7 @@ class TestBuildRollupHardenedConnections:
     def test_harden_connection_called_on_both_conns(
         self, source_db: str
     ) -> None:
-        from unittest.mock import call, patch
+        from unittest.mock import patch
 
         import app.connectors.preagg as preagg_mod
 

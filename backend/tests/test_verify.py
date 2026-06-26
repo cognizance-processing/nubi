@@ -16,7 +16,6 @@ Security properties verified by this suite
 from __future__ import annotations
 
 import os
-import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -39,8 +38,8 @@ os.environ.setdefault("ENV", "test")
 # Generate an RSA keypair for the "host" issuer (done once at module import).
 # ---------------------------------------------------------------------------
 
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
-from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 
 import jwt as pyjwt

@@ -77,7 +77,6 @@ root directory on the local filesystem.
 
 from __future__ import annotations
 
-import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime

@@ -1023,9 +1023,7 @@ async def test_run_sweep_passes_max_steps_to_drain():
     We verify this by patching drain_flow_run and asserting that the max_steps
     kwarg is always _SWEEP_CELL_DRAIN_MAX_STEPS (not the default 200).
     """
-    import unittest.mock as mock
     import app.flows.sweep as sweep_mod
-    from app.flows.runtime import materialize_flow_run
 
     reset_for_tests()
     store = InMemoryFlowStore()
@@ -1225,7 +1223,6 @@ async def test_drain_path_offloads_execute_task_to_thread(monkeypatch):
 
 async def test_sweep_cell_drain_max_steps_env_overridable(monkeypatch):
     """_SWEEP_CELL_DRAIN_MAX_STEPS is read from NUBI_SWEEP_CELL_DRAIN_MAX_STEPS env var."""
-    import importlib
     import app.flows.sweep as sweep_mod
 
     original_val = sweep_mod._SWEEP_CELL_DRAIN_MAX_STEPS
@@ -1252,7 +1249,7 @@ async def test_backfill_drain_bounded_by_cell_cap():
     store = InMemoryFlowStore()
     flow = await _make_flow(store)
 
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timezone
 
     start = datetime(2025, 1, 1, tzinfo=timezone.utc)
     end = datetime(2025, 1, 3, tzinfo=timezone.utc)  # 2 windows
@@ -1797,9 +1794,7 @@ async def test_backfill_timeout_raises_app_error_504():
     route translates to AppError 504.
     """
     import asyncio as _asyncio
-    import unittest.mock as mock
     import app.routes.flows as flows_mod
-    from app.errors import AppError as _AppError
 
     async def _slow_backfill(**kwargs):  # noqa: ANN202
         await _asyncio.sleep(10)  # simulate an indefinitely slow backfill
@@ -1830,7 +1825,6 @@ async def test_backfill_timeout_constant_exists_and_is_positive():
 async def test_backfill_timeout_default_is_600():
     """_BACKFILL_TIMEOUT_S default must be 600 s (env BACKFILL_TIMEOUT_S)."""
     import os
-    import importlib
     import app.routes.flows as flows_mod
 
     # Without BACKFILL_TIMEOUT_S in env, the module-level constant must be 600.
@@ -1882,7 +1876,6 @@ async def test_diff_surface_aggregate_cap_stops_after_budget_exhausted():
     when aggregate_bytes_cap is set to 50 bytes — below any cell's summary size.
     The truncation marker records cells_included, cells_omitted, and aggregate_bytes.
     """
-    import json as _json
 
     reset_for_tests()
     store = InMemoryFlowStore()
@@ -2137,7 +2130,6 @@ def test_sweep_in_grid_product_cap_at_parse_time():
 
 def test_sweep_in_grid_product_exactly_at_cap_is_accepted():
     """A grid whose product equals exactly _MAX_SWEEP_CELLS must be accepted."""
-    from pydantic import ValidationError
     import app.routes.flows as flows_mod
 
     SweepIn = flows_mod.SweepIn  # type: ignore[attr-defined]
@@ -3217,7 +3209,6 @@ def test_lru_idle_eviction_backfill(monkeypatch):
     Strategy: set cap=3, create 3 idle orgs, then request a 4th.
     The LRU idle entry (first inserted) must be evicted, keeping size == 3.
     """
-    import asyncio as _asyncio
     import app.routes.flows as flows_mod
     from collections import OrderedDict
 
@@ -3283,7 +3274,6 @@ async def test_in_use_semaphore_not_evicted(monkeypatch):
     (idle) must be evicted instead.  After releasing org-1's slot the
     registry is back to holding exactly the two most recent entries.
     """
-    import asyncio as _asyncio
     import app.routes.flows as flows_mod
     from collections import OrderedDict
 

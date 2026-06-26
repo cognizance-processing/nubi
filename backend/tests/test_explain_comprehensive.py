@@ -9,8 +9,6 @@ All functions under test are pure/sync; no async fixtures needed.
 import pytest
 from app.metrics.explain import (
     MemberContribution,
-    DimensionBreakdown,
-    ExplainResult,
     _safe_delta,
     _member_contributions,
     _explanatory_power,

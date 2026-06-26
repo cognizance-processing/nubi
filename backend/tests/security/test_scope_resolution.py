@@ -52,7 +52,7 @@ os.environ.setdefault("FRONTEND_URL", "http://localhost:3000")
 os.environ.setdefault("COOKIE_SECURE", "false")
 os.environ.setdefault("ENV", "test")
 
-from app.auth.deps import current_user, verified_identity  # noqa: E402
+from app.auth.deps import verified_identity  # noqa: E402
 from app.auth.jwt import mint_access_token  # noqa: E402
 from app.auth.verify import VerifiedIdentity  # noqa: E402
 from app.connectors import rls_hierarchy  # noqa: E402

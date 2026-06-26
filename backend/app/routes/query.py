@@ -112,7 +112,7 @@ from app.auth.scopes import has_scope, SCOPE_AUTHOR_SQL
 from app.auth.verify import VerifiedIdentity
 from app.connectors import plan as planner_plan
 from app.connectors.arrow_io import ipc_stream_from_bytes, table_to_ipc_bytes
-from app.connectors.cache import get_base_scan, get_cache, put_base_scan
+from app.connectors.cache import get_cache
 from app.connectors.cache_key import compute_base_scan_key, scope_cache_key
 from app.connectors.duckdb_conn import DuckDBConnector
 from app.connectors.planner import resolve_named_params

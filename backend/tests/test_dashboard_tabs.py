@@ -37,13 +37,9 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 
 from app.dashboards.spec import (
     DashboardSpec,
-    Tab,
-    Widget,
-    WidgetPos,
     spec_to_html,
     validate_spec,
 )

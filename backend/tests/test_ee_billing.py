@@ -54,10 +54,9 @@ import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
-import pytest_asyncio
 
 # ---------------------------------------------------------------------------
 # Ensure test env is set before importing app modules.

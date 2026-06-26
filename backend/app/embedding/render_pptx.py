@@ -34,7 +34,6 @@ Public API
 from __future__ import annotations
 
 import io
-import os
 from typing import Any
 
 from app.dashboards.spec import DashboardSpec, get_export_config, get_surface_layout
@@ -443,7 +442,6 @@ def _add_title_slide(
     subheading: str | None,
 ) -> Any:
     """Add a title slide with *heading* and optional *subheading*."""
-    from pptx.util import Pt  # noqa: PLC0415
 
     slide = prs.slides.add_slide(title_layout)
     title_ph = None

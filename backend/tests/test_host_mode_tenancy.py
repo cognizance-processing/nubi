@@ -342,7 +342,6 @@ async def test_resolve_org_id_matching_header_accepted(_clean_registry):
     """resolve_org_id returns the pinned org when X-Org-Id matches."""
     from unittest.mock import MagicMock
 
-    from app.auth.issuers import get_issuer_registry
     from app.routes._org import host_mode_org_pin, resolve_org_id
 
     host_mode_org_pin.set(_ORG_ID)

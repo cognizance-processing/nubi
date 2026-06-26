@@ -14,7 +14,7 @@ Test plan
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -22,7 +22,6 @@ from app.health.schema_drift import (
     InMemoryDriftStore,
     _diff_columns,
     detect_schema_drift,
-    get_drift_store,
     set_drift_store,
 )
 
@@ -245,8 +244,6 @@ def test_drift_api_returns_empty_list(use_memory_store):
     from fastapi.testclient import TestClient  # noqa: PLC0415
     from app.auth.deps import verified_identity  # noqa: PLC0415
     from app.auth.verify import VerifiedIdentity  # noqa: PLC0415
-    from app.routes._org import get_user_org  # noqa: PLC0415
-    from app.repos.provider import get_repo  # noqa: PLC0415
 
     app = _make_app()
 

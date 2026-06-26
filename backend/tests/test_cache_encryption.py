@@ -23,7 +23,6 @@ All tests are hermetic — in-process ``ContentAddressedCache`` only; no Redis r
 from __future__ import annotations
 
 import base64
-import os
 import secrets
 
 import pytest

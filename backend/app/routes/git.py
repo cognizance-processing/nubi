@@ -35,7 +35,6 @@ from pydantic import BaseModel
 
 from app.auth.deps import current_user
 from app.auth.roles import require_writer_default
-from app.config import get_settings
 from app.errors import AppError
 from app.git.remotes import make_provider
 from app.git.sync import (

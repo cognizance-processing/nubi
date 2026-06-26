@@ -23,7 +23,6 @@ import pathlib
 import unittest.mock as mock
 
 import duckdb
-import pyarrow as pa
 import pytest
 
 from app.connectors.duckdb_conn import DuckDBConnector

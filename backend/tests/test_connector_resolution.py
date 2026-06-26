@@ -34,7 +34,7 @@ from __future__ import annotations
 import uuid
 from io import BytesIO
 from typing import Any
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch
 
 import pyarrow as pa
 import pyarrow.ipc as pa_ipc

@@ -2862,11 +2862,9 @@ class TestPutCanvasApiConnectorOwnership:
 
 # RSA keypair for embed token tests in this module.
 import json as _json
-import os as _os
 from datetime import timedelta, timezone, datetime as _datetime
 
 from cryptography.hazmat.primitives.asymmetric import rsa as _rsa
-from cryptography.hazmat.primitives import serialization as _serialization
 from cryptography.hazmat.backends import default_backend as _default_backend
 from jwt.algorithms import RSAAlgorithm as _RSAAlgorithm
 import jwt as _pyjwt

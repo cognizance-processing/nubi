@@ -209,7 +209,6 @@ def test_ctx_watermark_injected_into_python_cell(staging_dir):
 
 
 def test_python_target_auto_loads_via_loader(staging_dir, monkeypatch):
-    import app.flows.registry as reg
     from app.connectors.base import file_capabilities
     from app.flows.loaders import LoadTarget
 

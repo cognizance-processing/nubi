@@ -35,10 +35,9 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-import sqlglot
 import sqlglot.expressions as exp
 
 from app.connectors.sql_parse import parse_sql_cached

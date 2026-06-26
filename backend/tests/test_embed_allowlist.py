@@ -32,7 +32,6 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-import pytest_asyncio
 import pyarrow.ipc as pa_ipc
 
 # ---------------------------------------------------------------------------

@@ -37,7 +37,7 @@
  *             onExportPng={echartsRef.current ? () => chartToPNG(echartsRef.current, `${widget.id}.png`) : undefined}
  *           />
  *         </div>
- *         {/* the actual widget renders here */}
+ *         {/* the actual widget renders here * /}
  *       </div>
  *     )
  *   }

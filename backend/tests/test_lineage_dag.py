@@ -33,12 +33,11 @@ from app.lineage.dag import (
     resolve_metric_lineage,
 )
 from app.metrics.models import (
-    Dimension,
     DerivedMeasure,
     Measure,
     MetricDefinition,
 )
-from app.queries.registry import QueryRegistry, RegisteredQuery
+from app.queries.registry import RegisteredQuery
 
 
 # ---------------------------------------------------------------------------

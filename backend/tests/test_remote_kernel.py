@@ -41,12 +41,11 @@ without it installed.
 
 from __future__ import annotations
 
-import io
 import json
 import os
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pyarrow as pa
 import pyarrow.ipc as pa_ipc
@@ -72,7 +71,6 @@ os.environ.setdefault("ENV", "test")
 # ---------------------------------------------------------------------------
 
 from cryptography.hazmat.primitives.asymmetric import rsa as _rsa
-from cryptography.hazmat.primitives import serialization as _serialization
 from cryptography.hazmat.backends import default_backend as _default_backend
 from jwt.algorithms import RSAAlgorithm as _RSAAlgorithm
 import jwt as _pyjwt

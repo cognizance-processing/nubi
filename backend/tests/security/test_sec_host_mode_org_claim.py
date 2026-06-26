@@ -135,7 +135,6 @@ async def test_string_org_claim_is_pinned() -> None:
     """A plain string org claim is pinned correctly."""
     reg = _setup_registry()
     try:
-        from app.routes._org import host_mode_org_pin
 
         token = _make_token("tenant-acme")
         pinned = await _run_pin(token)

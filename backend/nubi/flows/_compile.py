@@ -32,7 +32,6 @@ _branch_task_to_sdk(task_dict, handle_map) -> str
 
 from __future__ import annotations
 
-import textwrap
 from typing import Any
 
 

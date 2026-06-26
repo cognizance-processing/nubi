@@ -15,8 +15,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
-import pytest
-import pytest_asyncio
 
 # ---------------------------------------------------------------------------
 # Environment bootstrap (must be done before any app imports).

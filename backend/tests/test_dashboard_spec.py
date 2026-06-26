@@ -45,7 +45,6 @@ from __future__ import annotations
 import re
 import uuid
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -62,9 +61,7 @@ from app.dashboards.spec import (
     DataProvider,
     ProviderResult,
     SurfaceGridEntry,
-    Surfaces,
     Widget,
-    WidgetPos,
     WidgetSource,
     _BASE_CTE_MAX_BYTES,
     _SPEC_MAX_DATA_PROVIDERS,
@@ -1298,7 +1295,6 @@ class TestT1GetSurfaceLayout:
         spec, _ = validate_spec(_good_spec_dict())
         assert spec is not None
         # Manually override w1 in surfaces.grid with different coords.
-        from pydantic import TypeAdapter
         data = spec.model_dump()
         data["surfaces"] = {
             "grid": {

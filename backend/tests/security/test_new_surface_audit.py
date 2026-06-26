@@ -54,11 +54,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-import pytest_asyncio
 
 # ---------------------------------------------------------------------------
 # Imports (top-level, no network / DB)
@@ -507,7 +505,6 @@ class TestGovernanceRLSPolicies:
 
     def test_user_granted_region_x_sees_only_x_children(self):
         """2c: user with region=WC policy only sees WC's children (no GP leak)."""
-        import asyncio
         import pyarrow as pa
         from app.connectors.duckdb_conn import DuckDBConnector
         from app.connectors.planner import plan
@@ -1031,7 +1028,6 @@ class TestRegressions:
         """5b: author:metric create-gate rejects tokens without the author:metric scope."""
         from app.auth.verify import VerifiedIdentity
         from app.routes.metrics import _require_first_party_write
-        from app.auth.scopes import SCOPE_AUTHOR_METRIC
 
         identity = VerifiedIdentity(
             kind="access", user_id="u", org="o", project=None, roles=[],

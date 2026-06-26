@@ -514,7 +514,6 @@ async def render_board_svg_from_data(
         Composed page SVG string.
     """
     from app.dashboards.collect import collect_board_data  # noqa: PLC0415
-    from app.repos.provider import Repo  # noqa: PLC0415 — avoid circular at module level
 
     board = await repo.get("boards", org_id, board_id)
     if board is None:

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import uuid
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -25,7 +24,7 @@ from httpx import ASGITransport, AsyncClient
 from app.auth.jwt import mint_access_token
 from app.lineage.extract import extract_lineage
 from app.lineage.graph import build_graph
-from app.queries.registry import QueryRegistry, RegisteredQuery
+from app.queries.registry import RegisteredQuery
 
 
 # ---------------------------------------------------------------------------

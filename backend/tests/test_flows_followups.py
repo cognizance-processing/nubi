@@ -154,7 +154,6 @@ class TestOrgIdThreading:
 
     def test_ctx_org_id_wins_over_claims_org_id(self, repo: InMemoryRepo) -> None:
         """ctx.org_id takes precedence when both ctx.org_id and claims['org_id'] differ."""
-        from app.errors import AppError
 
         ds_id = "ds-ctx-wins"
         # Datastore belongs to ORG_ID, not OTHER_ORG_ID.

@@ -201,7 +201,6 @@ def test_mcp_rebinding_simulation_mock_resolver() -> None:
     DNS resolution, a rebinding resolver that changes to private on the second
     call will be caught by resolve_and_pin's check.
     """
-    import socket as _socket
 
     call_count = {"n": 0}
 
@@ -215,7 +214,6 @@ def test_mcp_rebinding_simulation_mock_resolver() -> None:
             return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("192.168.1.100", 0))]
 
     from app.ai.mcp import MCPServer, list_tools_sync
-    from app.errors import AppError
 
     server = MCPServer(name="rebinder", url="http://rebinding-test.example.com/mcp")
 
@@ -246,7 +244,6 @@ def test_mcp_rebinding_simulation_mock_resolver() -> None:
 def test_mcp_list_tools_allows_public_url() -> None:
     """A public URL passes guard_url and resolve_and_pin (mocked network)."""
     from app.ai.mcp import MCPServer, list_tools_sync
-    import socket as _socket
 
     def mock_getaddrinfo_public(host, port, **kwargs):
         # Return a public IP for both calls (no rebinding)

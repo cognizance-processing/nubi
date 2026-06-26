@@ -111,7 +111,6 @@ from app.metrics.models import (
     MetricQuery,
     MetricTarget,
     TimeGrain,
-    YEAR_LAG_BY_GRAIN,
     DerivedMeasure,
 )
 

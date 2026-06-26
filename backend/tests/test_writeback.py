@@ -37,7 +37,6 @@ from app.connectors.writeback import (
     _require_writer_role,
     approve_writeback,
     dry_run_writeback,
-    get_writeback_store,
     set_writeback_store,
     submit_writeback,
 )
@@ -1128,7 +1127,6 @@ async def test_route_approval_reject_does_not_invoke_connector(
 async def test_tick_refuses_401_when_secret_unset_in_production(monkeypatch):
     """In production ENV, flows_tick() raises AppError(401) when the secret is
     unset — no information leak about whether the endpoint is configured."""
-    import os  # noqa: PLC0415
 
     from app.config import get_settings  # noqa: PLC0415
     from app.routes.flows import flows_tick  # noqa: PLC0415
@@ -1152,7 +1150,6 @@ async def test_tick_refuses_401_when_secret_unset_in_production(monkeypatch):
 async def test_tick_disabled_503_when_secret_unset_in_non_production(monkeypatch):
     """In non-production ENV (dev/test), flows_tick() raises AppError(503) with
     a clear diagnostic message when the secret is unset."""
-    import os  # noqa: PLC0415
 
     from app.config import get_settings  # noqa: PLC0415
     from app.routes.flows import flows_tick  # noqa: PLC0415

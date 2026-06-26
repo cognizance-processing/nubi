@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends
 from fastapi.responses import Response as FastAPIResponse
 from pydantic import BaseModel
 

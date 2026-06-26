@@ -20,7 +20,6 @@ client seam is the boundary; see test_bulk_loaders for the mocked-client dispatc
 
 from __future__ import annotations
 
-import io
 import os
 import tempfile
 from datetime import datetime, timezone

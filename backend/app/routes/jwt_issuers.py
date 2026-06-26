@@ -287,7 +287,6 @@ async def delete_jwt_issuer(
 
     # Unregister from the in-process registry.
     try:
-        from app.auth.issuers import get_issuer_registry  # noqa: PLC0415
 
         all_rows = await store.list_for_org(org_id)
         _sync_registry(org_id, all_rows)

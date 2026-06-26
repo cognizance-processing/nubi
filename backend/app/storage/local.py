@@ -28,7 +28,6 @@ and then all keys are relative paths under that root.
 
 from __future__ import annotations
 
-import io
 import os
 import shutil
 from typing import BinaryIO

@@ -131,12 +131,10 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.types import ASGIApp
 
 from app.cache.redis_client import get_redis
 

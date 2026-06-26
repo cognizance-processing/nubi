@@ -100,7 +100,6 @@ def _seed_datastore(
     # InMemoryRepo.create is async — call get_sync to verify round-trip later.
     # Bypass via _store directly for simplicity (avoids asyncio in fixture).
     row_id = datastore_id
-    import uuid  # noqa: PLC0415
     from datetime import datetime, timezone  # noqa: PLC0415
 
     row: dict[str, Any] = {

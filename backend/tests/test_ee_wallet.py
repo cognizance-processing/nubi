@@ -14,11 +14,9 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime, timezone
-from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
-import pytest_asyncio
 
 # ---------------------------------------------------------------------------
 # Setup: inject InMemoryWalletStore before any wallet module is imported

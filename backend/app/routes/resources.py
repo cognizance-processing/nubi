@@ -39,7 +39,6 @@ from pydantic import BaseModel
 from app.auth.deps import current_user
 from app.auth.roles import require_writer
 from app.auth.scopes import author_kind, caller_claims, require_env_write
-from app.db import fetchrow, fetch
 from app.errors import AppError
 from app.repos.base import VALID_RESOURCES
 from app.repos.provider import get_repo, Repo
@@ -75,9 +74,7 @@ class UpdateIn(BaseModel):
 # ``/{resource}`` catch-all to register ahead of their own prefixed routes).
 # Re-exported here for backwards compatibility with existing call sites.
 from app.routes._org import (  # noqa: E402
-    _requested_project_id,
-    _user_is_member,
-    get_user_org,
+    get_user_org,  # noqa: F401 — re-exported; embed.py, chat.py, query.py, snapshot.py import from here
     resolve_org_id,
     resolve_project_filter,
     resolve_project_id_for_create,

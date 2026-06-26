@@ -37,13 +37,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import struct
 from typing import Any, Protocol, runtime_checkable
 
 from app.bridges.protocol import (
     FrameType,
     decode_frame,
-    decode_open_payload,
     encode_frame,
     encode_open,
     FrameError,

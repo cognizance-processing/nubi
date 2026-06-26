@@ -21,7 +21,6 @@ Coverage
 
 from __future__ import annotations
 
-import pytest
 
 from app.metrics.compile import compile_metric
 from app.metrics.models import (
@@ -31,7 +30,6 @@ from app.metrics.models import (
     MetricDefinition,
     MetricTarget,
     MetricQuery,
-    TimeDimension,
 )
 
 

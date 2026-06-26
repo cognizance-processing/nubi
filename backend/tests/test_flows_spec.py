@@ -34,11 +34,9 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 
 from app.flows.spec import (
     FlowSpec,
-    TaskSpec,
     flow_spec_is_valid,
     flow_spec_json_schema,
     validate_flow_spec,

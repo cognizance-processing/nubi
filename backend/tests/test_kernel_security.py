@@ -44,7 +44,7 @@ import pytest_asyncio
 # POSIX guard
 # ---------------------------------------------------------------------------
 try:
-    import resource as _resource
+    import resource as _resource  # noqa: F401 — module alias unused; import side-effect sets _HAVE_RESOURCE
     _HAVE_RESOURCE = True
 except ImportError:
     _HAVE_RESOURCE = False

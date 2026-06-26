@@ -71,7 +71,6 @@ def test_sql_injection_or_1_equals_1_is_literal():
     string), not extra rows.
     """
     from app.connectors.planner import plan, resolve_named_params
-    from app.queries.registry import QueryParam
 
     injection = "' OR 1=1 --"
     sql_template = "SELECT * FROM demo WHERE name = {{name}}"

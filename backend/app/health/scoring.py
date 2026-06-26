@@ -58,7 +58,7 @@ compute_health_score(freshness_rec, run_history, weights) -> HealthScoreResult
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 

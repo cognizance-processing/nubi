@@ -20,7 +20,6 @@ All network calls are lazy (inside ``send``); the module-level import does no I/
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)

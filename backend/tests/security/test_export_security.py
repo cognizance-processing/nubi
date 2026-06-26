@@ -17,12 +17,10 @@ Covers:
 from __future__ import annotations
 
 import os
-import uuid
 
 import pytest
 
 from app.errors import AppError
-from app.lakehouse.managed import lake_prefix
 from app.routes.lake_export import (
     InMemoryExportJobStore,
     _validate_dest_not_in_source,
@@ -286,7 +284,6 @@ def test_worker_claim_cas_single_winner():
 
 def test_for_export_engine_blocks_etc_passwd(tmp_path):
     """Engine-level sandbox: /etc/passwd is inaccessible even without denylist."""
-    import duckdb
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -418,8 +415,6 @@ def test_for_export_engine_blocks_denylist_bypass_variants(tmp_path):
     misses a function name (e.g. a future DuckDB alias or a case variant),
     the engine-level sandbox catches it.
     """
-    import pyarrow as pa
-    import pyarrow.parquet as pq
 
     from app.connectors.duckdb_storage import DuckDBStorageConnector
 

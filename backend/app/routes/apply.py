@@ -62,7 +62,6 @@ from pydantic import BaseModel
 from app.auth.deps import current_user
 from app.auth.roles import require_writer
 from app.errors import AppError
-from app.portability import parse_document
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
 from app.routes._org import resolve_org_id

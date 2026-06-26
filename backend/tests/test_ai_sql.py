@@ -38,7 +38,6 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.ai.grounding import build_catalog
 from app.ai.provider import LLMProvider, NullProvider
 from app.ai.sql import generate_sql
 from app.auth.jwt import mint_access_token

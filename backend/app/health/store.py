@@ -25,7 +25,6 @@ Status semantics
 
 from __future__ import annotations
 
-import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
@@ -200,7 +199,7 @@ class PgFreshnessStore:
         last_success_at: datetime | None,
         expected_interval_s: int | None = None,
     ) -> FreshnessRecord:
-        from app.db import execute, fetchrow  # lazy import — no circular risk
+        from app.db import execute  # lazy import — no circular risk
 
         status = _compute_status(last_success_at, expected_interval_s)
         now = datetime.now(timezone.utc)

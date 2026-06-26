@@ -24,7 +24,6 @@ when Node is not found, matching the optional-dep convention in the codebase.
 
 from __future__ import annotations
 
-import os
 import shutil
 
 import pytest
@@ -376,7 +375,6 @@ def test_node_semaphore_caps_concurrency(monkeypatch):
     import threading
     import time
     from app.dashboards import svg_render
-    from app.errors import AppError
 
     # Install a small test semaphore so the test runs quickly regardless of CPU count.
     cap = 3

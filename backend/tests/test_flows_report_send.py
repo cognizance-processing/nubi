@@ -19,7 +19,6 @@ Coverage
 from __future__ import annotations
 
 import uuid
-from copy import deepcopy
 from typing import Any
 from unittest.mock import patch
 

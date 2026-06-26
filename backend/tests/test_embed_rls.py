@@ -35,10 +35,9 @@ import os
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from typing import Any
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
-import pytest_asyncio
 import pyarrow.ipc as pa_ipc
 
 # ---------------------------------------------------------------------------
@@ -178,7 +177,6 @@ def _setup_embed_repo():
     repo = InMemoryRepo()
     # The embed token carries org="acme-org"; seed a board under that org_id.
     # We use a fixed id so the tests can reference it by path.
-    import asyncio
 
     # Seed the board synchronously by inserting directly into the store.
     board_id = "dash-42"
@@ -341,10 +339,7 @@ async def test_body_claims_policies_are_ignored(client):
     The ``policies`` captured from the spy must be {'tenant_id': 'acme'} even
     though the request body carried {'tenant_id': 'attacker'}.
     """
-    import pyarrow as pa
     from app.connectors import plan as real_plan
-    from app.connectors.plan import PhysicalPlan
-    from app.connectors.cache_key import compute_cache_key
 
     captured_claims: dict[str, Any] = {}
 

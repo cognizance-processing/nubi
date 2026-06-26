@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import threading
 import unittest.mock as mock
 
 os.environ.setdefault("DATABASE_URL", "postgresql://fake:fake@localhost/fake")

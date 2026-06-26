@@ -144,7 +144,7 @@ class TestConvertUsdToZar:
 
     def test_2_pct_buffer_applied(self) -> None:
         """Buffer means ZAR output > usd * rate * 1.00."""
-        from app.ee.billing.fx import convert_usd_to_zar, FX_BUFFER
+        from app.ee.billing.fx import convert_usd_to_zar
         usd = Decimal("100.00")
         rate = Decimal("16.00")
         result = convert_usd_to_zar(usd, fx_rate=rate)
@@ -333,7 +333,6 @@ class TestRefreshFxRate:
     @pytest.mark.asyncio
     async def test_happy_path_updates_module_cache(self) -> None:
         """After refresh, get_current_rate() returns the new rate."""
-        import app.ee.billing.fx as fx_mod
         from app.ee.billing.fx import get_current_rate, refresh_fx_rate
 
         mock_resp = _make_httpx_response(_frankfurter_response(rate=16.50))

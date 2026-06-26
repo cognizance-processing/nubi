@@ -29,7 +29,6 @@ All network-touching channel tests mock httpx.post so no real HTTP calls are mad
 from __future__ import annotations
 
 import sys
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -498,7 +497,7 @@ class TestNotifyAlert:
 class TestFlowListener:
     def test_on_flow_event_fires_on_failed(self):
         from app.notify.channels import NullChannel
-        from app.notify.alerts import on_flow_event, notify_alert
+        from app.notify.alerts import on_flow_event
 
         ch = NullChannel()
         event = {

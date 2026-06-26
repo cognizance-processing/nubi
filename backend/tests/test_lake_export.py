@@ -108,7 +108,6 @@ async def lake_client(tmp_path, monkeypatch, app, fake_db):
     - A seeded Parquet file (10 rows) under the lake prefix.
     - A ``dest_dir`` path for export output.
     """
-    import io
 
     lake_dir = tmp_path / "managed-lake"
     lake_dir.mkdir()
@@ -499,7 +498,6 @@ class TestDestUriOverlapValidation:
     @pytest.mark.asyncio
     async def test_dest_inside_source_lake_rejected(self, lake_client, monkeypatch):
         """dest_uri that resolves to/under the source lake prefix → 400."""
-        import os
         ac, alice_id, org_id, repo, ds_id, dest_dir, table_name = lake_client
 
         from app.lakehouse.managed import lake_prefix, resolve_central_storage

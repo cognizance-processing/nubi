@@ -52,8 +52,6 @@ from pptx import Presentation
 from app.dashboards.spec import (
     BoardExportConfig,
     DashboardSpec,
-    SurfaceGridEntry,
-    Surfaces,
     TitleSlideConfig,
     Widget,
     WidgetExportHints,
@@ -132,7 +130,6 @@ def _parse_pptx(raw_bytes: bytes) -> Presentation:
 
 def _count_picture_shapes(slide: Any) -> int:
     """Return the number of picture shapes on *slide*."""
-    from pptx.shapes.base import BaseShape
     count = 0
     for shape in slide.shapes:
         # A picture shape has shape_type == MSO_SHAPE_TYPE.PICTURE (13)
