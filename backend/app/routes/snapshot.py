@@ -54,6 +54,7 @@ from app.embedding.snapshot import (
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
+from app.routes._helpers import get_or_404
 from app.routes._org import resolve_org_id
 
 # First-party create/refresh + list live under /boards (mirrors export_share).
@@ -140,9 +141,11 @@ async def list_board_snapshots(
 ) -> dict[str, Any]:
     """List the persisted snapshot descriptors for *board_id* (org-scoped)."""
     org_id = await resolve_org_id(str(user["id"]), repo, request)
-    board = await repo.get("boards", org_id, board_id)
-    if board is None:
-        raise AppError("board_not_found", f"Board {board_id!r} not found.", 404)
+    await get_or_404(
+        repo, "boards", org_id, board_id,
+        error_code="board_not_found",
+        detail=f"Board {board_id!r} not found.",
+    )
     snaps = await list_snapshots(board_id, org_id, repo)
     return {"board_id": board_id, "snapshots": snaps}
 
@@ -290,9 +293,11 @@ async def get_frozen_view(
             tier="embed_frozen",
         )
 
-    board = await repo.get("boards", org_id, dashboard_id)
-    if board is None:
-        raise AppError("dashboard_not_found", f"Dashboard {dashboard_id!r} not found.", 404)
+    board = await get_or_404(
+        repo, "boards", org_id, dashboard_id,
+        error_code="dashboard_not_found",
+        detail=f"Dashboard {dashboard_id!r} not found.",
+    )
 
     if snapshot_id:
         descriptor = await get_snapshot(dashboard_id, org_id, snapshot_id, repo)

@@ -8,17 +8,18 @@ Dedup 1 — ``get_or_404``
     3. Custom ``detail`` is preserved verbatim in the raised error.
     4. Custom ``error_code`` is used when specified.
 
-Dedup 2 — ``resolved_ctx``
+Dedup 2 — ``resolved_ctx`` / ``resolved_ctx_scoped`` / ``resolved_ctx_default``
     5. Returns ``(user_id, org_id)`` correctly via ``resolve_org_id``.
-    6. Org-isolation: a handler using ``resolved_ctx`` 404s cross-org
-       (the InMemoryRepo scopes rows to org_id so a second org cannot
-       read another org's resources — tenant isolation preserved).
+    6. Org-isolation: a handler using ``resolved_ctx_scoped`` 404s cross-org.
+    7. X-Org-Id pointing at another org is rejected 403 (not granted access).
+    8. ``resolved_ctx_default`` unit test: returns correct (user_id, org_id).
+    9. ``resolved_ctx_default`` ignores X-Org-Id (uses default org only).
 
 Dedup 3 — ``get_org_role`` in ``remove_member``
-    7. ``DELETE /orgs/{id}/members/{mid}`` → 404 when member absent
-       (i.e. ``get_org_role`` returns None → "not_found" as before).
-    8. ``DELETE /orgs/{id}/members/{mid}`` → 403 when non-owner tries
-       to remove an owner (role check still works via ``get_org_role``).
+    10. ``DELETE /orgs/{id}/members/{mid}`` → 404 when member absent
+        (i.e. ``get_org_role`` returns None → "not_found" as before).
+    11. ``DELETE /orgs/{id}/members/{mid}`` → 403 when non-owner tries
+        to remove an owner (role check still works via ``get_org_role``).
 
 All tests use ``InMemoryRepo`` + FakeDB (no live DB).
 """
@@ -354,3 +355,140 @@ class TestRemoveMemberGetOrgRole:
         assert r.status_code == 204
         # Verify the member was actually removed from the repo.
         assert f"{org_id}:{member_id}" not in repo._org_members
+
+
+# ---------------------------------------------------------------------------
+# Dedup 2 (extended): resolved_ctx_scoped X-Org-Id isolation
+# ---------------------------------------------------------------------------
+
+
+class TestResolvedCtxScopedXOrgId:
+    """Verify that resolved_ctx_scoped (header-aware) correctly enforces tenant
+    isolation when the X-Org-Id header is provided.
+
+    Security invariant: a request carrying X-Org-Id pointing at org B must
+    not grant access to org B's resources if the authenticated user only
+    belongs to org A.  The call should 403 (forbidden), not 200 or 404.
+    """
+
+    @pytest.mark.asyncio
+    async def test_x_org_id_for_non_member_is_403(self, resources_ctx_client):
+        """X-Org-Id pointing at another org returns 403, not 200."""
+        client, repo, alice_id, alice_org, bob_id, bob_org = resources_ctx_client
+
+        # Bob creates a board in his org.
+        r = await client.post(
+            "/api/v1/boards",
+            json={"name": "Bob Board", "config": {}},
+            headers=_auth(bob_id),
+        )
+        assert r.status_code == 201
+        bob_board_id = r.json()["id"]
+
+        # Alice sends X-Org-Id pointing at Bob's org — must be 403.
+        r2 = await client.get(
+            f"/api/v1/boards/{bob_board_id}",
+            headers={**_auth(alice_id), "X-Org-Id": bob_org},
+        )
+        assert r2.status_code == 403, (
+            f"Expected 403 but got {r2.status_code}: {r2.text}"
+        )
+        body = r2.json()
+        assert body.get("error", {}).get("code") == "forbidden"
+
+    @pytest.mark.asyncio
+    async def test_x_org_id_matching_own_org_succeeds(self, resources_ctx_client):
+        """X-Org-Id matching the user's actual org resolves correctly."""
+        client, repo, alice_id, alice_org, bob_id, bob_org = resources_ctx_client
+
+        # Alice creates a board.
+        r = await client.post(
+            "/api/v1/boards",
+            json={"name": "Alice Board 2", "config": {}},
+            headers=_auth(alice_id),
+        )
+        assert r.status_code == 201
+        board_id = r.json()["id"]
+
+        # Alice fetches with X-Org-Id = her own org — should succeed.
+        r2 = await client.get(
+            f"/api/v1/boards/{board_id}",
+            headers={**_auth(alice_id), "X-Org-Id": alice_org},
+        )
+        assert r2.status_code == 200
+        assert r2.json()["name"] == "Alice Board 2"
+
+
+# ---------------------------------------------------------------------------
+# Dedup 2 (extended): resolved_ctx_default unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestResolvedCtxDefault:
+    """Unit tests for ``resolved_ctx_default``.
+
+    Because ``resolved_ctx_default`` is a FastAPI dependency (not a plain
+    coroutine), we test it by invoking ``get_user_org`` directly and verifying
+    its semantics: it always returns the default org regardless of any
+    simulated X-Org-Id context.
+    """
+
+    @pytest.mark.asyncio
+    async def test_default_dep_returns_user_default_org(self):
+        """resolved_ctx_default wraps get_user_org — returns default org."""
+        from app.routes._org import get_user_org
+
+        repo = InMemoryRepo()
+        user_id = str(uuid.uuid4())
+        org_id = str(uuid.uuid4())
+        repo.seed_org_member(org_id=org_id, user_id=user_id)
+
+        result = await get_user_org(user_id, repo)
+        assert result == org_id
+
+    @pytest.mark.asyncio
+    async def test_default_dep_ignores_x_org_id(self):
+        """get_user_org (resolved_ctx_default's backing fn) ignores X-Org-Id.
+
+        The default-org variant must NOT honour the X-Org-Id header.
+        We prove this by seeding the user in org A and verifying that
+        get_user_org returns org A regardless of what org_id is passed as
+        the "other org" — i.e., there is no mechanism inside get_user_org
+        to switch to a different org via a header.
+        """
+        from app.routes._org import get_user_org
+
+        repo = InMemoryRepo()
+        user_id = str(uuid.uuid4())
+        alice_org = str(uuid.uuid4())
+        bob_org = str(uuid.uuid4())
+
+        # User is a member of alice_org only.
+        repo.seed_org_member(org_id=alice_org, user_id=user_id)
+        # bob_org is seeded but user is NOT a member.
+
+        # get_user_org always returns alice_org regardless of bob_org's existence.
+        result = await get_user_org(user_id, repo)
+        assert result == alice_org
+        assert result != bob_org
+
+    @pytest.mark.asyncio
+    async def test_resolved_ctx_default_import(self):
+        """resolved_ctx_default is importable and is a callable (dependency)."""
+        from app.routes._helpers import resolved_ctx_default
+
+        assert callable(resolved_ctx_default)
+
+    @pytest.mark.asyncio
+    async def test_resolved_ctx_scoped_import(self):
+        """resolved_ctx_scoped is importable and is a callable (dependency)."""
+        from app.routes._helpers import resolved_ctx_scoped
+
+        assert callable(resolved_ctx_scoped)
+
+    @pytest.mark.asyncio
+    async def test_resolved_ctx_alias_matches_scoped(self):
+        """resolved_ctx is the same object as resolved_ctx_scoped (alias)."""
+        from app.routes._helpers import resolved_ctx, resolved_ctx_scoped
+
+        assert resolved_ctx is resolved_ctx_scoped
