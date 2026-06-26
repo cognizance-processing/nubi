@@ -4,9 +4,8 @@ Design
 ------
 A datastore row carries two new fields (added by migration):
 
-    ``network_mode``  TEXT  — one of: 'direct' | 'bridge' | 'ssh_tunnel'
-                              | 'psc' | 'cloudsql_proxy'  (DEFAULT 'direct')
-    ``bridge_id``     UUID  — FK → bridges.id; set when mode != 'direct'
+    ``network_mode``  TEXT  — one of: 'direct' | 'bridge'  (DEFAULT 'direct')
+    ``bridge_id``     UUID  — FK → bridges.id; set when mode='bridge'
 
 Before building a connector, the query route calls ``resolve_network`` with the
 datastore config dict and (if present) the pre-fetched bridge row.  The function
@@ -15,39 +14,41 @@ that the connector factory receives.
 
 Transport availability matrix (current milestone)
 --------------------------------------------------
-mode='direct'
+mode='direct'  [AVAILABLE]
     Egress goes directly from the Nubi backend to the database host/port.
     No extra infrastructure required.  ``NetworkTarget.host`` / ``.port``
     are taken verbatim from the datastore config.
 
-mode in ('bridge', 'ssh_tunnel', 'psc', 'cloudsql_proxy')
-    These modes require a provisioned bridge agent or tunnel process.
-    The transport layer is NOT yet implemented; calling resolve_network with
-    any of these modes raises ``AppError("network_mode_unavailable", 501)``.
+mode='bridge'  [AVAILABLE]
+    Egress tunnels through a provisioned Nubi bridge agent running inside the
+    customer VPC.  Use ``resolve_network_async`` for the full async proxy path.
+    The sync ``resolve_network`` raises 501 for bridge mode (async context
+    required for the TCP proxy).
 
-    Stub points for future implementation
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Future roadmap (not yet selectable — NOT in the advertised schema enum)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ssh_tunnel, psc, cloudsql_proxy — these modes are internal forward-compat
+stubs only.  They raise ``AppError("network_mode_unavailable", 501)`` when
+encountered in stored data, but they are NOT presented as valid options in the
+connector schema or documentation.  They will be re-advertised once the
+corresponding transport implementations land.
+
     When a real tunnel transport is added, the implementor should:
 
-    1. Add a branch in ``resolve_network`` for the new mode.
-    2. Negotiate the tunnel (e.g. connect to the bridge WebSocket, start an
-       SSH forward, acquire a Cloud SQL Connector socket).
-    3. Return a ``NetworkTarget`` with ``host`` / ``port`` pointing at the
+    1. Add the mode to the schema enum and this docstring's "AVAILABLE" list.
+    2. Add a branch in ``resolve_network`` / ``resolve_network_async``.
+    3. Negotiate the tunnel (SSH forward, Cloud SQL Connector socket, etc.).
+    4. Return a ``NetworkTarget`` with ``host`` / ``port`` pointing at the
        local tunnel endpoint (e.g. ``"127.0.0.1"`` + ephemeral port).
-    4. Ensure the tunnel is torn down in the connector's close/context-manager
-       lifecycle — ``NetworkTarget.cleanup`` (a no-op callable by default) is
-       provided for this purpose.
-
-    The connector factories themselves need no changes — they always receive
-    a plain ``(host, port)`` NetworkTarget and are agnostic of how the
-    reachability was established.
+    5. Ensure cleanup in ``NetworkTarget.cleanup``.
 
 Public API
 ----------
 ``resolve_network(datastore_config, bridge)`` → ``NetworkTarget``
-    The only public entry point.  Safe to call from sync or async contexts
-    (the function itself is synchronous; actual tunnel negotiation, when
-    implemented, will be async and will need a wrapper).
+    The only public entry point for sync callers.
+
+``resolve_network_async(datastore_config, bridge)`` → ``NetworkTarget``
+    Async variant; required for bridge mode (sets up the TCP proxy).
 
 ``NetworkTarget``
     A lightweight dataclass holding ``host``, ``port``, and an optional
@@ -221,38 +222,37 @@ def resolve_network(
         The ``config`` dict stored on the datastore row.  Expected keys:
 
         ``network_mode`` (str, optional)
-            Transport mode.  Defaults to ``"direct"`` when absent.
+            Transport mode.  Advertised valid values: ``"direct"`` (default)
+            and ``"bridge"``.  Values ``ssh_tunnel``, ``psc``, and
+            ``cloudsql_proxy`` are internal forward-compat stubs that raise
+            501 when encountered — they are NOT selectable by users.
         ``bridge_id`` (str, optional)
-            UUID of the bridge row.  Informational at this layer; the
-            caller is responsible for fetching the bridge row and passing it
-            as *bridge*.
+            UUID of the bridge row.  Required when ``network_mode='bridge'``.
         ``host`` (str, optional)
-            Database host (used for ``direct`` mode).
+            Database host.
         ``port`` (int, optional)
-            Database port (used for ``direct`` mode).
+            Database port.
 
     bridge:
         The pre-fetched bridge row dict (from the ``bridges`` table), or
-        ``None`` if no bridge is associated with this datastore.  Currently
-        unused because the tunnel transport is not yet implemented.  When
-        real transport is added, this row supplies the bridge's endpoint
-        (websocket URL, public key, etc.).
+        ``None`` if no bridge is associated with this datastore.
 
     Returns
     -------
     NetworkTarget
         For ``"direct"`` mode: ``host``/``port`` taken verbatim from the
-        config.  For all other modes: raises before returning.
+        config.  For ``"bridge"`` mode (sync): raises 501 (async context
+        required).  For unrecognised modes: raises 400.
 
     Raises
     ------
     app.errors.AppError
-        ``code="network_mode_unavailable"`` (501) if the requested mode is
-        not ``"direct"``.  The error message names the specific mode and
-        explains which infrastructure layer is missing.
+        ``code="network_mode_unavailable"`` (501) for ``"bridge"`` mode
+        in the sync path (use ``resolve_network_async`` instead), or for
+        internally-stored stubs (ssh_tunnel / psc / cloudsql_proxy).
     app.errors.AppError
-        ``code="unknown_network_mode"`` (400) if the mode string is not in
-        the known set.
+        ``code="unknown_network_mode"`` (400) for any mode string not in
+        the recognised set.
 
     Examples
     --------
@@ -261,9 +261,6 @@ def resolve_network(
     'direct'
     >>> target.host
     'db.example.com'
-
-    >>> resolve_network({"network_mode": "bridge", "bridge_id": "abc"}, bridge={})
-    # raises AppError("network_mode_unavailable", ..., 501)
     """
     mode: str = (datastore_config.get("network_mode") or "direct").strip().lower()
 
@@ -333,10 +330,13 @@ def resolve_network(
         )
 
     # ── unknown mode ───────────────────────────────────────────────────────────
-    known = {"direct", "bridge"} | _UNIMPLEMENTED_MODES
+    # Only advertise the modes that are actually selectable by users.
+    # ssh_tunnel / psc / cloudsql_proxy are internal forward-compat stubs
+    # handled above; they are NOT listed as valid options here so that API
+    # consumers only see the modes they can actually use.
     raise AppError(
         "unknown_network_mode",
         f"network_mode='{mode}' is not a recognised value. "
-        f"Valid modes: {sorted(known)!r}.",
+        "Valid modes: ['bridge', 'direct'].",
         400,
     )

@@ -1,41 +1,32 @@
-"""Modal remote kernel runner — M4-REMOTE (Wave M4R-A).
+"""Modal remote kernel runner — INTERNAL FORWARD-COMPAT STUB ONLY.
 
-Adapter for Modal (https://modal.com) as a remote code-execution backend.
-E2B is the **primary tested path**; this module is a parallel adapter that
-follows the same ``KernelResult`` contract and the same 503-when-unconfigured
-rule.
+NOT ADVERTISED / NOT FOR PRODUCTION USE
+-----------------------------------------
+This module is an internal forward-compat skeleton.  ``ModalRunner.run()``
+always raises ``AppError("kernel_unavailable", 503)`` regardless of
+credentials or SDK availability.  Setting ``KERNEL_REMOTE_PROVIDER=modal``
+will NOT produce a working remote kernel.
 
-Modal provides serverless GPU/CPU containers with isolation comparable to
-Firecracker (separate container namespace, ephemeral filesystem, no host IMDS
-access).
+The only production-viable remote provider is E2B:
+    KERNEL_REMOTE_PROVIDER=e2b
+    E2B_API_KEY=e2b-...
+    pip install e2b-code-interpreter
 
-SECURITY: Same isolation properties as E2B — no host network/IMDS access,
-no host filesystem visibility.  Production-grade.
+When to implement
+-----------------
+This stub exists so that the route layer can be code-complete (``_choose_runner``
+has a Modal branch) without shipping a broken advertised feature.  To promote it
+to a real provider:
 
-Enabling
---------
-Set in the environment::
-
-    KERNEL_REMOTE_PROVIDER=modal
-    MODAL_TOKEN_ID=<your-token-id>
-    MODAL_TOKEN_SECRET=<your-token-secret>
-
-Install the optional dependency::
-
-    pip install modal
-
-Note: the Modal SDK uses a different execution model (stub + function
-decorated with @modal.function).  The thinner implementation here uses
-``modal.runner.run_stub`` or the lower-level ``modal.Sandbox`` (if available)
-to run code remotely.  Because E2B is the primary tested path, this
-implementation stubs out the execution body and raises 503 if Modal SDK or
-credentials are absent.
+1. Implement ``ModalRunner.run()`` using Modal's async SDK (stub + @modal.function).
+2. Add ``modal`` to the list of valid ``KERNEL_REMOTE_PROVIDER`` values in config.py.
+3. Update CAPABILITIES.md and the /compute/run docstring.
+4. Run the test suite with a real Modal sandbox credential.
 
 Modal SDK lazy-import note
 --------------------------
 The ``modal`` package is NOT a hard dependency.  It is imported lazily inside
-``run()`` so that the server starts without it installed.  If Modal is not
-installed, ``run()`` raises ``AppError("kernel_unavailable", 503)``.
+``run()`` so that the server starts without it installed.
 """
 
 from __future__ import annotations

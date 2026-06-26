@@ -224,11 +224,13 @@ def _build_tier_display(tier_limits: Any) -> dict[str, Any]:
             "seat_zar_per_seat_month": None,  # never metered
         },
         "features": {
-            "has_white_label": tier_limits.has_white_label,
+            # NOTE: has_white_label, has_sso_saml, and has_scim are intentionally
+            # omitted from this response — the underlying gating code (white-label
+            # rendering, SAML IdP, SCIM provisioner) is not yet shipped.  The
+            # internal TierLimits fields are preserved as forward-compat skeletons
+            # and will be re-advertised once the implementations land.
             "has_rls": tier_limits.has_rls,
             "has_sso_google": tier_limits.has_sso_google,
-            "has_sso_saml": tier_limits.has_sso_saml,
-            "has_scim": tier_limits.has_scim,
             "has_multi_tenant_workspaces": tier_limits.has_multi_tenant_workspaces,
             "has_byoc": tier_limits.has_byoc,
             "has_custom_domain": tier_limits.has_custom_domain,
