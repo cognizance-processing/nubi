@@ -21,7 +21,8 @@
  * Only this file and connectorForms.jsx are owned by this wave.
  */
 
-import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
+import { useAsyncLoad } from '../../hooks/useAsyncLoad.js'
 import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
 import {
@@ -834,9 +835,11 @@ export default function ConnectorsPage() {
   const { topbarSlot } = useUi()
 
   // List state
-  const [connectors, setConnectors]   = useState([])
-  const [listLoading, setListLoading] = useState(true)
-  const [listError, setListError]     = useState(null)
+  const { data: connectorsData, loading: listLoading, error: listError, reload: reloadConnectors } = useAsyncLoad(
+    () => listConnectors().then(d => Array.isArray(d) ? d : d?.connectors ?? []),
+    [projectId]
+  )
+  const connectors = connectorsData ?? []
 
   // Slide-over state
   const [slideOpen, setSlideOpen]     = useState(false)
@@ -858,25 +861,6 @@ export default function ConnectorsPage() {
   // Managed-lakehouse provisioning (the "Use Nubi managed lakehouse" choice in
   // the Add-connector picker). Provisions a new managed-lake connector in place.
   const [provisioningLake, setProvisioningLake] = useState(false)
-
-  // ---------------------------------------------------------------------------
-  // Fetch connectors
-  // ---------------------------------------------------------------------------
-
-  const fetchConnectors = useCallback(async () => {
-    setListLoading(true)
-    setListError(null)
-    try {
-      const data = await listConnectors()
-      setConnectors(Array.isArray(data) ? data : data?.connectors ?? [])
-    } catch (err) {
-      setListError(err.message ?? 'Failed to load connectors')
-    } finally {
-      setListLoading(false)
-    }
-  }, [projectId])
-
-  useEffect(() => { fetchConnectors() }, [fetchConnectors])
 
   // ---------------------------------------------------------------------------
   // Slide-over open helpers
@@ -939,13 +923,8 @@ export default function ConnectorsPage() {
   async function handleProvisionManaged() {
     setProvisioningLake(true)
     try {
-      const created = await provisionLakehouse()
-      if (created?.id) {
-        setConnectors(prev => [...prev.filter(c => c.id !== created.id), created])
-      } else {
-        // Older contract returns only status — refetch to pick up the new row.
-        await fetchConnectors()
-      }
+      await provisionLakehouse()
+      reloadConnectors()
       toast.success('Managed lakehouse provisioned')
       closeSlide()
     } catch (err) {
@@ -967,8 +946,8 @@ export default function ConnectorsPage() {
       if (editTarget) {
         // PUT — only send changed fields; never re-send type
         const body = { name, config, secret: Object.keys(secret).length ? secret : undefined }
-        const updated = await updateConnector(editTarget.id, body)
-        setConnectors(prev => prev.map(c => c.id === editTarget.id ? updated : c))
+        await updateConnector(editTarget.id, body)
+        reloadConnectors()
         toast.success('Connector updated')
       } else {
         // POST — full body. The picker submits the backend factory type
@@ -977,10 +956,8 @@ export default function ConnectorsPage() {
         // seed (optional) is passed through for demo-seeded connectors.
         const body = { name, type, config, secret }
         if (seed) body.seed = seed
-        const created = await createConnector(body)
-        // Dedupe by id — re-adding the virtual demo connector returns its fixed
-        // sentinel id, which may already be present in the list.
-        setConnectors(prev => [...prev.filter(c => c.id !== created.id), created])
+        await createConnector(body)
+        reloadConnectors()
         toast.success('Connector added')
       }
       closeSlide()
@@ -1001,7 +978,7 @@ export default function ConnectorsPage() {
     setDeleteError(null)
     try {
       await deleteConnector(deleteTarget.id)
-      setConnectors(prev => prev.filter(c => c.id !== deleteTarget.id))
+      reloadConnectors()
       setDeleteTarget(null)
       toast.success('Connector deleted')
     } catch (err) {
@@ -1061,7 +1038,7 @@ export default function ConnectorsPage() {
           <span className="text-sm font-semibold font-display text-fg truncate">Connectors</span>
           <div className="flex-1" />
           <button
-            onClick={fetchConnectors}
+            onClick={reloadConnectors}
             disabled={listLoading}
             title="Refresh"
             aria-label="Refresh connectors"
@@ -1116,10 +1093,10 @@ export default function ConnectorsPage() {
             </div>
             <div className="text-center">
               <p className="text-sm font-medium text-fg">Failed to load connectors</p>
-              <p className="text-xs text-muted mt-1">{listError}</p>
+              <p className="text-xs text-muted mt-1">{listError?.message ?? String(listError)}</p>
             </div>
             <button
-              onClick={fetchConnectors}
+              onClick={reloadConnectors}
               className="
                 inline-flex items-center gap-2 px-4 py-2 rounded-xl
                 border border-border text-sm text-muted

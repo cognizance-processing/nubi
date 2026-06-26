@@ -17,6 +17,7 @@
  */
 
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { useAsyncLoad } from '../../hooks/useAsyncLoad.js'
 import {
   Plus,
   KeyRound,
@@ -343,9 +344,8 @@ function EmptyState({ onAdd, canWrite }) {
 
 export default function SecretsPage() {
   const canWrite = useCanWrite()
-  const [secrets, setSecrets]         = useState([])
-  const [listLoading, setListLoading] = useState(true)
-  const [listError, setListError]     = useState(null)
+  const { data: secretsData, loading: listLoading, error: listError, reload: reloadSecrets } = useAsyncLoad(listSecrets, [])
+  const secrets = secretsData ?? []
 
   const [panelOpen, setPanelOpen]     = useState(false)
 
@@ -354,37 +354,13 @@ export default function SecretsPage() {
   const [deleteError, setDeleteError]   = useState(null)
 
   // ---------------------------------------------------------------------------
-  // Fetch secrets
-  // ---------------------------------------------------------------------------
-
-  const fetchSecrets = useCallback(async () => {
-    setListLoading(true)
-    setListError(null)
-    try {
-      const data = await listSecrets()
-      setSecrets(data)
-    } catch (err) {
-      setListError(err.message ?? 'Failed to load secrets')
-    } finally {
-      setListLoading(false)
-    }
-  }, [])
-
-  useEffect(() => { fetchSecrets() }, [fetchSecrets])
-
-  // ---------------------------------------------------------------------------
   // Created callback
   // ---------------------------------------------------------------------------
 
   const handleCreated = useCallback((secret) => {
-    setSecrets(prev => {
-      // Upsert by name (in case of overwrite)
-      const exists = prev.some(s => s.name === secret.name)
-      if (exists) return prev.map(s => s.name === secret.name ? secret : s)
-      return [...prev, secret]
-    })
+    reloadSecrets()
     toast.success(`Secret "${secret.name}" saved`)
-  }, [])
+  }, [reloadSecrets])
 
   // ---------------------------------------------------------------------------
   // Delete
@@ -396,7 +372,7 @@ export default function SecretsPage() {
     setDeleteError(null)
     try {
       await deleteSecret(deleteTarget)
-      setSecrets(prev => prev.filter(s => s.name !== deleteTarget))
+      reloadSecrets()
       setDeleteTarget(null)
       toast.success(`Secret "${deleteTarget}" deleted`)
     } catch (err) {
@@ -431,7 +407,7 @@ export default function SecretsPage() {
 
         <div className="flex items-center gap-3">
           <button
-            onClick={fetchSecrets}
+            onClick={reloadSecrets}
             disabled={listLoading}
             title="Refresh"
             className="flex items-center justify-center w-9 h-9 rounded-xl border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
@@ -471,10 +447,10 @@ export default function SecretsPage() {
             </div>
             <div className="text-center">
               <p className="text-sm font-medium text-fg">Failed to load secrets</p>
-              <p className="text-xs text-muted mt-1">{listError}</p>
+              <p className="text-xs text-muted mt-1">{listError?.message ?? String(listError)}</p>
             </div>
             <button
-              onClick={fetchSecrets}
+              onClick={reloadSecrets}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-border text-sm text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <RefreshCw size={14} strokeWidth={2} />
