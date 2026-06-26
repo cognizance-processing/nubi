@@ -56,6 +56,8 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 
 | | |
 |---|---|
+| [**Capability Matrix**](/CAPABILITIES.md) | What's shipped vs. partial / roadmap / out-of-scope — the host-trackable capability contract (routes, components, status) |
+| [**Changelog**](/CHANGELOG.md) | Notable host-visible changes (Keep a Changelog format) |
 | [**Self-Host**](/docs/self-host) | Detailed deployment guide — Docker Compose, SSL, managed Postgres, production hardening |
 | [**Open Core**](/docs/open-core) | The CE/EE split — what's open source and what stays EE (billing, Paystack, cloud) |
 | [**Open-Core Architecture**](/docs/architecture-open-core) | Feature-gate API, Docker CE/EE images, how EE billing slots in |

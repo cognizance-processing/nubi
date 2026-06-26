@@ -88,6 +88,26 @@ Nubi uses an **in-place migration convention**:
 
 ---
 
+## Capability matrix & changelog (definition-of-done)
+
+Embedding hosts and integrators track [`CAPABILITIES.md`](./CAPABILITIES.md) and
+[`CHANGELOG.md`](./CHANGELOG.md) to know what's shipped — so keeping them current
+is part of done, not an afterthought:
+
+- **Any PR that adds or changes a host-visible capability** (a public route, an
+  embed component, an auth/RLS behaviour, a tool contract) must:
+  1. Update the matching row in `CAPABILITIES.md` — status (✅/🟡/🗓️/⛔),
+     contract (route/component), and docs link.
+  2. Add an entry to `CHANGELOG.md` under `[Unreleased]` in the right group
+     (Added / Changed / Fixed / Security / Deprecated / Removed).
+- A capability is only **✅ Shipped** when its public surface exists, is
+  documented, and is covered by tests. Use **🟡 Partial** with the caveat spelled
+  out otherwise.
+- On release, stamp `[Unreleased]` with a version + date and bump the
+  "Last reviewed" line in `CAPABILITIES.md`.
+
+---
+
 ## Issuer registration
 
 Embed JWT issuers are **DB-backed and org-scoped**. Manage them via the
