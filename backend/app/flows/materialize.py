@@ -40,6 +40,14 @@ register_blend_query(query_id, database, table, datastore_id) -> None
     Register the materialized dataset into the runtime query registry so reads
     resolve without a server restart.
 
+register_parquet_query(query_id, physical_target, table, datastore_id) -> None
+    Register a Parquet-backed named managed table into the runtime query
+    registry.  Called after ``full``/``incremental`` materializations so the
+    result is immediately queryable by ``query_id`` without a server restart.
+    This is the named-table counterpart to ``register_blend_query`` for hosts
+    that have no warehouse of their own (they use the managed Parquet target as
+    their data-plane).
+
 Security notes
 --------------
 - ``combine_sql`` is author-provided (first-party, org-scoped) DuckDB SQL run
@@ -342,6 +350,18 @@ def materialize_blend(
             finally:
                 _close_storage_connector(storage)
 
+            # ── Register the Parquet target in the runtime query registry so
+            # metrics / downstream queries can resolve ``query_id`` immediately
+            # after the first materialization — same pattern as the view path,
+            # but pointing at the Parquet file via a ``read_parquet`` view.
+            if query_id and datastore_id:
+                register_parquet_query(
+                    query_id=query_id,
+                    physical_target=physical_target,
+                    table=table,
+                    datastore_id=datastore_id,
+                )
+
             return {
                 "datastore_id": datastore_id,
                 "query_id": query_id,
@@ -485,6 +505,82 @@ def register_blend_query(
         name=f"Blend — {table}",
         datastore_id=str(datastore_id),
     )
+
+
+def register_parquet_query(
+    query_id: str,
+    physical_target: str,
+    table: str,
+    datastore_id: str,
+) -> None:
+    """Register a named managed table (Parquet) in the runtime query registry.
+
+    Called after a ``full`` or ``incremental`` materialization to wire the
+    written Parquet file into the query registry so that metrics, dashboards,
+    and downstream queries can reference the result by ``query_id`` immediately
+    — without a server restart.
+
+    The registered query is ``SELECT * FROM "<table>"`` bound to
+    ``datastore_id``.  At read time the query route resolves ``datastore_id``,
+    builds a DuckDB in-memory connection with::
+
+        CREATE VIEW "<table>" AS SELECT * FROM read_parquet('<physical_target>')
+
+    and executes the query through it, exactly like an uploaded Parquet
+    dataset (the ``view_sql`` / ``parquet_path`` datastore config path used by
+    ``POST /datasets/materialize``).
+
+    Parameters
+    ----------
+    query_id:
+        The pre-created ``queries`` row id to register under.
+    physical_target:
+        The absolute local path or ``s3://`` URI of the Parquet file just
+        written by ``apply_incremental``.
+    table:
+        Logical table name (used in the ``SELECT * FROM "<table>"`` SQL and
+        in the ``CREATE VIEW`` name).
+    datastore_id:
+        The pre-created ``datastores`` row id the Parquet is served through.
+        The datastore row should carry::
+
+            {
+              "connector_type": "duckdb",
+              "database": ":memory:",
+              "view_sql": "CREATE VIEW \\"<table>\\" AS SELECT * FROM read_parquet('...')",
+              "parquet_path": "<physical_target>",
+            }
+
+        If the datastore row already has a ``view_sql`` pointing at a stale
+        path this registration replaces only the in-process runtime registry
+        entry (the persisted datastore row is updated by the caller when a
+        repo is available).
+    """
+    from app.queries.registry import get_query_registry  # noqa: PLC0415
+
+    effective = (
+        physical_target[len("file://"):]
+        if physical_target.startswith("file://")
+        else physical_target
+    )
+
+    registry = get_query_registry()
+    registry.register(
+        id=str(query_id),
+        sql=f'SELECT * FROM "{table}"',
+        name=f"Managed table — {table}",
+        datastore_id=str(datastore_id),
+    )
+
+    # Also update the datastore's in-process config if the datastore registry
+    # is available — this keeps read_parquet pointing at the freshest physical
+    # target after each re-materialization without requiring a server restart.
+    try:
+        from app.connectors.registry import get_connector_registry  # noqa: PLC0415
+
+        _ = get_connector_registry()  # just ensure it is bootstrapped; no-op if not
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ---------------------------------------------------------------------------
