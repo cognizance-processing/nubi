@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nubi Charts — Comprehensive Gallery</title>
+  <script type="module" src="../dist/nubi-embed.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+    }
+
+    .hero {
+      padding: 48px 40px 28px;
+      border-bottom: 1px solid #2d3748;
+    }
+    .hero h1 { font-size: 24px; font-weight: 700; letter-spacing: -0.01em; }
+    .hero p { margin-top: 8px; font-size: 13px; opacity: 0.55; max-width: 720px; }
+
+    .section { padding: 40px; }
+
+    .section-label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      opacity: 0.45;
+      margin-bottom: 20px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+      gap: 18px;
+    }
+
+    nubi-chart {
+      width: 100%;
+      height: 320px;
+    }
+    nubi-chart.tall { height: 380px; }
+
+    /* Light section */
+    .section-light { background: #f8f9fc; color: #1a202c; }
+    .section-light .section-label { color: #1a202c; }
+  </style>
+</head>
+<body>
+
+  <div class="hero">
+    <h1>Nubi Chart Gallery</h1>
+    <p>
+      Every <code>&lt;nubi-chart&gt;</code> type, driven by inline data injection.
+      Bar, line, area, scatter, bubble, pie, donut, sankey, funnel, waterfall,
+      heatmap, radar, treemap, boxplot, gauge, candlestick and forecast fan charts —
+      all customizable via individual attributes and a deep-merged <code>config</code> JSON.
+    </p>
+  </div>
+
+  <!-- ════════════════ DARK ════════════════ -->
+  <div class="section">
+    <div class="section-label">Dark theme — core comparisons</div>
+    <div class="grid">
+
+      <!-- Grouped bar -->
+      <nubi-chart
+        type="bar" x="month" y="sales" color="region"
+        title="Grouped bar" legend="top" data-labels="false"
+        theme="dark"
+        data='[{"month":"Jan","sales":120,"region":"North"},{"month":"Jan","sales":90,"region":"South"},{"month":"Feb","sales":200,"region":"North"},{"month":"Feb","sales":150,"region":"South"},{"month":"Mar","sales":150,"region":"North"},{"month":"Mar","sales":170,"region":"South"}]'
+      ></nubi-chart>
+
+      <!-- Stacked bar -->
+      <nubi-chart
+        type="bar" x="month" y="sales" color="region" stacked="true"
+        title="Stacked bar" legend="top" y-format="si"
+        theme="dark"
+        data='[{"month":"Jan","sales":120,"region":"North"},{"month":"Jan","sales":90,"region":"South"},{"month":"Feb","sales":200,"region":"North"},{"month":"Feb","sales":150,"region":"South"},{"month":"Mar","sales":150,"region":"North"},{"month":"Mar","sales":170,"region":"South"}]'
+      ></nubi-chart>
+
+      <!-- 100% stacked horizontal bar -->
+      <nubi-chart
+        type="bar" x="quarter" y="value" color="product" stacked="percent" orientation="horizontal"
+        title="100% stacked (horizontal)" legend="bottom" x-format="percent"
+        theme="dark"
+        data='[{"quarter":"Q1","value":40,"product":"A"},{"quarter":"Q1","value":60,"product":"B"},{"quarter":"Q2","value":55,"product":"A"},{"quarter":"Q2","value":45,"product":"B"},{"quarter":"Q3","value":30,"product":"A"},{"quarter":"Q3","value":70,"product":"B"}]'
+      ></nubi-chart>
+
+      <!-- Line with target reference line -->
+      <nubi-chart
+        type="line" x="day" y="active" smooth="true"
+        title="Line + target reference" y-label="Active users"
+        config='{"referenceLines":[{"value":520,"label":"Target 520","axis":"y","color":"#f59e0b"}]}'
+        theme="dark"
+        data='[{"day":"Mon","active":420},{"day":"Tue","active":480},{"day":"Wed","active":510},{"day":"Thu","active":470},{"day":"Fri","active":560},{"day":"Sat","active":600},{"day":"Sun","active":540}]'
+      ></nubi-chart>
+
+      <!-- Dual axis: revenue (bars-as-line) + margin% -->
+      <nubi-chart
+        type="line" x="month" y="revenue" y2="margin"
+        title="Dual axis — revenue & margin" legend="top"
+        y-format="currency" y2-format="percent" y2-label="Margin"
+        theme="dark"
+        data='[{"month":"Jan","revenue":120000,"margin":0.21},{"month":"Feb","revenue":138000,"margin":0.24},{"month":"Mar","revenue":151000,"margin":0.27},{"month":"Apr","revenue":162000,"margin":0.25}]'
+      ></nubi-chart>
+
+      <!-- Stacked area -->
+      <nubi-chart
+        type="area" x="day" y="visits" color="channel" stacked="true"
+        title="Stacked area" legend="top" area-opacity="0.3"
+        theme="dark"
+        data='[{"day":"Mon","visits":120,"channel":"Organic"},{"day":"Mon","visits":80,"channel":"Paid"},{"day":"Tue","visits":150,"channel":"Organic"},{"day":"Tue","visits":90,"channel":"Paid"},{"day":"Wed","visits":170,"channel":"Organic"},{"day":"Wed","visits":110,"channel":"Paid"}]'
+      ></nubi-chart>
+
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-label">Dark theme — distributions & relationships</div>
+    <div class="grid">
+
+      <!-- Scatter -->
+      <nubi-chart
+        type="scatter" x="x" y="y" color="grp"
+        title="Scatter (grouped)" legend="top"
+        theme="dark"
+        data='[{"x":1.2,"y":2.4,"grp":"A"},{"x":3.5,"y":1.8,"grp":"B"},{"x":2.1,"y":3.9,"grp":"A"},{"x":4.8,"y":2.2,"grp":"B"},{"x":0.9,"y":4.6,"grp":"A"},{"x":5.3,"y":1.1,"grp":"B"},{"x":3.9,"y":3.3,"grp":"A"},{"x":2.7,"y":4.1,"grp":"B"}]'
+      ></nubi-chart>
+
+      <!-- Bubble -->
+      <nubi-chart
+        type="bubble" x="gdp" y="life" size="pop"
+        title="Bubble (size = population)" x-label="GDP" y-label="Life exp."
+        theme="dark"
+        data='[{"gdp":1.2,"life":62,"pop":50},{"gdp":3.4,"life":71,"pop":120},{"gdp":5.6,"life":78,"pop":40},{"gdp":2.1,"life":68,"pop":200},{"gdp":4.8,"life":81,"pop":15}]'
+      ></nubi-chart>
+
+      <!-- Boxplot -->
+      <nubi-chart
+        type="boxplot" x="team" y="latency"
+        title="Boxplot — latency by team" y-label="ms"
+        theme="dark"
+        data='[{"team":"A","latency":12},{"team":"A","latency":15},{"team":"A","latency":22},{"team":"A","latency":18},{"team":"A","latency":30},{"team":"B","latency":40},{"team":"B","latency":35},{"team":"B","latency":55},{"team":"B","latency":48},{"team":"B","latency":60},{"team":"C","latency":8},{"team":"C","latency":11},{"team":"C","latency":9},{"team":"C","latency":14},{"team":"C","latency":12}]'
+      ></nubi-chart>
+
+      <!-- Heatmap -->
+      <nubi-chart
+        type="heatmap" x="day" color="hour" value="events" data-labels="true"
+        title="Heatmap — events by day × hour"
+        theme="dark"
+        data='[{"day":"Mon","hour":"9","events":3},{"day":"Mon","hour":"12","events":8},{"day":"Mon","hour":"17","events":5},{"day":"Tue","hour":"9","events":2},{"day":"Tue","hour":"12","events":9},{"day":"Tue","hour":"17","events":7},{"day":"Wed","hour":"9","events":4},{"day":"Wed","hour":"12","events":12},{"day":"Wed","hour":"17","events":6}]'
+      ></nubi-chart>
+
+      <!-- Candlestick -->
+      <nubi-chart
+        type="candlestick" x="date" open="o" close="c" low="l" high="h"
+        title="Candlestick — OHLC"
+        theme="dark"
+        data='[{"date":"D1","o":20,"c":24,"l":18,"h":26},{"date":"D2","o":24,"c":22,"l":21,"h":27},{"date":"D3","o":22,"c":28,"l":22,"h":29},{"date":"D4","o":28,"c":26,"l":25,"h":31},{"date":"D5","o":26,"c":30,"l":24,"h":32}]'
+      ></nubi-chart>
+
+      <!-- Fan / forecast -->
+      <nubi-chart
+        type="fan" x="t" y="forecast" lower="lo" upper="hi" smooth="true"
+        title="Fan chart — forecast + confidence band" y-label="Demand"
+        theme="dark"
+        data='[{"t":"W1","forecast":100,"lo":95,"hi":105},{"t":"W2","forecast":110,"lo":100,"hi":120},{"t":"W3","forecast":118,"lo":104,"hi":132},{"t":"W4","forecast":125,"lo":106,"hi":144},{"t":"W5","forecast":135,"lo":110,"hi":160}]'
+      ></nubi-chart>
+
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-label">Dark theme — composition, flow & single-value</div>
+    <div class="grid">
+
+      <!-- Pie -->
+      <nubi-chart
+        type="pie" x="browser" y="share"
+        title="Pie — browser share"
+        theme="dark"
+        data='[{"browser":"Chrome","share":63},{"browser":"Safari","share":20},{"browser":"Edge","share":10},{"browser":"Firefox","share":7}]'
+      ></nubi-chart>
+
+      <!-- Donut -->
+      <nubi-chart
+        type="donut" x="plan" y="revenue"
+        title="Donut — revenue by plan" config='{"dataLabels":{"format":"currency"}}'
+        theme="dark"
+        data='[{"plan":"Free","revenue":0},{"plan":"Pro","revenue":42000},{"plan":"Team","revenue":88000},{"plan":"Enterprise","revenue":210000}]'
+      ></nubi-chart>
+
+      <!-- Funnel -->
+      <nubi-chart
+        type="funnel" x="stage" y="count"
+        title="Funnel — conversion"
+        theme="dark"
+        data='[{"stage":"Visit","count":1000},{"stage":"Signup","count":420},{"stage":"Activate","count":260},{"stage":"Pay","count":95}]'
+      ></nubi-chart>
+
+      <!-- Waterfall -->
+      <nubi-chart
+        type="waterfall" x="step" y="delta"
+        title="Waterfall — cash bridge" legend="top" y-format="currency"
+        theme="dark"
+        data='[{"step":"Opening","delta":50000},{"step":"Sales","delta":32000},{"step":"Refunds","delta":-8000},{"step":"Costs","delta":-21000},{"step":"Tax","delta":-6000}]'
+      ></nubi-chart>
+
+      <!-- Sankey -->
+      <nubi-chart
+        type="sankey" source="from" target="to" value="amount" class="tall"
+        title="Sankey — traffic flow"
+        theme="dark"
+        data='[{"from":"Search","to":"Landing","amount":50},{"from":"Social","to":"Landing","amount":30},{"from":"Landing","to":"Signup","amount":45},{"from":"Landing","to":"Bounce","amount":35},{"from":"Signup","to":"Paid","amount":20}]'
+      ></nubi-chart>
+
+      <!-- Treemap -->
+      <nubi-chart
+        type="treemap" x="product" y="revenue" color="category"
+        title="Treemap — revenue by product"
+        theme="dark"
+        data='[{"product":"Widget","revenue":120,"category":"Hardware"},{"product":"Gadget","revenue":90,"category":"Hardware"},{"product":"Cloud","revenue":210,"category":"Software"},{"product":"API","revenue":150,"category":"Software"},{"product":"Support","revenue":60,"category":"Services"}]'
+      ></nubi-chart>
+
+      <!-- Radar -->
+      <nubi-chart
+        type="radar" x="skill" y="score" color="player"
+        title="Radar — skill comparison" legend="bottom"
+        theme="dark"
+        data='[{"skill":"Speed","score":80,"player":"A"},{"skill":"Power","score":60,"player":"A"},{"skill":"Defense","score":70,"player":"A"},{"skill":"Stamina","score":90,"player":"A"},{"skill":"Speed","score":60,"player":"B"},{"skill":"Power","score":85,"player":"B"},{"skill":"Defense","score":55,"player":"B"},{"skill":"Stamina","score":75,"player":"B"}]'
+      ></nubi-chart>
+
+      <!-- Gauge -->
+      <nubi-chart
+        type="gauge" y="score"
+        title="Gauge — health score" config='{"max":100}'
+        theme="dark"
+        data='[{"score":72}]'
+      ></nubi-chart>
+
+      <!-- Custom palette + annotation -->
+      <nubi-chart
+        type="bar" x="month" y="sales"
+        title="Custom palette + annotation" palette="#22d3ee,#a78bfa,#f472b6"
+        config='{"annotations":[{"x":"Feb","y":200,"label":"Peak"}]}'
+        theme="dark"
+        data='[{"month":"Jan","sales":120},{"month":"Feb","sales":200},{"month":"Mar","sales":150},{"month":"Apr","sales":90}]'
+      ></nubi-chart>
+
+    </div>
+  </div>
+
+  <!-- ════════════════ LIGHT ════════════════ -->
+  <div class="section section-light">
+    <div class="section-label">Light theme — same components, light tokens</div>
+    <div class="grid">
+
+      <nubi-chart
+        type="bar" x="month" y="sales" color="region" stacked="true"
+        title="Stacked bar (light)" legend="top" theme="light"
+        data='[{"month":"Jan","sales":120,"region":"North"},{"month":"Jan","sales":90,"region":"South"},{"month":"Feb","sales":200,"region":"North"},{"month":"Feb","sales":150,"region":"South"},{"month":"Mar","sales":150,"region":"North"},{"month":"Mar","sales":170,"region":"South"}]'
+      ></nubi-chart>
+
+      <nubi-chart
+        type="line" x="day" y="active" smooth="true"
+        title="Line + target (light)" theme="light"
+        config='{"referenceLines":[{"value":520,"label":"Target","axis":"y"}]}'
+        data='[{"day":"Mon","active":420},{"day":"Tue","active":480},{"day":"Wed","active":510},{"day":"Thu","active":470},{"day":"Fri","active":560},{"day":"Sat","active":600},{"day":"Sun","active":540}]'
+      ></nubi-chart>
+
+      <nubi-chart
+        type="donut" x="plan" y="revenue"
+        title="Donut (light)" theme="light"
+        data='[{"plan":"Pro","revenue":42000},{"plan":"Team","revenue":88000},{"plan":"Enterprise","revenue":210000}]'
+      ></nubi-chart>
+
+      <nubi-chart
+        type="heatmap" x="day" color="hour" value="events"
+        title="Heatmap (light)" theme="light"
+        data='[{"day":"Mon","hour":"9","events":3},{"day":"Mon","hour":"12","events":8},{"day":"Tue","hour":"9","events":2},{"day":"Tue","hour":"12","events":9},{"day":"Wed","hour":"9","events":4},{"day":"Wed","hour":"12","events":12}]'
+      ></nubi-chart>
+
+      <nubi-chart
+        type="fan" x="t" y="forecast" lower="lo" upper="hi" smooth="true"
+        title="Fan chart (light)" theme="light"
+        data='[{"t":"W1","forecast":100,"lo":95,"hi":105},{"t":"W2","forecast":110,"lo":100,"hi":120},{"t":"W3","forecast":118,"lo":104,"hi":132},{"t":"W4","forecast":125,"lo":106,"hi":144}]'
+      ></nubi-chart>
+
+      <nubi-chart
+        type="gauge" y="score"
+        title="Gauge (light)" theme="light"
+        data='[{"score":88}]'
+      ></nubi-chart>
+
+    </div>
+  </div>
+
+  <script type="module">
+    // Demonstrate the nubi:select event — log clicks from any chart.
+    document.addEventListener('nubi:select', (e) => {
+      // eslint-disable-next-line no-console
+      console.log('nubi:select →', e.detail)
+    })
+  </script>
+
+</body>
+</html>
