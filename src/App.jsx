@@ -107,6 +107,7 @@ const SecuritySettings = lazy(() => import('./pages/app/settings/SecuritySetting
 const IntegrationsSettings = lazy(() => import('./pages/app/settings/IntegrationsSettings.jsx'))
 const BridgesSettings = lazy(() => import('./pages/app/settings/BridgesSettings.jsx'))
 const UsageSettings = lazy(() => import('./pages/app/settings/UsageSettings.jsx'))
+const McpSettings = lazy(() => import('./pages/app/settings/McpSettings.jsx'))
 const SecretsPage = lazy(() => import('./pages/app/SecretsPage.jsx'))
 const DataExplorerPage = lazy(() => import('./pages/app/DataExplorerPage.jsx'))
 const ExplorePage = lazy(() => import('./pages/app/ExplorePage.jsx'))
@@ -119,6 +120,7 @@ const AdminOverviewPage = lazy(() => import('./pages/admin/AdminOverviewPage.jsx
 const AdminUsersPage = lazy(() => import('./pages/admin/AdminUsersPage.jsx'))
 const AdminOrgsPage = lazy(() => import('./pages/admin/AdminOrgsPage.jsx'))
 const AdminOrgDetailPage = lazy(() => import('./pages/admin/AdminOrgDetailPage.jsx'))
+const AdminAuditPage = lazy(() => import('./pages/admin/AdminAuditPage.jsx'))
 
 // Dev
 const IllustrationGallery = lazy(() => import('./pages/dev/IllustrationGallery.jsx'))
@@ -334,6 +336,7 @@ export default function App() {
             <Route path="usage" element={<UsageSettings />} />
             <Route path="project" element={<ProjectSettings />} />
             <Route path="security" element={<SecuritySettings />} />
+            <Route path="mcp" element={<McpSettings />} />
           </Route>
           {/* Secrets are flow-scoped — homed under the Flows section, not top-level nav. */}
           <Route path="flows/secrets" element={<SecretsPage />} />
@@ -344,6 +347,7 @@ export default function App() {
             <Route path="users" element={<AdminUsersPage />} />
             <Route path="orgs" element={<AdminOrgsPage />} />
             <Route path="orgs/:id" element={<AdminOrgDetailPage />} />
+            <Route path="audit" element={<AdminAuditPage />} />
           </Route>
 
           {/* EE-only: /billing — rendered only when EE module is loaded and

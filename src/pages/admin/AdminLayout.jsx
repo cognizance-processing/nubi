@@ -19,6 +19,7 @@ const TABS = [
   { to: '/admin', label: 'Overview', end: true },
   { to: '/admin/users', label: 'Users' },
   { to: '/admin/orgs', label: 'Organizations' },
+  { to: '/admin/audit', label: 'Audit log' },
 ]
 
 function AdminChrome() {
