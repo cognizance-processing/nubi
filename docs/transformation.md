@@ -6,6 +6,10 @@ pinning, and the `POST /transpile` SQL dialect-conversion endpoint.
 For the full flow orchestration API (run, preview, sweep, backfill, etc.) see
 [docs/flows.md](flows.md) and [docs/semantic-and-data-apps.md](semantic-and-data-apps.md).
 
+For the named managed-table pattern (hosts without a warehouse, Parquet-backed
+queryable projections via a `materialize` cell) see
+[docs/materialization.md](materialization.md).
+
 ---
 
 ## Flow spec version history

@@ -36,6 +36,7 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 | [**Lineage**](/docs/lineage) | Inter-model dependency DAG (`GET /lineage/dag`), metric lineage, flow/cell column lineage |
 | [**Data Health**](/docs/data-health) | Freshness registry (`GET /health/freshness`), weighted health scoring (`GET /health/score`), estate graph |
 | [**Transformation**](/docs/transformation) | Flow spec version history + revert, env pinning, `POST /transpile` (SQL dialect conversion) |
+| [**Materialization**](/docs/materialization) | Named managed tables for flows — the data-plane path for hosts without a warehouse; `full` / `incremental` Parquet targets, query registry wiring, RLS, watermarks |
 | [**Governance**](/docs/governance) | RLS policy schema (scalar/list/range), hierarchical scope expansion, authoring scopes (`author:sql`, `author:metric`) |
 | [**AI, Chat & MCP**](/docs/ai-and-mcp) | Grounded ask, agentic chat, 14 agent tools, MCP server (15 tools), Slack/WhatsApp gateway |
 | [**MCP integration**](/docs/mcp) | Host integration contract: registering external MCP servers, agent tool dispatch, Nubi as MCP server (JSON-RPC, tool catalog, auth) |
