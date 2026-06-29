@@ -2,7 +2,7 @@
  * nubi-metric-explorer.test.js
  *
  * Tests for <nubi-metric-explorer>: scope gating, metric loading,
- * dimension picker rendering, run flow, and event emission.
+ * dimension picker rendering, run flow, event emission, and CSV export.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi, beforeAll } from 'vitest'
@@ -366,5 +366,177 @@ describe('hasScope utility', () => {
   it('returns false when scope not present', async () => {
     const { hasScope } = await import('../nubi-context.js')
     expect(hasScope(['read:*'], 'author:sql')).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// CSV export
+// ---------------------------------------------------------------------------
+
+describe('NubiMetricExplorer — CSV export', () => {
+  let fetchCtx
+
+  afterEach(() => {
+    fetchCtx?.restore()
+  })
+
+  /**
+   * Create a minimal valid Arrow IPC stream buffer for a single string column.
+   * We import tableToIPC and the Table builder from apache-arrow at test time so
+   * we don't need a build step.
+   */
+  async function makeArrowBuffer(rows) {
+    const { tableFromArrays, vectorFromArray, tableToIPC } = await import('apache-arrow')
+    const keys = Object.keys(rows[0] || { _empty: '' })
+    const arrays = {}
+    for (const k of keys) {
+      arrays[k] = vectorFromArray(rows.map(r => String(r[k] ?? '')))
+    }
+    const table = tableFromArrays(arrays)
+    const ipc   = tableToIPC(table, 'stream')
+    return ipc.buffer
+  }
+
+  /**
+   * Stub URL.createObjectURL / revokeObjectURL and intercept <a>.click so
+   * downloadCsv doesn't throw in jsdom.
+   */
+  function stubDownload() {
+    const calls = []
+    const origCreate = URL.createObjectURL
+    const origRevoke = URL.revokeObjectURL
+    URL.createObjectURL = vi.fn(() => 'blob:mock-url')
+    URL.revokeObjectURL = vi.fn()
+
+    const origCreateElement = document.createElement.bind(document)
+    const createSpy = vi.spyOn(document, 'createElement').mockImplementation((tag) => {
+      const node = origCreateElement(tag)
+      if (tag === 'a') {
+        node.click = () => calls.push({ href: node.href, download: node.download })
+      }
+      return node
+    })
+
+    return {
+      calls,
+      restore() {
+        URL.createObjectURL = origCreate
+        URL.revokeObjectURL = origRevoke
+        createSpy.mockRestore()
+      },
+    }
+  }
+
+  it('export button is hidden before a Run completes', async () => {
+    fetchCtx = stubFetch()
+    const el = make({
+      token: makeToken(['read:*', 'author:metric']),
+      backend: 'http://localhost:8000',
+      'metric-id': 'revenue',
+    })
+    mount(el)
+    await nextTick(4)
+
+    const toolbar = el.shadowRoot.querySelector('.nubi-me-results-toolbar')
+    expect(toolbar).toBeTruthy()
+    expect(toolbar.style.display).toBe('none')
+
+    el.remove()
+  })
+
+  it('export button appears after a successful Run', async () => {
+    const arrowBuf = await makeArrowBuffer([{ metric: 'revenue', value: '100' }])
+    fetchCtx = stubFetch({ arrowBuffer: arrowBuf })
+
+    const el = make({
+      token: makeToken(['read:*', 'author:metric']),
+      backend: 'http://localhost:8000',
+      'metric-id': 'revenue',
+    })
+    mount(el)
+    await nextTick(4)
+
+    // Trigger a run
+    el.shadowRoot.querySelector('.btn-run-me')?.click()
+    await nextTick(6)
+
+    const toolbar = el.shadowRoot.querySelector('.nubi-me-results-toolbar')
+    expect(toolbar.style.display).not.toBe('none')
+
+    const btn = el.shadowRoot.querySelector('[data-role="export"]')
+    expect(btn).toBeTruthy()
+    expect(btn.textContent).toMatch(/csv/i)
+
+    el.remove()
+  })
+
+  it('clicking export emits nubi:export event with format:csv', async () => {
+    const arrowBuf = await makeArrowBuffer([{ region: 'ZA', rev: '500' }])
+    fetchCtx = stubFetch({ arrowBuffer: arrowBuf })
+
+    const el = make({
+      token: makeToken(['read:*', 'author:metric']),
+      backend: 'http://localhost:8000',
+      'metric-id': 'revenue',
+    })
+
+    const events = []
+    document.addEventListener('nubi:export', (e) => events.push(e.detail))
+
+    mount(el)
+    await nextTick(4)
+
+    // Run first
+    el.shadowRoot.querySelector('.btn-run-me')?.click()
+    await nextTick(6)
+
+    const dl = stubDownload()
+    try {
+      el.shadowRoot.querySelector('[data-role="export"]')?.click()
+      await nextTick(2)
+
+      expect(events.length).toBeGreaterThanOrEqual(1)
+      expect(events[0].format).toBe('csv')
+      expect(events[0].rows).toBeGreaterThan(0)
+    } finally {
+      document.removeEventListener('nubi:export', (e) => events.push(e.detail))
+      dl.restore()
+    }
+
+    el.remove()
+  })
+
+  it('clicking export creates a Blob download', async () => {
+    const arrowBuf = await makeArrowBuffer([{ city: 'Cape Town', sales: '42' }])
+    fetchCtx = stubFetch({ arrowBuffer: arrowBuf })
+
+    const el = make({
+      token: makeToken(['read:*', 'author:metric']),
+      backend: 'http://localhost:8000',
+      'metric-id': 'revenue',
+    })
+    mount(el)
+    await nextTick(4)
+
+    el.shadowRoot.querySelector('.btn-run-me')?.click()
+    await nextTick(6)
+
+    const dl = stubDownload()
+    try {
+      el.shadowRoot.querySelector('[data-role="export"]')?.click()
+      await nextTick(2)
+
+      expect(URL.createObjectURL).toHaveBeenCalledOnce()
+      const blob = URL.createObjectURL.mock.calls[0][0]
+      expect(blob).toBeInstanceOf(Blob)
+      expect(blob.type).toContain('text/csv')
+
+      expect(dl.calls.length).toBe(1)
+      expect(dl.calls[0].download).toMatch(/\.csv$/)
+    } finally {
+      dl.restore()
+    }
+
+    el.remove()
   })
 })

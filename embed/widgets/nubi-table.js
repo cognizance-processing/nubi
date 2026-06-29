@@ -3,12 +3,13 @@
  *
  * ATTRIBUTES
  * ----------
- * query-id   (required) Registered query id.
- * limit      Max rows to display. Defaults to 100.
- * columns    Optional comma-separated list of column names to show (ordered).
- * token      Static JWT or get-token fn name on window.
- * get-token  Name of a window function returning Promise<string>|string.
- * backend    Base URL of Nubi API. Defaults to http://localhost:8000.
+ * query-id          (required) Registered query id.
+ * limit             Max rows to display. Defaults to 100.
+ * columns           Optional comma-separated list of column names to show (ordered).
+ * token             Static JWT or get-token fn name on window.
+ * get-token         Name of a window function returning Promise<string>|string.
+ * backend           Base URL of Nubi API. Defaults to http://localhost:8000.
+ * no-export         When present, hides the "Download CSV" button entirely.
  *
  * CSS CUSTOM PROPERTIES
  * ---------------------
@@ -18,10 +19,12 @@
  * ------
  * nubi:widget-ready  { rows, renderer: 'table' }
  * nubi:widget-error  { message }
+ * nubi:export        { rows: number, format: 'csv' }
  */
 
 import { resolveToken, fetchArrow, makeSampleTableData, escapeHtml, formatCell, BASE_STYLES, rowsToArrowTable } from './shared.js'
 import { applyTheme } from '../theme.js'
+import { toCsv, downloadCsv } from './csv.js'
 
 // ---------------------------------------------------------------------------
 // Styles
@@ -147,6 +150,35 @@ const TABLE_STYLES = /* css */ `
     font-size: 11px;
     opacity: 0.35;
   }
+
+  /* CSV export button in the toolbar */
+  .nubi-export-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 9px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    border-radius: var(--nubi-radius-sm, 4px);
+    border: 1px solid var(--nubi-border, #2d3748);
+    background: transparent;
+    color: var(--nubi-fg, #e2e8f0);
+    cursor: pointer;
+    opacity: 0.6;
+    transition: var(--nubi-transition, 0.15s ease);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .nubi-export-btn:hover {
+    opacity: 1;
+    background: var(--nubi-bg, #0f1117);
+    border-color: var(--nubi-primary, #6366f1);
+    color: var(--nubi-primary, #6366f1);
+  }
+  .nubi-export-btn:active {
+    transform: scale(0.97);
+  }
 `
 
 // ---------------------------------------------------------------------------
@@ -176,13 +208,16 @@ function buildTableHTML(table, colNames, limit) {
 // ---------------------------------------------------------------------------
 class NubiTable extends HTMLElement {
   static get observedAttributes() {
-    return ['query-id', 'limit', 'columns', 'token', 'get-token', 'backend', 'theme', 'data', 'no-sample-fallback']
+    return ['query-id', 'limit', 'columns', 'token', 'get-token', 'backend', 'theme', 'data', 'no-sample-fallback', 'no-export']
   }
 
   constructor() {
     super()
     this._shadow = this.attachShadow({ mode: 'open' })
     this._ac = null
+    // Stash the current Arrow table + resolved columns so _exportCsv can use them
+    this._currentTable = null
+    this._currentCols  = null
   }
 
   connectedCallback() {
@@ -193,6 +228,7 @@ class NubiTable extends HTMLElement {
   attributeChangedCallback(name, old, val) {
     if (old === val) return
     if (name === 'theme') applyTheme(this, val || 'dark')
+    if (name === 'no-export') { this._syncExportBtn(); return }
     if (this.isConnected) this._render()
   }
 
@@ -228,6 +264,7 @@ class NubiTable extends HTMLElement {
         <div class="nubi-toolbar">
           <span class="nubi-title">${escapeHtml(this.getAttribute('query-id') || 'table')}</span>
           <span class="nubi-badge" style="display:none">SAMPLE</span>
+          <button class="nubi-export-btn" data-role="export" title="Download CSV">&#8595; CSV</button>
         </div>
         <div class="nubi-sample-note">preview · sample data</div>
         <div class="nubi-table-wrap">
@@ -237,11 +274,59 @@ class NubiTable extends HTMLElement {
       </div>
     `
     this._shadow.insertBefore(styleEl, this._shadow.firstChild)
+
+    // Wire up the export button (uses event delegation-style via querySelector after DOM is built)
+    const exportBtn = this._shadow.querySelector('[data-role="export"]')
+    if (exportBtn) {
+      exportBtn.addEventListener('click', () => this._exportCsv())
+    }
+
+    // Honour no-export attribute on initial scaffold
+    this._syncExportBtn()
+  }
+
+  /** Show or hide the export button based on the no-export attribute. */
+  _syncExportBtn() {
+    const btn = this._shadow.querySelector('[data-role="export"]')
+    if (!btn) return
+    btn.style.display = this.hasAttribute('no-export') ? 'none' : ''
+  }
+
+  /** Export the currently displayed rows+columns to a CSV file and emit nubi:export. */
+  _exportCsv() {
+    if (!this._currentTable || !this._currentCols) return
+
+    const table  = this._currentTable
+    const cols   = this._currentCols
+    const limit  = this._limit()
+    const rowCnt = Math.min(table.numRows, limit)
+
+    // Build row data as arrays-of-values
+    const rowArrays = []
+    for (let r = 0; r < rowCnt; r++) {
+      rowArrays.push(cols.map(col => {
+        const val = table.getChild(col)?.get(r)
+        return formatCell(val)
+      }))
+    }
+
+    const csv      = toCsv(cols, rowArrays)
+    const filename = `${this.getAttribute('query-id') || 'export'}.csv`
+    downloadCsv(csv, filename)
+
+    this.dispatchEvent(new CustomEvent('nubi:export', {
+      bubbles: true, composed: true,
+      detail: { rows: rowCnt, format: 'csv' },
+    }))
   }
 
   _showTable(table, isSample) {
     const limit = this._limit()
     const cols = this._columns(table)
+
+    // Stash for CSV export
+    this._currentTable = table
+    this._currentCols  = cols
 
     const wrap = this._shadow.querySelector('.nubi-table-wrap')
     if (wrap) wrap.innerHTML = buildTableHTML(table, cols, limit)
@@ -264,6 +349,10 @@ class NubiTable extends HTMLElement {
   }
 
   _showError(_rawMsg) {
+    // Clear stash — nothing to export in error state
+    this._currentTable = null
+    this._currentCols  = null
+
     const tw = this._shadow.querySelector('.nubi-table-wrap')
     if (tw) {
       tw.innerHTML = ''

@@ -25,6 +25,7 @@
  *  nubi:run    — { metricId, dimensions, timeGrain }
  *  nubi:select — { column, value, row }
  *  nubi:error  — { message, code }
+ *  nubi:export — { rows: number, format: 'csv' }
  */
 
 import { resolveToken, fetchArrow, escapeHtml, formatCell, el, BASE_STYLES } from './shared.js'
@@ -32,6 +33,7 @@ import { decodeScopes, hasScope }    from '../nubi-context.js'
 import { emitRun, emitSelect, emitError } from '../events.js'
 import { applyTheme }                from '../theme.js'
 import { tableFromIPC }              from 'apache-arrow'
+import { toCsv, downloadCsv }        from './csv.js'
 
 // ---------------------------------------------------------------------------
 // Styles
@@ -230,6 +232,45 @@ const EXPLORER_STYLES = /* css */ `
     color: var(--nubi-fg-muted, #718096);
     font-size: var(--nubi-font-size-sm, 11px);
   }
+
+  /* Results sub-toolbar (sits above the results table) */
+  .nubi-me-results-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 4px 10px;
+    border-bottom: 1px solid var(--nubi-border, #2d3748);
+    background: var(--nubi-bg-2, #1a1f2e);
+    flex-shrink: 0;
+  }
+
+  /* CSV export button */
+  .me-export-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 9px;
+    font-size: var(--nubi-font-size-xs, 10px);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    border-radius: var(--nubi-radius-sm, 4px);
+    border: 1px solid var(--nubi-border, #2d3748);
+    background: transparent;
+    color: var(--nubi-fg, #e2e8f0);
+    cursor: pointer;
+    opacity: 0.6;
+    transition: var(--nubi-transition, 0.15s ease);
+    white-space: nowrap;
+  }
+  .me-export-btn:hover {
+    opacity: 1;
+    background: var(--nubi-bg, #0f1117);
+    border-color: var(--nubi-primary, #6366f1);
+    color: var(--nubi-primary, #6366f1);
+  }
+  .me-export-btn:active {
+    transform: scale(0.97);
+  }
 `
 
 // ---------------------------------------------------------------------------
@@ -315,12 +356,45 @@ export class NubiMetricExplorer extends HTMLElement {
         <span class="scope-indicator readonly">READ-ONLY</span>
       </div>
       <div class="nubi-me-controls" style="display:none"></div>
+      <div class="nubi-me-results-toolbar" style="display:none">
+        <button class="me-export-btn" data-role="export" title="Download results as CSV">&#8595; CSV</button>
+      </div>
       <div class="nubi-me-results">
         <div class="me-empty">Select a metric to explore.</div>
       </div>
       <div class="nubi-me-footer"></div>
     `
     this._shadow.appendChild(wrap)
+
+    // Wire up export button
+    const exportBtn = this._shadow.querySelector('[data-role="export"]')
+    if (exportBtn) {
+      exportBtn.addEventListener('click', () => this._exportCsv())
+    }
+  }
+
+  /** Export the current result table to a CSV file and emit nubi:export. */
+  _exportCsv() {
+    const table = this._resultTable
+    if (!table || table.numRows === 0) return
+
+    const fields   = table.schema.fields.map(f => f.name)
+    const rowArrays = []
+    for (let r = 0; r < table.numRows; r++) {
+      rowArrays.push(fields.map(f => {
+        const col = table.getChild(f)
+        return formatCell(col ? col.get(r) : null)
+      }))
+    }
+
+    const csv      = toCsv(fields, rowArrays)
+    const metricId = this._metricDef?.id || 'metric-export'
+    downloadCsv(csv, `${metricId}.csv`)
+
+    this.dispatchEvent(new CustomEvent('nubi:export', {
+      bubbles: true, composed: true,
+      detail: { rows: table.numRows, format: 'csv' },
+    }))
   }
 
   // --------------------------------------------------------------------------
@@ -698,9 +772,12 @@ export class NubiMetricExplorer extends HTMLElement {
 
   _renderResults(table) {
     const results = this._shadow.querySelector('.nubi-me-results')
+    const resultsToolbar = this._shadow.querySelector('.nubi-me-results-toolbar')
+
     if (!table || table.numRows === 0) {
       results.innerHTML = '<div class="me-empty">No results.</div>'
       this._setFooter('0 rows')
+      if (resultsToolbar) resultsToolbar.style.display = 'none'
       return
     }
 
@@ -742,6 +819,9 @@ export class NubiMetricExplorer extends HTMLElement {
     results.innerHTML = ''
     results.appendChild(tbl)
     this._setFooter(`${table.numRows.toLocaleString()} rows`)
+
+    // Show the export toolbar now that we have results
+    if (resultsToolbar) resultsToolbar.style.display = ''
   }
 
   _setFooter(text) {
