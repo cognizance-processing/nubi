@@ -183,7 +183,5 @@ Long-term, this matrix and the changelog are part of the definition-of-done:
    by tests.
 3. On release, the `[Unreleased]` changelog section is stamped with a version +
    date; this file's "Last reviewed" line is bumped.
-4. The per-audience documentation coverage matrix lives in
-   [DOCS_AUDIT.md](./DOCS_AUDIT.md); the strategic build sequence in
-   [ROADMAP.md](./ROADMAP.md). This file is the **capability contract**; those
-   are docs-coverage and roadmap respectively.
+4. The strategic build sequence lives in [ROADMAP.md](./ROADMAP.md). This
+   file is the **capability contract** for hosts/integrators.

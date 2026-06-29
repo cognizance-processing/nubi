@@ -133,7 +133,7 @@ export function resolveParams(widgetParams, variables) {
 }
 
 /**
- * Alias with the "get" prefix — kept for symmetry with the naming in TASKS.md.
+ * Alias with the "get" prefix — kept for symmetry.
  * Both names are exported; prefer resolveParams in tests.
  */
 export const getResolvedParams = resolveParams

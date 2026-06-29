@@ -1,7 +1,7 @@
 /**
  * CanvasRenderer.jsx — Runtime renderer for a CanvasDoc.
  *
- * Pipeline (per CANVAS_BUILD_PROMPT.txt §5):
+ * Pipeline:
  *   1. sanitizeDashboardHtml(doc.html)  — NEVER bypass (done inside renderDashboardDoc)
  *   2. set innerHTML on a container div
  *   3. upgrade <nubi-*> custom elements (renderDashboardDoc.js)

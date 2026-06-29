@@ -502,7 +502,7 @@ export const MATRIX = {
 // ---------------------------------------------------------------------------
 // NUBI FLOWS — Nubi's workflow orchestration offering
 // Compared against Prefect, Airflow, Dagster, n8n in the orchestration section.
-// See FLOWS_TASKS.md for the full spec.
+// See ROADMAP.md (Flows / Axis B) for the full spec.
 // ---------------------------------------------------------------------------
 export const NUBI_FLOWS = {
   name: "Nubi Flows",

@@ -531,7 +531,7 @@ grounding + M8 AI, emitting a saved parameterized query — not raw SQL to the c
 
 ### 11.7 Build sequence (builder layer)
 Original status reflected a code audit on 2026-06-05; **re-audited 2026-06-07 — all of
-M13–M18 have landed** (see [`TASKS.md`](./TASKS.md) M13–M18 for the per-wave breakdown).
+M13–M18 have landed**.
 
 | Milestone | Status | Scope | Where it lives |
 |---|---|---|---|
@@ -555,7 +555,7 @@ for the full triage.
 
 ## 12. Builder layer — extended scope (2026-06-05 decisions)
 
-New direction from product, layered on §11. Per-milestone tasks in [`TASKS.md`](./TASKS.md)
+New direction from product, layered on §11.
 (M19–M22). **Status (re-audited 2026-06-07): all four have landed** —
 M19 undo/redo (`src/editor/history.js` + wiring in `DashboardEditor.jsx`),
 M20 git sync (`backend/app/git/`, `routes/git.py`, `docs/git-sync.md`),
