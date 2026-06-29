@@ -2034,12 +2034,12 @@ def apply(
     """Apply a declarative resource bundle to Nubi — idempotent.
 
     Reads ``bundle.yaml`` from BUNDLE_DIR, then applies each resource (metrics,
-    datastores, dashboards, queries) to the server using create-or-update
+    datastores, dashboards, queries, watches) to the server using create-or-update
     semantics.  Running the same bundle twice is a true no-op.
 
-    Resources are applied in order: metrics → datastores → dashboards → queries.
-    A single failing resource does NOT abort the rest.  Exit code is 1 when any
-    resource fails; 0 on full success.
+    Resources are applied in order: metrics → datastores → dashboards → queries
+    → watches.  A single failing resource does NOT abort the rest.  Exit code is
+    1 when any resource fails; 0 on full success.
 
     See ``nubi plan`` for a read-only diff without making changes.
     """

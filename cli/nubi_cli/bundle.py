@@ -14,6 +14,8 @@ A *bundle* is a directory with the following structure::
         main.json
       queries/             ← optional; *.yaml or *.json files, each a query envelope
         top_customers.yaml
+      watches/             ← optional; *.yaml files, each a watch definition
+        revenue_alert.yaml
 
 ``bundle.yaml`` schema::
 
@@ -61,6 +63,24 @@ Datastore YAML schema (``datastores.yaml``)::
         port: 5432
         database: prod
         user: analytics
+
+Watch YAML schema (``watches/*.yaml``)::
+
+    name: Revenue Alert           # required; stable identity key (org-scoped slug)
+    metric_id: demo_revenue       # required; metric slug or UUID this watch monitors
+    threshold:                    # a threshold, comparison, OR change rule is required
+      op: ">"
+      value: 100
+    # comparison: ...             # alternative: comparison rule
+    # change: ...                 # alternative: change rule
+    config:                       # optional freeform config block
+      dimensions: [region]
+      time_grain: day
+      channel_config: {}
+      enabled: true
+    labels:                       # optional free-form metadata labels
+      team: data
+      env: production
 
 Dashboard JSON schema (``dashboards/*.json``)::
 
@@ -246,6 +266,76 @@ def _metric_to_envelope(raw: dict[str, Any], source_path: Path) -> dict[str, Any
 
 
 # ---------------------------------------------------------------------------
+# Watch → portability envelope conversion
+# ---------------------------------------------------------------------------
+
+
+def _watch_to_envelope(raw: dict[str, Any], source_path: Path) -> dict[str, Any]:
+    """Convert a watch YAML definition to a portability envelope (kind='watch').
+
+    The stable watch identity is the watch ``name`` scoped to the org (backend
+    upserts by ``(org_id, slug)`` where slug is derived from name).
+
+    Required fields: ``name``, ``metric_id``, and at least one breach rule
+    (``threshold``, ``comparison``, or ``change`` — either top-level or inside
+    ``config``).
+
+    Optional: ``config`` (freeform dict), ``labels`` (freeform dict).
+    """
+    if not isinstance(raw, dict):
+        raise BundleError(f"{source_path.name}: watch file must be a YAML mapping.")
+
+    name = str(raw.get("name") or "").strip()
+    if not name:
+        raise BundleError(
+            f"{source_path.name}: watch definition must include a 'name' field."
+        )
+
+    metric_id = str(raw.get("metric_id") or "").strip()
+    if not metric_id:
+        raise BundleError(
+            f"{source_path.name}: watch '{name}' must include a 'metric_id' field."
+        )
+
+    # Build config block: start with any explicit config dict, then fold in
+    # top-level rule keys so authors can write them at the top level for brevity.
+    config: dict[str, Any] = dict(raw.get("config") or {})
+    for key in ("threshold", "comparison", "change", "dimensions", "time_grain",
+                "channel_config", "channel", "enabled"):
+        if key in raw and key not in config:
+            config[key] = raw[key]
+
+    # Validate that at least one breach rule is present.
+    if not (config.get("threshold") or config.get("comparison") or config.get("change")):
+        raise BundleError(
+            f"{source_path.name}: watch '{name}' must declare a threshold or a "
+            "comparison/change rule (top-level or inside config)."
+        )
+
+    spec: dict[str, Any] = {
+        "name": name,
+        "metric_id": metric_id,
+        "config": config,
+    }
+
+    labels = raw.get("labels")
+    if labels and isinstance(labels, dict):
+        spec["labels"] = labels
+
+    meta: dict[str, Any] = {"name": name}
+    existing_id = raw.get("id") or (raw.get("metadata") or {}).get("id")
+    if existing_id:
+        meta["id"] = str(existing_id)
+
+    return {
+        "kind": "watch",
+        "apiVersion": "nubi/v1",
+        "metadata": meta,
+        "spec": spec,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Bundle → envelope list
 # ---------------------------------------------------------------------------
 
@@ -268,7 +358,7 @@ class BundleLoadResult:
 def load_bundle(bundle_dir: Path) -> BundleLoadResult:
     """Read a bundle directory and return all portability envelopes.
 
-    Load order: metrics → datastores → dashboards → queries.
+    Load order: metrics → datastores → dashboards → queries → watches.
     Errors in individual files are collected but do NOT abort loading; they are
     surfaced to the caller in ``result.errors`` so the CLI can print them.
 
@@ -341,5 +431,16 @@ def load_bundle(bundle_dir: Path) -> BundleLoadResult:
                 result.add_envelope(raw)
             except BundleError as exc:
                 result.add_error(f"queries/{path.name}: {exc}")
+
+    # ── Watches ────────────────────────────────────────────────────────────
+    watches_dir = bundle_dir / "watches"
+    if watches_dir.is_dir():
+        for path in sorted(watches_dir.glob("*.yaml")):
+            try:
+                raw = _load_yaml_file(path)
+                env = _watch_to_envelope(raw, path)
+                result.add_envelope(env)
+            except BundleError as exc:
+                result.add_error(f"watches/{path.name}: {exc}")
 
     return result

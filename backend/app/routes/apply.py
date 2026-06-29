@@ -53,7 +53,9 @@ uniquely (same semantics as the portability routes).
 
 from __future__ import annotations
 
+import json
 import logging
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -113,6 +115,108 @@ def _resource_summary(results: list[dict[str, Any]]) -> dict[str, int]:
     return summary
 
 
+async def _upsert_watch(
+    spec: dict[str, Any],
+    *,
+    org_id: str,
+    user_id: str,
+    project_id: str | None,
+) -> tuple[dict[str, Any], str]:
+    """Upsert a watch from an apply envelope; return (record, action).
+
+    Stable key: ``(org_id, slug)`` where slug is derived from ``spec.name``.
+    Delegates to the watches route's internal helpers so the in-process
+    registry stays in sync and the same upsert SQL is reused.
+
+    Returns ``(record, action)`` where action is ``"created"`` or ``"updated"``.
+    """
+    from app.routes.watches import (  # noqa: PLC0415
+        _build_record,
+        _registry_all,
+        _registry_get,
+        _registry_put,
+        _slugify,
+    )
+
+    name = str(spec.get("name") or "").strip()
+    if not name:
+        raise AppError("validation_error", "watch spec must include a name.", 400)
+    metric_id = str(spec.get("metric_id") or "").strip()
+    if not metric_id:
+        raise AppError("validation_error", "watch spec must include a metric_id.", 400)
+
+    # Merge top-level rule keys into config so _build_record validation passes.
+    data: dict[str, Any] = {
+        "name": name,
+        "metric_id": metric_id,
+        "config": dict(spec.get("config") or {}),
+    }
+    for key in ("threshold", "comparison", "change", "dimensions", "time_grain",
+                "channel_config", "channel", "enabled"):
+        if key in spec and key not in data["config"]:
+            data["config"][key] = spec[key]
+
+    provisional_id = _slugify(name)
+    record = _build_record(data, watch_id=provisional_id)
+    record["org_id"] = str(org_id)
+
+    # Carry labels through if present.
+    labels = spec.get("labels")
+    if labels and isinstance(labels, dict):
+        record["labels"] = labels
+
+    slug = _slugify(name)
+
+    # Determine create vs update by checking the registry and DB.
+    action = "created"
+    existing_record = _registry_get(provisional_id)
+    if existing_record is None:
+        # Check for an org-scoped existing watch in DB / registry by slug.
+        for r in _registry_all():
+            from app.routes.watches import _slugify as _s  # noqa: PLC0415
+            if str(r.get("org_id")) == str(org_id) and _s(r.get("name") or "") == slug:
+                existing_record = r
+                break
+    if existing_record is not None and str(existing_record.get("org_id")) == str(org_id):
+        action = "updated"
+
+    # Persist to DB (best-effort upsert by (org_id, slug)).
+    config_json = json.dumps(record.get("config") or {})
+    canonical_id = provisional_id
+    try:
+        from app.db import fetchrow  # noqa: PLC0415
+
+        row = await fetchrow(
+            """
+            INSERT INTO watches
+                (id, org_id, project_id, created_by, slug, name, metric_id, config)
+            VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8::jsonb)
+            ON CONFLICT (org_id, slug) DO UPDATE
+                SET name = EXCLUDED.name,
+                    metric_id = EXCLUDED.metric_id,
+                    config = EXCLUDED.config,
+                    updated_at = now()
+            RETURNING id
+            """,
+            str(uuid.uuid4()),
+            org_id,
+            project_id,
+            user_id,
+            slug,
+            name,
+            metric_id,
+            config_json,
+        )
+        if row is not None and row.get("id"):
+            canonical_id = str(row["id"])
+    except Exception:  # noqa: BLE001 — persistence is best-effort
+        pass
+
+    record["id"] = canonical_id
+    _registry_put(record)
+    return record, action
+
+
 async def _apply_envelope(
     env: dict[str, Any],
     *,
@@ -130,6 +234,38 @@ async def _apply_envelope(
 
     if dry_run:
         # Validate only — never write.
+
+        # Watch kind: validate spec without touching the DB.
+        if kind == "watch":
+            spec = env.get("spec") or {}
+            watch_name = str(spec.get("name") or name or "").strip()
+            metric_id = str(spec.get("metric_id") or "").strip()
+            config = dict(spec.get("config") or {})
+            for key in ("threshold", "comparison", "change"):
+                if key in spec and key not in config:
+                    config[key] = spec[key]
+            issues: list[str] = []
+            if not watch_name:
+                issues.append("name must not be empty")
+            if not metric_id:
+                issues.append("metric_id must not be empty")
+            if not (config.get("threshold") or config.get("comparison") or config.get("change")):
+                issues.append("must declare a threshold or comparison/change rule")
+            if issues:
+                return {
+                    "kind": kind,
+                    "id": str(env_id) if env_id else None,
+                    "name": watch_name or name,
+                    "action": "failed",
+                    "error": "Spec validation failed: " + "; ".join(issues),
+                }
+            return {
+                "kind": kind,
+                "id": str(env_id) if env_id else None,
+                "name": watch_name,
+                "action": "create",
+            }
+
         from app.portability import get_handler, validate_spec_for_kind  # noqa: PLC0415
 
         try:
@@ -185,6 +321,44 @@ async def _apply_envelope(
         }
 
     # Live apply.
+
+    # Watch kind: upsert via the watches store path.
+    if kind == "watch":
+        try:
+            spec = env.get("spec") or {}
+            record, action = await _upsert_watch(
+                spec,
+                org_id=org_id,
+                user_id=str(user["id"]),
+                project_id=project_id,
+            )
+            return {
+                "kind": kind,
+                "id": record.get("id"),
+                "name": record.get("name", name),
+                "action": action,
+            }
+        except AppError as exc:
+            logger.warning(
+                "apply: watch name=%r failed: %s", name, exc.message
+            )
+            return {
+                "kind": kind,
+                "id": str(env_id) if env_id else None,
+                "name": name,
+                "action": "failed",
+                "error": exc.message,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("apply: unexpected error for watch name=%r", name)
+            return {
+                "kind": kind,
+                "id": str(env_id) if env_id else None,
+                "name": name,
+                "action": "failed",
+                "error": str(exc),
+            }
+
     try:
         row, action = await upsert_envelope(
             env,
