@@ -33,6 +33,7 @@ import {
   ChevronRight,
   RefreshCw,
   Loader2,
+  GitBranch,
 } from 'lucide-react'
 import { useOrg } from '../../contexts/OrgContext.jsx'
 import * as api from '../../lib/api.js'
@@ -205,6 +206,10 @@ export default function WorkqueuePage() {
   const [stalenessLoading, setStalenessLoading] = useState(true)
   const [staleDatasets, setStaleDatasets] = useState([])
 
+  // (d) Schema drift
+  const [driftLoading, setDriftLoading] = useState(true)
+  const [driftItems, setDriftItems] = useState([])
+
   // ── (a) Watches ──────────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false
@@ -270,8 +275,22 @@ export default function WorkqueuePage() {
     return () => { cancelled = true }
   }, [activeOrg?.id])
 
-  const totalIssues = watches.length + badRuns.length + staleDatasets.length
-  const allClear = !watchesLoading && !runsLoading && !stalenessLoading && totalIssues === 0
+  // ── (d) Schema drift ─────────────────────────────────────────────────────
+  useEffect(() => {
+    let cancelled = false
+    async function loadDrift() {
+      setDriftLoading(true)
+      const list = await fetchList('/health/drift')
+      if (cancelled) return
+      setDriftItems(list)
+      setDriftLoading(false)
+    }
+    loadDrift()
+    return () => { cancelled = true }
+  }, [activeOrg?.id])
+
+  const totalIssues = watches.length + badRuns.length + staleDatasets.length + driftItems.length
+  const allClear = !watchesLoading && !runsLoading && !stalenessLoading && !driftLoading && totalIssues === 0
 
   return (
     <PageRoot>
@@ -399,6 +418,40 @@ export default function WorkqueuePage() {
               </div>
             ) : (
               <EmptyGroup label="All datasets are fresh" />
+            )}
+          </section>
+
+          {/* (d) Schema drift */}
+          <section aria-labelledby="drift-heading">
+            <GroupHeader
+              icon={GitBranch}
+              title="Schema drift"
+              count={driftLoading ? null : driftItems.length}
+              description="Datasets with detected schema changes since last run"
+            />
+            {driftLoading ? (
+              <GroupSkeleton rows={2} />
+            ) : driftItems.length > 0 ? (
+              <div className="space-y-3">
+                {driftItems.map((d, i) => {
+                  const changeCount = Array.isArray(d.changes) ? d.changes.length : 0
+                  const ts = d.detected_at
+                  return (
+                    <ItemRow
+                      key={d.dataset_key}
+                      icon={GitBranch}
+                      iconVariant="amber"
+                      title={d.dataset_key}
+                      subtitle={changeCount > 0 ? `${changeCount} column change${changeCount !== 1 ? 's' : ''} detected` : 'Schema change detected'}
+                      meta={ts ? `Detected ${relativeTime(new Date(ts))}` : undefined}
+                      chips={[{ label: 'drift', variant: 'amber' }]}
+                      delay={i * 50}
+                    />
+                  )
+                })}
+              </div>
+            ) : (
+              <EmptyGroup label="No schema drift detected" />
             )}
           </section>
         </div>
