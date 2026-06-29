@@ -172,6 +172,71 @@ def _is_remote(uri: str) -> bool:
     return bool(re.match(r"^(s3|s3a|gs|gcs|az|abfss?|http|https)://", uri, re.IGNORECASE))
 
 
+def _sanitize_target_segment(target: str) -> str:
+    """Sanitize a user-supplied target path segment against directory traversal.
+
+    SECURITY: the ``target`` field in ``materialized`` config is author-supplied
+    (first-party, org-scoped) but must still be constrained so a malicious tenant
+    cannot escape the configured base directory via ``../`` sequences or absolute
+    paths.
+
+    Rules enforced:
+    - Leading slashes are stripped (no absolute-path override of the base).
+    - ``..`` components anywhere in the path are rejected outright — they have no
+      legitimate use in a relative data target name.
+    - Empty segments (``//``) are collapsed.
+    - After cleaning, the result must be non-empty.
+
+    Raises :exc:`AppError` (400) on any violation; returns the sanitised relative
+    path segment string on success.
+    """
+    # Strip leading slashes first.
+    rel = target.lstrip("/")
+
+    # Split on both POSIX and Windows path separators.
+    parts = [p for p in re.split(r"[/\\]", rel) if p]  # drop empty segments
+
+    # Reject any ``..`` component — these have no valid use in a data target name
+    # and are the canonical path-traversal primitive.  Reject ``~`` similarly as
+    # a home-directory expansion guard.
+    bad = [p for p in parts if p in ("..", "~") or p.startswith("..")]
+    if bad:
+        raise AppError(
+            "invalid_task_config",
+            f"materialized 'target' contains illegal path component(s) {bad!r}. "
+            "Path traversal sequences ('..') are not allowed in target names.",
+            400,
+        )
+
+    sanitized = "/".join(parts)
+    if not sanitized:
+        raise AppError(
+            "invalid_task_config",
+            "materialized 'target' resolved to an empty path after sanitization.",
+            400,
+        )
+    return sanitized
+
+
+def _sanitize_env_segment(env: str) -> str:
+    """Sanitize the env string against path traversal.
+
+    The ``env`` value ("dev"/"prod"/custom) is operator/flow-controlled but
+    should never contain directory traversal sequences.  We apply the same
+    ``..`` rejection as ``_sanitize_target_segment``.
+    """
+    parts = [p for p in re.split(r"[/\\]", env) if p]
+    bad = [p for p in parts if p in ("..", "~") or p.startswith("..")]
+    if bad:
+        raise AppError(
+            "invalid_task_config",
+            f"env contains illegal path component(s) {bad!r}.",
+            400,
+        )
+    sanitized = "/".join(parts)
+    return sanitized or "prod"
+
+
 def resolve_target_uri(
     env: str,
     materialized: dict[str, Any],
@@ -183,6 +248,17 @@ def resolve_target_uri(
     The logical ``materialized.target`` is joined under ``<base_uri>/<env>/``
     so dev and prod never clobber each other.  A ``.parquet`` suffix is added
     when the target has no recognised extension.
+
+    SECURITY: ``target`` and ``env`` are sanitized via
+    :func:`_sanitize_target_segment` and :func:`_sanitize_env_segment` before
+    path composition.  Any ``..`` component or other traversal primitive raises
+    ``AppError("invalid_task_config", 400)`` so a malicious tenant cannot escape
+    the configured base directory.
+
+    For local filesystem targets the resolved path is additionally validated with
+    ``os.path.normpath`` to confirm it still starts with the resolved base — this
+    is a belt-and-braces check against any edge case that the segment sanitizer
+    might miss (e.g. OS-specific path normalisation quirks).
 
     Parameters
     ----------
@@ -199,6 +275,11 @@ def resolve_target_uri(
     -------
     str
         The physical URI (``s3://...parquet`` or a local absolute path).
+
+    Raises
+    ------
+    AppError("invalid_task_config", 400)
+        If ``target`` is missing, empty, or contains path-traversal sequences.
     """
     target = str((materialized or {}).get("target") or "").strip()
     if not target:
@@ -207,17 +288,30 @@ def resolve_target_uri(
             "materialized config requires 'target' for non-view kinds.",
             400,
         )
-    env = (env or "prod").strip() or "prod"
+
+    # SECURITY: sanitize env and target BEFORE any path composition.
+    safe_env = _sanitize_env_segment((env or "prod").strip() or "prod")
+    safe_target = _sanitize_target_segment(target)
 
     base = _base_uri(materialized, flow, settings)
-    # Strip any leading slashes on target so it composes as a relative segment.
-    rel_target = target.lstrip("/")
 
     if _is_remote(base):
-        joined = f"{base}/{env}/{rel_target}"
+        joined = f"{base}/{safe_env}/{safe_target}"
     else:
-        # Local filesystem path.
-        joined = os.path.join(base, env, *rel_target.split("/"))
+        # Local filesystem path — use os.path.join then verify containment.
+        joined = os.path.join(base, safe_env, *safe_target.split("/"))
+        # Belt-and-braces: normpath collapses any residual ``..`` sequences
+        # (shouldn't happen after segment sanitisation, but defence in depth).
+        resolved = os.path.normpath(joined)
+        base_norm = os.path.normpath(base)
+        if not resolved.startswith(base_norm + os.sep) and resolved != base_norm:
+            raise AppError(
+                "invalid_task_config",
+                "materialized 'target' resolves outside the allowed base directory. "
+                "Path traversal is not permitted.",
+                400,
+            )
+        joined = resolved
 
     # Ensure a .parquet extension (v1 targets are Parquet).
     root, ext = os.path.splitext(joined)
