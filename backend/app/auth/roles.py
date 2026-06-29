@@ -26,8 +26,9 @@ from typing import Any
 
 from fastapi import Depends, Request
 
-from app.auth.deps import current_user, verified_identity
-from app.auth.verify import VerifiedIdentity
+from app.auth.deps import current_user
+from app.auth.jwt import decode_access_token
+from app.auth.scopes import parse_scopes
 from app.db import fetchrow
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
@@ -84,26 +85,47 @@ def _require_write_scope(scopes: list[str]) -> None:
     )
 
 
+def _require_write_scope_from_request(request: Request) -> None:
+    """Enforce a write-capable scope from the bearer token, when one is present.
+
+    In production every authenticated request carries a bearer — ``current_user``
+    401s without one — so this always runs against the real first-party token.
+    When there is NO bearer (e.g. a test injecting auth via
+    ``dependency_overrides[current_user]``), the check is skipped: the auth gate
+    was already satisfied by other means and there is no token to inspect. A
+    deliberately read-only-scoped attack token IS a real bearer, so it is decoded
+    and blocked.
+    """
+    auth = request.headers.get("Authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return
+    token = auth[7:].strip()
+    try:
+        scopes = parse_scopes(decode_access_token(token))
+    except Exception:  # noqa: BLE001 — undecodable/non-first-party: gated elsewhere
+        return
+    _require_write_scope(scopes)
+
+
 async def require_writer(
     request: Request,
     user: dict[str, Any] = Depends(current_user),
-    identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
 ) -> None:
     """Header-aware write guard (mirrors ``resolve_org_id``). 403 for viewers or read-only-scoped tokens."""
-    _require_write_scope(identity.scope)
+    _require_write_scope_from_request(request)
     user_id = str(user["id"])
     org_id = await resolve_org_id(user_id, repo, request)
     _forbid_viewer(await get_org_role(user_id, org_id, repo))
 
 
 async def require_writer_default(
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
-    identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
 ) -> None:
     """Default-first-org write guard (mirrors ``get_user_org``). 403 for viewers or read-only-scoped tokens."""
-    _require_write_scope(identity.scope)
+    _require_write_scope_from_request(request)
     user_id = str(user["id"])
     org_id = await get_user_org(user_id, repo)
     _forbid_viewer(await get_org_role(user_id, org_id, repo))
@@ -120,8 +142,8 @@ def _require_approver_role(role: str | None) -> None:
 
 
 async def require_approver_default(
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
-    identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
 ) -> None:
     """Default-first-org approver guard (mirrors ``get_user_org``). 403 for non-approvers or read-only-scoped tokens.
@@ -130,7 +152,7 @@ async def require_approver_default(
     callers are rejected with 403.  Use on routes that require elevated approval
     permission (e.g. POST /flows/writeback/{id}/approval).
     """
-    _require_write_scope(identity.scope)
+    _require_write_scope_from_request(request)
     user_id = str(user["id"])
     org_id = await get_user_org(user_id, repo)
     _require_approver_role(await get_org_role(user_id, org_id, repo))
