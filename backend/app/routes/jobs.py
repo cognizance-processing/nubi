@@ -139,15 +139,15 @@ class CreateJobIn(BaseModel):
 
     name: str
     kind: str
-    target: str | dict[str, Any]
+    target: str | dict[str, Any] = ""
     schedule: str
     enabled: bool = True
 
     @field_validator("kind")
     @classmethod
     def _validate_kind(cls, v: str) -> str:
-        if v not in ("query", "python", "report"):
-            raise ValueError("kind must be 'query', 'python', or 'report'")
+        if v not in ("query", "python", "report", "watch_sweep"):
+            raise ValueError("kind must be 'query', 'python', 'report', or 'watch_sweep'")
         return v
 
     @model_validator(mode="after")
@@ -168,6 +168,12 @@ class CreateJobIn(BaseModel):
                 ReportTarget.model_validate(self.target)
             except Exception as exc:
                 raise ValueError(f"invalid report target: {exc}") from exc
+        elif self.kind == "watch_sweep":
+            # watch_sweep takes no target configuration — the org is resolved
+            # from the authenticated caller's org at creation time (embedded in
+            # the stored job).  Accept an empty string or omit entirely.
+            if not isinstance(self.target, str):
+                raise ValueError("target must be an empty string for kind='watch_sweep'")
         return self
 
     def target_as_str(self) -> str:

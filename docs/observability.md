@@ -168,3 +168,113 @@ mutation path it wraps. A DB write failure is logged at WARNING level only.
 
 See [api-reference.md#audit-log](api-reference.md#audit-log) for the full
 endpoint specification and response shape.
+
+---
+
+## Nightly Watch Sweep
+
+Nubi includes a **watch-sweep** scheduled job that evaluates an org's metric
+watches on a cron and emits `WATCH_BREACH` webhook events so the host
+(e.g. KeyOne) can react — keeping all sweep logic inside Nubi.
+
+### How it works
+
+1. The scheduler fires the `watch_sweep` job according to its cron
+   (e.g. `0 2 * * *` — every night at 02:00 UTC).
+2. The sweep iterates **all enabled watches** whose `org_id` matches the job's
+   owning org.  Each watch is evaluated via the SAME engine as
+   `POST /watches/{id}/evaluate`:
+   - The metric is compiled and executed (DuckDB or the org's bound datastore).
+   - The scalar measure is reduced and compared against the threshold (or
+     change-over-time) rule.
+3. For each **breached** watch:
+   - An AI explanation is generated (deterministic template under `NullProvider`).
+   - A `WATCH_BREACH` outbound webhook is emitted to every subscribed endpoint
+     for the org (via `app.webhooks.events.emit_watch_breach`).
+   - The in-app notification feed and configured channels (Slack, WhatsApp) are
+     also updated (additive to the webhook).
+4. Each watch is **best-effort**: a single watch error is recorded as
+   `state='error'` and logged; the sweep continues to the next watch.
+5. The job run records `row_count = breached_count` and a summary message in
+   the `job_runs` table.
+
+### Scheduling (for the host)
+
+Create a `watch_sweep` job via `POST /api/v1/jobs` (first-party auth required):
+
+```json
+{
+  "name": "Nightly Watch Sweep",
+  "kind": "watch_sweep",
+  "target": "",
+  "schedule": "0 2 * * *"
+}
+```
+
+The `schedule` field accepts any cron expression (5 fields, parsed via
+`croniter`) or an `interval:Nh/Nm/Ns` string for interval-based runs.
+`target` is ignored for this kind — the org is derived from the caller's
+identity at creation time.
+
+**Run on-demand** (e.g. during setup / after updating watches):
+
+```
+POST /api/v1/jobs/{id}/run
+```
+
+### Webhook events consumed by the host
+
+Each breach emits a `watch_breach` event over the org's registered webhook
+endpoints:
+
+```jsonc
+{
+  "type": "watch_breach",
+  "id": "<uuid4>",
+  "org_id": "<org-uuid>",
+  "occurred_at": "2025-06-01T02:01:23.456Z",
+  "data": {
+    "watch_id": "<watch-uuid>",
+    "name": "Revenue Watch",
+    "metric_id": "demo_revenue",
+    "value": 18500.0,
+    "explanation": "Revenue Watch: revenue is 18500, > the 15000 threshold."
+  }
+}
+```
+
+Register a webhook endpoint to receive these:
+`POST /api/v1/webhooks/endpoints` with `event_types: ["watch_breach"]`.
+
+### Pairing with the host's work-graph (response §2G)
+
+The watch-sweep job is the **Nubi-side counterpart** to a host's work-graph
+responder:
+
+| Nubi side | Host side |
+|-----------|-----------|
+| Sweep runs on cron, evaluates watches | Receives `watch_breach` webhook |
+| Emits `WATCH_BREACH` per breach | Triggers downstream work (e.g. alert, workflow, remediation) |
+| Best-effort per-watch; errors logged | Should be idempotent (re-delivery safe) |
+
+The host should treat each `watch_breach` event as an **idempotent trigger**
+keyed by `data.watch_id` + `occurred_at` (the envelope `id` is unique per
+emission and can serve as a deduplication key).
+
+### Isolation + security
+
+- **Org-scoped** — the sweep only touches watches stamped with the job's org.
+  No cross-org leakage even if multiple orgs run sweeps in the same process.
+- **System claims** — the sweep evaluates metrics with empty RLS policies
+  (scheduler context, no per-user row restrictions).  This matches the behaviour
+  of `POST /watches/tick`.
+- **No new migrations** — the sweep reuses the existing `jobs`, `job_runs`, and
+  `watches` tables unchanged.
+
+### Existing `POST /watches/tick` endpoint
+
+`POST /watches/tick` (shared-secret gated) is a lightweight HTTP trigger that
+evaluates **all in-process watches** (not org-scoped, no cron, no job_runs
+record). The `watch_sweep` job complements it with org isolation, DB-backed job
+history, and proper cron scheduling — and is the recommended production path for
+hosts that want a managed nightly sweep.

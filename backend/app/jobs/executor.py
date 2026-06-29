@@ -12,6 +12,12 @@
         inputs (the job's Python snippet is expected to produce a ``result``
         pyarrow.Table binding).  Metering is recorded after a successful run.
 
+    kind == 'watch_sweep'
+        Iterate all ENABLED watches for the job's owning org, evaluate each
+        against its metric (reusing the ``run_watch`` path), and emit a
+        ``WATCH_BREACH`` webhook for each breach.  Best-effort per-watch —
+        one failure never aborts the sweep.  Returns ``row_count=breached_count``.
+
     Any exception is caught and returned as a ``status='error'`` run with
     ``row_count=0`` and the exception message in ``message``.
 
@@ -76,6 +82,9 @@ def execute_job(job: dict[str, Any], now: datetime | None = None) -> dict[str, A
                 import json as _json
                 target_dict = _json.loads(target_dict)
             row_count, message = _run_report_job(target_dict)
+        elif kind == "watch_sweep":
+            from app.jobs.watch_sweep import execute_watch_sweep_sync  # noqa: PLC0415
+            row_count, message = execute_watch_sweep_sync(job, now)
         else:
             raise AppError("bad_job_kind", f"Unknown job kind: {kind!r}", 400)
 
