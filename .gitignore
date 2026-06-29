@@ -74,3 +74,7 @@ test-results-embed/
 # Python coverage artifacts
 .coverage
 backend/.coverage
+
+# build artifacts / generated metadata (should not be tracked)
+dist-embed/
+*.egg-info/

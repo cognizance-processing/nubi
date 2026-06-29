@@ -447,7 +447,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 # These two constants enrich the generated ``/openapi.json`` so external AI
 # agents (and humans) can understand the Nubi authoring loop without reading
 # source.  They are pure metadata — they do NOT affect routing, auth, or
-# middleware.  See also ``public/llms.txt`` and
+# middleware.  See also
 # ``docs/dashboard-spec-reference.md`` for the deeper, pasteable references.
 
 NUBI_OPENAPI_DESCRIPTION = """\

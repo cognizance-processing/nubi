@@ -1,2 +1,0 @@
-[console_scripts]
-nubi = nubi_cli.main:main
