@@ -5,7 +5,23 @@
  */
 
 export const DEMO_QUERY_IDS = ['demo_all', 'demo_active', 'demo_points_10k', 'demo_points_100k']
-export const CHART_TYPES = ['line', 'bar', 'hbar', 'scatter', 'area', 'pie', 'donut', 'heatmap', 'gauge']
+
+// All chart types supported by the shared embed/widgets/chart-options.js builder.
+// Order determines display order in the chart-type picker grid.
+export const CHART_TYPES = [
+  // Core cartesian
+  'bar', 'line', 'area', 'scatter', 'bubble',
+  // Circular
+  'pie', 'donut',
+  // Flow / hierarchy / distribution
+  'sankey', 'funnel', 'waterfall', 'treemap',
+  // Matrix / radial
+  'heatmap', 'radar',
+  // Statistical / financial / forecast
+  'boxplot', 'gauge', 'candlestick', 'fan',
+]
+
+// Per-series type options (for multi-series / combo chart series rows in the editor)
 export const SERIES_TYPES = ['bar', 'line', 'area', 'scatter']
 export const FILTER_SUBTYPES = ['select', 'multiselect', 'daterange', 'text']
 export const VARIABLE_TYPES = ['text', 'number', 'date', 'daterange', 'select', 'multiselect']

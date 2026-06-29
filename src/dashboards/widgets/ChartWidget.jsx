@@ -1,91 +1,147 @@
 /**
  * ChartWidget.jsx — Spec-driven chart widget for the SpecRenderer.
  *
+ * Renders via the shared buildChartOption() builder from
+ * embed/widgets/chart-options.js (re-exported through src/lib/chartOptionShared.js).
+ * This is the single source of truth for ECharts option generation — identical
+ * to the <nubi-chart> embed.
+ *
  * Props
  * -----
  * widget  {object}  A spec Widget object with type === 'chart'.
- *                   Shape: { id, type, query_id, chart_type, encoding, props, params?, pos }
+ *                   Shape: { id, type, query_id, chart_type, encoding, props, config, params?, pos }
  *
  * encoding shape:
  *   {
- *     x:     string,                           // x-axis / category column
- *     y:     string | SeriesDef[],             // single col OR array for combo charts
- *     color: string,                           // optional categorical-color grouping
- *     stack: string,                           // optional stack-group id
+ *     x:      string,   // x-axis / category column
+ *     y:      string,   // primary y column (single-series path)
+ *     y2:     string,   // secondary y column (dual-axis)
+ *     color:  string,   // categorical grouping
+ *     value:  string,   // for pie/donut/gauge/funnel/treemap
+ *     size:   string,   // for bubble
+ *     source: string,   // for sankey
+ *     target: string,   // for sankey
+ *     low:    string,   // for candlestick
+ *     high:   string,   // for candlestick
+ *     open:   string,   // for candlestick
+ *     close:  string,   // for candlestick
+ *     lower:  string,   // for fan (confidence lower bound)
+ *     upper:  string,   // for fan (confidence upper bound)
  *   }
  *
- *   SeriesDef: { col: string, type?: 'bar'|'line'|'area'|'scatter', axis?: 'left'|'right' }
- *
- * props shape (all optional):
+ * config shape (all optional — persisted in widget.config):
  *   {
- *     height:        number,          // chart height in px (default 260)
- *     stack:         boolean|string,  // true → 'total'; string → custom stack id
- *     series:        SeriesDef[],     // explicit per-series combo spec (overrides encoding.y array)
- *     secondaryAxis: string[],        // column names to bind to the right y-axis
+ *     title, subtitle, legend, tooltip, palette, stack, orientation,
+ *     smooth, areaOpacity, dataLabels, animation, grid,
+ *     xAxis, yAxis, y2Axis,         // AxisSpec { label, type, log, min, max, format, rotate }
+ *     referenceLines, annotations,  // markLine / markPoint entries
+ *     locale, echarts,
  *   }
+ *
+ * props shape (legacy, for backward-compat height/max):
+ *   { height, max, min }
  *
  * Behaviour
  * ---------
- * - On mount (and when query_id or resolved params change) fetches data via
- *   runArrowQueryById(query_id, { namedParams }).
+ * - On mount fetches data via runArrowQueryById(query_id, { namedParams }).
  * - Re-queries whenever any referenced variable changes via useResolvedParams.
- * - Builds an ECharts option via buildChartOption() — supports stacking, combo, dual y-axis.
- * - Shows a loading spinner, error state, or empty state as appropriate.
- * - Falls back gracefully to SAMPLE_TABLE when the query fails.
- * - Widgets without params behave identically to before (regression-safe).
+ * - Builds an ECharts option via the shared buildChartOption().
+ * - Shows loading skeleton, error banner, or empty state as appropriate.
+ * - Light/dark via ThemeContext → resolveSpaTheme().
  */
 
 import { useState, useEffect, useMemo } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { runMetricQuery } from '../../lib/metricRuntime.js'
-import { buildChartOption } from '../../viz/chartOption.js'
+import { buildChartOption } from '../../lib/chartOptionShared.js'
+import { resolveSpaTheme } from '../../lib/spaTheme.js'
 import EChart from '../../viz/EChart.jsx'
 import { useResolvedParams, useSetVariable } from '../VariableStore.jsx'
 import { useCrossFilter } from '../CrossFilterContext.jsx'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
 import Skeleton from '../../components/ui/Skeleton.jsx'
 import EmptyState from '../../components/ui/EmptyState.jsx'
+import { useTheme } from '../../contexts/ThemeContext.jsx'
+
+/**
+ * Translate a widget spec into the encoding object expected by buildChartOption.
+ * Merges widget.encoding directly (it already matches the shared API shape).
+ * Backward-compat: widget.props.series / secondaryAxis → y2 in encoding.
+ */
+function resolveEncoding(widget) {
+  const enc = { ...(widget.encoding ?? {}) }
+  const wProps = widget.props ?? {}
+
+  // Legacy: props.secondaryAxis array → take first column as y2 if not already set
+  if (!enc.y2 && Array.isArray(wProps.secondaryAxis) && wProps.secondaryAxis.length) {
+    enc.y2 = wProps.secondaryAxis[0]
+  }
+
+  // Legacy: props.series / encoding.y as array → flatten to y (take first col)
+  // The shared builder handles single-column y; multi-series comes via encoding.y2
+  // for dual-axis or via the color grouping mechanism.
+  if (Array.isArray(enc.y)) {
+    const first = enc.y[0]
+    enc.y = first?.col ?? (typeof first === 'string' ? first : undefined)
+  }
+  if (Array.isArray(wProps.series) && wProps.series.length && !enc.y) {
+    enc.y = wProps.series[0]?.col ?? ''
+  }
+
+  return enc
+}
+
+/**
+ * Merge widget.config and widget.props into the config object for buildChartOption.
+ * widget.config is the canonical store; widget.props holds legacy keys (height, max, min).
+ */
+function resolveConfig(widget) {
+  const cfg = { ...(widget.config ?? {}) }
+  const wProps = widget.props ?? {}
+
+  // Legacy stack in props
+  if (cfg.stack === undefined && (wProps.stack === true || typeof wProps.stack === 'string')) {
+    cfg.stack = wProps.stack
+  }
+  // Legacy gauge max/min
+  if (cfg.yAxis === undefined) {
+    if (wProps.max !== undefined || wProps.min !== undefined) {
+      cfg.yAxis = {}
+      if (wProps.max !== undefined) cfg.yAxis.max = wProps.max
+      if (wProps.min !== undefined) cfg.yAxis.min = wProps.min
+    }
+  }
+
+  return cfg
+}
 
 /**
  * @param {{ widget: object, providerTable?: import('apache-arrow').Table | null }} props
  *
  * providerTable — when supplied by SpecRenderer (BET-3 DataProvider path) the
  * widget skips its own query_id / metric fetch and renders from this table.
- * When absent the legacy query_id / metric path is used unchanged.
  */
 export default function ChartWidget({ widget, providerTable = null }) {
   const {
     query_id,
     chart_type = 'scatter',
-    encoding = {},
-    props: wProps = {},
     params: widgetParams,
     drilldown,
-    onClick: onClickSpec,   // widget.onClick → cross-filter / navigate spec
+    onClick: onClickSpec,
     metric,
   } = widget
 
-  // Resolve x / y / color from encoding (backward-compatible)
-  const xCol    = encoding.x || ''
-  // encoding.y can be a string (simple) or an array (combo) — chartOption handles both
-  const yCol    = typeof encoding.y === 'string' ? encoding.y : ''
-  const colorCol = encoding.color || undefined
+  const { theme: appTheme } = useTheme()
+  const isDark = appTheme === 'dark'
 
-  // Resolve widget params against the variable store — re-renders when vars change.
-  // Widgets with no params get {} and behave identically to pre-M14-C (regression-safe).
   const resolvedParams = useResolvedParams(widgetParams)
-
-  // Board-level refresh epoch — when the board's auto-refresh timer fires this
-  // increments and causes the widget to re-fetch its data.
   const refreshEpoch = useRefreshEpoch()
 
   const [table, setTable] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
-  // BET-3: when a providerTable is supplied, use it directly — skip the
-  // query_id / metric fetch entirely. The provider fetch is shared across all
-  // bound widgets (one call per provider, not one per widget).
+  // BET-3: DataProvider path — use the shared table directly
   useEffect(() => {
     if (providerTable !== null) {
       setTable(providerTable)
@@ -95,8 +151,6 @@ export default function ChartWidget({ widget, providerTable = null }) {
   }, [providerTable])
 
   useEffect(() => {
-    // Skip own fetch when this widget is bound to a DataProvider (providerTable
-    // is supplied by SpecRenderer). Also skip when there is no binding at all.
     if (providerTable !== null) return
     if (!metric && !query_id) return
     let cancelled = false
@@ -105,8 +159,6 @@ export default function ChartWidget({ widget, providerTable = null }) {
       setLoading(true)
       setError(null)
       try {
-        // Governed metric path: server-side compile + RLS injection.
-        // Otherwise the existing query_id path is used EXACTLY as before.
         const hasParams = Object.keys(resolvedParams).length > 0
         const { table: t, cacheStatus } = metric
           ? await runMetricQuery(metric)
@@ -129,37 +181,21 @@ export default function ChartWidget({ widget, providerTable = null }) {
 
     fetchData()
     return () => { cancelled = true }
-  // resolvedParams + metric are new objects each render; JSON.stringify gives a
-  // stable dep so the effect only re-fires when actual values change.
-  // refreshEpoch increments on board auto-refresh ticks.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query_id, JSON.stringify(metric), JSON.stringify(resolvedParams), refreshEpoch, providerTable])
 
-  const height = wProps.height ?? 260
+  const height = (widget.props?.height) ?? 260
 
-  // ── Drilldown / cross-filter (cross-widget filtering + tab navigation) ─────
-  // Supports two opt-in mechanisms — both are inactive unless configured:
-  //
-  //   1. Legacy `drilldown` — writes a single variable (backward-compatible).
-  //      widget.drilldown = { target_var, value_field? }
-  //
-  //   2. New `onClick` spec — uses the CrossFilterContext bus (set var AND/OR
-  //      navigate to a tab, and fires an optional external onCrossFilter callback).
-  //      widget.onClick = { setVar?, valueField?, navigateTab? }
-  //
-  // Both can coexist; the legacy drilldown fires first.
-  const setVariable   = useSetVariable()
+  // Drilldown / cross-filter
+  const setVariable = useSetVariable()
   const { emit: emitCrossFilter } = useCrossFilter()
 
   const onEvents = useMemo(() => {
-    const targetVar    = drilldown?.target_var
+    const targetVar = drilldown?.target_var
     const hasCrossFilter = !!(onClickSpec?.setVar || onClickSpec?.navigateTab)
-
     if (!targetVar && !hasCrossFilter) return undefined
-
     return {
       click: (params) => {
-        // Legacy drilldown path (backward-compatible).
         if (targetVar) {
           const field = drilldown.value_field
           let val
@@ -170,8 +206,6 @@ export default function ChartWidget({ widget, providerTable = null }) {
           }
           if (val !== undefined && val !== null) setVariable(targetVar, val)
         }
-
-        // New cross-filter / navigate path.
         if (hasCrossFilter) {
           emitCrossFilter(onClickSpec, params)
         }
@@ -182,24 +216,27 @@ export default function ChartWidget({ widget, providerTable = null }) {
     onClickSpec, emitCrossFilter,
   ])
 
-  // Build ECharts option — threading encoding + props through for advanced features
+  // Build ECharts option via the shared builder
   const option = useMemo(() => {
-    if (!table || !xCol) return null
-    return buildChartOption({
-      chartType: chart_type,
+    if (!table) return null
+    const encoding = resolveEncoding(widget)
+    const config = resolveConfig(widget)
+    const theme = resolveSpaTheme(isDark, Array.isArray(config.palette) ? config.palette : null)
+
+    const opt = buildChartOption({
+      type: chart_type,
       table,
-      x: xCol,
-      y: yCol || undefined,
-      color: colorCol,
       encoding,
-      props: wProps,
+      config,
+      theme,
     })
-  }, [table, xCol, yCol, colorCol, chart_type, encoding, wProps])
+    return opt
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [table, chart_type, JSON.stringify(widget.encoding), JSON.stringify(widget.config), JSON.stringify(widget.props), isDark])
 
   if (loading) {
     return (
       <div className="flex flex-col h-full p-3 gap-2" aria-busy="true" aria-label="Loading chart">
-        {/* Mimic a bar-chart skeleton: axis area + bars */}
         <div className="flex-1 min-h-0 flex items-end gap-1.5 px-2 pb-2">
           {[55, 80, 40, 90, 65, 75, 50, 85].map((h, i) => (
             <Skeleton
