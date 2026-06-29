@@ -1615,7 +1615,29 @@ async def query(
 
     _t0 = _time.perf_counter()
     try:
-        arrow_table = connector.execute(physical_plan)
+        try:
+            arrow_table = connector.execute(physical_plan)
+        except _AppError:
+            raise
+        except Exception as _exec_exc:  # noqa: BLE001 — classify engine errors
+            # A malformed user query (unknown column/table, parse/binder/catalog
+            # error) is a 400 client error, not a 500. Genuine infra failures
+            # (connection/IO) re-raise → 500.
+            _en = type(_exec_exc).__name__.lower()
+            _em = str(_exec_exc).lower()
+            if (
+                any(k in _en for k in ("binder", "catalog", "parser", "syntax", "conversion", "invalidinput"))
+                or any(k in _em for k in (
+                    "binder error", "catalog error", "parser error", "syntax error",
+                    "referenced column", "does not exist", "not found in from clause",
+                ))
+            ):
+                raise _AppError(
+                    "query_error",
+                    f"Query could not be executed: {str(_exec_exc)[:300]}",
+                    400,
+                ) from _exec_exc
+            raise
 
         # ── 4b. Output-shape contract validation (A4) ────────────────────────
         # Only on cache MISS — cached bytes were validated when first written.

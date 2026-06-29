@@ -435,10 +435,22 @@ class DuckDBConnector(Connector):
                     return result.read_all()
                 return result  # already a pa.Table in older builds
         except Exception as exc:
+            # Classify: a malformed user query (unknown column/table, parse/binder/
+            # catalog/conversion error) is a 400 client error; genuine engine/IO
+            # failures stay 500.
+            _n = type(exc).__name__.lower()
+            _m = str(exc).lower()
+            _client_err = (
+                any(k in _n for k in ("binder", "catalog", "parser", "syntax", "conversion", "invalidinput"))
+                or any(k in _m for k in (
+                    "binder error", "catalog error", "parser error", "syntax error",
+                    "referenced column", "does not exist", "not found in from clause",
+                ))
+            )
             raise AppError(
                 "query_error",
                 f"DuckDB query failed: {exc}",
-                status=500,
+                status=400 if _client_err else 500,
             ) from exc
 
     def execute_stream(self, plan: PhysicalPlan) -> Iterator["pa.RecordBatch"]:

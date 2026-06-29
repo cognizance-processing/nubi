@@ -26,7 +26,8 @@ from typing import Any
 
 from fastapi import Depends, Request
 
-from app.auth.deps import current_user
+from app.auth.deps import current_user, verified_identity
+from app.auth.verify import VerifiedIdentity
 from app.db import fetchrow
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
@@ -59,12 +60,38 @@ def _forbid_viewer(role: str | None) -> None:
         )
 
 
+def _require_write_scope(scopes: list[str]) -> None:
+    """Raise 403 if the token's scope is read-only.
+
+    The DB org role is necessary but NOT sufficient: the JWT ``scope`` claim is
+    an independent capability restriction. A token deliberately minted read-only
+    (e.g. ``scope="read:*"`` for a read-only integration/API key) must NOT be able
+    to mutate even when the underlying user's org role is owner/admin. A token is
+    write-capable iff it carries the super-admin sentinel, ``admin``, or any
+    ``edit:`` / ``write:`` / ``author:`` scope (first-party login sessions carry
+    ``edit:*`` + ``author:*`` and pass; read-only tokens are blocked).
+    """
+    if "*" in scopes:
+        return
+    for s in scopes:
+        if s == "admin" or s.startswith(("edit:", "write:", "author:")):
+            return
+    raise AppError(
+        "insufficient_scope",
+        "This token is read-only (no write-capable scope) and cannot perform "
+        "this action.",
+        403,
+    )
+
+
 async def require_writer(
     request: Request,
     user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
 ) -> None:
-    """Header-aware write guard (mirrors ``resolve_org_id``). 403 for viewers."""
+    """Header-aware write guard (mirrors ``resolve_org_id``). 403 for viewers or read-only-scoped tokens."""
+    _require_write_scope(identity.scope)
     user_id = str(user["id"])
     org_id = await resolve_org_id(user_id, repo, request)
     _forbid_viewer(await get_org_role(user_id, org_id, repo))
@@ -72,9 +99,11 @@ async def require_writer(
 
 async def require_writer_default(
     user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
 ) -> None:
-    """Default-first-org write guard (mirrors ``get_user_org``). 403 for viewers."""
+    """Default-first-org write guard (mirrors ``get_user_org``). 403 for viewers or read-only-scoped tokens."""
+    _require_write_scope(identity.scope)
     user_id = str(user["id"])
     org_id = await get_user_org(user_id, repo)
     _forbid_viewer(await get_org_role(user_id, org_id, repo))
@@ -92,14 +121,16 @@ def _require_approver_role(role: str | None) -> None:
 
 async def require_approver_default(
     user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
 ) -> None:
-    """Default-first-org approver guard (mirrors ``get_user_org``). 403 for non-approvers.
+    """Default-first-org approver guard (mirrors ``get_user_org``). 403 for non-approvers or read-only-scoped tokens.
 
     Approver roles are owner and admin only.  Members, viewers, and unauthenticated
     callers are rejected with 403.  Use on routes that require elevated approval
     permission (e.g. POST /flows/writeback/{id}/approval).
     """
+    _require_write_scope(identity.scope)
     user_id = str(user["id"])
     org_id = await get_user_org(user_id, repo)
     _require_approver_role(await get_org_role(user_id, org_id, repo))
