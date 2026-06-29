@@ -292,6 +292,13 @@ def _build_record(data: dict[str, Any], *, watch_id: str) -> dict[str, Any]:
         if key in data and key not in config:
             config[key] = data[key]
 
+    # Accept a top-level ``labels`` dict and fold it into config.labels so it
+    # is persisted inside the existing JSONB column with no schema migration.
+    # A labels map supplied inside config already takes precedence (it wins).
+    top_labels = data.get("labels")
+    if isinstance(top_labels, dict) and "labels" not in config:
+        config["labels"] = top_labels
+
     # A watch must carry SOME breach rule.
     if not (config.get("threshold") or config.get("comparison") or config.get("change")):
         raise AppError(

@@ -472,3 +472,209 @@ async def test_evaluate_watch_layered_metric_with_rls_policy_no_binder_error(app
     # active=True rows: 10+20+40 = 70 (rows with active=True in the demo table)
     # Threshold > 0 → breached.
     assert result.breached is True
+
+
+# ---------------------------------------------------------------------------
+# labels passthrough — watch_breach webhook carries host-supplied labels
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_breach_event_carries_labels(app, fake_db):
+    """A watch with labels={"category_id":"X"} emits a watch_breach payload
+    that contains labels.category_id == "X" and the watch name.
+    """
+    from unittest.mock import patch
+
+    from app.ai.watch import Watch, evaluate_watch, fire_watch
+    from app.metrics.registry import get_metric_registry
+
+    metric = get_metric_registry().get("demo_revenue")
+    assert metric is not None
+
+    watch = Watch.from_config(
+        id="labels-watch",
+        name="Category Revenue Watch",
+        metric_id="demo_revenue",
+        config={
+            "dimensions": ["name"],
+            "threshold": {"op": ">", "value": 10},
+            "labels": {"category_id": "cat-abc", "region": "ZA"},
+        },
+    )
+
+    # Confirm labels are parsed from config.
+    assert watch.labels == {"category_id": "cat-abc", "region": "ZA"}
+
+    # Evaluate — should breach (demo total 16.5 > 10).
+    result = await evaluate_watch(watch, metric, {"policies": {}})
+    assert result.breached is True
+
+    # Capture what emit_watch_breach is called with.
+    # Patch the function in the events module (where it is defined and looked up
+    # via the lazy import inside fire_watch).
+    captured: dict = {}
+
+    def _fake_emit(org_id, **kwargs):
+        captured.update(kwargs)
+
+    with patch("app.webhooks.events.emit_watch_breach", side_effect=_fake_emit):
+        await fire_watch(watch, result, "Revenue breached.", org_id="org-1")
+
+    assert captured["name"] == "Category Revenue Watch"
+    assert captured["watch_id"] == "labels-watch"
+    assert captured["metric_id"] == "demo_revenue"
+    assert captured["labels"] == {"category_id": "cat-abc", "region": "ZA"}
+    assert captured["labels"]["category_id"] == "cat-abc"
+
+
+@pytest.mark.asyncio
+async def test_breach_event_without_labels_still_works(app, fake_db):
+    """A watch with no labels configured still fires and emits an empty labels map."""
+    from unittest.mock import patch
+
+    from app.ai.watch import Watch, evaluate_watch, fire_watch
+    from app.metrics.registry import get_metric_registry
+
+    metric = get_metric_registry().get("demo_revenue")
+    watch = Watch.from_config(
+        id="no-labels-watch",
+        name="No Labels Watch",
+        metric_id="demo_revenue",
+        config={"dimensions": ["name"], "threshold": {"op": ">", "value": 10}},
+    )
+
+    assert watch.labels == {}
+
+    result = await evaluate_watch(watch, metric, {"policies": {}})
+    assert result.breached is True
+
+    captured: dict = {}
+
+    def _fake_emit(org_id, **kwargs):
+        captured.update(kwargs)
+
+    with patch("app.webhooks.events.emit_watch_breach", side_effect=_fake_emit):
+        await fire_watch(watch, result, "Revenue breached.", org_id="org-1")
+
+    # Labels absent from config → emitted as empty dict (never missing key).
+    assert "labels" in captured
+    assert captured["labels"] == {} or captured["labels"] is None
+
+
+@pytest.mark.asyncio
+async def test_watch_breach_payload_has_no_pii(app, fake_db):
+    """The watch_breach event payload must not contain any row data or secrets.
+
+    Only metadata fields (watch_id, name, metric_id, value, explanation,
+    labels) are permitted.  labels are host-supplied identifiers, not row data.
+    """
+    from app.webhooks.events import build_envelope, WATCH_BREACH
+
+    payload = {
+        "watch_id": "wid-1",
+        "name": "Revenue Watch",
+        "metric_id": "demo_revenue",
+        "value": 16.5,
+        "explanation": "Revenue is 16.5, > the 10 threshold.",
+        "labels": {"category_id": "cat-xyz"},
+    }
+    envelope = build_envelope(WATCH_BREACH, "org-1", payload)
+
+    assert envelope["type"] == WATCH_BREACH
+    data = envelope["data"]
+
+    # Required metadata fields present.
+    assert data["watch_id"] == "wid-1"
+    assert data["name"] == "Revenue Watch"
+    assert data["metric_id"] == "demo_revenue"
+    assert data["labels"]["category_id"] == "cat-xyz"
+
+    # No raw rows / SQL / PII fields.
+    forbidden = {"rows", "sql", "result", "filter", "filters", "where", "params"}
+    assert not forbidden.intersection(set(data.keys())), (
+        f"payload must not carry any of {forbidden}; got: {set(data.keys())}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_labels_from_top_level_body_folded_into_config(w_client):
+    """POST /watches with top-level labels stores them under config.labels."""
+    client, user_id, _org_id = w_client
+    headers = _auth_headers(user_id)
+
+    name = f"Labelled Watch {uuid.uuid4().hex[:8]}"
+    body = {
+        "name": name,
+        "metric_id": "demo_revenue",
+        "labels": {"category_id": "cat-top"},
+        "config": {
+            "threshold": {"op": ">", "value": 10},
+            "enabled": True,
+        },
+    }
+    resp = await client.post("/api/v1/watches", json=body, headers=headers)
+    assert resp.status_code == 201, resp.text
+    created = resp.json()
+    assert created["config"]["labels"] == {"category_id": "cat-top"}
+
+
+@pytest.mark.asyncio
+async def test_labels_inside_config_wins_over_top_level(w_client):
+    """When labels exist in both config and top-level, config takes precedence."""
+    client, user_id, _org_id = w_client
+    headers = _auth_headers(user_id)
+
+    name = f"Labels Priority Watch {uuid.uuid4().hex[:8]}"
+    body = {
+        "name": name,
+        "metric_id": "demo_revenue",
+        "labels": {"category_id": "top-level"},
+        "config": {
+            "threshold": {"op": ">", "value": 10},
+            "labels": {"category_id": "config-level"},
+        },
+    }
+    resp = await client.post("/api/v1/watches", json=body, headers=headers)
+    assert resp.status_code == 201, resp.text
+    created = resp.json()
+    # config.labels wins.
+    assert created["config"]["labels"]["category_id"] == "config-level"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_breaching_watch_with_labels_emits_label(app, fake_db):
+    """run_watch on a labelled breaching watch emits labels in the webhook payload."""
+    from unittest.mock import patch
+
+    from app.ai.watch import Watch, run_watch
+    from app.metrics.registry import get_metric_registry
+
+    metric = get_metric_registry().get("demo_revenue")
+
+    watch = Watch.from_config(
+        id="full-path-labels-watch",
+        name="Full Path Labels Watch",
+        metric_id="demo_revenue",
+        config={
+            "dimensions": ["name"],
+            "threshold": {"op": ">", "value": 10},
+            "labels": {"category_id": "cat-full"},
+        },
+    )
+
+    emitted: list[dict] = []
+
+    def _capture(org_id, **kwargs):
+        emitted.append({"org_id": org_id, **kwargs})
+
+    # Patch the function where it is defined (looked up lazily from fire_watch).
+    with patch("app.webhooks.events.emit_watch_breach", side_effect=_capture):
+        summary = await run_watch(watch, metric, {"policies": {}, "org_id": "org-full"})
+
+    assert summary["breached"] is True
+    assert len(emitted) == 1
+    ev = emitted[0]
+    assert ev["labels"] == {"category_id": "cat-full"}
+    assert ev["name"] == "Full Path Labels Watch"
+    assert ev["watch_id"] == "full-path-labels-watch"
