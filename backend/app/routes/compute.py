@@ -268,7 +268,14 @@ def _choose_runner():
     if provider == "e2b" and settings.E2B_API_KEY:
         from app.compute.remote_e2b import E2BRunner  # lazy import
 
-        return E2BRunner(api_key=settings.E2B_API_KEY, timeout_s=30)
+        # Plumb the custom attribution template explicitly (empty -> base image).
+        # E2BRunner also reads E2B_TEMPLATE from the env as a fallback, but the
+        # live path must not rely on that implicit behavior.
+        return E2BRunner(
+            api_key=settings.E2B_API_KEY,
+            timeout_s=30,
+            template=settings.E2B_TEMPLATE or None,
+        )
 
     # ── 2. Modal remote runner ────────────────────────────────────────────────
     if provider == "modal" and settings.MODAL_TOKEN_ID and settings.MODAL_TOKEN_SECRET:

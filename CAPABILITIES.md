@@ -152,8 +152,9 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 
 > **Metric vs. model explainability — the boundary.** Nubi owns **metric**
 > explainability: `POST /metrics/{id}/explain` decomposes *why a metric number
-> moved* across dimensions (per-member delta / share / explanatory_power /
-> coverage). It is pure math over the semantic layer — no model is involved.
+> moved* across dimensions (per-member delta/share, plus per-dimension
+> coverage/explanatory_power). It is pure math over the semantic layer — no
+> model is involved.
 > **Model** explainability (per-prediction feature attribution / SHAP on the
 > host's own predictive models) stays host-side; Nubi does no ML modelling.
 >

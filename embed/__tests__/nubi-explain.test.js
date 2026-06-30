@@ -79,6 +79,24 @@ function _sortFeatures(features) {
   return features.slice().sort((a, b) => Math.abs(b.contribution || 0) - Math.abs(a.contribution || 0))
 }
 
+// Mirrors of the production guards in nubi-explain.js (the test file inlines
+// pure logic rather than importing the browser module).
+const MODEL_ATTRIB_MAX_ROWS = 50
+
+function _isModelAttribution(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false
+  if (v.kind === 'model_attribution') return true
+  return Array.isArray(v.features) && v.features.length > 0
+}
+
+// Normalize-once + sort + cap, matching _renderModelAttribution's row pipeline.
+function _prepareFeatures(features) {
+  const all = (Array.isArray(features) ? features : [])
+    .map((f) => ({ ...f, _c: Number(f.contribution) || 0 }))
+  all.sort((a, b) => Math.abs(b._c) - Math.abs(a._c))
+  return { shown: all.slice(0, MODEL_ATTRIB_MAX_ROWS), hidden: Math.max(0, all.length - MODEL_ATTRIB_MAX_ROWS) }
+}
+
 function _makeSampleData() {
   return {
     metric_id: 'demo',
@@ -372,5 +390,52 @@ describe('feature sort by |contribution|', () => {
     const a = _makeSampleModelAttribution()
     const sorted = _sortFeatures(a.features)
     assert.equal(sorted[0].feature, 'promo_active')
+  })
+})
+
+describe('_isModelAttribution (host-payload presence guard)', () => {
+  test('accepts a payload with the discriminator', () => {
+    assert.ok(_isModelAttribution({ kind: 'model_attribution', features: [] }))
+  })
+
+  test('accepts a payload with a non-empty features array (no discriminator)', () => {
+    assert.ok(_isModelAttribution({ features: [{ feature: 'x', contribution: 1 }] }))
+  })
+
+  test('rejects empty object, array, null and primitives (no empty section)', () => {
+    assert.ok(!_isModelAttribution({}))
+    assert.ok(!_isModelAttribution({ features: [] }))
+    assert.ok(!_isModelAttribution([]))
+    assert.ok(!_isModelAttribution(null))
+    assert.ok(!_isModelAttribution('model_attribution'))
+  })
+})
+
+describe('_prepareFeatures (normalize + cap)', () => {
+  test('caps rendered rows at MODEL_ATTRIB_MAX_ROWS and reports the remainder', () => {
+    const features = Array.from({ length: 130 }, (_, i) => ({ feature: `f${i}`, contribution: i + 1 }))
+    const { shown, hidden } = _prepareFeatures(features)
+    assert.equal(shown.length, MODEL_ATTRIB_MAX_ROWS)
+    assert.equal(hidden, 130 - MODEL_ATTRIB_MAX_ROWS)
+    // Highest-magnitude drivers survive the cap (descending sort, then slice).
+    assert.equal(shown[0].feature, 'f129')
+  })
+
+  test('no cap applied below the limit', () => {
+    const { shown, hidden } = _prepareFeatures([{ feature: 'a', contribution: 2 }])
+    assert.equal(shown.length, 1)
+    assert.equal(hidden, 0)
+  })
+
+  test('non-numeric contribution normalizes to 0 consistently for sort and scale', () => {
+    const { shown } = _prepareFeatures([
+      { feature: 'bad', contribution: 'high' },
+      { feature: 'real', contribution: -5 },
+    ])
+    // 'real' (|−5|) outranks the garbage-valued 'bad' (→0), which no longer
+    // sorts ahead of a legitimate driver.
+    assert.equal(shown[0].feature, 'real')
+    assert.equal(shown[0]._c, -5)
+    assert.equal(shown[1]._c, 0)
   })
 })

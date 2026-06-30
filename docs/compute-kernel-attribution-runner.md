@@ -36,10 +36,15 @@ exceeding them aborts the run.
 | ------------- | ------------------------------ |
 | Runtime       | Python only (no shell/network) |
 | Wall-clock    | 120 s                          |
-| Memory        | 2 GiB                          |
+| Memory        | dev runner: 2 GiB (`RLIMIT_AS`); E2B: whatever the template/plan grants |
 | Result size   | 64 MiB (Arrow IPC)             |
 | Code size     | ~100k characters               |
 | Network       | None — the sandbox is sealed   |
+
+The wall-clock (120 s) and result-size (64 MiB) ceilings are enforced for **both**
+runners. The 2 GiB memory cap is a POSIX `RLIMIT_AS` enforced only by the local
+dev runner; on E2B, memory is whatever the sandbox template/plan allocates
+(`e2b.toml` sets no `memory_mb`), so size your workload accordingly.
 
 Because the sandbox is **network-sealed**, a runtime `pip install` does **not**
 work. The attribution / ML-inference stack (`shap`, `scikit-learn`,
@@ -135,3 +140,9 @@ verbatim; interpreting those numbers is the caller's job.
 - `result` may be a `pyarrow.Table` or a `pandas.DataFrame` (auto-converted).
 - Keep the result under the 64 MiB Arrow cap — return attribution values, not
   raw intermediate arrays.
+- **Pickle is version-sensitive.** A `scikit-learn`/`xgboost` model pickled on the
+  host must be loadable by the versions baked into the sandbox image
+  (`scikit-learn==1.7.2`, `xgboost==3.0.5`, etc. — see
+  `backend/app/compute/e2b/e2b.Dockerfile`). Serialize with matching versions, or
+  use a version-stable format (e.g. ONNX via `onnxruntime`) to avoid unpickling
+  warnings/failures.

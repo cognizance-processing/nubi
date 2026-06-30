@@ -27,8 +27,18 @@
 # =============================================================================
 
 # E2B base image — Debian + Python 3 + the E2B sandbox agent.
-# Pinned to a specific tag so rebuilds are reproducible.
+#
+# NOTE: `:latest` is a MUTABLE tag — it is NOT reproducible. Before publishing
+# this template for production, pin a digest (`e2bdev/code-interpreter@sha256:…`)
+# or a concrete dated tag and bump it deliberately, exactly like the pip pins
+# below. Left as `:latest` only so the template builds out-of-the-box pre-pin.
 FROM e2bdev/code-interpreter:latest
+
+# The pinned numpy/scipy below require Python >= 3.11 (numpy 2.3.x dropped 3.10).
+# Fail the build LOUDLY and early if the base image ever floats to an older
+# interpreter, rather than emitting a confusing "no matching wheel" pip error.
+RUN python -c "import sys; assert sys.version_info >= (3, 11), \
+    f'base image Python {sys.version_info.major}.{sys.version_info.minor} < 3.11 — pin a newer base tag'"
 
 # --- Attribution / ML-inference stack -------------------------------------
 # numpy / pandas / pyarrow are already present in the base image, but we pin

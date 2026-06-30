@@ -17,9 +17,10 @@ name = "nubi-attribution-runner"
 # Path to the Dockerfile that defines the sandbox image (relative to this file).
 dockerfile = "e2b.Dockerfile"
 
-# Default sandbox lifetime in seconds.  The Nubi kernel enforces its own
-# per-call wall-clock timeout (120 s) on top of this; this is the upper bound
-# E2B will keep an idle sandbox alive.
+# Command run when the sandbox starts. Empty = use the base image's default
+# (the E2B agent). The Nubi kernel writes/execs the harness per call, so no
+# custom start command is needed here. (Per-call wall-clock is enforced in the
+# backend at 120 s — see routes/compute.py — not via this manifest.)
 start_cmd = ""
 
 # template_id is populated by `e2b template build` after the first successful

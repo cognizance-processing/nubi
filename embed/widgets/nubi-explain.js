@@ -491,6 +491,22 @@ function _fmtSigned(n) {
   return sign + new Intl.NumberFormat(undefined, { maximumFractionDigits: digits }).format(abs)
 }
 
+// Max model-attribution feature rows rendered, to bound DOM from a host payload
+// (the metric-contribution path is bounded by the `top-n` attribute; this is its
+// equivalent guard). Excess rows collapse into a "+N more" affordance.
+const MODEL_ATTRIB_MAX_ROWS = 50
+
+// A host-supplied model-attribution payload counts as "present" only when it is
+// a plain object (not an array) that actually carries attribution content —
+// either the explicit discriminator or a non-empty `features` list. This keeps
+// an empty `{}` / stray array from re-titling the metric section with nothing to
+// show beside it.
+function _isModelAttribution(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false
+  if (v.kind === 'model_attribution') return true
+  return Array.isArray(v.features) && v.features.length > 0
+}
+
 // Unsigned, adaptive-precision formatter for base value / prediction value.
 function _fmtValue(n) {
   if (n === null || n === undefined || isNaN(n)) return '—'
@@ -590,14 +606,14 @@ class NubiExplain extends HTMLElement {
    * @returns {ModelAttribution|null}
    */
   _resolveModelAttribution() {
-    if (this._modelAttribution && typeof this._modelAttribution === 'object') {
+    if (_isModelAttribution(this._modelAttribution)) {
       return this._modelAttribution
     }
     const attr = this.getAttribute('model-attribution')
     if (attr) {
       try {
         const parsed = JSON.parse(attr)
-        if (parsed && typeof parsed === 'object') return parsed
+        if (_isModelAttribution(parsed)) return parsed
       } catch (err) {
         console.warn('[nubi-explain] invalid model-attribution attribute:', err.message)
       }
@@ -800,19 +816,24 @@ class NubiExplain extends HTMLElement {
       body.appendChild(meta)
     }
 
-    // Feature rows, sorted by |contribution| descending.
-    const features = Array.isArray(attrib.features) ? attrib.features.slice() : []
-    features.sort((a, b) => Math.abs(b.contribution || 0) - Math.abs(a.contribution || 0))
+    // Feature rows: normalize each contribution to a number ONCE (so sort key,
+    // scale, and bar all agree even on non-numeric host input), sort by
+    // |contribution| descending, then cap the rendered count.
+    const allFeatures = (Array.isArray(attrib.features) ? attrib.features : [])
+      .map((f) => ({ ...f, _c: Number(f.contribution) || 0 }))
+    allFeatures.sort((a, b) => Math.abs(b._c) - Math.abs(a._c))
+    const hiddenCount = Math.max(0, allFeatures.length - MODEL_ATTRIB_MAX_ROWS)
+    const features = allFeatures.slice(0, MODEL_ATTRIB_MAX_ROWS)
 
     let maxAbs = 0
     for (const f of features) {
-      const c = Math.abs(f.contribution || 0)
+      const c = Math.abs(f._c)
       if (c > maxAbs) maxAbs = c
     }
     if (maxAbs < 1e-9) maxAbs = 1
 
     for (const f of features) {
-      const c = Number(f.contribution) || 0
+      const c = f._c
       const dir = c > 1e-9 ? 'up' : c < -1e-9 ? 'down' : 'flat'
       const widthPct = Math.min(50, (Math.abs(c) / maxAbs) * 50)
 
@@ -846,6 +867,13 @@ class NubiExplain extends HTMLElement {
       row.appendChild(barWrap)
       row.appendChild(contribEl)
       body.appendChild(row)
+    }
+
+    if (hiddenCount > 0) {
+      const more = document.createElement('div')
+      more.className = 'attrib-summary'
+      more.textContent = `+${hiddenCount} more feature${hiddenCount === 1 ? '' : 's'} (showing top ${MODEL_ATTRIB_MAX_ROWS} by |contribution|)`
+      body.appendChild(more)
     }
 
     if (attrib.summary) {
