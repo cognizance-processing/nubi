@@ -29,6 +29,18 @@ import { useTheme } from '../../contexts/ThemeContext.jsx'
 import { getAccessToken } from '../../lib/api.js'
 import { registerSpaTokenBridge, applySpaThemeTo } from '../../lib/embedBridge.js'
 import { PageRoot, PageHeader } from '../../components/app/PageShell.jsx'
+import { _makeSampleModelAttribution } from '../../../embed/widgets/nubi-explain.js'
+
+// ---------------------------------------------------------------------------
+// Host-supplied model-attribution payload (the SECOND, distinct payload).
+//
+// Nubi does NOT compute this — it answers "why did the model predict X" rather
+// than "why did the number move". A real deployment would build this from its
+// own model's per-prediction SHAP/feature attributions and pass it in via the
+// `.modelAttribution` property. Here we use the widget's sample so the dogfood
+// shows the two payloads rendered side-by-side, visually namespaced.
+// ---------------------------------------------------------------------------
+const SAMPLE_MODEL_ATTRIBUTION = _makeSampleModelAttribution()
 
 // ---------------------------------------------------------------------------
 // Token bridge — install the window callback once per module load.
@@ -104,7 +116,13 @@ export default function ExplorePage() {
 
   const attachExplain = useCallback((el) => {
     explainRef.current = el
-    if (el) applySpaThemeTo(el)
+    if (el) {
+      applySpaThemeTo(el)
+      // Explicit prop pathway: hand the host's model-attribution payload to the
+      // widget. The widget renders it as a separate, namespaced section and
+      // never calls the backend for it.
+      el.modelAttribution = SAMPLE_MODEL_ATTRIBUTION
+    }
   }, [explainRef])
 
   return (
