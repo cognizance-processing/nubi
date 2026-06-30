@@ -184,6 +184,12 @@ class Settings(BaseSettings):
     # as placeholders for when a full Modal implementation lands.
     KERNEL_REMOTE_PROVIDER: str = ""   # '' | 'e2b'  ('modal' is a stub — not for production use)
     E2B_API_KEY: str = ""              # E2B API key (e2b-code-interpreter)
+    # Optional E2B sandbox template id/name.  When empty the E2B *base* image is
+    # used (numpy/pandas/pyarrow only).  Set this to the custom Nubi attribution
+    # template (built from backend/app/compute/e2b/) to make the BYO-model
+    # attribution stack — shap, scikit-learn, onnxruntime, xgboost — available
+    # inside the sandbox.  See docs/compute-kernel-attribution-runner.md.
+    E2B_TEMPLATE: str = ""             # E2B sandbox template id/name (built from backend/app/compute/e2b/)
     MODAL_TOKEN_ID: str = ""           # Modal token ID (reserved — modal stub not yet implemented)
     MODAL_TOKEN_SECRET: str = ""       # Modal token secret (reserved — modal stub not yet implemented)
 
