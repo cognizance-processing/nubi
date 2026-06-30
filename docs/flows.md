@@ -430,4 +430,154 @@ Click any node in the run view to open the **task result** panel. It shows:
 - **Use the schedule, not manual runs.** Once a pipeline is working, attach a schedule and let it run automatically rather than triggering it by hand each time.
 - **Mind the wallet.** Previews are cheap; full durable runs and large materializations cost more compute units.
 
+---
+
+## Flow task types
+
+Cells cover the common SQL and Python patterns. For more specialised steps — calling external APIs, enforcing data contracts, or materialising model refreshes — Nubi ships dedicated **task kinds** you configure in the Inspector (canvas view) or directly in `flow.py` (code view).
+
+---
+
+### `http_call` — outbound HTTP requests
+
+The `http_call` task POSTs (or GET/PUT/PATCH/DELETE) to an HTTP endpoint from inside a flow run. Use it when your scheduler needs to trigger an action on an external service — for example, notifying a downstream system that a model has refreshed, or kicking off a nightly job managed by another service.
+
+#### Configuration
+
+```jsonc
+{
+  "url":    "https://api.example.com/hooks/nightly",   // required
+  "method": "POST",                                     // default POST
+  "headers": { "X-Source": "nubi-flow" },              // optional
+  "body":    { "run_date": "{{ params.run_date }}" },  // optional JSON — supports {{ params }}
+  "timeout_s": 30,                                     // default 30 s
+  "auth": {
+    "kind":        "bearer",            // bearer | header | basic
+    "secret_name": "MY_WEBHOOK_KEY"     // org secret name — value is never logged
+  }
+}
+```
+
+**Auth kinds:**
+
+| `kind` | Header injected |
+|--------|----------------|
+| `bearer` | `Authorization: Bearer <secret>` |
+| `header` | `<auth.header_name>: <secret>` (arbitrary header name) |
+| `basic` | `Authorization: Basic base64(user:secret)` (`user` defaults to `"nubi"`) |
+
+The `secret_name` references an [org secret](/docs/secrets) — the resolved value is injected at run time and never written to logs, run records, or task results.
+
+#### Success and failure
+
+The task returns `{ status_code, ok, response_snippet, url, method }`. **A 2xx response is success; anything else fails the run** and surfaces the status code and the first 2 KB of the response body in the task result panel.
+
+#### Security
+
+- **SSRF guard** — every URL is DNS-resolved before the socket is opened. Loopback, RFC1918, link-local, and cloud-metadata addresses (`169.254.169.254` etc.) are always blocked. Set `NUBI_SSRF_ALLOW_PRIVATE=1` for self-hosted dev.
+- **Org-level allowlist** — add an `http_call_allowed_hosts` list to the flow's `runtime_config` to restrict which hostnames this flow may call. Evaluated *after* the SSRF check, so the allowlist can never bypass the always-blocked set.
+- **DNS-rebinding-safe** — the connection is pinned to the IP resolved at check time; the hostname is re-used only for SNI / `Host`, not for a second DNS lookup.
+
+```jsonc
+// flow.py runtime_config — optional allowlist
+{
+  "runtime_config": {
+    "http_call_allowed_hosts": ["api.example.com", "hooks.internal.example.com"]
+  }
+}
+```
+
+---
+
+### `assert` — data-quality expectations
+
+The `assert` task runs a set of data-quality expectations against a table or query result and **fails the run if any expectation is violated** — the flows equivalent of a SQLMesh audit.
+
+Place an `assert` cell immediately after a model cell that writes data to catch integrity issues before downstream cells consume them.
+
+#### Expectations
+
+**`row_count`** — verify the table has an expected number of rows.
+
+```jsonc
+{
+  "kind": "row_count",
+  "min": 1,         // at least N rows
+  "max": 1000000,   // at most N rows
+  "exact": 42       // exactly N rows (use sparingly in schedules)
+}
+```
+
+**`not_null`** — check that listed columns have no NULLs.
+
+```jsonc
+{ "kind": "not_null", "columns": ["id", "created_at", "amount"] }
+```
+
+**`unique`** — check that a column or column-tuple has no duplicates.
+
+```jsonc
+{ "kind": "unique", "column": "order_id" }
+// or for a composite key:
+{ "kind": "unique", "columns": ["order_id", "line_num"] }
+```
+
+**`custom_sql`** — author-defined SQL assertion.
+
+Two modes, auto-detected:
+
+- **Zero-row mode** (default): the SELECT must return 0 rows. Any rows returned are violations.
+- **Scalar-boolean mode**: the SELECT returns exactly one cell; a truthy value (1, `true`, `"yes"`) passes.
+
+```jsonc
+{
+  "kind": "custom_sql",
+  "name": "no_negative_amounts",
+  "sql":  "SELECT id FROM {{ target }} WHERE amount < 0"
+}
+// Or scalar-boolean style:
+{
+  "kind": "custom_sql",
+  "name": "amount_positive_check",
+  "sql":  "SELECT COUNT(*) = 0 AS ok FROM {{ target }} WHERE amount < 0"
+}
+```
+
+`{{ target }}` in the SQL is replaced with the safe, quoted table reference from `config.target`.
+
+#### Full config shape
+
+```jsonc
+{
+  "target":       "analytics.orders",   // fully-qualified table identifier
+  "datastore_id": "uuid",               // optional — defaults to demo DuckDB
+
+  "expectations": [
+    { "kind": "row_count", "min": 1 },
+    { "kind": "not_null", "columns": ["id"] },
+    { "kind": "unique", "column": "id" },
+    { "kind": "custom_sql", "name": "positive_amounts",
+      "sql": "SELECT id FROM {{ target }} WHERE amount < 0" }
+  ]
+}
+```
+
+#### Result payload
+
+```json
+{
+  "passed": 3,
+  "failed": 1,
+  "total":  4,
+  "results": [
+    { "expectation": "row_count(\"analytics\".\"orders\")", "passed": true,  "detail": "row_count=84000" },
+    { "expectation": "not_null(..., [id])",                  "passed": true,  "detail": "no NULLs found" },
+    { "expectation": "unique(..., [id])",                    "passed": true,  "detail": "all values unique" },
+    { "expectation": "custom_sql:positive_amounts",          "passed": false, "detail": "returned 3 violation row(s)" }
+  ]
+}
+```
+
+When any expectation fails the run is marked **failed** and the error message names every violation, so alerts surface the detail without requiring you to inspect logs manually.
+
 See also: [Secrets](/docs/secrets) for `{{ secrets.NAME }}`, [Connectors](/docs/connectors) for Run against targets, [Dashboards](/docs/dashboards) for consuming materialized outputs, [Git sync](/docs/git-sync) for flows on disk, and [Billing and usage](/docs/billing-and-usage) for how compute units are metered.

@@ -39,6 +39,79 @@ Conventions:
   cap (`_MAX_TOKENS=4096`) are preserved as inner guards.
 
 ### Added
+- **`http_call` flow task.** Flows can now POST (or GET/PUT/PATCH/DELETE) to any
+  external HTTP endpoint from inside a flow run. Config: `url`, `method`,
+  `headers`, `body` (JSON, supports `{{ params }}`), `timeout_s`, and `auth`
+  (kinds: `bearer` / `header` / `basic`, all via an org secret-ref). Security:
+  SSRF-guarded via DNS-rebinding-safe IP-pinning; optional org-level
+  `http_call_allowed_hosts` allowlist in `runtime_config`. Fails the run on
+  non-2xx. Response capped at 2 KB in the run record.
+  See [flows § http_call](docs/flows.md#http_call--outbound-http-requests).
+
+- **`assert` data-quality flow task.** A new `assert` task kind runs
+  data-quality expectations against a table or query result and fails the run
+  on any violation — the flows equivalent of a SQLMesh audit. Supported
+  expectations: `row_count` (min/max/exact), `not_null` (per column),
+  `unique` (single column or composite key), `custom_sql` (zero-row mode or
+  scalar-boolean mode; `{{ target }}` placeholder). Runs through the same
+  planner path as query cells, honouring RLS. Result payload names every
+  failing expectation and its actual value.
+  See [flows § assert](docs/flows.md#assert--data-quality-expectations).
+
+- **Native GCS connector.** The `duckdb_storage` connector now handles
+  `gs://` URIs via DuckDB's native `TYPE gcs` secret — no S3-compat
+  `storage.googleapis.com` workaround required. Credential modes: HMAC key
+  pair (`gcs_access_key_id` / `gcs_secret`) or Application Default Credentials
+  (ADC) when both keys are empty, suitable for GCE/GKE Workload Identity. The
+  connection is hardened identically to the S3 path: local FS access blocked,
+  config frozen after secret registration.
+  See [connectors § GCS](docs/connectors.md#native-google-cloud-storage-gcs-connector).
+
+- **Column profiling (`GET /datasets/{id}/profile`).** New endpoint returns
+  per-column statistics in a single DuckDB pass: `null_rate` (fraction of
+  NULLs), `distinct_count` (HyperLogLog approximate), `min` / `max` (cast to
+  string), and `type` (DuckDB type string). Default sample cap: 100 000 rows
+  (override via `?sample_rows=N` or `NUBI_PROFILE_SAMPLE_ROWS`). Works across
+  local, S3, and GCS-backed datasets — credentials resolved from the dataset's
+  connector config.
+  See [connectors § Column profiling](docs/connectors.md#column-profiling).
+
+- **Cross-model column lineage (`resolve_column_lineage`).** The lineage DAG
+  now supports column-level provenance tracing across model layers.
+  `resolve_column_lineage(dag, node_id, column, max_hops)` walks upstream
+  following `SELECT col AS alias` renames at each hop, falls back to
+  table-level edges for `SELECT *` layers (marked `select_star: true`), and
+  has a cycle guard + depth ceiling (max 20 hops). Used internally by the
+  auto-rebuild hook and the lineage panel.
+  See [lineage § Cross-model column lineage](docs/lineage.md#cross-model-column-lineage).
+
+- **Lineage-driven auto-rebuild (`runtime_config.auto_rebuild_downstream`).**
+  Opt-in flag on a flow spec: when set to `true`, a successful run
+  automatically enqueues all downstream dependent flows in the same org
+  (lineage DAG traversal, up to 20 hops). Guards: org-scoped, cycle-safe
+  (`_visited` set), storm-safe debounce, fan-out cap, success-only, best-effort
+  (never fails the upstream run).
+  See [lineage § Lineage-driven auto-rebuild](docs/lineage.md#lineage-driven-auto-rebuild).
+
+- **`explain_metric_change` AI agent tool.** The in-app AI assistant can now
+  explain why a metric moved between two time windows in natural language. The
+  tool runs the same dimension-contribution decomposition as
+  `POST /metrics/{id}/explain` — delta totals, per-dimension explanatory power
+  and coverage, top-N members sorted by absolute delta — and verbalizes the
+  findings in the chat panel. RLS enforced identically to `query_metric`.
+  See [ai-and-mcp § explain_metric_change](docs/ai-and-mcp.md#explain_metric_change--conversational-metric-drill-downs).
+
+- **Per-org rate limiting + embed token exemption.** The rate-limit middleware
+  now keys token buckets on the **verified org** from the JWT (HS256
+  first-party or RS256/ES256 embed), not on IP alone. A forged `org` claim
+  triggers a verification failure and falls back to IP-keyed limiting. Verified
+  embed tokens (`kind: "embed"`) are fully exempt from the per-org query bucket
+  on metric and registered-query read paths (`POST /metrics/{id}/query|sql|explain`
+  and `POST /query`/`/query/*`) so cockpit dashboards can fire tile queries
+  concurrently without hitting the cap. First-party tokens on those paths remain
+  subject to the per-org bucket.
+  See [embedding § Rate limiting](docs/embedding.md#rate-limiting-and-embed-exemption).
+
 - **Watches as code via `nubi apply`.** `watches/*.yaml` files in a bundle
   directory are now registered by `nubi apply` (`POST /api/v1/apply`) alongside
   metrics, dashboards, queries, and flows. The operation is idempotent (stable

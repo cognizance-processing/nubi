@@ -23,9 +23,12 @@ _Last reviewed: 2026-06-26 · branch `wave/trim-stubs`._
 | Registered queries + typed `{{params}}` | ✅ | `POST /query`, `/query/registry` | [queries-and-params](docs/queries-and-params.md) |
 | Governed semantic metrics — serving | ✅ | `POST /metrics/{id}/query` | [metrics-reference](docs/metrics-reference.md) |
 | Metric explainability — dimension-contribution decomposition (why a number moved) | ✅ | `POST /metrics/{id}/explain` | [metrics-reference](docs/metrics-reference.md#contribution-analysis-post-metricsidexplain) |
+| **Conversational metric drill-down (`explain_metric_change` agent tool)** | ✅ | AI agent tool; same computation as `POST /metrics/{id}/explain`, verbalized in chat | [ai-and-mcp](docs/ai-and-mcp.md#explain_metric_change--conversational-metric-drill-downs) |
 | Metric authoring (derived/ratio, time-intel, top-N) | ✅ | `/metrics` CRUD (`author:metric`) | [semantic-and-data-apps](docs/semantic-and-data-apps.md) |
 | Pre-aggregations / rollups (transparent routing) | ✅ | auto, query-log mined | [pre-aggregations](docs/pre-aggregations.md) |
 | Connectors (Postgres, DuckDB, MySQL, JDBC, HttpJson, BYO) | ✅ | `/connectors` | [connectors](docs/connectors.md) |
+| **Native GCS connector (`gs://` via DuckDB `TYPE gcs`)** | ✅ | `duckdb_storage` connector; HMAC key pair or ADC | [connectors](docs/connectors.md#native-google-cloud-storage-gcs-connector) |
+| **Column profiling (`null_rate` / `distinct_count` / `min` / `max` per column)** | ✅ | `GET /datasets/{id}/profile` | [connectors](docs/connectors.md#column-profiling) |
 | Result cache (keyed on SQL+params+RLS) | ✅ | internal | [cache-key-spec](docs/cache-key-spec.md) |
 
 **Rate/SLA for host calls:** query-class routes (incl. `/metrics/{id}/query`) are
@@ -77,12 +80,16 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 | Dependency DAG | ✅ | `GET /lineage/dag`, `/lineage/dag/{node}` | [lineage](docs/lineage.md) |
 | Metric lineage (input columns + upstream) | ✅ | `GET /metrics/{id}/lineage` | [lineage](docs/lineage.md) |
 | Flow/cell column lineage | ✅ | `GET /lineage/flow/{id}`, `/lineage/query/{id}` | [lineage](docs/lineage.md) |
+| **Cross-model column lineage (`resolve_column_lineage`)** | ✅ | `resolve_column_lineage(dag, node_id, column, max_hops)` — alias-aware, cycle-safe, SELECT * fallback | [lineage](docs/lineage.md#cross-model-column-lineage) |
+| **Lineage-driven auto-rebuild (`auto_rebuild_downstream`)** | ✅ | `runtime_config.auto_rebuild_downstream = true` on flow spec; fires downstream flows on upstream success | [lineage](docs/lineage.md#lineage-driven-auto-rebuild) |
 
 ## E. Transformation, flows & environments
 
 | Capability | Status | Contract | Docs |
 |---|---|---|---|
 | Cell-based flows (SQL/Python/Note), DAG + notebook views | ✅ | `/flows` | [flows](docs/flows.md) |
+| **`http_call` flow task** — SSRF-guarded outbound HTTP from a flow, auth via org secret-ref, org allowlist | ✅ | `kind: http_call` in FlowSpec; fails run on non-2xx | [flows](docs/flows.md#http_call--outbound-http-requests) |
+| **`assert` flow task** — `row_count` / `not_null` / `unique` / `custom_sql` expectations; fails run on violation | ✅ | `kind: assert` in FlowSpec | [flows](docs/flows.md#assert--data-quality-expectations) |
 | Flow spec **version history + revert** | ✅ | `GET /flows/{id}/versions`, `POST /flows/{id}/revert/{v}` | [transformation](docs/transformation.md) |
 | Environment list + watermarks (read) | ✅ | `GET /flows/{id}/environments` | [transformation](docs/transformation.md) |
 | Environment pin/create (write) | 🟡 | via `/environments` routes (not under `/flows`) | [transformation](docs/transformation.md) |
@@ -129,6 +136,7 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 | Per-viewer JWT (RS256/ES256), token-locked params | ✅ | `get-token` bridge | [embedding](docs/embedding.md) |
 | 25-token theme contract, cross-filter bus, scope gating | ✅ | `NubiContext` | [embed-api](docs/embed-api.md) |
 | Data-custody tier (BYO storage, CMEK, region pin) | ✅ | opt-in | [custody-tier](docs/custody-tier.md) |
+| **Per-org rate limiting + embed exemption** — token-bucket keyed by verified org; verified embed tokens exempt on metric/query read paths | ✅ | `middleware/ratelimit.py`; `NUBI_RATELIMIT_QUERY_RPM` (default 120) | [embedding](docs/embedding.md#rate-limiting-and-embed-exemption) |
 
 ## I. Audit & governance reads
 

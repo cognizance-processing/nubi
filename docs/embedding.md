@@ -408,6 +408,46 @@ Use this before shipping an embed to production.
 
 ---
 
+## Rate limiting and embed exemption
+
+Nubi enforces per-org rate limits on query-class routes. Embed tokens get **special treatment** so that a cockpit dashboard firing many tile queries in parallel is never throttled.
+
+### How the limiter works
+
+Every request is classified into a route class (`auth`, `query`, `flow-run`, `chat`) and counted against a token-bucket keyed by **verified org**. The org is read from the cryptographically verified JWT — a forged or tampered `org` claim falls back to the client IP key, never mints a fresh bucket.
+
+| Route class | Default cap | Env var |
+|-------------|-------------|---------|
+| `query` | 120 req/min | `NUBI_RATELIMIT_QUERY_RPM` |
+| `auth` | configurable | `NUBI_RATELIMIT_AUTH_RPM` |
+| `chat` | 20 req/min | `NUBI_RATELIMIT_CHAT_RPM` |
+| Burst ceiling | 1.5× cap | `NUBI_RATELIMIT_BURST_FACTOR` |
+
+Redis-backed when `REDIS_URL` is set (enforced globally across all workers and machines); falls back to an in-process approximation otherwise.
+
+Requests over the cap receive `HTTP 429` with a `Retry-After` header.
+
+### Embed token exemption
+
+A cockpit dashboard fires multiple metric tile queries concurrently. Throttling these by org or IP would degrade the dashboard for all viewers. **Verified embed tokens are exempt from the per-org query bucket** on the following read paths:
+
+| Exempt path | Description |
+|-------------|-------------|
+| `POST /api/v1/metrics/{id}/query` | Metric tile queries |
+| `POST /api/v1/metrics/{id}/sql` | Metric SQL export |
+| `POST /api/v1/metrics/{id}/explain` | Metric dimension drill-down |
+| `POST /api/v1/query` and `/api/v1/query/*` | General registered-query path |
+
+The exemption applies **only to verified embed tokens** (`kind: "embed"`, RS256/ES256 signature checked against your registered JWKS). First-party tokens on these same paths remain subject to the per-org query bucket. An invalid or forged embed token does not obtain the exemption — it falls back to IP-keyed rate limiting like any unauthenticated request.
+
+The resource cost of each tile query is bounded independently by the query planner, the DuckDB memory ceiling, and the registered-query allowlist — the exemption does not remove those guards.
+
+### Disabling the limiter
+
+Set `NUBI_RATELIMIT_ENABLED=false` to disable all rate limiting (useful for local dev and integration tests). This env var must not be set in production.
+
+---
+
 ## Related
 
 - [Queries & Parameters](/docs/queries-and-params) — register the queries you expose to embeds.
