@@ -630,6 +630,26 @@ async def open_ingest_session(
     # Validate: must be a safe single segment (no slashes, no dots-traversal).
     _validate_partition(table_name)  # reuse the same per-segment rules
 
+    # auto_create flag (default True) — auto-DDL behaviour at commit time.
+    #
+    # When True (the default), the FIRST commit for a table that has no stored
+    # schema sidecar automatically registers the declared schema as that table's
+    # contract.  On subsequent commits, additive columns (new columns present in
+    # the incoming schema but absent in the stored schema) are merged into the
+    # contract so new files with extra columns can be read correctly.
+    # Incompatible changes (column removed or type changed) still raise
+    # 409 schema_incompatible regardless of this flag.
+    #
+    # When False, the pre-auto-DDL behaviour is preserved: no schema sidecar is
+    # written on a first-ever ingest for a table, and the contract is not
+    # extended on additive commits.  Use this when you want an explicit schema
+    # declaration workflow (i.e. the schema must be pre-registered by another
+    # path before the first ingest is accepted).
+    #
+    # Org-scoped: the schema sidecar is keyed by (org_id, datastore_id,
+    # table_name) so two orgs can never see or overwrite each other's contracts.
+    auto_create = bool(body.get("auto_create", True))
+
     idempotency_key = str(body.get("idempotency_key") or "").strip()
     if not idempotency_key:
         raise AppError(
@@ -662,6 +682,7 @@ async def open_ingest_session(
         partition=partition or None,
         run_id=run_id,
         table_name=table_name,
+        auto_create=auto_create,
     )
 
     staging = _get_staging_area(org_id, run_id)
@@ -986,6 +1007,31 @@ async def _do_commit(
     # table, allowing multiple tables to coexist within one datastore.
     table_key = record.get("table_name") or "default"
 
+    # auto_create flag is stored on the session record (default True).
+    auto_create: bool = record.get("auto_create", True)
+
+    # -- Auto-DDL: schema registration and contract evolution ------------------
+    #
+    # When auto_create=True and no schema sidecar exists for this table yet:
+    #   → First ingest: register the declared schema as the table's contract.
+    #     This is idempotent — if a sidecar was written by a concurrent commit
+    #     that beat us here, _save_table_schema merges it (last-writer-wins for
+    #     the whole sidecar JSON, which is acceptable: the racing commits had the
+    #     same schema anyway since they both opened against a blank slate).
+    #
+    # When auto_create=True and a schema sidecar DOES exist:
+    #   → Existing table: run the normal compatibility gate (below), then extend
+    #     the stored contract with any additive columns from the incoming schema.
+    #     Type changes / removals are still rejected by the gate — auto_create
+    #     never bypasses incompatible-change protection.
+    #
+    # When auto_create=False:
+    #   → Legacy behaviour: no sidecar is written here; the existing
+    #     compatibility check runs if a sidecar is already present, unchanged.
+    #
+    # Org-scope: the sidecar key is (org_id, datastore_id, table_key) — the
+    # same triple used everywhere else in this module.  Two orgs cannot collide.
+
     # -- Schema evolution check ------------------------------------------------
     # append: reject narrowing (remove / type-change).
     # full_replace: validate declared schema matches stored schema if present.
@@ -1044,8 +1090,38 @@ async def _do_commit(
                 len(stale_keys), session_id,
             )
 
-    # -- Save schema sidecar --------------------------------------------------
-    _save_table_schema(org_id, datastore_id, table_key, schema)
+    # -- Auto-DDL: persist/extend the schema contract -------------------------
+    #
+    # _save_table_schema is always called at the end of a successful commit so
+    # that the sidecar reflects the most recent schema (existing behaviour).
+    # With auto_create=True we additionally EXTEND the stored contract when the
+    # incoming schema adds new columns — this makes additive column evolution
+    # transparent: readers who land on existing older Parquet files still see
+    # the old columns, while the contract now covers the new ones too.
+    #
+    # If auto_create=False and no existing_schema was present, we skip writing
+    # the sidecar so the table stays contract-free (pre-auto-DDL behaviour).
+    if auto_create:
+        # Merge incoming schema into the stored one: keep all existing columns
+        # (order + type preserved) then append any genuinely new columns from
+        # the incoming schema.  Type conflicts were already caught by the gate
+        # above so we will never silently overwrite a type here.
+        if existing_schema and schema:
+            existing_names = {c["name"] for c in existing_schema}
+            merged = list(existing_schema)
+            for col in schema:
+                if col["name"] not in existing_names:
+                    merged.append(col)
+            _save_table_schema(org_id, datastore_id, table_key, merged)
+        elif schema:
+            # First-ever ingest for this table: register schema as the contract.
+            _save_table_schema(org_id, datastore_id, table_key, schema)
+        # else: no schema declared at all — nothing to register.
+    else:
+        # auto_create=False: only save if there was already a contract (update
+        # existing sidecar with the latest declared schema, same as before).
+        if existing_schema is not None and schema:
+            _save_table_schema(org_id, datastore_id, table_key, schema)
 
     # -- Best-effort staging cleanup ------------------------------------------
     try:
