@@ -185,6 +185,12 @@ def _tool_use_system_prompt(claims: dict[str, Any] | None = None) -> str:
         "When you are done and want to give the user your final answer, reply "
         "with plain text and NO JSON tool object.",
         "",
+        "Tool selection hints:",
+        "- For 'why did X change', 'what drove the movement', 'explain the increase/decrease', "
+        "  or 'root cause' questions about a metric → use explain_metric_change.",
+        "- For current metric values / trends → use query_metric.",
+        "- For metric discovery → use list_metrics.",
+        "",
         "Available tools:",
     ]
     for s in schemas:
