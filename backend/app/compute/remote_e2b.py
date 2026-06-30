@@ -44,6 +44,7 @@ code_interpreter_sync.py) and https://pypi.org/project/e2b-code-interpreter/.
 
 from __future__ import annotations
 
+import os
 import textwrap
 import time
 from typing import TYPE_CHECKING
@@ -181,9 +182,22 @@ class E2BRunner:
 
     tier: str = "remote_kernel"
 
-    def __init__(self, api_key: str, timeout_s: int = 30) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        timeout_s: int = 30,
+        template: str | None = None,
+    ) -> None:
         self._api_key = api_key
         self._timeout_s = timeout_s
+        # Optional custom sandbox template id/name.  When empty/None, the E2B
+        # base image is used (numpy/pandas/pyarrow only).  Set this to the Nubi
+        # attribution template (built from backend/app/compute/e2b/) so that the
+        # BYO-model stack — shap, scikit-learn, onnxruntime, xgboost — is baked
+        # into the sandbox image (the sandbox is network-sealed, so runtime
+        # ``pip install`` does NOT work).  Falls back to the ``E2B_TEMPLATE`` env
+        # var when not passed explicitly.
+        self._template = (template or os.environ.get("E2B_TEMPLATE", "") or "").strip()
         # Do NOT connect at construction — sandbox is created lazily in run().
 
     def run(
@@ -242,10 +256,13 @@ class E2BRunner:
         sbx = None
         try:
             # ── 2. Create sandbox ─────────────────────────────────────────────
-            sbx = SandboxClass.create(
-                api_key=self._api_key,
-                timeout=timeout_s,
-            )
+            # Pass the custom attribution template when configured; otherwise
+            # let E2B use its base image.  The kwarg is omitted entirely when
+            # empty so the call matches the E2B base-image default.
+            create_kwargs = {"api_key": self._api_key, "timeout": timeout_s}
+            if self._template:
+                create_kwargs["template"] = self._template
+            sbx = SandboxClass.create(**create_kwargs)
 
             # ── 3. Write input Arrow tables into the sandbox filesystem ────────
             input_paths: dict[str, str] = {}

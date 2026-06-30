@@ -288,6 +288,66 @@ def test_remote_runner_unconfigured_raises_503():
 
 
 # ===========================================================================
+# 5b. BYO-model attribution runner — pure-numpy worked example (no heavy deps)
+# ===========================================================================
+
+
+def test_local_runner_byo_attribution_pure_numpy():
+    """End-to-end BYO-model attribution shape, runnable in CI without shap/sklearn.
+
+    Exercises the documented runner contract (see
+    docs/compute-kernel-attribution-runner.md) using a tiny *linear* model so it
+    needs only numpy (already a transitive dep) — no shap/sklearn/onnx/xgboost:
+
+      * a numeric feature matrix is passed as one Arrow table,
+      * a serialized model blob is passed as a one-row ``pa.binary()`` column,
+      * user code deserializes the model and computes per-feature attributions
+        (here: contribution = coef * feature value, the linear analogue of SHAP),
+      * the result is an Arrow table of attribution values, one column per feature.
+    """
+    import pickle
+
+    import numpy as np
+
+    from app.compute.runner import LocalSubprocessRunner
+
+    # Host side: a trivial "model" = linear coefficients, serialized to bytes.
+    coefs = np.array([1.5, -2.0, 0.5], dtype=np.float64)
+    model_bytes = pickle.dumps(coefs)
+    model_table = pa.table({"blob": pa.array([model_bytes], type=pa.binary())})
+
+    X = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float64)
+    feature_table = pa.table(
+        {f"f{i}": pa.array(X[:, i], type=pa.float64()) for i in range(X.shape[1])}
+    )
+
+    code = (
+        "import pickle\n"
+        "import numpy as np\n"
+        "coefs = pickle.loads(inputs['model']['blob'][0].as_py())\n"
+        "feat = inputs['features']\n"
+        "cols = feat.column_names\n"
+        "X = np.column_stack([feat[c].to_numpy(zero_copy_only=False) for c in cols])\n"
+        "contrib = X * coefs  # per-feature attribution (linear SHAP analogue)\n"
+        "result = pa.table({f'attr_{c}': contrib[:, i] for i, c in enumerate(cols)})\n"
+    )
+
+    runner = LocalSubprocessRunner()
+    result = runner.run(
+        code=code,
+        inputs={"features": feature_table, "model": model_table},
+        timeout_s=30,
+    )
+
+    assert result.table is not None
+    assert result.table.column_names == ["attr_f0", "attr_f1", "attr_f2"]
+    # Row 0: [1*1.5, 2*-2.0, 3*0.5] = [1.5, -4.0, 1.5]
+    assert result.table.column("attr_f0").to_pylist() == [1.5, 6.0]
+    assert result.table.column("attr_f1").to_pylist() == [-4.0, -10.0]
+    assert result.table.column("attr_f2").to_pylist() == [1.5, 3.0]
+
+
+# ===========================================================================
 # 6. Endpoint: embed token → 403
 # ===========================================================================
 

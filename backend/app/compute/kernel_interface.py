@@ -284,7 +284,11 @@ def get_kernel_runner(
             from app.compute.remote_e2b import E2BRunner  # noqa: PLC0415
 
             api_key = os.environ.get("E2B_API_KEY", "")
-            return E2BRunner(api_key=api_key)
+            # Optional custom sandbox template (built from backend/app/compute/e2b/)
+            # that bakes in the BYO-model attribution stack (shap, scikit-learn,
+            # onnxruntime, xgboost).  Empty → E2B base image.
+            template = os.environ.get("E2B_TEMPLATE", "") or None
+            return E2BRunner(api_key=api_key, template=template)
 
         if provider == "modal":
             from app.compute.remote_modal import ModalRunner  # noqa: PLC0415
