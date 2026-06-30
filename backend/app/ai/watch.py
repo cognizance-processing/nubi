@@ -70,6 +70,12 @@ class Watch:
     ``comparison`` is ``{kind:'change_pct', vs:'previous_period', op, value}`` (a
     change-over-time rule). Exactly one drives the breach decision — when both
     are present the ``comparison`` rule wins (it is the more specific intent).
+
+    ``labels`` is an arbitrary host-supplied metadata map stored inside the
+    watch's ``config.labels`` (e.g. ``{"category_id": "cat-abc"}``).  It is
+    passed through verbatim in the ``watch_breach`` webhook payload so
+    subscribers can correlate breach events with their own domain objects.
+    Labels are purely host-controlled metadata — no row data or PII.
     """
 
     id: str
@@ -81,6 +87,7 @@ class Watch:
     comparison: dict[str, Any] | None = None
     channel_config: dict[str, Any] = field(default_factory=dict)
     enabled: bool = True
+    labels: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_config(
@@ -92,6 +99,7 @@ class Watch:
         # Tolerate the change rule living under either key.
         if comparison is None and isinstance(cfg.get("change"), dict):
             comparison = cfg.get("change")
+        raw_labels = cfg.get("labels")
         return cls(
             id=str(id),
             name=str(name or id),
@@ -102,6 +110,7 @@ class Watch:
             comparison=comparison if isinstance(comparison, dict) else None,
             channel_config=dict(cfg.get("channel_config") or cfg.get("channel") or {}),
             enabled=bool(cfg.get("enabled", True)),
+            labels=dict(raw_labels) if isinstance(raw_labels, dict) else {},
         )
 
     def measure_name(self, metric: MetricDefinition) -> str:
@@ -541,6 +550,7 @@ async def fire_watch(
             metric_id=watch.metric_id,
             value=result.value,
             explanation=explanation,
+            labels=watch.labels or None,
         )
     except Exception as exc:  # noqa: BLE001 — webhooks are strictly best-effort.
         logger.warning("fire_watch(%s): webhook emit failed: %s", watch.id, exc)

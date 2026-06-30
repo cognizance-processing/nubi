@@ -102,8 +102,19 @@ def emit_watch_breach(
     metric_id: str | None,
     value: float | None,
     explanation: str | None,
+    labels: dict[str, Any] | None = None,
 ) -> None:
-    """Emit ``watch_breach`` when a monitored metric breaches its threshold."""
+    """Emit ``watch_breach`` when a monitored metric breaches its threshold.
+
+    ``labels`` is an arbitrary host-supplied metadata map (e.g.
+    ``{"category_id": "..."}``) stored inside the watch's ``config.labels``.
+    It is passed through verbatim so subscribers can correlate breach events
+    with their own domain objects without querying the watches API separately.
+
+    POPIA note: labels are host-supplied identifiers only — no row data or
+    personal information should ever be stored here, and this function makes
+    no attempt to sanitise the values beyond passing them through as-is.
+    """
     emit_event(
         WATCH_BREACH,
         org_id,
@@ -113,6 +124,7 @@ def emit_watch_breach(
             "metric_id": metric_id,
             "value": value,
             "explanation": explanation,
+            "labels": labels or {},
         },
     )
 
