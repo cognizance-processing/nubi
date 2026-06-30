@@ -231,6 +231,75 @@ behaviour — no extra columns are emitted.
 
 ---
 
+## Scoped ratio / carried-constant denominator
+
+When a ratio's denominator is a **per-group constant** (e.g. a full-population
+total carried once per output row) and output-dimension RLS may hide rows, do
+NOT compute the ratio directly from two `sum` measures — the denominator will
+be double-counted whenever rollup aggregates it over multiple groups.
+
+### The pattern: `agg: max` denominator + `derived_measure` ratio
+
+Carry the denominator as a **base measure** with `agg: max`. MAX of a
+per-group constant equals the constant without summing it across rows. `max`
+is rollup-safe; `avg` is NOT (it produces NULL in top-N Other buckets).
+
+Define the ratio itself as a **`derived_measure`** (post-aggregation arithmetic
+over base measures). The compiler emits the ratio in the outer CTE layer as
+`SUM(numerator) / NULLIF(MAX(denominator), 0)` at the grouped level — never
+aggregated again in rollups.
+
+### Example metric YAML
+
+```yaml
+id: category_fill_rate
+name: Fill Rate by Category
+base_table: order_lines
+measure:
+  name: delivered_qty
+  agg: sum
+  expr: delivered_qty
+extra_measures:
+  - name: total_ordered       # full-population total, carried per row
+    agg: max                  # MAX(constant) = constant; no double-count
+    expr: total_ordered_const # pre-computed constant column in the source
+derived_measures:
+  - name: fill_rate
+    formula: "delivered_qty / total_ordered"   # compiler: / NULLIF(MAX(...), 0)
+    format: percent
+dimensions:
+  - name: category
+    type: text
+rls_keys: [org_id]
+```
+
+This compiles to:
+
+```sql
+WITH __base AS (
+    SELECT category,
+           SUM(delivered_qty)       AS delivered_qty,
+           MAX(total_ordered_const) AS total_ordered   -- constant; MAX safe
+    FROM   order_lines
+    GROUP BY category
+)
+SELECT category,
+       delivered_qty,
+       total_ordered,
+       delivered_qty / NULLIF(total_ordered, 0) AS fill_rate
+FROM __base
+```
+
+RLS predicates land on `__base` output columns; the `fill_rate` division
+happens outside the aggregate, so it is correct under any row-hiding filter.
+
+> **Rule of thumb:** if you find yourself tempted to write `agg: sum` for a
+> denominator that is the same for every row in a partition, switch to
+> `agg: max`. It's safe for additive rollups, never double-counts, and works
+> correctly in top-N "Other" buckets (where `avg` would null out).
+
+---
+
 ## Contribution analysis: `POST /metrics/{id}/explain`
 
 Root-cause analysis that explains WHY the metric changed between two time

@@ -97,6 +97,8 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 | **Live** remote push (real `git push`, optional PR/MR) | ✅ | `POST /git/push` (project-scoped) | [git-sync](docs/git-sync.md) |
 | **Live** remote pull (real `git fetch` → import) | ✅ | `POST /git/pull` (project-scoped) | [git-sync](docs/git-sync.md) |
 | Files-as-code round-trip (CLI) | ✅ | `nubi pull/push/deploy/diff` | [files-as-code](docs/files-as-code.md) |
+| **Watches as code via `nubi apply`** | ✅ | `nubi apply`→`POST /api/v1/apply` (`kind: watch`, idempotent, org-scoped) | [files-as-code § Watches as code](docs/files-as-code.md#d2-watches-as-code) |
+| **`watch_breach` labels passthrough** | ✅ | `emit_watch_breach` → webhook `data.labels` map | [observability § labels](docs/observability.md#watch_breach--labels-passthrough) |
 
 > The legacy **org-level** git flow was a no-network stub; it is superseded by
 > the **project-scoped** endpoints above, which make real authenticated network

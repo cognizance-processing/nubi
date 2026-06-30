@@ -787,8 +787,23 @@ The `id` is a UUID4 unique per emission (idempotency key).
 #### `watch_breach` data
 
 ```json
-{ "watch_id": "…", "name": "Revenue Watch", "metric_id": "revenue", "value": 48500.0, "explanation": "…" }
+{
+  "watch_id":   "…",
+  "name":       "Revenue Watch",
+  "metric_id":  "revenue",
+  "value":      48500.0,
+  "explanation":"…",
+  "labels":     { "category_id": "cat-abc" }
+}
 ```
+
+`labels` is an arbitrary host-supplied metadata map set per watch definition
+(empty object `{}` when not set). Subscribers can key on it to correlate
+breach events with their own domain objects. See
+[files-as-code.md — Watches as code](files-as-code.md#d2-watches-as-code) for
+declaring watches via `nubi apply` and
+[observability.md](observability.md#watch_breach--labels-passthrough) for the
+full payload reference.
 
 #### `freshness_stale` data
 

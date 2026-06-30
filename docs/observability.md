@@ -234,17 +234,70 @@ endpoints:
   "org_id": "<org-uuid>",
   "occurred_at": "2025-06-01T02:01:23.456Z",
   "data": {
-    "watch_id": "<watch-uuid>",
-    "name": "Revenue Watch",
-    "metric_id": "demo_revenue",
-    "value": 18500.0,
-    "explanation": "Revenue Watch: revenue is 18500, > the 15000 threshold."
+    "watch_id":   "<watch-uuid>",
+    "name":       "Revenue Watch",
+    "metric_id":  "demo_revenue",
+    "value":      18500.0,
+    "explanation":"Revenue Watch: revenue is 18500, > the 15000 threshold.",
+    "labels":     {}          // host-supplied metadata; empty map when not set
   }
 }
 ```
 
 Register a webhook endpoint to receive these:
 `POST /api/v1/webhooks/endpoints` with `event_types: ["watch_breach"]`.
+
+### `watch_breach` — `labels` passthrough
+
+Every `watch_breach` payload carries a **`labels`** field: an arbitrary
+key-value map attached once per watch definition and passed through verbatim
+in `emit_watch_breach`. Subscribers use it to correlate breach events with
+their own domain objects without a secondary API call.
+
+```jsonc
+// watch_breach with labels
+{
+  "type": "watch_breach",
+  "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "org_id": "org-uuid",
+  "occurred_at": "2026-06-24T02:01:45.123Z",
+  "data": {
+    "watch_id":    "fill-rate-warning",
+    "name":        "Fill Rate Warning",
+    "metric_id":   "category_fill_rate",
+    "value":       0.71,
+    "explanation": "Fill Rate Warning: fill_rate is 0.71, < the 0.80 threshold.",
+    "labels": {
+      "category_id": "cat-beverages",
+      "alert_tier":  "p2"
+    }
+  }
+}
+```
+
+**Setting labels** — declare them in the watch definition (YAML or API):
+
+```yaml
+# watches/fill_rate_warning.yaml
+name: Fill Rate Warning
+metric_id: category_fill_rate
+threshold:
+  op: "<"
+  value: 0.80
+labels:
+  category_id: cat-beverages
+  alert_tier: p2
+```
+
+Or via the API: include `"labels": {"category_id": "...", ...}` in
+`POST /api/v1/watches` or in the `spec` block of an apply bundle envelope.
+
+Labels are stored in `watches.config.labels` (JSONB) and never interpreted by
+the server — they are purely a passthrough for the host's subscriber logic.
+
+**POPIA note:** labels are host-supplied identifiers only. Do not store PII
+or row-level data here; this field carries metadata about the watch definition,
+not about the queried subjects.
 
 ### Pairing with the host's work-graph (response §2G)
 

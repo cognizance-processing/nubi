@@ -61,6 +61,44 @@ Either `jwks_url` or `static_jwks_json` must be provided. The matching `GET`, `P
 
 > Embed tokens must use an **asymmetric** algorithm (RS256 or ES256). Nubi rejects `alg: none` and blocks HS256 on the embed path entirely — this prevents algorithm-confusion attacks. Your private key never leaves your infrastructure.
 
+#### Full request body reference — `POST /api/v1/security/jwt-issuers`
+
+This is a one-time, per-environment registration step. All fields:
+
+```jsonc
+POST /api/v1/security/jwt-issuers
+Authorization: Bearer <first-party-access-token>
+Content-Type: application/json
+
+{
+  // Required
+  "name":     "Production web app",          // human label for this issuer
+  "issuer":   "https://app.yourcompany.com", // exact iss claim in your JWTs
+  "audience": "nubi:your-project-id",        // exact aud claim in your JWTs
+
+  // JWKS source — exactly one of these two:
+  "jwks_url":         "https://app.yourcompany.com/.well-known/jwks.json",
+  // OR:
+  // "static_jwks_json": { "keys": [{ "kty": "RSA", "kid": "...", "n": "...", "e": "AQAB" }] },
+
+  // Optional
+  "algorithms": ["RS256"],    // defaults to ["RS256"]; also accepts ES256, RS384, RS512, ES384, ES512
+  "enabled":    true,         // false = reject all tokens from this issuer immediately
+
+  // Host-mode: org resolved from a JWT claim instead of org_members lookup
+  "host_mode": false,         // set true for claim-native multi-tenant issuers
+  "org_claim": null           // JWT claim name carrying the org_id when host_mode is true
+}
+```
+
+After registration the in-process `IssuerRegistry` is updated immediately —
+no restart is required. Subsequent embed JWTs signed with the matching `kid`
+from that JWKS verify against the registered public key.
+
+**Key rotation:** if you use `jwks_url` (recommended) Nubi fetches and caches
+the JWKS on demand; rotating your key pair only requires publishing the new
+`kid` in your JWKS endpoint — no API call to Nubi is needed.
+
 ---
 
 ## Step 2 — Mint short-lived embed tokens

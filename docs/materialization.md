@@ -193,6 +193,66 @@ POST /api/v1/metrics/<id>/watch
 
 ---
 
+## Full-refresh for full-partition aggregates
+
+When a materialized column is a **full-partition aggregate** — i.e. it depends
+on ALL rows in the dataset, not just the rows newer than a watermark — you
+**must** use `materialized.kind: "full"`, not `incremental`.
+
+### Why incremental would be wrong
+
+`kind: "incremental"` processes only rows with `time_column > watermark`.
+If the aggregate is something like `SUM(amount) OVER ()` (a cross-partition
+total) or `MAX(total_for_date)` (a daily constant that is derived from the
+entire day's data), an incremental run will see only new rows and produce a
+stale denominator for every group that has already been processed.
+
+### Flow YAML snippet — full-refresh pattern
+
+```yaml
+# flows/category_summary/flow.toml  (relevant excerpt)
+[[tasks]]
+key    = "pull"
+kind   = "query"
+needs  = []
+
+[tasks.config]
+sql           = """
+  SELECT category,
+         SUM(amount)                        AS total_for_category,
+         SUM(SUM(amount)) OVER ()           AS grand_total   -- full-partition aggregate
+  FROM   orders
+  GROUP BY category
+"""
+datastore_id = "<source-datastore-id>"
+
+[[tasks]]
+key   = "mat"
+kind  = "materialize"
+needs = ["pull"]
+
+[tasks.config]
+combine_sql  = "SELECT * FROM pull"
+sources      = ["pull"]
+rls_keys     = []
+table        = "category_summary"
+datastore_id = "<duckdb-datastore-id>"
+query_id     = "<query-id>"
+
+[tasks.config.materialized]
+kind     = "full"          # NOT incremental — grand_total depends on all rows
+target   = "category_summary"
+base_uri = "/var/nubi/managed"
+```
+
+With `kind: "full"` the runtime overwrites the Parquet file completely on
+every run, so `grand_total` is always computed over the current full dataset.
+
+> **Decision rule:** does the aggregate make sense if you compute it on only
+> the rows added since the last run? If no — use `kind: "full"`.
+
+---
+
 ## Incremental refresh (time-series data)
 
 For event streams where you only want to process new rows each run, use

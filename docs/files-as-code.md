@@ -408,6 +408,65 @@ authenticates as a normal Bearer token — set it as `NUBI_TOKEN` in CI.
 
 ---
 
+## D2. Watches as code
+
+`nubi apply` registers `watches/*.yaml` files from the bundle directory
+alongside metrics, dashboards, queries, and flows. The operation is
+**idempotent** (stable key: `(org, slug-of-name)`), **org-scoped** (no
+cross-org registration), and requires no separate API call — watches are
+declared in the same bundle that declares the metrics they monitor.
+
+### `watches/*.yaml` file schema
+
+```yaml
+# watches/revenue_alert.yaml
+name: Revenue Alert           # required — stable identity (org-scoped slug)
+metric_id: revenue            # required — metric slug or UUID to monitor
+threshold:                    # a threshold, comparison, OR change rule is required
+  op: ">"
+  value: 100000
+config:                       # optional — evaluation + channel settings
+  dimensions: [region]        # optional: group by these dimensions before reducing
+  time_grain: day             # optional: bucket the metric at this grain
+  channel_config: {}          # optional: {slack_webhook: "...", slack_channel: "..."}
+  enabled: true               # default true
+labels:                       # optional — arbitrary host-supplied metadata
+  team: analytics
+  alert_tier: p1
+```
+
+Fields at the top level (`threshold`, `comparison`, `change`) are equivalent
+to their counterparts inside `config`; the apply path merges them before
+validation. Use **either** the top-level shorthand or `config.*` — not both.
+
+### Bundle layout with watches
+
+```
+my-bundle/
+├─ bundle.yaml
+├─ metrics/
+│  └─ revenue.yaml
+└─ watches/
+   ├─ revenue_alert.yaml
+   └─ fill_rate_warning.yaml
+```
+
+Run: `nubi apply ./my-bundle/`
+
+The CLI loads watches after metrics and converts each file into a portability
+envelope (`kind: watch`), then sends all envelopes to `POST /api/v1/apply`.
+The backend upserts each watch idempotently and returns `created`, `updated`,
+or `unchanged` per resource.
+
+### Backend evaluation
+
+Registered watches are evaluated by the `watch_sweep` scheduled job (cron,
+org-scoped) and by `POST /watches/{id}/evaluate` on-demand. See
+[observability.md](observability.md#nightly-watch-sweep) for scheduling and
+breach-event details.
+
+---
+
 ## E. CI/CD pipelines
 
 Both pipelines: install the CLI, auth via a repo secret (`NUBI_TOKEN` — best

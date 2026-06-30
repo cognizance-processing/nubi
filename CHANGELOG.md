@@ -39,6 +39,21 @@ Conventions:
   cap (`_MAX_TOKENS=4096`) are preserved as inner guards.
 
 ### Added
+- **Watches as code via `nubi apply`.** `watches/*.yaml` files in a bundle
+  directory are now registered by `nubi apply` (`POST /api/v1/apply`) alongside
+  metrics, dashboards, queries, and flows. The operation is idempotent (stable
+  key: org-scoped slug of `name`) and best-effort per-resource (one failing
+  watch does not abort the rest). Schema: `name` (required), `metric_id`
+  (required), a `threshold`, `comparison`, or `change` rule (required),
+  optional `config` block, and optional `labels` map.
+  See [files-as-code § Watches as code](docs/files-as-code.md#d2-watches-as-code).
+- **`watch_breach` labels passthrough.** The `watch_breach` webhook payload
+  now includes a `labels` field — an arbitrary host-supplied key-value map
+  declared per watch and passed through verbatim in `emit_watch_breach`. Labels
+  are stored in `watches.config.labels` (JSONB) and are never interpreted by
+  the server. Use them to correlate breach events with your own domain objects
+  (e.g. `{"category_id": "..."}`) without a secondary API call.
+  See [observability § labels](docs/observability.md#watch_breach--labels-passthrough).
 - **Scope-resolution endpoint — `GET /auth/scope`.** Resolves the caller's
   effective RLS scope from the **verified token only** (first-party AND embed
   tokens): returns raw `policies`, hierarchy-expanded + grant-merged
