@@ -88,6 +88,18 @@ Pre-registered kinds
     (daily/cron) like ``snapshot_refresh`` — the captured RLS view comes
     from ``config['policies']``, not a live JWT.
     Delegates to ``app.flows.handlers.report_send.handle``.
+
+``'http_call'``
+    Issue a POST (or GET/PUT/PATCH/DELETE) to a host HTTP endpoint so the host
+    can run nightly domain jobs on Nubi's scheduler.  SSRF-guarded via
+    ``app.connectors.ssrf.resolve_and_pin``; auth via org secrets only.
+    Delegates to ``app.flows.handlers.http_call.handle``.
+
+``'assert'``
+    Data-quality audit that runs expectations against a target table/query and
+    FAILS the run on violation — the SQLMesh-audit equivalent.  Supported
+    expectation kinds: row_count, not_null, unique, custom_sql.
+    Delegates to ``app.flows.handlers.assert_task.handle``.
 """
 
 from __future__ import annotations
@@ -1528,7 +1540,8 @@ def get_task_kind_registry() -> TaskKindRegistry:
 
     Pre-populates with built-in handlers: ``query``, ``python``, ``agent``,
     ``materialize``, ``noop``, ``bucket_load``, ``preagg_refresh``,
-    ``snapshot_refresh``, ``map``, ``branch``, ``map_collect``.
+    ``snapshot_refresh``, ``map``, ``branch``, ``map_collect``,
+    ``http_call``, ``assert``.
     """
     global _registry
     if _registry is None:
@@ -1565,8 +1578,12 @@ def _bootstrap(registry: TaskKindRegistry) -> None:
     from app.flows.handlers.branch import handle_branch  # noqa: PLC0415
     from app.flows.handlers.map_collect import handle_map_collect  # noqa: PLC0415
     from app.flows.handlers.report_send import handle as _handle_report_send  # noqa: PLC0415
+    from app.flows.handlers.http_call import handle as _handle_http_call  # noqa: PLC0415
+    from app.flows.handlers.assert_task import handle as _handle_assert  # noqa: PLC0415
 
     registry.register("map", handle_map)
     registry.register("branch", handle_branch)
     registry.register("map_collect", handle_map_collect)
     registry.register("report_send", _handle_report_send)
+    registry.register("http_call", _handle_http_call)
+    registry.register("assert", _handle_assert)
