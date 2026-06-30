@@ -22,6 +22,7 @@ _Last reviewed: 2026-06-26 · branch `wave/trim-stubs`._
 |---|---|---|---|
 | Registered queries + typed `{{params}}` | ✅ | `POST /query`, `/query/registry` | [queries-and-params](docs/queries-and-params.md) |
 | Governed semantic metrics — serving | ✅ | `POST /metrics/{id}/query` | [metrics-reference](docs/metrics-reference.md) |
+| Metric explainability — dimension-contribution decomposition (why a number moved) | ✅ | `POST /metrics/{id}/explain` | [metrics-reference](docs/metrics-reference.md#contribution-analysis-post-metricsidexplain) |
 | Metric authoring (derived/ratio, time-intel, top-N) | ✅ | `/metrics` CRUD (`author:metric`) | [semantic-and-data-apps](docs/semantic-and-data-apps.md) |
 | Pre-aggregations / rollups (transparent routing) | ✅ | auto, query-log mined | [pre-aggregations](docs/pre-aggregations.md) |
 | Connectors (Postgres, DuckDB, MySQL, JDBC, HttpJson, BYO) | ✅ | `/connectors` | [connectors](docs/connectors.md) |
@@ -144,9 +145,24 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 |---|---|---|
 | MDM / probabilistic entity matching (Splink, embeddings) | ⛔ | Not BI; host's data-mastering concern |
 | ML demand forecasting / price elasticity | ⛔ | Domain modelling, not the semantic/serving layer |
+| **Model** explainability — SHAP / per-prediction feature attribution | ⛔ | Attribution over the **host's own** models (demand forecast, price elasticity, MDM match-scoring) — "why did the model predict X for this SKU/store." Nubi does no ML modelling. Not to be confused with **metric** explainability (why a number moved), which **is** in scope and owned by Nubi — see §A `POST /metrics/{id}/explain`. |
 | Retail cockpit / domain-specific engines | ⛔ | Host application logic |
 | Host app infra (CI/CD, Docker, deploy) | ⛔ | Host's platform |
 | Billing / Paystack / metered wallet | ⛔ (CE) | EE-only; not in the open-core/embeddable substrate |
+
+> **Metric vs. model explainability — the boundary.** Nubi owns **metric**
+> explainability: `POST /metrics/{id}/explain` decomposes *why a metric number
+> moved* across dimensions (per-member delta / share / explanatory_power /
+> coverage). It is pure math over the semantic layer — no model is involved.
+> **Model** explainability (per-prediction feature attribution / SHAP on the
+> host's own predictive models) stays host-side; Nubi does no ML modelling.
+>
+> The one nuance: the generic **compute kernel** (sandboxed Python) is available
+> to hosts as a domain-agnostic **bring-your-own-model attribution runner** —
+> submit Python + numeric Arrow arrays + a serialized model blob, get attribution
+> values back. See [compute-kernel-attribution-runner](docs/compute-kernel-attribution-runner.md).
+> Offering this runner does **not** cross the "no ML modelling" boundary: it
+> carries no domain semantics and never stores or interprets the model.
 
 ## K. Capability accuracy notice (advertised vs. implemented)
 
