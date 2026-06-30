@@ -641,6 +641,27 @@ def handle(
     strategy = str(incremental.get("strategy") or "none").lower().strip()
     post_action = str(config.get("post_action") or "none").strip()
 
+    # auto_create flag (default True) — auto-DDL behaviour for this run.
+    #
+    # When True (the default), the FIRST ingest of a new table (one that has
+    # no stored schema sidecar yet) automatically saves the inferred schema
+    # from the first staged Parquet file as the table's contract.  This means
+    # the next append will be gated by that contract — incompatible schema
+    # changes will raise 409 schema_incompatible as expected.
+    #
+    # Additive columns on subsequent ingests (new columns in the incoming
+    # Parquet not present in the stored contract) extend the contract so the
+    # schema sidecar grows with the data.
+    #
+    # When False, the pre-auto-DDL behaviour is preserved: no sidecar is
+    # written on first ingest, and no extension is attempted on additive
+    # ingests.  The schema gate only fires if a sidecar already exists.
+    #
+    # Org-scoped: the schema sidecar is keyed by
+    # (org_id, tgt_connector_id, tgt_object) — same triple as the gate —
+    # so two orgs' tables never interfere.
+    auto_create: bool = bool(config.get("auto_create", True))
+
     if fmt not in _VALID_FORMATS:
         raise ValueError(f"Invalid format {fmt!r}. Supported: {sorted(_VALID_FORMATS)}.")
     if inner_format not in _VALID_INNER:
@@ -702,6 +723,30 @@ def handle(
 
     # ── Verify + load (verify gates promote/load — design §5) ──────────────
     result = load_staged(staging, manifest, load_target)
+
+    # ── Auto-DDL: register/extend the schema contract ─────────────────────
+    # Runs AFTER a successful load so a failed load never writes a contract.
+    # Only acts when at least one file was staged (empty runs are no-ops).
+    if auto_create and entries:
+        from app.routes.ingest import (  # noqa: PLC0415
+            _load_table_schema,
+            _save_table_schema,
+        )
+        incoming = _infer_staged_schema(staging, entries[0].path)
+        if incoming:
+            existing = _load_table_schema(org_id, tgt_connector_id, tgt_object)
+            if existing:
+                # Extend the stored contract with any new additive columns.
+                # Incompatible changes were already caught by _contract_check.
+                existing_names = {c["name"] for c in existing}
+                merged = list(existing)
+                for col in incoming:
+                    if col["name"] not in existing_names:
+                        merged.append(col)
+                _save_table_schema(org_id, tgt_connector_id, tgt_object, merged)
+            else:
+                # First-ever ingest: register inferred schema as the contract.
+                _save_table_schema(org_id, tgt_connector_id, tgt_object, incoming)
 
     # ── post_action AFTER a successful load (never before) ─────────────────
     pa_done = _apply_post_action(src, ingested_files, post_action)

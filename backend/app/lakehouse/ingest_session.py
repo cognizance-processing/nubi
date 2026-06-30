@@ -99,6 +99,7 @@ class IngestSessionStore:
         partition: str | None,
         run_id: str,
         table_name: str = "default",
+        auto_create: bool = True,
     ) -> dict[str, Any]:
         """Create a new open session.  Must be idempotent via ``idempotency_key``."""
         raise NotImplementedError
@@ -181,6 +182,7 @@ class InMemoryIngestSessionStore(IngestSessionStore):
         partition: str | None,
         run_id: str,
         table_name: str = "default",
+        auto_create: bool = True,
     ) -> dict[str, Any]:
         session_id = str(uuid.uuid4())
         now = self._now()
@@ -194,6 +196,7 @@ class InMemoryIngestSessionStore(IngestSessionStore):
             "schema": list(schema),
             "partition": partition,
             "table_name": table_name,
+            "auto_create": auto_create,
             "run_id": run_id,
             "state": "open",
             "result": None,
@@ -354,6 +357,7 @@ class PgIngestSessionStore(IngestSessionStore):
         partition: str | None,
         run_id: str,
         table_name: str = "default",
+        auto_create: bool = True,
     ) -> dict[str, Any]:
         from app.db import fetchrow as _fetchrow  # noqa: PLC0415
 
@@ -402,7 +406,10 @@ class PgIngestSessionStore(IngestSessionStore):
             )
         if row is None:  # pragma: no cover — should never happen
             raise RuntimeError("ingest_sessions INSERT returned no row.")
-        return _pg_row_to_record(row)
+        record = _pg_row_to_record(row)
+        # auto_create is not a DB column; stored in-memory for _do_commit.
+        record.setdefault("auto_create", auto_create)
+        return record
 
     # ── get_by_idempotency_key ───────────────────────────────────────────────
 
