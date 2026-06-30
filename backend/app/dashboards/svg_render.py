@@ -120,6 +120,54 @@ def _require_script(path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Availability check (used by tests and callers to gate on echarts being
+# installed — returns True only when Node *and* the echarts module are both
+# reachable, so tests skip cleanly instead of failing with a confusing error).
+# ---------------------------------------------------------------------------
+
+_ECHARTS_AVAILABLE: bool | None = None  # cached result
+
+
+def renderer_available() -> bool:
+    """Return True when Node.js *and* the echarts SSR script can run.
+
+    Runs the echarts script with an empty widget list and checks for a clean
+    exit.  The result is cached at module level so repeated calls (e.g. from
+    multiple tests) pay the subprocess cost at most once per process.
+
+    Use this as a pytest skip guard::
+
+        pytestmark = pytest.mark.skipif(
+            not renderer_available(),
+            reason="Node.js / echarts not available",
+        )
+    """
+    global _ECHARTS_AVAILABLE  # noqa: PLW0603
+    if _ECHARTS_AVAILABLE is not None:
+        return _ECHARTS_AVAILABLE
+
+    import shutil  # noqa: PLC0415
+
+    node_bin = os.environ.get("NODE_PATH") or shutil.which("node")
+    if not node_bin or not os.path.exists(_ECHARTS_SSR_SCRIPT):
+        _ECHARTS_AVAILABLE = False
+        return False
+
+    try:
+        result = subprocess.run(
+            [node_bin, _ECHARTS_SSR_SCRIPT],
+            input=b'{"widgets":[]}',
+            capture_output=True,
+            timeout=30.0,
+        )
+        _ECHARTS_AVAILABLE = result.returncode == 0
+    except Exception:  # noqa: BLE001
+        _ECHARTS_AVAILABLE = False
+
+    return _ECHARTS_AVAILABLE
+
+
+# ---------------------------------------------------------------------------
 # Low-level subprocess helpers
 # ---------------------------------------------------------------------------
 
@@ -180,6 +228,14 @@ def _run_node_script(
 
     if result.returncode != 0:
         stderr = (result.stderr or b"").decode("utf-8", errors="replace")
+        # Exit code 2 is the echarts-ssr convention for "echarts not installed".
+        if result.returncode == 2 and "not available" in stderr:
+            raise AppError(
+                "echarts_not_installed",
+                "echarts is not installed. Run `npm install` in the repo root "
+                f"to install it. stderr: {stderr[:300]}",
+                503,
+            )
         raise AppError(
             "renderer_error",
             f"Node renderer exited with code {result.returncode}. "

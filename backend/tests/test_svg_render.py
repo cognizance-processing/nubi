@@ -24,14 +24,18 @@ when Node is not found, matching the optional-dep convention in the codebase.
 
 from __future__ import annotations
 
-import shutil
-
 import pytest
 
-# Skip entire module when Node.js is not available.
+from app.dashboards.svg_render import renderer_available
+
+# Skip the entire module when Node.js or echarts is not available.
+# renderer_available() probes the actual echarts SSR script (not just `node`),
+# so the suite skips cleanly in environments where echarts isn't installed
+# (e.g. Python-only CI, git worktrees without node_modules) rather than
+# failing with a confusing "echarts not found" error.
 pytestmark = pytest.mark.skipif(
-    shutil.which("node") is None,
-    reason="Node.js not found on PATH — skipping SVG render tests",
+    not renderer_available(),
+    reason="Node.js / echarts not available — skipping SVG render tests",
 )
 
 from app.dashboards.spec import DashboardSpec, WidgetPos, Widget, Surfaces, SurfaceGridEntry

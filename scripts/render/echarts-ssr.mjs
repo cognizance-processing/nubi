@@ -62,19 +62,48 @@ const require = createRequire(import.meta.url)
 // ECharts SSR bootstrap
 // ---------------------------------------------------------------------------
 
-// Resolve echarts from the repo root node_modules so this script works whether
-// called from scripts/render/ or from the repo root.
+// Resolve echarts from node_modules by walking up from __dirname until we find
+// a directory that contains node_modules/echarts/core.js.  This is robust when
+// the script is invoked from a git worktree (which has no node_modules of its
+// own) because it will walk up to the real repo root where node_modules lives.
 import { fileURLToPath } from 'url'
 import { dirname, resolve } from 'path'
-import { createReadStream } from 'fs'
-import { createInterface } from 'readline'
+import { existsSync } from 'fs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const REPO_ROOT = resolve(__dirname, '../..')
+
+/**
+ * Walk up from `startDir` until we find a directory that has
+ * `node_modules/echarts/core.js`, or return null if we reach the filesystem
+ * root without finding it.
+ *
+ * @param {string} startDir
+ * @returns {string|null}
+ */
+function findEchartsRoot(startDir) {
+  let dir = startDir
+  while (true) {
+    if (existsSync(resolve(dir, 'node_modules', 'echarts', 'core.js'))) return dir
+    const parent = dirname(dir)
+    if (parent === dir) return null  // reached filesystem root
+    dir = parent
+  }
+}
+
+// First candidate: two levels up from scripts/render/ (i.e. repo root in the
+// normal checkout layout).  Fall back to the walk-up search so git worktrees
+// that have no local node_modules still resolve correctly.
+const DIRECT_ROOT = resolve(__dirname, '../..')
+const REPO_ROOT = existsSync(resolve(DIRECT_ROOT, 'node_modules', 'echarts', 'core.js'))
+  ? DIRECT_ROOT
+  : findEchartsRoot(__dirname)
 
 // Dynamic import of echarts — lets us emit a clear install error if missing.
 let echartsInit
 try {
+  if (!REPO_ROOT) throw new Error(
+    'node_modules/echarts not found — run `npm install` in the repo root'
+  )
   const echarts = await import(resolve(REPO_ROOT, 'node_modules/echarts/core.js'))
   const { SVGRenderer } = await import(resolve(REPO_ROOT, 'node_modules/echarts/renderers.js'))
   const { BarChart, LineChart, ScatterChart, PieChart, HeatmapChart, GaugeChart } =
