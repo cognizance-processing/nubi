@@ -251,3 +251,71 @@ stored.**
   ]
 }
 ```
+
+---
+
+## Cross-model column lineage
+
+`resolve_column_lineage` walks the inter-model DAG *upstream* starting from a given node and column, tracing column provenance across model layers — resolving aliases and renames at each hop.
+
+This is used internally by the lineage panel and by the auto-rebuild hook to understand which specific columns flow through each model boundary.
+
+### Algorithm
+
+At each model node, the resolver:
+
+1. Parses the node's SQL to build a column-alias map.
+2. Maps the current column name to its source column in the upstream model (handling `col AS alias` renames).
+3. If the model uses `SELECT *`, falls back to the table-level edge (column name assumed unchanged) and marks the hop `select_star: true`.
+4. Stops at a physical source table (`type: "table"`) or when `max_hops` is reached (ceiling: 20).
+
+### Result shape
+
+Each hop is:
+
+```json
+{
+  "node":        "transform_cell",   // DAG node id
+  "column":      "revenue",          // column name at this node
+  "alias":       true,               // true when the name differs from the previous hop
+  "select_star": false               // true when this hop was a SELECT * pass-through
+}
+```
+
+The list is ordered from the starting node back to the physical source.
+
+---
+
+## Lineage-driven auto-rebuild
+
+When a materialized model flow completes successfully, Nubi can automatically enqueue its downstream dependent flows — so you never have to manually chain schedules.
+
+**Opt-in only.** Set `runtime_config.auto_rebuild_downstream = true` on the upstream flow. Existing flows are unaffected by default.
+
+```jsonc
+// flow.py
+{
+  "runtime_config": {
+    "auto_rebuild_downstream": true
+  }
+}
+```
+
+### How it works
+
+1. On flow-run success, Nubi looks up the flow's `runtime_config.auto_rebuild_downstream` flag.
+2. If set, it walks the lineage DAG downstream (up to 20 hops) to find dependent flows in the same org.
+3. For each downstream flow that also has `auto_rebuild_downstream: true`, a new flow run is enqueued.
+
+### Guards
+
+| Guard | Detail |
+|-------|--------|
+| **Opt-in** | Only active when `auto_rebuild_downstream = true` is set on the upstream flow |
+| **Org-scoped** | Only enqueues flows in the same org |
+| **Cycle-safe** | A `_visited` set of flow ids prevents circular trigger chains |
+| **Storm-safe** | A module-level debounce set prevents the same downstream from being enqueued twice for the same trigger event |
+| **Fan-out cap** | At most `_FLOWS_TRIGGER_MAX_FANOUT` downstream flows per trigger |
+| **Success-only** | Only fires when the upstream run state is `success` |
+| **Best-effort** | Any error is caught and logged; never raises or fails the upstream run |
+```

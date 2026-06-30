@@ -456,4 +456,100 @@ Two built-in connectors implement it:
 - RLS predicates are injected as AST predicates by the query planner — never string-concatenated — and are enforced server-side; the browser never filters rows.
 - Post-fetch RLS in `FunctionConnector` fails closed: a missing policy column returns 403 rather than unfiltered data.
 
+---
+
+## Native Google Cloud Storage (GCS) connector
+
+The object-storage connector (`duckdb_storage`) supports `gs://` URIs natively using DuckDB's built-in `TYPE gcs` secret — no S3-compatibility workaround required.
+
+### Adding a GCS connector
+
+Pick **Object storage (Parquet / DuckDB)** from the connector type picker and enter a `gs://` URI as the file URL:
+
+```
+gs://my-bucket/data/warehouse.duckdb
+gs://my-bucket/exports/sales.parquet
+```
+
+### Credentials
+
+Two modes, tried in order:
+
+| Mode | When to use | Config keys |
+|------|-------------|-------------|
+| **HMAC key pair** | Service accounts with HMAC keys (generated in Cloud Console → Storage → Settings → HMAC keys) | `gcs_access_key_id` + `gcs_secret` (or the aliases `gcs_hmac_key_id` / `gcs_hmac_secret`) |
+| **Application Default Credentials (ADC)** | Running on GCP with Workload Identity or a `GOOGLE_APPLICATION_CREDENTIALS` env var | Leave both keys blank; Nubi registers a `PROVIDER credential_chain` secret and lets DuckDB resolve from the metadata server or gcloud |
+
+Env-var fallbacks (same precedence as S3): `GCS_ACCESS_KEY_ID`, `GCS_HMAC_KEY_ID`, `GCS_SECRET`, `GCS_HMAC_SECRET`.
+
+### Security hardening
+
+After the GCS secret is registered, the DuckDB connection is hardened: local filesystem access is blocked and the configuration is frozen. Tenant SQL can only reach the `gs://` path — it cannot read host-filesystem files or re-configure credentials.
+
+### Example config (HMAC)
+
+```json
+{
+  "connector_type": "duckdb_storage",
+  "database":       "gs://analytics-bucket/data/sales.parquet",
+  "gcs_access_key_id":  "GOOGxxxxxxxxxxx",
+  "gcs_secret":         "base64secret"
+}
+```
+
+---
+
+## Column profiling
+
+`GET /api/v1/datasets/{id}/profile` computes per-column statistics for a dataset file in a **single DuckDB pass** — no separate scan per column.
+
+### Statistics returned
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `null_rate` | `float` (0.0–1.0) | Fraction of NULL values in the column |
+| `distinct_count` | `int` | Approximate distinct value count (HyperLogLog — O(1) memory regardless of cardinality) |
+| `min` / `max` | `string \| null` | Min and max values cast to string; `null` for non-orderable types (STRUCT, BLOB, LIST, etc.) |
+| `type` | `string` | DuckDB column type string, e.g. `"INTEGER"`, `"VARCHAR"`, `"TIMESTAMP"` |
+
+### Sampling
+
+Large datasets are sampled rather than fully scanned. The default sample cap is **100 000 rows** (override via `NUBI_PROFILE_SAMPLE_ROWS`; set to `0` to scan the full file). The response includes `sampled: true` and `sample_rows` when sampling was applied.
+
+### Example
+
+```
+GET /api/v1/datasets/3fa85f64-5717-4562-b3fc-2c963f66afa6/profile
+GET /api/v1/datasets/3fa85f64-5717-4562-b3fc-2c963f66afa6/profile?sample_rows=50000
+```
+
+```json
+{
+  "dataset_id":  "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "row_count":   420000,
+  "sampled":     true,
+  "sample_rows": 100000,
+  "columns": [
+    {
+      "name":           "order_id",
+      "type":           "INTEGER",
+      "null_rate":      0.0,
+      "distinct_count": 420000,
+      "min":            "1",
+      "max":            "420000"
+    },
+    {
+      "name":           "region",
+      "type":           "VARCHAR",
+      "null_rate":      0.012,
+      "distinct_count": 8,
+      "min":            "east",
+      "max":            "west"
+    }
+  ]
+}
+```
+
+The endpoint resolves credentials automatically from the dataset's connector config (S3, GCS, or local), so profiling works the same way across all storage backends.
+
 For the deeper security model — encryption, key rotation, and network modes — see [Connector Security](/docs/connector-security).
