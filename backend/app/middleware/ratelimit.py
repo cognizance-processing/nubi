@@ -69,35 +69,65 @@ Route classes
 Requests are classified into one of four buckets (or SKIP):
 
     auth        /api/v1/auth/*
-    query       /api/v1/query*
+    query       /api/v1/query*  and  /api/v1/metrics/*/query|sql|explain
     flow-run    /api/v1/flows/*/run  or  /api/v1/flows/run-cell
     chat        /api/v1/chat/stream, /api/v1/ai/chat*, /api/v1/ai/ask,
                 /api/v1/ai/dashboard, /api/v1/ai/sql, /api/v1/ai/canvas*
     (skip)      /health, /api/v1/health, /embed/*, /assets/*
                 and everything else (no-op)
 
-Identity key
-~~~~~~~~~~~~
-The limiting key MUST be derived from something the client cannot freely
-forge.  This middleware runs BEFORE authentication, so it deliberately does
-NOT trust:
+Identity key  (FINDING 6B — org-keyed + embed exemption)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The limiting key is derived from a CRYPTOGRAPHICALLY VERIFIED token when one
+is present, falling back to the trusted client IP when not.
 
-  * the Bearer JWT ``org`` claim — the token signature is not verified here,
-    so an attacker could forge an arbitrary ``org`` to poison a victim's
-    bucket or rotate ``org`` per request to dodge their own cap; and
-  * the LEFT-most ``X-Forwarded-For`` entry — that value is fully
-    attacker-controlled (anyone can send a fresh one per request), which would
-    hand each request its own bucket and defeat the limit entirely.
+Verification at the limiter
+    The Bearer JWT (if present) is verified at the limiter using the same
+    ``verify_token`` path used by route auth — HS256 signature check for
+    first-party tokens; JWKS signature check for embed RS256/ES256 tokens.
+    Verification FAILURES (bad sig, expired, unknown issuer, no token) fall
+    back to ``ip:<client>`` — a forged org claim CANNOT mint a fresh bucket or
+    bypass the limiter.
 
-The key is therefore the *trusted client IP* (see ``_client_ip``):
+Key selection
+    * Verified first-party (``kind="access"``): ``org:<verified_org>`` when the
+      token carries an ``org`` claim; else ``ip:<client>`` (no org claim is
+      unusual but safe to fall back).
+    * Verified embed (``kind="embed"``): exempt on the read paths below, so no
+      key is computed; elsewhere the same ``org:<verified_org>`` or IP fallback.
+    * Unverified / no token: ``ip:<client>`` (trusted TCP peer, or rightmost XFF).
+    * No peer at all: ``"unknown"`` shared bucket (never skipped — FINDING 3).
 
-    1. ``request.client.host`` — the real TCP peer (under Fly this is the
-       proxy; for auth routes this is what we want to throttle on).
-    2. The RIGHT-most ``X-Forwarded-For`` entry as a fallback only — that
-       entry is the one appended by the trusted proxy, not the client.
-    3. ``"unknown"`` — a single SHARED, conservatively-throttled bucket when no
-       peer is available (anonymous floods stay bounded; we never skip
-       limiting entirely).
+SECURITY: the ``org`` value read from the token is the value DECODED BY
+``verify_token`` after full signature verification — not from an unverified
+header or body claim.  A forged ``org`` field inside an unsigned/wrong-signature
+JWT will trigger a ``PyJWTError``/``AppError`` and fall back to IP key.
+
+Embed exemption (cockpit tiles — FINDING 6B)
+    A cockpit dashboard fires N concurrent metric tile queries.  Keying by IP
+    or even by org would throttle tiles from a single-tenant install behind one
+    IP.  Embed tokens (``kind="embed"``) are VERIFIED short-lived JWTs signed by
+    the host; they carry hard per-tenant RLS constraints and are already
+    restricted to the registered-query allowlist.  The server-side resource cost
+    of each tile query is bounded and metered separately (query planner, DuckDB
+    memory cap, etc.).
+
+    Paths exempted for VERIFIED embed tokens only:
+        POST /api/v1/metrics/{id}/query
+        POST /api/v1/metrics/{id}/sql
+        POST /api/v1/metrics/{id}/explain
+        POST /api/v1/query  (and /api/v1/query/*)
+
+    First-party (kind="access") tokens on these paths remain subject to the
+    per-org query bucket.  The existing ``/embed/*`` static-asset skip is
+    preserved.  A forged/invalid embed token falls back to IP key and is NOT
+    exempted.
+
+Trusted IP fallback (unchanged from original)
+    * ``request.client.host`` — the real TCP peer (preferred).
+    * RIGHT-most ``X-Forwarded-For`` — appended by the trusted proxy.
+    * ``"unknown"`` — single shared conservative bucket when no peer is available.
+    The LEFT-most XFF is NEVER used (attacker-controlled — FINDING 1).
 
 Configuration (NUBI_RATELIMIT_* env vars)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -131,12 +161,16 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from app.cache.redis_client import get_redis
+
+if TYPE_CHECKING:
+    from app.auth.verify import VerifiedIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -464,9 +498,12 @@ def _classify(path: str) -> tuple[str | None, int]:
 
     # Query: POST /api/v1/query (exact or with trailing /registry etc.)
     # Board provider data: POST /api/v1/boards/<id>/providers/<pid>/data
+    # Metrics read surface: /api/v1/metrics/{id}/query|sql|explain
     # Embed tokens never face billing but still drive server compute; classifying
-    # this route into the 'query' bucket gives it the same hard rpm ceiling so a
+    # these routes into the 'query' bucket gives them the same hard rpm ceiling so a
     # cache-busting embed token cannot trigger unbounded live flow executions.
+    # NOTE: VERIFIED embed tokens on these specific paths are EXEMPTED from the
+    # limiter entirely (see _extract_verified_identity); first-party tokens are not.
     if path == "/api/v1/query" or path.startswith("/api/v1/query/"):
         return "query", _cfg.query_rpm
 
@@ -475,6 +512,16 @@ def _classify(path: str) -> tuple[str | None, int]:
         parts = path.split("/")
         # Expected: ['', 'api', 'v1', 'boards', <bid>, 'providers', <pid>, 'data']
         if len(parts) == 8 and parts[5] == "providers":
+            return "query", _cfg.query_rpm
+
+    # Metrics read surface (semantic layer execute paths).
+    # /api/v1/metrics/<id>/query  — compile + execute (Arrow)
+    # /api/v1/metrics/<id>/sql    — dry compile (no execution)
+    # /api/v1/metrics/<id>/explain — root-cause contribution analysis
+    if path.startswith("/api/v1/metrics/"):
+        parts = path.split("/")
+        # Expected: ['', 'api', 'v1', 'metrics', <id>, <action>]
+        if len(parts) == 6 and parts[5] in ("query", "sql", "explain"):
             return "query", _cfg.query_rpm
 
     return None, 0
@@ -487,6 +534,16 @@ def _classify(path: str) -> tuple[str | None, int]:
 # SINGLE bucket all such requests share, so anonymous floods stay bounded
 # (FINDING 3 — we never skip limiting for these).
 _UNKNOWN_IDENTITY = "unknown"
+
+# Paths on which VERIFIED embed tokens are fully exempt from rate limiting.
+# These are the cockpit tile read paths that a single dashboard fires N times
+# concurrently.  First-party tokens on these paths remain subject to the per-org
+# query bucket.  The set is small and checked with a fast startswith/split so
+# there is no regex overhead per request.
+_EMBED_EXEMPT_PREFIXES = (
+    "/api/v1/query",     # covers /api/v1/query and /api/v1/query/*
+    "/api/v1/metrics/",  # covers /api/v1/metrics/<id>/query|sql|explain (checked below)
+)
 
 
 def _client_ip(request: Request) -> str | None:
@@ -521,31 +578,103 @@ def _client_ip(request: Request) -> str | None:
     return None
 
 
+def _is_embed_exempt_path(path: str) -> bool:
+    """Return True if *path* is on the embed-exempt read surface.
+
+    Exempt paths (VERIFIED embed tokens skip rate limiting here):
+        /api/v1/query         — exact
+        /api/v1/query/*       — sub-paths
+        /api/v1/metrics/<id>/query
+        /api/v1/metrics/<id>/sql
+        /api/v1/metrics/<id>/explain
+    """
+    if path == "/api/v1/query" or path.startswith("/api/v1/query/"):
+        return True
+    if path.startswith("/api/v1/metrics/"):
+        parts = path.split("/")
+        # ['', 'api', 'v1', 'metrics', <id>, <action>]
+        if len(parts) == 6 and parts[5] in ("query", "sql", "explain"):
+            return True
+    return False
+
+
+def _extract_verified_identity(request: Request) -> tuple[str | None, bool]:
+    """Attempt to cryptographically verify the Bearer token and derive the key.
+
+    SECURITY CONTRACT
+    -----------------
+    The ``org`` and ``kind`` values returned here come EXCLUSIVELY from
+    ``verify_token()`` — which validates the JWT signature (HS256 for
+    first-party, RS256/ES256 JWKS for embed).  We NEVER read the raw JWT
+    payload directly.  A forged or tampered token raises ``AppError`` /
+    ``PyJWTError`` and this function returns ``(None, False)`` so the caller
+    falls back to the IP key — a forged ``org`` claim or a forged "embed" kind
+    CANNOT mint a fresh bucket or obtain the embed exemption.
+
+    Returns
+    -------
+    (identity_key, is_verified_embed)
+        ``identity_key``      — ``"org:<org>"`` on success, or ``None`` on
+                                failure (fall back to IP).
+        ``is_verified_embed`` — ``True`` only when the token is a VERIFIED embed
+                                token (``kind == "embed"``); always ``False`` on
+                                verification failure.
+    """
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        return None, False
+
+    token = auth_header[7:].strip()
+    if not token:
+        return None, False
+
+    try:
+        # Lazy import to avoid circular deps at module load time.  verify_token
+        # is the sync path: HS256 first-party + in-process IssuerRegistry for
+        # embed RS256/ES256.  The async DB-fallback path (_verify_embed_token_async)
+        # is NOT used here so we stay synchronous inside the middleware.
+        from app.auth.verify import verify_token  # noqa: PLC0415
+
+        identity = verify_token(token, expected_origin=None)
+    except Exception:  # noqa: BLE001 — AppError, PyJWTError, anything → fall back to IP
+        return None, False
+
+    org: str | None = identity.org
+    is_embed = identity.kind == "embed"
+
+    if org:
+        return f"org:{org}", is_embed
+
+    # Verified token but no org claim: fall back to IP (unusual but safe).
+    return None, is_embed
+
+
 def _extract_identity(request: Request) -> str:
     """Return the rate-limiting key — derived only from non-forgeable signals.
 
-    This middleware runs BEFORE authentication, so the key is NOT taken from
-    the (unverified) JWT ``org`` claim (FINDING 2): an attacker could forge an
-    arbitrary ``org`` to poison another tenant's bucket, or rotate it per
-    request to dodge their own cap.  We key on the trusted client IP instead.
+    Key derivation (FINDING 6B):
+    1. Attempt to cryptographically verify the Bearer token via ``verify_token``.
+       On success, key by ``org:<verified_org>`` (users in the same org share one
+       bucket; users in different orgs have independent buckets).
+    2. Fall back to the trusted client IP when no token is present, verification
+       fails, or the verified token carries no ``org`` claim.
+    3. Fall back to ``"unknown"`` shared bucket when no peer IP is available.
 
-    If upstream auth ever attaches a *verified* identity to ``request.state``
-    before this middleware runs, read the org from there — but today nothing
-    does, so we deliberately fall through to the IP key for every route class
-    (including auth, per FINDING 1).
+    A forged ``org`` in an unsigned/badly-signed JWT will cause ``verify_token``
+    to raise — we catch all exceptions and fall through to the IP key, so no
+    forged claim can influence bucket selection.
     """
-    # If a VERIFIED identity is ever attached upstream, trust that (forge-proof).
-    verified_org = getattr(request.state, "org_id", None)
-    if isinstance(verified_org, str) and verified_org:
-        return f"org:{verified_org}"
+    # 1. Try verified-token key (forge-proof via verify_token).
+    token_key, _ = _extract_verified_identity(request)
+    if token_key is not None:
+        return token_key
 
-    # Otherwise key on the trusted client IP (real TCP peer; right-most XFF as a
-    # last resort).  See _client_ip for the SECURITY rationale.
+    # 2. Trusted client IP (real TCP peer; right-most XFF as a last resort).
     ip = _client_ip(request)
     if ip:
         return f"ip:{ip}"
 
-    # No peer available → shared, throttled bucket (FINDING 3 — not skipped).
+    # 3. No peer available → shared, throttled bucket (FINDING 3 — not skipped).
     return _UNKNOWN_IDENTITY
 
 
@@ -607,7 +736,25 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             # No classification → pass through.
             return await call_next(request)
 
-        identity = _extract_identity(request)
+        # FINDING 6B: attempt to verify the bearer token once (fast, sync).
+        # This gives us both the org key (for per-org bucketing) and the
+        # is_embed flag (for the cockpit-tile exemption check below).
+        token_key, is_verified_embed = _extract_verified_identity(request)
+
+        # Embed exemption: VERIFIED embed tokens on the metrics/query read paths
+        # are exempt so a cockpit firing N tiles is never throttled.
+        # A forged/invalid embed token returns is_verified_embed=False here and
+        # falls through to normal rate-limiting — no exemption for forgeries.
+        if is_verified_embed and _is_embed_exempt_path(path):
+            return await call_next(request)
+
+        # Identity: use verified org key when available; else IP fallback.
+        if token_key is not None:
+            identity = token_key
+        else:
+            ip = _client_ip(request)
+            identity = f"ip:{ip}" if ip else _UNKNOWN_IDENTITY
+
         # FINDING 3: we do NOT pass 'unknown' through unthrottled.  When the
         # caller can't be identified they share a single conservative bucket
         # (identity == _UNKNOWN_IDENTITY) so anonymous floods stay bounded.
