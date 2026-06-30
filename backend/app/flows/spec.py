@@ -58,6 +58,13 @@ Supported task kinds
                       matching downstream tasks.
 - ``map_collect``   — collector handler for map fan-in; returns
                       ``{items: [...], item_count: N}``.
+- ``http_call``     — POST (or GET/PUT/PATCH/DELETE) to a host HTTP endpoint
+                      so the host can run nightly domain jobs on Nubi's
+                      scheduler.  SSRF-guarded; auth via org secrets only.
+- ``assert``        — data-quality audit that runs expectations against a
+                      target table/query and FAILS the run on violation.
+                      Supported expectations: row_count, not_null, unique,
+                      custom_sql.
 
 Security notes
 --------------
@@ -244,6 +251,17 @@ class TaskSpec(BaseModel):
           ``org_id``, ``format`` (csv/pdf/pptx, default csv), ``params``,
           ``subject``, ``body``, ``apply_user_permissions``, ``locked_params``,
           ``notify_channels``, ``policies``.
+        - ``http_call``   → ``url`` (required — SSRF-guarded outbound URL).
+          Optional: ``method`` (GET/POST/PUT/PATCH/DELETE, default POST),
+          ``headers`` (dict), ``body`` (JSON-serialisable dict or string),
+          ``auth`` (``{kind: bearer|header|basic, secret_name: NAME}``).
+        - ``assert``      → ``expectations`` (required — non-empty list of
+          expectation dicts).  Each expectation must have a ``kind`` field:
+          ``row_count`` (requires at least one of min/max/exact),
+          ``not_null`` (requires ``columns`` list),
+          ``unique`` (requires ``column`` or ``columns``),
+          ``custom_sql`` (requires ``sql``).
+          Optional: ``target`` (table/view name or sub-query), ``datastore_id``.
         - ``noop``        → no required fields.
     retries:
         Number of retry attempts after the first failure (``0`` = no retry).
@@ -273,6 +291,8 @@ class TaskSpec(BaseModel):
         "branch",       # conditional routing; config.conditions list
         "map_collect",  # collector for map fan-in (internal / handler use)
         "report_send",  # render a board and deliver to recipients (email/Slack)
+        "http_call",    # POST/GET/… to a host endpoint (SSRF-guarded)
+        "assert",       # data-quality audit; fails the run on violation
     ] = Field(description="Execution kind.")
     needs: list[str] = Field(
         default_factory=list,
@@ -777,6 +797,59 @@ def validate_flow_spec(data: Any) -> tuple[FlowSpec | None, list[str]]:
                         issues.append(
                             f"Task {task.key!r} (branch): condition[{i}] missing 'next' "
                             "list (must be a non-empty list of task keys)."
+                        )
+        elif task.kind == "http_call":
+            if not cfg.get("url"):
+                issues.append(
+                    f"Task {task.key!r} (http_call): config must include 'url'."
+                )
+        elif task.kind == "assert":
+            expectations = cfg.get("expectations")
+            if not expectations or not isinstance(expectations, list):
+                issues.append(
+                    f"Task {task.key!r} (assert): config must include 'expectations' "
+                    "(non-empty list of expectation dicts)."
+                )
+            else:
+                for i, exp in enumerate(expectations):
+                    if not isinstance(exp, dict):
+                        issues.append(
+                            f"Task {task.key!r} (assert): expectations[{i}] must be a dict."
+                        )
+                        continue
+                    kind_e = str(exp.get("kind") or "").lower().strip()
+                    if not kind_e:
+                        issues.append(
+                            f"Task {task.key!r} (assert): expectations[{i}] missing 'kind'."
+                        )
+                    elif kind_e == "row_count":
+                        if exp.get("min") is None and exp.get("max") is None and exp.get("exact") is None:
+                            issues.append(
+                                f"Task {task.key!r} (assert): expectations[{i}] (row_count) "
+                                "requires at least one of 'min', 'max', or 'exact'."
+                            )
+                    elif kind_e == "not_null":
+                        if not exp.get("columns") or not isinstance(exp.get("columns"), list):
+                            issues.append(
+                                f"Task {task.key!r} (assert): expectations[{i}] (not_null) "
+                                "requires 'columns' (non-empty list)."
+                            )
+                    elif kind_e == "unique":
+                        if not exp.get("column") and not exp.get("columns"):
+                            issues.append(
+                                f"Task {task.key!r} (assert): expectations[{i}] (unique) "
+                                "requires 'column' (str) or 'columns' (list)."
+                            )
+                    elif kind_e == "custom_sql":
+                        if not exp.get("sql"):
+                            issues.append(
+                                f"Task {task.key!r} (assert): expectations[{i}] (custom_sql) "
+                                "requires 'sql' (non-empty string)."
+                            )
+                    else:
+                        issues.append(
+                            f"Task {task.key!r} (assert): expectations[{i}] has unsupported "
+                            f"kind {kind_e!r}. Supported: row_count, not_null, unique, custom_sql."
                         )
         # map_collect: no required config fields
         # noop: no required config fields
