@@ -13,6 +13,28 @@
  * token             Static JWT string.
  * get-token         Name of a window function returning Promise<string>|string.
  * backend           Base URL of the Nubi API. Defaults to http://localhost:8000.
+ * model-attribution JSON string of a host-supplied ModelAttribution payload (see below).
+ *
+ * PROPERTIES
+ * ----------
+ * .modelAttribution  (ModelAttribution|null) The EXPLICIT host prop pathway for the
+ *                    model-attribution payload. Set it directly on the element instance
+ *                    (e.g. `el.modelAttribution = {...}`) to render the second, distinct
+ *                    "why the model predicted this" section. This payload is supplied by
+ *                    the HOST — the widget NEVER fetches or computes it. Takes precedence
+ *                    over the `model-attribution` attribute. When unset, the drawer renders
+ *                    exactly as before (metric-contribution only).
+ *
+ * TWO DISTINCT PAYLOADS
+ * ---------------------
+ * This drawer can render two payloads that answer DIFFERENT questions and are kept
+ * visually namespaced (never blurred together):
+ *   1. METRIC CONTRIBUTION (Nubi computes it, via POST /metrics/{id}/explain) —
+ *      "why did this NUMBER move across dimensions." Rendered from the fetched/inline
+ *      `data` (ExplainResponse). Always present.
+ *   2. MODEL ATTRIBUTION (the HOST posts it; Nubi does NOT compute it) — per-prediction
+ *      SHAP / feature attribution for the host's own model: "why did the model predict X."
+ *      Optional; supplied via the `.modelAttribution` prop or `model-attribution` attribute.
  *
  * EVENTS
  * ------
@@ -31,8 +53,44 @@
  * pages always show something meaningful.
  */
 
-import { resolveToken, escapeHtml, el, BASE_STYLES } from './shared.js'
+import { resolveToken, escapeHtml, BASE_STYLES } from './shared.js'
 import { applyTheme } from '../theme.js'
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+//
+// The metric-contribution payload (ExplainResponse — Nubi computes it) is
+// documented in the file header and the backend (ExplainResponse in
+// backend/app/routes/metrics.py). The types below describe the SECOND,
+// distinct payload: a host-supplied per-prediction model attribution. It is
+// intentionally generic and domain-agnostic — Nubi never computes or fetches
+// it; the host posts it in.
+
+/**
+ * A single feature's contribution to a model prediction (e.g. one SHAP value).
+ *
+ * @typedef {Object} ModelAttributionFeature
+ * @property {string}                feature        Human-readable feature name.
+ * @property {string|number} [value]                The feature's value for this prediction.
+ * @property {number}                contribution   Signed push toward (+) or away from (−)
+ *                                                   the prediction, in the prediction's units.
+ */
+
+/**
+ * Host-supplied model-attribution payload. Answers "why did the model predict X
+ * for this SKU/store" — distinct from the metric-contribution payload, which
+ * answers "why did this number move across dimensions".
+ *
+ * @typedef {Object} ModelAttribution
+ * @property {'model_attribution'}        kind          Namespace discriminator.
+ * @property {string}              [model]              Model name / identifier.
+ * @property {{label?: string, value?: number}} [prediction]  The prediction being explained.
+ * @property {number}              [base_value]         Model base/expected value (SHAP E[f(x)]).
+ * @property {ModelAttributionFeature[]} features        Per-feature contributions (any order;
+ *                                                       the widget sorts by |contribution|).
+ * @property {string}              [summary]            Optional natural-language summary.
+ */
 
 // ---------------------------------------------------------------------------
 // Styles
@@ -178,6 +236,121 @@ const EXPLAIN_STYLES = /* css */ `
     margin-top: 4px;
   }
 
+  /* ── Namespaced section headers (shown only when BOTH payloads present) ── */
+  .ns-header {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 10px 14px 6px;
+  }
+
+  .ns-header.attrib {
+    border-top: 2px solid var(--nubi-border, #2d3748);
+    margin-top: 6px;
+  }
+
+  .ns-namespace {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    opacity: 0.5;
+  }
+  .ns-namespace.contribution { color: var(--nubi-up, #22c55e); }
+  .ns-namespace.attrib       { color: #818cf8; }
+
+  .ns-question {
+    font-size: 12px;
+    font-weight: 600;
+    opacity: 0.8;
+  }
+
+  /* ── Model-attribution section ── */
+  .attrib-meta {
+    padding: 2px 14px 6px;
+    font-size: 11px;
+    opacity: 0.6;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .attrib-meta b {
+    font-weight: 600;
+    opacity: 0.9;
+  }
+
+  .attrib-row {
+    display: flex;
+    align-items: center;
+    padding: 3px 14px;
+    gap: 8px;
+  }
+
+  .attrib-feature {
+    font-size: 12px;
+    flex: 0 0 110px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    opacity: 0.85;
+  }
+
+  .attrib-feature .fval {
+    opacity: 0.45;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Bidirectional bar: a centre line with the bar growing left (−) or right (+). */
+  .attrib-bar-wrap {
+    flex: 1;
+    height: 10px;
+    position: relative;
+    background: rgba(255,255,255,0.06);
+    border-radius: 2px;
+  }
+
+  .attrib-bar-wrap::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: -1px;
+    bottom: -1px;
+    width: 1px;
+    background: rgba(255,255,255,0.18);
+  }
+
+  .attrib-bar {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    border-radius: 2px;
+    min-width: 2px;
+  }
+  .attrib-bar.up   { left: 50%;  background: var(--nubi-up, #22c55e); }
+  .attrib-bar.down { right: 50%; background: var(--nubi-down, #ef4444); }
+
+  .attrib-contribution {
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    flex: 0 0 56px;
+    text-align: right;
+    opacity: 0.7;
+  }
+  .attrib-contribution.up   { color: var(--nubi-up, #22c55e); }
+  .attrib-contribution.down { color: var(--nubi-down, #ef4444); }
+
+  .attrib-summary {
+    font-size: 12px;
+    line-height: 1.5;
+    opacity: 0.65;
+    padding: 8px 14px 10px;
+  }
+
+  .nubi-badge.model { background: #1e1b4b; color: #c7d2fe; }
+
   .explain-footer {
     padding: 4px 14px;
     font-size: 10px;
@@ -306,6 +479,52 @@ function _fmtPct(share) {
   return pct.toFixed(1) + '%'
 }
 
+// Signed, adaptive-precision formatter for model-attribution contributions
+// (SHAP-like values are often small, so keep more decimals than _fmtNumber).
+function _fmtSigned(n) {
+  if (n === null || n === undefined || isNaN(n)) return '—'
+  const abs = Math.abs(n)
+  const sign = n < 0 ? '-' : n > 0 ? '+' : ''
+  if (abs >= 1_000_000) return sign + (abs / 1_000_000).toFixed(2) + 'M'
+  if (abs >= 1_000) return sign + (abs / 1_000).toFixed(2) + 'K'
+  const digits = abs >= 1 ? 2 : 3
+  return sign + new Intl.NumberFormat(undefined, { maximumFractionDigits: digits }).format(abs)
+}
+
+// Unsigned, adaptive-precision formatter for base value / prediction value.
+function _fmtValue(n) {
+  if (n === null || n === undefined || isNaN(n)) return '—'
+  const abs = Math.abs(n)
+  if (abs >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M'
+  if (abs >= 1_000) return (n / 1_000).toFixed(2) + 'K'
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 }).format(n)
+}
+
+// ---------------------------------------------------------------------------
+// Sample model-attribution (host-supplied payload demo)
+// ---------------------------------------------------------------------------
+
+/**
+ * @returns {ModelAttribution}
+ */
+function _makeSampleModelAttribution() {
+  return {
+    kind: 'model_attribution',
+    model: 'demand_forecast_v3',
+    prediction: { label: 'units_next_week', value: 168 },
+    base_value: 120,
+    features: [
+      { feature: 'promo_active',      value: 'yes',   contribution: 38 },
+      { feature: 'avg_temp_c',        value: 27.5,    contribution: 21 },
+      { feature: 'price',             value: 14.99,   contribution: -18 },
+      { feature: 'day_of_week',       value: 'Sat',   contribution: 12 },
+      { feature: 'competitor_promo',  value: 'yes',   contribution: -9 },
+      { feature: 'stock_on_hand',     value: 320,     contribution: 4 },
+    ],
+    summary: null,
+  }
+}
+
 // ---------------------------------------------------------------------------
 // NubiExplain — custom element
 // ---------------------------------------------------------------------------
@@ -319,6 +538,7 @@ class NubiExplain extends HTMLElement {
       'top-n', 'include-summary',
       'token', 'get-token', 'backend',
       'theme', 'data', 'no-sample-fallback',
+      'model-attribution',
     ]
   }
 
@@ -326,6 +546,20 @@ class NubiExplain extends HTMLElement {
     super()
     this._shadow = this.attachShadow({ mode: 'open' })
     this._ac = null
+    /** @type {ModelAttribution|null} */
+    this._modelAttribution = null
+  }
+
+  /**
+   * Explicit host prop pathway for the model-attribution payload.
+   * The host sets this directly (`el.modelAttribution = {...}`); the widget
+   * never fetches or computes it. Setting it triggers a re-render.
+   * @returns {ModelAttribution|null}
+   */
+  get modelAttribution() { return this._modelAttribution }
+  set modelAttribution(val) {
+    this._modelAttribution = val || null
+    if (this.isConnected) this._render()
   }
 
   connectedCallback() {
@@ -345,6 +579,30 @@ class NubiExplain extends HTMLElement {
 
   _backend() {
     return (this.getAttribute('backend') || 'http://localhost:8000').replace(/\/$/, '')
+  }
+
+  /**
+   * Resolve the host-supplied model-attribution payload. Precedence:
+   *   1. `.modelAttribution` property (the explicit prop pathway).
+   *   2. `model-attribution` attribute (inline JSON string).
+   * Returns null when neither is present or the JSON is invalid — in which
+   * case the drawer renders the metric-contribution payload alone, unchanged.
+   * @returns {ModelAttribution|null}
+   */
+  _resolveModelAttribution() {
+    if (this._modelAttribution && typeof this._modelAttribution === 'object') {
+      return this._modelAttribution
+    }
+    const attr = this.getAttribute('model-attribution')
+    if (attr) {
+      try {
+        const parsed = JSON.parse(attr)
+        if (parsed && typeof parsed === 'object') return parsed
+      } catch (err) {
+        console.warn('[nubi-explain] invalid model-attribution attribute:', err.message)
+      }
+    }
+    return null
   }
 
   _ensureScaffold() {
@@ -373,6 +631,21 @@ class NubiExplain extends HTMLElement {
   _renderData(data, isSample) {
     const body = this._shadow.querySelector('.explain-body')
     body.innerHTML = ''
+
+    // Host-supplied model-attribution payload (optional, second payload).
+    const attrib = this._resolveModelAttribution()
+
+    // Only namespace the contribution section when BOTH payloads are present,
+    // so the single-payload case renders exactly as before (no regression).
+    if (attrib) {
+      const nsHead = document.createElement('div')
+      nsHead.className = 'ns-header contribution'
+      nsHead.innerHTML = `
+        <span class="ns-namespace contribution">Metric contribution</span>
+        <span class="ns-question">Why the number moved</span>
+      `
+      body.appendChild(nsHead)
+    }
 
     const deltaEl = this._shadow.querySelector('.explain-delta')
     const sampleBadge = this._shadow.querySelector('.nubi-badge.sample')
@@ -485,6 +758,102 @@ class NubiExplain extends HTMLElement {
       <span>${data.dimensions ? data.dimensions.length : 0} dimension(s)</span>
     `
     body.appendChild(footer)
+
+    // Second, visually distinct payload: host-supplied model attribution.
+    if (attrib) this._renderModelAttribution(body, attrib)
+  }
+
+  /**
+   * Render the host-supplied model-attribution payload as a clearly separated,
+   * namespaced section ("Why the model predicted this"). Feature contributions
+   * are sorted by |contribution|, signed/directional, with an optional base
+   * value + prediction and summary. Nubi never computes this — it is passed in.
+   *
+   * @param {HTMLElement} body
+   * @param {ModelAttribution} attrib
+   */
+  _renderModelAttribution(body, attrib) {
+    // Namespaced header — distinct accent colour from the contribution section.
+    const nsHead = document.createElement('div')
+    nsHead.className = 'ns-header attrib'
+    nsHead.innerHTML = `
+      <span class="ns-namespace attrib">Model attribution${attrib.model ? ' · ' + escapeHtml(String(attrib.model)) : ''}</span>
+      <span class="ns-question">Why the model predicted this</span>
+    `
+    body.appendChild(nsHead)
+
+    // Base value + prediction meta line.
+    const pred = attrib.prediction || {}
+    const hasBase = attrib.base_value !== null && attrib.base_value !== undefined
+    const hasPred = pred.value !== null && pred.value !== undefined
+    if (hasBase || hasPred || pred.label) {
+      const meta = document.createElement('div')
+      meta.className = 'attrib-meta'
+      const parts = []
+      if (hasBase) parts.push(`<span>base <b>${escapeHtml(_fmtValue(attrib.base_value))}</b></span>`)
+      if (hasPred || pred.label) {
+        const label = pred.label ? escapeHtml(String(pred.label)) : 'prediction'
+        const valTxt = hasPred ? escapeHtml(_fmtValue(pred.value)) : '—'
+        parts.push(`<span>${label} <b>${valTxt}</b></span>`)
+      }
+      meta.innerHTML = parts.join('')
+      body.appendChild(meta)
+    }
+
+    // Feature rows, sorted by |contribution| descending.
+    const features = Array.isArray(attrib.features) ? attrib.features.slice() : []
+    features.sort((a, b) => Math.abs(b.contribution || 0) - Math.abs(a.contribution || 0))
+
+    let maxAbs = 0
+    for (const f of features) {
+      const c = Math.abs(f.contribution || 0)
+      if (c > maxAbs) maxAbs = c
+    }
+    if (maxAbs < 1e-9) maxAbs = 1
+
+    for (const f of features) {
+      const c = Number(f.contribution) || 0
+      const dir = c > 1e-9 ? 'up' : c < -1e-9 ? 'down' : 'flat'
+      const widthPct = Math.min(50, (Math.abs(c) / maxAbs) * 50)
+
+      const row = document.createElement('div')
+      row.className = 'attrib-row'
+      row.setAttribute('data-feature', String(f.feature))
+      row.setAttribute('data-contribution', String(c))
+
+      const nameEl = document.createElement('span')
+      nameEl.className = 'attrib-feature'
+      const valSuffix = (f.value !== null && f.value !== undefined && f.value !== '')
+        ? ` <span class="fval">${escapeHtml(String(f.value))}</span>`
+        : ''
+      // feature name is text; value is escaped above.
+      nameEl.innerHTML = `${escapeHtml(String(f.feature ?? ''))}${valSuffix}`
+
+      const barWrap = document.createElement('div')
+      barWrap.className = 'attrib-bar-wrap'
+      if (dir !== 'flat') {
+        const bar = document.createElement('div')
+        bar.className = `attrib-bar ${dir}`
+        bar.style.width = `${widthPct}%`
+        barWrap.appendChild(bar)
+      }
+
+      const contribEl = document.createElement('span')
+      contribEl.className = `attrib-contribution ${dir}`
+      contribEl.textContent = _fmtSigned(c)
+
+      row.appendChild(nameEl)
+      row.appendChild(barWrap)
+      row.appendChild(contribEl)
+      body.appendChild(row)
+    }
+
+    if (attrib.summary) {
+      const summaryEl = document.createElement('div')
+      summaryEl.className = 'attrib-summary'
+      summaryEl.textContent = attrib.summary
+      body.appendChild(summaryEl)
+    }
   }
 
   _showError(_rawMsg) {
@@ -535,7 +904,7 @@ class NubiExplain extends HTMLElement {
     const backend = this._backend()
 
     let token = null
-    try { token = await resolveToken(this) } catch (_) { /* ignore */ }
+    try { token = await resolveToken(this) } catch { /* ignore */ }
     if (ac.signal.aborted) return
 
     if (metricId && currentStart && currentEnd && comparisonStart && comparisonEnd && backend) {
@@ -597,4 +966,4 @@ if (typeof customElements !== 'undefined' && !customElements.get('nubi-explain')
   customElements.define('nubi-explain', NubiExplain)
 }
 
-export { NubiExplain }
+export { NubiExplain, _makeSampleModelAttribution }

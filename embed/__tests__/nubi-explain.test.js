@@ -38,6 +38,47 @@ function _fmtPct(share) {
   return pct.toFixed(1) + '%'
 }
 
+function _fmtSigned(n) {
+  if (n === null || n === undefined || isNaN(n)) return '—'
+  const abs = Math.abs(n)
+  const sign = n < 0 ? '-' : n > 0 ? '+' : ''
+  if (abs >= 1_000_000) return sign + (abs / 1_000_000).toFixed(2) + 'M'
+  if (abs >= 1_000) return sign + (abs / 1_000).toFixed(2) + 'K'
+  const digits = abs >= 1 ? 2 : 3
+  return sign + new Intl.NumberFormat(undefined, { maximumFractionDigits: digits }).format(abs)
+}
+
+function _fmtValue(n) {
+  if (n === null || n === undefined || isNaN(n)) return '—'
+  const abs = Math.abs(n)
+  if (abs >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M'
+  if (abs >= 1_000) return (n / 1_000).toFixed(2) + 'K'
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 }).format(n)
+}
+
+function _makeSampleModelAttribution() {
+  return {
+    kind: 'model_attribution',
+    model: 'demand_forecast_v3',
+    prediction: { label: 'units_next_week', value: 168 },
+    base_value: 120,
+    features: [
+      { feature: 'promo_active',      value: 'yes',   contribution: 38 },
+      { feature: 'avg_temp_c',        value: 27.5,    contribution: 21 },
+      { feature: 'price',             value: 14.99,   contribution: -18 },
+      { feature: 'day_of_week',       value: 'Sat',   contribution: 12 },
+      { feature: 'competitor_promo',  value: 'yes',   contribution: -9 },
+      { feature: 'stock_on_hand',     value: 320,     contribution: 4 },
+    ],
+    summary: null,
+  }
+}
+
+// Mirrors the widget's feature sort: by |contribution| descending.
+function _sortFeatures(features) {
+  return features.slice().sort((a, b) => Math.abs(b.contribution || 0) - Math.abs(a.contribution || 0))
+}
+
 function _makeSampleData() {
   return {
     metric_id: 'demo',
@@ -240,5 +281,96 @@ describe('ExplainResponse shape validation', () => {
     for (let i = 0; i < powers.length - 1; i++) {
       assert.ok(powers[i] >= powers[i + 1], `dimension ${i} power ${powers[i]} < ${powers[i + 1]}`)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Model-attribution payload (host-supplied, second distinct payload)
+// ---------------------------------------------------------------------------
+
+describe('_fmtSigned (model-attribution contributions)', () => {
+  test('formats null/undefined/NaN as —', () => {
+    assert.equal(_fmtSigned(null), '—')
+    assert.equal(_fmtSigned(undefined), '—')
+    assert.equal(_fmtSigned(NaN), '—')
+  })
+
+  test('signs positive and negative contributions', () => {
+    assert.ok(_fmtSigned(38).startsWith('+'))
+    assert.ok(_fmtSigned(-18).startsWith('-'))
+  })
+
+  test('keeps decimals for small SHAP-like values', () => {
+    assert.equal(_fmtSigned(0.123), '+0.123')
+    assert.equal(_fmtSigned(-0.05), '-0.05')
+  })
+
+  test('uses K/M suffixes for large magnitudes', () => {
+    assert.equal(_fmtSigned(12_500), '+12.50K')
+    assert.equal(_fmtSigned(-2_000_000), '-2.00M')
+  })
+})
+
+describe('_fmtValue (base value / prediction value)', () => {
+  test('formats null as —', () => {
+    assert.equal(_fmtValue(null), '—')
+  })
+
+  test('no forced sign for positive values', () => {
+    const r = _fmtValue(120)
+    assert.ok(!r.startsWith('+'), `expected no + sign, got ${r}`)
+  })
+})
+
+describe('_makeSampleModelAttribution', () => {
+  test('has the model_attribution discriminator', () => {
+    const a = _makeSampleModelAttribution()
+    assert.equal(a.kind, 'model_attribution')
+  })
+
+  test('exposes base_value, prediction and a features array', () => {
+    const a = _makeSampleModelAttribution()
+    assert.equal(typeof a.base_value, 'number')
+    assert.ok(a.prediction && 'value' in a.prediction)
+    assert.ok(Array.isArray(a.features))
+  })
+
+  test('each feature has feature name + numeric contribution', () => {
+    const a = _makeSampleModelAttribution()
+    for (const f of a.features) {
+      assert.ok('feature' in f)
+      assert.equal(typeof f.contribution, 'number')
+    }
+  })
+
+  test('contains both positive and negative contributions (directional)', () => {
+    const a = _makeSampleModelAttribution()
+    assert.ok(a.features.some(f => f.contribution > 0))
+    assert.ok(a.features.some(f => f.contribution < 0))
+  })
+
+  test('base_value + sum(contributions) reconstructs the prediction', () => {
+    const a = _makeSampleModelAttribution()
+    const sum = a.features.reduce((acc, f) => acc + f.contribution, 0)
+    assert.equal(a.base_value + sum, a.prediction.value)
+  })
+})
+
+describe('feature sort by |contribution|', () => {
+  test('orders features by descending absolute contribution', () => {
+    const a = _makeSampleModelAttribution()
+    const sorted = _sortFeatures(a.features)
+    for (let i = 0; i < sorted.length - 1; i++) {
+      assert.ok(
+        Math.abs(sorted[i].contribution) >= Math.abs(sorted[i + 1].contribution),
+        `feature ${i} |${sorted[i].contribution}| < |${sorted[i + 1].contribution}|`,
+      )
+    }
+  })
+
+  test('top feature is the largest-magnitude driver', () => {
+    const a = _makeSampleModelAttribution()
+    const sorted = _sortFeatures(a.features)
+    assert.equal(sorted[0].feature, 'promo_active')
   })
 })
