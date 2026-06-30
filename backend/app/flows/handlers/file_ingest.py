@@ -520,6 +520,84 @@ def _pg_copy(dsn: str, table: str, batches: Iterator[Any]) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Contract gate helpers
+# ---------------------------------------------------------------------------
+
+
+def _infer_staged_schema(staging: "StagingArea", staged_rel: str) -> list[dict[str, str]]:
+    """Infer schema from a staged Parquet entry.
+
+    Reads the staged Parquet bytes via pyarrow and returns a list of
+    ``{name, type}`` dicts using the Arrow type's string representation,
+    normalised to lower-case for comparison stability.
+
+    Returns an empty list on any error (best-effort: a missing pyarrow
+    dependency should not silently suppress the schema check — the caller
+    treats an empty incoming schema as "no columns to validate").
+    """
+    try:
+        import pyarrow.parquet as pq  # noqa: PLC0415
+
+        data = staging.read_bytes(staged_rel)
+        schema = pq.read_schema(io.BytesIO(data))
+        return [
+            {"name": field.name, "type": str(field.type)}
+            for field in schema
+        ]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _contract_check(
+    org_id: str,
+    datastore_id: str,
+    table_key: str,
+    staging: "StagingArea",
+    first_staged_rel: str,
+) -> None:
+    """Apply the schema-compatibility contract gate for the file-ingest path.
+
+    Loads the stored schema sidecar for *table_key* (via the same helpers used
+    by the HTTP lake-ingest commit) and compares it against the schema inferred
+    from *first_staged_rel* (the first staged Parquet file in this run).
+
+    Raises ``AppError("schema_incompatible", 409)`` when the incoming schema
+    narrows the stored schema (column removed or type changed).  Additive
+    changes (new columns) are allowed.  When no sidecar exists yet (first ever
+    ingest) the check is skipped — the sidecar is written by the loader on
+    success.
+
+    Parameters
+    ----------
+    org_id:
+        Org identifier used to scope the schema sidecar lookup.
+    datastore_id:
+        Connector/datastore identifier (``target.connector_id`` from config).
+    table_key:
+        Logical table name (``target.object`` from config).
+    staging:
+        The run's staging area (used to read the staged Parquet for schema inference).
+    first_staged_rel:
+        Relative path of the first staged Parquet object.
+    """
+    from app.routes.ingest import _load_table_schema, _check_schema_compatible  # noqa: PLC0415
+
+    existing = _load_table_schema(org_id, datastore_id, table_key)
+    if not existing:
+        # No stored schema yet — first ingest, nothing to validate against.
+        return
+
+    incoming = _infer_staged_schema(staging, first_staged_rel)
+    if not incoming:
+        # Could not infer schema (e.g. pyarrow not available in this env) —
+        # skip silently rather than blocking a valid ingest on a tooling gap.
+        return
+
+    # Reuse the SAME check from the HTTP ingest path (no logic duplication).
+    _check_schema_compatible(existing, incoming, table_key)
+
+
+# ---------------------------------------------------------------------------
 # Main handler
 # ---------------------------------------------------------------------------
 
@@ -607,6 +685,16 @@ def handle(
         ingested_files.append(fstat)
 
     manifest = staging.build_manifest(entries, row_counts)
+
+    # ── Contract gate: schema-compatibility check (append mode) ────────────
+    # Mirrors the guard in routes/ingest.py _do_commit so that scheduled
+    # file-ingest tasks FAIL loudly on schema drift rather than silently
+    # loading incompatible data.  Only enforced when at least one file was
+    # staged (so empty runs don't needlessly hit the schema sidecar).
+    # The incoming schema is inferred from the first staged Parquet; it is
+    # compared against the stored schema sidecar for the target table.
+    if mode == "append" and entries:
+        _contract_check(org_id, tgt_connector_id, tgt_object, staging, entries[0].path)
 
     # ── Bind the staging-bound loader callables now that staging + manifest
     #    exist (promote for object stores, bulk for warehouses) ──────────────

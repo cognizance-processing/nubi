@@ -687,6 +687,93 @@ async def get_dataset(
 
 
 # ---------------------------------------------------------------------------
+# GET /datasets/{dataset_id}/profile — column profiling
+# ---------------------------------------------------------------------------
+
+@router.get("/{dataset_id}/profile")
+async def profile_dataset(
+    dataset_id: str,
+    sample_rows: int | None = None,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Compute per-column statistics for a dataset.
+
+    Statistics computed in a single DuckDB pass (sample-bounded for large files):
+
+    * ``null_rate``      — fraction of NULL values per column (0.0–1.0)
+    * ``distinct_count`` — approximate distinct value count (HyperLogLog)
+    * ``min`` / ``max``  — cast to string for uniform serialisation
+    * ``type``           — DuckDB type string (e.g. ``"INTEGER"``, ``"VARCHAR"``)
+
+    Query parameters
+    ----------------
+    * ``sample_rows`` — override the default sample cap
+      (default: ``NUBI_PROFILE_SAMPLE_ROWS`` env var, or 100 000 rows).
+      Set to ``0`` to scan the full dataset (use with caution for large files).
+
+    **Response (200)**::
+
+        {
+          "dataset_id": "<id>",
+          "row_count":  42000,
+          "sampled":    true,
+          "sample_rows": 100000,
+          "columns": [
+            {
+              "name":           "order_id",
+              "type":           "INTEGER",
+              "null_rate":      0.0,
+              "distinct_count": 42000,
+              "min":            "1",
+              "max":            "42000"
+            },
+            ...
+          ]
+        }
+
+    Errors
+    ------
+    * 404 ``not_found`` — dataset not in catalog.
+    * 400 ``profile_error`` — schema inspection failed (e.g. corrupt Parquet).
+    * 500 ``profile_error`` — DuckDB profiling query failed.
+    """
+    user_id = str(user["id"])
+    org_id = await _get_user_org(user_id, repo)
+    catalog = get_catalog()
+    row = await catalog.get(org_id, dataset_id)
+    if row is None:
+        raise AppError("not_found", f"Dataset {dataset_id!r} not found.", 404)
+
+    # Locate the Parquet file for this dataset.
+    # The catalog stores the parquet_path (local) or a cloud URI in config.
+    parquet_path: str | None = row.get("parquet_path") or row.get("storage_uri")
+    if not parquet_path:
+        # Derive from local layout (datasets/<org_id>/<dataset_id>/data.parquet).
+        parquet_path = _parquet_local_path(org_id, dataset_id)
+
+    from app.connectors.duckdb_storage import DuckDBStorageConnector  # noqa: PLC0415
+    from app.connectors.profiling import profile_parquet  # noqa: PLC0415
+
+    # Build the right connector: cloud URI → use config from the catalog row;
+    # local path → in-memory connector (DuckDB reads local parquet without httpfs).
+    connector_cfg: dict[str, Any] = dict(row.get("config") or {})
+    if parquet_path and "://" in parquet_path and not parquet_path.startswith("file://"):
+        # Cloud Parquet: build a connector from the dataset's connector config
+        # so the right credentials (S3 or GCS) are loaded.
+        connector_cfg.setdefault("database", parquet_path)
+        connector = DuckDBStorageConnector.from_config(connector_cfg)
+    else:
+        # Local file: in-memory connector (no httpfs needed).
+        connector = DuckDBStorageConnector.for_memory()
+
+    effective_sample = sample_rows if sample_rows is not None else None
+    profile = profile_parquet(parquet_path, connector, sample_rows=effective_sample)
+    profile["dataset_id"] = dataset_id
+    return profile
+
+
+# ---------------------------------------------------------------------------
 # Self-register on the shared api_router
 # ---------------------------------------------------------------------------
 
