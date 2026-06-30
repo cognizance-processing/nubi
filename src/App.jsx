@@ -108,6 +108,8 @@ const IntegrationsSettings = lazy(() => import('./pages/app/settings/Integration
 const BridgesSettings = lazy(() => import('./pages/app/settings/BridgesSettings.jsx'))
 const UsageSettings = lazy(() => import('./pages/app/settings/UsageSettings.jsx'))
 const McpSettings = lazy(() => import('./pages/app/settings/McpSettings.jsx'))
+const AccessGrantsSettings = lazy(() => import('./pages/app/settings/AccessGrantsSettings.jsx'))
+const LineagePage = lazy(() => import('./pages/app/LineagePage.jsx'))
 const SecretsPage = lazy(() => import('./pages/app/SecretsPage.jsx'))
 const DataExplorerPage = lazy(() => import('./pages/app/DataExplorerPage.jsx'))
 const ExplorePage = lazy(() => import('./pages/app/ExplorePage.jsx'))
@@ -315,6 +317,8 @@ export default function App() {
           <Route path="metrics/:id" element={<Navigate to="/queries" replace />} />
           <Route path="watches" element={<WatchesPage />} />
           <Route path="automations" element={<AutomationsPage />} />
+          {/* Lineage DAG — full workspace data lineage view */}
+          <Route path="lineage" element={<LineagePage />} />
           {/* Explore — dogfood of embed/ components in the first-party SPA */}
           <Route path="explore" element={<ExplorePage />} />
           {/* Usage moved into Settings — keep the old route as a redirect. */}
@@ -337,6 +341,7 @@ export default function App() {
             <Route path="project" element={<ProjectSettings />} />
             <Route path="security" element={<SecuritySettings />} />
             <Route path="mcp" element={<McpSettings />} />
+            <Route path="access-grants" element={<AccessGrantsSettings />} />
           </Route>
           {/* Secrets are flow-scoped — homed under the Flows section, not top-level nav. */}
           <Route path="flows/secrets" element={<SecretsPage />} />

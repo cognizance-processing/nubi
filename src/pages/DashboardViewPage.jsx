@@ -40,6 +40,7 @@ import { get } from '../lib/api.js'
 import DashboardView from '../dashboards/DashboardView.jsx'
 import SpecRenderer from '../dashboards/SpecRenderer.jsx'
 import { extractVarsFromURL, applyVarToSearchParams } from '../dashboards/urlSync.js'
+import { decodeJwtPayload } from '../dashboards/embedLock.js'
 import { useCanWrite } from '../contexts/OrgContext.jsx'
 import Skeleton from '../components/ui/Skeleton.jsx'
 
@@ -179,32 +180,36 @@ export default function DashboardViewPage() {
   // Variable ↔ URL sync
   // ---------------------------------------------------------------------------
 
-  // EMBED-TOKEN HOOK:
-  // When an embed token is verified and passed to this page (e.g. via a prop or
-  // a future EmbedContext), populate embedLockedParams with the token's locked
-  // variable values.  These MUST take precedence over URL params and cannot be
-  // written by filter widgets.
+  // EMBED-TOKEN HOOK (wired):
+  // Read `_token` (or `_embed`) from the URL, base64-decode the JWT payload
+  // (client-side only — the server verifies the signature), and extract
+  // `locked_params` from the payload.  These values take precedence over URL
+  // params and cannot be overridden by filter widgets.
   //
-  // Implementation plan for embed integration:
-  //   1. Verify the embed JWT server-side (M3 flow).
-  //   2. Pass locked param names+values to this component (prop / context).
-  //   3. Merge them into initialVariables AFTER urlVars (so they win).
-  //   4. Strip locked param names from the URL before extracting urlVars so the
-  //      URL cannot shadow a locked param.
-  //
-  // For now (non-embed flow), this is always an empty object.
-  const embedLockedParams = {}
+  // Fail-closed: if the token is absent or malformed, embedLockedParams = {}
+  // (no restriction widening — the server will still enforce its own check).
+  const embedLockedParams = useMemo(() => {
+    const raw = searchParams.get('_token') ?? searchParams.get('_embed')
+    if (!raw) return {}
+    const payload = decodeJwtPayload(raw)
+    if (!payload || typeof payload.locked_params !== 'object' || !payload.locked_params) return {}
+    return payload.locked_params
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams.get('_token'), searchParams.get('_embed')])
 
   // Names of variables declared in the spec that participate in URL sync.
   // A variable opts in via `url_bind: true`. For backward-compatibility, if NO
   // variable declares url_bind, ALL declared variables sync (prior behaviour).
+  // Locked param names are stripped so the URL cannot shadow embed-token values.
   const knownVarNames = useMemo(() => {
     if (!spec?.variables) return []
     const named = spec.variables.filter(v => v.name)
     const anyOptIn = named.some(v => v.url_bind)
     const eligible = anyOptIn ? named.filter(v => v.url_bind) : named
-    return eligible.map(v => v.name)
-  }, [spec])
+    const lockedNames = new Set(Object.keys(embedLockedParams))
+    return eligible.map(v => v.name).filter(n => !lockedNames.has(n))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spec, JSON.stringify(embedLockedParams)])
 
   // Extract variable values from the URL, restricted to declared variable names.
   const urlVars = useMemo(
