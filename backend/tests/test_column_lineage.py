@@ -681,3 +681,104 @@ class TestFlowLineageEndpoint:
         assert "nodes" in body["lineage"]
         assert "edges" in body["lineage"]
         assert "column_flow" in body["lineage"]
+
+
+# ---------------------------------------------------------------------------
+# 12. GET /lineage/columns/{node_id} — new column-provenance endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestColumnLineageEndpoint:
+    """GET /lineage/columns/{node_id}?column=<col>&hops=N tests.
+
+    The DAG is built over the seed registry (demo_all, demo_active, etc.).
+    We hit real nodes from the seed data to keep tests hermetic (no mocking
+    required), and use synthetic node IDs to trigger the 404 path.
+    """
+
+    @pytest.mark.asyncio
+    async def test_requires_auth(self, lineage_api_client):
+        """401 without a bearer token."""
+        ac, _ = lineage_api_client
+        resp = await ac.get(
+            "/api/v1/lineage/columns/demo_all",
+            params={"column": "id"},
+        )
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_missing_column_param_returns_400(self, lineage_api_client):
+        """400 when the required ?column= parameter is absent."""
+        ac, user_id = lineage_api_client
+        resp = await ac.get(
+            "/api/v1/lineage/columns/demo_all",
+            headers=_auth_headers(user_id),
+            # deliberately no ?column= param
+        )
+        assert resp.status_code in (400, 422)
+
+    @pytest.mark.asyncio
+    async def test_unknown_node_returns_404(self, lineage_api_client):
+        """404 when node_id is not present in the DAG."""
+        ac, user_id = lineage_api_client
+        resp = await ac.get(
+            "/api/v1/lineage/columns/does_not_exist_xyz",
+            params={"column": "id"},
+            headers=_auth_headers(user_id),
+        )
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_known_node_returns_200(self, lineage_api_client):
+        """200 for a known node (demo_all from seed registry)."""
+        ac, user_id = lineage_api_client
+        resp = await ac.get(
+            "/api/v1/lineage/columns/demo_all",
+            params={"column": "id"},
+            headers=_auth_headers(user_id),
+        )
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_response_shape(self, lineage_api_client):
+        """Response has node_id, column, hops, and path keys."""
+        ac, user_id = lineage_api_client
+        resp = await ac.get(
+            "/api/v1/lineage/columns/demo_all",
+            params={"column": "id", "hops": "3"},
+            headers=_auth_headers(user_id),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["node_id"] == "demo_all"
+        assert body["column"] == "id"
+        assert "hops" in body
+        assert "path" in body
+        assert isinstance(body["path"], list)
+
+    @pytest.mark.asyncio
+    async def test_hops_is_clamped_to_ceiling(self, lineage_api_client):
+        """hops > 20 is silently clamped to 20."""
+        ac, user_id = lineage_api_client
+        resp = await ac.get(
+            "/api/v1/lineage/columns/demo_all",
+            params={"column": "id", "hops": "999"},
+            headers=_auth_headers(user_id),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["hops"] <= 20
+
+    @pytest.mark.asyncio
+    async def test_path_entries_have_node_and_column(self, lineage_api_client):
+        """Each hop in the path has at least 'node' and 'column' keys."""
+        ac, user_id = lineage_api_client
+        resp = await ac.get(
+            "/api/v1/lineage/columns/demo_all",
+            params={"column": "id"},
+            headers=_auth_headers(user_id),
+        )
+        body = resp.json()
+        for hop in body["path"]:
+            assert "node" in hop
+            assert "column" in hop

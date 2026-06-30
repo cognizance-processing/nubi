@@ -12,7 +12,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { GitBranch, Loader2, AlertCircle, Search, ArrowRight, ArrowLeft, X, RefreshCw } from 'lucide-react'
+import { GitBranch, Loader2, AlertCircle, Search, ArrowRight, ArrowLeft, X, RefreshCw, Columns3 } from 'lucide-react'
 import { get } from '../../lib/api.js'
 
 // ---------------------------------------------------------------------------
@@ -239,6 +239,107 @@ function NeighbourhoodPanel({ nodeId, hops, onSelectNode }) {
 }
 
 // ---------------------------------------------------------------------------
+// ColumnLineagePanel — column provenance chain for a selected node + column
+// ---------------------------------------------------------------------------
+
+function ColumnLineagePanel({ nodeId, column, hops, onSelectNode }) {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+
+  const load = useCallback(async () => {
+    if (!nodeId || !column) return
+    setLoading(true)
+    setError(null)
+    setData(null)
+    try {
+      const res = await get(
+        `/lineage/columns/${encodeURIComponent(nodeId)}?column=${encodeURIComponent(column)}&hops=${hops}`
+      )
+      setData(res)
+    } catch (err) {
+      setError(err?.message || 'Failed to load column lineage.')
+    } finally {
+      setLoading(false)
+    }
+  }, [nodeId, column, hops])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  if (!nodeId || !column) return null
+
+  return (
+    <div className="mt-4 border-t border-border/60 pt-4 space-y-2">
+      <div className="flex items-center gap-1.5">
+        <Columns3 size={12} className="text-primary shrink-0" />
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">
+          Column provenance: <span className="font-mono text-fg">{column}</span>
+        </p>
+        <button
+          onClick={load}
+          disabled={loading}
+          className="ml-auto h-5 w-5 flex items-center justify-center text-muted hover:text-fg transition-colors disabled:opacity-40"
+        >
+          {loading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+        </button>
+      </div>
+
+      {loading && (
+        <div className="flex items-center gap-1.5 text-xs text-muted">
+          <Loader2 size={11} className="animate-spin" /> Loading provenance…
+        </div>
+      )}
+
+      {error && (
+        <div className="flex items-center gap-1.5 text-xs text-red-500">
+          <AlertCircle size={11} /> {error}
+        </div>
+      )}
+
+      {data && (
+        <div className="space-y-1">
+          {(data.path ?? []).length === 0 ? (
+            <p className="text-xs italic text-muted/50">No provenance path found.</p>
+          ) : (
+            <>
+              {(data.path ?? []).map((hop, i) => (
+                <div
+                  key={i}
+                  className="flex items-start gap-2 text-[11px] font-mono rounded-lg bg-surface-2/30 px-2.5 py-1.5 border border-border/40"
+                >
+                  <span className="text-[9px] text-muted/40 font-sans mt-0.5 shrink-0 w-3">{i}</span>
+                  <div className="flex-1 min-w-0">
+                    <button
+                      className="text-blue-600 dark:text-blue-400 hover:underline truncate max-w-[120px] block"
+                      onClick={() => onSelectNode(hop.node)}
+                      title={hop.node}
+                    >
+                      {hop.node}
+                    </button>
+                    <span className="text-fg/80">.{hop.column}</span>
+                    {hop.alias && (
+                      <span className="ml-1.5 text-[9px] font-sans text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1 rounded">alias</span>
+                    )}
+                    {hop.select_star && (
+                      <span className="ml-1.5 text-[9px] font-sans text-slate-500 bg-surface-2 px-1 rounded">SELECT *</span>
+                    )}
+                  </div>
+                  {i < (data.path ?? []).length - 1 && (
+                    <ArrowLeft size={9} className="text-muted/40 shrink-0 mt-1" />
+                  )}
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // LineagePage
 // ---------------------------------------------------------------------------
 
@@ -253,6 +354,10 @@ export default function LineagePage() {
   // Node selection
   const [selectedId, setSelectedId] = useState(null)
   const [hops, setHops] = useState(2)
+
+  // Column selection for column-level lineage
+  const [selectedColumn, setSelectedColumn] = useState(null)
+  const [columnInput, setColumnInput] = useState('')
 
   // Search
   const [search, setSearch] = useState('')
@@ -432,12 +537,51 @@ export default function LineagePage() {
         </div>
 
         {/* Right: neighbourhood detail */}
-        <div className="flex-1 min-w-0 overflow-hidden bg-surface-2/20">
+        <div className="flex-1 min-w-0 overflow-hidden bg-surface-2/20 overflow-y-auto">
           <NeighbourhoodPanel
             nodeId={selectedId}
             hops={hops}
-            onSelectNode={setSelectedId}
+            onSelectNode={(id) => { setSelectedId(id); setSelectedColumn(null); setColumnInput('') }}
           />
+
+          {/* Column-level lineage — input + provenance chain */}
+          {selectedId && (
+            <div className="px-4 pb-6">
+              <div className="flex items-center gap-2">
+                <Columns3 size={13} className="text-muted shrink-0" />
+                <input
+                  type="text"
+                  value={columnInput}
+                  onChange={e => setColumnInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') setSelectedColumn(columnInput.trim() || null) }}
+                  placeholder="Column name (Enter to trace)"
+                  className="flex-1 h-7 px-2 text-xs font-mono bg-surface border border-border rounded-lg text-fg placeholder:text-muted/50 focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+                <button
+                  onClick={() => setSelectedColumn(columnInput.trim() || null)}
+                  className="h-7 px-2.5 text-xs rounded-lg border border-border bg-surface-2 hover:bg-surface text-muted hover:text-fg transition-colors"
+                >
+                  Trace
+                </button>
+                {selectedColumn && (
+                  <button
+                    onClick={() => { setSelectedColumn(null); setColumnInput('') }}
+                    className="h-7 w-7 flex items-center justify-center rounded-lg border border-border text-muted hover:text-fg transition-colors"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+              {selectedColumn && (
+                <ColumnLineagePanel
+                  nodeId={selectedId}
+                  column={selectedColumn}
+                  hops={hops}
+                  onSelectNode={(id) => { setSelectedId(id); setSelectedColumn(null); setColumnInput('') }}
+                />
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>

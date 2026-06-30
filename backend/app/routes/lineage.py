@@ -27,6 +27,11 @@ POST /lineage/cell
     Accepts ``{sql, dialect, cell_key, upstream_cells: {key: sql}}``.
     Returns column-level lineage edges for the provided SQL.
 
+GET /lineage/columns/{node_id}?column=<col>&hops=N
+    Walk the DAG upstream for a specific column, returning the full
+    provenance chain from source column through each model layer to the
+    named metric/query.  Alias-aware; org-scoped.
+
 Registration
 -----------
 A dedicated sub-router (prefix ``/lineage``) is registered on ``api_router``
@@ -397,6 +402,75 @@ async def get_lineage_dag_node(
         "hops": hops,
         "upstream": dag.upstream(node_id, hops),
         "downstream": dag.downstream(node_id, hops),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Column-level lineage endpoint (Feature A – cross-model column provenance)
+# ---------------------------------------------------------------------------
+
+
+@_router.get("/columns/{node_id:path}")
+async def get_column_lineage(
+    node_id: str,
+    column: str,
+    hops: int = 10,
+    _user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    """Walk the DAG upstream for *column* starting at *node_id*.
+
+    Resolves aliases and renames at each model layer, returning the full
+    provenance chain from the requested metric/query node back to the physical
+    source table/column.
+
+    Parameters
+    ----------
+    node_id:
+        Id of the starting DAG node (query, metric, or table).  Path
+        parameter so it may contain slashes.
+    column:
+        The output column name to trace (query parameter).
+    hops:
+        Maximum traversal depth (default 10, ceiling 20).
+
+    Returns
+    -------
+    dict
+        ``{"node_id", "column", "hops", "path": [{node, column,
+        select_star, alias}, ...]}``
+
+    Raises
+    ------
+    AppError("node_not_found", 404)
+        If *node_id* is not in the DAG.
+    AppError("column_required", 400)
+        If the ``column`` query parameter is missing or empty.
+    """
+    from app.lineage.dag import build_dag, resolve_column_lineage  # noqa: PLC0415
+    from app.metrics.registry import get_metric_registry  # noqa: PLC0415
+
+    if not column or not column.strip():
+        raise AppError("column_required", "Query parameter 'column' is required.", 400)
+
+    registry = get_query_registry()
+    metric_registry = get_metric_registry()
+    dag = build_dag(registry.all(), metric_registry.all())
+
+    if node_id not in dag.nodes:
+        raise AppError(
+            "node_not_found",
+            f"No DAG node found with id '{node_id}'.",
+            404,
+        )
+
+    hops = max(1, min(hops, 20))
+    path = resolve_column_lineage(dag, node_id, column.strip(), max_hops=hops)
+
+    return {
+        "node_id": node_id,
+        "column": column.strip(),
+        "hops": hops,
+        "path": path,
     }
 
 

@@ -1035,7 +1035,406 @@ function BranchConfig({ config, onChange }) {
 // NodeInspector
 // ---------------------------------------------------------------------------
 
-const KINDS = ['query', 'python', 'agent', 'bucket_load', 'materialize', 'preagg_refresh', 'noop', 'map', 'branch']
+const KINDS = ['query', 'python', 'agent', 'bucket_load', 'materialize', 'preagg_refresh', 'noop', 'map', 'branch', 'http_call', 'assert']
+
+// ---------------------------------------------------------------------------
+// HttpCallConfig — outbound HTTP request task config panel
+// ---------------------------------------------------------------------------
+
+/**
+ * Config panel for the 'http_call' task kind.
+ *
+ * Fields:
+ *   url      — required outbound URL (SSRF-guarded server-side)
+ *   method   — HTTP verb (GET/POST/PUT/PATCH/DELETE, default POST)
+ *   headers  — optional JSON object of non-secret headers
+ *   body     — optional JSON body (for POST/PUT/PATCH)
+ *   auth     — optional { kind: bearer|header|basic, secret_name: NAME }
+ *   timeout_s — override task-level timeout (optional, number)
+ *   retries   — override task-level retries (optional, number)
+ *
+ * Security: auth.secret_name is a reference to a stored secret name; the
+ * raw credential is NEVER sent via the UI.
+ */
+function HttpCallConfig({ config, onChange }) {
+  const METHODS = ['POST', 'GET', 'PUT', 'PATCH', 'DELETE']
+  const AUTH_KINDS = [
+    { value: '', label: '— none —' },
+    { value: 'bearer', label: 'Bearer token' },
+    { value: 'header', label: 'Custom header' },
+    { value: 'basic', label: 'Basic auth' },
+  ]
+
+  const [secrets, setSecrets] = useState([])
+  useEffect(() => {
+    let cancelled = false
+    listSecrets().then(data => {
+      if (!cancelled) setSecrets(data)
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  const [headersError, setHeadersError] = useState(null)
+  const [headersText, setHeadersText] = useState(
+    () => config.headers ? JSON.stringify(config.headers, null, 2) : ''
+  )
+
+  const handleHeadersChange = (text) => {
+    setHeadersText(text)
+    if (!text.trim()) {
+      setHeadersError(null)
+      onChange({ ...config, headers: undefined })
+      return
+    }
+    try {
+      const parsed = JSON.parse(text)
+      setHeadersError(null)
+      onChange({ ...config, headers: parsed })
+    } catch (err) {
+      setHeadersError('Invalid JSON: ' + err.message)
+    }
+  }
+
+  const auth = config.auth ?? {}
+  const setAuth = (patch) => {
+    const next = { ...auth, ...patch }
+    if (!next.kind) {
+      onChange({ ...config, auth: undefined })
+    } else {
+      onChange({ ...config, auth: next })
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* URL */}
+      <div>
+        <FieldLabel>URL <span className="text-red-400">*</span></FieldLabel>
+        <input
+          type="url"
+          className={inputCls}
+          value={config.url ?? ''}
+          placeholder="https://api.example.com/webhook"
+          onChange={e => onChange({ ...config, url: e.target.value })}
+        />
+        <p className="text-[10px] text-muted/60 mt-1">
+          SSRF-guarded server-side — private IP ranges are blocked.
+        </p>
+      </div>
+
+      {/* Method */}
+      <div>
+        <FieldLabel>Method</FieldLabel>
+        <select
+          className={selectCls}
+          value={config.method ?? 'POST'}
+          onChange={e => onChange({ ...config, method: e.target.value })}
+        >
+          {METHODS.map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+      </div>
+
+      {/* Headers (non-secret) */}
+      <div>
+        <FieldLabel>Headers (JSON, non-secret)</FieldLabel>
+        <textarea
+          className={[textareaCls, headersError ? 'border-red-400' : ''].join(' ')}
+          rows={3}
+          value={headersText}
+          placeholder={'{\n  "Content-Type": "application/json"\n}'}
+          onChange={e => handleHeadersChange(e.target.value)}
+        />
+        {headersError && <p className="text-[10px] text-red-500 mt-1">{headersError}</p>}
+        <p className="text-[10px] text-muted/60 mt-1">Non-secret headers only — put auth credentials in the Auth section below.</p>
+      </div>
+
+      {/* JSON body */}
+      {['POST', 'PUT', 'PATCH'].includes(config.method ?? 'POST') && (
+        <div>
+          <FieldLabel>Body (JSON)</FieldLabel>
+          <textarea
+            className={textareaCls}
+            rows={4}
+            value={typeof config.body === 'string' ? config.body : (config.body ? JSON.stringify(config.body, null, 2) : '')}
+            placeholder={'{\n  "key": "{{ inputs.task.value }}"\n}'}
+            onChange={e => {
+              const val = e.target.value
+              try {
+                onChange({ ...config, body: val ? JSON.parse(val) : undefined })
+              } catch {
+                onChange({ ...config, body: val })
+              }
+            }}
+          />
+          <p className="text-[10px] text-muted/60 mt-1">
+            Template expressions <code className="font-mono bg-surface-2 px-0.5 rounded">{'{{ inputs.task.field }}'}</code> are resolved at run time.
+          </p>
+        </div>
+      )}
+
+      {/* Auth */}
+      <div className="pt-1 border-t border-border/60 space-y-2">
+        <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest">Auth</p>
+        <div>
+          <FieldLabel>Auth kind</FieldLabel>
+          <select
+            className={selectCls}
+            value={auth.kind ?? ''}
+            onChange={e => setAuth({ kind: e.target.value })}
+          >
+            {AUTH_KINDS.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
+          </select>
+        </div>
+        {auth.kind && (
+          <div>
+            <FieldLabel>Secret name</FieldLabel>
+            <div className="relative">
+              <select
+                className={selectCls}
+                value={auth.secret_name ?? ''}
+                onChange={e => setAuth({ secret_name: e.target.value })}
+              >
+                <option value="">— none —</option>
+                {secrets.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+              </select>
+            </div>
+            <p className="text-[10px] text-muted/60 mt-1">
+              Secret resolved server-side at run time. Never embed raw credentials here.
+            </p>
+            {auth.kind === 'header' && (
+              <div className="mt-2">
+                <FieldLabel>Header name</FieldLabel>
+                <input
+                  type="text"
+                  className={inputCls}
+                  value={auth.header_name ?? ''}
+                  placeholder="X-Api-Key"
+                  onChange={e => setAuth({ header_name: e.target.value })}
+                />
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// AssertConfig — data-quality expectations editor
+// ---------------------------------------------------------------------------
+
+/**
+ * Config panel for the 'assert' task kind.
+ *
+ * Fields:
+ *   target       — optional target table/view name
+ *   datastore_id — optional connector UUID
+ *   expectations — list of { kind, ...params }
+ *     row_count: { min?, max?, exact? }
+ *     not_null:  { columns: string[] }
+ *     unique:    { column?: string, columns?: string[] }
+ *     custom_sql: { sql: string, name?: string }
+ */
+function AssertConfig({ config, onChange }) {
+  const EXPECT_KINDS = [
+    { value: 'row_count', label: 'Row count' },
+    { value: 'not_null', label: 'Not null' },
+    { value: 'unique', label: 'Unique' },
+    { value: 'custom_sql', label: 'Custom SQL' },
+  ]
+
+  const expectations = config.expectations ?? []
+
+  const addExpectation = () => {
+    onChange({ ...config, expectations: [...expectations, { kind: 'row_count', min: 1 }] })
+  }
+
+  const removeExpectation = (i) => {
+    const next = [...expectations]
+    next.splice(i, 1)
+    onChange({ ...config, expectations: next })
+  }
+
+  const updateExpectation = (i, patch) => {
+    const next = expectations.map((e, idx) => idx === i ? { ...e, ...patch } : e)
+    onChange({ ...config, expectations: next })
+  }
+
+  const setKind = (i, kind) => {
+    const defaults = {
+      row_count: { kind: 'row_count', min: 1 },
+      not_null: { kind: 'not_null', columns: [] },
+      unique: { kind: 'unique', columns: [] },
+      custom_sql: { kind: 'custom_sql', sql: '', name: '' },
+    }
+    const next = expectations.map((e, idx) => idx === i ? defaults[kind] : e)
+    onChange({ ...config, expectations: next })
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* Target */}
+      <div>
+        <FieldLabel>Target table / view (optional)</FieldLabel>
+        <input
+          type="text"
+          className={inputCls}
+          value={config.target ?? ''}
+          placeholder="schema.table or upstream task key"
+          onChange={e => onChange({ ...config, target: e.target.value || undefined })}
+        />
+        <p className="text-[10px] text-muted/60 mt-1">
+          Leave blank to assert on the last upstream task's output.
+        </p>
+      </div>
+
+      {/* Expectations */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <FieldLabel>Expectations</FieldLabel>
+          <button
+            onClick={addExpectation}
+            className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-md border border-dashed border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+          >
+            <Plus size={10} />
+            Add
+          </button>
+        </div>
+
+        {expectations.length === 0 && (
+          <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-3 text-center">
+            No expectations yet — click &ldquo;Add&rdquo; to create the first check.
+          </p>
+        )}
+
+        <div className="space-y-3">
+          {expectations.map((exp, i) => (
+            <div key={i} className="rounded-lg border border-border bg-surface-2/20 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <FieldLabel>Expectation {i + 1}</FieldLabel>
+                <button
+                  onClick={() => removeExpectation(i)}
+                  className="w-5 h-5 flex items-center justify-center rounded text-muted/60 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                  title="Remove"
+                >
+                  <Trash2 size={10} />
+                </button>
+              </div>
+
+              <div>
+                <FieldLabel>Kind</FieldLabel>
+                <select
+                  className={selectCls}
+                  value={exp.kind ?? 'row_count'}
+                  onChange={e => setKind(i, e.target.value)}
+                >
+                  {EXPECT_KINDS.map(k => <option key={k.value} value={k.value}>{k.label}</option>)}
+                </select>
+              </div>
+
+              {/* row_count params */}
+              {exp.kind === 'row_count' && (
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <FieldLabel>Min rows</FieldLabel>
+                    <input
+                      type="number"
+                      min={0}
+                      className={inputCls}
+                      value={exp.min ?? ''}
+                      placeholder="—"
+                      onChange={e => updateExpectation(i, { min: e.target.value ? parseInt(e.target.value, 10) : undefined })}
+                    />
+                  </div>
+                  <div>
+                    <FieldLabel>Max rows</FieldLabel>
+                    <input
+                      type="number"
+                      min={0}
+                      className={inputCls}
+                      value={exp.max ?? ''}
+                      placeholder="—"
+                      onChange={e => updateExpectation(i, { max: e.target.value ? parseInt(e.target.value, 10) : undefined })}
+                    />
+                  </div>
+                  <div>
+                    <FieldLabel>Exact</FieldLabel>
+                    <input
+                      type="number"
+                      min={0}
+                      className={inputCls}
+                      value={exp.exact ?? ''}
+                      placeholder="—"
+                      onChange={e => updateExpectation(i, { exact: e.target.value ? parseInt(e.target.value, 10) : undefined })}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* not_null params */}
+              {exp.kind === 'not_null' && (
+                <div>
+                  <FieldLabel>Columns (comma-separated)</FieldLabel>
+                  <input
+                    type="text"
+                    className={inputCls}
+                    value={(exp.columns ?? []).join(', ')}
+                    placeholder="id, email, created_at"
+                    onChange={e => updateExpectation(i, { columns: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
+                  />
+                </div>
+              )}
+
+              {/* unique params */}
+              {exp.kind === 'unique' && (
+                <div>
+                  <FieldLabel>Column(s) (comma-separated)</FieldLabel>
+                  <input
+                    type="text"
+                    className={inputCls}
+                    value={(exp.columns ?? (exp.column ? [exp.column] : [])).join(', ')}
+                    placeholder="id  or  order_id, line_num"
+                    onChange={e => {
+                      const cols = e.target.value.split(',').map(s => s.trim()).filter(Boolean)
+                      updateExpectation(i, { columns: cols, column: undefined })
+                    }}
+                  />
+                </div>
+              )}
+
+              {/* custom_sql params */}
+              {exp.kind === 'custom_sql' && (
+                <>
+                  <div>
+                    <FieldLabel>SQL (returns 0 rows = pass)</FieldLabel>
+                    <textarea
+                      className={textareaCls}
+                      rows={3}
+                      value={exp.sql ?? ''}
+                      placeholder="SELECT id FROM {{ target }} WHERE amount < 0"
+                      onChange={e => updateExpectation(i, { sql: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <FieldLabel>Name (optional)</FieldLabel>
+                    <input
+                      type="text"
+                      className={inputCls}
+                      value={exp.name ?? ''}
+                      placeholder="no_negative_amounts"
+                      onChange={e => updateExpectation(i, { name: e.target.value })}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
 
 export default function NodeInspector({ task, onChange, onClose, readOnly = false, showHeader = true }) {
   // Validate key locally (only on blur to avoid stuttering)
@@ -1128,6 +1527,8 @@ export default function NodeInspector({ task, onChange, onClose, readOnly = fals
                   noop:        {},
                   map:         { item_expr: '', item_var: 'item', max_concurrency: 0, max_map_size: 1000, collect_key: '', body: [] },
                   branch:      { conditions: [], default: [] },
+                  http_call:   { url: '', method: 'POST' },
+                  assert:      { expectations: [{ kind: 'row_count', min: 1 }] },
                 }
                 // Keep cell_type coherent for the three user-facing cell kinds.
                 const cellTypeFor = { query: 'sql', python: 'python', noop: 'markdown' }
@@ -1169,6 +1570,8 @@ export default function NodeInspector({ task, onChange, onClose, readOnly = fals
           {task.kind === 'preagg_refresh' && <PreaggRefreshConfig  config={config} onChange={setConfig} />}
           {task.kind === 'map'         && <MapConfig        config={config} onChange={setConfig} />}
           {task.kind === 'branch'      && <BranchConfig     config={config} onChange={setConfig} />}
+          {task.kind === 'http_call'   && <HttpCallConfig   config={config} onChange={setConfig} />}
+          {task.kind === 'assert'      && <AssertConfig     config={config} onChange={setConfig} />}
           {(task.kind === 'noop' || !task.kind) && <NoopConfig />}
         </section>
 

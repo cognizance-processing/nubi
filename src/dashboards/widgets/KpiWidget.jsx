@@ -43,6 +43,7 @@ import { applySignal } from '../../viz/signals.js'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
 import Skeleton from '../../components/ui/Skeleton.jsx'
 import Badge from '../../components/ui/Badge.jsx'
+import ExplainDrawer from './ExplainDrawer.jsx'
 
 /** Format a raw value for display. */
 function formatValue(raw, format) {
@@ -153,6 +154,11 @@ export default function KpiWidget({ widget, providerTable = null }) {
   const [sparkValues, setSparkValues] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [explainOpen, setExplainOpen] = useState(false)
+
+  // The metric id used for the explain endpoint (only present when this
+  // widget is bound to a governed metric reference).
+  const explainMetricId = metric?.id ?? null
 
   /**
    * Extract KPI values from an Arrow table (shared by both provider and legacy paths).
@@ -261,54 +267,75 @@ export default function KpiWidget({ widget, providerTable = null }) {
   const valueColor = signal.matched ? signal.color : undefined
 
   return (
-    <div className="flex flex-col justify-center h-full px-5 py-4 gap-1">
-      {loading ? (
-        <div className="space-y-3" aria-busy="true" aria-label="Loading KPI">
-          <Skeleton className="h-9 w-28 rounded-lg" />
-          <Skeleton className="h-3.5 w-20 rounded" />
-        </div>
-      ) : (
-        <>
-          <div className="flex items-baseline gap-2 flex-wrap">
-            <p
-              className="text-3xl font-bold font-display tabular-nums leading-none tracking-tight"
-              style={{ color: valueColor ?? undefined }}
-            >
-              {formatValue(value, format)}
-            </p>
-            {signal.matched && signal.label && (
-              <Badge
-                variant={
-                  signal.color === DELTA_COLORS.up ? 'success'
-                  : signal.color === DELTA_COLORS.down ? 'danger'
-                  : 'warning'
-                }
-                size="sm"
-              >
-                {signal.label}
-              </Badge>
-            )}
-            {delta && (
-              <span
-                className="text-sm font-semibold tabular-nums"
-                style={{ color: DELTA_COLORS[delta.direction] }}
-                aria-label={`Change: ${delta.text}`}
-              >
-                {delta.text}
-              </span>
-            )}
+    <>
+      <div className="flex flex-col justify-center h-full px-5 py-4 gap-1 relative group">
+        {loading ? (
+          <div className="space-y-3" aria-busy="true" aria-label="Loading KPI">
+            <Skeleton className="h-9 w-28 rounded-lg" />
+            <Skeleton className="h-3.5 w-20 rounded" />
           </div>
-          <p className="mt-1 text-sm font-medium text-muted leading-snug">{label}</p>
-          {spark && (
-            <div className="mt-2 -mx-1">
-              <EChart option={spark} height={36} />
+        ) : (
+          <>
+            <div className="flex items-baseline gap-2 flex-wrap">
+              <p
+                className="text-3xl font-bold font-display tabular-nums leading-none tracking-tight"
+                style={{ color: valueColor ?? undefined }}
+              >
+                {formatValue(value, format)}
+              </p>
+              {signal.matched && signal.label && (
+                <Badge
+                  variant={
+                    signal.color === DELTA_COLORS.up ? 'success'
+                    : signal.color === DELTA_COLORS.down ? 'danger'
+                    : 'warning'
+                  }
+                  size="sm"
+                >
+                  {signal.label}
+                </Badge>
+              )}
+              {delta && (
+                <span
+                  className="text-sm font-semibold tabular-nums"
+                  style={{ color: DELTA_COLORS[delta.direction] }}
+                  aria-label={`Change: ${delta.text}`}
+                >
+                  {delta.text}
+                </span>
+              )}
             </div>
-          )}
-          {error && (
-            <p className="mt-1 text-xs text-warning" role="status">{error}</p>
-          )}
-        </>
+            <p className="mt-1 text-sm font-medium text-muted leading-snug">{label}</p>
+            {spark && (
+              <div className="mt-2 -mx-1">
+                <EChart option={spark} height={36} />
+              </div>
+            )}
+            {error && (
+              <p className="mt-1 text-xs text-warning" role="status">{error}</p>
+            )}
+          </>
+        )}
+
+        {/* Explain button — only for governed metric widgets */}
+        {explainMetricId && (
+          <button
+            onClick={() => setExplainOpen(true)}
+            className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity h-6 px-2 text-[10px] font-medium rounded border border-border bg-surface hover:bg-surface-2 text-muted hover:text-fg"
+            title="Explain metric change"
+          >
+            Explain
+          </button>
+        )}
+      </div>
+
+      {explainMetricId && (
+        <ExplainDrawer
+          metricId={explainMetricId}
+          open={explainOpen}
+          onClose={() => setExplainOpen(false)}
+        />
       )}
-    </div>
+    </>
   )
 }

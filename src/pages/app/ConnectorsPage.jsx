@@ -951,10 +951,11 @@ export default function ConnectorsPage() {
         toast.success('Connector updated')
       } else {
         // POST — full body. The picker submits the backend factory type
-        // directly (e.g. object storage → 'duckdb_storage'); no client-side
-        // type remapping is needed.
-        // seed (optional) is passed through for demo-seeded connectors.
-        const body = { name, type, config, secret }
+        // directly. For connectors with an `apiType` override (e.g. GCS →
+        // 'duckdb_storage') we send the backend type, not the catalog id.
+        const info = getTypeInfo(type)
+        const backendType = info.apiType ?? type
+        const body = { name, type: backendType, config, secret }
         if (seed) body.seed = seed
         await createConnector(body)
         reloadConnectors()

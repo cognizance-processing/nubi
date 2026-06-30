@@ -560,6 +560,59 @@ function ScheduleControl({ flow, onSaved }) {
 }
 
 // ---------------------------------------------------------------------------
+// AutoRebuildToggle — set runtime_config.auto_rebuild_downstream on a flow
+// ---------------------------------------------------------------------------
+
+/**
+ * Inline toggle that enables/disables ``runtime_config.auto_rebuild_downstream``
+ * on a saved (non-draft) materialized flow. Saves immediately on toggle.
+ *
+ * The flag is stored inside the flow's spec.runtime_config dict.  The UI reads
+ * the current spec to determine the toggle's initial state and PATCH-saves on
+ * change by calling updateFlow with the merged spec.
+ *
+ * @param {{ flow: object, spec: object, onSaved: (updated: object) => void }} props
+ */
+function AutoRebuildToggle({ flow, spec, onSaved }) {
+  const [saving, setSaving] = useState(false)
+
+  // Read current state from the spec's runtime_config
+  const isOn = Boolean(spec?.runtime_config?.auto_rebuild_downstream)
+
+  async function toggle() {
+    if (saving || !flow?.id) return
+    setSaving(true)
+    try {
+      const rc = { ...(spec?.runtime_config ?? {}), auto_rebuild_downstream: !isOn }
+      const nextSpec = { ...(spec ?? {}), runtime_config: rc }
+      const updated = await updateFlow(flow.id, { spec: nextSpec })
+      if (updated) onSaved?.(updated)
+    } catch {
+      // ignore; can surface a toast if needed
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <button
+      onClick={toggle}
+      disabled={saving}
+      title={isOn ? 'Auto-rebuild downstream enabled — click to disable' : 'Enable auto-rebuild downstream flows when this flow completes'}
+      className={[
+        'flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border transition-colors disabled:opacity-50',
+        isOn
+          ? 'border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400'
+          : 'border-border bg-surface text-fg hover:bg-surface-2',
+      ].join(' ')}
+    >
+      {saving ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} className={isOn ? 'text-blue-500' : ''} />}
+      <span className="hidden lg:inline">Auto-rebuild</span>
+    </button>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // FlowsPage
 // ---------------------------------------------------------------------------
 
@@ -1107,6 +1160,9 @@ export default function FlowsPage() {
             )}
             {canWrite && activeFlow?.id && !activeFlow?._isNew && (
               <ScheduleControl flow={activeFlow} onSaved={handleSaved} />
+            )}
+            {canWrite && activeFlow?.id && !activeFlow?._isNew && (
+              <AutoRebuildToggle flow={activeFlow} spec={activeSpec} onSaved={handleSaved} />
             )}
             {canWrite && (
               <button onClick={triggerRun} disabled={running || !canRun} title={!canRun ? 'Save the flow first' : 'Run flow'}

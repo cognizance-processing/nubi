@@ -37,10 +37,12 @@ import {
   ChevronRight,
   AlertCircle,
   SlidersHorizontal,
+  BarChart2,
 } from 'lucide-react'
 import EditableDataGrid from '../../components/app/EditableDataGrid.jsx'
 import { normalizeColumnMeta } from '../../components/app/editableGridUtils.js'
 import * as api from '../../lib/api.js'
+import DatasetProfileView from './DatasetProfileView.jsx'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -165,6 +167,21 @@ export default function DataExplorerPage() {
   // Mobile rail open/close
   const [railOpen, setRailOpen] = useState(false)
 
+  // Profile tab
+  const [mainTab, setMainTab] = useState('data') // 'data' | 'profile'
+  const [datasets, setDatasets] = useState([])
+
+  // Load org datasets list (for Profile tab dataset_id lookup)
+  useEffect(() => {
+    let cancelled = false
+    api.get('/datasets').then(data => {
+      if (cancelled) return
+      const list = Array.isArray(data) ? data : (data?.datasets ?? [])
+      setDatasets(list)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
   // ── Load connectors ───────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false
@@ -253,6 +270,7 @@ export default function DataExplorerPage() {
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleSelectTable = useCallback((name) => {
     setSelectedTable(name)
+    setMainTab('data')
     setRailOpen(false)
   }, [])
 
@@ -286,6 +304,13 @@ export default function DataExplorerPage() {
   // ── Selected connector label ──────────────────────────────────────────────
   const selectedConnector = connectors.find((c) => c.id === selectedConnectorId) ?? DEMO_ENTRY
   const connectorType = selectedConnector?.config?.connector_type ?? 'duckdb'
+
+  // ── Dataset id lookup for Profile tab ─────────────────────────────────────
+  // Match a dataset whose name matches the selected table (best-effort). If
+  // multiple datasets match, prefer an exact name match.
+  const profileDatasetId = selectedTable
+    ? (datasets.find(d => d.name === selectedTable) ?? datasets.find(d => (d.name ?? '').toLowerCase() === selectedTable.toLowerCase()))?.id ?? null
+    : null
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -423,20 +448,61 @@ export default function DataExplorerPage() {
             )}
           </div>
         ) : (
-          <EditableDataGrid
-            key={`${selectedConnectorId ?? 'demo'}:${selectedTable}`}
-            datastoreId={selectedConnectorId}
-            table={selectedTable}
-            meta={meta}
-            rows={rows}
-            total={total}
-            loading={dataLoading}
-            error={dataError}
-            onRetry={refreshData}
-            onRefresh={refreshData}
-            onRowsChange={setRows}
-            onTotalChange={handleTotalChange}
-          />
+          <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+            {/* Tab bar */}
+            <div className="shrink-0 flex items-center gap-1 px-4 border-b border-border bg-surface">
+              <button
+                onClick={() => setMainTab('data')}
+                className={[
+                  'flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium border-b-2 transition-colors',
+                  mainTab === 'data'
+                    ? 'border-primary text-primary'
+                    : 'border-transparent text-muted hover:text-fg',
+                ].join(' ')}
+              >
+                <Table2 size={13} />
+                Data
+              </button>
+              <button
+                onClick={() => setMainTab('profile')}
+                className={[
+                  'flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium border-b-2 transition-colors',
+                  mainTab === 'profile'
+                    ? 'border-primary text-primary'
+                    : 'border-transparent text-muted hover:text-fg',
+                ].join(' ')}
+                title={!profileDatasetId ? 'No matching dataset found for profiling' : undefined}
+              >
+                <BarChart2 size={13} />
+                Profile
+                {!profileDatasetId && (
+                  <span className="text-[9px] text-muted/50 font-normal ml-0.5">(no dataset)</span>
+                )}
+              </button>
+            </div>
+
+            {/* Tab content */}
+            <div className="flex-1 min-h-0 overflow-hidden">
+              {mainTab === 'data' ? (
+                <EditableDataGrid
+                  key={`${selectedConnectorId ?? 'demo'}:${selectedTable}`}
+                  datastoreId={selectedConnectorId}
+                  table={selectedTable}
+                  meta={meta}
+                  rows={rows}
+                  total={total}
+                  loading={dataLoading}
+                  error={dataError}
+                  onRetry={refreshData}
+                  onRefresh={refreshData}
+                  onRowsChange={setRows}
+                  onTotalChange={handleTotalChange}
+                />
+              ) : (
+                <DatasetProfileView datasetId={profileDatasetId} />
+              )}
+            </div>
+          </div>
         )}
       </main>
     </div>

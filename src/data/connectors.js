@@ -397,6 +397,71 @@ export const CONNECTOR_TYPES = [
     ],
     summary: (cfg) => cfg.database || '',
   },
+  // ── Google Cloud Storage (GCS) — gs:// Parquet/DuckDB via httpfs ─────────
+  // Uses the same `duckdb_storage` backend factory (it supports gs:// URLs).
+  // Auth: HMAC key/secret or Workload Identity / ADC (toggle).
+  {
+    id: 'gcs',
+    label: 'Google Cloud Storage (GCS)',
+    description: 'Query Parquet or DuckDB files in Google Cloud Storage (gs://).',
+    category: 'lake',
+    // Backend maps `gcs` to the `duckdb_storage` factory; apiType carries that.
+    apiType: 'duckdb_storage',
+    logo: logo('gcs.svg'),
+    color: '#4285F4',
+    fields: [
+      {
+        key: 'database',
+        label: 'GCS file URL',
+        type: 'text',
+        placeholder: 'gs://my-bucket/warehouse.parquet',
+        required: true,
+        width: 'full',
+        help: 'gs:// URL to a Parquet or DuckDB file.',
+      },
+      {
+        key: 'auth_mode',
+        label: 'Authentication',
+        type: 'segmented',
+        default: 'hmac',
+        width: 'full',
+        options: [
+          { value: 'hmac', label: 'HMAC key/secret', desc: 'Provide a GCS HMAC access key and secret' },
+          { value: 'adc', label: 'Workload Identity / ADC', desc: 'Use Application Default Credentials (GKE, Cloud Run, gcloud auth)' },
+        ],
+      },
+      {
+        key: 'aws_access_key_id',
+        label: 'HMAC access key ID',
+        type: 'text',
+        optional: true,
+        width: 'full',
+        showIf: (cfg) => (cfg.auth_mode ?? 'hmac') === 'hmac',
+      },
+      {
+        key: 'aws_secret_access_key',
+        label: 'HMAC secret',
+        type: 'password',
+        group: 'secret',
+        optional: true,
+        width: 'full',
+        showIf: (cfg) => (cfg.auth_mode ?? 'hmac') === 'hmac',
+        help: 'GCS HMAC secret (interoperable with S3 API). Encrypted at rest.',
+      },
+      {
+        key: 'endpoint',
+        label: 'Endpoint override',
+        type: 'text',
+        optional: true,
+        default: 'storage.googleapis.com',
+        width: 'full',
+        help: 'Leave as default unless using a GCS-compatible emulator.',
+        showIf: (cfg) => (cfg.auth_mode ?? 'hmac') === 'hmac',
+      },
+    ],
+    summary: (cfg) => cfg.database || '',
+  },
+
   // ── File-only ingestion sources (design §2 — FileConnectorMixin) ───────────
   // sftp/ftp are NOT queryable: they only expose a file interface, consumed by
   // the `file_ingest` flow task (or a Python ingest cell). They land in the
