@@ -251,7 +251,6 @@ def _render_html(
     spec_json = json.dumps(spec or {"widgets": []}, default=str)
     manifest = snapshot_descriptor.get("artifact", {}).get("tables", [])
     manifest_json = json.dumps(manifest, default=str)
-    snap_url = html.escape(snapshot_public_url, quote=True)
     fingerprint = html.escape(str(snapshot_descriptor.get("policy_fingerprint") or "none"))
 
     return f"""<!doctype html>

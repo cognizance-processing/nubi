@@ -692,7 +692,6 @@ async def ai_context(
         grounding = ground(q, catalog)
         # related_queries is an ordered (most-relevant-first) list of ids.
         ranked_ids = list(grounding.get("related_queries", []))
-        order = {qid: i for i, qid in enumerate(ranked_ids)}
         by_id = {rq.id: rq for rq in all_queries}
         selected = [by_id[qid] for qid in ranked_ids if qid in by_id]
     else:

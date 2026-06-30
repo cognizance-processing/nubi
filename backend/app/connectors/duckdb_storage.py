@@ -249,7 +249,7 @@ def _register_s3_secret(
             endpoint_bare = endpoint_raw
 
     parts: list[str] = [
-        f"    TYPE s3",
+        "    TYPE s3",
         f"    KEY_ID '{creds['key_id']}'",
         f"    SECRET '{creds['secret']}'",
         f"    REGION '{creds['region']}'",

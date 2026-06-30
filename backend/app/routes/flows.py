@@ -3354,7 +3354,7 @@ async def list_flow_environments(
     """
     org_id = await _get_user_org(str(user["id"]), repo)
     store = get_flow_store()
-    flow = await _require_flow_in_org(flow_id, org_id, store)
+    await _require_flow_in_org(flow_id, org_id, store)
 
     # Collect all watermarks for this flow from the store.
     # InMemoryFlowStore._watermarks is keyed (flow_id, model_key, env).

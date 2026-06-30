@@ -332,7 +332,6 @@ def render_invoice_pdf(invoice: Invoice) -> bytes:
     ensure_space(120)
     box_x = _MARGIN + _CONTENT_W * 0.52
     box_w = _PAGE_W - _MARGIN - box_x
-    label_r = box_x + box_w * 0.55
     val_r = _PAGE_W - _MARGIN - 6
 
     def total_row(label: str, value: str, *, bold: bool = False, color: tuple = _INK, size: float = 10.0) -> None:
