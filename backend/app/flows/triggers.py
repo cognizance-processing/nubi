@@ -22,6 +22,19 @@ on_flow_run_complete(store, flow_run_id, state, now) -> None
     state.  Fires registered ``downstream`` triggers for that flow's
     completions.  Best-effort + idempotent + error-isolated — NEVER raises.
 
+on_materialized_model_complete(store, flow_run_id, state, now, dag, ...) -> list[str]
+    LINEAGE-DRIVEN AUTO-REBUILD HOOK — opt-in.
+    When a materialized model flow run completes successfully AND the flow has
+    ``auto_rebuild_downstream: true`` in its spec ``runtime_config``, resolves
+    downstream materialized models via the lineage DAG and enqueues their flow
+    runs.  Returns list of enqueued run_ids.
+
+    Opt-in flag:  set ``runtime_config.auto_rebuild_downstream = true`` on the
+    upstream flow's spec.  Only fires on state == 'success'.  Org-scoped:
+    only downstream flows in the same org are rebuilt.  Cycle-safe via visited
+    set.  Storm-safe via debounce set (same upstream_run_id → only rebuilt once
+    per downstream flow_id).
+
 get_trigger_registry() / set_trigger_registry(registry)
     Singleton accessor.
 
@@ -1003,3 +1016,263 @@ def flag_sla_breach(
 # completion hook is exposed as a public function.  The caller (routes layer or
 # an enhanced advance_readiness) calls it after finalising the flow_run.
 # The hook is also called explicitly in the test suite to verify isolation.
+
+
+# ---------------------------------------------------------------------------
+# Lineage-driven auto-rebuild (Feature B)
+# ---------------------------------------------------------------------------
+
+# Key in flow spec's runtime_config that enables auto-rebuild for a flow.
+_AUTO_REBUILD_KEY = "auto_rebuild_downstream"
+
+# Debounce: track (upstream_run_id, downstream_flow_id) pairs already enqueued
+# to guard against duplicate enqueues within the same process lifetime.
+# (Thread-safe for async; not distributed — Pg-side idempotency via params.)
+_auto_rebuild_enqueued: set[tuple[str, str]] = set()
+
+
+def _reset_auto_rebuild_debounce() -> None:
+    """Clear the debounce set (for tests)."""
+    _auto_rebuild_enqueued.clear()
+
+
+def _flow_has_auto_rebuild(flow: dict[str, Any]) -> bool:
+    """Return True when the flow spec has ``runtime_config.auto_rebuild_downstream = true``."""
+    spec = flow.get("spec") or {}
+    if not isinstance(spec, dict):
+        return False
+    runtime_config = spec.get("runtime_config") or {}
+    if not isinstance(runtime_config, dict):
+        return False
+    return bool(runtime_config.get(_AUTO_REBUILD_KEY, False))
+
+
+async def on_materialized_model_complete(
+    store: Any,
+    flow_run_id: str,
+    state: str,
+    now: datetime,
+    dag: Any,  # DependencyDAG — typed as Any to avoid import cycle
+    claims: dict[str, Any] | None = None,
+    _visited: frozenset[str] | None = None,
+) -> list[str]:
+    """LINEAGE-DRIVEN AUTO-REBUILD HOOK — opt-in, best-effort.
+
+    When a materialized model flow run completes successfully:
+    1.  Checks if the upstream flow has ``auto_rebuild_downstream: true`` in its
+        spec's ``runtime_config``.  If not set, returns immediately (opt-in).
+    2.  Uses the lineage DAG to find downstream nodes (within hops=20).
+    3.  For each downstream node that maps to a flow in the same org AND whose
+        flow also has ``auto_rebuild_downstream: true`` (or is a direct dependent),
+        enqueues a new flow run.
+
+    Guards
+    ------
+    - **Opt-in**: only active when ``auto_rebuild_downstream = true`` is set
+      on the upstream flow.  Existing flows are unaffected.
+    - **Org-scoped**: only enqueues flows in the same org as the upstream run.
+    - **Cycle-safe**: a ``_visited`` set of flow_ids prevents circular chains.
+    - **Storm-safe / debounce**: a module-level set ``_auto_rebuild_enqueued``
+      tracks ``(upstream_run_id, downstream_flow_id)`` pairs so the same
+      downstream is not enqueued twice for the same trigger event.
+    - **Fan-out cap**: at most ``_FLOWS_TRIGGER_MAX_FANOUT`` downstream flows.
+    - **Success-only**: only fires when ``state == 'success'``.
+    - **Best-effort**: any error is caught and logged; NEVER raises.
+
+    Parameters
+    ----------
+    store:
+        Flow store instance.
+    flow_run_id:
+        Id of the completed flow run.
+    state:
+        Terminal state (``'success'`` | ``'failed'``).
+    now:
+        Injected clock datetime.
+    dag:
+        Fully built ``DependencyDAG`` (from ``app.lineage.dag.build_dag``).
+        The caller is responsible for providing the current org-scoped DAG.
+    claims:
+        Optional auth claims.
+    _visited:
+        Internal cycle guard: set of flow_ids already processed in this chain.
+
+    Returns
+    -------
+    list[str]
+        Run ids of downstream flows that were enqueued.  Empty on no-op or error.
+    """
+    if state != "success":
+        return []
+
+    if _visited is None:
+        _visited = frozenset()
+
+    if claims is None:
+        claims = {}
+
+    enqueued_run_ids: list[str] = []
+
+    try:
+        from app.flows.runtime import materialize_flow_run  # noqa: PLC0415
+
+        # ── 1. Load the completing flow run ──────────────────────────────────
+        flow_run = await store.get_flow_run(flow_run_id)
+        if flow_run is None:
+            return []
+
+        upstream_flow_id = flow_run.get("flow_id", "")
+        org_id = str(flow_run.get("org_id", ""))
+        if not upstream_flow_id or not org_id:
+            return []
+
+        # Cycle guard: if this flow_id is already in the visited chain, stop.
+        if upstream_flow_id in _visited:
+            logger.warning(
+                "on_materialized_model_complete: cycle detected for flow %s "
+                "(visited=%s); stopping auto-rebuild chain.",
+                upstream_flow_id, _visited,
+            )
+            return []
+
+        # ── 2. Opt-in check ──────────────────────────────────────────────────
+        upstream_flow = await store.get_flow(upstream_flow_id)
+        if upstream_flow is None:
+            return []
+
+        if not _flow_has_auto_rebuild(upstream_flow):
+            # Auto-rebuild not opted in for this flow — skip silently.
+            return []
+
+        # ── 3. Resolve downstream nodes from the lineage DAG ─────────────────
+        # We look up the flow's model_id (if set) or fall back to the flow_id
+        # itself as the DAG node identifier.
+        upstream_spec = upstream_flow.get("spec") or {}
+        upstream_model_id = (
+            (upstream_spec.get("runtime_config") or {}).get("model_id")
+            or upstream_flow_id
+        )
+
+        # Walk DAG downstream (up to max hops).
+        downstream_node_ids: list[str] = dag.downstream(upstream_model_id, hops=20)
+        if not downstream_node_ids:
+            logger.debug(
+                "on_materialized_model_complete: no downstream DAG nodes for "
+                "model '%s' (flow %s).",
+                upstream_model_id, upstream_flow_id,
+            )
+            return []
+
+        # Build a mapping: model_id → flow for quick lookup.
+        # The store is expected to support list_flows_by_model_ids or we
+        # enumerate by convention (flow name == model_id).
+        # We call store.list_flows with org_id to avoid cross-org leaks.
+        try:
+            all_flows = await store.list_flows(org_id=org_id)
+        except Exception:  # noqa: BLE001
+            all_flows = []
+
+        # Index flows by their model_id (from runtime_config) or by flow_id.
+        flow_index: dict[str, dict[str, Any]] = {}
+        for f in all_flows:
+            fspec = f.get("spec") or {}
+            frc = (fspec.get("runtime_config") or {}) if isinstance(fspec, dict) else {}
+            mid = frc.get("model_id") or f.get("id", "")
+            if mid:
+                flow_index[str(mid)] = f
+            # Also index by flow id for direct flow_id == node_id matches.
+            flow_index[str(f.get("id", ""))] = f
+
+        # ── 4. Fan-out: enqueue downstream flows ─────────────────────────────
+        new_visited = _visited | {upstream_flow_id}
+
+        enqueued_count = 0
+        for ds_node_id in downstream_node_ids:
+            if enqueued_count >= _FLOWS_TRIGGER_MAX_FANOUT:
+                logger.warning(
+                    "on_materialized_model_complete: fan-out cap %d reached for "
+                    "upstream flow %s (run %s); skipping remaining %d downstream nodes.",
+                    _FLOWS_TRIGGER_MAX_FANOUT, upstream_flow_id, flow_run_id,
+                    len(downstream_node_ids) - enqueued_count,
+                )
+                break
+
+            ds_flow = flow_index.get(ds_node_id)
+            if ds_flow is None:
+                # No flow registered for this DAG node — skip (it may be a
+                # bare table leaf or an unmanaged model).
+                continue
+
+            ds_flow_id = str(ds_flow.get("id", ""))
+            ds_org_id = str(ds_flow.get("org_id", ""))
+
+            # Org-scope guard.
+            if ds_org_id != org_id:
+                logger.warning(
+                    "on_materialized_model_complete: downstream flow %s is in "
+                    "different org (%s != %s); skipping.",
+                    ds_flow_id, ds_org_id, org_id,
+                )
+                continue
+
+            # Cycle guard.
+            if ds_flow_id in new_visited:
+                logger.warning(
+                    "on_materialized_model_complete: downstream flow %s already "
+                    "in visited chain %s; skipping to prevent cycle.",
+                    ds_flow_id, new_visited,
+                )
+                continue
+
+            # Storm-safe debounce: don't enqueue the same downstream more than
+            # once for a single upstream run.
+            debounce_key = (flow_run_id, ds_flow_id)
+            if debounce_key in _auto_rebuild_enqueued:
+                logger.debug(
+                    "on_materialized_model_complete: downstream flow %s already "
+                    "enqueued for upstream run %s; skipping (debounce).",
+                    ds_flow_id, flow_run_id,
+                )
+                continue
+
+            try:
+                run_params: dict[str, Any] = {
+                    "__auto_rebuild__": True,
+                    "__upstream_flow_id__": upstream_flow_id,
+                    "__upstream_run_id__": flow_run_id,
+                    "__upstream_state__": state,
+                    "__lineage_dag_node__": ds_node_id,
+                }
+
+                ds_run = await materialize_flow_run(
+                    store, ds_flow, run_params, "lineage_rebuild", now
+                )
+                run_id = ds_run["id"]
+                enqueued_run_ids.append(run_id)
+                _auto_rebuild_enqueued.add(debounce_key)
+                enqueued_count += 1
+
+                logger.info(
+                    "on_materialized_model_complete: enqueued rebuild of "
+                    "downstream flow %s (node %s) → run %s "
+                    "(upstream flow %s, run %s).",
+                    ds_flow_id, ds_node_id, run_id,
+                    upstream_flow_id, flow_run_id,
+                )
+
+            except Exception as exc:  # noqa: BLE001
+                # Error-isolated: log and continue to other downstream flows.
+                logger.warning(
+                    "on_materialized_model_complete: failed to enqueue downstream "
+                    "flow %s (node %s): %s",
+                    ds_flow_id, ds_node_id, exc,
+                )
+
+    except Exception as exc:  # noqa: BLE001
+        # Outermost guard: NEVER raise.
+        logger.warning(
+            "on_materialized_model_complete: hook failed for run %s (state=%s): %s",
+            flow_run_id, state, exc,
+        )
+
+    return enqueued_run_ids

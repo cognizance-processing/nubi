@@ -12,10 +12,19 @@ DependencyDAG
     Holds nodes (queries + metrics + bare tables) and edges.  Use
     ``upstream(node_id, hops)`` / ``downstream(node_id, hops)`` to walk the
     DAG N hops in either direction.
+
+resolve_column_lineage(dag, node_id, column, max_hops) -> list[dict]
+    Walk the DAG upstream following column provenance across model layers.
+    Returns a list of column-path hops:
+        [{"node": node_id, "column": col, "alias": bool}, ...]
+    from the starting node back to the physical source, handling aliases/renames
+    at each hop.  Falls back to table-level edges for SELECT * layers (marked with
+    ``"select_star": True``).  Cap: max_hops (default 10, absolute ceiling 20).
 """
 
 from __future__ import annotations
 
+import logging
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
@@ -23,6 +32,8 @@ from typing import Any
 from app.lineage.extract import extract_lineage
 from app.metrics.models import MetricDefinition
 from app.queries.registry import RegisteredQuery
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +53,8 @@ class DAGNode:
     tables: list[str] = field(default_factory=list)
     outputs: list[str] = field(default_factory=list)
     columns: list[dict[str, Any]] = field(default_factory=list)
+    # Raw SQL of the model, used by column-lineage resolver to trace aliases.
+    sql: str | None = None
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -142,6 +155,7 @@ def _node_for_query(rq: RegisteredQuery) -> DAGNode:
         tables=lineage["tables"],
         outputs=lineage["outputs"],
         columns=lineage["columns"],
+        sql=rq.sql,
     )
     if "error" in lineage:
         node.error = lineage["error"]
@@ -156,16 +170,19 @@ def _node_for_metric(metric: MetricDefinition) -> DAGNode:
         columns = lineage["columns"]
         outputs = lineage["outputs"]
         error: str | None = lineage.get("error")
+        sql: str | None = metric.base_sql
     elif metric.base_table:
         tables = [metric.base_table]
         columns = []
         outputs = []
         error = None
+        sql = None
     else:
         tables = []
         columns = []
         outputs = []
         error = "no_source"
+        sql = None
 
     # A metric exposes its measure/dimension names as logical outputs so
     # downstream queries that reference this metric by name can be wired up.
@@ -183,6 +200,7 @@ def _node_for_metric(metric: MetricDefinition) -> DAGNode:
         tables=tables,
         outputs=all_outputs,
         columns=columns,
+        sql=sql,
         error=error,
     )
 
@@ -270,6 +288,190 @@ def build_dag(
                 _add_edge(consumed_table, consumer.id, consumed_table)
 
     return dag
+
+
+# ---------------------------------------------------------------------------
+# Cross-model column lineage resolver (Feature A)
+# ---------------------------------------------------------------------------
+
+_MAX_HOPS_CEILING = 20
+
+
+def _build_column_alias_map(sql: str) -> dict[str, str]:
+    """Parse *sql* and return a mapping output_alias → source_column.
+
+    E.g. ``SELECT amount AS revenue FROM …`` produces ``{"revenue": "amount"}``.
+    For bare column references (no alias) the mapping is identity:
+    ``{"amount": "amount"}``.
+
+    Returns an empty dict on any parse failure so callers degrade gracefully.
+    """
+    try:
+        import sqlglot.expressions as exp  # noqa: PLC0415
+        import sqlglot  # noqa: PLC0415
+
+        tree = sqlglot.parse_one(sql)
+        if not isinstance(tree, exp.Select):
+            return {}
+
+        alias_map: dict[str, str] = {}
+        for expr in tree.expressions:
+            if isinstance(expr, exp.Alias):
+                # SELECT <something> AS <alias>
+                alias_name = expr.alias
+                inner = expr.this
+                if isinstance(inner, exp.Column):
+                    alias_map[alias_name.lower()] = inner.name.lower()
+                elif alias_name:
+                    # Complex expression with alias — no reliable source column;
+                    # map alias to itself so callers know the column exists.
+                    alias_map[alias_name.lower()] = alias_name.lower()
+            elif isinstance(expr, exp.Column):
+                col_name = expr.name.lower()
+                if col_name and col_name != "*":
+                    alias_map[col_name] = col_name
+            elif isinstance(expr, exp.Star):
+                # SELECT * — sentinel value so callers know to fall back to
+                # table-level edge.
+                alias_map["*"] = "*"
+        return alias_map
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _upstream_nodes_for(dag: DependencyDAG, node_id: str) -> list[str]:
+    """Return direct upstream neighbour IDs for *node_id*."""
+    return [e.from_id for e in dag.edges if e.to_id == node_id]
+
+
+def resolve_column_lineage(
+    dag: DependencyDAG,
+    node_id: str,
+    column: str,
+    max_hops: int = 10,
+) -> list[dict[str, Any]]:
+    """Walk the DAG upstream following column provenance across model layers.
+
+    Starting from *node_id* / *column*, trace the column back through each
+    upstream model layer, resolving aliases and renames at each hop, until
+    reaching a physical source table (type="table") or exhausting *max_hops*.
+
+    Algorithm
+    ---------
+    At each node we inspect the model's SQL (when available) to map the
+    current column name to its source column in the upstream model:
+
+    1.  Parse the node's SQL with ``_build_column_alias_map``.
+    2.  If the current column maps to a source column (possibly the same name),
+        carry that source column into the upstream node.
+    3.  If the node uses ``SELECT *``, fall back to table-level edge (the
+        column name is assumed unchanged) and mark the hop as ``select_star=True``.
+    4.  If no SQL is available (e.g. a metric with only ``base_table``),
+        carry the column name unchanged.
+
+    Cycle guard: a visited set of ``(node_id, column)`` pairs prevents loops.
+    Depth guard: the walk stops at ``min(max_hops, _MAX_HOPS_CEILING)`` hops.
+
+    Parameters
+    ----------
+    dag:
+        Fully built ``DependencyDAG`` (from ``build_dag``).
+    node_id:
+        Starting node id (the downstream model or metric).
+    column:
+        The output column name to trace from *node_id* backwards.
+    max_hops:
+        Maximum number of hops upstream (default 10; ceiling 20).
+
+    Returns
+    -------
+    list[dict]
+        Ordered list from the starting node to the source, each entry::
+
+            {
+                "node":        str,   # DAG node id
+                "column":      str,   # column name at this node
+                "select_star": bool,  # True when this hop was a SELECT * pass-through
+                "alias":       bool,  # True when the column name differs from the previous hop
+            }
+
+        Returns ``[{"node": node_id, "column": column, ...}]`` (single entry)
+        when the node has no upstream or is already a physical table.
+        Returns ``[]`` when *node_id* is not in the DAG.
+    """
+    if node_id not in dag.nodes:
+        return []
+
+    effective_hops = min(max_hops, _MAX_HOPS_CEILING)
+
+    # Path built up so far (returned to caller).
+    path: list[dict[str, Any]] = []
+
+    # Visited guard: set of (node_id, column) tuples.
+    visited: set[tuple[str, str]] = set()
+
+    cur_node_id = node_id
+    cur_column = column.lower()
+
+    for _ in range(effective_hops + 1):
+        if (cur_node_id, cur_column) in visited:
+            # Cycle detected — stop.
+            break
+        visited.add((cur_node_id, cur_column))
+
+        node = dag.nodes.get(cur_node_id)
+        if node is None:
+            break
+
+        # Determine whether this hop is an alias/rename relative to previous.
+        is_alias = (
+            len(path) > 0 and path[-1]["column"] != cur_column
+        )
+
+        path.append({
+            "node": cur_node_id,
+            "column": cur_column,
+            "select_star": False,
+            "alias": is_alias,
+        })
+
+        # Physical table — we've reached the source; stop.
+        if node.type == "table":
+            break
+
+        # Find direct upstream nodes.
+        upstream_ids = _upstream_nodes_for(dag, cur_node_id)
+        if not upstream_ids:
+            # No upstream — this is a root model.
+            break
+
+        # Resolve column provenance through this node's SQL.
+        if node.sql:
+            alias_map = _build_column_alias_map(node.sql)
+
+            if "*" in alias_map and cur_column not in alias_map:
+                # SELECT * layer — column passes through unchanged.
+                path[-1]["select_star"] = True
+                # Take the first upstream node (table-level fallback).
+                cur_node_id = upstream_ids[0]
+                # cur_column stays the same.
+                continue
+
+            source_col = alias_map.get(cur_column)
+            if source_col is None:
+                # Column not found in this node's SELECT list — stop tracing.
+                break
+
+            # Walk into the first upstream node (single-parent assumption;
+            # for multi-parent we take the first for determinism).
+            cur_column = source_col
+            cur_node_id = upstream_ids[0]
+        else:
+            # No SQL available (e.g. metric with base_table only) — column
+            # name is assumed unchanged; walk upstream.
+            cur_node_id = upstream_ids[0]
+
+    return path
 
 
 # ---------------------------------------------------------------------------
