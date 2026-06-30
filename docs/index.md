@@ -65,6 +65,7 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 | [**Data-Custody Tier**](/docs/custody-tier) | BYO storage + customer-managed keys + region pinning + host write/export API — the opt-in residency tier |
 | [**Connector Security**](/docs/connector-security) | AES-256-GCM secret encryption, key rotation, network modes |
 | [**Kernel Security**](/docs/kernel-security) | The two-kernel trust boundary — browser DuckDB-WASM vs. server Python sandbox |
+| [**Compute-Kernel Attribution Runner**](/docs/compute-kernel-attribution-runner) | Domain-agnostic bring-your-own-model attribution runner on the sandboxed kernel — submit Python + Arrow arrays + a serialized model, get attribution values back; carries no domain semantics |
 | [**Cache-Key Spec**](/docs/cache-key-spec) | The result cache keyed on SQL, params, and RLS policies |
 | [**Conformance**](/docs/conformance) | The M1-C conformance suite every executor must pass |
 | [**Secrets**](/docs/secrets) | Org-scoped encrypted secrets, `{{ secrets.NAME }}` in flows, `nubi secrets set/list` |
