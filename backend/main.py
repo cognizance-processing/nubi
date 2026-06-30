@@ -70,6 +70,7 @@ from starlette.responses import FileResponse
 from app.config import get_settings
 from app.db import close_db, fetchrow, init_db
 from app.errors import register_handlers
+from app.middleware.audit import register_audit_middleware
 from app.middleware.latency import register_latency
 from app.middleware.ratelimit import register_ratelimit
 from app.routes import api_router
@@ -615,6 +616,15 @@ def create_app() -> FastAPI:
     # GET /ops/stats. Per-worker only (mirrors the rate-limiter/cache story); see
     # docs/observability.md. Best-effort — it never breaks a request.
     register_latency(application)
+
+    # ── Audit-log backstop middleware ────────────────────────────────────────────
+    # Records every successful mutating request (POST/PUT/PATCH/DELETE on
+    # /api/v1/* that returns 2xx) to the audit log as a backstop — so no mutation
+    # goes unaudited even if the route handler lacks an explicit record_audit call.
+    # Routes that already call record_audit explicitly set
+    # ``request.state.audit_logged = True`` to suppress the duplicate middleware
+    # write.  Fail-open: a failed audit write NEVER breaks the response.
+    register_audit_middleware(application)
 
     # ── Error handlers ────────────────────────────────────────────────────────
     register_handlers(application)
