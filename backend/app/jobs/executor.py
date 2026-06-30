@@ -85,6 +85,9 @@ def execute_job(job: dict[str, Any], now: datetime | None = None) -> dict[str, A
         elif kind == "watch_sweep":
             from app.jobs.watch_sweep import execute_watch_sweep_sync  # noqa: PLC0415
             row_count, message = execute_watch_sweep_sync(job, now)
+        elif kind == "drift_sweep":
+            from app.jobs.drift_sweep import execute_drift_sweep_sync  # noqa: PLC0415
+            row_count, message = execute_drift_sweep_sync(job, now)
         else:
             raise AppError("bad_job_kind", f"Unknown job kind: {kind!r}", 400)
 
