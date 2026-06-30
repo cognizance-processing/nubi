@@ -293,7 +293,7 @@ async def get_frozen_view(
             tier="embed_frozen",
         )
 
-    board = await get_or_404(
+    await get_or_404(
         repo, "boards", org_id, dashboard_id,
         error_code="dashboard_not_found",
         detail=f"Dashboard {dashboard_id!r} not found.",

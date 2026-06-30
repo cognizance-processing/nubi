@@ -591,7 +591,7 @@ async def run_sweep(
                     wall_timeout_s=_SWEEP_CELL_TIMEOUT_S,
                 )
                 cell_state = final_run.get("state", "failed")
-            except BaseException as drain_exc:
+            except BaseException:
                 # CancelledError (and any other BaseException) is NOT caught by
                 # ``except Exception`` — the in-flight flow_run would stay in
                 # state='running' forever (orphan).  Transition it to 'failed'
@@ -937,7 +937,7 @@ async def run_backfill(
                     wall_timeout_s=_BACKFILL_WINDOW_TIMEOUT_S,
                 )
                 win_state = final_run.get("state", "failed")
-            except BaseException as drain_exc:
+            except BaseException:
                 # CancelledError is a BaseException, not Exception — the existing
                 # outer ``except Exception`` would miss it, leaving the flow_run in
                 # state='running' (orphan).  Transition it to 'failed' best-effort

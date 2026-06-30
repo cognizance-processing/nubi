@@ -548,10 +548,6 @@ def _compile_layered(
         )
 
     # (e) time-intelligence window functions (non-snapshot)
-    # Partition by non-time dims (requested dims + rls extras, no time alias).
-    partition_cols = [exp.column(d) for d in all_dim_names]
-    order_col = exp.column(time_alias) if time_alias else None
-
     # Lateral join entries for prior-period / prior-year pct expressions.
     # Each entry is (lateral_alias, lateral_sql) — the lateral SELECT computes
     # the prior value once; the pct expression references the alias column.
@@ -2258,7 +2254,7 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
         if tn.other and ("'" in tn.other_label or "\\" in tn.other_label):
             raise MetricError(
                 "bad_other_label",
-                f"top_n.other_label must not contain single-quotes or backslashes.",
+                "top_n.other_label must not contain single-quotes or backslashes.",
             )
 
     # FIX #6: cap mq.limit to 1..NUBI_MAX_QUERY_LIMIT.

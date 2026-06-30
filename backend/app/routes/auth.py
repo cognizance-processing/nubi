@@ -34,6 +34,7 @@ from app.auth.cookies import (
 )
 from app.auth.denylist import get_token_denylist
 from app.auth.deps import current_user, verified_identity
+from app.auth.verify import VerifiedIdentity
 from app.auth.google import (
     build_authorize_url,
     exchange_code,

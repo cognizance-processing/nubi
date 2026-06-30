@@ -558,12 +558,6 @@ def register_parquet_query(
     """
     from app.queries.registry import get_query_registry  # noqa: PLC0415
 
-    effective = (
-        physical_target[len("file://"):]
-        if physical_target.startswith("file://")
-        else physical_target
-    )
-
     registry = get_query_registry()
     registry.register(
         id=str(query_id),

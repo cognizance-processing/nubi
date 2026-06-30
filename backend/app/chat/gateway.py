@@ -376,7 +376,6 @@ def _extract_chart_action(actions: list[dict[str, Any]]) -> dict[str, Any] | Non
     dict | None
         The matching action dict, or ``None`` if none found.
     """
-    chart_tools = {"create_chart", "create_dashboard", "render_chart", "viz"}
     for action in actions:
         tool = str(action.get("tool") or "").lower()
         result = action.get("result") or {}

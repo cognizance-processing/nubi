@@ -554,7 +554,7 @@ def render_board_pptx(
     AppError("cairosvg_not_installed", 503)
         When cairosvg is not installed and SVG rasterization is needed.
     """
-    pptx_mod = _require_pptx()
+    _require_pptx()
     from pptx import Presentation  # noqa: PLC0415
     from pptx.util import Cm  # noqa: PLC0415
 
