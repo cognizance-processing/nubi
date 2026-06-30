@@ -1,4 +1,4 @@
-"""Focused tests for the IP-keyed rate limiter (app/middleware/ratelimit.py).
+"""Focused tests for the rate limiter (app/middleware/ratelimit.py).
 
 The global suite runs with NUBI_RATELIMIT_ENABLED=false (conftest) because every
 test shares one in-process TestClient → one client-IP bucket. These tests instead
@@ -10,7 +10,13 @@ properties of the post-review rewrite:
   * a spoofed LEFT-most X-Forwarded-For does NOT mint a fresh bucket
     (FINDING 1 — left-most XFF is attacker-controlled and must be ignored),
   * an unverified JWT ``org`` claim does NOT redirect/widen a bucket
-    (FINDING 2 — key is the trusted IP, never the forgeable claim).
+    (FINDING 2 — key is the trusted IP, never the forgeable claim),
+  * FINDING 6B — org-keyed + embed exemption (KeyOne 6B):
+    - two users in the same org share one org bucket,
+    - two orgs have independent buckets,
+    - a VERIFIED embed token is NOT throttled on /metrics/{id}/query paths,
+    - a FORGED org claim or forged embed token does NOT get a fresh bucket or
+      exemption (falls back to IP).
 """
 
 from __future__ import annotations
@@ -343,3 +349,340 @@ def test_redis_error_degrades_to_in_process_no_500(limited_app, fake_redis):
     assert 429 in codes[3:], codes
     # The fallback actually used the in-process store.
     assert ratelimit._buckets, "expected in-process fallback bucket to be created"
+
+
+# ── FINDING 6B: org-keyed buckets + embed exemption ─────────────────────────
+#
+# These tests exercise the new cryptographic-token-keyed paths:
+#   - verified first-party (HS256) tokens key by org:<org>
+#   - two users in the same org share one bucket
+#   - two orgs get independent buckets
+#   - a VERIFIED embed (RS256) token is exempt on /metrics/{id}/query
+#   - a forged org claim in an unsigned JWT falls back to IP (not a fresh bucket)
+#   - a forged "embed" claim in an unsigned JWT does NOT get the exemption
+#
+# We use the same RSA keypair + IssuerRegistry pattern as test_embed_config.py.
+
+
+import json as _json_mod
+from datetime import datetime, timedelta, timezone
+
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.asymmetric import rsa
+from jwt.algorithms import RSAAlgorithm
+import jwt as pyjwt
+
+# Generate a module-level RSA keypair (once) for embed token tests.
+_RL_PRIVATE_KEY = rsa.generate_private_key(
+    public_exponent=65537,
+    key_size=2048,
+    backend=default_backend(),
+)
+_RL_PUBLIC_KEY = _RL_PRIVATE_KEY.public_key()
+_RL_JWKS_KEY: dict = _json_mod.loads(RSAAlgorithm.to_jwk(_RL_PUBLIC_KEY))
+_RL_JWKS_KEY["kid"] = "rl-test-key"
+_RL_JWKS_KEY["use"] = "sig"
+_RL_STATIC_JWKS: dict = {"keys": [_RL_JWKS_KEY]}
+
+_RL_ISS = "https://rl-test-embed-host.example"
+_RL_AUD = "nubi"
+
+
+def _mint_rl_embed_token(org: str = "embed-org", exp_delta: int = 300) -> str:
+    """Mint a test RS256 embed JWT against the test keypair."""
+    now = datetime.now(tz=timezone.utc)
+    payload = {
+        "iss": _RL_ISS,
+        "aud": _RL_AUD,
+        "sub": "embed-user",
+        "org": org,
+        "roles": ["viewer"],
+        "policies": {},
+        "scope": ["read:query"],
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(seconds=exp_delta)).timestamp()),
+    }
+    return pyjwt.encode(
+        payload, _RL_PRIVATE_KEY, algorithm="RS256", headers={"kid": "rl-test-key"}
+    )
+
+
+def _mint_rl_first_party_token(org: str) -> str:
+    """Mint a first-party HS256 access token carrying the given org claim."""
+    from app.auth.jwt import mint_access_token
+    return mint_access_token("00000000-0000-0000-0000-000000000001", extra_claims={"org": org})
+
+
+@pytest.fixture
+def rl_embed_issuer():
+    """Register (and later unregister) the test embed issuer in the IssuerRegistry."""
+    from app.auth.issuers import get_issuer_registry
+    from app.auth.jwks_cache import clear_cache
+
+    registry = get_issuer_registry()
+    registry.register(
+        _RL_ISS,
+        jwks_uri=f"{_RL_ISS}/.well-known/jwks.json",
+        aud=_RL_AUD,
+        allowed_origins=[],
+        static_jwks=_RL_STATIC_JWKS,
+    )
+    yield
+    registry.unregister(_RL_ISS)
+    clear_cache()
+
+
+@pytest.fixture
+def limited_app_6b(rl_embed_issuer):
+    """An isolated limited app with low caps; registers query + metrics endpoints."""
+    cfg = ratelimit._cfg
+    saved = {
+        "_loaded": getattr(cfg, "_loaded", False),
+        "enabled": getattr(cfg, "enabled", False),
+        "auth_rpm": getattr(cfg, "auth_rpm", 30),
+        "query_rpm": getattr(cfg, "query_rpm", 120),
+        "flowrun_rpm": getattr(cfg, "flowrun_rpm", 60),
+        "burst_factor": getattr(cfg, "burst_factor", 1.5),
+    }
+    cfg._loaded = True
+    cfg.enabled = True
+    cfg.auth_rpm = 3
+    cfg.query_rpm = 3
+    cfg.flowrun_rpm = 3
+    cfg.burst_factor = 1.0
+    ratelimit._buckets.clear()
+
+    app = FastAPI()
+    ratelimit.register_ratelimit(app)
+
+    @app.post("/api/v1/metrics/{metric_id}/query")
+    async def _metrics_query(metric_id: str) -> dict:
+        return {"ok": True, "metric": metric_id}
+
+    @app.post("/api/v1/query")
+    async def _query() -> dict:
+        return {"ok": True}
+
+    @app.post("/api/v1/auth/login")
+    async def _login() -> dict:
+        return {"ok": True}
+
+    try:
+        yield app
+    finally:
+        ratelimit._buckets.clear()
+        for k, v in saved.items():
+            setattr(cfg, k, v)
+
+
+# ── org-keyed buckets ─────────────────────────────────────────────────────────
+
+def test_same_org_users_share_one_bucket(limited_app_6b):
+    """Two verified first-party tokens with the SAME org share one org bucket.
+
+    With cap=3 and burst=1.0, 6 requests from two users in org A should
+    exhaust the org A bucket (the 4th request overall is 429).
+    """
+    token_a = _mint_rl_first_party_token("org-alpha")
+    token_b = _mint_rl_first_party_token("org-alpha")  # same org, different sub
+
+    client = TestClient(limited_app_6b)
+    codes = []
+    for i in range(6):
+        # Alternate between the two tokens to prove they share one bucket.
+        tok = token_a if i % 2 == 0 else token_b
+        codes.append(
+            client.post(
+                "/api/v1/auth/login",
+                headers={"Authorization": f"Bearer {tok}"},
+            ).status_code
+        )
+
+    assert codes[:3] == [200, 200, 200], f"first 3 must pass; got {codes}"
+    assert 429 in codes[3:], f"4th+ must be throttled; got {codes}"
+
+    # Only ONE org bucket should exist (not two per-user buckets).
+    bucket_keys = list(ratelimit._buckets.keys())
+    org_keys = [k for k in bucket_keys if k[0] == "org:org-alpha"]
+    assert len(org_keys) == 1, (
+        f"expected exactly one org:org-alpha bucket; got {bucket_keys}"
+    )
+
+
+def test_different_orgs_have_independent_buckets(limited_app_6b):
+    """Two verified tokens from different orgs get INDEPENDENT buckets.
+
+    Draining org-beta's budget (cap=3) must NOT throttle org-gamma requests.
+    """
+    token_beta = _mint_rl_first_party_token("org-beta")
+    token_gamma = _mint_rl_first_party_token("org-gamma")
+
+    client = TestClient(limited_app_6b)
+
+    # Drain org-beta completely (4 requests → 3 pass, 1 throttled).
+    beta_codes = [
+        client.post(
+            "/api/v1/auth/login",
+            headers={"Authorization": f"Bearer {token_beta}"},
+        ).status_code
+        for _ in range(4)
+    ]
+    assert 429 in beta_codes, f"org-beta should be throttled; got {beta_codes}"
+
+    # org-gamma is untouched — first request must be allowed.
+    gamma_first = client.post(
+        "/api/v1/auth/login",
+        headers={"Authorization": f"Bearer {token_gamma}"},
+    ).status_code
+    assert gamma_first == 200, (
+        f"org-gamma must not be throttled by org-beta exhaustion; got {gamma_first}"
+    )
+
+
+# ── embed exemption on query/metrics read paths ───────────────────────────────
+
+def test_verified_embed_token_not_throttled_on_metrics_query(limited_app_6b):
+    """A VERIFIED RS256 embed token firing many metric tile requests is never throttled.
+
+    cap=3, burst=1.0 → without exemption the 4th request would be 429.
+    With the exemption all 10 requests must be 200.
+    """
+    token = _mint_rl_embed_token(org="cockpit-org")
+    client = TestClient(limited_app_6b)
+
+    codes = [
+        client.post(
+            "/api/v1/metrics/metric-abc-123/query",
+            headers={"Authorization": f"Bearer {token}"},
+        ).status_code
+        for _ in range(10)
+    ]
+    assert all(c == 200 for c in codes), (
+        f"verified embed token must not be throttled on /metrics/*/query; got {codes}"
+    )
+
+
+def test_verified_embed_token_not_throttled_on_query(limited_app_6b):
+    """A VERIFIED RS256 embed token on /api/v1/query is also exempt."""
+    token = _mint_rl_embed_token(org="cockpit-org2")
+    client = TestClient(limited_app_6b)
+
+    codes = [
+        client.post(
+            "/api/v1/query",
+            headers={"Authorization": f"Bearer {token}"},
+        ).status_code
+        for _ in range(10)
+    ]
+    assert all(c == 200 for c in codes), (
+        f"verified embed token must not be throttled on /api/v1/query; got {codes}"
+    )
+
+
+def test_first_party_token_still_throttled_on_metrics_query(limited_app_6b):
+    """A first-party (HS256) token on /metrics/{id}/query IS still throttled (per-org)."""
+    token = _mint_rl_first_party_token("org-internal")
+    client = TestClient(limited_app_6b)
+
+    codes = [
+        client.post(
+            "/api/v1/metrics/metric-xyz/query",
+            headers={"Authorization": f"Bearer {token}"},
+        ).status_code
+        for _ in range(6)
+    ]
+    assert codes[:3] == [200, 200, 200], f"first 3 must pass; got {codes}"
+    assert 429 in codes[3:], (
+        f"first-party token must still be throttled on /metrics/*/query; got {codes}"
+    )
+
+
+# ── anti-forgery: forged org + forged embed kind ──────────────────────────────
+
+def test_forged_org_claim_does_not_mint_fresh_org_bucket(limited_app_6b):
+    """An unsigned JWT with a forged ``org`` claim must NOT get an org: bucket.
+
+    The limiter must fall back to IP key — a forged org cannot escape the IP cap
+    or poison another org's bucket.
+    """
+    def forged_token(org: str) -> str:
+        # Build a raw JWT where each part is (non-cryptographically) base64-encoded.
+        # This token has no valid signature.
+        header = base64.urlsafe_b64encode(
+            _json_mod.dumps({"alg": "HS256", "typ": "JWT"}).encode()
+        ).rstrip(b"=").decode()
+        payload_b64 = base64.urlsafe_b64encode(
+            _json_mod.dumps({"org": org, "sub": "hacker", "exp": 9999999999}).encode()
+        ).rstrip(b"=").decode()
+        return f"{header}.{payload_b64}.invalidsig"
+
+    client = TestClient(limited_app_6b)
+    codes = []
+    for i in range(6):
+        # Each request uses a different forged org to try to mint N fresh buckets.
+        codes.append(
+            client.post(
+                "/api/v1/auth/login",
+                headers={"Authorization": f"Bearer {forged_token(f'victim-org-{i}')}"},
+            ).status_code
+        )
+    # The forged tokens must NOT each get a fresh bucket — all collapse to one IP
+    # bucket and throttling kicks in after cap=3.
+    assert 429 in codes, (
+        f"forged org claims must not bypass throttling; got {codes}"
+    )
+    # No org: key must have been created — only IP key.
+    org_keys = [k for k in ratelimit._buckets if k[0].startswith("org:")]
+    assert not org_keys, (
+        f"forged org tokens must NOT create org: buckets; got {org_keys}"
+    )
+
+
+def test_forged_embed_token_not_exempt_on_metrics_query(limited_app_6b):
+    """A FORGED embed token (unsigned) must NOT get the cockpit-tile exemption.
+
+    Without the exemption it falls back to IP key and IS throttled after cap=3.
+    """
+    def forged_embed_token() -> str:
+        # Forge a token claiming kind/alg RS256 but with a fake signature.
+        header = base64.urlsafe_b64encode(
+            _json_mod.dumps({"alg": "RS256", "typ": "JWT", "kid": "rl-test-key"}).encode()
+        ).rstrip(b"=").decode()
+        payload_b64 = base64.urlsafe_b64encode(
+            _json_mod.dumps({
+                "iss": _RL_ISS,
+                "aud": _RL_AUD,
+                "sub": "attacker",
+                "org": "attacker-org",
+                "kind": "embed",
+                "exp": 9999999999,
+            }).encode()
+        ).rstrip(b"=").decode()
+        return f"{header}.{payload_b64}.FORGEDSIGNATURE"
+
+    client = TestClient(limited_app_6b)
+    codes = [
+        client.post(
+            "/api/v1/metrics/metric-abc/query",
+            headers={"Authorization": f"Bearer {forged_embed_token()}"},
+        ).status_code
+        for _ in range(6)
+    ]
+    # With cap=3, IP-keyed bucket will be exhausted — throttle must kick in.
+    assert 429 in codes, (
+        f"forged embed token must NOT be exempt; expected 429 in {codes}"
+    )
+
+
+def test_unauthenticated_traffic_is_ip_limited(limited_app_6b):
+    """Unauthenticated requests (no Bearer token) are still IP-limited as before."""
+    client = TestClient(limited_app_6b)
+    codes = [
+        client.post("/api/v1/auth/login").status_code
+        for _ in range(6)
+    ]
+    assert codes[:3] == [200, 200, 200], f"first 3 must pass; got {codes}"
+    assert 429 in codes[3:], f"unauthenticated traffic must be throttled; got {codes}"
+    # Must use an ip: key, not an org: key.
+    ip_keys = [k for k in ratelimit._buckets if k[0].startswith("ip:")]
+    assert ip_keys, "unauthenticated traffic must produce ip: bucket keys"
