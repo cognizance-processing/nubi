@@ -823,6 +823,36 @@ def set_artifact_store(
     _artifact_store = store
 
 
+def reset_for_tests() -> None:
+    """Reset all module-level singleton/shared state (test teardown only).
+
+    Mirrors the ``reset_for_tests()`` helper already established for the
+    other Flow-adjacent singletons (``app.flows.registry``,
+    ``app.connectors.registry``, ``app.connectors.rls_hierarchy``,
+    ``app.health.schema_drift``, ``app.metrics.registry``, ...).
+
+    Without this, ``_artifact_store`` is a module-level singleton that is
+    NEVER cleared between tests: the first python-cell task execution in a
+    full test-suite run lazily creates a real ``ObjectStoreArtifactStore``
+    (or a test sets an ``InMemoryArtifactStore`` via ``set_artifact_store``
+    and an assertion failure skips its own cleanup line), and that instance
+    then silently leaks into every later test in the same process.
+
+    Also clears the per-run bookkeeping dicts, which are keyed by
+    ``flow_run_id`` and share the same leak risk: several tests use
+    hard-coded run-id strings (e.g. ``"run-unit-1"``), so counts/handles
+    left over from one test can affect a much later, unrelated test —
+    including tripping ``NUBI_MAX_ARTIFACTS_PER_RUN`` for a run_id that, from
+    that later test's point of view, should be brand new.
+    """
+    global _artifact_store
+    _artifact_store = None
+    with _run_artifact_counts_lock:
+        _run_artifact_counts.clear()
+    with _run_artifact_handles_lock:
+        _run_artifact_handles.clear()
+
+
 def reset_run_artifact_counts() -> None:
     """Clear all per-run artifact counters.
 

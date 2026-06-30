@@ -358,6 +358,7 @@ def _reset_state():
     - Metering usage log (list cleared)
     - Job store singleton (replaced with fresh InMemoryJobStore)
     - Repo provider singleton (reset to None so next get_repo() lazily creates PgRepo)
+    - Artifact store singleton (reset to None) + per-run artifact count/handle dicts
 
     Each reset is wrapped in try/except so a missing hook never breaks the
     fixture — test failures are still propagated normally.
@@ -548,6 +549,15 @@ def _reset_state():
         try:
             from app.health.schema_drift import reset_for_tests as _reset_drift
             _reset_drift()
+        except Exception:
+            pass
+
+        # ── Artifact store (B4 global singleton; reset to None) ───────────────
+        # Also clears the per-run artifact count/handle bookkeeping dicts, which
+        # are keyed by flow_run_id and leak across tests the same way.
+        try:
+            from app.flows.artifacts import reset_for_tests as _reset_artifacts
+            _reset_artifacts()
         except Exception:
             pass
 
