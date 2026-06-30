@@ -63,6 +63,7 @@ import {
   ArrowUp,
   ArrowDown,
   Hash,
+  ArrowLeftRight,
 } from 'lucide-react'
 
 import SqlEditor from '../../components/SqlEditor.jsx'
@@ -78,6 +79,7 @@ import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
 import { dialectForConnectorType } from '../../lib/sqlDialect.js'
+import TranspileDialog from './TranspileDialog.jsx'
 
 // ---------------------------------------------------------------------------
 // Connector type → SQL dialect
@@ -1227,6 +1229,9 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
   // ── AI assist ───────────────────────────────────────────────────────────
   const [showAi, setShowAi] = useState(false)
 
+  // ── Transpile dialog ─────────────────────────────────────────────────────
+  const [transpileOpen, setTranspileOpen] = useState(false)
+
   // ── VS Code-style "Code" view (files: <slug>.sql + <slug>.meta.json) ──────
   // Additional full-pane mode alongside the notebook editor; replaces the
   // notebook body when on. SQL edits round-trip through handleSqlChange.
@@ -1680,6 +1685,18 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
           </button>
         )}
 
+        {/* Translate SQL — opens TranspileDialog; shown when primary cell has SQL */}
+        {!isEmptyPrimary && (
+          <button
+            onClick={() => setTranspileOpen(true)}
+            className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+            title="Translate SQL to a different dialect"
+          >
+            <ArrowLeftRight size={12} />
+            <span className="hidden sm:inline">Translate</span>
+          </button>
+        )}
+
         {/* Schedule — mutating (creates a scheduled flow); writers only */}
         {canWrite && (
           <button
@@ -2129,6 +2146,16 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
           onView={setViewingVersion}
         />
       )}
+
+      {/* ── Transpile dialog ─────────────────────────────────────────────── */}
+      <TranspileDialog
+        open={transpileOpen}
+        onClose={() => setTranspileOpen(false)}
+        initialSql={sql}
+        onApply={(translatedSql) => {
+          handleSqlChange(translatedSql)
+        }}
+      />
     </div>
   )
 }

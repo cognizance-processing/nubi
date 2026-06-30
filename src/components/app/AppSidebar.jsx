@@ -44,6 +44,7 @@ import {
   Compass,
   LayoutGrid,
   ListChecks,
+  GitBranch,
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
@@ -65,6 +66,7 @@ const NAV_ITEMS = [
   { label: 'Dashboards',  to: '/dashboards',  Icon: LayoutDashboard },
   { label: 'Canvases',    to: '/canvases',    Icon: PanelTop },
   { label: 'Flows',       to: '/flows',       Icon: Workflow },
+  { label: 'Lineage',     to: '/lineage',     Icon: GitBranch },
   { label: 'Watches',     to: '/watches',     Icon: BellRing },
   { label: 'Automations', to: '/automations', Icon: CalendarClock },
 ]

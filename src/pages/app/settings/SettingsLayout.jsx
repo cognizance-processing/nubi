@@ -39,6 +39,7 @@ import {
   Network,
   Gauge,
   Cpu,
+  Key,
 } from 'lucide-react'
 import { useOrg } from '../../../contexts/OrgContext.jsx'
 import { useProject } from '../../../contexts/ProjectContext.jsx'
@@ -151,6 +152,7 @@ export default function SettingsLayout() {
             <SettingsNavItem to="/settings/bridges"      label="Bridges"      Icon={Network} />
             <SettingsNavItem to="/settings/security"     label="Security"     Icon={ShieldCheck} />
             <SettingsNavItem to="/settings/usage"        label="Usage"        Icon={Gauge} />
+            <SettingsNavItem to="/settings/access-grants" label="Access grants" Icon={Key} />
             {billingEnabled && (
               <SettingsNavItem to="/billing" label="Billing" Icon={CreditCard} external />
             )}
