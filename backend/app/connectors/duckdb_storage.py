@@ -94,7 +94,8 @@ from app.errors import AppError
 
 # Schemes that require httpfs + secret registration before any query.
 _S3_SCHEMES = frozenset({"s3", "s3a"})
-_CLOUD_SCHEMES = frozenset({"s3", "s3a", "gs", "az"})
+_GCS_SCHEMES = frozenset({"gs", "gcs"})
+_CLOUD_SCHEMES = frozenset({"s3", "s3a", "gs", "gcs", "az"})
 
 
 def _detect_scheme(database: str) -> str | None:
@@ -266,6 +267,107 @@ def _register_s3_secret(
         + ",\n".join(parts)
         + "\n)"
     )
+    conn.execute(sql)
+
+
+def _get_gcs_creds(config: dict) -> dict[str, str]:
+    """Extract GCS HMAC credentials from *config* with env-var fallbacks.
+
+    GCS HMAC keys are issued via Cloud Console → Storage → Settings → HMAC keys.
+    They look like regular S3 access keys (``GOOGxxx`` / base64 secret) and are
+    accepted by DuckDB's native ``TYPE gcs`` secret.
+
+    Precedence: config key > environment variable.
+
+    Config keys accepted (checked in order):
+        ``gcs_access_key_id``, ``gcs_hmac_key_id``, ``aws_access_key_id``,
+        ``access_key_id``, ``key_id``
+        ``gcs_secret``, ``gcs_hmac_secret``, ``aws_secret_access_key``,
+        ``secret_access_key``, ``secret``
+
+    Env vars (checked in order):
+        ``GCS_ACCESS_KEY_ID``, ``GCS_HMAC_KEY_ID``, ``AWS_ACCESS_KEY_ID``,
+        ``AWS_ACCESS_KEY``
+        ``GCS_SECRET``, ``GCS_HMAC_SECRET``, ``AWS_SECRET_ACCESS_KEY``,
+        ``AWS_SECRET_KEY``
+
+    Returns
+    -------
+    dict[str, str]
+        ``{"key_id": ..., "secret": ..., "scope": ...}``
+        where ``key_id`` and ``secret`` may be empty strings (ADC path).
+    """
+    def _get(config_keys: list[str], env_keys: list[str], default: str = "") -> str:
+        for k in config_keys:
+            v = config.get(k)
+            if v:
+                return str(v)
+        for k in env_keys:
+            v = os.environ.get(k)
+            if v:
+                return str(v)
+        return default
+
+    key_id = _get(
+        ["gcs_access_key_id", "gcs_hmac_key_id", "aws_access_key_id", "access_key_id", "key_id"],
+        ["GCS_ACCESS_KEY_ID", "GCS_HMAC_KEY_ID", "AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY"],
+    )
+    secret = _get(
+        ["gcs_secret", "gcs_hmac_secret", "aws_secret_access_key", "secret_access_key", "secret"],
+        ["GCS_SECRET", "GCS_HMAC_SECRET", "AWS_SECRET_ACCESS_KEY", "AWS_SECRET_KEY"],
+    )
+    scope = _get(["gcs_scope", "scope"], [])
+    return {"key_id": key_id, "secret": secret, "scope": scope}
+
+
+def _register_gcs_secret(
+    conn: "_duckdb_t.DuckDBPyConnection",
+    creds: dict[str, str],
+    secret_name: str = "nubi_gcs",
+) -> None:
+    """Register a DuckDB GCS secret on *conn* using HMAC *creds*.
+
+    Uses DuckDB's native ``TYPE gcs`` secret (available ≥ 0.10.0 with httpfs)
+    which natively handles ``gs://`` and ``gcs://`` prefixes without needing the
+    S3-compat ``storage.googleapis.com`` endpoint workaround.
+
+    When *creds* has empty ``key_id``/``secret``, a ``PROVIDER credential_chain``
+    secret is registered to use Application Default Credentials (ADC) — suitable
+    when running on GCP (Workload Identity, metadata server, etc.).
+
+    Parameters
+    ----------
+    conn:
+        An open DuckDB connection with httpfs already loaded.
+    creds:
+        Dict with ``key_id``, ``secret`` (HMAC), and optional ``scope``.
+    secret_name:
+        Name for the DuckDB secret (default ``"nubi_gcs"``).
+    """
+    if creds.get("key_id") and creds.get("secret"):
+        parts: list[str] = [
+            "    TYPE gcs",
+            f"    KEY_ID '{creds['key_id']}'",
+            f"    SECRET '{creds['secret']}'",
+        ]
+        if creds.get("scope"):
+            parts.append(f"    SCOPE '{creds['scope']}'")
+        sql = (
+            f"CREATE OR REPLACE SECRET {secret_name} (\n"
+            + ",\n".join(parts)
+            + "\n)"
+        )
+    else:
+        # ADC path: let DuckDB resolve credentials via the GCP metadata server /
+        # GOOGLE_APPLICATION_CREDENTIALS / well-known file.
+        parts = ["    TYPE gcs", "    PROVIDER credential_chain"]
+        if creds.get("scope"):
+            parts.append(f"    SCOPE '{creds['scope']}'")
+        sql = (
+            f"CREATE OR REPLACE SECRET {secret_name} (\n"
+            + ",\n".join(parts)
+            + "\n)"
+        )
     conn.execute(sql)
 
 
@@ -506,6 +608,58 @@ class DuckDBStorageConnector(Connector, FileConnectorMixin):
         return inst
 
     @classmethod
+    def for_gcs(
+        cls,
+        database: str,
+        creds: dict[str, str],
+    ) -> "DuckDBStorageConnector":
+        """Return a connector configured for *database* at a GCS URI (``gs://``).
+
+        Uses DuckDB's native ``TYPE gcs`` secret (≥ 0.10 / httpfs) so that
+        ``gs://`` URIs are handled first-class — not via the S3-compat
+        ``storage.googleapis.com`` endpoint workaround.
+
+        Credential sources (checked in order):
+          1. HMAC access key pair in *creds* (``key_id`` + ``secret``).
+             Obtained from Cloud Console → Storage → Settings → HMAC keys.
+          2. Application Default Credentials (ADC) when ``key_id``/``secret``
+             are empty — works on GCE/GKE with Workload Identity or when
+             ``GOOGLE_APPLICATION_CREDENTIALS`` / gcloud is configured.
+
+        The connector is hardened identically to :meth:`for_s3`: local FS access
+        is blocked and the configuration is frozen after secret registration.
+
+        Parameters
+        ----------
+        database:
+            The ``gs://`` URI.  May be a Parquet file / prefix, e.g.
+            ``gs://my-bucket/data/sales.parquet``.
+        creds:
+            Normalised credentials dict from :func:`_get_gcs_creds`.
+        """
+        try:
+            import duckdb  # noqa: PLC0415
+        except ImportError as exc:
+            raise AppError(
+                "driver_unavailable",
+                "DuckDB is not installed.  Add 'duckdb>=1.0' to requirements.txt.",
+                status=500,
+            ) from exc
+
+        conn = duckdb.connect(database=":memory:")
+        _install_httpfs(conn)
+        _register_gcs_secret(conn, creds)
+        # Harden AFTER secret setup so lock_configuration is last.
+        from app.connectors.duckdb_conn import harden_connection  # noqa: PLC0415
+
+        harden_connection(conn, block_local_fs=True)
+
+        inner = DuckDBConnector(conn)
+        inst = cls(inner, is_cloud=True)
+        inst._database_uri = database
+        return inst
+
+    @classmethod
     def from_config(cls, config: dict) -> "DuckDBStorageConnector":
         """Build a connector from a datastore config dict.
 
@@ -529,10 +683,12 @@ class DuckDBStorageConnector(Connector, FileConnectorMixin):
         if scheme in _S3_SCHEMES:
             creds = _get_creds(config)
             inst = cls.for_s3(db_path, creds)
+        elif scheme in _GCS_SCHEMES:
+            # Native GCS path: use DuckDB's TYPE gcs secret with HMAC keys.
+            creds = _get_gcs_creds(config)
+            inst = cls.for_gcs(db_path, creds)
         elif scheme in _CLOUD_SCHEMES:
-            # GCS / Azure — not fully implemented yet; fall back to httpfs
-            # with the S3-compat credentials structure and let DuckDB handle it.
-            # Callers are expected to use specialised connectors for gs:// / az://.
+            # Azure (az://) — fall through to S3-compat httpfs for now.
             creds = _get_creds(config)
             inst = cls.for_s3(db_path, creds)
         elif db_path and db_path.strip() not in (":memory:", ""):
