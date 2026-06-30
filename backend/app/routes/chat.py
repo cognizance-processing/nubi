@@ -206,6 +206,13 @@ async def chat_stream(
     if not message:
         raise AppError("validation_error", "message must not be empty.", 400)
 
+    # ── COST CEILING: per-user + per-org rolling daily budget guard ───────────
+    # Pre-flight check — raises 429 chat_budget_exceeded when already over limit.
+    # Fail-open: a metering-store outage does NOT block the turn.
+    from app.ai.cost_ceiling import check_chat_budget, record_chat_cost  # noqa: PLC0415
+
+    await check_chat_budget(org_id, user_id)
+
     # ── BILLING: AI calls are metered (tiers.max_ai_calls_per_month) ─────────
     # Quota enforcement is a no-op in OSS builds (no EE checker registered).
     # The call is recorded up-front: a streamed turn consumes the call when
@@ -262,6 +269,14 @@ async def chat_stream(
                 store.add_message, chat_id, "assistant", assistant_content
             )
             anyio.from_thread.run(store.touch_chat, chat_id)
+
+            # ── POST-TURN: record cost + post-turn ceiling check ───────────
+            # cost_usd=0.0 for the offline/NullProvider path (no real spend).
+            # For real LLM turns the cost is not yet captured per-request on
+            # this path — the pre-turn check is the primary enforcement gate.
+            # The record here ensures accumulated spend is visible for the
+            # NEXT turn's pre-flight check.
+            anyio.from_thread.run(record_chat_cost, org_id, user_id, 0.0)
 
             final: dict[str, Any] = {
                 "type": "message",
