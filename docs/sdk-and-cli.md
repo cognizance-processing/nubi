@@ -216,7 +216,7 @@ The CLI reads the API URL and Bearer token from environment variables or local f
 | Env var | `NUBI_TOKEN` | — |
 | File | `~/.nubi/credentials` | Written by `nubi login` |
 
-`NUBI_TOKEN` accepts either a short-lived JWT (what `nubi login` saves) or a long-lived API key minted with `nubi auth create-key` — the recommended option for CI. See [API keys](#api-keys) below.
+`NUBI_TOKEN` accepts either a short-lived JWT (what `nubi login` saves) or a long-lived API key minted with `nubi auth create-key` — the recommended option for CI. See [API keys](#nubi-auth-api-keys) below.
 
 ### Quickstart
 
@@ -231,7 +231,7 @@ nubi push                       # upload changed NON-SECRET manifests
 nubi deploy --env prod          # CI-style: materialize secrets + push manifests + secrets
 ```
 
-`nubi init` writes a `.gitignore` that excludes `.nubi/secrets/` and `~/.nubi/credentials`, so credentials and secret values never enter git. Non-secret config (manifests) is committed; secrets stay in gitignored local `.env` files. See [the secret model](#secret-model) below.
+`nubi init` writes a `.gitignore` that excludes `.nubi/secrets/` and `~/.nubi/credentials`, so credentials and secret values never enter git. Non-secret config (manifests) is committed; secrets stay in gitignored local `.env` files. See [the secret model](#nubi-secrets-the-secret-model) below.
 
 ### On-disk project layout
 
@@ -361,7 +361,7 @@ nubi auth create-key --name "GitHub Actions"
 
 ### Deploying from CI/CD
 
-`nubi init --ci github` (or `gitlab`) scaffolds a pipeline that, on every push to `main`, materializes the repo's secrets and runs `nubi deploy --env prod` — shipping your local edits to the cloud. The pipeline templates live in `cli/templates/{github,gitlab}/`. Authenticate the pipeline with an [API key](#api-keys) stored as the `NUBI_TOKEN` secret. The full design (secret prefixes, `nubi deploy` ordering) is in [Files-as-Code §C/§E](/docs/files-as-code); a short operator walkthrough is in [Git Sync → Deploy from local / CI](/docs/git-sync#deploy-from-local--ci).
+`nubi init --ci github` (or `gitlab`) scaffolds a pipeline that, on every push to `main`, materializes the repo's secrets and runs `nubi deploy --env prod` — shipping your local edits to the cloud. The pipeline templates live in `cli/templates/{github,gitlab}/`. Authenticate the pipeline with an [API key](#nubi-auth-api-keys) stored as the `NUBI_TOKEN` secret. The full design (secret prefixes, `nubi deploy` ordering) is in [Files-as-Code §C/§E](/docs/files-as-code); a short operator walkthrough is in [Git Sync → Deploy from local / CI](/docs/git-sync#deploy-from-local-ci).
 
 ### Running CLI tests
 
@@ -375,7 +375,7 @@ cd cli && python -m pytest tests -q
 
 All Nubi REST endpoints are served under `/api/v1/` from the FastAPI backend.
 
-- Every endpoint requires a valid Bearer token — a first-party JWT minted by the backend, a long-lived `nubi_ak_…` [API key](#api-keys), or an RS256/ES256 embed token from a registered issuer. See [Embedding](/docs/embedding) for embed token details.
+- Every endpoint requires a valid Bearer token — a first-party JWT minted by the backend, a long-lived `nubi_ak_…` [API key](#nubi-auth-api-keys), or an RS256/ES256 embed token from a registered issuer. See [Embedding](/docs/embedding) for embed token details.
 - Resources are org-scoped; cross-org access returns 404 (not 403) to avoid information leakage.
 - Query endpoints return `Content-Type: application/vnd.apache.arrow.stream`; all other endpoints return JSON.
 - In development, FastAPI's interactive Swagger UI is available at `http://localhost:8000/docs` (disabled in `ENV=production`).

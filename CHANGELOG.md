@@ -46,7 +46,7 @@ Conventions:
   SSRF-guarded via DNS-rebinding-safe IP-pinning; optional org-level
   `http_call_allowed_hosts` allowlist in `runtime_config`. Fails the run on
   non-2xx. Response capped at 2 KB in the run record.
-  See [flows § http_call](docs/flows.md#http_call--outbound-http-requests).
+  See [flows § http_call](docs/flows.md#http_call-outbound-http-requests).
 
 - **`assert` data-quality flow task.** A new `assert` task kind runs
   data-quality expectations against a table or query result and fails the run
@@ -56,7 +56,7 @@ Conventions:
   scalar-boolean mode; `{{ target }}` placeholder). Runs through the same
   planner path as query cells, honouring RLS. Result payload names every
   failing expectation and its actual value.
-  See [flows § assert](docs/flows.md#assert--data-quality-expectations).
+  See [flows § assert](docs/flows.md#assert-data-quality-expectations).
 
 - **Native GCS connector.** The `duckdb_storage` connector now handles
   `gs://` URIs via DuckDB's native `TYPE gcs` secret — no S3-compat
@@ -99,7 +99,7 @@ Conventions:
   `POST /metrics/{id}/explain` — delta totals, per-dimension explanatory power
   and coverage, top-N members sorted by absolute delta — and verbalizes the
   findings in the chat panel. RLS enforced identically to `query_metric`.
-  See [ai-and-mcp § explain_metric_change](docs/ai-and-mcp.md#explain_metric_change--conversational-metric-drill-downs).
+  See [ai-and-mcp § explain_metric_change](docs/ai-and-mcp.md#explain_metric_change-conversational-metric-drill-downs).
 
 - **Per-org rate limiting + embed token exemption.** The rate-limit middleware
   now keys token buckets on the **verified org** from the JWT (HS256
@@ -126,7 +126,7 @@ Conventions:
   are stored in `watches.config.labels` (JSONB) and are never interpreted by
   the server. Use them to correlate breach events with your own domain objects
   (e.g. `{"category_id": "..."}`) without a secondary API call.
-  See [observability § labels](docs/observability.md#watch_breach--labels-passthrough).
+  See [observability § labels](docs/observability.md#watch_breach-labels-passthrough).
 - **Scope-resolution endpoint — `GET /auth/scope`.** Resolves the caller's
   effective RLS scope from the **verified token only** (first-party AND embed
   tokens): returns raw `policies`, hierarchy-expanded + grant-merged

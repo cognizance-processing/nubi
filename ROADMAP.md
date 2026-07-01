@@ -453,8 +453,9 @@ and Google OAuth. Migrations from scratch.
 engine. This section is the **product surface a user actually touches to build a
 dashboard**: the manual builder. The wedge (§1) is an *embeddable, cross-filtering,
 million-point* dashboard — so the builder's job is to let someone compose one without
-writing WebGL, fetch, or auth code, against **their own warehouse** (§4). Legacy
-gap-analysis that motivated this section: [`FEATURE_PARITY.md`](./FEATURE_PARITY.md).
+writing WebGL, fetch, or auth code, against **their own warehouse** (§4). This section
+was originally motivated by a legacy gap-analysis (since folded in and removed from
+the repo); the triage outcomes are recorded inline below.
 
 ### 11.1 Three clean layers (the anti–legacy-coupling decision)
 Legacy welded each widget to its own query + template + Redux variable web. We **decouple**.
@@ -548,8 +549,7 @@ library, Redux variable graph, 270-field widget configs, Data Bridge / semantic-
 the read-only/connector-hardening floor, §5.2), Theme Creator, layout synchronizer. Widget
 groups/steppers are **not a port**: drilldown already shipped (chart-click → variable), and if
 demand appears the modern equivalent is a container widget with `display: 'tabs' | 'stepper'`
-over child widget IDs — not the legacy MUI/Redux widget. See [`FEATURE_PARITY.md`](./FEATURE_PARITY.md)
-for the full triage.
+over child widget IDs — not the legacy MUI/Redux widget.
 
 ---
 

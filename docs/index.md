@@ -43,6 +43,7 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 | [**Embedding**](/docs/embedding) | JWT minting (RS256/ES256), per-viewer RLS, token-locked params, `<nubi-dashboard>` |
 | [**Embed API v1**](/docs/embed-api) | Versioned public contract for the web-component kit — all attributes, events, 25-token theme contract, capability gating, `NubiContext` cross-filter bus |
 | [**Organization & Settings**](/docs/organization-settings) | Members, roles and invites; integrations; usage; project settings and the Git connection |
+| [**Notifications & Integrations**](/docs/notifications-and-integrations) | Chat gateways (Slack/WhatsApp/Google Chat/Teams), outbound alert channels, in-app notification feed, email + Web Push |
 | [**How-to guides**](/docs/how-to) | Worked examples: semantic metrics (define/query/derive/time-intel/top-N); pre-agg build; Flows sweep/backfill/triggers/write-back/action-widgets; Canvas authoring + bindings; DataProvider boards |
 | [**API Reference**](/docs/api-reference) | Full HTTP API reference — /metrics, /canvas/canvases, /ai/canvas, /flows sweep/backfill/triggers/writeback, /boards/providers/data, /variables |
 
@@ -52,6 +53,7 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 |---|---|
 | [**Nubi Cloud**](/docs/cloud) | The managed, hosted way to run Nubi — what differs from self-host |
 | [**Billing & Usage**](/docs/billing-and-usage) | 5 tiers (Free / $9 / $49 / $149 / $1,000-floor), ZAR billing with USD anchoring, metered usage wallet, unlimited seats at every tier — billing itself is **EE-only** |
+| [**Billing Model**](/docs/billing-model) | The COGS-mapping principle behind what's metered (and deliberately what isn't); authoritative tier values |
 
 ### Open-source project
 
@@ -62,12 +64,15 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 | [**Self-Host**](/docs/self-host) | Detailed deployment guide — Docker Compose, SSL, managed Postgres, production hardening |
 | [**Open Core**](/docs/open-core) | The CE/EE split — what's open source and what stays EE (billing, Paystack, cloud) |
 | [**Open-Core Architecture**](/docs/architecture-open-core) | Feature-gate API, Docker CE/EE images, how EE billing slots in |
+| [**Architecture & Economics**](/docs/architecture-and-economics) | The compute-placement model, embedding modes, and how each maps to billing COGS |
+| [**Compliance**](/docs/compliance) | Posture document (not a certification) — implemented controls today, gaps disclosed, POPIA/GDPR-relevant custody controls |
 | [**Data-Custody Tier**](/docs/custody-tier) | BYO storage + customer-managed keys + region pinning + host write/export API — the opt-in residency tier |
 | [**Connector Security**](/docs/connector-security) | AES-256-GCM secret encryption, key rotation, network modes |
 | [**Kernel Security**](/docs/kernel-security) | The two-kernel trust boundary — browser DuckDB-WASM vs. server Python sandbox |
 | [**Compute-Kernel Attribution Runner**](/docs/compute-kernel-attribution-runner) | Domain-agnostic bring-your-own-model attribution runner on the sandboxed kernel — submit Python + Arrow arrays + a serialized model, get attribution values back; carries no domain semantics |
 | [**Cache-Key Spec**](/docs/cache-key-spec) | The result cache keyed on SQL, params, and RLS policies |
 | [**Conformance**](/docs/conformance) | The M1-C conformance suite every executor must pass |
+| [**Observability**](/docs/observability) | Dependency-free request-latency percentiles, ops stats endpoint, SLOs, and the per-org rate-limit classes |
 | [**Secrets**](/docs/secrets) | Org-scoped encrypted secrets, `{{ secrets.NAME }}` in flows, `nubi secrets set/list` |
 | [**SDK & CLI**](/docs/sdk-and-cli) | `@nubi/sdk` JavaScript client and the `nubi` Python CLI (`login` / `init` / `pull` / `push` / `deploy` / `run` / `diff` / `flows` / `secrets`) |
 | [**Files-as-Code**](/docs/files-as-code) | The local project format — flows, queries, and dashboards as committed files; CLI round-trips and CI/CD |

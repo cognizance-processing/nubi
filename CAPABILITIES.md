@@ -12,7 +12,7 @@ of carrying redundant local shims.
   and a matching entry is added to [CHANGELOG.md](./CHANGELOG.md). See
   [Keeping these current](#keeping-these-current).
 
-_Last reviewed: 2026-06-26 · branch `wave/trim-stubs`._
+_Last reviewed: 2026-07-01 · branch `docs/readme-excellence`._
 
 ---
 
@@ -23,12 +23,13 @@ _Last reviewed: 2026-06-26 · branch `wave/trim-stubs`._
 | Registered queries + typed `{{params}}` | ✅ | `POST /query`, `/query/registry` | [queries-and-params](docs/queries-and-params.md) |
 | Governed semantic metrics — serving | ✅ | `POST /metrics/{id}/query` | [metrics-reference](docs/metrics-reference.md) |
 | Metric explainability — dimension-contribution decomposition (why a number moved) | ✅ | `POST /metrics/{id}/explain` | [metrics-reference](docs/metrics-reference.md#contribution-analysis-post-metricsidexplain) |
-| **Conversational metric drill-down (`explain_metric_change` agent tool)** | ✅ | AI agent tool; same computation as `POST /metrics/{id}/explain`, verbalized in chat | [ai-and-mcp](docs/ai-and-mcp.md#explain_metric_change--conversational-metric-drill-downs) |
+| **Conversational metric drill-down (`explain_metric_change` agent tool)** | ✅ | AI agent tool; same computation as `POST /metrics/{id}/explain`, verbalized in chat | [ai-and-mcp](docs/ai-and-mcp.md#explain_metric_change-conversational-metric-drill-downs) |
 | Metric authoring (derived/ratio, time-intel, top-N) | ✅ | `/metrics` CRUD (`author:metric`) | [semantic-and-data-apps](docs/semantic-and-data-apps.md) |
 | Pre-aggregations / rollups (transparent routing) | ✅ | auto, query-log mined | [pre-aggregations](docs/pre-aggregations.md) |
 | Connectors (Postgres, DuckDB, MySQL, JDBC, HttpJson, BYO) | ✅ | `/connectors` | [connectors](docs/connectors.md) |
 | **Native GCS connector (`gs://` via DuckDB `TYPE gcs`)** | ✅ | `duckdb_storage` connector; HMAC key pair or ADC | [connectors](docs/connectors.md#native-google-cloud-storage-gcs-connector) |
 | **Column profiling (`null_rate` / `distinct_count` / `min` / `max` per column)** | ✅ | `GET /datasets/{id}/profile` | [connectors](docs/connectors.md#column-profiling) |
+| **File ingestion + auto-DDL** — SFTP/FTP/bucket sources (incl. zip) normalized to Parquet and loaded into any target connector, auto-registering/evolving the target's schema contract | ✅ | `file_ingest` flow task kind; `connector_write` is the write-side sibling | [flows](docs/flows.md#task-kinds-under-the-hood) |
 | Result cache (keyed on SQL+params+RLS) | ✅ | internal | [cache-key-spec](docs/cache-key-spec.md) |
 
 **Rate/SLA for host calls:** query-class routes (incl. `/metrics/{id}/query`) are
@@ -88,8 +89,8 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 | Capability | Status | Contract | Docs |
 |---|---|---|---|
 | Cell-based flows (SQL/Python/Note), DAG + notebook views | ✅ | `/flows` | [flows](docs/flows.md) |
-| **`http_call` flow task** — SSRF-guarded outbound HTTP from a flow, auth via org secret-ref, org allowlist | ✅ | `kind: http_call` in FlowSpec; fails run on non-2xx | [flows](docs/flows.md#http_call--outbound-http-requests) |
-| **`assert` flow task** — `row_count` / `not_null` / `unique` / `custom_sql` expectations; fails run on violation | ✅ | `kind: assert` in FlowSpec | [flows](docs/flows.md#assert--data-quality-expectations) |
+| **`http_call` flow task** — SSRF-guarded outbound HTTP from a flow, auth via org secret-ref, org allowlist | ✅ | `kind: http_call` in FlowSpec; fails run on non-2xx | [flows](docs/flows.md#http_call-outbound-http-requests) |
+| **`assert` flow task** — `row_count` / `not_null` / `unique` / `custom_sql` expectations; fails run on violation | ✅ | `kind: assert` in FlowSpec | [flows](docs/flows.md#assert-data-quality-expectations) |
 | Flow spec **version history + revert** | ✅ | `GET /flows/{id}/versions`, `POST /flows/{id}/revert/{v}` | [transformation](docs/transformation.md) |
 | Environment list + watermarks (read) | ✅ | `GET /flows/{id}/environments` | [transformation](docs/transformation.md) |
 | Environment pin/create (write) | 🟡 | via `/environments` routes (not under `/flows`) | [transformation](docs/transformation.md) |
@@ -106,7 +107,7 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 | **Live** remote pull (real `git fetch` → import) | ✅ | `POST /git/pull` (project-scoped) | [git-sync](docs/git-sync.md) |
 | Files-as-code round-trip (CLI) | ✅ | `nubi pull/push/deploy/diff` | [files-as-code](docs/files-as-code.md) |
 | **Watches as code via `nubi apply`** | ✅ | `nubi apply`→`POST /api/v1/apply` (`kind: watch`, idempotent, org-scoped) | [files-as-code § Watches as code](docs/files-as-code.md#d2-watches-as-code) |
-| **`watch_breach` labels passthrough** | ✅ | `emit_watch_breach` → webhook `data.labels` map | [observability § labels](docs/observability.md#watch_breach--labels-passthrough) |
+| **`watch_breach` labels passthrough** | ✅ | `emit_watch_breach` → webhook `data.labels` map | [observability § labels](docs/observability.md#watch_breach-labels-passthrough) |
 
 > The legacy **org-level** git flow was a no-network stub; it is superseded by
 > the **project-scoped** endpoints above, which make real authenticated network
@@ -145,7 +146,7 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 | Scoped audit: query-executed (POPIA), export audit | ✅ | webhook event / board config | [observability](docs/observability.md) |
 | **Unified action audit-log read API** (all mutations) | ✅ | `GET /audit`, `GET /audit/{type}/{id}` (owner/admin) | [api-reference](docs/api-reference.md#audit-log) |
 | Spec version/revert for **boards** | ✅ | `/environments` `/versions/board/...` | [transformation](docs/transformation.md) |
-| Spec version/revert for **metrics** | ✅ | `GET /metrics/{id}/versions`, `GET /metrics/{id}/versions/{v}`, `POST /metrics/{id}/revert/{v}` (`author:metric`) | [metrics-reference](docs/metrics-reference.md#spec-version-history--revert) |
+| Spec version/revert for **metrics** | ✅ | `GET /metrics/{id}/versions`, `GET /metrics/{id}/versions/{v}`, `POST /metrics/{id}/revert/{v}` (`author:metric`) | [metrics-reference](docs/metrics-reference.md#spec-version-history-revert) |
 
 ## J. Explicitly out of scope (stays with the host)
 

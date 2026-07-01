@@ -146,7 +146,7 @@ A **PostgreSQL** connector asks for:
 - **Database** (required) and **User** (defaults to `postgres`)
 - **Password** (secret, encrypted)
 - **SSL mode** — `disable`, `allow`, `prefer` (default), `require`, `verify-ca`, or `verify-full`
-- **Network mode** — leave blank for direct; set to `bridge` for VPC access (see [Private networks & bridges](#private-networks--bridges))
+- **Network mode** — leave blank for direct; set to `bridge` for VPC access (see [Private networks & bridges](#private-networks-bridges))
 
 A **BigQuery** connector asks for a **GCP Project ID** and a **Service account JSON** key (upload a `.json` file or paste it). Leave the key blank to use Application Default Credentials.
 

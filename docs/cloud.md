@@ -14,7 +14,7 @@ even creates these tables (the billing migrations live under
 `database/migrations/ee/` and are applied only when the cloud layer is active).
 
 - **Billing & subscriptions** — the five plans (Free, Starter, Team, Pro,
-  Enterprise), collected via Paystack. See **[Billing, plans & usage wallet](billing-and-usage)**.
+  Enterprise), collected via Paystack. See **[Billing, plans & usage wallet](/docs/billing-and-usage)**.
 - **Usage wallet** — prepaid credits with manual and automatic top-up and spend
   caps, used to cover metered overages.
 - **Overages & metering** — usage beyond your plan's quota (storage, compute,
@@ -138,7 +138,7 @@ Plans are anchored in **US dollars** and billed in **South African Rand** at a
 daily-refreshed exchange rate (with a small buffer); your USD price anchor stays
 fixed for the duration of your plan. The full breakdown — what's metered, the
 usage wallet, overage rates, and invoices — is in
-**[Billing, plans & usage wallet](billing-and-usage)**.
+**[Billing, plans & usage wallet](/docs/billing-and-usage)**.
 
 > Want to run everything yourself instead? See the **Open-source project**
-> section, starting with **[Self-hosting](self-host)**.
+> section, starting with **[Self-hosting](/docs/self-host)**.
