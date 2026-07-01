@@ -552,26 +552,38 @@ async def _visible_query_row_ids(user: dict[str, Any], org_id: str | None) -> se
 def _query_visible_to_org(
     rq: Any, *, caller_org: str | None, row_ids: set[str] | None
 ) -> bool:
-    """Tenant-isolation gate for a registry entry in GET /ai/context.
+    """Tenant-isolation gate for a registry entry in GET /ai/context (and,
+    by reuse, ``app.routes.lineage``).
 
     An entry is visible to the caller when ANY of:
     - ``rq.system`` — built-in/seed queries (demo_*) are globally shared;
-    - ``rq.owner_org_id`` is ``None`` — unowned (seeds, slug-only, demo);
-    - ``rq.owner_org_id == caller_org`` — the caller's own runtime query;
-    - ``rq.id`` is in the caller's persisted ``queries`` row-ids.
+    - ``rq.owner_org_id == caller_org`` — the caller's own runtime-registered
+      query (e.g. via ``POST /ai/sql?save_as=``);
+    - ``rq.id`` is in the caller's persisted ``queries`` row-ids (covers the
+      OVERWHELMING majority of real queries: anything loaded by the startup
+      bulk loader — ``load_persisted_queries`` — which never stamps
+      ``owner_org_id`` at all, so it is ``None`` on the in-memory object even
+      though the underlying DB row has a real ``org_id``).
 
-    A query saved by another org via POST /ai/sql carries that org's
-    ``owner_org_id`` and matches NONE of these for a different caller, so org B
-    never sees org A's query id / name / params / output schema.
+    SECURITY (fixed in this pass): a query with ``owner_org_id is None`` used
+    to be treated as unconditionally visible to EVERY org ("unowned == public").
+    That was wrong for the common case above — ``owner_org_id`` is a
+    runtime-registration detail, not a reliable "this has no tenant" signal.
+    The ONLY reliable "no tenant" signal is ``rq.system``; every other
+    ``owner_org_id is None`` entry now falls through to the row_ids check
+    (or, when org-scoping itself is unavailable — no DB/no repo — fails open
+    so the persistence-free demo/test path keeps working, matching
+    ``_visible_query_row_ids``'s own documented fallback).
     """
     if getattr(rq, "system", False):
         return True
     owner = getattr(rq, "owner_org_id", None)
-    if owner is None or owner == caller_org:
+    if owner is not None:
+        return owner == caller_org
+    if row_ids is None:
+        # Org-scoping unavailable (no repo / no DB) — fail open.
         return True
-    if row_ids is not None and rq.id in row_ids:
-        return True
-    return False
+    return rq.id in row_ids
 
 
 async def _visible_metric_slugs(org_id: str | None) -> set[str] | None:

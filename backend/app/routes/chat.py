@@ -271,12 +271,14 @@ async def chat_stream(
             anyio.from_thread.run(store.touch_chat, chat_id)
 
             # ── POST-TURN: record cost + post-turn ceiling check ───────────
-            # cost_usd=0.0 for the offline/NullProvider path (no real spend).
-            # For real LLM turns the cost is not yet captured per-request on
-            # this path — the pre-turn check is the primary enforcement gate.
-            # The record here ensures accumulated spend is visible for the
-            # NEXT turn's pre-flight check.
-            anyio.from_thread.run(record_chat_cost, org_id, user_id, 0.0)
+            # turn.cost_usd is the REAL USD cost accumulated across all
+            # agentic steps of this turn (0.0 for the offline/NullProvider
+            # path, which has no real spend). The record here ensures
+            # accumulated spend is visible for the NEXT turn's pre-flight
+            # check — a hardcoded 0.0 here would let every real LLM turn
+            # bypass the per-user/per-org daily ceiling entirely.
+            turn_cost = last_turn.cost_usd if last_turn else 0.0
+            anyio.from_thread.run(record_chat_cost, org_id, user_id, turn_cost)
 
             final: dict[str, Any] = {
                 "type": "message",

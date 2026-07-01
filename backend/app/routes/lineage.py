@@ -63,20 +63,93 @@ _router = APIRouter(prefix="/lineage", tags=["lineage"])
 # ---------------------------------------------------------------------------
 
 
-def _get_graph() -> LineageGraph:
-    """Build the lineage graph from the current query registry.
+async def _resolve_org_id(user: dict[str, Any]) -> str | None:
+    """Best-effort org resolution for lineage tenant-scoping (never raises).
+
+    Mirrors ``app.routes.ai._resolve_org_id``.  ``None`` means org resolution
+    was unavailable (no repo / no membership row) — callers then fall back to
+    the unfiltered registry so the demo/test path keeps working.
+    """
+    try:
+        from app.repos.provider import get_repo  # noqa: PLC0415
+        from app.routes._org import get_user_org  # noqa: PLC0415
+
+        return await get_user_org(str(user["id"]), get_repo())
+    except Exception:  # noqa: BLE001 — best-effort; never break the request
+        return None
+
+
+async def _visible_queries_and_metrics(
+    user: dict[str, Any], org_id: str | None
+) -> tuple[list[Any], list[Any]]:
+    """Return the (queries, metrics) visible to *org_id* — tenant-isolation gate.
+
+    SECURITY (cross-org lineage disclosure)
+    ----------------------------------------
+    ``QueryRegistry`` and ``MetricRegistry`` are process-global singletons that
+    span EVERY org on the deployment (same contract as ``app.routes.ai`` /
+    ``app.routes.query`` / ``app.routes.metrics`` — "org scoping happens at the
+    route layer", per ``load_metrics_from_queries``'s docstring). Building the
+    lineage graph/DAG from the RAW, unfiltered ``.all()`` lists — as the routes
+    below originally did — would let any authenticated user of ANY org see
+    another org's query/metric ids, SQL structure, and column-level provenance
+    via ``/lineage``, ``/lineage/query/{id}``, ``/lineage/dag``, and
+    ``/lineage/columns/{node_id}``.
+
+    This reuses the EXACT SAME visibility gate ``GET /ai/context`` already
+    applies (no logic duplication): a query/metric is visible when it is a
+    system/seed entry, unowned, owned by the caller's own org, or backed by a
+    ``queries`` row the caller's org actually owns.
+    """
+    from app.metrics.registry import SEED_METRIC_IDS, get_metric_registry  # noqa: PLC0415
+    from app.routes.ai import (  # noqa: PLC0415
+        _query_visible_to_org,
+        _visible_metric_slugs,
+        _visible_query_row_ids,
+    )
+
+    registry = get_query_registry()
+    metric_registry = get_metric_registry()
+
+    row_ids = await _visible_query_row_ids(user, org_id)
+    queries = [
+        rq
+        for rq in registry.all()
+        if _query_visible_to_org(rq, caller_org=org_id, row_ids=row_ids)
+    ]
+
+    metric_slugs = await _visible_metric_slugs(org_id)
+    metrics = [
+        md
+        for md in metric_registry.all()
+        if metric_slugs is None or md.id in metric_slugs or md.id in SEED_METRIC_IDS
+    ]
+    return queries, metrics
+
+
+def _get_graph(queries: list[Any] | None = None) -> LineageGraph:
+    """Build the lineage graph from *queries* (default: the FULL registry).
 
     This is a synchronous helper called inline from route handlers.  For M7-A
     the graph is rebuilt on every request (cheap; ~ms); a caching layer can be
     added in a later milestone.
+
+    Parameters
+    ----------
+    queries:
+        Pre-filtered, org-visible query list.  Callers MUST pass the
+        tenant-scoped list (see ``_visible_queries_and_metrics``) — passing
+        ``None`` builds the graph from every query in the process-global
+        registry, which is only safe for internal/trusted callers.
 
     Returns
     -------
     LineageGraph
         Fully populated lineage graph.
     """
-    registry = get_query_registry()
-    return build_graph(registry.all())
+    if queries is None:
+        queries = get_query_registry().all()
+    return build_graph(queries)
 
 
 def _graph_to_dict(graph: LineageGraph) -> dict[str, Any]:
@@ -108,13 +181,17 @@ def _graph_to_dict(graph: LineageGraph) -> dict[str, Any]:
 async def get_lineage(
     _user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
-    """Return the full lineage graph over all registered queries.
+    """Return the full lineage graph over the CALLER'S ORG's registered queries.
+
+    Org-scoped (SEC): the query registry is a process-global singleton
+    spanning every org, so the visible query set is gated by the caller's org
+    — see ``_visible_queries_and_metrics``. System/seed queries (no tenant)
+    are always included.
 
     Parameters
     ----------
     _user:
-        Injected by FastAPI; the authenticated user dict.  Not used in the
-        response body but required to enforce authentication.
+        Injected by FastAPI; the authenticated user dict.
 
     Returns
     -------
@@ -123,7 +200,9 @@ async def get_lineage(
         "tables": {table: [query_ids]},
         "columns": {"table.column": [query_ids]}}``
     """
-    graph = _get_graph()
+    org_id = await _resolve_org_id(_user)
+    queries, _metrics = await _visible_queries_and_metrics(_user, org_id)
+    graph = _get_graph(queries)
     return _graph_to_dict(graph)
 
 
@@ -133,6 +212,10 @@ async def get_lineage_for_query(
     _user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     """Return the lineage detail for a single registered query.
+
+    Org-scoped (SEC): a query owned by a DIFFERENT org (or not visible to the
+    caller) is treated as 404 — same non-disclosure contract as the cross-org
+    IDOR gates elsewhere (connectors/flows/metrics).
 
     Parameters
     ----------
@@ -150,14 +233,20 @@ async def get_lineage_for_query(
     Raises
     ------
     AppError("query_not_found", 404)
-        If *query_id* is not in the query registry.
+        If *query_id* is not in the query registry, or belongs to another org.
     """
     registry = get_query_registry()
     rq = registry.get(query_id)
     if rq is None:
         raise AppError("query_not_found", f"No registered query with id '{query_id}'.", 404)
 
-    graph = _get_graph()
+    org_id = await _resolve_org_id(_user)
+    visible_queries, _metrics = await _visible_queries_and_metrics(_user, org_id)
+    if query_id not in {q.id for q in visible_queries}:
+        # Cross-org: same 404 as "not found" — no existence disclosure.
+        raise AppError("query_not_found", f"No registered query with id '{query_id}'.", 404)
+
+    graph = _get_graph(visible_queries)
     detail = graph.for_query(query_id)
     if detail is None:
         # Shouldn't happen but guard defensively.
@@ -347,11 +436,10 @@ async def get_lineage_dag(
         Each edge: ``{from, to, via}``.
     """
     from app.lineage.dag import build_dag  # noqa: PLC0415
-    from app.metrics.registry import get_metric_registry  # noqa: PLC0415
 
-    registry = get_query_registry()
-    metric_registry = get_metric_registry()
-    dag = build_dag(registry.all(), metric_registry.all())
+    org_id = await _resolve_org_id(_user)
+    queries, metrics = await _visible_queries_and_metrics(_user, org_id)
+    dag = build_dag(queries, metrics)
     return dag.to_dict()
 
 
@@ -378,14 +466,14 @@ async def get_lineage_dag_node(
     Raises
     ------
     AppError("node_not_found", 404)
-        If *node_id* is not in the DAG.
+        If *node_id* is not in the DAG, or belongs to another org (SEC: same
+        404 as "not found" — no existence disclosure across tenants).
     """
     from app.lineage.dag import build_dag  # noqa: PLC0415
-    from app.metrics.registry import get_metric_registry  # noqa: PLC0415
 
-    registry = get_query_registry()
-    metric_registry = get_metric_registry()
-    dag = build_dag(registry.all(), metric_registry.all())
+    org_id = await _resolve_org_id(_user)
+    queries, metrics = await _visible_queries_and_metrics(_user, org_id)
+    dag = build_dag(queries, metrics)
 
     node = dag.nodes.get(node_id)
     if node is None:
@@ -442,19 +530,23 @@ async def get_column_lineage(
     Raises
     ------
     AppError("node_not_found", 404)
-        If *node_id* is not in the DAG.
+        If *node_id* is not in the DAG, or belongs to another org (SEC: same
+        404 as "not found" — a cross-tenant caller cannot distinguish
+        "doesn't exist" from "not yours").
     AppError("column_required", 400)
         If the ``column`` query parameter is missing or empty.
     """
     from app.lineage.dag import build_dag, resolve_column_lineage  # noqa: PLC0415
-    from app.metrics.registry import get_metric_registry  # noqa: PLC0415
 
     if not column or not column.strip():
         raise AppError("column_required", "Query parameter 'column' is required.", 400)
 
-    registry = get_query_registry()
-    metric_registry = get_metric_registry()
-    dag = build_dag(registry.all(), metric_registry.all())
+    # SEC: the query/metric registries are process-global singletons spanning
+    # every org — build the DAG from ONLY the caller's org-visible entries so
+    # this endpoint can never disclose another org's node/column provenance.
+    org_id = await _resolve_org_id(_user)
+    queries, metrics = await _visible_queries_and_metrics(_user, org_id)
+    dag = build_dag(queries, metrics)
 
     if node_id not in dag.nodes:
         raise AppError(
