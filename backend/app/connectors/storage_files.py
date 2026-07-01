@@ -76,6 +76,12 @@ class StorageFileSupport:
 
         stats: list[FileStat] = []
         for key in keys:
+            # Belt-and-braces tenant isolation: base_prefix is the org boundary,
+            # and list(prefix=…) is trusted to honour it — but never surface a
+            # key the backend returned OUTSIDE base_prefix, so a misbehaving or
+            # misconfigured backend cannot leak objects across the boundary.
+            if self._base_prefix and not key.startswith(self._base_prefix + "/"):
+                continue
             rel = self._to_path(key)
             meta = self._storage.stat(key)
             if meta is not None:

@@ -88,10 +88,10 @@ def test_to_path_without_base_prefix_is_identity():
 
 
 def test_to_path_key_not_matching_prefix_is_returned_unchanged():
-    """Documents the org-scoping trust boundary: this mixin does not verify
-    that every key returned by the backend actually lives under base_prefix —
-    it only strips the prefix when present. Isolation for list_files() relies
-    entirely on the backend honouring the `list(prefix=...)` filter."""
+    """`_to_path` is a pure prefix-strip: it only removes base_prefix when
+    present and otherwise returns the key unchanged (it does not itself reject
+    a foreign key). The tenant-isolation guard lives one level up in
+    `list_files` (see test_list_files_filters_keys_outside_base_prefix)."""
     support = StorageFileSupport(_mk_client(), base_prefix="org-42")
     assert support._to_path("other-org/orders/2024.csv") == "other-org/orders/2024.csv"
 
@@ -109,6 +109,24 @@ def test_list_files_uses_literal_prefix_and_base_prefix():
     support.list_files("outbound/2024/*.csv")
 
     client.list.assert_called_once_with(prefix="org-42/outbound/2024")
+
+
+def test_list_files_filters_keys_outside_base_prefix():
+    """Belt-and-braces tenant isolation: if a misbehaving/misconfigured backend
+    returns a key OUTSIDE base_prefix, list_files drops it — a foreign-org
+    object can never surface across the boundary base_prefix defines."""
+    client = _mk_client()
+    client.list.return_value = [
+        "org-42/outbound/a.csv",       # ours — kept
+        "other-org/outbound/b.csv",    # foreign — must be filtered out
+    ]
+    support = StorageFileSupport(client, base_prefix="org-42")
+
+    results = support.list_files("outbound/*.csv")
+    paths = {f.path for f in results}
+
+    assert "outbound/a.csv" in paths
+    assert all("b.csv" not in p for p in paths)  # cross-org key never surfaces
 
 
 def test_list_files_glob_only_pattern_falls_back_to_base_prefix():
