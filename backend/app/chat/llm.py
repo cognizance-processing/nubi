@@ -145,6 +145,11 @@ class _Turn:
         self.text_parts: list[str] = []
         self.tool_calls: list[dict[str, Any]] = []  # {id, name, input, output}
         self.spec: dict[str, Any] | None = None
+        #: Real USD cost of this turn, accumulated across all agentic steps.
+        #: Fed to ``record_chat_cost`` so the per-user/per-org daily ceiling
+        #: (app.ai.cost_ceiling) actually accumulates real spend instead of
+        #: always recording 0.0 — see SECURITY note on _stream_real below.
+        self.cost_usd: float = 0.0
 
     @property
     def text(self) -> str:
@@ -245,6 +250,19 @@ def _stream_real(
                     + (getattr(usage, "completion_tokens", 0) or 0)
                 )
                 tokens_used += step_tokens
+        except Exception:  # noqa: BLE001
+            pass
+
+        # SECURITY: accumulate the REAL USD cost of this step onto the turn so
+        # the caller (app.routes.chat) can record actual spend into the
+        # per-user/per-org cost ceiling (app.ai.cost_ceiling). Without this,
+        # record_chat_cost would always be called with 0.0 and the configured
+        # NUBI_CHAT_USER_DAILY_USD / NUBI_CHAT_ORG_DAILY_USD ceilings could
+        # never trip against real (billed) traffic. Best-effort: an unknown
+        # model / missing pricing table must not fail the turn.
+        try:
+            step_cost = float(litellm.completion_cost(completion_response=rebuilt) or 0.0)
+            turn.cost_usd += step_cost
         except Exception:  # noqa: BLE001
             pass
 
