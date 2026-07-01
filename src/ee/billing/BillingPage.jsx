@@ -425,13 +425,13 @@ export default function BillingPage() {
 
       {/* Checkout feedback banner */}
       {checkoutStatus === 'success' && (
-        <div className="flex items-center gap-3 rounded-xl bg-teal-50 dark:bg-teal-900/20 border border-teal-200 dark:border-teal-800 px-4 py-3 text-sm text-teal-800 dark:text-teal-200">
+        <div role="status" className="flex items-center gap-3 rounded-xl bg-teal-50 dark:bg-teal-900/20 border border-teal-200 dark:border-teal-800 px-4 py-3 text-sm text-teal-800 dark:text-teal-200">
           <CheckCircle size={16} className="shrink-0" />
           Payment successful — your plan has been updated.
         </div>
       )}
       {checkoutStatus === 'cancelled' && (
-        <div className="flex items-center gap-3 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+        <div role="status" className="flex items-center gap-3 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
           <AlertCircle size={16} className="shrink-0" />
           Checkout was cancelled — no charge was made.
         </div>
@@ -439,7 +439,7 @@ export default function BillingPage() {
 
       {/* Upgrade error */}
       {upgradeError && (
-        <div className="flex items-center gap-3 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-4 py-3 text-sm text-red-800 dark:text-red-200">
+        <div role="alert" className="flex items-center gap-3 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-4 py-3 text-sm text-red-800 dark:text-red-200">
           <AlertCircle size={16} className="shrink-0" />
           {upgradeError}
         </div>
@@ -447,12 +447,12 @@ export default function BillingPage() {
 
       {/* Current plan */}
       {loadingStatus ? (
-        <div className="flex items-center gap-3 text-muted text-sm py-4">
+        <div className="flex items-center gap-3 text-muted text-sm py-4" aria-live="polite">
           <Loader2 size={16} className="animate-spin" />
           Loading billing status…
         </div>
       ) : statusError ? (
-        <div className="flex items-center gap-3 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-4 py-3 text-sm text-red-800 dark:text-red-200">
+        <div role="alert" className="flex items-center gap-3 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-4 py-3 text-sm text-red-800 dark:text-red-200">
           <AlertCircle size={16} className="shrink-0" />
           {statusError}
         </div>

@@ -15,7 +15,7 @@
  * font-display headings, text-muted secondaries, accent CTA button.
  */
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef, useId } from 'react'
 import {
   Wallet,
   TrendingDown,
@@ -32,7 +32,6 @@ import {
   manualTopup,
   formatUsd,
   formatZarCents,
-  centsToUsd,
   usdToCents,
   ENTRY_META,
 } from '../../lib/ee/wallet.js'
@@ -258,6 +257,27 @@ function TopupForm({ onCancel, onSuccess }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
+  // Accessible-dialog wiring: a11y APG "non-modal dialog" pattern — the form
+  // isn't a full-screen overlay (no redesign), but it IS a self-contained
+  // task ("add credit") that appears/disappears, so it gets role="dialog",
+  // a labelled heading, focus-on-open, and Escape-to-close like a real dialog.
+  const headingId = `topup-heading-${useId()}`
+  const customInputId = `topup-custom-amount-${useId()}`
+  const headingRef = useRef(null)
+
+  useEffect(() => {
+    // Move focus into the dialog when it mounts (i.e. when the user opens it)
+    // so keyboard/screen-reader users land on the new content immediately.
+    headingRef.current?.focus()
+  }, [])
+
+  function handleKeyDown(e) {
+    if (e.key === 'Escape' && !loading) {
+      e.stopPropagation()
+      onCancel?.()
+    }
+  }
+
   async function handleSubmit(e) {
     e.preventDefault()
     const cents = usdToCents(Number(amountUsd))
@@ -280,16 +300,27 @@ function TopupForm({ onCancel, onSuccess }) {
   return (
     <form
       onSubmit={handleSubmit}
+      onKeyDown={handleKeyDown}
+      role="dialog"
+      aria-labelledby={headingId}
       className="rounded-2xl border border-border bg-surface-2 p-5 space-y-4"
     >
-      <p className="text-sm font-semibold text-fg">Add credit to wallet</p>
+      <h3
+        id={headingId}
+        ref={headingRef}
+        tabIndex={-1}
+        className="text-sm font-semibold text-fg focus:outline-none"
+      >
+        Add credit to wallet
+      </h3>
 
       {/* Preset amounts */}
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-2" role="group" aria-label="Top-up amount presets">
         {TOPUP_PRESETS_USD.map((v) => (
           <button
             key={v}
             type="button"
+            aria-pressed={!custom && amountUsd === v}
             onClick={() => { setAmountUsd(v); setCustom(false) }}
             className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
               !custom && amountUsd === v
@@ -302,6 +333,7 @@ function TopupForm({ onCancel, onSuccess }) {
         ))}
         <button
           type="button"
+          aria-pressed={custom}
           onClick={() => setCustom(true)}
           className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
             custom
@@ -316,14 +348,16 @@ function TopupForm({ onCancel, onSuccess }) {
       {/* Custom amount input */}
       {custom && (
         <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-fg">$</span>
+          <label htmlFor={customInputId} className="text-sm font-medium text-fg" aria-hidden="true">$</label>
           <input
+            id={customInputId}
             type="number"
             min="1"
             max="10000"
             step="1"
             value={amountUsd}
             onChange={(e) => setAmountUsd(e.target.value)}
+            aria-label="Custom top-up amount in US dollars"
             className="w-32 px-3 py-1.5 rounded-lg border border-border bg-surface text-sm text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
             autoFocus
           />
@@ -337,7 +371,7 @@ function TopupForm({ onCancel, onSuccess }) {
       </p>
 
       {error && (
-        <p className="text-xs text-red-600 dark:text-red-400 flex items-center gap-1.5">
+        <p role="alert" className="text-xs text-red-600 dark:text-red-400 flex items-center gap-1.5">
           <AlertCircle size={12} />
           {error}
         </p>
@@ -405,8 +439,8 @@ export default function WalletPanel({ className }) {
 
   if (loading) {
     return (
-      <section className={`rounded-2xl border border-border bg-surface p-6 ${className ?? ''}`}>
-        <div className="flex items-center gap-3 text-muted text-sm">
+      <section aria-busy="true" className={`rounded-2xl border border-border bg-surface p-6 ${className ?? ''}`}>
+        <div className="flex items-center gap-3 text-muted text-sm" aria-live="polite">
           <Loader2 size={16} className="animate-spin" />
           Loading wallet…
         </div>
@@ -417,7 +451,7 @@ export default function WalletPanel({ className }) {
   if (error) {
     return (
       <section className={`rounded-2xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/10 p-6 ${className ?? ''}`}>
-        <div className="flex items-center gap-3 text-sm text-red-700 dark:text-red-300">
+        <div role="alert" className="flex items-center gap-3 text-sm text-red-700 dark:text-red-300">
           <AlertCircle size={16} className="shrink-0" />
           <span>{error}</span>
           <button
@@ -464,13 +498,13 @@ export default function WalletPanel({ className }) {
 
       {/* Paystack return banners */}
       {walletParam === 'funded' && (
-        <div className="flex items-center gap-3 rounded-xl bg-teal-50 dark:bg-teal-900/20 border border-teal-200 dark:border-teal-800 px-4 py-3 text-sm text-teal-800 dark:text-teal-200">
+        <div role="status" className="flex items-center gap-3 rounded-xl bg-teal-50 dark:bg-teal-900/20 border border-teal-200 dark:border-teal-800 px-4 py-3 text-sm text-teal-800 dark:text-teal-200">
           <TrendingDown size={15} className="shrink-0 rotate-180" />
           Payment successful — your wallet has been topped up.
         </div>
       )}
       {walletParam === 'cancelled' && (
-        <div className="flex items-center gap-3 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+        <div role="status" className="flex items-center gap-3 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
           <AlertCircle size={15} className="shrink-0" />
           Top-up cancelled — no charge was made.
         </div>
@@ -485,6 +519,8 @@ export default function WalletPanel({ className }) {
         {!showTopup && (
           <button
             onClick={() => setShowTopup(true)}
+            aria-expanded={showTopup}
+            aria-controls="topup-form-region"
             className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-accent text-white hover:bg-accent/90 transition-colors shrink-0"
           >
             <Plus size={14} />
@@ -495,10 +531,12 @@ export default function WalletPanel({ className }) {
 
       {/* Manual top-up form */}
       {showTopup && (
-        <TopupForm
-          onCancel={() => setShowTopup(false)}
-          onSuccess={() => setShowTopup(false)}
-        />
+        <div id="topup-form-region">
+          <TopupForm
+            onCancel={() => setShowTopup(false)}
+            onSuccess={() => setShowTopup(false)}
+          />
+        </div>
       )}
 
       {/* Spend meter */}
@@ -529,19 +567,21 @@ export default function WalletPanel({ className }) {
         </p>
       )}
 
-      {/* Recent ledger */}
-      {ledger.length > 0 && (
-        <div className="space-y-2">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">
-            Recent transactions
-          </h3>
+      {/* Recent ledger — explicit empty state so the panel never just "goes quiet" */}
+      <div className="space-y-2">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">
+          Recent transactions
+        </h3>
+        {ledger.length > 0 ? (
           <div>
             {ledger.slice(0, 10).map((entry) => (
               <LedgerRow key={entry.id} entry={entry} />
             ))}
           </div>
-        </div>
-      )}
+        ) : (
+          <p className="text-sm text-muted/70 italic">No transactions yet.</p>
+        )}
+      </div>
     </section>
   )
 }
