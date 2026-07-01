@@ -62,6 +62,7 @@ Nubi meters only the dimensions that map to real COGS lines:
 | Metric | COGS line | Overage rate (ZAR) |
 |--------|-----------|--------------------|
 | **Storage GB/month** | Object-storage (S3/R2) + Postgres WAL | R0.33/GB/mo |
+| **Bytes scanned/TiB/month** (`scan_zar_per_tib`) | DuckDB CPU + R2 egress (~R15/TiB, pending benchmark); first 1 TiB/org/month free | R83/TiB |
 | **Compute units/month** (flow runs + query compute) | Container-compute (ECS/k8s) + DuckDB CPU-time | R100/1,000 CU |
 | **Embedded sessions/10K** | Egress bandwidth + per-request compute (CDN) | R50/10K sessions |
 | **AI / agent calls** | Anthropic Claude API token cost | R5.00/call |
@@ -75,13 +76,19 @@ overages require an upgrade.
 
 Queries against datastores flagged for the **hosted DuckDB warehouse** (the
 heavy-query pool — same engine on 8 GB+ machines, for big-table sorts/joins
-and ~1B-row workloads) consume compute units at a **4× multiplier**
-(`WAREHOUSE_CU_MULTIPLIER` in `tiers.py`; runtime `NUBI_CU_MULTIPLIER` on the
-pool process). There is **no separate warehouse meter or rate**: warehouse CUs
-draw from the same monthly CU quota, and overage uses the normal
-R100/1,000 CU rate. Availability is a tier feature: **Pro and Enterprise**
-(`has_warehouse`); Free/Starter/Team queries always run on standard machines
-(the quota checker denies the `warehouse` dimension with an upgrade prompt).
+and ~1B-row workloads) are billed identically to standard queries via the
+**bytes-scanned** meter (`scan_zar_per_tib`) — see above.
+
+> **Changed from earlier pricing.** Warehouse queries previously consumed
+> compute units at a **4× multiplier** (`WAREHOUSE_CU_MULTIPLIER`). As of the
+> bytes-scanned billing model, `WAREHOUSE_CU_MULTIPLIER = 1` (the constant is
+> retained only so the `NUBI_CU_MULTIPLIER` env var and any code reading it
+> stay a no-op) — there is no separate warehouse rate, meter, or penalty.
+> "Warehouse vs. standard" no longer appears as a distinct invoice line.
+> Availability of the warehouse itself is still a tier feature: **Pro and
+> Enterprise** (`has_warehouse`); Free/Starter/Team queries always run on
+> standard machines (the quota checker denies the `warehouse` dimension with
+> an upgrade prompt).
 
 ---
 
@@ -111,7 +118,8 @@ The following have near-zero marginal COGS and are never charged:
 | Embedded sessions/mo | 0 | 1,000 | 5,000 | 25,000 | Unlimited |
 | Agent runs/mo | 0 | 0 | 10 | 50 | 1,000 |
 | AI calls/mo | 0 | 5 | 15 | 50 | 500 |
-| Warehouse (heavy-query pool) | — | — | — | ✓ (4× CU) | ✓ (4× CU) |
+| Bytes scanned free allowance/mo | 1 TiB | 1 TiB | 1 TiB | 1 TiB | 1 TiB |
+| Warehouse (heavy-query pool) | — | — | — | ✓ (bytes-scanned, no multiplier) | ✓ (bytes-scanned, no multiplier) |
 
 ---
 
@@ -128,16 +136,29 @@ via Paystack.
 - **Manual topup** — org admin buys credits through the billing UI; Paystack
   processes the ZAR charge and the wallet is credited on `charge.success`.
 - **Auto-topup** — when the balance drops below a configurable **threshold**
-  (default $10.00 = 1,000 cents), the system automatically charges the saved
-  Paystack card for the configured **topup amount** (default $50.00 = 5,000
-  cents).  The auto-topup is fire-and-forget (non-blocking).
-- **Monthly topup cap** — optional ceiling on the total auto-topup credits in a
-  calendar month.  Prevents runaway spending.
-- **Spend cap** — optional ceiling on total monthly usage credits added.
-  Enforced before each auto-topup attempt.
+  (default $10.00 = 1,000 cents; UI-allowed range **$1–$10,000**), the system
+  automatically charges the saved Paystack card for the configured **topup
+  amount** (default $50.00 = 5,000 cents; UI-allowed range **$5–$100,000**).
+  The auto-topup is fire-and-forget (non-blocking) — it never delays the debit
+  that triggered it.
+- **Monthly topup cap** — optional ceiling (**$5–$100,000**) on the total
+  auto-topup credits in a calendar month.  A *soft* limit: prevents runaway
+  automatic spending while manual top-ups keep working.
+- **Spend cap** — optional ceiling (**$1–$100,000**) on total monthly usage
+  credits added.  A *hard* limit, enforced before each auto-topup attempt.
 - **Zero-balance hard stop** — if the balance reaches zero and the tier's included
   quota is exhausted, the metered action is blocked with a `wallet_balance_insufficient`
   error.  The org must top up to continue.
+- **In-flight guard** — an auto-topup attempt atomically claims a
+  `topup_in_flight` lock before charging the card, so two concurrent debits
+  crossing the threshold at once can never double-charge. A claim abandoned by
+  a crashed process self-heals after `TOPUP_IN_FLIGHT_TTL_SECONDS` (600s / 10
+  minutes), so a later debit can still trigger a fresh attempt.
+- **3-D Secure (paused charges)** — if Paystack requires 3DS for the saved
+  card, the unattended charge cannot complete: it is recorded as a
+  `TOPUP_FAILED` ledger entry with `reason: "3ds_required"` (no balance
+  change) rather than erroring. A manual top-up (which the customer completes
+  interactively) is required to keep the card usable for future auto-topups.
 - **Idempotency** — every topup and debit carries a unique `ref_id`; duplicate
   Paystack webhook deliveries are silently skipped.
 

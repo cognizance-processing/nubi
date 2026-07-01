@@ -73,13 +73,16 @@ Both PDF and PPTX export use the **editor view** (no RLS filtering) — the same
 
 ## Scheduled Jobs
 
-Jobs automate query execution and report delivery. Three kinds are supported:
+Jobs automate query execution, report delivery, and two guaranteed-cadence
+sweeps. Five kinds are supported:
 
 | `kind` | `target` type | Description |
 |--------|---------------|-------------|
 | `query` | `string` — registered query ID | Execute a query on schedule; record the row count. |
 | `python` | `string` — Python source | Run Python in the server kernel; metered against the org's compute quota. |
 | `report` | `object` — `ReportTarget` | Render a board as CSV or PDF and email it to a list of recipients. |
+| `watch_sweep` | `string` — empty (org resolved from caller) | Evaluate all of the org's metric watches on a cron; emit `WATCH_BREACH` webhooks for breaches. See [Observability § Nightly Watch Sweep](observability.md#nightly-watch-sweep). |
+| `drift_sweep` | `string` — empty (org resolved from caller) | Re-check every observed dataset's schema on a cron and emit `SCHEMA_DRIFT` webhooks for changes. See [Data Health § Nightly drift sweep](data-health.md#nightly-drift-sweep-guaranteed-cadence). |
 
 ### REST Endpoints
 

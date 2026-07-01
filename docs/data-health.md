@@ -217,6 +217,48 @@ against).
 snapshot. If anything changed, Nubi writes `schema_drift_events` rows and emits
 a `SCHEMA_DRIFT` webhook event.
 
+### Nightly drift sweep (guaranteed cadence)
+
+The fire-and-forget detection above only runs when a dataset happens to be
+queried. For datasets that go quiet (a source stops being queried but its
+schema still changes underneath you), Nubi also ships a **`drift_sweep`**
+scheduled job — the guaranteed-cadence counterpart, same pattern as the
+[nightly watch sweep](observability.md#nightly-watch-sweep).
+
+Create one via `POST /api/v1/jobs` (first-party auth required):
+
+```json
+{
+  "name": "Nightly Schema Drift Sweep",
+  "kind": "drift_sweep",
+  "target": "",
+  "schedule": "0 2 * * *"
+}
+```
+
+How it works:
+
+1. On its cron (or via `POST /api/v1/jobs/{id}/run` for an on-demand check),
+   the sweep iterates **every dataset** the org has a stored schema snapshot
+   for.
+2. For each dataset it fetches the live column list (datasets catalog first,
+   falling back to a lightweight DuckDB `DESCRIBE`) and runs the same
+   `detect_schema_drift` comparison the fire-and-forget path uses — so a
+   sweep-detected change emits the identical `SCHEMA_DRIFT` webhook event and
+   `schema_drift_events` row.
+3. **Org-scoped** — only snapshots stamped with the job's `org_id` are
+   evaluated; no cross-org leakage.
+4. **Best-effort per-dataset** — one dataset failing (connector offline,
+   schema unavailable) is logged and skipped; the sweep continues to the rest.
+5. The job run records `row_count = changed_count` and a summary message
+   (`evaluated` / `changed` / `errors`) in `job_runs`, same as any other
+   scheduled job.
+
+`target` is ignored for this kind — the org is derived from the caller's
+identity at job-creation time. See [Exports & Scheduled
+Reports](exports-and-jobs.md#scheduled-jobs) for the full `POST /jobs`
+contract shared by every job kind.
+
 ### `GET /api/v1/health/drift`
 
 List recent schema-drift events for the org, newest-first.

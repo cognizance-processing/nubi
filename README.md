@@ -450,7 +450,8 @@ Full documentation lives in [`docs/`](docs/index.md) — **start at the [documen
 **Platform & security**
 - [Architecture & Economics](docs/architecture-and-economics.md) — compute model, embedding modes, billing COGS mapping
 - [Data-custody tier](docs/custody-tier.md) — BYO storage, customer-managed keys, region pinning (POPIA/GDPR-relevant residency) · [Compliance](docs/compliance.md) — posture document, gaps disclosed
-- [Self-host](docs/self-host.md) · [Open core](docs/open-core.md) · [Open-core architecture](docs/architecture-open-core.md) · [Billing model](docs/billing-model.md)
+- [Self-host](docs/self-host.md) · [Open core](docs/open-core.md) · [Open-core architecture](docs/architecture-open-core.md)
+- [Nubi Cloud](docs/cloud.md) — managed hosting, architecture, scaling · [Billing & usage](docs/billing-and-usage.md) — plans, wallet, auto-topup, FX/ZAR, invoices · [Billing model](docs/billing-model.md) — COGS mapping, tier values
 - [Kernel security](docs/kernel-security.md) · [Connector security](docs/connector-security.md) · [Secrets](docs/secrets.md) · [Observability](docs/observability.md)
 - [Cache-key spec](docs/cache-key-spec.md) · [Conformance](docs/conformance.md) · [Bridges](docs/bridges.md) · [Lakehouse](docs/lakehouse.md)
 

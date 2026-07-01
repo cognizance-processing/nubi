@@ -31,6 +31,7 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 | [**Dashboards**](/docs/dashboards) | DashboardSpec, widget types (kpi/metric/chart/table/pivot/filter/text/section), 9 chart types, variables, `/d/:id?var=` route params |
 | [**Exports & Scheduled Reports**](/docs/exports-and-jobs) | CSV/PDF exports, cron jobs, per-recipient locked params |
 | [**Flows**](/docs/flows) | Cell-based orchestrator with 3 cell types (SQL, Python, Note); notebook and canvas (DAG) views; retries, durable run history, scheduling, cross-cell data references |
+| [**Notebooks**](/docs/notebooks) | The notebook view of a Flow spec — CellSpec/NotebookSpec data model, cross-cell data flow, preview vs. durable execution runtimes, cross-engine SQL (`source_dialect`), column lineage & plan-before-apply |
 | [**Semantic layer, data apps & close-the-loop**](/docs/semantic-and-data-apps) | Governed metric definitions; derived/ratio measures; time intelligence; dynamic top-N; pre-agg rollups; Flows as a data-app engine (per-cell resources, stochastic seeds, artifact channel, sweep/backfill, triggers, write-back); Canvas (HTML-native sibling to Dashboards); the close-the-loop architecture |
 | [**Metrics reference**](/docs/metrics-reference) | Agent/MCP reference for declaring and querying governed metrics via `POST /metrics/{id}/query` |
 | [**Lineage**](/docs/lineage) | Inter-model dependency DAG (`GET /lineage/dag`), metric lineage, flow/cell column lineage |

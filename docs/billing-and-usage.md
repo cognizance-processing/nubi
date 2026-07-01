@@ -122,15 +122,21 @@ Nubi never bills for dimensions that cost us essentially nothing to run, because
 
 ### Metered
 
-We meter only the five dimensions that map to a real cost we pay on your behalf:
+We meter only the six dimensions that map to a real cost we pay on your behalf:
 
 | Metered dimension | What it measures |
 |-------------------|------------------|
 | **Storage (GB)** | Object storage your org consumes |
-| **Compute units (CU)** | Flow runs + query compute on Nubi's nodes. Each server-side query execution records one event (compute-seconds + bytes returned); cached reads are never metered. **Warehouse queries** (the hosted heavy-query pool, Pro+) consume CUs at 4× — same quota, same overage rate, no separate meter |
+| **Compute units (CU)** | Flow runs + query compute on Nubi's nodes. Each server-side query execution records one event (compute-seconds); cached reads are never metered |
+| **Bytes scanned (TiB)** | Bytes read by DuckDB across your queries (cache hits scan nothing). The first **1 TiB/month per org is free** (matches BigQuery's free tier); beyond that it's billed per TiB. **Warehouse queries** (the hosted heavy-query pool, Pro+) use this same bytes-scanned meter — there is **no separate warehouse rate or CU multiplier** |
 | **Embedded sessions** | Embedded dashboard loads per month |
 | **AI calls** | Text-to-SQL, MCP tools, and agent steps |
 | **Agent / kernel runs** | On-demand server kernels (Team & Pro+) |
+
+> **Changed from earlier pricing.** Warehouse queries used to carry a 4× compute-unit
+> multiplier. Billing for warehouse queries has since moved to the bytes-scanned
+> meter above (comparable to how BigQuery prices scans) — the multiplier is gone
+> and "warehouse vs. standard" no longer shows up as a separate line on your invoice.
 
 ---
 
@@ -138,11 +144,12 @@ We meter only the five dimensions that map to a real cost we pay on your behalf:
 
 When you exceed a plan's included quota, the extra usage is an **overage**. Overages let you buy more of *one* thing — say more AI calls — without jumping a whole plan.
 
-Overage rates are **fixed in ZAR**: Storage R0.33/GB/mo, Compute R100/1,000 CU, AI R5/call, Embedded R50/10,000 sessions, Agent/kernel runs R2/run. Agent/kernel run overages are **not available on the Starter plan**.
+Overage rates are **fixed in ZAR**: Storage R0.33/GB/mo, Bytes scanned R83/TiB (first 1 TiB/mo free), Compute R100/1,000 CU, AI R5/call, Embedded R50/10,000 sessions, Agent/kernel runs R2/run. Agent/kernel run overages are **not available on the Starter plan**.
 
 | Dimension | Rate | Unit |
 |-----------|------|------|
 | Storage | R0.33 | / GB / mo (~$0.02 USD) |
+| Bytes scanned | R83 | / TiB, first 1 TiB/mo free (~$5 USD/TiB) |
 | Compute | R100 | / 1,000 CU |
 | AI calls | R5 | / call |
 | Embedded sessions | R50 | / 10,000 |
@@ -205,11 +212,13 @@ Auto top-up keeps the wallet from hitting zero by charging your saved card when 
 > You must do a **manual top-up first** to put a card on file. Until then, the auto top-up toggle is disabled and the card shows as "No saved payment method."
 
 1. Toggle **Enable auto-topup** on.
-2. Set **Balance threshold** — when the balance drops below this, a charge is triggered (default $10).
-3. Set **Top-up amount** — how much credit to buy each time it triggers (default $50, minimum $5).
-4. (Optional) Tick **Monthly auto-topup cap** — a *soft* ceiling on total auto top-ups per calendar month. Once reached, auto top-up pauses for the rest of the month, but manual top-ups still work.
-5. (Optional) Tick **Monthly spend cap** — a *hard* stop (see below).
+2. Set **Balance threshold** — when the balance drops below this, a charge is triggered (default $10, allowed range **$1–$10,000**).
+3. Set **Top-up amount** — how much credit to buy each time it triggers (default $50, allowed range **$5–$100,000**).
+4. (Optional) Tick **Monthly auto-topup cap** — a *soft* ceiling on total auto top-ups per calendar month (range **$5–$100,000**). Once reached, auto top-up pauses for the rest of the month, but manual top-ups still work.
+5. (Optional) Tick **Monthly spend cap** — a *hard* stop (range **$1–$100,000**; see below).
 6. Click **Save settings**. The saved card (brand and last 4 digits) is shown for confirmation.
+
+Under the hood, an auto-topup attempt only ever fires **once at a time** per organization — a short-lived lock prevents two concurrent triggers from double-charging the card, and a stale lock (e.g. the server restarted mid-charge) self-heals after 10 minutes so a later debit can still trigger a fresh attempt. If your bank requires 3-D Secure confirmation, the automatic charge can't complete unattended — it's recorded as a paused attempt (no balance change, no error shown to you) and you'll need to complete a **manual top-up** instead to keep the card usable for future auto-topups.
 
 ### Spend caps and the zero-balance stop
 

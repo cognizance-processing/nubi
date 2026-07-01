@@ -39,6 +39,31 @@ Conventions:
   cap (`_MAX_TOKENS=4096`) are preserved as inner guards.
 
 ### Added
+- **`drift_sweep` scheduled job + audit backstop middleware.** Two
+  guaranteed-coverage additions: (1) a `kind: "drift_sweep"` job (`POST
+  /api/v1/jobs`) that re-checks every observed dataset's schema on a cron —
+  the guaranteed-cadence sibling to the existing fire-and-forget,
+  query-triggered drift detection — emitting the same `SCHEMA_DRIFT` webhook
+  events; org-scoped, best-effort per dataset. (2) `AuditMiddleware`
+  (`app/middleware/audit.py`), registered unconditionally in `create_app()`,
+  which records every successful (2xx) mutating `/api/v1/*` request to the
+  audit log even when the route has no explicit `record_audit()` call site —
+  deduplicated against explicit calls via `request.state.audit_logged`, same
+  POPIA-safe metadata-only contract, fail-open.
+  See [data-health § Nightly drift sweep](docs/data-health.md#nightly-drift-sweep-guaranteed-cadence)
+  and [observability § Guaranteed mutation coverage](docs/observability.md#guaranteed-mutation-coverage-the-audit-backstop-middleware).
+
+- **Bytes-scanned billing (replaces the warehouse CU multiplier).** EE billing
+  now meters actual bytes scanned by DuckDB (`kind="query_scan"` usage events)
+  at `R83/TiB` with the first `1 TiB/org/month` free, instead of applying a 4×
+  compute-unit multiplier to warehouse (heavy-query pool) queries.
+  `WAREHOUSE_CU_MULTIPLIER` is now `1` (retained as a no-op skeleton for the
+  `NUBI_CU_MULTIPLIER` env var) — warehouse queries are billed identically to
+  standard queries via the shared bytes-scanned meter, so "warehouse vs.
+  standard" no longer appears as a separate invoice line.
+  See [billing-and-usage § What we meter](docs/billing-and-usage.md#metered)
+  and [billing-model § Metered Dimensions](docs/billing-model.md#metered-dimensions).
+
 - **`http_call` flow task.** Flows can now POST (or GET/PUT/PATCH/DELETE) to any
   external HTTP endpoint from inside a flow run. Config: `url`, `method`,
   `headers`, `body` (JSON, supports `{{ params }}`), `timeout_s`, and `auth`

@@ -169,6 +169,35 @@ mutation path it wraps. A DB write failure is logged at WARNING level only.
 See [api-reference.md#audit-log](api-reference.md#audit-log) for the full
 endpoint specification and response shape.
 
+### Guaranteed mutation coverage — the audit backstop middleware
+
+Individual routes call `record_audit()` explicitly for the richest entries,
+but a **backstop middleware** (`app/middleware/audit.py`, `AuditMiddleware`)
+guarantees every successful mutation is captured even for routes that never
+got an explicit call site:
+
+- Records every **2xx** response to a mutating method (`POST`/`PUT`/`PATCH`/
+  `DELETE`) under `/api/v1/*`, deriving `resource_type`/`resource_id` from the
+  URL path segments and `action` as `"{resource_type}.{create|update|delete}"`.
+- **Deduplicated** — a route that already called `record_audit()` sets
+  `request.state.audit_logged = True` before responding; the middleware sees
+  the flag and skips its own write, so no request is ever logged twice.
+- **Same POPIA contract** as explicit calls: no request body, no query
+  params, no PII — the `summary` is only `{method, path, status}`.
+- Skips non-mutating methods, non-2xx responses, and a fixed set of
+  prefixes (`/health`, `/api/v1/auth/*`, `/embed/*`, `/assets/*`, `/docs`,
+  `/redoc`, `/openapi`, `/ops/health`).
+- Identity (`actor_user_id`, `actor_kind`, `org_id`) is derived from the same
+  Bearer-token verification the rate limiter uses; requests with no resolvable
+  `org_id` are skipped (nothing to scope the row to) rather than logged
+  ambiguously.
+- **Fail-open** — the audit write is wrapped in its own try/except; a failure
+  never alters or breaks the original response.
+
+Registered once in `main.py:create_app()` alongside the rate-limit and
+latency middlewares — no per-route opt-in required for a mutation to show up
+in `GET /audit`.
+
 ---
 
 ## Nightly Watch Sweep

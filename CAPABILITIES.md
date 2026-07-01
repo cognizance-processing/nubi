@@ -12,7 +12,7 @@ of carrying redundant local shims.
   and a matching entry is added to [CHANGELOG.md](./CHANGELOG.md). See
   [Keeping these current](#keeping-these-current).
 
-_Last reviewed: 2026-07-01 · branch `docs/readme-excellence`._
+_Last reviewed: 2026-07-01 · branch `docs/full-coverage`._
 
 ---
 
@@ -73,6 +73,7 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 | Freshness **write** path (populated on flow success) | ✅ | listener wired at startup | [data-health](docs/data-health.md) |
 | Health reads via embed tokens | ✅ | `verified_identity` (embed + first-party) | [data-health](docs/data-health.md) |
 | **Schema-drift detection / event API** (column add/remove/type-change) | ✅ | `GET /health/drift`, `GET /health/drift/{key}`, `SCHEMA_DRIFT` webhook event | [data-health](docs/data-health.md) |
+| **Nightly schema-drift sweep** (guaranteed cadence, not just on-query) | ✅ | `kind: drift_sweep` scheduled job via `POST /jobs` | [data-health § Nightly drift sweep](docs/data-health.md#nightly-drift-sweep-guaranteed-cadence) |
 
 ## D. Lineage
 
@@ -145,6 +146,7 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 |---|---|---|---|
 | Scoped audit: query-executed (POPIA), export audit | ✅ | webhook event / board config | [observability](docs/observability.md) |
 | **Unified action audit-log read API** (all mutations) | ✅ | `GET /audit`, `GET /audit/{type}/{id}` (owner/admin) | [api-reference](docs/api-reference.md#audit-log) |
+| **Audit backstop middleware** — guaranteed 2xx-mutation coverage even for routes with no explicit `record_audit` call site; dedupes against explicit calls via `request.state.audit_logged` | ✅ | `app/middleware/audit.py` (`AuditMiddleware`), registered unconditionally in `create_app()` | [observability § Guaranteed mutation coverage](docs/observability.md#guaranteed-mutation-coverage-the-audit-backstop-middleware) |
 | Spec version/revert for **boards** | ✅ | `/environments` `/versions/board/...` | [transformation](docs/transformation.md) |
 | Spec version/revert for **metrics** | ✅ | `GET /metrics/{id}/versions`, `GET /metrics/{id}/versions/{v}`, `POST /metrics/{id}/revert/{v}` (`author:metric`) | [metrics-reference](docs/metrics-reference.md#spec-version-history-revert) |
 
@@ -196,6 +198,29 @@ schema enum) as of 2026-06-26 to avoid misleading hosts.
 **EE feature flags available in tier API today**: `has_rls`, `has_sso_google`,
   `has_multi_tenant_workspaces`, `has_byoc`, `has_custom_domain`, `has_warehouse`,
   `has_priority_support`, SLA fields.
+
+---
+
+## L. Nubi Cloud billing (EE-only)
+
+These capabilities live in the `ee/` tree and only activate under a paid
+license or on Nubi Cloud (see §J — billing itself is **out of scope for the
+open-core/embeddable substrate** other CE hosts embed against). Listed here so
+the same "shipped vs. roadmap" contract applies to the Cloud product, not just
+the embeddable core.
+
+| Capability | Status | Contract | Docs |
+|---|---|---|---|
+| 5-tier plan catalogue (Free/Starter/Team/Pro/Enterprise), unlimited seats at every tier | ✅ | `GET /pricing` (public), `GET /ee/billing/tier` | [billing-and-usage](docs/billing-and-usage.md), [billing-model](docs/billing-model.md) |
+| Paystack checkout + webhook (subscription + wallet) | ✅ | `POST /ee/billing/checkout`, `POST /ee/billing/webhook` (HMAC-SHA512 verified) | [billing-and-usage](docs/billing-and-usage.md#upgrading-or-changing-your-plan) |
+| Usage wallet — manual top-up, ledger, balance | ✅ | `GET /ee/billing/wallet`, `POST /ee/billing/wallet/topup` | [billing-and-usage § usage wallet](docs/billing-and-usage.md#the-usage-wallet) |
+| **Wallet auto-topup** (threshold / amount / monthly caps, saved-card charge, in-flight guard, 3DS pause handling) | ✅ | `PUT /ee/billing/wallet/autotopup`; `app/ee/billing/wallet.py` | [billing-and-usage § Auto top-up](docs/billing-and-usage.md#auto-top-up), [billing-model § Usage Wallet](docs/billing-model.md#usage-wallet) |
+| **USD-anchored, ZAR-billed FX** (daily refresh, 2% buffer, ceil-to-nearest-R10, staleness fallback, disclosed variance) | ✅ | `app/ee/billing/fx.py`; rate surfaced in `GET /pricing` and the wallet card | [billing-and-usage § Prices in USD, billed in ZAR](docs/billing-and-usage.md#prices-in-usd-billed-in-zar), [billing-model § Currency and FX](docs/billing-model.md#currency-and-fx) |
+| Bytes-scanned metering + free allowance (replaces the old warehouse CU multiplier) | ✅ | `kind="query_scan"` usage events; `SCAN_ZAR_PER_TIB` / `SCAN_FREE_ALLOWANCE_TIB` in `tiers.py` | [billing-and-usage § What we meter](docs/billing-and-usage.md#metered), [architecture-and-economics](docs/architecture-and-economics.md) |
+| Monthly invoices — PDF render, email delivery, VAT (TAX INVOICE when issuer is VAT-registered) | ✅ | `GET /ee/billing/invoices`, `GET /ee/billing/invoices/{id}/pdf` | [billing-and-usage § Monthly invoices, PDFs & VAT](docs/billing-and-usage.md#monthly-invoices-pdfs-vat) |
+| Billing-cycle reconciliation (idempotent close, wallet-first draw-down, deterministic charge reference) | ✅ | `run_billing_cycle()`; `GET /ee/billing/invoices/current-cycle` (dry-run projection) | [billing-model](docs/billing-model.md) |
+| Quota enforcement (hard stop where no overage rate; wallet-billable overage otherwise) | ✅ | `app.ee.billing.quota.billing_quota_checker` registered into the core `enforce_quota` hook | [billing-model § Resource Limits by Tier](docs/billing-model.md#resource-limits-by-tier) |
+| License-tier resolution (`NUBI_LICENSE_KEY` → Free/Pro/Enterprise) | ✅ | `app.ee.licensing.license.get_license()` | [open-core § License key resolution](docs/open-core.md#license-key-resolution) |
 
 ---
 
