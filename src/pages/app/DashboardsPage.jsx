@@ -42,6 +42,7 @@ import { checkpoint, listEnvironments } from '../../lib/versions.js'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import PromoteDialog from '../../components/app/PromoteDialog.jsx'
 import DangerConfirmDialog from '../../components/app/DangerConfirmDialog.jsx'
+import { toast } from '../../components/ui/Toast.jsx'
 import {
   PageRoot,
   PageHeader,
@@ -178,6 +179,23 @@ function CardMenu({ onEdit, onCheckpoint, onHistory, onPromote, onDelete }) {
 }
 
 function DeleteDialog({ board, onConfirm, onCancel, busy }) {
+  const dialogRef = useRef(null)
+
+  // Escape to close (ignored while a delete is in flight)
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.key === 'Escape' && !busy) onCancel()
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [busy, onCancel])
+
+  // Focus the dialog panel on open
+  useEffect(() => {
+    const t = setTimeout(() => dialogRef.current?.focus(), 50)
+    return () => clearTimeout(t)
+  }, [])
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -185,11 +203,16 @@ function DeleteDialog({ board, onConfirm, onCancel, busy }) {
       aria-modal="true"
       aria-labelledby="delete-dlg-title"
     >
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onCancel} />
-      <div className="relative z-10 w-full max-w-sm rounded-2xl border border-border bg-surface p-6 shadow-nubi-xl nubi-animate-scale-in">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={busy ? undefined : onCancel} />
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        className="relative z-10 w-full max-w-sm rounded-2xl border border-border bg-surface p-6 shadow-nubi-xl nubi-animate-scale-in outline-none"
+      >
         <button
           onClick={onCancel}
-          className="absolute top-4 right-4 text-muted hover:text-fg transition-colors p-1 rounded-lg hover:bg-surface-2"
+          disabled={busy}
+          className="absolute top-4 right-4 text-muted hover:text-fg transition-colors p-1 rounded-lg hover:bg-surface-2 disabled:opacity-50"
           aria-label="Cancel"
         >
           <X size={16} />
@@ -215,10 +238,10 @@ function DeleteDialog({ board, onConfirm, onCancel, busy }) {
           <button
             onClick={onConfirm}
             disabled={busy}
-            className="flex-1 h-9 rounded-xl bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+            className="flex-1 h-9 rounded-xl bg-danger text-white text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center justify-center gap-2"
           >
             {busy && <Loader2 size={13} className="animate-spin" />}
-            Delete
+            {busy ? 'Deleting…' : 'Delete'}
           </button>
         </div>
       </div>
@@ -264,11 +287,12 @@ function BoardCard({ board, onDeleted, onRestored, canWrite, environments, stric
     try {
       await api.del(`/boards/${board.id}`)
       onDeleted(board.id)
+      setConfirmDelete(false)
     } catch (err) {
       console.error('Delete failed:', err)
+      toast.error(err?.message || 'Failed to delete dashboard. Please try again.')
     } finally {
       setDeleteBusy(false)
-      setConfirmDelete(false)
     }
   }
 
@@ -739,7 +763,7 @@ export default function DashboardsPage() {
             type="button"
             data-testid="boards-delete-selected"
             onClick={openBulkDeleteSelected}
-            className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg bg-danger text-white text-xs font-semibold hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Trash2 size={12} />
             Delete {selectedBoards.length}
@@ -815,7 +839,7 @@ export default function DashboardsPage() {
                 type="button"
                 data-testid="boards-delete-all"
                 onClick={openBulkDeleteAll}
-                className="inline-flex items-center gap-1.5 h-6 px-2.5 rounded-lg border border-red-500/30 text-red-600 dark:text-red-400 text-xs font-medium hover:bg-red-500/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="inline-flex items-center gap-1.5 h-6 px-2.5 rounded-lg border border-danger/30 text-danger text-xs font-medium hover:bg-danger-bg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <Trash2 size={11} />
                 Delete all{search ? ' matching' : ''}

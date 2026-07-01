@@ -171,7 +171,7 @@ function RecentItem({ icon: Icon, iconBg, title, meta, onClick, href, delay }) {
       style={{ animationDelay: `${delay}ms` }}
       className="ov-reveal group flex items-center gap-3 p-4 rounded-xl border border-border bg-surface
         hover:border-primary/40 hover:shadow-md hover:shadow-primary/5 transition-all duration-200
-        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring min-h-[44px] w-full text-left"
+        min-h-[44px] w-full text-left"
     >
       <div className={`flex items-center justify-center w-9 h-9 rounded-lg shrink-0 ${iconBg ?? 'bg-surface-2 group-hover:bg-primary/10 transition-colors'}`}>
         <Icon size={16} className={iconBg ? 'text-white' : 'text-muted group-hover:text-primary transition-colors'} />
@@ -187,8 +187,9 @@ function RecentItem({ icon: Icon, iconBg, title, meta, onClick, href, delay }) {
       <ExternalLink size={13} className="text-muted opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
     </div>
   )
-  if (onClick) return <button onClick={onClick} className="block w-full">{inner}</button>
-  if (href) return <Link to={href} className="block">{inner}</Link>
+  const focusCls = "rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+  if (onClick) return <button onClick={onClick} className={`block w-full ${focusCls}`}>{inner}</button>
+  if (href) return <Link to={href} className={`block ${focusCls}`}>{inner}</Link>
   return inner
 }
 
@@ -326,7 +327,8 @@ export default function OverviewPage() {
           <h2 id="health-heading" className="font-display font-semibold text-lg text-fg">Data health</h2>
           <Link
             to="/workqueue"
-            className="text-xs text-muted hover:text-primary transition-colors inline-flex items-center gap-1"
+            className="text-xs text-muted hover:text-primary transition-colors inline-flex items-center gap-1
+              rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             View issues <ChevronRight size={12} />
           </Link>
@@ -467,7 +469,8 @@ export default function OverviewPage() {
           <div>
             <div className="flex items-center justify-between mb-3">
               <p className="text-xs font-medium text-muted uppercase tracking-wider">Dashboards</p>
-              <Link to="/dashboards" className="text-xs text-muted hover:text-primary transition-colors inline-flex items-center gap-1">
+              <Link to="/dashboards" className="text-xs text-muted hover:text-primary transition-colors inline-flex items-center gap-1
+                rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                 View all <ChevronRight size={12} />
               </Link>
             </div>
@@ -498,7 +501,8 @@ export default function OverviewPage() {
           <div>
             <div className="flex items-center justify-between mb-3">
               <p className="text-xs font-medium text-muted uppercase tracking-wider">Flows</p>
-              <Link to="/flows" className="text-xs text-muted hover:text-primary transition-colors inline-flex items-center gap-1">
+              <Link to="/flows" className="text-xs text-muted hover:text-primary transition-colors inline-flex items-center gap-1
+                rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                 View all <ChevronRight size={12} />
               </Link>
             </div>

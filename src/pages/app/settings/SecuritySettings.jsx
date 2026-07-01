@@ -28,7 +28,6 @@ import {
   Trash2,
   Loader2,
   CheckCircle,
-  XCircle,
   AlertCircle,
   ChevronDown,
   ChevronUp,
@@ -40,7 +39,15 @@ import {
   updateJwtIssuer,
   deleteJwtIssuer,
 } from '../../../lib/security.js'
-import { SettingsPageHeader } from './SettingsUI.jsx'
+import {
+  SettingsPageHeader,
+  SettingsCard,
+  PrimaryButton,
+  ErrorText,
+  Toggle,
+  inputCls,
+} from './SettingsUI.jsx'
+import { toast } from '../../../components/ui/Toast.jsx'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -187,7 +194,7 @@ function IssuerForm({ initial, onSave, onCancel, saving, saveError }) {
             value={form.name}
             onChange={(e) => set('name', e.target.value)}
             placeholder="My App Production"
-            className="w-full px-3 py-2 rounded-xl bg-bg border border-border text-sm text-fg placeholder:text-muted focus:outline-none focus:border-primary"
+            className={inputCls}
           />
         </div>
 
@@ -204,7 +211,7 @@ function IssuerForm({ initial, onSave, onCancel, saving, saveError }) {
             value={form.issuer}
             onChange={(e) => set('issuer', e.target.value)}
             placeholder="https://myapp.example.com"
-            className="w-full px-3 py-2 rounded-xl bg-bg border border-border text-sm text-fg placeholder:text-muted focus:outline-none focus:border-primary font-mono"
+            className={inputCls + ' font-mono'}
           />
         </div>
       </div>
@@ -221,7 +228,7 @@ function IssuerForm({ initial, onSave, onCancel, saving, saveError }) {
           value={form.jwks_url}
           onChange={(e) => set('jwks_url', e.target.value)}
           placeholder="https://myapp.example.com/.well-known/jwks.json"
-          className="w-full px-3 py-2 rounded-xl bg-bg border border-border text-sm text-fg placeholder:text-muted focus:outline-none focus:border-primary font-mono"
+          className={inputCls + ' font-mono'}
         />
       </div>
 
@@ -247,7 +254,7 @@ function IssuerForm({ initial, onSave, onCancel, saving, saveError }) {
               value={form.jwk_pem}
               onChange={(e) => set('jwk_pem', e.target.value)}
               placeholder={"-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"}
-              className="w-full px-3 py-2 rounded-xl bg-bg border border-border text-xs text-fg placeholder:text-muted focus:outline-none focus:border-primary font-mono resize-y"
+              className={inputCls + ' text-xs font-mono resize-y'}
             />
           </div>
         )}
@@ -266,6 +273,7 @@ function IssuerForm({ initial, onSave, onCancel, saving, saveError }) {
                 <button
                   key={algo}
                   type="button"
+                  aria-pressed={active}
                   onClick={() => toggleAlgo(algo)}
                   className={[
                     'px-2.5 py-1 rounded-lg text-xs font-mono font-medium border transition-colors',
@@ -293,25 +301,18 @@ function IssuerForm({ initial, onSave, onCancel, saving, saveError }) {
             value={form.audience}
             onChange={(e) => set('audience', e.target.value)}
             placeholder="nubi-embed"
-            className="w-full px-3 py-2 rounded-xl bg-bg border border-border text-sm text-fg placeholder:text-muted focus:outline-none focus:border-primary font-mono"
+            className={inputCls + ' font-mono'}
           />
         </div>
       </div>
 
       {/* Enabled toggle */}
-      <label className="flex items-center gap-3 cursor-pointer select-none w-fit">
-        <div className="relative">
-          <input
-            type="checkbox"
-            className="sr-only peer"
-            checked={form.enabled}
-            onChange={(e) => set('enabled', e.target.checked)}
-          />
-          <div className="w-9 h-5 rounded-full border border-border bg-surface-2 peer-checked:bg-primary peer-checked:border-primary transition-colors" />
-          <div className="absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform peer-checked:translate-x-4" />
-        </div>
-        <span className="text-sm text-fg">Enabled</span>
-      </label>
+      <Toggle
+        id="issuer-enabled"
+        checked={form.enabled}
+        onChange={(v) => set('enabled', v)}
+        label="Enabled"
+      />
 
       {saveError && (
         <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-400">
@@ -321,15 +322,13 @@ function IssuerForm({ initial, onSave, onCancel, saving, saveError }) {
       )}
 
       <div className="flex items-center gap-3 pt-1">
-        <button
+        <PrimaryButton
           type="submit"
+          busy={saving}
           disabled={saving || !form.name.trim() || !form.issuer.trim()}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium text-white transition-opacity disabled:opacity-50"
-          style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}
         >
-          {saving ? <Loader2 size={15} className="animate-spin" /> : null}
           {isEdit ? 'Update issuer' : 'Add issuer'}
-        </button>
+        </PrimaryButton>
         <button
           type="button"
           onClick={onCancel}
@@ -418,8 +417,9 @@ export default function SecuritySettings() {
     try {
       await deleteJwtIssuer(id)
       setLocalIssuers((prev) => (prev ?? issuers).filter((iss) => iss.id !== id))
+      toast.success('JWT issuer deleted.')
     } catch (err) {
-      window.alert(err?.message ?? 'Failed to delete issuer.')
+      toast.error(err?.message ?? 'Failed to delete issuer.')
     } finally {
       setDeleting(null)
     }
@@ -451,27 +451,13 @@ export default function SecuritySettings() {
       </div>
 
       {/* Issuer list */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted/70">
-            JWT Issuers
-          </h3>
-          {formMode === null && (
-            <button
-              type="button"
-              onClick={openCreate}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-white transition-opacity"
-              style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}
-            >
-              <Plus size={13} />
-              Add issuer
-            </button>
-          )}
-        </div>
-
+      <SettingsCard
+        title="JWT issuers"
+        description="Public keys used to verify host-signed embed JWTs."
+      >
         {/* Loading */}
         {loading && (
-          <div className="flex items-center gap-2 py-6 text-sm text-muted">
+          <div className="flex items-center gap-2 py-6 text-sm text-muted justify-center">
             <Loader2 size={15} className="animate-spin" />
             Loading issuers…
           </div>
@@ -479,40 +465,37 @@ export default function SecuritySettings() {
 
         {/* Load error */}
         {!loading && loadError && (
-          <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-400">
-            <XCircle size={15} className="shrink-0 mt-0.5" />
-            {loadError}
+          <div className="flex items-center justify-between gap-3 py-2">
+            <ErrorText>{loadError}</ErrorText>
+            <button
+              type="button"
+              onClick={load}
+              className="text-xs text-muted hover:text-fg underline shrink-0"
+            >
+              Retry
+            </button>
           </div>
         )}
 
         {/* Empty state */}
         {!loading && !loadError && issuers.length === 0 && formMode === null && (
-          <div className="py-8 text-center rounded-2xl border border-dashed border-border bg-surface">
-            <ShieldCheck size={28} className="mx-auto text-muted/40 mb-3" />
-            <p className="text-sm font-medium text-fg mb-1">No JWT issuers configured</p>
-            <p className="text-xs text-muted mb-4">
-              Add an issuer to enable host-signed embed authentication.
+          <div className="flex flex-col items-center justify-center text-center py-8 px-6 gap-2">
+            <ShieldCheck size={26} className="text-muted/40" />
+            <p className="text-sm font-medium text-fg">No JWT issuers configured</p>
+            <p className="text-xs text-muted max-w-sm">
+              Add an issuer below to enable host-signed embed authentication.
             </p>
-            <button
-              type="button"
-              onClick={openCreate}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-white"
-              style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}
-            >
-              <Plus size={13} />
-              Add your first issuer
-            </button>
           </div>
         )}
 
         {/* Issuer rows */}
-        {!loading && issuers.length > 0 && (
-          <div className="rounded-2xl border border-border bg-surface divide-y divide-border overflow-hidden">
+        {!loading && !loadError && issuers.length > 0 && (
+          <div className="-mx-5 sm:-mx-6 -my-5 divide-y divide-border">
             {issuers.map((issuer) => (
-              <div key={issuer.id} className="px-5">
+              <div key={issuer.id} className="px-5 sm:px-6">
                 {/* Saved flash */}
                 {savedId === issuer.id && (
-                  <div className="flex items-center gap-1.5 py-1.5 text-xs text-emerald-600 dark:text-emerald-400">
+                  <div className="flex items-center gap-1.5 py-1.5 text-xs text-success">
                     <CheckCircle size={13} />
                     Saved
                   </div>
@@ -539,14 +522,12 @@ export default function SecuritySettings() {
             ))}
           </div>
         )}
+      </SettingsCard>
 
-        {/* Create form */}
-        {formMode === 'create' && (
-          <div className="rounded-2xl border border-border bg-surface px-5 pb-5">
-            <div className="flex items-center gap-2 pt-4 pb-2 border-b border-border mb-1">
-              <Plus size={14} className="text-primary" />
-              <span className="text-sm font-medium text-fg">New JWT issuer</span>
-            </div>
+      {/* Add issuer */}
+      {formMode !== 'edit' && (
+        <SettingsCard title="Add an issuer" description="Register a new signing key.">
+          {formMode === 'create' ? (
             <IssuerForm
               initial={null}
               onSave={handleSave}
@@ -554,9 +535,14 @@ export default function SecuritySettings() {
               saving={saving}
               saveError={saveError}
             />
-          </div>
-        )}
-      </div>
+          ) : (
+            <PrimaryButton type="button" onClick={openCreate}>
+              <Plus size={13} />
+              Add issuer
+            </PrimaryButton>
+          )}
+        </SettingsCard>
+      )}
     </div>
   )
 }

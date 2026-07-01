@@ -39,6 +39,8 @@ import {
 } from 'lucide-react'
 
 import { useOrg } from '../../../contexts/OrgContext.jsx'
+import { useTheme } from '../../../contexts/ThemeContext.jsx'
+import { resolveSpaTheme } from '../../../lib/spaTheme.js'
 import { usageSummary, usageSeries, formatUsage } from '../../../lib/usage.js'
 import EChart from '../../../viz/EChart.jsx'
 import { SettingsPageHeader } from './SettingsUI.jsx'
@@ -143,7 +145,10 @@ function UsageCard({ metric, selected, onSelect }) {
 // Series chart (ECharts line) for the selected metric
 // ---------------------------------------------------------------------------
 
-function buildSeriesOption(series) {
+// Colours are resolved from the app's design tokens (via resolveSpaTheme) so
+// the chart stays legible in both light and dark mode instead of hardcoding
+// hex values that only look right on a light background.
+function buildSeriesOption(series, spaTheme) {
   const points = series?.points ?? []
   const isHourly = series?.bucket === 'hour'
   const x = points.map((p) => {
@@ -159,14 +164,14 @@ function buildSeriesOption(series) {
     xAxis: {
       type: 'category',
       data: x,
-      axisLabel: { color: '#94a3b8', fontSize: 10 },
-      axisLine: { lineStyle: { color: '#e2e8f0' } },
+      axisLabel: { color: spaTheme.fgMuted, fontSize: 10 },
+      axisLine: { lineStyle: { color: spaTheme.border } },
       boundaryGap: false,
     },
     yAxis: {
       type: 'value',
-      axisLabel: { color: '#94a3b8', fontSize: 10 },
-      splitLine: { lineStyle: { color: '#f1f5f9' } },
+      axisLabel: { color: spaTheme.fgMuted, fontSize: 10 },
+      splitLine: { lineStyle: { color: spaTheme.grid } },
     },
     series: [
       {
@@ -176,14 +181,16 @@ function buildSeriesOption(series) {
         showSymbol: false,
         areaStyle: { opacity: 0.12 },
         lineStyle: { width: 2 },
-        itemStyle: { color: '#6366f1' },
+        itemStyle: { color: spaTheme.primary },
       },
     ],
   }
 }
 
 function SeriesChart({ series, loading }) {
-  const option = useMemo(() => buildSeriesOption(series), [series])
+  const { theme } = useTheme()
+  const spaTheme = useMemo(() => resolveSpaTheme(theme === 'dark'), [theme])
+  const option = useMemo(() => buildSeriesOption(series, spaTheme), [series, spaTheme])
   const hasData = (series?.points ?? []).some((p) => Number(p.value) > 0)
 
   return (
@@ -219,6 +226,7 @@ function PeriodSelector({ period, onChange, loading, onRefresh }) {
             key={p.id}
             type="button"
             onClick={() => onChange(p.id)}
+            aria-pressed={period === p.id}
             className={`px-2.5 h-7 rounded-md text-xs font-medium transition-colors ${
               period === p.id
                 ? 'bg-primary text-primary-fg'

@@ -133,7 +133,7 @@ export default function ExplorePage() {
       >
         {/* Dogfood badge — visible signal that this surface consumes embed/ */}
         <span
-          className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1 text-xs font-medium text-text-muted select-none"
+          className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1 text-xs font-medium text-muted select-none"
           title="This page consumes the shared embed/ component library"
         >
           <Compass size={12} aria-hidden="true" />
@@ -152,10 +152,10 @@ export default function ExplorePage() {
         {/* ── Metric Explorer ─────────────────────────────────────────────── */}
         <div className="flex-1 min-h-[520px] flex flex-col rounded-xl border border-border overflow-hidden bg-surface shadow-sm">
           <div className="px-4 py-2.5 border-b border-border bg-surface-2 flex items-center gap-2 shrink-0">
-            <span className="text-xs font-semibold text-text-muted uppercase tracking-wide">
+            <span className="text-xs font-semibold text-muted uppercase tracking-wide">
               Metric Explorer
             </span>
-            <span className="ml-auto text-[10px] text-text-muted font-mono opacity-60">
+            <span className="ml-auto text-[10px] text-muted font-mono opacity-60">
               &lt;nubi-metric-explorer&gt;
             </span>
           </div>
@@ -185,10 +185,10 @@ export default function ExplorePage() {
           style={{ minHeight: '360px' }}
         >
           <div className="px-4 py-2.5 border-b border-border bg-surface-2 flex items-center gap-2 shrink-0">
-            <span className="text-xs font-semibold text-text-muted uppercase tracking-wide">
+            <span className="text-xs font-semibold text-muted uppercase tracking-wide">
               Contribution Analysis
             </span>
-            <span className="ml-auto text-[10px] text-text-muted font-mono opacity-60">
+            <span className="ml-auto text-[10px] text-muted font-mono opacity-60">
               &lt;nubi-explain&gt;
             </span>
           </div>
@@ -217,7 +217,7 @@ export default function ExplorePage() {
       </div>
 
       {/* Info strip */}
-      <p className="mt-4 text-xs text-text-muted leading-relaxed max-w-2xl">
+      <p className="mt-4 text-xs text-muted leading-relaxed max-w-2xl">
         Both panels above are standard web components from{' '}
         <code className="font-mono bg-surface-2 px-1 py-0.5 rounded text-[11px]">embed/widgets/</code>.
         They inherit the app&apos;s current light/dark theme via a CSS-variable bridge

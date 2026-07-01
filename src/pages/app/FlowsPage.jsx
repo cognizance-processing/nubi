@@ -74,6 +74,8 @@ import { useCanWrite } from '../../contexts/OrgContext.jsx'
 import { useEnv } from '../../contexts/EnvContext.jsx'
 import { checkpoint, restoreVersion } from '../../lib/versions.js'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
+import { toast } from '../../components/ui/Toast.jsx'
+import Skeleton from '../../components/ui/Skeleton.jsx'
 import {
   listFlows,
   getFlow,
@@ -121,13 +123,13 @@ function newFlowDraft() {
 
 function RunStateDot({ state }) {
   const map = {
-    pending:   'bg-slate-400',
-    running:   'bg-amber-400 animate-pulse',
-    success:   'bg-green-500',
-    failed:    'bg-red-500',
-    cancelled: 'bg-slate-400',
+    pending:   'bg-muted/50',
+    running:   'bg-warning animate-pulse',
+    success:   'bg-success',
+    failed:    'bg-danger',
+    cancelled: 'bg-muted/50',
   }
-  return <span className={['w-2 h-2 rounded-full shrink-0', map[state] ?? 'bg-slate-400'].join(' ')} />
+  return <span className={['w-2 h-2 rounded-full shrink-0', map[state] ?? 'bg-muted/50'].join(' ')} />
 }
 
 // ---------------------------------------------------------------------------
@@ -141,8 +143,14 @@ function FlowListItem({ flow, isActive, onClick, onDelete, canWrite, strictEnv }
     e.stopPropagation()
     if (!window.confirm(`Delete flow "${flow.name}"?`)) return
     setDeleting(true)
-    await deleteFlow(flow.id)
-    onDelete(flow.id)
+    const ok = await deleteFlow(flow.id)
+    setDeleting(false)
+    if (ok) {
+      toast.success(`Deleted "${flow.name}".`)
+      onDelete(flow.id)
+    } else {
+      toast.error('Delete failed — check the console.')
+    }
   }, [flow, onDelete])
 
   return (
@@ -189,8 +197,9 @@ function FlowListItem({ flow, isActive, onClick, onDelete, canWrite, strictEnv }
         <button
           onClick={handleDelete}
           disabled={deleting}
-          className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-md text-muted hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 opacity-0 group-hover:opacity-100 transition-all disabled:opacity-40"
+          className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-md text-muted hover:text-danger hover:bg-danger-bg opacity-0 group-hover:opacity-100 transition-all disabled:opacity-40"
           title="Delete flow"
+          aria-label={`Delete flow "${flow.name}"`}
         >
           {deleting ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
         </button>
@@ -220,6 +229,7 @@ function FlowList({ flows, activeId, loading, onSelect, onNew, onRefresh, onDele
             disabled={loading}
             className="h-7 w-7 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors"
             title="Refresh flows"
+            aria-label="Refresh flows"
           >
             <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
           </button>
@@ -242,9 +252,16 @@ function FlowList({ flows, activeId, loading, onSelect, onNew, onRefresh, onDele
       {/* List */}
       <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-0.5">
         {loading && flows.length === 0 && (
-          <div className="flex items-center gap-2 text-[11px] text-muted py-4 justify-center">
-            <Loader2 size={12} className="animate-spin" />
-            Loading…
+          <div className="space-y-1.5 px-1 py-1" aria-label="Loading flows">
+            {[0, 1, 2, 3].map(i => (
+              <div key={i} className="flex items-center gap-2 px-2 py-2.5 rounded-lg">
+                <Skeleton className="w-3.5 h-3.5 rounded" />
+                <div className="flex-1 space-y-1.5">
+                  <Skeleton className="h-2.5 w-3/4" />
+                  <Skeleton className="h-2 w-1/3" />
+                </div>
+              </div>
+            ))}
           </div>
         )}
         {!loading && flows.length === 0 && (
@@ -274,6 +291,14 @@ function FlowList({ flows, activeId, loading, onSelect, onNew, onRefresh, onDele
 // ---------------------------------------------------------------------------
 
 function MobileFlowsSheet({ open, onClose, flows, activeId, loading, onSelect, onNew, onRefresh, onDelete, canWrite, strictEnv = null }) {
+  // Close on Escape.
+  useEffect(() => {
+    if (!open) return undefined
+    const handler = (e) => { if (e.key === 'Escape') onClose?.() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [open, onClose])
+
   return (
     <>
       {/* Backdrop */}
@@ -362,6 +387,8 @@ function RunsTab({ flow, currentRunId, onSelectRun }) {
         <button
           onClick={load}
           disabled={loading}
+          title="Refresh runs"
+          aria-label="Refresh runs"
           className="h-7 w-7 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors"
         >
           <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
@@ -369,10 +396,17 @@ function RunsTab({ flow, currentRunId, onSelectRun }) {
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 sm:px-4 py-3 space-y-2">
-        {loading && (
-          <div className="flex items-center gap-2 text-xs text-muted py-4 justify-center">
-            <Loader2 size={12} className="animate-spin" />
-            Loading runs…
+        {loading && runs.length === 0 && (
+          <div className="space-y-2" aria-label="Loading run history">
+            {[0, 1, 2].map(i => (
+              <div key={i} className="flex items-center gap-2 px-3 py-3 rounded-lg border border-border">
+                <Skeleton className="w-2 h-2 rounded-full" />
+                <div className="flex-1 space-y-1.5">
+                  <Skeleton className="h-2.5 w-1/2" />
+                  <Skeleton className="h-2 w-1/3" />
+                </div>
+              </div>
+            ))}
           </div>
         )}
         {!loading && runs.length === 0 && (
@@ -541,7 +575,7 @@ function ScheduleControl({ flow, onSaved }) {
                 Interval (e.g. <code>interval:30m</code>, <code>interval:6h</code>) or a 5-field cron expression.
               </p>
             </div>
-            {error && <p className="text-[11px] text-red-500 mt-2">{error}</p>}
+            {error && <p className="text-[11px] text-danger mt-2">{error}</p>}
             <div className="flex items-center justify-end gap-2 mt-3">
               <button onClick={() => setOpen(false)} className="px-2.5 h-7 text-xs rounded-lg border border-border bg-surface hover:bg-surface-2">
                 Cancel
@@ -872,7 +906,7 @@ export default function FlowsPage() {
       if (!saved) {
         if (!stale) {
           if (auto) setAutosaveStatus('error')
-          else setSaveError('Save failed — check the console for details.')
+          else { setSaveError('Save failed — check the console for details.'); toast.error('Save failed.') }
         }
         return null
       }
@@ -880,6 +914,7 @@ export default function FlowsPage() {
         setSavedSnapshotJson(specJson)
         setAutosaveStatus(auto ? 'saved' : null)
         handleSaved({ ...saved, _localId: target?._localId })
+        if (!auto) toast.success('Flow saved.')
       }
       return saved
     }
@@ -929,8 +964,13 @@ export default function FlowsPage() {
     setRunError(null)
     const result = await runFlow(activeFlow.id, {}, runEnv || undefined)
     setRunning(false)
-    if (!result) setRunError('Run failed — check the console for details.')
-    else handleRun({ runId: result.id })
+    if (!result) {
+      setRunError('Run failed — check the console for details.')
+      toast.error('Run failed to start.')
+    } else {
+      toast.success('Run started.')
+      handleRun({ runId: result.id })
+    }
   }
 
   // ── Checkpoint — snapshot the saved draft spec as a new version ──────────
@@ -945,17 +985,17 @@ export default function FlowsPage() {
     if (dirty) {
       const saved = await performSave()
       if (!saved) {
-        window.alert('Save failed — checkpoint aborted.')
+        toast.error('Save failed — checkpoint aborted.')
         return
       }
     }
     try {
       const v = await checkpoint('flow', activeFlow.id, { message: message.trim() || undefined })
-      window.alert(v?.deduped
+      toast.success(v?.deduped
         ? `No changes since v${v.version} — the existing version was reused.`
         : `Created version v${v?.version}.`)
     } catch (cause) {
-      window.alert(cause?.message || 'Checkpoint failed.')
+      toast.error(cause?.message || 'Checkpoint failed.')
     }
   }
 
@@ -977,8 +1017,9 @@ export default function FlowsPage() {
     try {
       await restoreVersion('flow', activeFlow.id, viewingVersion.version)
       await handleRestored()
+      toast.success(`Restored v${viewingVersion.version}.`)
     } catch (cause) {
-      window.alert(cause?.message || 'Restore failed.')
+      toast.error(cause?.message || 'Restore failed.')
     }
   }
 
@@ -1044,7 +1085,7 @@ export default function FlowsPage() {
           >
             {tab.label}
             {tab.id === 'runs' && activeRunId && (
-              <span className="inline-flex w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+              <span className="inline-flex w-1.5 h-1.5 rounded-full bg-warning animate-pulse" />
             )}
           </button>
         ))}
@@ -1279,8 +1320,8 @@ export default function FlowsPage() {
                 <div className={[
                   'shrink-0 flex items-start gap-2 px-4 py-2.5 text-xs border-b',
                   validationIssues.length === 0
-                    ? 'bg-green-500/5 border-green-500/20 text-green-700 dark:text-green-400'
-                    : 'bg-rose-500/5 border-rose-500/20 text-rose-700 dark:text-rose-400',
+                    ? 'bg-success-bg border-success/20 text-success'
+                    : 'bg-danger-bg border-danger/20 text-danger',
                 ].join(' ')}>
                   {validationIssues.length === 0
                     ? <CheckCircle2 size={14} className="shrink-0 mt-0.5" />
@@ -1290,28 +1331,28 @@ export default function FlowsPage() {
                       ? 'Flow spec is valid.'
                       : <><strong>Validation issues:</strong><ul className="mt-1 space-y-0.5 list-disc list-inside">{validationIssues.map((i, idx) => <li key={idx}>{i}</li>)}</ul></>}
                   </div>
-                  <button onClick={() => setValidationIssues(null)} className="shrink-0 opacity-60 hover:opacity-100 transition-opacity"><X size={13} /></button>
+                  <button onClick={() => setValidationIssues(null)} aria-label="Dismiss validation result" className="shrink-0 opacity-60 hover:opacity-100 transition-opacity"><X size={13} /></button>
                 </div>
               )}
               {saveError && (
-                <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-rose-500/5 border-b border-rose-500/20 text-xs text-rose-600 dark:text-rose-400">
+                <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-danger-bg border-b border-danger/20 text-xs text-danger">
                   <AlertCircle size={13} />
                   <span className="flex-1 min-w-0">{saveError}</span>
-                  <button onClick={() => setSaveError(null)} className="ml-auto opacity-60 hover:opacity-100 shrink-0"><X size={12} /></button>
+                  <button onClick={() => setSaveError(null)} aria-label="Dismiss save error" className="ml-auto opacity-60 hover:opacity-100 shrink-0"><X size={12} /></button>
                 </div>
               )}
               {runError && (
-                <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-rose-500/5 border-b border-rose-500/20 text-xs text-rose-600 dark:text-rose-400">
+                <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-danger-bg border-b border-danger/20 text-xs text-danger">
                   <AlertCircle size={13} />
                   <span className="flex-1 min-w-0">{runError}</span>
-                  <button onClick={() => setRunError(null)} className="ml-auto opacity-60 hover:opacity-100 shrink-0"><X size={12} /></button>
+                  <button onClick={() => setRunError(null)} aria-label="Dismiss run error" className="ml-auto opacity-60 hover:opacity-100 shrink-0"><X size={12} /></button>
                 </div>
               )}
 
               {/* Read-only version-view banner — builder shows the version's
                   spec; the draft is untouched until Restore. */}
               {viewingVersion && activeTab === 'builder' && (
-                <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-sky-500/5 border-b border-sky-500/20 text-xs text-sky-700 dark:text-sky-400">
+                <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-info-bg border-b border-info/20 text-xs text-info">
                   <History size={13} className="shrink-0" />
                   <span className="flex-1 min-w-0 truncate">
                     Viewing <span className="font-mono font-semibold">v{viewingVersion.version}</span> (read-only)
@@ -1320,7 +1361,7 @@ export default function FlowsPage() {
                   {canWrite && (
                     <button
                       onClick={restoreViewedVersion}
-                      className="shrink-0 px-2 h-6 rounded-md border border-sky-500/30 font-medium hover:bg-sky-500/10 transition-colors"
+                      className="shrink-0 px-2 h-6 rounded-md border border-info/30 font-medium hover:bg-info/10 transition-colors"
                     >
                       Restore
                     </button>

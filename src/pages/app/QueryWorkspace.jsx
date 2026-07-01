@@ -159,7 +159,7 @@ function ParamInputRow({ param, value, onChange }) {
         <span className="font-mono normal-case text-fg/80">{param.name}</span>
         <span className="text-muted/60 normal-case">({param.type})</span>
         {param.required && (
-          <span className="text-rose-500 text-[10px]" title="Required">*</span>
+          <span className="text-danger text-[10px]" title="Required">*</span>
         )}
       </label>
       {hasOptions ? (
@@ -208,7 +208,7 @@ function CellNameBadge({ name }) {
       <Hash size={8} />
       {name}
       {copied
-        ? <Check size={8} className="text-emerald-500" />
+        ? <Check size={8} className="text-success" />
         : <Copy size={8} className="opacity-0 group-hover:opacity-100 transition-opacity" />
       }
     </button>
@@ -228,6 +228,13 @@ function SaveDialog({ query, onConfirm, onCancel, saving }) {
     inputRef.current?.select()
   }, [])
 
+  // Close on Escape.
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape') onCancel?.() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onCancel])
+
   const handleSubmit = (e) => {
     e.preventDefault()
     if (!name.trim()) return
@@ -238,6 +245,9 @@ function SaveDialog({ query, onConfirm, onCancel, saving }) {
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-bg/60 backdrop-blur-sm rounded-xl">
       <form
         onSubmit={handleSubmit}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Save query"
         className="bg-surface border border-border rounded-xl shadow-2xl p-5 w-80 flex flex-col gap-4"
       >
         <div>
@@ -245,8 +255,9 @@ function SaveDialog({ query, onConfirm, onCancel, saving }) {
           <p className="text-[11px] text-muted mt-0.5">Give this query a name to save it to the registry.</p>
         </div>
         <div className="flex flex-col gap-1">
-          <label className="text-[11px] font-semibold text-muted uppercase tracking-wide">Name</label>
+          <label htmlFor="save-query-name" className="text-[11px] font-semibold text-muted uppercase tracking-wide">Name</label>
           <input
+            id="save-query-name"
             ref={inputRef}
             type="text"
             value={name}
@@ -331,6 +342,13 @@ function ScheduleDialog({ query, params, paramValues, onConfirm, onCancel, sched
     inputRef.current?.select()
   }, [])
 
+  // Close on Escape.
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape') onCancel?.() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onCancel])
+
   const schedule = mode === 'interval'
     ? buildIntervalString(intervalN, intervalUnit)
     : cron.trim()
@@ -349,6 +367,9 @@ function ScheduleDialog({ query, params, paramValues, onConfirm, onCancel, sched
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-bg/60 backdrop-blur-sm rounded-xl p-4">
       <form
         onSubmit={handleSubmit}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Schedule query"
         className="bg-surface border border-border rounded-xl shadow-2xl p-5 w-[26rem] max-w-full flex flex-col gap-4"
       >
         <div className="flex items-start gap-2">
@@ -363,7 +384,7 @@ function ScheduleDialog({ query, params, paramValues, onConfirm, onCancel, sched
 
         {status === 'ok' ? (
           <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-2 text-sm text-emerald-600 dark:text-emerald-400">
+            <div className="flex items-center gap-2 text-sm text-success">
               <CheckCircle2 size={16} />
               Scheduled — manage it in Automations.
             </div>
@@ -392,8 +413,9 @@ function ScheduleDialog({ query, params, paramValues, onConfirm, onCancel, sched
         ) : (
           <>
             <div className="flex flex-col gap-1">
-              <label className="text-[11px] font-semibold text-muted uppercase tracking-wide">Name</label>
+              <label htmlFor="schedule-query-name" className="text-[11px] font-semibold text-muted uppercase tracking-wide">Name</label>
               <input
+                id="schedule-query-name"
                 ref={inputRef}
                 type="text"
                 value={name}
@@ -455,9 +477,10 @@ function ScheduleDialog({ query, params, paramValues, onConfirm, onCancel, sched
                     value={cron}
                     onChange={e => setCron(e.target.value)}
                     placeholder="0 9 * * *"
+                    aria-invalid={cronInvalid || undefined}
                     className={[
                       'h-8 px-2.5 text-xs font-mono bg-surface border rounded-lg text-fg placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-ring',
-                      cronInvalid ? 'border-rose-500/50' : 'border-border',
+                      cronInvalid ? 'border-danger/50' : 'border-border',
                     ].join(' ')}
                   />
                   <p className="text-[10px] text-muted/70">
@@ -474,7 +497,7 @@ function ScheduleDialog({ query, params, paramValues, onConfirm, onCancel, sched
               </p>
             )}
             {cronInvalid && (
-              <p className="text-[11px] text-rose-500 flex items-center gap-1">
+              <p className="text-[11px] text-danger flex items-center gap-1">
                 <AlertCircle size={10} /> Cron expression must have 5 fields.
               </p>
             )}
@@ -486,7 +509,7 @@ function ScheduleDialog({ query, params, paramValues, onConfirm, onCancel, sched
             )}
 
             {status === 'err' && (
-              <p className="text-[11px] text-rose-500 flex items-center gap-1">
+              <p className="text-[11px] text-danger flex items-center gap-1">
                 <AlertCircle size={10} /> Failed to schedule — please try again.
               </p>
             )}
@@ -564,6 +587,7 @@ function AiAssistBar({ onResult, onClose }) {
         </button>
         <button
           onClick={onClose}
+          aria-label="Close AI assist"
           className="text-[11px] text-muted hover:text-fg transition-colors ml-1"
         >
           ✕
@@ -573,6 +597,7 @@ function AiAssistBar({ onResult, onClose }) {
         <input
           ref={inputRef}
           type="text"
+          aria-label="Describe the SQL you want to generate"
           value={question}
           onChange={e => setQuestion(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleGenerate() } }}
@@ -590,7 +615,7 @@ function AiAssistBar({ onResult, onClose }) {
         </button>
       </div>
       {error && (
-        <p className="text-[11px] text-rose-500 flex items-center gap-1">
+        <p className="text-[11px] text-danger flex items-center gap-1">
           <AlertCircle size={10} /> {error}
         </p>
       )}
@@ -606,7 +631,7 @@ function CacheBadge({ status }) {
   if (!status || status === 'MISS') return null
   if (status === 'SAMPLE') {
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full bg-warning-bg text-warning border border-warning/20">
         <Database size={8} /> SAMPLE
       </span>
     )
@@ -619,7 +644,7 @@ function CacheBadge({ status }) {
     )
   }
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full bg-success-bg text-success border border-success/20">
       <Zap size={8} /> {status}
     </span>
   )
@@ -765,7 +790,7 @@ function CellRunStatus({ running, result, error, cellName }) {
   }
   if (error) {
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] text-rose-500 font-mono">
+      <span className="inline-flex items-center gap-1 text-[10px] text-danger font-mono">
         <AlertCircle size={9} />
         error
       </span>
@@ -774,7 +799,7 @@ function CellRunStatus({ running, result, error, cellName }) {
   if (result) {
     const rows = result.table?.numRows ?? 0
     return (
-      <span className="inline-flex items-center gap-1.5 text-[10px] text-emerald-600 dark:text-emerald-400 font-mono">
+      <span className="inline-flex items-center gap-1.5 text-[10px] text-success font-mono">
         <CheckCircle2 size={9} />
         {rows.toLocaleString()} row{rows !== 1 ? 's' : ''}
         {result.elapsedMs != null && (
@@ -937,7 +962,7 @@ function ScratchSqlCell({
           </button>
           <button
             onClick={onRemove}
-            className="h-9 w-9 flex items-center justify-center rounded text-muted hover:text-rose-500 hover:bg-rose-500/10 transition-colors"
+            className="h-9 w-9 flex items-center justify-center rounded text-muted hover:text-danger hover:bg-danger-bg transition-colors"
             title="Remove cell"
           >
             <Trash2 size={12} />
@@ -1067,7 +1092,7 @@ function ScratchPythonCell({ cell, cellNumber, index, total, onRemove, onMoveUp,
           </button>
           <button
             onClick={onRemove}
-            className="h-9 w-9 flex items-center justify-center rounded text-muted hover:text-rose-500 hover:bg-rose-500/10 transition-colors"
+            className="h-9 w-9 flex items-center justify-center rounded text-muted hover:text-danger hover:bg-danger-bg transition-colors"
             title="Remove cell"
           >
             <Trash2 size={12} />
@@ -1620,7 +1645,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
             </span>
           )}
           {isNew && (
-            <span className="shrink-0 inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+            <span className="shrink-0 inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-warning-bg text-warning border border-warning/20">
               unsaved
             </span>
           )}
@@ -1746,9 +1771,9 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
             {saving ? (
               <Loader2 size={12} className="animate-spin" />
             ) : saveStatus === 'ok' ? (
-              <CheckCircle2 size={12} className="text-emerald-500" />
+              <CheckCircle2 size={12} className="text-success" />
             ) : saveStatus === 'err' ? (
-              <AlertCircle size={12} className="text-rose-500" />
+              <AlertCircle size={12} className="text-danger" />
             ) : (
               <Save size={12} />
             )}
@@ -1797,7 +1822,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
         {/* Read-only version-view banner — the editor below shows the
             version's SQL/params; the draft is untouched until Restore. */}
         {viewing && (
-          <div className="flex items-center gap-2 px-4 py-2 bg-sky-500/5 border-b border-sky-500/20 text-xs text-sky-700 dark:text-sky-400">
+          <div className="flex items-center gap-2 px-4 py-2 bg-info-bg border-b border-info/20 text-xs text-info">
             <History size={13} className="shrink-0" />
             <span className="flex-1 min-w-0 truncate">
               Viewing <span className="font-mono font-semibold">v{viewingVersion.version}</span> (read-only)
@@ -1806,7 +1831,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
             {canWrite && (
               <button
                 onClick={restoreViewedVersion}
-                className="shrink-0 px-2 h-6 rounded-md border border-sky-500/30 font-medium hover:bg-sky-500/10 transition-colors"
+                className="shrink-0 px-2 h-6 rounded-md border border-info/30 font-medium hover:bg-info-bg transition-colors"
               >
                 Restore
               </button>
@@ -1893,7 +1918,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                         <label className="text-[11px] font-semibold text-muted uppercase tracking-wide flex items-center gap-1">
                           <span className="font-mono normal-case text-fg/80">{param.name}</span>
                           {param.required && (
-                            <span className="text-rose-500 text-[10px]" title="Required">*</span>
+                            <span className="text-danger text-[10px]" title="Required">*</span>
                           )}
                         </label>
                         <select
@@ -1920,7 +1945,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                         </label>
                         <button
                           onClick={() => handleRemoveParam(param.name)}
-                          className="text-muted/40 hover:text-rose-500 transition-colors"
+                          className="text-muted/40 hover:text-danger transition-colors"
                           title={`Remove param ${param.name}`}
                         >
                           <Trash2 size={9} />

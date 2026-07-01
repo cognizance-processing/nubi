@@ -23,7 +23,6 @@ import {
   KeyRound,
   Trash2,
   X,
-  Loader2,
   AlertTriangle,
   RefreshCw,
   ShieldCheck,
@@ -35,16 +34,26 @@ import { Link } from 'react-router-dom'
 import { listSecrets, createSecret, deleteSecret } from '../../lib/secrets.js'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
 import { toast } from '../../components/ui/Toast.jsx'
+import Button from '../../components/ui/Button.jsx'
 
 // ---------------------------------------------------------------------------
 // Delete confirm dialog
 // ---------------------------------------------------------------------------
 
 function DeleteDialog({ name, loading, error, onCancel, onConfirm }) {
+  // ESC to close (matches AddSecretPanel's idiom below)
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (e.key === 'Escape' && !loading) onCancel()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [loading, onCancel])
+
   return (
     <div
       className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
-      onClick={onCancel}
+      onClick={loading ? undefined : onCancel}
     >
       <div
         className="bg-surface rounded-2xl border border-border shadow-2xl p-6 w-full max-w-sm"
@@ -53,8 +62,8 @@ function DeleteDialog({ name, loading, error, onCancel, onConfirm }) {
         aria-modal="true"
       >
         <div className="flex items-start gap-3 mb-4">
-          <div className="w-10 h-10 rounded-xl bg-red-100 dark:bg-red-900/30 flex items-center justify-center shrink-0">
-            <Trash2 size={18} className="text-red-600 dark:text-red-400" strokeWidth={2} />
+          <div className="w-10 h-10 rounded-xl bg-danger-bg flex items-center justify-center shrink-0">
+            <Trash2 size={18} className="text-danger" strokeWidth={2} />
           </div>
           <div>
             <h3 className="font-semibold text-fg text-sm">Delete secret?</h3>
@@ -66,26 +75,18 @@ function DeleteDialog({ name, loading, error, onCancel, onConfirm }) {
         </div>
 
         {error && (
-          <div className="mb-3 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-xs text-red-700 dark:text-red-300">
+          <div className="mb-3 px-3 py-2 rounded-lg bg-danger-bg border border-danger/20 text-xs text-danger">
             {error}
           </div>
         )}
 
         <div className="flex gap-2 justify-end">
-          <button
-            onClick={onCancel}
-            className="px-4 py-2 rounded-xl text-sm font-medium text-muted border border-border hover:bg-surface-2 hover:text-fg transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
-          >
+          <Button variant="secondary" onClick={onCancel} disabled={loading}>
             Cancel
-          </button>
-          <button
-            onClick={onConfirm}
-            disabled={loading}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2"
-          >
-            {loading && <Loader2 size={13} className="animate-spin" />}
+          </Button>
+          <Button variant="danger" onClick={onConfirm} loading={loading}>
             Delete
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -243,21 +244,16 @@ function AddSecretPanel({ open, onClose, onCreated }) {
 
             {/* Error */}
             {error && (
-              <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-xs text-red-700 dark:text-red-300">
+              <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl bg-danger-bg border border-danger/20 text-xs text-danger">
                 <AlertTriangle size={13} className="shrink-0 mt-0.5" strokeWidth={2} />
                 <span>{error}</span>
               </div>
             )}
 
             {/* Submit */}
-            <button
-              type="submit"
-              disabled={loading || !name.trim() || !value}
-              className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-            >
-              {loading && <Loader2 size={15} className="animate-spin" />}
+            <Button type="submit" disabled={!name.trim() || !value} loading={loading} className="w-full">
               Save secret
-            </button>
+            </Button>
           </form>
         </div>
       </div>
@@ -299,7 +295,8 @@ function SecretRow({ secret, onDelete, canWrite }) {
         <button
           onClick={() => onDelete(secret.name)}
           title={`Delete ${secret.name}`}
-          className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-border text-muted hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 hover:border-red-300 transition-colors focus:outline-none focus:ring-2 focus:ring-ring shrink-0"
+          aria-label={`Delete ${secret.name}`}
+          className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-border text-muted hover:text-danger hover:bg-danger-bg hover:border-danger/40 transition-colors focus:outline-none focus:ring-2 focus:ring-ring shrink-0"
         >
           <Trash2 size={13} strokeWidth={2} />
         </button>
@@ -410,6 +407,7 @@ export default function SecretsPage() {
             onClick={reloadSecrets}
             disabled={listLoading}
             title="Refresh"
+            aria-label="Refresh secrets"
             className="flex items-center justify-center w-9 h-9 rounded-xl border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
           >
             <RefreshCw size={15} className={listLoading ? 'animate-spin' : ''} strokeWidth={2} />
@@ -442,8 +440,8 @@ export default function SecretsPage() {
         {/* Error state */}
         {!listLoading && listError && (
           <div className="flex flex-col items-center justify-center py-16 gap-4">
-            <div className="w-12 h-12 rounded-xl bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
-              <AlertTriangle size={22} className="text-red-600 dark:text-red-400" strokeWidth={2} />
+            <div className="w-12 h-12 rounded-xl bg-danger-bg flex items-center justify-center">
+              <AlertTriangle size={22} className="text-danger" strokeWidth={2} />
             </div>
             <div className="text-center">
               <p className="text-sm font-medium text-fg">Failed to load secrets</p>

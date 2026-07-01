@@ -9,7 +9,7 @@
  *   listInvites / createInvite / revokeInvite / inviteLink
  */
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import {
   Loader2,
   Trash2,
@@ -62,7 +62,7 @@ export default function MembersSettings() {
   const canManage = MANAGE_ROLES.includes(currentRole)
   const isPersonal = !orgId || orgId === 'personal'
 
-  const { data: membersData, loading, reload: refreshMembers } = useAsyncLoad(
+  const { data: membersData, loading, error: loadErrorObj, reload: refreshMembers } = useAsyncLoad(
     async () => {
       if (!orgId || orgId === 'personal') return { members: [], invites: [] }
       const [m, inv] = await Promise.all([
@@ -75,6 +75,7 @@ export default function MembersSettings() {
   )
   const members = membersData?.members ?? []
   const invites = membersData?.invites ?? []
+  const loadError = !loading && loadErrorObj ? (loadErrorObj?.message ?? 'Failed to load members.') : null
 
   const [err, setErr] = useState(null)
   const [busyRow, setBusyRow] = useState(null)
@@ -83,6 +84,12 @@ export default function MembersSettings() {
   const [inviteRole, setInviteRole] = useState('member')
   const [inviting, setInviting] = useState(false)
   const [copiedToken, setCopiedToken] = useState(null)
+  const inviteEmailRef = useRef(null)
+
+  function focusInvite() {
+    inviteEmailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    inviteEmailRef.current?.focus()
+  }
 
   const ownerCount = members.filter((m) => m.role === 'owner').length
 
@@ -165,8 +172,11 @@ export default function MembersSettings() {
         >
           <form onSubmit={sendInvite} className="flex flex-col sm:flex-row gap-2">
             <div className="relative flex-1">
+              <label htmlFor="invite-email" className="sr-only">Teammate email address</label>
               <Mail size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
               <input
+                id="invite-email"
+                ref={inviteEmailRef}
                 type="email"
                 required
                 value={inviteEmail}
@@ -204,10 +214,30 @@ export default function MembersSettings() {
           <div className="flex items-center gap-2 text-xs text-muted py-2">
             <Loader2 size={13} className="animate-spin" /> Loading members…
           </div>
+        ) : loadError ? (
+          <div className="flex items-center justify-between gap-3 py-2">
+            <p className="text-xs text-danger" role="alert">{loadError}</p>
+            <button
+              type="button"
+              onClick={refreshMembers}
+              className="text-xs text-muted hover:text-fg underline shrink-0"
+            >
+              Retry
+            </button>
+          </div>
         ) : members.length === 0 ? (
-          <div className="py-6 text-center">
-            <Users size={24} className="mx-auto text-muted/40 mb-2" />
+          <div className="flex flex-col items-center justify-center text-center py-6 gap-2">
+            <Users size={24} className="text-muted/40" />
             <p className="text-sm text-muted">No members yet.</p>
+            {canManage && (
+              <button
+                type="button"
+                onClick={focusInvite}
+                className="text-xs font-medium text-primary hover:underline"
+              >
+                Invite a member
+              </button>
+            )}
           </div>
         ) : (
           <ul className="divide-y divide-border -my-2">
@@ -219,11 +249,11 @@ export default function MembersSettings() {
                 <li key={m.user_id} className="flex items-center gap-3 py-3">
                   <Avatar name={m.name} email={m.email} />
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm text-fg truncate">
+                    <p className="text-sm text-fg truncate" title={m.name || m.email}>
                       {m.name || m.email}
                       {isSelf && <span className="text-muted"> (you)</span>}
                     </p>
-                    {m.name && <p className="text-xs text-muted truncate">{m.email}</p>}
+                    {m.name && <p className="text-xs text-muted truncate" title={m.email}>{m.email}</p>}
                   </div>
                   {canManage ? (
                     <select
@@ -231,6 +261,7 @@ export default function MembersSettings() {
                       value={m.role}
                       disabled={rowBusy || isLastOwner}
                       title={isLastOwner ? 'The last owner cannot be demoted' : undefined}
+                      aria-label={`Change role for ${m.name || m.email}`}
                       onChange={(e) => changeRole(m, e.target.value)}
                     >
                       {ORG_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
@@ -246,6 +277,7 @@ export default function MembersSettings() {
                       onClick={() => handleRemove(m)}
                       disabled={rowBusy || isLastOwner}
                       title={isLastOwner ? 'The last owner cannot be removed' : 'Remove member'}
+                      aria-label={isLastOwner ? 'The last owner cannot be removed' : `Remove ${m.name || m.email}`}
                       className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed shrink-0"
                     >
                       {rowBusy ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
@@ -269,12 +301,13 @@ export default function MembersSettings() {
               <li key={inv.id} className="flex items-center gap-2 py-3">
                 <Avatar email={inv.email} />
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm text-fg truncate">{inv.email}</p>
+                  <p className="text-sm text-fg truncate" title={inv.email}>{inv.email}</p>
                   <p className="text-[11px] text-muted capitalize">role: {inv.role}</p>
                 </div>
                 <button
                   type="button"
                   onClick={() => copyLink(inv.token)}
+                  aria-label={copiedToken === inv.token ? 'Invite link copied' : `Copy invite link for ${inv.email}`}
                   className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs text-muted hover:text-primary border border-border hover:border-primary/40 transition-colors shrink-0"
                 >
                   {copiedToken === inv.token ? <Check size={12} /> : <Copy size={12} />}
@@ -285,6 +318,7 @@ export default function MembersSettings() {
                   onClick={() => handleRevoke(inv)}
                   disabled={busyRow === inv.id}
                   title="Revoke invite"
+                  aria-label={`Revoke invite for ${inv.email}`}
                   className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors disabled:opacity-30 shrink-0"
                 >
                   {busyRow === inv.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}

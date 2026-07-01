@@ -308,7 +308,7 @@ function QuickTile({ item, onChat, delay }) {
       style={{ animationDelay: `${delay}ms` }}
       className="hp-reveal group flex items-center gap-3 p-3.5 rounded-xl border border-border bg-surface
         hover:border-primary/40 hover:shadow-md hover:shadow-primary/5 transition-all duration-200
-        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring min-h-[44px] w-full text-left"
+        min-h-[44px] w-full text-left"
     >
       <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-surface-2 shrink-0 group-hover:bg-primary/10 transition-colors">
         <Icon size={16} className="text-muted group-hover:text-primary transition-colors" />
@@ -319,8 +319,9 @@ function QuickTile({ item, onChat, delay }) {
       </div>
     </div>
   )
-  if (item.chat) return <button onClick={onChat} className="block w-full">{inner}</button>
-  return <Link to={item.to} className="block">{inner}</Link>
+  const focusCls = "rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+  if (item.chat) return <button onClick={onChat} className={`block w-full ${focusCls}`}>{inner}</button>
+  return <Link to={item.to} className={`block ${focusCls}`}>{inner}</Link>
 }
 
 function BoardCard({ board, delay }) {
@@ -478,21 +479,21 @@ export default function HomePage() {
 
         {/* ── Header ──────────────────────────────────────────────────────── */}
         <header className="hp-reveal flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div className="space-y-1">
-            <h1 className="font-display font-semibold text-2xl sm:text-3xl text-fg leading-tight">
+          <div className="space-y-1 min-w-0">
+            <h1 className="font-display font-semibold text-2xl sm:text-3xl text-fg leading-tight truncate">
               {getGreeting()},{' '}
               <span className="text-brand-gradient bg-clip-text">{displayName}</span>&nbsp;👋
             </h1>
             {orgName && !orgLoading && (
-              <div className="flex items-center gap-1.5 text-sm text-muted">
-                <Building2 size={13} />
-                <span>{orgName}</span>
+              <div className="flex items-center gap-1.5 text-sm text-muted min-w-0">
+                <Building2 size={13} className="shrink-0" />
+                <span className="truncate">{orgName}</span>
               </div>
             )}
           </div>
           <button
             onClick={openChat}
-            className="self-start sm:self-auto inline-flex items-center gap-2 px-4 py-2.5 rounded-xl
+            className="self-start sm:self-auto shrink-0 inline-flex items-center gap-2 px-4 py-2.5 rounded-xl
               bg-surface border border-border hover:border-primary/50 text-sm font-medium font-display text-fg hover:text-primary
               transition-all duration-150 shadow-sm hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring min-h-[44px]"
           >
@@ -634,7 +635,8 @@ export default function HomePage() {
                 <div>
                   <div className="flex items-center justify-between mb-3">
                     <p className="text-xs font-medium text-muted uppercase tracking-wider">Dashboards</p>
-                    <Link to="/dashboards" className="text-xs text-muted hover:text-primary transition-colors inline-flex items-center gap-1">
+                    <Link to="/dashboards" className="text-xs text-muted hover:text-primary transition-colors inline-flex items-center gap-1
+                      rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                       View all <ChevronRight size={12} />
                     </Link>
                   </div>
@@ -655,7 +657,8 @@ export default function HomePage() {
                 <div>
                   <div className="flex items-center justify-between mb-3">
                     <p className="text-xs font-medium text-muted uppercase tracking-wider">Flows</p>
-                    <Link to="/flows" className="text-xs text-muted hover:text-primary transition-colors inline-flex items-center gap-1">
+                    <Link to="/flows" className="text-xs text-muted hover:text-primary transition-colors inline-flex items-center gap-1
+                      rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                       View all <ChevronRight size={12} />
                     </Link>
                   </div>

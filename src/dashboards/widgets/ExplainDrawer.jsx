@@ -12,7 +12,7 @@
  * power (delta share).
  */
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { X, Loader2, AlertCircle, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronRight } from 'lucide-react'
 import { post } from '../../lib/api.js'
 
@@ -52,6 +52,7 @@ function DimensionBreakdown({ dim }) {
     <div className="border border-border rounded-xl overflow-hidden">
       <button
         onClick={() => setOpen(v => !v)}
+        aria-expanded={open}
         className="w-full flex items-center gap-2 px-3 py-2.5 bg-surface hover:bg-surface-2/50 transition-colors text-left"
       >
         {open ? <ChevronDown size={13} className="text-muted shrink-0" /> : <ChevronRight size={13} className="text-muted shrink-0" />}
@@ -157,6 +158,7 @@ export default function ExplainDrawer({ metricId, open, onClose }) {
   const [result, setResult] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const drawerRef = useRef(null)
 
   const runExplain = useCallback(async () => {
     if (!metricId) return
@@ -178,6 +180,21 @@ export default function ExplainDrawer({ metricId, open, onClose }) {
     }
   }, [metricId, currentStart, currentEnd, compStart, compEnd, topN])
 
+  // Escape to close
+  useEffect(() => {
+    if (!open) return
+    const handler = (e) => { if (e.key === 'Escape') onClose?.() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [open, onClose])
+
+  // Focus the drawer panel on open
+  useEffect(() => {
+    if (!open) return
+    const t = setTimeout(() => drawerRef.current?.focus(), 50)
+    return () => clearTimeout(t)
+  }, [open])
+
   if (!open) return null
 
   const delta = result?.delta_total ?? null
@@ -189,15 +206,23 @@ export default function ExplainDrawer({ metricId, open, onClose }) {
       <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={onClose} />
 
       {/* Drawer */}
-      <div className="fixed right-0 top-0 bottom-0 z-50 w-full max-w-xl flex flex-col bg-surface border-l border-border shadow-2xl">
+      <div
+        ref={drawerRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="explain-drawer-title"
+        className="fixed right-0 top-0 bottom-0 z-50 w-full max-w-xl flex flex-col bg-surface border-l border-border shadow-2xl outline-none"
+      >
         {/* Header */}
         <div className="shrink-0 flex items-center gap-3 px-5 py-4 border-b border-border">
           <div className="flex-1 min-w-0">
-            <h2 className="text-sm font-semibold text-fg">Explain metric</h2>
+            <h2 id="explain-drawer-title" className="text-sm font-semibold text-fg">Explain metric</h2>
             <p className="text-xs text-muted font-mono truncate">{metricId}</p>
           </div>
           <button
             onClick={onClose}
+            aria-label="Close"
             className="h-8 w-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
           >
             <X size={15} />
@@ -254,6 +279,13 @@ export default function ExplainDrawer({ metricId, open, onClose }) {
 
         {/* Results */}
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+          {loading && (
+            <div className="flex flex-col items-center gap-2 py-12 text-center text-muted" aria-busy="true" aria-live="polite">
+              <Loader2 size={18} className="animate-spin" aria-hidden="true" />
+              <p className="text-xs">Running explain…</p>
+            </div>
+          )}
+
           {!result && !loading && !error && (
             <div className="flex flex-col items-center gap-2 py-12 text-center text-muted">
               <p className="text-xs">Set the time windows above and click Run explain to see which dimensions drove the change.</p>

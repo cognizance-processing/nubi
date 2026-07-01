@@ -102,8 +102,8 @@ export default function DatasetProfileView({ datasetId }) {
   if (error) {
     return (
       <div className="flex flex-col items-center gap-3 py-10 text-center px-6">
-        <AlertCircle size={20} className="text-red-500" />
-        <p className="text-xs text-red-500">{error}</p>
+        <AlertCircle size={20} className="text-danger" />
+        <p className="text-xs text-danger">{error}</p>
         <button
           onClick={load}
           className="text-xs text-primary hover:underline flex items-center gap-1"
@@ -138,6 +138,7 @@ export default function DatasetProfileView({ datasetId }) {
           onClick={load}
           disabled={loading}
           title="Refresh profile"
+          aria-label="Refresh profile"
           className="h-7 w-7 flex items-center justify-center rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors"
         >
           {loading

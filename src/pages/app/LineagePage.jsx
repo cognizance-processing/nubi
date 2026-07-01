@@ -14,6 +14,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { GitBranch, Loader2, AlertCircle, Search, ArrowRight, ArrowLeft, X, RefreshCw, Columns3 } from 'lucide-react'
 import { get } from '../../lib/api.js'
+import Button from '../../components/ui/Button.jsx'
+import Skeleton from '../../components/ui/Skeleton.jsx'
 
 // ---------------------------------------------------------------------------
 // Small reusable chips (match LineagePanel visual language)
@@ -89,16 +91,37 @@ function NeighbourhoodPanel({ nodeId, hops, onSelectNode }) {
 
   if (loading) {
     return (
-      <div className="flex items-center gap-2 px-4 py-8 text-xs text-muted justify-center">
-        <Loader2 size={14} className="animate-spin" /> Loading neighbourhood…
+      <div className="space-y-5 px-4 py-4" aria-busy="true" aria-label="Loading neighbourhood">
+        <div className="space-y-2">
+          <Skeleton className="h-2.5 w-16 rounded" />
+          <Skeleton className="h-4 w-40 rounded" />
+        </div>
+        <div className="space-y-2">
+          <Skeleton className="h-2.5 w-24 rounded" />
+          <div className="flex flex-wrap gap-1.5">
+            <Skeleton className="h-6 w-20 rounded-lg" />
+            <Skeleton className="h-6 w-24 rounded-lg" />
+            <Skeleton className="h-6 w-16 rounded-lg" />
+          </div>
+        </div>
+        <div className="space-y-2">
+          <Skeleton className="h-2.5 w-28 rounded" />
+          <div className="flex flex-wrap gap-1.5">
+            <Skeleton className="h-6 w-24 rounded-lg" />
+            <Skeleton className="h-6 w-16 rounded-lg" />
+          </div>
+        </div>
       </div>
     )
   }
 
   if (error) {
     return (
-      <div className="flex items-center gap-2 px-4 py-6 text-xs text-red-500">
-        <AlertCircle size={13} /> {error}
+      <div className="flex flex-col items-start gap-2 px-4 py-6 text-xs text-red-500">
+        <div className="flex items-center gap-1.5">
+          <AlertCircle size={13} /> {error}
+        </div>
+        <Button variant="outline" size="xs" onClick={load}>Try again</Button>
       </div>
     )
   }
@@ -145,7 +168,7 @@ function NeighbourhoodPanel({ nodeId, hops, onSelectNode }) {
       {/* Upstream */}
       <div>
         <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2 flex items-center gap-1.5">
-          <ArrowLeft size={10} className="text-blue-500" />
+          <ArrowLeft size={10} className="text-blue-500 dark:text-blue-400" />
           Upstream ({upstream.length})
         </p>
         {upstream.length === 0 ? (
@@ -170,7 +193,7 @@ function NeighbourhoodPanel({ nodeId, hops, onSelectNode }) {
       {/* Downstream */}
       <div>
         <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2 flex items-center gap-1.5">
-          <ArrowRight size={10} className="text-emerald-500" />
+          <ArrowRight size={10} className="text-emerald-500 dark:text-emerald-400" />
           Downstream ({downstream.length})
         </p>
         {downstream.length === 0 ? (
@@ -280,6 +303,8 @@ function ColumnLineagePanel({ nodeId, column, hops, onSelectNode }) {
         <button
           onClick={load}
           disabled={loading}
+          aria-label="Refresh column provenance"
+          title="Refresh column provenance"
           className="ml-auto h-5 w-5 flex items-center justify-center text-muted hover:text-fg transition-colors disabled:opacity-40"
         >
           {loading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
@@ -323,7 +348,7 @@ function ColumnLineagePanel({ nodeId, column, hops, onSelectNode }) {
                       <span className="ml-1.5 text-[9px] font-sans text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1 rounded">alias</span>
                     )}
                     {hop.select_star && (
-                      <span className="ml-1.5 text-[9px] font-sans text-slate-500 bg-surface-2 px-1 rounded">SELECT *</span>
+                      <span className="ml-1.5 text-[9px] font-sans text-muted bg-surface-2 px-1 rounded">SELECT *</span>
                     )}
                   </div>
                   {i < (data.path ?? []).length - 1 && (
@@ -405,7 +430,7 @@ export default function LineagePage() {
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Page header */}
-      <div className="shrink-0 flex items-center gap-3 px-4 sm:px-6 py-4 border-b border-border bg-surface">
+      <div className="shrink-0 flex flex-wrap items-center gap-3 px-4 sm:px-6 py-4 border-b border-border bg-surface">
         <div className="flex items-center gap-2">
           <GitBranch size={18} className="text-primary shrink-0" />
           <h1 className="text-base font-semibold text-fg font-display">Data Lineage</h1>
@@ -418,7 +443,7 @@ export default function LineagePage() {
           </span>
         )}
 
-        <div className="flex-1" />
+        <div className="flex-1 min-w-0" />
 
         {/* Hops selector */}
         <div className="flex items-center gap-1.5 shrink-0">
@@ -439,6 +464,7 @@ export default function LineagePage() {
           onClick={loadDag}
           disabled={dagLoading}
           title="Refresh graph"
+          aria-label="Refresh lineage graph"
           className="h-7 w-7 flex items-center justify-center rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors"
         >
           {dagLoading
@@ -452,7 +478,7 @@ export default function LineagePage() {
       <div className="flex flex-1 min-h-0 overflow-hidden">
 
         {/* Left: node list */}
-        <div className="w-64 shrink-0 border-r border-border flex flex-col overflow-hidden">
+        <div className="w-48 sm:w-64 shrink-0 border-r border-border flex flex-col overflow-hidden">
           {/* Search */}
           <div className="p-3 border-b border-border shrink-0">
             <div className="relative">
@@ -467,6 +493,7 @@ export default function LineagePage() {
               {search && (
                 <button
                   onClick={() => setSearch('')}
+                  aria-label="Clear search"
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-fg transition-colors"
                 >
                   <X size={12} />
@@ -478,20 +505,17 @@ export default function LineagePage() {
           {/* Node list body */}
           <div className="flex-1 overflow-y-auto">
             {dagLoading ? (
-              <div className="flex items-center gap-2 px-4 py-6 text-xs text-muted justify-center">
-                <Loader2 size={13} className="animate-spin" /> Loading…
+              <div className="px-3 py-2 space-y-2" aria-busy="true" aria-label="Loading nodes">
+                {[1, 2, 3, 4, 5, 6].map((i) => (
+                  <Skeleton key={i} className="h-6 w-full rounded-lg" />
+                ))}
               </div>
             ) : dagError ? (
               <div className="flex flex-col items-start gap-2 px-4 py-4 text-xs text-red-500">
                 <div className="flex items-center gap-1.5">
                   <AlertCircle size={12} /> {dagError}
                 </div>
-                <button
-                  onClick={loadDag}
-                  className="text-xs text-primary hover:underline"
-                >
-                  Try again
-                </button>
+                <Button variant="outline" size="xs" onClick={loadDag}>Try again</Button>
               </div>
             ) : filteredNodes.length === 0 ? (
               <div className="px-4 py-6 text-xs text-center text-muted">
@@ -566,6 +590,7 @@ export default function LineagePage() {
                 {selectedColumn && (
                   <button
                     onClick={() => { setSelectedColumn(null); setColumnInput('') }}
+                    aria-label="Clear column selection"
                     className="h-7 w-7 flex items-center justify-center rounded-lg border border-border text-muted hover:text-fg transition-colors"
                   >
                     <X size={12} />
