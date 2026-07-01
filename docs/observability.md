@@ -204,7 +204,7 @@ in `GET /audit`.
 
 Nubi includes a **watch-sweep** scheduled job that evaluates an org's metric
 watches on a cron and emits `WATCH_BREACH` webhook events so the host
-(e.g. KeyOne) can react — keeping all sweep logic inside Nubi.
+(e.g. an embedding host) can react — keeping all sweep logic inside Nubi.
 
 ### How it works
 

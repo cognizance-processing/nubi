@@ -11,7 +11,7 @@ properties of the post-review rewrite:
     (FINDING 1 — left-most XFF is attacker-controlled and must be ignored),
   * an unverified JWT ``org`` claim does NOT redirect/widen a bucket
     (FINDING 2 — key is the trusted IP, never the forgeable claim),
-  * FINDING 6B — org-keyed + embed exemption (KeyOne 6B):
+  * FINDING 6B — org-keyed + embed exemption:
     - two users in the same org share one org bucket,
     - two orgs have independent buckets,
     - a VERIFIED embed token is NOT throttled on /metrics/{id}/query paths,

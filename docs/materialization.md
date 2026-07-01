@@ -5,7 +5,7 @@ a projection and writes the result to a persistent, queryable Parquet table
 that downstream metrics and registered queries can SELECT from — without the
 host needing a warehouse of their own.
 
-This is the recommended data-plane path for hosts like KeyOne that have no
+This is the recommended data-plane path for embedding hosts that have no
 BYO warehouse.
 
 > For the general blend (multi-source materialize-then-serve) pattern see

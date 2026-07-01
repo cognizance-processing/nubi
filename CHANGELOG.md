@@ -254,7 +254,7 @@ Conventions:
   misconfigured host issuer cannot mint write/admin/raw-SQL capability.
 
 ### Notes
-- All capabilities KeyOne flagged as roadmap are now shipped (metric versioning,
+- All capabilities previously flagged as roadmap are now shipped (metric versioning,
   schema-drift detection, unified audit-log). Remaining 🟡 in
   [CAPABILITIES.md](./CAPABILITIES.md): flow-scoped environment *write* aliases
   (env write is available today under the `/environments` routes).

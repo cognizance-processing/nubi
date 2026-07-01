@@ -315,7 +315,7 @@ litellm completion model=anthropic/claude-opus-4-8 prompt_tokens=812 completion_
 
 Beyond the stdio server above, Nubi's agent loop can also **call an external
 MCP server** that you register via the API. This is the integration model for
-SaaS hosts like KeyOne whose entire integration point is an MCP server.
+SaaS hosts whose entire integration point is an MCP server.
 
 ### How it works
 
@@ -324,7 +324,7 @@ When the AI agent processes a request for an org:
 1. It fetches the org's enabled MCP servers from the `mcp_servers` table.
 2. It calls `tools/list` on each server (Streamable-HTTP transport, SSRF-guarded).
 3. It presents those tools to the LLM **alongside Nubi's built-in tools**,
-   namespaced as `serverName.toolName` (e.g. `keyOne.fetch_contract`).
+   namespaced as `serverName.toolName` (e.g. `acme.fetch_contract`).
 4. It dispatches any `serverName.toolName` tool calls to the correct MCP server
    via `tools/call`.
 
@@ -336,10 +336,10 @@ Authorization: Bearer <token>
 Content-Type: application/json
 
 {
-  "name": "keyOne",
-  "url": "https://mcp.keyOne.example.com/mcp",
+  "name": "acme",
+  "url": "https://mcp.acme.example.com/mcp",
   "transport": "http",
-  "auth_token": "sk-keyOne-bearer-token",
+  "auth_token": "sk-acme-bearer-token",
   "enabled": true
 }
 ```

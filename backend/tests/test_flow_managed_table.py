@@ -1,6 +1,6 @@
 """Tests for the named managed-table materialization path.
 
-This covers the data-plane target for hosts (e.g. KeyOne) that have no
+This covers the data-plane target for embedding hosts that have no
 warehouse of their own.  The pattern:
 
   1. A Flow whose SQL cell computes a projection.
