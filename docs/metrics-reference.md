@@ -1,8 +1,9 @@
 # Metrics / semantic layer — reference for agents
 
 A concise, paste-into-context reference for an AI agent (or a human) authoring
-against Nubi's **metrics / semantic layer**. For the design rationale see
-[`METRICS_LAYER.md`](../METRICS_LAYER.md); the authoritative types live in
+against Nubi's **metrics / semantic layer**. See
+[Semantic layer, data apps & close-the-loop](semantic-and-data-apps.md) for the
+design rationale; the authoritative types live in
 `backend/app/metrics/models.py`.
 
 ## What a metric is (governed definition vs raw query)

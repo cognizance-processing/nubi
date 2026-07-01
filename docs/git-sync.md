@@ -149,7 +149,7 @@ The two formats differ deliberately: the `.yaml` envelope path keys files by **s
 
 ### Flows on disk
 
-`git/flow_files.py` projects a single `FlowSpec` onto a small, reviewable directory tree — the **file persona** of the [one flow, three views](/docs/flows#one-flow-three-views) model:
+`git/flow_files.py` projects a single `FlowSpec` onto a small, reviewable directory tree — the **file persona** of the [three views of one flow](/docs/flows#three-views-of-one-flow) model:
 
 ```
 flows/<slug>__<id8>/

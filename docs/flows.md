@@ -232,12 +232,18 @@ The palette surfaces three cell types, but the `FlowSpec` itself supports a wide
 | `agent` | `prompt` | Run an LLM-agent step. |
 | `materialize` | `combine_sql` | Merge upstream task results in DuckDB and write them to a materialized dataset. |
 | `bucket_load` | `uri`, `source` | Upload an upstream task's result to a storage bucket. Optional `format` (`csv`/`json`/`ndjson`/`parquet`), `mode` (`overwrite`/`append`), `secret`. |
+| `file_ingest` | `source.connector_id`, `target.connector_id`, `target.object` | Pull files from a source connector's file interface (`sftp`/`ftp`/a storage bucket), normalize to Parquet, stage, and load into any target connector — the read-side counterpart to `connector_write`. Optional `format` (incl. `zip`), `mode` (`append`/`overwrite`/`merge`), `incremental` watermark strategy, `post_action` (`move:<dir>`/`delete`). |
+| `connector_write` | `input` (upstream task key) or `source`, `target.connector_id` | Write an upstream task's result into any target connector — the write-side sibling of `file_ingest`/`bucket_load`. Optional `mode` (`append`/`overwrite`/`merge`). |
+| `http_call` | `url` | Outbound HTTP call (SSRF-guarded) to a host endpoint. See [`http_call` — outbound HTTP requests](#http_call-outbound-http-requests) below. |
+| `assert` | `target`, `expectations` | Data-quality expectations (`row_count`/`not_null`/`unique`/`custom_sql`) that fail the run on violation. See [`assert` — data-quality expectations](#assert-data-quality-expectations) below. |
+| `preagg_refresh` | — | Refresh a pre-aggregated rollup for the org — see [Pre-aggregations § Keeping rollups fresh](pre-aggregations.md#keeping-rollups-fresh). |
+| `report_send` | — | Render and deliver a scheduled report or Canvas (PDF/HTML) to its recipients — see [Exports & Scheduled Reports § Scheduled report_send Flow](exports-and-jobs.md#scheduled-report_send-flow-flows-based-delivery). |
 | `noop` | — | No-operation — a Note cell, or a join/synchronisation point. |
 | `map` | `item_expr`, `body` | Fan out over an iterable; `body` is a nested sub-DAG run once per item. Optional `item_var`, `max_concurrency`, `collect_key`. |
 | `branch` | `conditions` | Conditional routing — an ordered list of `{when, next}` pairs; the first matching condition activates its downstream tasks. Optional `default`. |
 | `map_collect` | — | Collector for `map` fan-in; returns `{items: [...], item_count: N}`. |
 
-For new flows, prefer the cell-level settings above — **Materialization** instead of a `materialize` task, **For each** instead of `map`, **Run when** instead of `branch` — and keep the spec-level kinds for pipelines that genuinely need nested sub-DAGs or routing.
+For new flows, prefer the cell-level settings above — **Materialization** instead of a `materialize` task, **For each** instead of `map`, **Run when** instead of `branch` — and keep the spec-level kinds for pipelines that genuinely need nested sub-DAGs, file ingestion, connector write-back, or routing.
 
 ---
 

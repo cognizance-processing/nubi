@@ -802,7 +802,7 @@ The `id` is a UUID4 unique per emission (idempotency key).
 breach events with their own domain objects. See
 [files-as-code.md — Watches as code](files-as-code.md#d2-watches-as-code) for
 declaring watches via `nubi apply` and
-[observability.md](observability.md#watch_breach--labels-passthrough) for the
+[observability.md](observability.md#watch_breach-labels-passthrough) for the
 full payload reference.
 
 #### `freshness_stale` data
