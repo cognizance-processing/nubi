@@ -12,7 +12,7 @@
  *   - Loading skeleton, error state, empty state
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAsyncLoad } from '../../hooks/useAsyncLoad.js'
 import { Link, useNavigate } from 'react-router-dom'
 import {
@@ -27,6 +27,7 @@ import {
   X,
 } from 'lucide-react'
 import * as api from '../../lib/api.js'
+import { toast } from '../../components/ui/Toast.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
 import {
@@ -121,7 +122,7 @@ function CardThumbnail({ canvas }) {
 
 function CardMenu({ onEdit, onDelete }) {
   const [open, setOpen] = useState(false)
-  const ref = { current: null }
+  const ref = useRef(null)
 
   return (
     <div ref={ref} className="relative">
@@ -151,6 +152,23 @@ function CardMenu({ onEdit, onDelete }) {
 }
 
 function DeleteDialog({ canvas, onConfirm, onCancel, busy }) {
+  const dialogRef = useRef(null)
+
+  // Escape to close (ignored while a delete is in flight)
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.key === 'Escape' && !busy) onCancel()
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [busy, onCancel])
+
+  // Focus the dialog panel on open
+  useEffect(() => {
+    const t = setTimeout(() => dialogRef.current?.focus(), 50)
+    return () => clearTimeout(t)
+  }, [])
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -158,11 +176,16 @@ function DeleteDialog({ canvas, onConfirm, onCancel, busy }) {
       aria-modal="true"
       aria-labelledby="canvas-delete-dlg-title"
     >
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onCancel} />
-      <div className="relative z-10 w-full max-w-sm rounded-2xl border border-border bg-surface p-6 shadow-nubi-xl nubi-animate-scale-in">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={busy ? undefined : onCancel} />
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        className="relative z-10 w-full max-w-sm rounded-2xl border border-border bg-surface p-6 shadow-nubi-xl nubi-animate-scale-in outline-none"
+      >
         <button
           onClick={onCancel}
-          className="absolute top-4 right-4 text-muted hover:text-fg transition-colors p-1 rounded-lg hover:bg-surface-2"
+          disabled={busy}
+          className="absolute top-4 right-4 text-muted hover:text-fg transition-colors p-1 rounded-lg hover:bg-surface-2 disabled:opacity-50"
           aria-label="Cancel"
         >
           <X size={16} />
@@ -188,10 +211,10 @@ function DeleteDialog({ canvas, onConfirm, onCancel, busy }) {
           <button
             onClick={onConfirm}
             disabled={busy}
-            className="flex-1 h-9 rounded-xl bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+            className="flex-1 h-9 rounded-xl bg-danger text-white text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center justify-center gap-2"
           >
             {busy && <Loader2 size={13} className="animate-spin" />}
-            Delete
+            {busy ? 'Deleting…' : 'Delete'}
           </button>
         </div>
       </div>
@@ -209,11 +232,12 @@ function CanvasCard({ canvas, onDeleted, canWrite }) {
     try {
       await api.del(`/canvases/${canvas.id}`)
       onDeleted(canvas.id)
+      setConfirmDelete(false)
     } catch (err) {
       console.error('Delete failed:', err)
+      toast.error(err?.message || 'Failed to delete canvas. Please try again.')
     } finally {
       setDeleteBusy(false)
-      setConfirmDelete(false)
     }
   }
 

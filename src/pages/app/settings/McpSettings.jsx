@@ -166,6 +166,7 @@ function ServerRow({ server, canWrite, onChanged, onDeleted }) {
     try {
       const updated = await put(`/mcp/servers/${server.id}`, { enabled: !enabled })
       onChanged?.(updated ?? { ...server, enabled: !enabled })
+      toast.success(enabled ? 'Server disabled.' : 'Server enabled.')
     } catch {
       toast.error('Failed to update server.')
     } finally {
@@ -219,6 +220,7 @@ function ServerRow({ server, canWrite, onChanged, onDeleted }) {
               onClick={handleToggle}
               disabled={busy !== null}
               title={enabled ? 'Disable' : 'Enable'}
+              aria-label={enabled ? 'Disable server' : 'Enable server'}
               className="inline-flex items-center h-8 px-2.5 rounded-lg text-xs font-medium border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
             >
               {busy === 'toggle' ? <Loader2 size={12} className="animate-spin" /> : enabled ? 'Disable' : 'Enable'}
@@ -228,6 +230,7 @@ function ServerRow({ server, canWrite, onChanged, onDeleted }) {
                 <button
                   onClick={handleDelete}
                   disabled={busy === 'delete'}
+                  aria-label="Confirm delete"
                   className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-50 transition-colors"
                 >
                   {busy === 'delete' ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
@@ -235,6 +238,7 @@ function ServerRow({ server, canWrite, onChanged, onDeleted }) {
                 </button>
                 <button
                   onClick={() => setConfirmDelete(false)}
+                  aria-label="Cancel delete"
                   className="h-8 w-8 flex items-center justify-center rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
                 >
                   <X size={14} />
@@ -244,6 +248,7 @@ function ServerRow({ server, canWrite, onChanged, onDeleted }) {
               <button
                 onClick={() => setConfirmDelete(true)}
                 title="Delete"
+                aria-label="Delete server"
                 className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border text-muted hover:text-red-600 hover:border-red-200 hover:bg-red-50 dark:hover:text-red-400 dark:hover:border-red-900/40 dark:hover:bg-red-900/10 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
               >
                 <Trash2 size={13} />
@@ -319,8 +324,11 @@ export default function McpSettings() {
             <Loader2 size={16} className="animate-spin" /> Loading servers…
           </div>
         ) : error ? (
-          <div className="py-2">
+          <div className="py-2 flex items-center gap-3">
             <ErrorText>{error}</ErrorText>
+            <button onClick={load} className="text-xs text-muted hover:text-fg underline shrink-0">
+              Retry
+            </button>
           </div>
         ) : servers.length === 0 ? (
           <div className="flex flex-col items-center justify-center text-center py-8 px-6 gap-2">

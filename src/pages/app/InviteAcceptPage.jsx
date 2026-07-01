@@ -12,6 +12,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { Loader2, Building2, CheckCircle, AlertTriangle } from 'lucide-react'
 import { getInvite, acceptInvite } from '../../lib/members.js'
+import Button from '../../components/ui/Button.jsx'
 
 const ACTIVE_ORG_KEY = 'nubi-active-org-id'
 
@@ -22,7 +23,7 @@ export default function InviteAcceptPage() {
   const [error, setError] = useState(null)
   const [accepting, setAccepting] = useState(false)
 
-  useEffect(() => {
+  const fetchInvite = useCallback(() => {
     let cancelled = false
     getInvite(token)
       .then((p) => { if (!cancelled) setPreview(p) })
@@ -30,6 +31,14 @@ export default function InviteAcceptPage() {
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [token])
+
+  useEffect(() => fetchInvite(), [fetchInvite])
+
+  const retryInvite = useCallback(() => {
+    setLoading(true)
+    setError(null)
+    fetchInvite()
+  }, [fetchInvite])
 
   const accept = useCallback(async () => {
     setAccepting(true)
@@ -65,7 +74,10 @@ export default function InviteAcceptPage() {
           <>
             <h1 className="font-display font-semibold text-xl text-fg mb-1">Invitation unavailable</h1>
             <p className="text-sm text-muted mb-6">{error}</p>
-            <Link to="/home" className="text-sm font-medium text-primary hover:underline">Go to home</Link>
+            <div className="flex items-center justify-center gap-4">
+              <Button variant="outline" size="sm" onClick={retryInvite}>Try again</Button>
+              <Link to="/home" className="text-sm font-medium text-primary hover:underline">Go to home</Link>
+            </div>
           </>
         ) : !pending ? (
           <>
@@ -89,7 +101,8 @@ export default function InviteAcceptPage() {
               type="button"
               onClick={accept}
               disabled={accepting}
-              className="inline-flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-xl text-sm font-medium text-white disabled:opacity-50"
+              aria-busy={accepting}
+              className="inline-flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-xl text-sm font-medium text-white disabled:opacity-50 transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}
             >
               {accepting ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle size={15} />}

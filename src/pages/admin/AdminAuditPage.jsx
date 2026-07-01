@@ -12,8 +12,8 @@ import { get } from '../../lib/api.js'
 import {
   AdminCard,
   AdminTable,
+  AdminTableSkeleton,
   Pagination,
-  LoadingState,
   ErrorState,
   EmptyState,
 } from './AdminUI.jsx'
@@ -60,7 +60,7 @@ export default function AdminAuditPage() {
 
       <AdminCard>
         {loading ? (
-          <LoadingState />
+          <AdminTableSkeleton columns={6} />
         ) : !data ? (
           <ErrorState message="Could not load audit log." onRetry={() => setReloadKey((k) => k + 1)} />
         ) : items.length === 0 ? (
@@ -75,9 +75,9 @@ export default function AdminAuditPage() {
                 <td className="px-4 py-3 whitespace-nowrap">
                   <span className="font-mono text-xs text-fg">{ev.action}</span>
                 </td>
-                <td className="px-4 py-3 whitespace-nowrap text-muted text-sm">{ev.actor_email || '—'}</td>
+                <td className="px-4 py-3 max-w-[180px] truncate text-muted text-sm" title={ev.actor_email || undefined}>{ev.actor_email || '—'}</td>
                 <td className="px-4 py-3 whitespace-nowrap text-muted text-xs">{ev.resource_type || '—'}</td>
-                <td className="px-4 py-3 whitespace-nowrap text-fg text-sm">{ev.resource_name || '—'}</td>
+                <td className="px-4 py-3 max-w-[200px] truncate text-fg text-sm" title={ev.resource_name || undefined}>{ev.resource_name || '—'}</td>
                 <td className="px-4 py-3 whitespace-nowrap text-muted font-mono text-xs">{ev.resource_id || '—'}</td>
               </tr>
             ))}

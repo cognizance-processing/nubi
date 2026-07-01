@@ -153,6 +153,7 @@ export default function DataExplorerPage() {
   const [tables, setTables] = useState([])
   const [tablesLoading, setTablesLoading] = useState(false)
   const [tablesError, setTablesError] = useState(null)
+  const [tablesReloadKey, setTablesReloadKey] = useState(0)
   const [tableSearch, setTableSearch] = useState('')
   const [selectedTable, setSelectedTable] = useState(null)
 
@@ -227,7 +228,7 @@ export default function DataExplorerPage() {
     })()
 
     return () => { cancelled = true }
-  }, [selectedConnectorId])
+  }, [selectedConnectorId, tablesReloadKey])
 
   // ── Load meta + rows for the selected table ───────────────────────────────
   // A monotonically increasing token guards against out-of-order responses
@@ -314,7 +315,7 @@ export default function DataExplorerPage() {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div className="flex h-full overflow-hidden bg-background">
+    <div className="flex h-full overflow-hidden bg-bg">
 
       {/* ── Mobile rail toggle ──────────────────────────────────────────── */}
       <div className="md:hidden shrink-0 flex items-center border-b border-border bg-surface px-3 py-2 gap-2 absolute top-0 left-0 right-0 z-30">
@@ -387,8 +388,15 @@ export default function DataExplorerPage() {
             </div>
           ) : tablesError ? (
             <div className="flex flex-col items-center gap-2 p-4 text-center">
-              <AlertCircle size={16} className="text-rose-500" />
-              <p className="text-xs text-rose-500">{tablesError}</p>
+              <AlertCircle size={16} className="text-danger" />
+              <p className="text-xs text-danger">{tablesError}</p>
+              <button
+                onClick={() => setTablesReloadKey((k) => k + 1)}
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline focus:outline-none"
+              >
+                <RefreshCw size={11} />
+                Retry
+              </button>
             </div>
           ) : filteredTables.length === 0 ? (
             <p className="text-xs text-muted px-3 py-4 text-center">

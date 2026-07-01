@@ -44,7 +44,7 @@ function AdminChrome() {
           </p>
         </header>
 
-        <nav aria-label="Admin sections" className="flex items-center gap-1 border-b border-border">
+        <nav aria-label="Admin sections" className="flex items-center gap-1 border-b border-border overflow-x-auto">
           {TABS.map((tab) => (
             <NavLink
               key={tab.to}
@@ -52,7 +52,7 @@ function AdminChrome() {
               end={tab.end}
               className={({ isActive }) =>
                 [
-                  'px-3.5 py-2.5 -mb-px text-sm font-medium font-display border-b-2 transition-colors',
+                  'px-3.5 py-2.5 -mb-px text-sm font-medium font-display border-b-2 whitespace-nowrap transition-colors rounded-t-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   isActive
                     ? 'border-primary text-primary'
                     : 'border-transparent text-muted hover:text-fg',

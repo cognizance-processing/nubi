@@ -52,6 +52,7 @@ import { useUi } from '../../contexts/UiContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
 import { toast } from '../../components/ui/Toast.jsx'
+import Skeleton from '../../components/ui/Skeleton.jsx'
 
 // ---------------------------------------------------------------------------
 // API helpers
@@ -155,12 +156,12 @@ function flowType(flow) {
 // ---------------------------------------------------------------------------
 
 const STATE_STYLES = {
-  pending:   'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300',
-  running:   'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
-  success:   'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
-  failed:    'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
-  error:     'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
-  cancelled: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400',
+  pending:   'bg-surface-2 text-muted',
+  running:   'bg-warning-bg text-warning',
+  success:   'bg-success-bg text-success',
+  failed:    'bg-danger-bg text-danger',
+  error:     'bg-danger-bg text-danger',
+  cancelled: 'bg-surface-2 text-muted',
 }
 
 function StatePill({ state }) {
@@ -210,13 +211,14 @@ function FlowTypeBadge({ type }) {
   )
 }
 
-function Toggle({ on, busy, onToggle }) {
+function Toggle({ on, busy, onToggle, label }) {
   return (
     <button
       onClick={onToggle}
       disabled={busy}
       role="switch"
       aria-checked={on}
+      aria-label={label ?? (on ? 'Enabled — click to disable' : 'Disabled — click to enable')}
       title={on ? 'Enabled — click to disable' : 'Disabled — click to enable'}
       className={`
         relative inline-flex h-5 w-9 shrink-0 items-center rounded-full
@@ -243,7 +245,7 @@ function SectionLabel({ children, icon: Icon, className = 'mb-2' }) {
 }
 
 function SkeletonCard() {
-  return <div className="bg-surface rounded-xl border border-border h-20 animate-pulse" />
+  return <Skeleton className="h-20 rounded-xl" />
 }
 
 // ---------------------------------------------------------------------------
@@ -287,7 +289,7 @@ function FlowRunHistory({ flowId }) {
         </p>
         <button onClick={load} disabled={loading}
           className="h-6 w-6 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors"
-          title="Refresh">
+          title="Refresh" aria-label="Refresh run history">
           <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
         </button>
       </div>
@@ -297,7 +299,7 @@ function FlowRunHistory({ flowId }) {
           <Loader2 size={12} className="animate-spin" /> Loading runs…
         </div>
       )}
-      {!loading && error && <p className="text-xs text-red-600 dark:text-red-400 py-2">{error}</p>}
+      {!loading && error && <p className="text-xs text-danger py-2">{error}</p>}
       {!loading && !error && runs.length === 0 && (
         <p className="text-xs text-muted py-3 text-center">No runs yet.</p>
       )}
@@ -334,7 +336,7 @@ function FlowRunHistory({ flowId }) {
                             <StatePill state={tr.state} />
                             <span className="text-[11px] font-medium text-fg truncate">{tr.task_key}</span>
                             {tr.attempt > 0 && <span className="text-[10px] text-muted">attempt {tr.attempt + 1}</span>}
-                            {tr.error && <span className="text-[10px] text-red-600 dark:text-red-400 truncate" title={tr.error}>{tr.error}</span>}
+                            {tr.error && <span className="text-[10px] text-danger truncate" title={tr.error}>{tr.error}</span>}
                             <span className="text-[10px] text-muted ml-auto shrink-0">{fmtTime(tr.finished_at ?? tr.started_at)}</span>
                           </div>
                         ))}
@@ -380,11 +382,11 @@ function JobRunHistory({ jobId, onClose }) {
           <h3 className="font-semibold text-sm text-fg">Run history</h3>
         </div>
         <div className="flex items-center gap-1">
-          <button onClick={load} disabled={loading}
+          <button onClick={load} disabled={loading} title="Refresh" aria-label="Refresh run history"
             className="h-8 w-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors disabled:opacity-40">
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           </button>
-          <button onClick={onClose}
+          <button onClick={onClose} title="Close" aria-label="Close run history"
             className="h-8 w-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors">
             <X size={16} />
           </button>
@@ -399,9 +401,9 @@ function JobRunHistory({ jobId, onClose }) {
           </div>
         )}
         {!loading && error && (
-          <div className="flex flex-col items-center justify-center py-12 gap-3 rounded-xl border border-dashed border-red-200 dark:border-red-900/40">
-            <AlertTriangle size={20} className="text-red-500" />
-            <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+          <div className="flex flex-col items-center justify-center py-12 gap-3 rounded-xl border border-dashed border-danger/30">
+            <AlertTriangle size={20} className="text-danger" />
+            <p className="text-sm text-danger">{error}</p>
             <button onClick={load} className="text-xs text-muted hover:text-fg underline">Retry</button>
           </div>
         )}
@@ -420,10 +422,10 @@ function JobRunHistory({ jobId, onClose }) {
               const isFail = run.status === 'error' || run.status === 'failed'
               const duration = fmtDuration(run.started_at, run.finished_at)
               return (
-                <div key={run.id} className={`rounded-xl border p-3.5 ${isFail ? 'border-red-200 dark:border-red-900/40 bg-red-50/50 dark:bg-red-900/10' : 'border-border bg-surface'}`}>
+                <div key={run.id} className={`rounded-xl border p-3.5 ${isFail ? 'border-danger/30 bg-danger-bg' : 'border-border bg-surface'}`}>
                   <div className="flex items-start gap-2.5">
                     {/* timeline dot */}
-                    <div className={`mt-1 h-2 w-2 rounded-full shrink-0 ${isFail ? 'bg-red-500' : run.status === 'success' ? 'bg-emerald-500' : 'bg-amber-400'}`} />
+                    <div className={`mt-1 h-2 w-2 rounded-full shrink-0 ${isFail ? 'bg-danger' : run.status === 'success' ? 'bg-success' : 'bg-warning'}`} />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
                         <StatePill state={run.status} />
@@ -437,7 +439,7 @@ function JobRunHistory({ jobId, onClose }) {
                         {duration && <span>Duration: {duration}</span>}
                       </div>
                       {run.message && (
-                        <p className={`mt-1.5 text-[11px] font-mono break-all leading-relaxed ${isFail ? 'text-red-700 dark:text-red-400' : 'text-muted'}`}>
+                        <p className={`mt-1.5 text-[11px] font-mono break-all leading-relaxed ${isFail ? 'text-danger' : 'text-muted'}`}>
                           {run.message}
                         </p>
                       )}
@@ -470,6 +472,13 @@ function JobModal({ initial, onSave, onClose, saving }) {
     if (!matchedPreset) setCustomCron(true)
   }, [])
 
+  // Close on Escape — matches the other hand-rolled dialogs in the app.
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+
   const set = (key, val) => setForm(f => ({ ...f, [key]: val }))
 
   const handleSchedulePreset = (val) => {
@@ -491,18 +500,23 @@ function JobModal({ initial, onSave, onClose, saving }) {
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
 
       {/* Panel */}
-      <div className="relative w-full sm:max-w-lg bg-surface rounded-t-2xl sm:rounded-2xl border border-border shadow-2xl flex flex-col max-h-[90vh]">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="job-modal-title"
+        className="relative w-full sm:max-w-lg bg-surface rounded-t-2xl sm:rounded-2xl border border-border shadow-2xl flex flex-col max-h-[90vh]"
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl bg-primary/10 flex items-center justify-center">
               <CalendarClock size={16} className="text-primary" />
             </div>
-            <h2 className="font-semibold text-base text-fg">
+            <h2 id="job-modal-title" className="font-semibold text-base text-fg">
               {isEdit ? 'Edit automation' : 'New automation'}
             </h2>
           </div>
-          <button onClick={onClose}
+          <button onClick={onClose} aria-label="Close"
             className="h-8 w-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors">
             <X size={18} />
           </button>
@@ -512,9 +526,11 @@ function JobModal({ initial, onSave, onClose, saving }) {
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto px-5 py-5 space-y-4">
           {/* Name */}
           <div>
-            <label className="block text-xs font-semibold text-muted mb-1.5">Name</label>
+            <label htmlFor="job-name" className="block text-xs font-semibold text-muted mb-1.5">Name</label>
             <input
+              id="job-name"
               required
+              autoFocus
               type="text"
               placeholder="Daily revenue report"
               value={form.name}
@@ -557,11 +573,12 @@ function JobModal({ initial, onSave, onClose, saving }) {
 
           {/* Target */}
           <div>
-            <label className="block text-xs font-semibold text-muted mb-1.5">
+            <label htmlFor="job-target" className="block text-xs font-semibold text-muted mb-1.5">
               {form.kind === 'query' ? 'Query ID' : form.kind === 'python' ? 'Python code' : 'Report config (JSON)'}
             </label>
             {form.kind === 'python' ? (
               <textarea
+                id="job-target"
                 required
                 rows={5}
                 placeholder={'# Python script\nprint("hello nubi")'}
@@ -576,6 +593,7 @@ function JobModal({ initial, onSave, onClose, saving }) {
               />
             ) : form.kind === 'report' ? (
               <textarea
+                id="job-target"
                 required
                 rows={4}
                 placeholder={'{\n  "board_id": "uuid",\n  "recipients": ["you@example.com"]\n}'}
@@ -590,6 +608,7 @@ function JobModal({ initial, onSave, onClose, saving }) {
               />
             ) : (
               <input
+                id="job-target"
                 required
                 type="text"
                 placeholder="query-uuid or registered query name"
@@ -607,8 +626,9 @@ function JobModal({ initial, onSave, onClose, saving }) {
 
           {/* Schedule */}
           <div>
-            <label className="block text-xs font-semibold text-muted mb-1.5">Schedule</label>
+            <label htmlFor="job-schedule" className="block text-xs font-semibold text-muted mb-1.5">Schedule</label>
             <select
+              id="job-schedule"
               value={customCron ? '__custom__' : (form.schedule || '__custom__')}
               onChange={e => handleSchedulePreset(e.target.value)}
               className="
@@ -624,7 +644,9 @@ function JobModal({ initial, onSave, onClose, saving }) {
             </select>
             {customCron && (
               <div>
+                <label htmlFor="job-schedule-custom" className="sr-only">Custom cron expression</label>
                 <input
+                  id="job-schedule-custom"
                   type="text"
                   placeholder="*/15 * * * * — cron expression"
                   value={form.schedule}
@@ -752,6 +774,7 @@ function FlowRow({ flow, onChanged, canWrite }) {
             on={enabled}
             busy={toggling || !canWrite}
             onToggle={canWrite ? handleToggle : undefined}
+            label={`${enabled ? 'Disable' : 'Enable'} "${flow.name}"`}
           />
 
           <button
@@ -773,6 +796,7 @@ function FlowRow({ flow, onChanged, canWrite }) {
           <button
             onClick={() => navigate(`/flows/${flow.id}`)}
             title={canWrite ? 'Edit flow' : 'View flow'}
+            aria-label={canWrite ? `Edit flow "${flow.name}"` : `View flow "${flow.name}"`}
             className="
               inline-flex items-center justify-center h-8 w-8 rounded-lg
               border border-border text-muted
@@ -786,6 +810,8 @@ function FlowRow({ flow, onChanged, canWrite }) {
           <button
             onClick={() => setExpanded(v => !v)}
             title={expanded ? 'Collapse' : 'View run history'}
+            aria-label={expanded ? 'Collapse run history' : `View run history for "${flow.name}"`}
+            aria-expanded={expanded}
             className="
               inline-flex items-center justify-center h-8 w-8 rounded-lg
               border border-border text-muted
@@ -889,6 +915,7 @@ function JobCard({ job, onDeleted, onViewRuns, canWrite }) {
           <button
             onClick={() => onViewRuns?.(job)}
             title="View run history"
+            aria-label={`View run history for "${job.name}"`}
             className="
               inline-flex items-center justify-center h-8 w-8 rounded-lg
               border border-border text-muted
@@ -904,6 +931,7 @@ function JobCard({ job, onDeleted, onViewRuns, canWrite }) {
               <button
                 onClick={handleDelete}
                 disabled={deleting}
+                aria-label={`Confirm delete "${job.name}"`}
                 className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-50 transition-colors"
               >
                 {deleting ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
@@ -911,6 +939,8 @@ function JobCard({ job, onDeleted, onViewRuns, canWrite }) {
               </button>
               <button
                 onClick={() => setConfirmDelete(false)}
+                title="Cancel"
+                aria-label="Cancel delete"
                 className="h-8 w-8 flex items-center justify-center rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
               >
                 <X size={14} />
@@ -920,11 +950,11 @@ function JobCard({ job, onDeleted, onViewRuns, canWrite }) {
             <button
               onClick={() => setConfirmDelete(true)}
               title="Delete"
+              aria-label={`Delete "${job.name}"`}
               className="
                 inline-flex items-center justify-center h-8 w-8 rounded-lg
                 border border-border text-muted
-                hover:text-red-600 hover:border-red-200 hover:bg-red-50
-                dark:hover:text-red-400 dark:hover:border-red-900/40 dark:hover:bg-red-900/10
+                hover:text-danger hover:border-danger/30 hover:bg-danger-bg
                 transition-colors focus:outline-none focus:ring-2 focus:ring-ring
               "
             >
@@ -955,7 +985,12 @@ function SlideOver({ open, onClose, children }) {
   return (
     <div className="fixed inset-0 z-[60] flex">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative ml-auto w-full max-w-md bg-surface border-l border-border shadow-2xl flex flex-col h-full overflow-hidden animate-in slide-in-from-right-4 duration-200">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Run history"
+        className="relative ml-auto w-full max-w-md bg-surface border-l border-border shadow-2xl flex flex-col h-full overflow-hidden animate-in slide-in-from-right-4 duration-200"
+      >
         {children}
       </div>
     </div>
@@ -1089,9 +1124,9 @@ export default function AutomationsPage() {
           )}
 
           {!flowsLoading && flowsError && (
-            <div className="flex flex-col items-center justify-center py-12 gap-3 rounded-xl border border-dashed border-red-200 dark:border-red-900/40">
-              <div className="w-11 h-11 rounded-xl bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
-                <AlertTriangle size={20} className="text-red-600 dark:text-red-400" />
+            <div className="flex flex-col items-center justify-center py-12 gap-3 rounded-xl border border-dashed border-danger/30">
+              <div className="w-11 h-11 rounded-xl bg-danger-bg flex items-center justify-center">
+                <AlertTriangle size={20} className="text-danger" />
               </div>
               <p className="text-sm font-medium text-fg">Failed to load workflows</p>
               <p className="text-xs text-muted">{flowsError}</p>
@@ -1149,9 +1184,9 @@ export default function AutomationsPage() {
           )}
 
           {!jobsLoading && jobsError && (
-            <div className="flex flex-col items-center justify-center py-10 gap-3 rounded-xl border border-dashed border-red-200 dark:border-red-900/40">
-              <AlertTriangle size={18} className="text-red-500" />
-              <p className="text-sm text-red-600 dark:text-red-400">{jobsError}</p>
+            <div className="flex flex-col items-center justify-center py-10 gap-3 rounded-xl border border-dashed border-danger/30">
+              <AlertTriangle size={18} className="text-danger" />
+              <p className="text-sm text-danger">{jobsError}</p>
               <button onClick={fetchJobs} className="text-xs text-muted hover:text-fg underline">Retry</button>
             </div>
           )}

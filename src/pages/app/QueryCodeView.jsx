@@ -87,6 +87,8 @@ function FileRow({ Icon, name, active, dirty, readOnly, onSelect }) {
   return (
     <button
       onClick={onSelect}
+      role="tab"
+      aria-selected={active}
       className={[
         'group w-full flex items-center gap-2 px-2 py-1 text-left text-xs rounded-md transition-colors',
         active ? 'bg-primary/10 text-fg' : 'text-muted hover:text-fg hover:bg-surface-2',
@@ -95,7 +97,7 @@ function FileRow({ Icon, name, active, dirty, readOnly, onSelect }) {
     >
       <Icon size={13} className={active ? 'text-primary shrink-0' : 'text-muted/70 shrink-0'} />
       <span className="truncate flex-1">{name}</span>
-      {dirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Unsaved edits" />}
+      {dirty && <span className="w-1.5 h-1.5 rounded-full bg-warning shrink-0" title="Unsaved edits" />}
       {readOnly && <span className="text-[9px] text-muted/60 shrink-0">ro</span>}
     </button>
   )
@@ -138,7 +140,7 @@ export default function QueryCodeView({ sql, params, datastoreId, query, onSqlCh
           <FolderTree size={13} className="text-muted" />
           <span className="text-[11px] font-semibold uppercase tracking-wide text-muted">Explorer</span>
         </div>
-        <div className="flex-1 overflow-y-auto py-2 px-1.5 space-y-0.5">
+        <div role="tablist" aria-label="Files" aria-orientation="vertical" className="flex-1 overflow-y-auto py-2 px-1.5 space-y-0.5">
           <FileRow
             Icon={Database}
             name={sqlName}
@@ -185,7 +187,7 @@ export default function QueryCodeView({ sql, params, datastoreId, query, onSqlCh
                 className="flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-md border border-border bg-surface-2 hover:bg-surface text-fg transition-colors"
                 title="Copy to clipboard"
               >
-                {copied ? <Check size={11} className="text-green-500" /> : <Copy size={11} />}
+                {copied ? <Check size={11} className="text-success" /> : <Copy size={11} />}
                 {copied ? 'Copied!' : 'Copy'}
               </button>
             )}

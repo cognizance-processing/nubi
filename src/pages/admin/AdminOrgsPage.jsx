@@ -11,9 +11,9 @@ import { getAdminOrgs } from '../../lib/admin.js'
 import {
   AdminCard,
   AdminTable,
+  AdminTableSkeleton,
   SearchInput,
   Pagination,
-  LoadingState,
   ErrorState,
   EmptyState,
 } from './AdminUI.jsx'
@@ -66,21 +66,31 @@ export default function AdminOrgsPage() {
 
       <AdminCard>
         {loading ? (
-          <LoadingState />
+          <AdminTableSkeleton columns={5} />
         ) : !data ? (
           <ErrorState message="Could not load organizations." onRetry={() => setReloadKey((k) => k + 1)} />
         ) : orgs.length === 0 ? (
-          <EmptyState message="No organizations match this search." />
+          <EmptyState
+            message={search ? 'No organizations match this search.' : 'No organizations yet.'}
+          />
         ) : (
           <AdminTable headers={['Name', 'Slug', 'Members', 'Projects', 'Created']}>
             {orgs.map((o) => (
               <tr
                 key={o.id}
                 onClick={() => navigate(`/admin/orgs/${o.id}`)}
-                className="cursor-pointer hover:bg-surface-2/50 transition-colors"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    navigate(`/admin/orgs/${o.id}`)
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+                className="cursor-pointer hover:bg-surface-2/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset transition-colors"
               >
-                <td className="px-4 py-3 whitespace-nowrap text-fg font-medium">{o.name}</td>
-                <td className="px-4 py-3 whitespace-nowrap text-muted">{o.slug || '—'}</td>
+                <td className="px-4 py-3 max-w-[220px] truncate text-fg font-medium" title={o.name}>{o.name}</td>
+                <td className="px-4 py-3 max-w-[160px] truncate text-muted" title={o.slug || undefined}>{o.slug || '—'}</td>
                 <td className="px-4 py-3 whitespace-nowrap text-muted tabular-nums">{o.member_count}</td>
                 <td className="px-4 py-3 whitespace-nowrap text-muted tabular-nums">{o.project_count}</td>
                 <td className="px-4 py-3 whitespace-nowrap text-muted tabular-nums">{fmtDate(o.created_at)}</td>

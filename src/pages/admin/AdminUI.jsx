@@ -60,14 +60,14 @@ export function LoadingState({ label = 'Loading…' }) {
 export function ErrorState({ message = 'Failed to load data.', onRetry }) {
   return (
     <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
-      <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-red-500/10">
-        <AlertTriangle size={18} className="text-red-500" />
+      <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-danger-bg">
+        <AlertTriangle size={18} className="text-danger" />
       </div>
       <p className="text-sm text-muted">{message}</p>
       {onRetry && (
         <button
           onClick={onRetry}
-          className="px-3 py-1.5 rounded-lg text-sm font-medium border border-border text-fg hover:bg-surface-2 transition-colors"
+          className="px-3 py-1.5 rounded-lg text-sm font-medium border border-border text-fg hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-colors"
         >
           Retry
         </button>
@@ -78,6 +78,30 @@ export function ErrorState({ message = 'Failed to load data.', onRetry }) {
 
 export function EmptyState({ message = 'Nothing here yet.' }) {
   return <p className="py-10 text-center text-sm text-muted">{message}</p>
+}
+
+// ---------------------------------------------------------------------------
+// Table loading skeleton — used instead of the generic spinner when a page
+// already knows its column count, so the loading state doesn't cause a
+// layout jump once real rows arrive.
+// ---------------------------------------------------------------------------
+
+export function AdminTableSkeleton({ columns = 5, rows = 8 }) {
+  return (
+    <div className="animate-pulse px-4 py-3 space-y-3" aria-hidden="true">
+      {Array.from({ length: rows }).map((_, r) => (
+        <div key={r} className="flex items-center gap-4">
+          {Array.from({ length: columns }).map((__, c) => (
+            <div
+              key={c}
+              className="h-3 rounded-full bg-surface-2"
+              style={{ width: c === 0 ? '22%' : `${Math.max(8, 16 - c * 2)}%` }}
+            />
+          ))}
+        </div>
+      ))}
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +143,7 @@ export function SearchInput({ value, onChange, placeholder = 'Search…' }) {
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
+        aria-label={placeholder}
         className="w-full pl-8 pr-3 py-2 rounded-xl bg-bg border border-border text-sm text-fg
           placeholder:text-muted focus:outline-none focus:border-primary"
       />
@@ -139,7 +164,7 @@ export function Pagination({ offset, limit, total, onPage }) {
         disabled={offset === 0}
         aria-label="Previous page"
         className="flex items-center justify-center w-7 h-7 rounded-lg border border-border text-fg
-          hover:bg-surface-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
       >
         <ChevronLeft size={14} />
       </button>
@@ -149,7 +174,7 @@ export function Pagination({ offset, limit, total, onPage }) {
         disabled={offset + limit >= total}
         aria-label="Next page"
         className="flex items-center justify-center w-7 h-7 rounded-lg border border-border text-fg
-          hover:bg-surface-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
       >
         <ChevronRight size={14} />
       </button>

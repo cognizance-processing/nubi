@@ -138,7 +138,11 @@ function ItemRow({ icon: Icon, iconVariant = 'muted', title, subtitle, meta, chi
     </div>
   )
 
-  if (href) return <Link to={href} className="block">{inner}</Link>
+  if (href) return (
+    <Link to={href} className="block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      {inner}
+    </Link>
+  )
   return inner
 }
 

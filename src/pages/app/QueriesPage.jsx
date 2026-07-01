@@ -53,6 +53,7 @@ import {
 } from 'lucide-react'
 
 import { del, get, listRegisteredQueries, registerQuery } from '../../lib/api.js'
+import Button from '../../components/ui/Button.jsx'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import DangerConfirmDialog from '../../components/app/DangerConfirmDialog.jsx'
 import { useEnv } from '../../contexts/EnvContext.jsx'
@@ -100,7 +101,7 @@ function QueryListItem({ query, isActive, onClick, onHistory, strictEnv, manageM
           'w-full text-left px-3 py-2.5 rounded-lg transition-all',
           isSaved && onHistory && !manageMode ? 'pr-9' : '',
           manageMode && checked
-            ? 'bg-red-500/5 border border-red-500/30 text-fg'
+            ? 'bg-danger-bg border border-danger/30 text-fg'
             : isActive && !manageMode
             ? 'bg-primary/10 border border-primary/20 text-fg'
             : 'hover:bg-surface-2 border border-transparent text-fg/80 hover:text-fg',
@@ -112,7 +113,7 @@ function QueryListItem({ query, isActive, onClick, onHistory, strictEnv, manageM
               size={13}
               className={[
                 'shrink-0 mt-0.5',
-                checked ? 'text-red-500' : 'text-muted group-hover:text-fg/60',
+                checked ? 'text-danger' : 'text-muted group-hover:text-fg/60',
               ].join(' ')}
             />
           ) : (
@@ -150,7 +151,7 @@ function QueryListItem({ query, isActive, onClick, onHistory, strictEnv, manageM
               </div>
             )}
             {query.isNew && (
-              <span className="inline-flex items-center px-1 py-0.5 text-[9px] font-medium rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 mt-1">
+              <span className="inline-flex items-center px-1 py-0.5 text-[9px] font-medium rounded bg-warning-bg text-warning mt-1">
                 draft
               </span>
             )}
@@ -161,7 +162,7 @@ function QueryListItem({ query, isActive, onClick, onHistory, strictEnv, manageM
               && !query.pinned_envs.includes(strictEnv) && (
               <span
                 title={`No version is pinned to ${strictEnv} — promote one to make it visible there.`}
-                className="inline-flex items-center px-1 py-0.5 text-[9px] font-medium rounded bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20 mt-1"
+                className="inline-flex items-center px-1 py-0.5 text-[9px] font-medium rounded bg-danger-bg text-danger border border-danger/20 mt-1"
               >
                 not in {strictEnv}
               </span>
@@ -246,6 +247,7 @@ function QueriesPanel({
           <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
           <input
             type="text"
+            aria-label="Search queries"
             value={searchQuery}
             onChange={e => onSearchChange(e.target.value)}
             placeholder="Search queries…"
@@ -255,6 +257,7 @@ function QueriesPanel({
         <button
           onClick={onRefresh}
           disabled={loading}
+          aria-label="Refresh query registry"
           className="h-7 w-7 shrink-0 flex items-center justify-center rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors"
           title="Refresh query registry"
         >
@@ -266,6 +269,7 @@ function QueriesPanel({
             onClick={onToggleManage}
             data-testid="queries-manage-toggle"
             aria-pressed={manageMode}
+            aria-label={manageMode ? 'Exit manage mode' : 'Manage queries (multi-select)'}
             title={manageMode ? 'Exit manage mode' : 'Manage queries (multi-select)'}
             className={[
               'h-7 w-7 shrink-0 flex items-center justify-center rounded-lg border transition-colors',
@@ -284,7 +288,7 @@ function QueriesPanel({
         <div
           data-testid="queries-bulk-notice"
           role="status"
-          className="shrink-0 mx-2 mb-2 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-[11px] text-emerald-700 dark:text-emerald-400"
+          className="shrink-0 mx-2 mb-2 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-success/30 bg-success-bg text-[11px] text-success"
         >
           <CheckCircle2 size={12} className="shrink-0" />
           <span className="min-w-0 truncate">{bulkNotice}</span>
@@ -316,21 +320,23 @@ function QueriesPanel({
             )}
           </div>
           <div className="flex items-center gap-1.5">
-            <button
+            <Button
               data-testid="queries-delete-selected"
               onClick={onDeleteSelected}
               disabled={(selectedIds?.size ?? 0) === 0}
-              className="flex-1 h-7 flex items-center justify-center gap-1 rounded-lg bg-red-600 text-white text-[11px] font-semibold hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              variant="danger"
+              size="xs"
+              className="flex-1"
             >
               <Trash2 size={11} />
               Delete {(selectedIds?.size ?? 0) > 0 ? selectedIds.size : ''}
-            </button>
+            </Button>
             <button
               data-testid="queries-delete-all"
               onClick={() => onDeleteAll?.(registeredFiltered)}
               disabled={registeredFiltered.length === 0}
               title={searchQuery ? 'Delete all queries matching the search' : 'Delete all registered queries'}
-              className="flex-1 h-7 flex items-center justify-center gap-1 rounded-lg border border-red-500/30 text-red-600 dark:text-red-400 text-[11px] font-medium hover:bg-red-500/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="flex-1 h-7 flex items-center justify-center gap-1 rounded-lg border border-danger/30 text-danger text-[11px] font-medium hover:bg-danger-bg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <Trash2 size={11} />
               Delete all{searchQuery ? ' matching' : ''}
@@ -472,7 +478,7 @@ function MobileQueryDropdown({ queries, localQueries, activeQuery, onSelect, onN
               >
                 <span className="font-medium">{q.name ?? q.id}</span>
                 {q.isNew && (
-                  <span className="ml-1.5 text-[10px] text-amber-600 dark:text-amber-400">draft</span>
+                  <span className="ml-1.5 text-[10px] text-warning">draft</span>
                 )}
               </button>
             ))}
@@ -896,7 +902,7 @@ export default function QueriesPage() {
 
         {/* Registry error banner (editor view only) */}
         {view === 'editor' && registryError && (
-          <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-rose-500/5 border-b border-rose-500/20 text-xs text-rose-600 dark:text-rose-400">
+          <div role="alert" className="shrink-0 flex items-center gap-2 px-4 py-2 bg-danger-bg border-b border-danger/20 text-xs text-danger">
             <AlertCircle size={12} />
             Registry unavailable: {registryError}. Ad-hoc queries still work.
           </div>

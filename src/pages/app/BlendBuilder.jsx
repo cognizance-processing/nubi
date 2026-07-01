@@ -179,12 +179,14 @@ function SourceRow({
         <div className="flex flex-col gap-0.5 flex-1 min-w-0">
           <input
             type="text"
+            aria-label="Source alias (used as table name)"
+            aria-invalid={duplicateKey || undefined}
             value={source.key}
             onChange={e => set({ key: e.target.value.replace(/\s+/g, '_') })}
             placeholder="alias (used as table name)"
             className={[
               'h-8 px-2.5 text-xs font-mono bg-surface border rounded-lg text-fg placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-ring',
-              duplicateKey ? 'border-rose-500/60' : 'border-border',
+              duplicateKey ? 'border-danger/60' : 'border-border',
             ].join(' ')}
           />
         </div>
@@ -222,7 +224,8 @@ function SourceRow({
             onClick={onRemove}
             disabled={!canRemove}
             title={canRemove ? 'Remove source' : `At least ${MIN_SOURCES} sources required`}
-            className="flex items-center justify-center w-8 h-8 rounded-lg border border-border text-muted hover:text-rose-500 hover:border-rose-500/40 disabled:opacity-30 disabled:hover:text-muted disabled:hover:border-border transition-colors shrink-0"
+            aria-label={canRemove ? 'Remove source' : `At least ${MIN_SOURCES} sources required`}
+            className="flex items-center justify-center w-8 h-8 rounded-lg border border-border text-muted hover:text-danger hover:border-danger/40 disabled:opacity-30 disabled:hover:text-muted disabled:hover:border-border transition-colors shrink-0"
           >
             <Trash2 size={13} />
           </button>
@@ -230,7 +233,7 @@ function SourceRow({
       </div>
 
       {duplicateKey && (
-        <p className="text-[10px] text-rose-500 flex items-center gap-1 -mt-1">
+        <p className="text-[10px] text-danger flex items-center gap-1 -mt-1">
           <AlertCircle size={10} /> Aliases must be unique — referenced as table names in the combine SQL.
         </p>
       )}
@@ -429,7 +432,7 @@ export default function BlendBuilder() {
       <div className="flex flex-col h-full bg-bg overflow-y-auto">
         <div className="px-6 py-6 max-w-2xl w-full mx-auto">
           <div className="rounded-2xl border border-border bg-surface p-6 flex flex-col gap-4">
-            <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400">
+            <div className="flex items-center gap-2 text-success">
               <CheckCircle2 size={20} />
               <h1 className="font-display font-semibold text-lg text-fg">Blend created</h1>
             </div>
@@ -456,7 +459,7 @@ export default function BlendBuilder() {
                     onClick={copyQueryId}
                     className="flex items-center gap-1.5 h-9 px-3 text-xs font-medium border border-border rounded-lg bg-surface hover:bg-surface-2 text-fg transition-colors"
                   >
-                    {copied ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}
+                    {copied ? <Check size={13} className="text-success" /> : <Copy size={13} />}
                     {copied ? 'Copied' : 'Copy'}
                   </button>
                 </div>
@@ -499,6 +502,7 @@ export default function BlendBuilder() {
           type="button"
           onClick={() => navigate('/queries')}
           title="Back to queries"
+          aria-label="Back to queries"
           className="flex items-center justify-center w-9 h-9 rounded-xl border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors shrink-0"
         >
           <ArrowLeft size={15} />
@@ -517,8 +521,9 @@ export default function BlendBuilder() {
       <form onSubmit={handleSubmit} className="flex-1 px-6 py-6 max-w-3xl w-full mx-auto flex flex-col gap-7">
         {/* Name */}
         <div className="flex flex-col gap-1.5">
-          <label className="text-[11px] font-semibold text-muted uppercase tracking-wide">Name</label>
+          <label htmlFor="blend-name" className="text-[11px] font-semibold text-muted uppercase tracking-wide">Name</label>
           <input
+            id="blend-name"
             type="text"
             value={name}
             onChange={e => setName(e.target.value)}
@@ -670,9 +675,10 @@ export default function BlendBuilder() {
                     value={cron}
                     onChange={e => setCron(e.target.value)}
                     placeholder="0 9 * * *"
+                    aria-invalid={cronInvalid || undefined}
                     className={[
                       'h-8 px-2.5 text-xs font-mono bg-surface border rounded-lg text-fg placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-ring',
-                      cronInvalid ? 'border-rose-500/50' : 'border-border',
+                      cronInvalid ? 'border-danger/50' : 'border-border',
                     ].join(' ')}
                   />
                   <p className="text-[10px] text-muted/70">
@@ -688,7 +694,7 @@ export default function BlendBuilder() {
                 </p>
               )}
               {cronInvalid && (
-                <p className="text-[11px] text-rose-500 flex items-center gap-1">
+                <p className="text-[11px] text-danger flex items-center gap-1">
                   <AlertCircle size={10} /> Cron expression must have 5 fields.
                 </p>
               )}
@@ -712,7 +718,7 @@ export default function BlendBuilder() {
 
         {/* Error */}
         {error && (
-          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-rose-500/5 border border-rose-500/20 text-xs text-rose-600 dark:text-rose-400">
+          <div role="alert" className="flex items-center gap-2 px-3 py-2 rounded-lg bg-danger-bg border border-danger/20 text-xs text-danger">
             <AlertCircle size={14} /> {error}
           </div>
         )}

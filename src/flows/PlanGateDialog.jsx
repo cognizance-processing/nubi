@@ -21,7 +21,7 @@
  *   onCancel      {Function}       — called when user dismisses
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -43,15 +43,15 @@ import { fetchLineagePlan } from '../lib/notebooks.js'
 const CHANGE_TYPE_META = {
   breaking: {
     label: 'Breaking',
-    cls: 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/25',
+    cls: 'bg-danger-bg text-danger border border-danger/25',
     icon: AlertTriangle,
-    iconCls: 'text-rose-500',
+    iconCls: 'text-danger',
   },
   non_breaking: {
     label: 'Non-breaking',
-    cls: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/25',
+    cls: 'bg-warning-bg text-warning border border-warning/25',
     icon: Zap,
-    iconCls: 'text-amber-500',
+    iconCls: 'text-warning',
   },
 }
 
@@ -74,6 +74,7 @@ function ImpactRow({ impact, expanded, onToggle }) {
     <div className="rounded-lg border border-border/60 bg-surface-2/20 overflow-hidden">
       <button
         onClick={onToggle}
+        aria-expanded={expanded}
         className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2/40 transition-colors"
       >
         {expanded
@@ -95,7 +96,7 @@ function ImpactRow({ impact, expanded, onToggle }) {
             {impact.affected_columns.map(col => (
               <span
                 key={col}
-                className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-mono bg-blue-500/8 text-blue-600 dark:text-blue-400 border border-blue-500/15"
+                className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-mono bg-info/10 text-info border border-info/20"
               >
                 {col}
               </span>
@@ -120,6 +121,22 @@ export default function PlanGateDialog({ open, spec, changedCellKey, onConfirm, 
   // Error from a failed confirm (run trigger) — shown inline; the dialog stays
   // open so the user can retry or cancel.
   const [confirmError, setConfirmError] = useState(null)
+  const dialogRef = useRef(null)
+
+  // Close on Escape — matches the other hand-rolled dialogs in the app.
+  useEffect(() => {
+    if (!open) return undefined
+    const handler = (e) => { if (e.key === 'Escape') onCancel?.() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [open, onCancel])
+
+  // Focus the dialog panel on open (reasonable focus handling for a hand-rolled dialog).
+  useEffect(() => {
+    if (!open) return undefined
+    const t = setTimeout(() => dialogRef.current?.focus(), 50)
+    return () => clearTimeout(t)
+  }, [open])
 
   // Derive the changed cell key: use the provided one, else first task key
   const resolvedCellKey = changedCellKey
@@ -184,7 +201,14 @@ export default function PlanGateDialog({ open, spec, changedCellKey, onConfirm, 
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[2px]"
       onClick={e => { if (e.target === e.currentTarget) onCancel?.() }}
     >
-      <div className="relative w-full max-w-lg mx-4 rounded-2xl border border-border bg-surface shadow-2xl overflow-hidden max-h-[80vh] flex flex-col">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="plan-gate-title"
+        tabIndex={-1}
+        className="relative w-full max-w-lg mx-4 rounded-2xl border border-border bg-surface shadow-2xl overflow-hidden max-h-[80vh] flex flex-col outline-none"
+      >
 
         {/* Header */}
         <div className="shrink-0 flex items-center gap-2.5 px-5 py-4 border-b border-border bg-surface-2/30">
@@ -192,7 +216,7 @@ export default function PlanGateDialog({ open, spec, changedCellKey, onConfirm, 
             <GitBranch size={15} className="text-primary" />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-fg leading-tight">Run Plan</p>
+            <p id="plan-gate-title" className="text-sm font-semibold text-fg leading-tight">Run Plan</p>
             <p className="text-[11px] text-muted mt-0.5">
               Review downstream impact before executing
             </p>
@@ -201,6 +225,7 @@ export default function PlanGateDialog({ open, spec, changedCellKey, onConfirm, 
             onClick={onCancel}
             className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
             title="Cancel"
+            aria-label="Cancel"
           >
             <X size={13} />
           </button>
@@ -219,7 +244,7 @@ export default function PlanGateDialog({ open, spec, changedCellKey, onConfirm, 
 
           {/* Error state */}
           {!loading && error && (
-            <div className="flex items-start gap-2 px-3 py-3 rounded-lg bg-rose-500/5 border border-rose-500/20 text-xs text-rose-600 dark:text-rose-400">
+            <div className="flex items-start gap-2 px-3 py-3 rounded-lg bg-danger-bg border border-danger/20 text-xs text-danger">
               <AlertCircle size={13} className="shrink-0 mt-0.5" />
               <span className="flex-1">{error}</span>
             </div>
@@ -227,7 +252,7 @@ export default function PlanGateDialog({ open, spec, changedCellKey, onConfirm, 
 
           {/* Validation issues banner */}
           {!loading && !error && hasIssues && (
-            <div className="flex items-start gap-2 px-3 py-3 rounded-lg bg-amber-500/5 border border-amber-500/20 text-xs text-amber-700 dark:text-amber-400">
+            <div className="flex items-start gap-2 px-3 py-3 rounded-lg bg-warning-bg border border-warning/20 text-xs text-warning">
               <AlertTriangle size={13} className="shrink-0 mt-0.5" />
               <div>
                 <p className="font-semibold mb-1">Spec has {isValid ? 'warnings' : 'errors'}</p>
@@ -254,20 +279,20 @@ export default function PlanGateDialog({ open, spec, changedCellKey, onConfirm, 
               {/* Stat chips */}
               <div className="flex items-center gap-2 flex-wrap">
                 {impact.length === 0 ? (
-                  <div className="flex items-center gap-1.5 text-xs text-green-600 dark:text-green-400">
+                  <div className="flex items-center gap-1.5 text-xs text-success">
                     <CheckCircle2 size={13} />
                     No downstream cells affected
                   </div>
                 ) : (
                   <>
                     {breakingCount > 0 && (
-                      <div className="flex items-center gap-1 text-xs text-rose-600 dark:text-rose-400">
+                      <div className="flex items-center gap-1 text-xs text-danger">
                         <AlertTriangle size={11} />
                         <span className="font-semibold">{breakingCount}</span> breaking
                       </div>
                     )}
                     {nonBreakingCount > 0 && (
-                      <div className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
+                      <div className="flex items-center gap-1 text-xs text-warning">
                         <Zap size={11} />
                         <span className="font-semibold">{nonBreakingCount}</span> non-breaking
                       </div>
@@ -298,7 +323,7 @@ export default function PlanGateDialog({ open, spec, changedCellKey, onConfirm, 
 
         {/* Run-trigger error — dialog stays open so the user can retry/cancel */}
         {confirmError && (
-          <div className="shrink-0 flex items-start gap-2 px-5 py-2.5 border-t border-rose-500/20 bg-rose-500/5 text-xs text-rose-600 dark:text-rose-400">
+          <div className="shrink-0 flex items-start gap-2 px-5 py-2.5 border-t border-danger/20 bg-danger-bg text-xs text-danger">
             <AlertCircle size={13} className="shrink-0 mt-0.5" />
             <span className="flex-1 min-w-0">{confirmError}</span>
           </div>

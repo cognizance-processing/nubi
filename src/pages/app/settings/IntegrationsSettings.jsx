@@ -56,6 +56,7 @@ import {
   ErrorText,
   inputCls,
 } from './SettingsUI.jsx'
+import { toast } from '../../../components/ui/Toast.jsx'
 
 // ---------------------------------------------------------------------------
 // Per-kind field schema (drives both the form and the list summary).
@@ -207,6 +208,7 @@ function IntegrationModal({ open, kind, initial, onClose, onSaved }) {
       const saved = editing
         ? await updateIntegration(initial.id, { name: trimmedName, config })
         : await createIntegration({ kind, name: trimmedName, config, enabled: true })
+      toast.success(editing ? 'Integration updated.' : 'Integration connected.')
       onSaved?.(saved)
       onClose?.()
     } catch (err) {
@@ -246,8 +248,9 @@ function IntegrationModal({ open, kind, initial, onClose, onSaved }) {
           {meta.blurb && <p className="text-xs text-muted">{meta.blurb}</p>}
 
           <div>
-            <label className={LABEL_CLS}>Name</label>
+            <label className={LABEL_CLS} htmlFor="integration-name">Name</label>
             <input
+              id="integration-name"
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -259,10 +262,12 @@ function IntegrationModal({ open, kind, initial, onClose, onSaved }) {
 
           {meta.fields.map((f) => {
             const configured = editing && f.secret && initial?.configured
+            const fieldId = `integration-field-${f.key}`
             return (
               <div key={f.key}>
-                <label className={LABEL_CLS}>{f.label}</label>
+                <label className={LABEL_CLS} htmlFor={fieldId}>{f.label}</label>
                 <input
+                  id={fieldId}
                   type={f.secret ? 'password' : 'text'}
                   value={values[f.key] ?? ''}
                   onChange={(e) => setField(f.key, e.target.value)}
@@ -332,8 +337,9 @@ function IntegrationRow({ integration, canWrite, onEdit, onChanged }) {
     try {
       const saved = await updateIntegration(integration.id, { enabled: !enabled })
       onChanged?.(saved ?? { ...integration, enabled: !enabled })
-    } catch {
-      /* leave state unchanged on failure */
+      toast.success(enabled ? 'Integration disabled.' : 'Integration enabled.')
+    } catch (err) {
+      toast.error(err?.message ?? 'Failed to update integration.')
     } finally {
       setBusy(null)
     }
@@ -360,8 +366,13 @@ function IntegrationRow({ integration, canWrite, onEdit, onChanged }) {
     setBusy('delete')
     const ok = await deleteIntegration(integration.id)
     setBusy(null)
-    if (ok) onChanged?.(null, integration.id)
-    else setConfirmDelete(false)
+    if (ok) {
+      toast.success('Integration deleted.')
+      onChanged?.(null, integration.id)
+    } else {
+      toast.error('Failed to delete integration.')
+      setConfirmDelete(false)
+    }
   }, [integration, onChanged])
 
   // Compact non-secret summary line.
@@ -422,6 +433,7 @@ function IntegrationRow({ integration, canWrite, onEdit, onChanged }) {
                 onClick={handleToggle}
                 disabled={busy !== null}
                 title={enabled ? 'Disable' : 'Enable'}
+                aria-label={enabled ? 'Disable integration' : 'Enable integration'}
                 className="inline-flex items-center h-8 px-2.5 rounded-lg text-xs font-medium border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
               >
                 {busy === 'toggle' ? <Loader2 size={12} className="animate-spin" /> : enabled ? 'Disable' : 'Enable'}
@@ -429,6 +441,7 @@ function IntegrationRow({ integration, canWrite, onEdit, onChanged }) {
               <button
                 onClick={() => onEdit?.(integration)}
                 title="Edit"
+                aria-label="Edit integration"
                 className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
               >
                 <Pencil size={13} />
@@ -438,6 +451,7 @@ function IntegrationRow({ integration, canWrite, onEdit, onChanged }) {
                   <button
                     onClick={handleDelete}
                     disabled={busy === 'delete'}
+                    aria-label="Confirm delete"
                     className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-50 transition-colors"
                   >
                     {busy === 'delete' ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
@@ -445,6 +459,7 @@ function IntegrationRow({ integration, canWrite, onEdit, onChanged }) {
                   </button>
                   <button
                     onClick={() => setConfirmDelete(false)}
+                    aria-label="Cancel delete"
                     className="h-8 w-8 flex items-center justify-center rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
                   >
                     <X size={14} />
@@ -454,6 +469,7 @@ function IntegrationRow({ integration, canWrite, onEdit, onChanged }) {
                 <button
                   onClick={() => setConfirmDelete(true)}
                   title="Delete"
+                  aria-label="Delete integration"
                   className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border text-muted hover:text-red-600 hover:border-red-200 hover:bg-red-50 dark:hover:text-red-400 dark:hover:border-red-900/40 dark:hover:bg-red-900/10 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
                 >
                   <Trash2 size={13} />

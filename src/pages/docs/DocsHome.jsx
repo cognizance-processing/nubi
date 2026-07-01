@@ -52,7 +52,7 @@ function WorkflowCard({ slug, illo, title, body }) {
       to={`/docs/${slug}`}
       className="group flex flex-col rounded-2xl border border-border bg-surface overflow-hidden hover:border-brand-teal/40 hover:shadow-md transition-all"
     >
-      <div className="bg-surface-2 px-5 pt-5 pb-2 border-b border-border">
+      <div className="bg-surface-2 px-5 pt-5 pb-2 border-b border-border" aria-hidden="true">
         {Illo ? <Illo className="w-full h-auto max-h-40 mx-auto" /> : null}
       </div>
       <div className="p-5 flex flex-col gap-1.5 flex-1">

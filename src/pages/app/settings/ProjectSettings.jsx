@@ -19,6 +19,7 @@ import GitPanel from '../../../components/app/GitPanel.jsx'
 import DangerDeleteDialog from '../../../components/app/DangerDeleteDialog.jsx'
 import { updateProjectSettings, deleteProjectSettings, getProjectDeletionImpact } from '../../../lib/settings.js'
 import { isUnchangedName } from '../../../shell/shellLogic.js'
+import { toast } from '../../../components/ui/Toast.jsx'
 import {
   SettingsPageHeader,
   SettingsCard,
@@ -49,6 +50,7 @@ export default function ProjectSettings() {
 
   // Dialog
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   // Sync local state when active project changes
   useEffect(() => {
@@ -99,13 +101,21 @@ export default function ProjectSettings() {
     // DangerDeleteDialog only calls onConfirm when the typed name matches exactly,
     // so we can safely pass the known name as confirm_name to the API.
     const confirmName = impact?.name ?? activeProject?.name ?? ''
-    await deleteProjectSettings(projectId, confirmName)
-    const remaining = projects.filter((p) => p.id !== projectId)
-    setDialogOpen(false)
-    if (remaining.length > 0) {
-      setActiveProject(remaining[0].id)
+    setDeleting(true)
+    try {
+      await deleteProjectSettings(projectId, confirmName)
+      const remaining = projects.filter((p) => p.id !== projectId)
+      setDialogOpen(false)
+      if (remaining.length > 0) {
+        setActiveProject(remaining[0].id)
+      }
+      await refreshProjects()
+      toast.success('Project deleted.')
+    } catch (err) {
+      toast.error(err?.message ?? 'Failed to delete project.')
+    } finally {
+      setDeleting(false)
     }
-    await refreshProjects()
   }
 
   if (!projectId) {
@@ -235,6 +245,7 @@ export default function ProjectSettings() {
           resourceType="project"
           name={impact.name ?? activeProject?.name ?? ''}
           impact={impact}
+          loading={deleting}
           onConfirm={handleDelete}
           onCancel={() => setDialogOpen(false)}
         />

@@ -100,6 +100,17 @@ function UserMenu() {
     return () => document.removeEventListener('mousedown', onDown)
   }, [open])
 
+  // Close on Escape (matches the Escape-to-close behaviour of every other
+  // dropdown/dialog in the shell — WorkspaceSwitcher, NotificationCenter, etc).
+  useEffect(() => {
+    if (!open) return
+    function onKey(e) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+
   if (!user) return null
 
   const initials = (user.name || user.email || '?')

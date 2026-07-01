@@ -98,7 +98,10 @@ export default function ProfileSettings() {
             </Field>
 
             <Field label="Email address" hint="Your email address cannot be changed here.">
-              <div className="px-3 py-2 rounded-xl bg-bg/60 border border-border text-sm text-muted select-all">
+              <div
+                className="px-3 py-2 rounded-xl bg-bg/60 border border-border text-sm text-muted select-all truncate"
+                title={user?.email ?? undefined}
+              >
                 {user?.email ?? '—'}
               </div>
             </Field>

@@ -10,11 +10,11 @@ import { getAdminUsers } from '../../lib/admin.js'
 import {
   AdminCard,
   AdminTable,
+  AdminTableSkeleton,
   SearchInput,
   Pagination,
   RoleChip,
   SuperadminBadge,
-  LoadingState,
   ErrorState,
   EmptyState,
 } from './AdminUI.jsx'
@@ -71,22 +71,22 @@ export default function AdminUsersPage() {
 
       <AdminCard>
         {loading ? (
-          <LoadingState />
+          <AdminTableSkeleton columns={6} />
         ) : !data ? (
           <ErrorState message="Could not load users." onRetry={() => setReloadKey((k) => k + 1)} />
         ) : users.length === 0 ? (
-          <EmptyState message="No users match this search." />
+          <EmptyState message={search ? 'No users match this search.' : 'No users yet.'} />
         ) : (
           <AdminTable headers={['Email', 'Name', 'Created', 'Last login', 'Last location', 'Orgs']}>
             {users.map((u) => (
               <tr key={u.id} className="hover:bg-surface-2/50 transition-colors">
-                <td className="px-4 py-3 whitespace-nowrap">
-                  <div className="flex items-center gap-2">
-                    <span className="text-fg font-medium">{u.email}</span>
+                <td className="px-4 py-3 max-w-[220px]">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-fg font-medium truncate" title={u.email}>{u.email}</span>
                     {u.is_superadmin && <SuperadminBadge />}
                   </div>
                 </td>
-                <td className="px-4 py-3 whitespace-nowrap text-muted">{u.name || '—'}</td>
+                <td className="px-4 py-3 max-w-[160px] truncate text-muted" title={u.name || undefined}>{u.name || '—'}</td>
                 <td className="px-4 py-3 whitespace-nowrap text-muted tabular-nums">{fmtDate(u.created_at)}</td>
                 <td className="px-4 py-3 whitespace-nowrap text-muted tabular-nums">{fmtDateTime(u.last_login_at)}</td>
                 <td className="px-4 py-3 whitespace-nowrap text-muted">{u.last_location || '—'}</td>
@@ -95,7 +95,11 @@ export default function AdminUsersPage() {
                     {(u.orgs ?? []).length === 0
                       ? <span className="text-muted">—</span>
                       : u.orgs.map((o) => (
-                          <RoleChip key={o.id}>{o.name} · {o.role}</RoleChip>
+                          <RoleChip key={o.id}>
+                            <span className="max-w-[120px] truncate inline-block align-bottom" title={`${o.name} · ${o.role}`}>
+                              {o.name} · {o.role}
+                            </span>
+                          </RoleChip>
                         ))}
                   </div>
                 </td>

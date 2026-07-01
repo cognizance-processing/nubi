@@ -22,7 +22,7 @@
  * text-fg/text-muted, bg-primary/text-primary-fg) are used throughout.
  */
 
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Bell,
@@ -53,6 +53,7 @@ import {
 } from '../../lib/watches.js'
 import { listIntegrations } from '../../lib/integrationsApi.js'
 import { toast } from '../../components/ui/Toast.jsx'
+import Skeleton from '../../components/ui/Skeleton.jsx'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -110,9 +111,9 @@ function isEnabled(watch) {
 
 function StatePill({ state }) {
   const map = {
-    breached: { cls: 'bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20', label: 'Breached', Icon: AlertCircle },
-    ok:       { cls: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20', label: 'OK', Icon: CheckCircle2 },
-    error:    { cls: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20', label: 'Error', Icon: AlertTriangle },
+    breached: { cls: 'bg-danger-bg text-danger border-danger/20', label: 'Breached', Icon: AlertCircle },
+    ok:       { cls: 'bg-success-bg text-success border-success/20', label: 'OK', Icon: CheckCircle2 },
+    error:    { cls: 'bg-warning-bg text-warning border-warning/20', label: 'Error', Icon: AlertTriangle },
   }
   const m = map[state]
   if (!m) {
@@ -211,6 +212,7 @@ function WatchRow({ watch, metricName, canWrite, onEdit, onDeleted }) {
             <button
               onClick={() => onEdit?.(watch)}
               title="Edit"
+              aria-label={`Edit "${watch.name}"`}
               className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <Pencil size={13} />
@@ -222,6 +224,7 @@ function WatchRow({ watch, metricName, canWrite, onEdit, onDeleted }) {
               <button
                 onClick={handleDelete}
                 disabled={deleting}
+                aria-label={`Confirm delete "${watch.name}"`}
                 className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-50 transition-colors"
               >
                 {deleting ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
@@ -229,6 +232,8 @@ function WatchRow({ watch, metricName, canWrite, onEdit, onDeleted }) {
               </button>
               <button
                 onClick={() => setConfirmDelete(false)}
+                title="Cancel"
+                aria-label="Cancel delete"
                 className="h-8 w-8 flex items-center justify-center rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
               >
                 <X size={14} />
@@ -238,7 +243,8 @@ function WatchRow({ watch, metricName, canWrite, onEdit, onDeleted }) {
             <button
               onClick={() => setConfirmDelete(true)}
               title="Delete"
-              className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border text-muted hover:text-red-600 hover:border-red-200 hover:bg-red-50 dark:hover:text-red-400 dark:hover:border-red-900/40 dark:hover:bg-red-900/10 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
+              aria-label={`Delete "${watch.name}"`}
+              className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border text-muted hover:text-danger hover:border-danger/30 hover:bg-danger-bg transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <Trash2 size={13} />
             </button>
@@ -252,10 +258,10 @@ function WatchRow({ watch, metricName, canWrite, onEdit, onDeleted }) {
           className={[
             'mt-3 rounded-lg border p-3 text-xs',
             result.state === 'breached'
-              ? 'border-red-500/20 bg-red-500/5'
+              ? 'border-danger/20 bg-danger-bg'
               : result.state === 'error'
-                ? 'border-amber-500/20 bg-amber-500/5'
-                : 'border-emerald-500/20 bg-emerald-500/5',
+                ? 'border-warning/20 bg-warning-bg'
+                : 'border-success/20 bg-success-bg',
           ].join(' ')}
         >
           <div className="flex items-center gap-2">
@@ -273,7 +279,7 @@ function WatchRow({ watch, metricName, canWrite, onEdit, onDeleted }) {
             <p className="mt-2 text-fg/90 leading-relaxed">{result.explanation}</p>
           )}
           {result.error && (
-            <p className="mt-2 text-amber-600 dark:text-amber-400">{result.error}</p>
+            <p className="mt-2 text-warning">{result.error}</p>
           )}
           {result.state === 'ok' && !result.explanation && (
             <p className="mt-2 text-muted">Within threshold — no alert sent.</p>
@@ -388,6 +394,7 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
   const [draft, setDraft] = useState(blankDraft)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
+  const dialogRef = useRef(null)
 
   // Re-seed the draft each time the modal opens (create vs edit).
   useEffect(() => {
@@ -435,12 +442,19 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
   return (
     <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center p-0 sm:p-4">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full sm:max-w-lg max-h-[92dvh] flex flex-col bg-surface border border-border rounded-t-2xl sm:rounded-2xl shadow-2xl overflow-hidden">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="watch-modal-title"
+        tabIndex={-1}
+        className="relative w-full sm:max-w-lg max-h-[92dvh] flex flex-col bg-surface border border-border rounded-t-2xl sm:rounded-2xl shadow-2xl overflow-hidden outline-none"
+      >
         {/* Header */}
         <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-border">
           <div className="flex items-center gap-2">
             <Bell size={15} className="text-primary" strokeWidth={2.2} />
-            <h2 className="text-sm font-semibold text-fg">
+            <h2 id="watch-modal-title" className="text-sm font-semibold text-fg">
               {draft.id ? 'Edit watch' : 'New watch'}
             </h2>
           </div>
@@ -457,8 +471,9 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
           {/* Name */}
           <div>
-            <label className={LABEL_CLS}>Name</label>
+            <label htmlFor="watch-name" className={LABEL_CLS}>Name</label>
             <input
+              id="watch-name"
               type="text"
               value={draft.name}
               onChange={e => set({ name: e.target.value })}
@@ -470,8 +485,9 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
 
           {/* Metric */}
           <div>
-            <label className={LABEL_CLS}>Metric to monitor</label>
+            <label htmlFor="watch-metric" className={LABEL_CLS}>Metric to monitor</label>
             <select
+              id="watch-metric"
               value={draft.metric_id}
               onChange={e => set({ metric_id: e.target.value })}
               className={FIELD_CLS}
@@ -493,8 +509,9 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
           {/* Dimensions + grain */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className={LABEL_CLS}>Dimensions</label>
+              <label htmlFor="watch-dimensions" className={LABEL_CLS}>Dimensions</label>
               <input
+                id="watch-dimensions"
                 type="text"
                 value={draft.dimensions}
                 onChange={e => set({ dimensions: e.target.value })}
@@ -508,8 +525,9 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
               )}
             </div>
             <div>
-              <label className={LABEL_CLS}>Time grain</label>
+              <label htmlFor="watch-time-grain" className={LABEL_CLS}>Time grain</label>
               <select
+                id="watch-time-grain"
                 value={draft.time_grain}
                 onChange={e => set({ time_grain: e.target.value })}
                 className={FIELD_CLS}
@@ -553,8 +571,9 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
           {draft.ruleKind === 'threshold' ? (
             <div className="grid grid-cols-[auto_1fr] gap-3 items-end">
               <div>
-                <label className={LABEL_CLS}>Operator</label>
+                <label htmlFor="watch-threshold-op" className={LABEL_CLS}>Operator</label>
                 <select
+                  id="watch-threshold-op"
                   value={draft.thresholdOp}
                   onChange={e => set({ thresholdOp: e.target.value })}
                   className={[FIELD_CLS, 'font-mono'].join(' ')}
@@ -563,8 +582,9 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
                 </select>
               </div>
               <div>
-                <label className={LABEL_CLS}>Value</label>
+                <label htmlFor="watch-threshold-value" className={LABEL_CLS}>Value</label>
                 <input
+                  id="watch-threshold-value"
                   type="number"
                   value={draft.thresholdValue}
                   onChange={e => set({ thresholdValue: e.target.value })}
@@ -576,8 +596,9 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
           ) : (
             <div className="grid grid-cols-[auto_1fr] gap-3 items-end">
               <div>
-                <label className={LABEL_CLS}>Operator</label>
+                <label htmlFor="watch-change-op" className={LABEL_CLS}>Operator</label>
                 <select
+                  id="watch-change-op"
                   value={draft.changeOp}
                   onChange={e => set({ changeOp: e.target.value })}
                   className={[FIELD_CLS, 'font-mono'].join(' ')}
@@ -586,8 +607,9 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
                 </select>
               </div>
               <div>
-                <label className={LABEL_CLS}>Change %</label>
+                <label htmlFor="watch-change-value" className={LABEL_CLS}>Change %</label>
                 <input
+                  id="watch-change-value"
                   type="number"
                   value={draft.changeValue}
                   onChange={e => set({ changeValue: e.target.value })}
@@ -606,8 +628,9 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
             {integrations.length > 0 ? (
               <>
                 <div>
-                  <label className={LABEL_CLS}>Connected integration</label>
+                  <label htmlFor="watch-integration" className={LABEL_CLS}>Connected integration</label>
                   <select
+                    id="watch-integration"
                     value={draft.integrationId}
                     onChange={e => set({ integrationId: e.target.value })}
                     className={FIELD_CLS}
@@ -633,8 +656,9 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
                   channel in <span className="font-medium text-fg/80">Settings → Integrations</span>.
                 </p>
                 <div>
-                  <label className={LABEL_CLS}>Webhook URL</label>
+                  <label htmlFor="watch-slack-webhook" className={LABEL_CLS}>Webhook URL</label>
                   <input
+                    id="watch-slack-webhook"
                     type="text"
                     value={draft.slackWebhook}
                     onChange={e => set({ slackWebhook: e.target.value })}
@@ -643,8 +667,9 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
                   />
                 </div>
                 <div>
-                  <label className={LABEL_CLS}>Channel</label>
+                  <label htmlFor="watch-slack-channel" className={LABEL_CLS}>Channel</label>
                   <input
+                    id="watch-slack-channel"
                     type="text"
                     value={draft.slackChannel}
                     onChange={e => set({ slackChannel: e.target.value })}
@@ -672,7 +697,7 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
           </label>
 
           {error && (
-            <div className="flex items-start gap-2 text-xs text-red-600 dark:text-red-400">
+            <div className="flex items-start gap-2 text-xs text-danger">
               <AlertTriangle size={14} className="shrink-0 mt-0.5" />
               <span>{error}</span>
             </div>
@@ -801,15 +826,15 @@ export default function WatchesPage() {
         </p>
 
         {loading && (
-          <div className="flex items-center gap-2 text-sm text-muted py-12 justify-center">
-            <Loader2 size={16} className="animate-spin" /> Loading watches…
+          <div className="space-y-3" aria-label="Loading watches">
+            {[0, 1, 2].map(i => <Skeleton.Card key={i} rows={2} />)}
           </div>
         )}
 
         {!loading && error && (
-          <div className="flex flex-col items-center justify-center py-12 gap-3 rounded-xl border border-dashed border-red-200 dark:border-red-900/40">
-            <AlertTriangle size={20} className="text-red-500" />
-            <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+          <div className="flex flex-col items-center justify-center py-12 gap-3 rounded-xl border border-dashed border-danger/30">
+            <AlertTriangle size={20} className="text-danger" />
+            <p className="text-sm text-danger">{error}</p>
             <button onClick={load} className="text-xs text-muted hover:text-fg underline">Retry</button>
           </div>
         )}

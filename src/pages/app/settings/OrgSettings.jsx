@@ -247,7 +247,16 @@ export default function OrgSettings() {
                       </div>
                     )}
                     {impactError && (
-                      <p className="mt-2 text-xs text-red-600 dark:text-red-400">{impactError}</p>
+                      <div className="mt-2 flex items-center gap-2">
+                        <p className="text-xs text-red-600 dark:text-red-400">{impactError}</p>
+                        <button
+                          type="button"
+                          onClick={loadImpact}
+                          className="text-xs text-muted hover:text-fg underline shrink-0"
+                        >
+                          Retry
+                        </button>
+                      </div>
                     )}
                   </>
                 }

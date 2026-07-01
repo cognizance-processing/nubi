@@ -49,6 +49,7 @@ import {
   DangerButton,
   inputCls,
 } from './SettingsUI.jsx'
+import { toast } from '../../../components/ui/Toast.jsx'
 
 const MANAGE_ROLES = ['owner', 'admin']
 
@@ -191,8 +192,10 @@ function BridgeTokens({ bridgeId, canManage }) {
       const res = await mintBridgeToken(bridgeId)
       setRevealed(res?.token ?? null)
       await load()
+      toast.success('Bridge token generated.')
     } catch (e) {
       setErr(e?.message ?? 'Failed to generate token.')
+      toast.error(e?.message ?? 'Failed to generate token.')
     } finally {
       setMinting(false)
     }
@@ -205,8 +208,10 @@ function BridgeTokens({ bridgeId, canManage }) {
       const res = await rotateBridgeToken(bridgeId, t.id)
       setRevealed(res?.token ?? null)
       await load()
+      toast.success('Bridge token rotated.')
     } catch (e) {
       setErr(e?.message ?? 'Failed to rotate token.')
+      toast.error(e?.message ?? 'Failed to rotate token.')
     } finally {
       setBusyRow(null)
     }
@@ -219,8 +224,10 @@ function BridgeTokens({ bridgeId, canManage }) {
     try {
       await revokeBridgeToken(bridgeId, t.id)
       await load()
+      toast.success('Bridge token revoked.')
     } catch (e) {
       setErr(e?.message ?? 'Failed to revoke token.')
+      toast.error(e?.message ?? 'Failed to revoke token.')
     } finally {
       setBusyRow(null)
     }
@@ -279,6 +286,7 @@ function BridgeTokens({ bridgeId, canManage }) {
                       onClick={() => handleRotate(t)}
                       disabled={rowBusy}
                       title="Rotate token"
+                      aria-label="Rotate token"
                       className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-primary hover:bg-surface-2 transition-colors disabled:opacity-30 shrink-0"
                     >
                       {rowBusy ? <Loader2 size={13} className="animate-spin" /> : <RotateCw size={13} />}
@@ -288,6 +296,7 @@ function BridgeTokens({ bridgeId, canManage }) {
                       onClick={() => handleRevoke(t)}
                       disabled={rowBusy}
                       title="Revoke token"
+                      aria-label="Revoke token"
                       className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors disabled:opacity-30 shrink-0"
                     >
                       <Ban size={13} />
@@ -323,8 +332,10 @@ function BridgeCard({ bridge, canManage, onDeleted }) {
     try {
       await deleteBridge(bridge.id)
       onDeleted(bridge.id)
+      toast.success('Bridge deleted.')
     } catch (e) {
       setErr(e?.message ?? 'Failed to delete bridge.')
+      toast.error(e?.message ?? 'Failed to delete bridge.')
       setDeleting(false)
     }
   }
@@ -407,8 +418,10 @@ export default function BridgesSettings() {
       await createBridge(trimmed)
       setName('')
       await load()
+      toast.success('Bridge created.')
     } catch (e2) {
       setErr(e2?.message ?? 'Failed to create bridge.')
+      toast.error(e2?.message ?? 'Failed to create bridge.')
     } finally {
       setCreating(false)
     }

@@ -46,7 +46,8 @@
  *   surfaces the error message gracefully without retrying.
  */
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import { Loader2 } from 'lucide-react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { useResolvedParams } from '../VariableStore.jsx'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
@@ -192,6 +193,20 @@ function pickColumns(row, columns) {
 function EditModal({ row, columns, onConfirm, onCancel }) {
   const cols = pickColumns(row, columns)
   const [draft, setDraft] = useState(() => ({ ...row }))
+  const dialogRef = useRef(null)
+
+  // Escape to close
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape') onCancel() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onCancel])
+
+  // Focus the dialog panel on open
+  useEffect(() => {
+    const t = setTimeout(() => dialogRef.current?.focus(), 50)
+    return () => clearTimeout(t)
+  }, [])
 
   return (
     <div
@@ -201,7 +216,7 @@ function EditModal({ row, columns, onConfirm, onCancel }) {
       aria-label="Edit row before approving"
     >
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onCancel} />
-      <div className="relative bg-surface border border-border rounded-2xl shadow-2xl w-full max-w-md mx-4 p-5 flex flex-col gap-4">
+      <div ref={dialogRef} tabIndex={-1} className="relative bg-surface border border-border rounded-2xl shadow-2xl w-full max-w-md mx-4 p-5 flex flex-col gap-4 outline-none">
         <div className="flex items-center justify-between">
           <h4 className="text-sm font-semibold text-fg">Edit before approving</h4>
           <button
@@ -240,6 +255,21 @@ function EditModal({ row, columns, onConfirm, onCancel }) {
 
 function DryRunPreview({ diff, columns, onConfirm, onCancel }) {
   const cols = diff.rows && diff.rows.length > 0 ? pickColumns(diff.rows[0], columns) : []
+  const dialogRef = useRef(null)
+
+  // Escape to close
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape') onCancel() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onCancel])
+
+  // Focus the dialog panel on open
+  useEffect(() => {
+    const t = setTimeout(() => dialogRef.current?.focus(), 50)
+    return () => clearTimeout(t)
+  }, [])
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center"
@@ -248,7 +278,7 @@ function DryRunPreview({ diff, columns, onConfirm, onCancel }) {
       aria-label="Dry-run preview"
     >
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onCancel} />
-      <div className="relative bg-surface border border-border rounded-2xl shadow-2xl w-full max-w-lg mx-4 p-5 flex flex-col gap-4">
+      <div ref={dialogRef} tabIndex={-1} className="relative bg-surface border border-border rounded-2xl shadow-2xl w-full max-w-lg mx-4 p-5 flex flex-col gap-4 outline-none">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <h4 className="text-sm font-semibold text-fg">
@@ -495,12 +525,18 @@ function ActionRow({ row, index, columns, target, mode, approvalRequired, idempo
             {phase === 'submitting' && (
               <span className="text-xs text-muted italic">Processing…</span>
             )}
+            {phase === 'previewing' && !dryRunDiff && (
+              <span className="text-xs text-muted italic inline-flex items-center gap-1">
+                <Loader2 size={11} className="animate-spin" aria-hidden="true" />
+                Loading preview…
+              </span>
+            )}
             {error && (
               <span className="text-xs text-danger" role="alert">{error}</span>
             )}
           </div>
 
-          {!isDone && phase !== 'submitting' && (
+          {!isDone && phase === 'idle' && (
             <div className="flex items-center gap-1.5">
               <Button
                 variant="ghost"
@@ -638,12 +674,7 @@ export default function ActionWidget({ widget }) {
 
         {!loading && fetchError && (
           <div
-            className="px-3 py-2.5 text-xs rounded-xl border flex items-center gap-1.5"
-            style={{
-              color: 'var(--warning)',
-              background: 'var(--warning-bg)',
-              borderColor: 'color-mix(in srgb, var(--warning) 20%, transparent)',
-            }}
+            className="px-3 py-2.5 text-xs rounded-xl border border-warning/20 bg-warning-bg text-warning flex items-center gap-1.5"
             role="alert"
           >
             <span aria-hidden="true">&#9888;</span>

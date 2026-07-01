@@ -72,8 +72,8 @@ export default function AdminOrgDetailPage() {
           <AdminTable headers={['Email', 'Name', 'Role']}>
             {members.map((m) => (
               <tr key={m.user_id} className="hover:bg-surface-2/50 transition-colors">
-                <td className="px-4 py-3 whitespace-nowrap text-fg font-medium">{m.email}</td>
-                <td className="px-4 py-3 whitespace-nowrap text-muted">{m.name || '—'}</td>
+                <td className="px-4 py-3 max-w-[240px] truncate text-fg font-medium" title={m.email}>{m.email}</td>
+                <td className="px-4 py-3 max-w-[180px] truncate text-muted" title={m.name || undefined}>{m.name || '—'}</td>
                 <td className="px-4 py-3 whitespace-nowrap"><RoleChip>{m.role}</RoleChip></td>
               </tr>
             ))}
@@ -89,8 +89,8 @@ export default function AdminOrgDetailPage() {
           <AdminTable headers={['Name', 'Slug', 'Created']}>
             {projects.map((p) => (
               <tr key={p.id} className="hover:bg-surface-2/50 transition-colors">
-                <td className="px-4 py-3 whitespace-nowrap text-fg font-medium">{p.name}</td>
-                <td className="px-4 py-3 whitespace-nowrap text-muted">{p.slug || '—'}</td>
+                <td className="px-4 py-3 max-w-[240px] truncate text-fg font-medium" title={p.name}>{p.name}</td>
+                <td className="px-4 py-3 max-w-[180px] truncate text-muted" title={p.slug || undefined}>{p.slug || '—'}</td>
                 <td className="px-4 py-3 whitespace-nowrap text-muted tabular-nums">{fmtDate(p.created_at)}</td>
               </tr>
             ))}

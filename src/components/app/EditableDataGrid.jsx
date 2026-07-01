@@ -159,7 +159,7 @@ function CellEditor({ col, initialValue, onCommit, onCommitMove, onCancel, seed 
         {col.nullable && (
           <button onClick={commitNull} className="text-[10px] text-muted hover:text-fg px-1" title="Set NULL">∅</button>
         )}
-        <button onClick={onCancel} className="text-muted hover:text-fg" title="Cancel (Esc)"><X size={12} /></button>
+        <button onClick={onCancel} className="text-muted hover:text-fg" title="Cancel (Esc)" aria-label="Cancel edit"><X size={12} /></button>
       </div>
     )
   }
@@ -331,7 +331,7 @@ function FilterPanel({ columns, filters, setFilters, onClose }) {
                   className="w-20 h-7 px-1.5 text-[11px] font-mono bg-surface-2 border border-border rounded text-fg placeholder:text-muted/50 focus:outline-none focus:ring-1 focus:ring-ring"
                 />
               )}
-              <button onClick={() => remove(i)} className="shrink-0 text-muted hover:text-rose-500" title="Remove">
+              <button onClick={() => remove(i)} className="shrink-0 text-muted hover:text-rose-500" title="Remove" aria-label="Remove filter">
                 <X size={13} />
               </button>
             </div>
@@ -428,7 +428,7 @@ function RowDetailPanel({ row, columns, readOnly, writable, hasPk, onClose, onSa
             <PanelRightOpen size={15} className="text-primary" />
             <h3 className="text-sm font-semibold text-fg">Row detail</h3>
           </div>
-          <button onClick={onClose} className="text-muted hover:text-fg" title="Close (Esc)"><X size={16} /></button>
+          <button onClick={onClose} className="text-muted hover:text-fg" title="Close (Esc)" aria-label="Close row detail"><X size={16} /></button>
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
@@ -962,7 +962,7 @@ export default function EditableDataGrid({
         )}
 
         <button
-          onClick={onRefresh} disabled={loading} title="Refresh"
+          onClick={onRefresh} disabled={loading} title="Refresh" aria-label="Refresh data"
           className="flex items-center justify-center w-7 h-7 rounded-md border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40"
         ><RefreshCw size={13} className={loading ? 'animate-spin' : ''} /></button>
       </div>
@@ -977,7 +977,7 @@ export default function EditableDataGrid({
       {actionError && (
         <div className="shrink-0 flex items-center gap-2 px-4 py-1.5 bg-rose-500/5 border-b border-rose-500/15 text-[11px] text-rose-600 dark:text-rose-400">
           <AlertCircle size={11} /> {actionError}
-          <button onClick={() => setActionError(null)} className="ml-auto"><X size={11} /></button>
+          <button onClick={() => setActionError(null)} className="ml-auto" aria-label="Dismiss error"><X size={11} /></button>
         </div>
       )}
 

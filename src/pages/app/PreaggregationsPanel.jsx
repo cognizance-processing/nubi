@@ -182,7 +182,7 @@ function SuggestionCard({ suggestion, canWrite, onBuild, buildState }) {
       </div>
 
       {errored && (
-        <p className="mt-2 text-[11px] text-rose-500 flex items-center gap-1">
+        <p className="mt-2 text-[11px] text-danger flex items-center gap-1">
           <AlertCircle size={10} /> {buildState?.message ?? 'Build failed.'}
         </p>
       )}
@@ -353,6 +353,7 @@ export default function PreaggregationsPanel() {
             disabled={loading}
             className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors shrink-0"
             title="Refresh suggestions and built rollups"
+            aria-label="Refresh suggestions and built rollups"
           >
             <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
             <span className="hidden sm:inline">Refresh</span>
@@ -386,7 +387,7 @@ export default function PreaggregationsPanel() {
 
         {/* ── Error banner ─────────────────────────────────────────────── */}
         {error && (
-          <div className="mt-4 flex items-center gap-2 rounded-xl bg-rose-500/5 border border-rose-500/20 px-3 py-2 text-xs text-rose-600 dark:text-rose-400">
+          <div className="mt-4 flex items-center gap-2 rounded-xl bg-danger-bg border border-danger/20 px-3 py-2 text-xs text-danger">
             <AlertCircle size={13} />
             {error}
           </div>
