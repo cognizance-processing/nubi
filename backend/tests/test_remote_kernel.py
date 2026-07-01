@@ -899,3 +899,110 @@ def test_router_oversized_remote_configured():
         router.place({"kind": "python", "est_rows": _DEFAULT_BROWSER_ROW_CAP + 1})
         == "remote_kernel"
     )
+
+
+# ===========================================================================
+# 21. Honesty audit — unimplemented remote providers fail fast/open, never
+#     with a misleading success/None. Covers _choose_runner('modal') selection,
+#     ModalRunner.run() with SDK+credentials present (the deepest stub path),
+#     and confirms E2B/local selection is unaffected.
+# ===========================================================================
+
+
+def test_choose_runner_modal_selection_returns_stub_that_fails_on_run():
+    """KERNEL_REMOTE_PROVIDER=modal + creds → _choose_runner returns ModalRunner,
+    and calling .run() on it raises AppError('kernel_unavailable', 503)
+    immediately (the failure surfaces at first-use, not deep inside a stub the
+    caller can't observe)."""
+    from app.compute.remote_modal import ModalRunner
+    from app.errors import AppError
+    from app.routes.compute import _choose_runner
+
+    env_patch = {
+        "ENV": "production",
+        "KERNEL_REMOTE_PROVIDER": "modal",
+        "E2B_API_KEY": "",
+        "MODAL_TOKEN_ID": "modal-tok-id",
+        "MODAL_TOKEN_SECRET": "modal-tok-secret",
+        "KERNEL_LOCAL_ENABLED": "false",
+    }
+
+    class _FakeModalModule:
+        """Stand-in for the real ``modal`` package (installed + importable)."""
+
+    with patch.dict(os.environ, env_patch):
+        from app.config import get_settings
+
+        get_settings.cache_clear()
+        try:
+            runner = _choose_runner()
+        finally:
+            get_settings.cache_clear()
+
+    assert isinstance(runner, ModalRunner)
+
+    # Even with the SDK "installed" and credentials present, run() must still
+    # fail honestly — never return a misleading success/None.
+    with patch(
+        "app.compute.remote_modal._get_modal_module",
+        return_value=_FakeModalModule(),
+    ):
+        with pytest.raises(AppError) as exc_info:
+            runner.run(code="result = pa.table({'x': [1]})", inputs={}, timeout_s=30)
+
+    err = exc_info.value
+    assert err.code == "kernel_unavailable"
+    assert err.status == 503
+    assert "not yet fully implemented" in err.message
+    assert "e2b" in err.message.lower()
+
+
+def test_modal_runner_sdk_and_credentials_present_still_503():
+    """ModalRunner.run() with a mocked-installed SDK AND valid credentials still
+    raises kernel_unavailable/503 — this is the deepest stub path (guard clauses
+    passed) and it must fail clearly, not silently no-op or return None."""
+    from app.compute.remote_modal import ModalRunner
+    from app.errors import AppError
+
+    class _FakeModalModule:
+        pass
+
+    runner = ModalRunner(token_id="tok-id", token_secret="tok-secret")
+    with patch(
+        "app.compute.remote_modal._get_modal_module",
+        return_value=_FakeModalModule(),
+    ):
+        with pytest.raises(AppError) as exc_info:
+            runner.run(code="result = pa.table({'x': [1]})", inputs={}, timeout_s=30)
+
+    err = exc_info.value
+    assert err.code == "kernel_unavailable"
+    assert err.status == 503
+    assert "not yet fully implemented" in err.message
+
+
+def test_choose_runner_e2b_selection_still_works_when_modal_env_also_set():
+    """Sanity: E2B remains selectable/functional even with Modal env vars
+    present, confirming the honesty work on the Modal stub does not regress
+    the real, shipped E2B path (E2B is checked first in _choose_runner)."""
+    from app.compute.remote_e2b import E2BRunner
+    from app.routes.compute import _choose_runner
+
+    env_patch = {
+        "ENV": "production",
+        "KERNEL_REMOTE_PROVIDER": "e2b",
+        "E2B_API_KEY": "e2b-key",
+        "MODAL_TOKEN_ID": "unused-modal-id",
+        "MODAL_TOKEN_SECRET": "unused-modal-secret",
+        "KERNEL_LOCAL_ENABLED": "false",
+    }
+    with patch.dict(os.environ, env_patch):
+        from app.config import get_settings
+
+        get_settings.cache_clear()
+        try:
+            runner = _choose_runner()
+        finally:
+            get_settings.cache_clear()
+
+    assert isinstance(runner, E2BRunner)

@@ -27,8 +27,13 @@ This module defines the SEAM, not a full Fly orchestrator:
   * :class:`FlyMachineExecutor` — a clearly-marked SKELETON for *explicit*
     wake/sleep, where Nubi (not the Fly proxy) drives ``scale count 0 -> 1`` on
     demand, waits for readiness, runs, and scales back.  This is the honest TODO:
-    the methods raise / no-op with NotImplementedError-style guards so the seam
-    compiles and can be selected, but the Machines API calls are stubs.
+    NOT IMPLEMENTED — it is a placeholder for a future backing.  Its ``_wake``/
+    ``_sleep`` primitives raise ``NotImplementedError`` immediately (no
+    misleading no-op), and are never called by ``submit()`` today.  Selecting
+    ``NUBI_SERVERLESS_BACKEND=fly`` does not break anything — per the
+    :class:`ServerlessExecutor` fail-open contract, ``submit()`` delegates to a
+    genuinely working backing (the pool) — but a warning is logged at selection
+    time so operators know explicit Fly Machine control is NOT active.
 
 NO ROUTE WIRING happens here.  ``routes/query.py`` is untouched; wiring the
 planner to call ``get_default_executor().submit(...)`` is a later task.  This
@@ -49,6 +54,7 @@ OPEN-CORE / INVARIANTS
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from dataclasses import dataclass, field
@@ -56,6 +62,8 @@ from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from fastapi import Request
+
+logger = logging.getLogger("nubi.compute.serverless")
 
 
 # ---------------------------------------------------------------------------
@@ -282,13 +290,22 @@ async def _maybe_await(value: Any) -> Any:
 # SKELETON — explicit Fly Machine wake/sleep (the honest TODO).
 # ---------------------------------------------------------------------------
 class FlyMachineExecutor:
-    """SKELETON: drive ``scale count 0 -> 1`` ourselves on the Fly Machines API.
+    """NOT IMPLEMENTED — placeholder for a future explicit Fly Machines backing.
 
     Unlike :class:`HeavyPoolExecutor` (where Fly's PROXY wakes machines on the
     inbound request), this backing would have Nubi explicitly orchestrate the
     lifecycle — useful when work isn't request-shaped (e.g. a scheduled rollup
     refresh with no inbound HTTP) or when we want tighter control over warm-pool
     size, machine class, and sleep timing than ``auto_stop_machines`` gives.
+
+    Selecting it fails HONESTLY: ``_wake``/``_sleep`` raise
+    ``NotImplementedError`` immediately if ever called (no misleading no-op),
+    and a warning is logged as soon as this class is constructed (selection
+    time) so the choice is never silently swallowed.  ``submit()`` itself never
+    calls the unimplemented primitives — it fails OPEN to a real, working
+    backing (the heavy pool), per the :class:`ServerlessExecutor` contract's
+    fail-open guarantee.  Net effect: choosing ``fly`` today is equivalent to
+    the pool backing, clearly logged as such — never a fake/partial result.
 
     Lifecycle (TODO — none of this is implemented; calls below are stubs):
 
@@ -313,25 +330,46 @@ class FlyMachineExecutor:
         # Until the Machines API is wired, delegate everything to a working
         # backing (default: the heavy-pool executor). This keeps the seam usable
         # and honest: selecting FlyMachineExecutor does NOT silently break.
+        #
+        # HONESTY: log at selection/construction time (not buried inside a
+        # never-called stub) so an operator who sets
+        # NUBI_SERVERLESS_BACKEND=fly immediately sees that explicit Fly
+        # Machines wake/sleep is NOT implemented and this falls back to the
+        # pool backing.
+        logger.warning(
+            "NUBI_SERVERLESS_BACKEND=fly selected: explicit Fly Machines "
+            "wake/sleep is NOT IMPLEMENTED (forward-compat placeholder only). "
+            "Falling back to HeavyPoolExecutor (pool-based scale-to-zero) — "
+            "this is a real, working path, not a fake result, but you are NOT "
+            "getting Nubi-driven explicit machine control."
+        )
         self._fallback: ServerlessExecutor = fallback or HeavyPoolExecutor()
 
     async def _wake(self, connector_cfg: dict[str, Any]) -> bool:
-        """TODO: scale count 0 -> 1 via Fly Machines API; return True when warm.
+        """NOT IMPLEMENTED — placeholder for a future Fly Machines wake call.
 
-        Skeleton: returns False (no machine woken) so callers fall back.
+        Fails fast: raises immediately rather than returning a misleading
+        ``False``/no-op. Not called by :meth:`submit` today (see class
+        docstring); reserved for when the Machines API integration lands.
         """
         # TODO(W4-E): httpx POST {FLY_MACHINES_API}/apps/{app}/machines/{id}/start
         # then poll GET .../machines/{id} until state == "started"; health check.
         raise NotImplementedError(
             "FlyMachineExecutor._wake: Fly Machines wake not yet implemented "
-            "(see MANAGED_LAKEHOUSE.md §3 / Wave 4 W4-E). Use HeavyPoolExecutor."
+            "(see MANAGED_LAKEHOUSE.md §3 / Wave 4 W4-E). Use HeavyPoolExecutor "
+            "(NUBI_SERVERLESS_BACKEND=pool, the default) instead."
         )
 
     async def _sleep(self) -> None:
-        """TODO: scale back to zero (stop the machine) after the idle window."""
+        """NOT IMPLEMENTED — placeholder for a future explicit machine stop.
+
+        Fails fast: raises immediately. Not called by :meth:`submit` today.
+        """
         # TODO(W4-E): POST .../machines/{id}/stop, or lean on auto_stop_machines.
         raise NotImplementedError(
-            "FlyMachineExecutor._sleep: explicit machine stop not implemented."
+            "FlyMachineExecutor._sleep: explicit machine stop not implemented "
+            "(see MANAGED_LAKEHOUSE.md §3 / Wave 4 W4-E). Use HeavyPoolExecutor "
+            "(NUBI_SERVERLESS_BACKEND=pool, the default) instead."
         )
 
     async def submit(
@@ -354,7 +392,10 @@ def get_default_executor(
 
     ``NUBI_SERVERLESS_BACKEND``:
       * unset / ``pool`` / ``auto`` → :class:`HeavyPoolExecutor` (works today).
-      * ``fly`` → :class:`FlyMachineExecutor` (skeleton; falls back to pool).
+      * ``fly`` → :class:`FlyMachineExecutor` — NOT IMPLEMENTED (placeholder for
+        a future explicit Fly Machines backing). Selecting it logs a clear
+        warning at construction time and falls open to the pool backing; it
+        never returns a fake/partial result and never silently no-ops.
       * ``local`` → :class:`HeavyPoolExecutor` with no forwarder (always
         in-process — self-host / dev).
 

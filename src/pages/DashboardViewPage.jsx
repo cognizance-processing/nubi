@@ -15,23 +15,23 @@
  * For spec dashboards, DashboardViewPage manages the variable store seed values:
  *
  *   Precedence (highest → lowest):
- *     1. Embed-token-locked params (HOOK — not yet wired; see comment below)
+ *     1. Embed-token-locked params (wired — see `embedLockedParams` below)
  *     2. URL search params (?varName=value)
  *     3. spec.variables defaults
  *
  * When a filter widget changes a variable, the new value is written back to the
  * URL via setSearchParams (shallow replace, so no extra history entry).
  *
- * Embed-token integration hook:
- *   A future embed integration can call SpecRenderer with locked initialVariables
- *   sourced from a verified embed JWT.  Those locked values must:
- *     a) Override URL params (the token wins).
- *     b) Not be writable by filter widgets in the page (the store should be
- *        initialised with those values and the filter widget's setVariable call
- *        should be a no-op for locked names).
- *   Until that integration lands, the hook is represented by the
- *   `embedLockedParams` constant below (always {} for now).  Wire it once the
- *   embed token is verified server-side and passed to this page as a prop.
+ * Embed-token integration:
+ *   `embedLockedParams` reads `_token`/`_embed` off the URL, client-side
+ *   base64-decodes the JWT payload via `decodeJwtPayload` (dashboards/embedLock.js),
+ *   and extracts `locked_params`.  Those locked values:
+ *     a) Override URL params (the token wins — merged last into initialVariables).
+ *     b) Are stripped from `knownVarNames`, so filter widgets/URL sync cannot
+ *        write to a locked variable name.
+ *   Fail-closed: an absent/malformed token yields `embedLockedParams = {}` (no
+ *   access widening). The client-side decode is trust-on-read only — the
+ *   server independently verifies the token signature and re-enforces the lock.
  */
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
