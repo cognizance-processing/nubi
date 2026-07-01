@@ -30,13 +30,15 @@ COPY index.html vite.config.js tailwind.config.js postcss.config.js ./
 COPY public/ public/
 COPY src/ src/
 COPY docs/ docs/
+# src/main.jsx imports ../embed/widgets/*.js, so embed/ must be in the context
+# for the MAIN build too — not only for build:embed/build:widgets below.
+COPY embed/ embed/
 
 RUN npm run build
 
 # Embed bundles (<nubi-dashboard> / <nubi-widgets> drop-in scripts) → dist-embed/.
 # Served by the backend at /embed/* (see the embed block in backend/main.py).
 COPY vite.embed.config.js vite.widgets.config.js ./
-COPY embed/ embed/
 RUN npm run build:embed && npm run build:widgets
 
 # ── Stage 2: Python dependencies ────────────────────────────────────────────
