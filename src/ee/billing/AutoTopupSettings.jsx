@@ -22,7 +22,7 @@
  * className   string             Extra class names applied to the root element.
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useId } from 'react'
 import {
   Settings2,
   CreditCard,
@@ -31,7 +31,7 @@ import {
   Loader2,
   Info,
 } from 'lucide-react'
-import { setAutoTopup, formatUsd, centsToUsd, usdToCents } from '../../lib/ee/wallet.js'
+import { setAutoTopup, centsToUsd, usdToCents } from '../../lib/ee/wallet.js'
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -39,17 +39,30 @@ import { setAutoTopup, formatUsd, centsToUsd, usdToCents } from '../../lib/ee/wa
 
 /**
  * A labelled number input that works in USD.
+ *
+ * Always accessible: when `label` is non-empty it renders a visible
+ * <label htmlFor> wired to the input's id. When `label` is empty (the
+ * monthly-cap / spend-cap sub-fields, which sit directly under a checkbox
+ * label) the hint text is still exposed to assistive tech via aria-label so
+ * the field is never an unlabelled number input.
  */
 function UsdInput({ label, hint, value, onChange, min = 1, max = 100000, disabled }) {
+  const autoId = useId()
+  const inputId = `usd-input-${autoId}`
+  const accessibleLabel = label || hint || 'Amount (USD)'
+
   return (
     <div className="space-y-1.5">
-      <label className="block text-sm font-medium text-fg">
-        {label}
-        {hint && <span className="ml-1.5 text-xs font-normal text-muted">({hint})</span>}
-      </label>
+      {label && (
+        <label htmlFor={inputId} className="block text-sm font-medium text-fg">
+          {label}
+          {hint && <span className="ml-1.5 text-xs font-normal text-muted">({hint})</span>}
+        </label>
+      )}
       <div className="flex items-center gap-2">
-        <span className="text-sm font-medium text-fg">$</span>
+        <span className="text-sm font-medium text-fg" aria-hidden="true">$</span>
         <input
+          id={inputId}
           type="number"
           min={min}
           max={max}
@@ -57,6 +70,7 @@ function UsdInput({ label, hint, value, onChange, min = 1, max = 100000, disable
           value={value}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
+          aria-label={label ? undefined : accessibleLabel}
           className="w-32 px-3 py-1.5 rounded-lg border border-border bg-surface text-sm text-fg focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-50 disabled:cursor-not-allowed"
         />
         <span className="text-xs text-muted">USD</span>
@@ -335,15 +349,16 @@ export default function AutoTopupSettings({ config, onSaved, className }) {
           )}
         </div>
 
-        {/* Feedback */}
+        {/* Feedback — role="status"/"alert" so screen readers announce the outcome
+            without requiring focus to move (the save button stays focused). */}
         {saveError && (
-          <p className="text-xs text-red-600 dark:text-red-400 flex items-center gap-1.5">
+          <p role="alert" className="text-xs text-red-600 dark:text-red-400 flex items-center gap-1.5">
             <AlertCircle size={12} />
             {saveError}
           </p>
         )}
         {savedOk && (
-          <p className="text-xs text-teal-600 dark:text-teal-400 flex items-center gap-1.5">
+          <p role="status" className="text-xs text-teal-600 dark:text-teal-400 flex items-center gap-1.5">
             <CheckCircle size={12} />
             Settings saved.
           </p>

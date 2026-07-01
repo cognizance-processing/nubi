@@ -30,7 +30,12 @@
 function fmtDate(iso) {
   if (!iso) return ''
   try {
-    return new Date(iso).toLocaleDateString('en-ZA', {
+    const d = new Date(iso)
+    // toLocaleDateString does NOT throw on an invalid Date — it silently
+    // returns the string "Invalid Date". Guard explicitly so a malformed
+    // updated_at from the backend never leaks that string into the UI.
+    if (Number.isNaN(d.getTime())) return ''
+    return d.toLocaleDateString('en-ZA', {
       day: 'numeric',
       month: 'short',
       year: 'numeric',
