@@ -52,6 +52,18 @@ const mdFiles = import.meta.glob(
     '/docs/lakehouse.md',
     '/docs/development.md',
     '/docs/docs-and-screenshots.md',
+    // Feature docs (shipped + linked from README/index, previously unreachable in-app)
+    '/docs/metrics-reference.md',
+    '/docs/semantic-and-data-apps.md',
+    '/docs/transformation.md',
+    '/docs/materialization.md',
+    '/docs/data-health.md',
+    '/docs/lineage.md',
+    '/docs/governance.md',
+    '/docs/mcp.md',
+    '/docs/embed-api.md',
+    '/docs/custody-tier.md',
+    '/docs/compute-kernel-attribution-runner.md',
   ],
   { query: '?raw', import: 'default', eager: true }
 )
@@ -63,16 +75,16 @@ const LAYOUT = [
   { section: null,                  group: 'Home',              slugs: ['home'] },
 
   { section: 'Using Nubi',          group: 'Get started',       slugs: ['quickstart', 'getting-started', 'ui-tour'] },
-  { section: 'Using Nubi',          group: 'Work with data',    slugs: ['connectors', 'queries-and-params', 'pre-aggregations', 'dashboards', 'exports-and-jobs'] },
-  { section: 'Using Nubi',          group: 'Automate & build',  slugs: ['flows', 'ai-and-mcp', 'embedding'] },
+  { section: 'Using Nubi',          group: 'Work with data',    slugs: ['connectors', 'queries-and-params', 'metrics-reference', 'pre-aggregations', 'dashboards', 'data-health', 'lineage', 'governance', 'exports-and-jobs'] },
+  { section: 'Using Nubi',          group: 'Automate & build',  slugs: ['flows', 'transformation', 'materialization', 'semantic-and-data-apps', 'ai-and-mcp', 'mcp', 'embedding', 'embed-api'] },
   { section: 'Using Nubi',          group: 'Your account',      slugs: ['organization-settings', 'notifications-and-integrations'] },
   { section: 'Using Nubi',          group: 'Reference',         slugs: ['how-to', 'api-reference'] },
 
   { section: 'Nubi Cloud',          group: 'Cloud & billing',   slugs: ['cloud', 'billing-and-usage'] },
 
   { section: 'Open-source project', group: 'Self-host',         slugs: ['self-host', 'open-core', 'architecture-open-core'] },
-  { section: 'Open-source project', group: 'Security & internals', slugs: ['connector-security', 'kernel-security', 'cache-key-spec', 'conformance', 'secrets'] },
-  { section: 'Open-source project', group: 'Build on Nubi',     slugs: ['sdk-and-cli', 'files-as-code', 'git-sync', 'bridges', 'lakehouse'] },
+  { section: 'Open-source project', group: 'Security & internals', slugs: ['connector-security', 'kernel-security', 'custody-tier', 'cache-key-spec', 'conformance', 'secrets'] },
+  { section: 'Open-source project', group: 'Build on Nubi',     slugs: ['sdk-and-cli', 'files-as-code', 'git-sync', 'bridges', 'lakehouse', 'compute-kernel-attribution-runner'] },
   { section: 'Open-source project', group: 'Contributing',      slugs: ['development', 'docs-and-screenshots'] },
 ]
 
