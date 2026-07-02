@@ -34,6 +34,27 @@ export default defineConfig([
     },
     rules: {
       'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]', argsIgnorePattern: '^[A-Z_]', destructuredArrayIgnorePattern: '^[A-Z_]' }],
+      // Fast Refresh is a dev-HMR optimisation, not a correctness rule — advisory.
+      'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+      // Classic React-hooks linting: rules-of-hooks catches real bugs (error, from
+      // the recommended set); exhaustive-deps stays advisory (warn).
+      'react-hooks/exhaustive-deps': 'warn',
+      // The plugin's latest recommended set also enables experimental,
+      // React-Compiler-era rules. They're opt-in and too aggressive for this
+      // codebase, so disable them (rules-of-hooks above remains enforced).
+      'react-hooks/error-boundaries': 'off',
+      'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/immutability': 'off',
+      'react-hooks/static-components': 'off',
+      'react-hooks/preserve-manual-memoization': 'off',
+      'react-hooks/incompatible-library': 'off',
+    },
+  },
+  // Test + e2e files run under Node/Vitest/Playwright — give them those globals.
+  {
+    files: ['**/*.test.{js,mjs,jsx}', 'embed/__tests__/**/*.js', 'embed/e2e/**/*.js', 'src/**/*.test.mjs'],
+    languageOptions: {
+      globals: { ...globals.node, ...globals.vitest },
     },
   },
 ])

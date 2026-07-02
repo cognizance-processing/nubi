@@ -43,9 +43,9 @@
  * ThemeContext is absent (e.g. in Storybook), defaults to 'light'.
  */
 
-import { useRef, useCallback, useEffect } from 'react'
+import { useRef, useCallback, useEffect, useContext } from 'react'
 import Editor from '@monaco-editor/react'
-import { useTheme } from '../contexts/ThemeContext.jsx'
+import { ThemeContext } from '../contexts/ThemeContext.jsx'
 
 // ---------------------------------------------------------------------------
 // severity map
@@ -69,7 +69,6 @@ export default function CodeEditor({
   value = '',
   onChange,
   language = 'sql',
-  dialect,      // informational only — SqlEditor uses it; we ignore it here
   markers = [],
   height = '200px',
   readOnly = false,
@@ -84,13 +83,9 @@ export default function CodeEditor({
   minimap = false,
   padding = { top: 8, bottom: 8 },
 }) {
-  // Theme — soft-fail if ThemeProvider is absent (e.g. tests / Storybook)
-  let themeVal = 'light'
-  try {
-    themeVal = useTheme().theme
-  } catch {
-    // Outside ThemeProvider
-  }
+  // Theme — null-safe read so this renders outside a ThemeProvider (tests /
+  // Storybook) without a conditional hook call.
+  const themeVal = useContext(ThemeContext)?.theme ?? 'light'
   const monacoTheme = themeVal === 'dark' ? 'vs-dark' : 'light'
 
   // Internal refs

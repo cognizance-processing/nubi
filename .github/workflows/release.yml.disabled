@@ -1,3 +1,6 @@
+# DISABLED for now — GitHub only runs *.yml/*.yaml in this dir, so the
+# .disabled suffix keeps this pipeline inert but preserved. Re-enable with:
+#   git mv .github/workflows/release.yml.disabled .github/workflows/release.yml
 name: Release
 
 # Versioning is tag-driven: push an annotated semver tag (vX.Y.Z) and this

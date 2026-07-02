@@ -223,7 +223,7 @@ export function createScatter(canvas) {
       positionBuf.destroy()
       colorBuf.destroy()
       regl.destroy()
-    } catch (_) {
+    } catch {
       // Ignore errors during teardown (e.g., context already lost)
     }
   }

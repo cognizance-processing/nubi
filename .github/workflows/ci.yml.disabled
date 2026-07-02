@@ -1,3 +1,6 @@
+# DISABLED for now — GitHub only runs *.yml/*.yaml in this dir, so the
+# .disabled suffix keeps this pipeline inert but preserved. Re-enable with:
+#   git mv .github/workflows/ci.yml.disabled .github/workflows/ci.yml
 name: CI
 
 on:

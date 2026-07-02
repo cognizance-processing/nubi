@@ -453,7 +453,6 @@ function SpecRendererBody({
       if (t === effectiveTabId) return true
       return t == null && effectiveTabId === firstTabId
     })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [widgets, effectiveTabId, firstTabId, tabs.length])
 
   // Header (filter-bar) widgets, tab-scoped + sorted by widget.order ascending.
@@ -466,7 +465,6 @@ function SpecRendererBody({
           return t == null && effectiveTabId === firstTabId
         })
     return [...scoped].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [headerWidgets, effectiveTabId, firstTabId, tabs.length])
 
   const drawerTitle = openDrawer === 'filters'

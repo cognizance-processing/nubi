@@ -19,7 +19,10 @@
 
 import { createContext, useContext, useEffect, useState } from 'react'
 
-const ThemeContext = createContext(null)
+// Exported so components that must render outside a ThemeProvider (editors used
+// in tests / Storybook) can read it via useContext with a null-safe default,
+// instead of calling useTheme() in a try/catch (which violates rules-of-hooks).
+export const ThemeContext = createContext(null)
 
 const STORAGE_KEY = 'nubi-theme'
 

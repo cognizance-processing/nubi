@@ -86,7 +86,7 @@ export default function TranspileDialog({ open, onClose, initialSql = '', onAppl
       await navigator.clipboard.writeText(translated)
       setCopied(true)
       setTimeout(() => setCopied(false), 1800)
-    } catch {}
+    } catch { /* ignore: clipboard write may be blocked/unavailable */ }
   }, [translated])
 
   const handleReplace = useCallback(() => {

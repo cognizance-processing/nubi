@@ -215,7 +215,6 @@ export function VariableProvider({
     } catch (err) {
       // Defer the side-effecting report out of render.
       setTimeout(() => { onGraphErrorRef.current?.(err) }, 0)
-      // eslint-disable-next-line no-console
       console.warn('[VariableStore] filter graph build rejected:', err?.message)
       return null
     }

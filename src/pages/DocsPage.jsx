@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import {
   Menu, X, ChevronRight, BookOpen, FileText, Search,
@@ -194,7 +194,7 @@ function buildIndex() {
     slug: doc.slug,
     title: doc.title,
     group: doc.group,
-    content: (doc.content ?? '').replace(/[#*`>\-\[\]]/g, '').replace(/\s+/g, ' ').trim(),
+    content: (doc.content ?? '').replace(/[#*`>\-[\]]/g, '').replace(/\s+/g, ' ').trim(),
   }))
 }
 
@@ -316,7 +316,6 @@ function SearchModal({ onClose }) {
 
   // Group label for result
   const allDocs = getDocs()
-  const recent  = allDocs.slice(0, 5)
 
   return (
     <div
@@ -422,7 +421,7 @@ function SearchModal({ onClose }) {
                 All Docs
               </p>
               <ul>
-                {allDocs.slice(0, 6).map((d, i) => {
+                {allDocs.slice(0, 6).map((d) => {
                   const Icon = docIcon(d.slug)
                   return (
                     <li key={d.slug}>

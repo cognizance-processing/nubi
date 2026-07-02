@@ -28,7 +28,7 @@
  *  nubi:export — { rows: number, format: 'csv' }
  */
 
-import { resolveToken, fetchArrow, escapeHtml, formatCell, el, BASE_STYLES } from './shared.js'
+import { resolveToken, escapeHtml, formatCell, BASE_STYLES } from './shared.js'
 import { decodeScopes, hasScope }    from '../nubi-context.js'
 import { emitRun, emitSelect, emitError } from '../events.js'
 import { applyTheme }                from '../theme.js'
@@ -801,7 +801,7 @@ export class NubiMetricExplorer extends HTMLElement {
     for (let r = 0; r < table.numRows; r++) {
       const row = document.createElement('tr')
       const rowData = {}
-      fields.forEach((f, ci) => {
+      fields.forEach((f, _ci) => {
         const col = table.getChild(f)
         const val = col ? col.get(r) : null
         rowData[f] = val

@@ -134,7 +134,7 @@ function CacheBadge({ cacheStatus }) {
 // PythonNotebookCell — thin wrapper around PythonCell with notebook chrome
 // ---------------------------------------------------------------------------
 
-function PythonNotebookCell({ cell, index, total, onRemove, onMoveUp, onMoveDown }) {
+function PythonNotebookCell({ cell: _cell, index, total, onRemove, onMoveUp, onMoveDown }) {
   const [collapsed, setCollapsed] = useState(false)
 
   return (
@@ -389,7 +389,7 @@ export default function Playground() {
   let openChat = null
   try {
     openChat = _useUi().openChat
-  } catch (_) {}
+  } catch { /* no UI context outside the app shell */ }
 
   // ---------------------------------------------------------------------------
   // Cell management
@@ -478,7 +478,7 @@ export default function Playground() {
     for (const cell of sqlCells) {
       const runner = cellRunners.current.get(cell.id)
       if (runner) {
-        try { await runner() } catch (_) {}
+        try { await runner() } catch { /* a cell's runner failing must not abort the rest */ }
       }
     }
     setRunAllLoading(false)

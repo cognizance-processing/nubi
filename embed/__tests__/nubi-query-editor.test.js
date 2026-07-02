@@ -6,8 +6,8 @@
  * Monaco is mocked (dynamic import) so tests run in jsdom without a bundler.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi, beforeAll } from 'vitest'
-import { makeToken, nextTick, mount, unmount } from './helpers.js'
+import { describe, it, expect, afterEach, vi, beforeAll } from 'vitest'
+import { makeToken, nextTick, mount } from './helpers.js'
 
 // ---------------------------------------------------------------------------
 // Mock Monaco (the dynamic import in nubi-query-editor.js)
@@ -17,7 +17,7 @@ import { makeToken, nextTick, mount, unmount } from './helpers.js'
 const _mockEditorInstances = []
 
 vi.mock('monaco-editor', () => {
-  const create = vi.fn((container, options) => {
+  const create = vi.fn((_container, _options) => {
     const handlers = { change: null }
     const instance = {
       getValue:    vi.fn(() => ''),

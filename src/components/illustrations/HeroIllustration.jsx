@@ -7,7 +7,6 @@
 export default function HeroIllustration({ className = '', style }) {
   const curve = 'M 62 232 C 96 226, 116 210, 150 202 C 188 193, 210 206, 244 184 C 282 159, 302 167, 332 146'
   const area = `${curve} L 332 250 L 62 250 Z`
-  const bars = [18, 27, 22, 34, 28, 38, 31]
   // donut: r=26, C≈163.4; segments 42/28/18/12 %
   const C = 163.4
   const segs = [

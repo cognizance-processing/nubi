@@ -212,7 +212,7 @@ async function hasErrorState(page, selector) {
 // ---------------------------------------------------------------------------
 
 test.describe('live embed backend — metric-explorer fetches REAL data', () => {
-  test.beforeEach(({}, testInfo) => {
+  test.beforeEach((_fixtures, testInfo) => {
     if (!RUN_LIVE) {
       testInfo.skip(true,
         'Live embed E2E skipped — set RUN_E2E_EMBED_LIVE=1 and provide ' +
@@ -540,7 +540,7 @@ test.describe('live embed backend — metric-explorer fetches REAL data', () => 
 // ---------------------------------------------------------------------------
 
 test.describe('live-embed fixture — bundle smoke (no backend needed)', () => {
-  test.beforeEach(({}, testInfo) => {
+  test.beforeEach((_fixtures, testInfo) => {
     if (!RUN_LIVE) {
       testInfo.skip(true, 'Set RUN_E2E_EMBED_LIVE=1 to run live embed tests')
     }

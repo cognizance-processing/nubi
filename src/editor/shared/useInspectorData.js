@@ -19,7 +19,7 @@ export function useColumnIntrospection(queryId) {
   const [columns, setColumns] = useState([])
   const [introspecting, setIntrospecting] = useState(false)
   useEffect(() => {
-    if (!queryId) { setColumns([]); return } // eslint-disable-line react-hooks/set-state-in-effect
+    if (!queryId) { setColumns([]); return }  
     let cancelled = false
     setIntrospecting(true)
     runArrowQueryById(queryId)

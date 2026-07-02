@@ -455,7 +455,7 @@ export default function CanvasesPage() {
   }, [projectId])
   const canvases = canvasesData ?? []
 
-  const handleDeleted = useCallback((id) => {
+  const handleDeleted = useCallback((_id) => {
     reloadCanvases()
   }, [reloadCanvases])
 

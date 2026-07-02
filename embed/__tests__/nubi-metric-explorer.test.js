@@ -5,8 +5,8 @@
  * dimension picker rendering, run flow, event emission, and CSV export.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi, beforeAll } from 'vitest'
-import { makeToken, nextTick, mount, unmount } from './helpers.js'
+import { describe, it, expect, afterEach, vi, beforeAll } from 'vitest'
+import { makeToken, nextTick, mount } from './helpers.js'
 
 // ---------------------------------------------------------------------------
 // Register the custom element once
@@ -37,7 +37,7 @@ function make(attrs = {}) {
  * @returns {{ restore: () => void, stub: vi.Mock }}
  */
 function stubFetch({ metricDef = null, arrowBuffer = new ArrayBuffer(0), failQuery = false } = {}) {
-  const stub = vi.fn(async (url, opts) => {
+  const stub = vi.fn(async (url, _opts) => {
     if (url.includes('/metrics/') && !url.includes('/query')) {
       if (metricDef) {
         return { ok: true, json: async () => metricDef, headers: { get: () => 'application/json' } }

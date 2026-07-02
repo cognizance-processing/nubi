@@ -403,7 +403,7 @@ class NubiTable extends HTMLElement {
     const backend = this._backend()
 
     let token = null
-    try { token = await resolveToken(this) } catch (_) { /* ignore */ }
+    try { token = await resolveToken(this) } catch { /* ignore */ }
     if (ac.signal.aborted) return
 
     if (queryId && backend) {

@@ -6,7 +6,7 @@
  *   npx vitest run embed/__tests__/widget-data-injection.test.js
  */
 
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { JSDOM } from 'jsdom'
 
 // ---------------------------------------------------------------------------
@@ -336,7 +336,7 @@ describe('data attribute parsing logic', () => {
     try {
       const rows = JSON.parse(dataAttr)
       return rowsToArrowTable(rows)
-    } catch (_) {
+    } catch {
       return null
     }
   }

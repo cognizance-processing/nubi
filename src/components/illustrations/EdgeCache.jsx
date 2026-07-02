@@ -5,7 +5,7 @@
  */
 export default function EdgeCache({ className = '' }) {
   const viewers = [78, 132, 186, 240, 294]
-  const cacheX = 232, cacheY = 186 // center of cache module
+  const cacheY = 186 // center of cache module
   return (
     <svg
       viewBox="30 46 420 282"

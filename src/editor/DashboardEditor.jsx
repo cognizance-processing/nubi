@@ -1586,8 +1586,6 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   const [hist, setHist] = useState(() => createHistory(DEFAULT_SPEC))
   const spec = hist.present
 
-  const pendingSpecRef = useRef(null)
-  const dragDebounceRef = useRef(null)
   const isDraggingRef = useRef(false)
   const frozenLayoutsRef = useRef(null)
 
@@ -1645,7 +1643,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   // When on, the canvas is replaced by DashboardCodeView (dashboard.json editor).
   const [codeView, setCodeView] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [saveError, setSaveError] = useState(null)
+  const [_saveError, setSaveError] = useState(null)
   const [loading, setLoading] = useState(!!boardId)
   const [loadError, setLoadError] = useState(null)
   const [savedBoardId, setSavedBoardId] = useState(boardId)

@@ -29,7 +29,7 @@
  * sample health data so demo pages always show content.
  */
 
-import { resolveToken, escapeHtml, BASE_STYLES } from './shared.js'
+import { resolveToken, BASE_STYLES } from './shared.js'
 import { fetchJson } from './shared.js'
 import { applyTheme } from '../theme.js'
 
@@ -649,7 +649,7 @@ class NubiHealth extends HTMLElement {
     const backend = this._backend()
 
     let token = null
-    try { token = await resolveToken(this) } catch (_) { /* ignore */ }
+    try { token = await resolveToken(this) } catch { /* ignore */ }
     if (ac.signal.aborted) return
 
     // Bound the fetch with a timeout so it never hangs indefinitely

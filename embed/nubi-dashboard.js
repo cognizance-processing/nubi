@@ -55,25 +55,6 @@ const SAMPLE_TABLE = tableFromArrays({
 // ---------------------------------------------------------------------------
 
 /**
- * Decode the payload of a JWT without signature verification.
- * Returns null if the token is malformed.
- *
- * @param {string} token
- * @returns {{ exp?: number } | null}
- */
-function decodeJwtPayload(token) {
-  try {
-    const [, payloadB64] = token.split('.')
-    // Base64url → Base64
-    const b64 = payloadB64.replace(/-/g, '+').replace(/_/g, '/')
-    const json = atob(b64)
-    return JSON.parse(json)
-  } catch {
-    return null
-  }
-}
-
-/**
  * Render an Arrow Table as an HTML string (first `maxRows` rows).
  * Returns a <table> string safe to set as innerHTML inside the shadow root.
  *
@@ -682,7 +663,7 @@ class NubiDashboard extends HTMLElement {
     let token
     try {
       token = await this._resolveToken()
-    } catch (err) {
+    } catch {
       token = null
     }
 

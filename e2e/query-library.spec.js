@@ -58,9 +58,6 @@ test.describe('Queries Page', () => {
     const newQueryBtn = page.getByRole('button', { name: 'New query' }).first()
     await expect(newQueryBtn).toBeVisible({ timeout: 10_000 })
 
-    // Count current items
-    const initialDrafts = await page.locator('text=draft').count()
-
     await newQueryBtn.click()
 
     // A new "draft" tag should appear in the left rail

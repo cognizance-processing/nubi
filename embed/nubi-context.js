@@ -16,7 +16,7 @@
  *   the server is the real gate).
  */
 
-import { resolveToken as resolveTokenAttr, fetchArrow } from './widgets/shared.js'
+import { fetchArrow } from './widgets/shared.js'
 
 // ---------------------------------------------------------------------------
 // Scope decoder (UI capability gating — cosmetic, server enforces real gate)

@@ -196,7 +196,7 @@ function CellNameBadge({ name }) {
       await navigator.clipboard.writeText(name)
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
-    } catch {}
+    } catch { /* clipboard copy is best-effort */ }
   }, [name])
 
   return (
@@ -329,7 +329,7 @@ function describeSchedule(mode, schedule) {
   return null
 }
 
-function ScheduleDialog({ query, params, paramValues, onConfirm, onCancel, scheduling, status, createdFlow }) {
+function ScheduleDialog({ query, params, onConfirm, onCancel, scheduling, status, createdFlow }) {
   const [name, setName] = useState(`${query?.name ?? 'Query'} (scheduled)`)
   const [mode, setMode] = useState('interval')
   const [intervalN, setIntervalN] = useState('1')
@@ -711,7 +711,7 @@ function useResizableHeight(initial = DEFAULT_EDITOR_H) {
     dragState.current = { startY: e.clientY, startH: editorH }
     const onMove = (me) => {
       const delta = me.clientY - dragState.current.startY
-      setEditorH(h => Math.max(MIN_EDITOR_H, Math.min(MAX_EDITOR_H, dragState.current.startH + delta)))
+      setEditorH(() => Math.max(MIN_EDITOR_H, Math.min(MAX_EDITOR_H, dragState.current.startH + delta)))
     }
     const onUp = () => {
       dragState.current = null
@@ -826,7 +826,6 @@ function CellRunStatus({ running, result, error, cellName }) {
 
 function ScratchSqlCell({
   cell,
-  cellNumber,
   index,
   total,
   onSqlChange,
@@ -1041,7 +1040,7 @@ function ScratchSqlCell({
 // ScratchPythonCell — thin notebook wrapper around <PythonCell/>
 // ---------------------------------------------------------------------------
 
-function ScratchPythonCell({ cell, cellNumber, index, total, onRemove, onMoveUp, onMoveDown, cellRef }) {
+function ScratchPythonCell({ index, total, onRemove, onMoveUp, onMoveDown, cellRef }) {
   const [collapsed, setCollapsed] = useState(false)
 
   return (
@@ -1251,9 +1250,6 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
   const viewing = Boolean(viewingVersion)
   const viewCfg = viewingVersion?.config ?? {}
 
-  // ── AI assist ───────────────────────────────────────────────────────────
-  const [showAi, setShowAi] = useState(false)
-
   // ── Transpile dialog ─────────────────────────────────────────────────────
   const [transpileOpen, setTranspileOpen] = useState(false)
 
@@ -1277,7 +1273,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
     setScratchCells([])
     scratchRunners.current = new Map()
     setViewingVersion(null)
-  }, [query?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [query?.id])  
 
   // ── Add cells ────────────────────────────────────────────────────────────
 
@@ -1399,12 +1395,12 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
   // ── Run all (primary + scratch SQL cells, top to bottom) ────────────────
   const handleRunAll = useCallback(async () => {
     setRunAllLoading(true)
-    try { await handleRun() } catch (_) {}
+    try { await handleRun() } catch { /* keep running the remaining cells */ }
     for (const cell of scratchCells) {
       if (cell.type !== 'sql') continue
       const runner = scratchRunners.current.get(cell.id)
       if (runner) {
-        try { await runner() } catch (_) {}
+        try { await runner() } catch { /* one cell failing must not abort run-all */ }
       }
     }
     setRunAllLoading(false)
@@ -1604,12 +1600,6 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
       setScheduling(false)
     }
   }, [query, params, paramValues])
-
-  // ── AI result → primary cell ────────────────────────────────────────────
-  const handleAiResult = useCallback((generatedSql) => {
-    setSql(generatedSql)
-    onQueryChange?.({ ...query, sql: generatedSql })
-  }, [query, onQueryChange])
 
   // ── Param descriptor edits ──────────────────────────────────────────────
   const handleParamDescChange = useCallback((name, field, value) => {

@@ -72,7 +72,6 @@ export default function HtmlWidget({ widget }) {
   return (
     <div
       className="h-full w-full overflow-auto"
-      // eslint-disable-next-line react/no-danger
       dangerouslySetInnerHTML={{ __html: safeHtml }}
     />
   )

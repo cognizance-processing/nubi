@@ -36,11 +36,11 @@
  * degrading to 'light' when ThemeContext is unavailable.
  */
 
-import { useRef, useCallback, useState, useEffect } from 'react'
+import { useRef, useCallback, useState, useEffect, useContext } from 'react'
 import Editor from '@monaco-editor/react'
 import { FileCode2, ChevronDown, HelpCircle, Braces, Database } from 'lucide-react'
 
-import { useTheme } from '../contexts/ThemeContext.jsx'
+import { ThemeContext } from '../contexts/ThemeContext.jsx'
 import { validateSql, fetchSchema } from '../lib/api.js'
 
 // ---------------------------------------------------------------------------
@@ -287,13 +287,9 @@ export default function SqlEditor({
   dialectHint,
   schema: schemaProp,
 }) {
-  // Theme — soft-fail if ThemeProvider is not mounted
-  let theme = 'light'
-  try {
-    theme = useTheme().theme
-  } catch {
-    // Outside ThemeProvider — default to light
-  }
+  // Theme — null-safe read so this renders outside a ThemeProvider without a
+  // conditional hook call; degrades to 'light'.
+  const theme = useContext(ThemeContext)?.theme ?? 'light'
   const monacoTheme = theme === 'dark' ? 'vs-dark' : 'light'
 
   // Dialect — controlled when dialectProp is provided, else internal state.

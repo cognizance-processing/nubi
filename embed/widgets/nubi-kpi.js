@@ -40,7 +40,7 @@
  * Any failure falls back to a visible sample card so demo pages always render.
  */
 
-import { resolveToken, fetchArrow, makeSampleKpiTable, escapeHtml, formatCell, BASE_STYLES, rowsToArrowTable } from './shared.js'
+import { resolveToken, fetchArrow, makeSampleKpiTable, formatCell, BASE_STYLES, rowsToArrowTable } from './shared.js'
 import { applyTheme } from '../theme.js'
 
 // ---------------------------------------------------------------------------
@@ -489,7 +489,7 @@ class NubiKpi extends HTMLElement {
     const backend = this._backend()
 
     let token = null
-    try { token = await resolveToken(this) } catch (_) { /* ignore */ }
+    try { token = await resolveToken(this) } catch { /* ignore */ }
     if (ac.signal.aborted) return
 
     if (queryId && backend) {

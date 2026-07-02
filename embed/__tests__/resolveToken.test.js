@@ -7,7 +7,7 @@
  *   3. `get-token` attribute → window function (with retry loop)
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { resolveToken } from '../widgets/shared.js'
 
 // ---------------------------------------------------------------------------

@@ -62,11 +62,11 @@ function matchesOp(cellValue, op, value, value2) {
   switch (op) {
     case 'eq':
       // loose equality so '42' == 42 when appropriate; use == intentionally
-      // eslint-disable-next-line eqeqeq
+       
       return cellValue == value
 
     case 'ne':
-      // eslint-disable-next-line eqeqeq
+       
       return cellValue != value
 
     case 'gt':
@@ -113,7 +113,7 @@ function matchesOp(cellValue, op, value, value2) {
  *                            but kept for future column-existence guards)
  * @returns {{ cellStyles: Record<string, object>, rowStyle: object|null }}
  */
-export function evalRules(rules, row, columns) {
+export function evalRules(rules, row, _columns) {
   if (!rules || rules.length === 0) {
     return { cellStyles: {}, rowStyle: null }
   }

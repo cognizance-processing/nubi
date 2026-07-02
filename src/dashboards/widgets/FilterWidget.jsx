@@ -141,7 +141,6 @@ export default function FilterWidget({ widget, options = [] }) {
   useEffect(() => {
     if (refireEpoch > 0) onSearchRef.current?.('')
     // Intentionally depend ONLY on refireEpoch so this fires once per cascade bump.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refireEpoch])
 
   // Choose the option source: search-mode results, else the static prop.
@@ -179,7 +178,6 @@ export default function FilterWidget({ widget, options = [] }) {
     if (storeValue !== undefined && storeValue !== null) {
       setLocalValue(storeValue)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storeValue])
 
   const handleChange = useCallback((newValue) => {

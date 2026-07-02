@@ -274,7 +274,6 @@ export default function GitFilesPanel({ projectId, defaultRef = '' }) {
   const [listLoading, setListLoading] = useState(false)
   const [fileList, setFileList] = useState(null) // null = not loaded; { ref, files }
   const [listError, setListError] = useState(null)
-  const noRepo = fileList === null && !listLoading && !listError
 
   // Selected file + content state
   const [selectedPath, setSelectedPath] = useState(null)

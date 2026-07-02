@@ -177,9 +177,9 @@ export function createGlScatter(canvas) {
   }
 
   function destroy() {
-    try { positionBuf.destroy() } catch (_) { /* ignore */ }
-    try { colorBuf.destroy()    } catch (_) { /* ignore */ }
-    try { regl.destroy()        } catch (_) { /* ignore */ }
+    try { positionBuf.destroy() } catch { /* ignore */ }
+    try { colorBuf.destroy()    } catch { /* ignore */ }
+    try { regl.destroy()        } catch { /* ignore */ }
   }
 
   return { draw, destroy }

@@ -459,7 +459,7 @@ export class NubiQueryEditor extends HTMLElement {
       // Configure workers if not already done (light DOM context)
       if (!window.__nubiMonacoWorkerConfigured) {
         window.MonacoEnvironment = {
-          getWorkerUrl(_moduleId, label) {
+          getWorkerUrl(_moduleId) {
             // Fallback: no worker (Monaco degrades gracefully to main-thread)
             return ''
           },
