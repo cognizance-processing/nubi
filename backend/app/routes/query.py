@@ -196,9 +196,11 @@ async def _load_query_vars(
 # no security or billing surface of its own.
 #
 # Env contract:
-#   NUBI_HEAVY_QUERY_URL  — base URL of the pool (e.g.
-#       "http://query.process.nubi.internal:8000").  Unset → never forward
-#       (self-host / local dev default: everything executes in-process).
+#   NUBI_HEAVY_QUERY_URL  — base URL of the pool. Point it at a proxy-fronted
+#       (autoscaling) address like "http://nubi.flycast:8001" so the pool can
+#       scale to zero and load-balance, or at the process group directly
+#       ("http://query.process.nubi.internal:8000") for an always-on pool.
+#       Unset → never forward (self-host / local dev: everything runs in-process).
 #   NUBI_QUERY_POOL=heavy — set ON the pool machines; short-circuits
 #       forwarding so the pool always executes locally (loop guard #1).
 # Loop guard #2: forwarded requests carry X-Nubi-Forwarded and are never
