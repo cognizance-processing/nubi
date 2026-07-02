@@ -19,9 +19,10 @@
 
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { resolve, dirname } from 'path'
-import { readFileSync, existsSync, copyFileSync } from 'fs'
+import { resolve } from 'path'
+import { existsSync, copyFileSync } from 'fs'
 import { fileURLToPath } from 'url'
+import { resolveVersion } from '../scripts/resolveVersion.mjs'
 
 // __filename / __dirname equivalents for ESM configs
 // We derive from the config's own path so this works even after Vite bundles
@@ -34,7 +35,10 @@ const __configFile = fileURLToPath(import.meta.url)
 const __repoRoot = resolve(process.cwd())
 const __embedDir = resolve(__repoRoot, 'embed')
 
-const pkg = JSON.parse(readFileSync(resolve(__repoRoot, 'package.json'), 'utf-8'))
+// Real build version: "X.Y.Z" on a release tag, else "X.Y.Z-dev.<sha>" (or a
+// NUBI_VERSION stamp from release tooling). Used for both the injected embed
+// version global and the content-addressable bundle filename.
+const NUBI_VERSION = resolveVersion(__repoRoot)
 
 export default defineConfig({
   plugins: [
@@ -48,10 +52,10 @@ export default defineConfig({
       name: 'nubi-version-stamp',
       closeBundle() {
         const src = resolve(__embedDir, 'dist/nubi-embed.js')
-        const dst = resolve(__embedDir, `dist/nubi-embed-${pkg.version}.js`)
+        const dst = resolve(__embedDir, `dist/nubi-embed-${NUBI_VERSION}.js`)
         if (existsSync(src)) {
           copyFileSync(src, dst)
-          console.log(`[nubi-version-stamp] copied → dist/nubi-embed-${pkg.version}.js`)
+          console.log(`[nubi-version-stamp] copied → dist/nubi-embed-${NUBI_VERSION}.js`)
         }
       },
     },
@@ -121,7 +125,7 @@ export default defineConfig({
     // Shim process.env for CJS deps that reference it
     'process.env': JSON.stringify({ NODE_ENV: 'production' }),
     'process.env.NODE_ENV': JSON.stringify('production'),
-    // Embed kit version — injected at build time from package.json
-    '__NUBI_EMBED_VERSION__': JSON.stringify(pkg.version),
+    // Embed kit version — real stamp ("X.Y.Z" on a tag, else "X.Y.Z-dev.<sha>")
+    '__NUBI_EMBED_VERSION__': JSON.stringify(NUBI_VERSION),
   },
 })

@@ -20,7 +20,8 @@
  *
  * Version exports
  * ---------------
- *   window.__nubiVersion   — version string set on load (e.g. "0.0.0")
+ *   window.__nubiVersion   — version string set on load (e.g. "0.2.0" on a
+ *                            release, "0.2.0-dev.<sha>" on a branch build)
  *   export { version }     — same value as a named ESM export
  *   export { NUBI_EMBED_VERSION } — alias for the named export
  *

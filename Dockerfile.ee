@@ -21,6 +21,13 @@
 FROM node:20-alpine AS frontend
 WORKDIR /build
 
+# Version stamp for the build. .git is dockerignored, so resolveVersion.mjs
+# can't derive it here — release tooling (nubi-cloud/scripts/deploy.sh) passes
+# the real "X.Y.Z" / "X.Y.Z-dev.<sha>" via --build-arg NUBI_VERSION. Empty ⇒
+# the embed build falls back to the bare package.json version.
+ARG NUBI_VERSION=""
+ENV NUBI_VERSION=$NUBI_VERSION
+
 COPY package.json package-lock.json ./
 RUN npm ci
 
@@ -38,6 +45,8 @@ RUN npm run build
 # Embed bundles (<nubi-dashboard> / <nubi-widgets> drop-in scripts) → dist-embed/.
 # Served by the backend at /embed/* (see the embed block in backend/main.py).
 COPY vite.embed.config.js vite.widgets.config.js ./
+# embed/vite.embed.config.js imports ../scripts/resolveVersion.mjs
+COPY scripts/ scripts/
 RUN npm run build:embed && npm run build:widgets
 
 # ── Stage 2: Python dependencies ────────────────────────────────────────────

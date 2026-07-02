@@ -5,10 +5,13 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
-  // Node config files (vite.config.js, postcss.config.js, etc.) need process + node globals
+  // Build outputs, the Python venv, and the pinned-source checkout are not ours
+  // to lint — and the minified bundles overflow ESLint's formatter.
+  globalIgnores(['dist', '**/dist', '.venv-backend', '.venv-mig', '.nubi-build']),
+  // Node config files (vite.config.js, embed/vite.embed.config.js, …) and build
+  // scripts need process + node globals. Use ** so NESTED config files match too.
   {
-    files: ['*.config.js', '*.config.ts'],
+    files: ['**/*.config.{js,mjs,ts}', 'scripts/**/*.{js,mjs}'],
     languageOptions: {
       globals: { ...globals.node },
     },
