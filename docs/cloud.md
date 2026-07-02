@@ -117,20 +117,24 @@ Streamed aggregates (`GROUP BY` over filtered scans) are not memory-bound and sc
 
 ### Deploy runbook
 
-- **First deploy / manual deploys** — run `scripts/deploy-fly.sh` from the
-  repo root. It verifies `flyctl` is installed and authenticated, creates the
-  app on first run, checks the required secrets are set (printing the full
-  checklist with `fly secrets set` examples if not), and then runs
-  `fly deploy --remote-only`. `scripts/deploy-fly.sh --secrets-only` prints
-  the secrets checklist without deploying.
-- **Continuous deploys** — every push to `main` triggers
-  `.github/workflows/deploy-main.yml`, which runs `flyctl deploy
-  --remote-only` using the `FLY_API_TOKEN` repository secret.
+Nubi Cloud's production deployment — the Fly config, secrets, version pin, and
+the deploy pipeline — lives in a separate private ops repo, **nubi-cloud**, so
+this open-source project stays deployment-neutral. In that repo:
 
-Both paths build the combined image (root `Dockerfile`: Vite SPA build →
-Python deps → runtime) on Fly's remote builders and roll out the `app` and
-`worker` processes together; migrations run automatically via the release
-command.
+- **Manual deploys** — `scripts/deploy.sh` checks out the pinned Nubi version
+  (`deploy/nubi.lock.json`) and runs `flyctl deploy` with `deploy/fly.toml`.
+- **Continuous deploys** — pushing to `main` (or bumping the pin with
+  `scripts/pin.sh`) triggers `.github/workflows/deploy.yml`, using the
+  `FLY_API_TOKEN` secret.
+- **Secrets** — managed with `.env` + `scripts/secrets.sh` (Fly secrets).
+
+Either path builds the EE image (`Dockerfile.ee`: Vite SPA build → Python deps →
+runtime) on Fly's remote builders and rolls out the `app`, `worker`, and `query`
+processes; the `--ee` migrations run automatically via the release command.
+
+**Self-hosting Nubi yourself?** You supply your own deployment — the OSS
+`Dockerfile` builds the community image; bring your own orchestration (Docker
+Compose, Fly, Kubernetes, …).
 
 ## Pricing
 

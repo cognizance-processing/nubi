@@ -2,8 +2,9 @@
 # Nubi combined image — FastAPI backend + embedded SPA in ONE image.
 # Build context: repo root (docker build -f Dockerfile .)
 #
-# This is the image deployed to Fly.io (see fly.toml). The same image runs as
-# two Fly processes:
+# This is the image deployed to Fly.io by the operator's deploy config (for
+# Nubi Cloud that's the private nubi-cloud repo: deploy/fly.toml). The same
+# image runs as two Fly processes:
 #   app    — uvicorn serving the API *and* the built SPA (STATIC_DIR=/app/dist,
 #            see the static-SPA block in backend/main.py)
 #   worker — `python worker.py` (flows scheduler loop + worker pool)

@@ -1,12 +1,15 @@
 # syntax=docker/dockerfile:1
 # Nubi EE combined image — identical to the root Dockerfile EXCEPT the build
 # context includes backend/app/ee/ (see Dockerfile.ee.dockerignore, which
-# BuildKit pairs with this file automatically; fly.toml sets it explicitly).
+# BuildKit pairs with this file automatically; nubi-cloud/deploy/fly.toml sets
+# it explicitly).
 #
 # This is the image for Nubi Cloud / licensed EE deployments: load_ee() in
 # backend/main.py finds app.ee at startup and mounts the EE routers (billing,
 # licensing, SSO). EE migrations (database/migrations/ee/) are applied by the
-# release command (`python /app/database/migrate.py --ee`, see fly.toml).
+# release command (`python /app/database/migrate.py --ee`, see
+# nubi-cloud/deploy/fly.toml). The production Fly config lives in the private
+# nubi-cloud ops repo, which builds this image from a pinned nubi checkout.
 # Activation at runtime is via the NUBI_LICENSE_KEY secret.
 #
 # KEEP IN SYNC with ./Dockerfile — the stages below are intentionally
