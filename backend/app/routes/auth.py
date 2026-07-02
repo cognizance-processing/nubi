@@ -638,6 +638,19 @@ async def revoke_api_key(
         raise AppError("not_found", "API key not found.", 404)
 
 
+@router.get("/config")
+async def auth_config() -> dict[str, bool]:
+    """Public (unauthenticated) auth capabilities for the sign-in UI.
+
+    The SPA's Login/Register pages call this before rendering so they only show
+    the "Continue with Google" button when Google OAuth is actually configured
+    (see :attr:`Settings.google_oauth_enabled`). Deployments without a Google
+    project — OSS or cloud — advertise ``google_oauth: false`` and get an
+    email/password-only sign-in screen.
+    """
+    return {"google_oauth": get_settings().google_oauth_enabled}
+
+
 @router.get("/google/start")
 async def google_start(response: Response) -> RedirectResponse:
     """Initiate the Google OAuth flow.
@@ -650,8 +663,16 @@ async def google_start(response: Response) -> RedirectResponse:
     Returns
     -------
     302 → Google authorization URL
+
+    Raises
+    ------
+    AppError("not_found", 404)
+        When Google OAuth is not configured (no client credentials). Keeps the
+        route inert on deployments that run email/password only.
     """
     settings = get_settings()
+    if not settings.google_oauth_enabled:
+        raise AppError("not_found", "Google sign-in is not enabled.", 404)
     state = generate_state()
     code_verifier, code_challenge = generate_pkce_pair()
     authorize_url = build_authorize_url(state, code_challenge)

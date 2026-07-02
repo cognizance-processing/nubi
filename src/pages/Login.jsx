@@ -6,11 +6,11 @@
  * on submit, dark mode parity, full a11y (focus rings, aria-invalid, aria-live).
  */
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { Eye, EyeOff, AlertCircle } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext.jsx'
-import { googleStartUrl } from '../lib/api.js'
+import { googleStartUrl, fetchAuthConfig } from '../lib/api.js'
 import AuthLayout from '../components/AuthLayout.jsx'
 
 export default function Login() {
@@ -24,6 +24,13 @@ export default function Login() {
   const [showPw, setShowPw]     = useState(false)
   const [error, setError]       = useState(null)
   const [pending, setPending]   = useState(false)
+  const [googleEnabled, setGoogleEnabled] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    fetchAuthConfig().then(c => { if (alive) setGoogleEnabled(!!c.google_oauth) })
+    return () => { alive = false }
+  }, [])
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -53,20 +60,24 @@ export default function Login() {
         </>
       }
     >
-      {/* Google OAuth */}
-      <button
-        type="button"
-        onClick={() => { window.location.href = googleStartUrl() }}
-        disabled={pending}
-        className="nubi-auth-social-btn"
-        aria-label="Continue with Google"
-      >
-        <GoogleIcon />
-        Continue with Google
-      </button>
+      {/* Google OAuth — only when the backend has it configured */}
+      {googleEnabled && (
+        <>
+          <button
+            type="button"
+            onClick={() => { window.location.href = googleStartUrl() }}
+            disabled={pending}
+            className="nubi-auth-social-btn"
+            aria-label="Continue with Google"
+          >
+            <GoogleIcon />
+            Continue with Google
+          </button>
 
-      {/* Divider */}
-      <div className="nubi-auth-divider">or sign in with email</div>
+          {/* Divider */}
+          <div className="nubi-auth-divider">or sign in with email</div>
+        </>
+      )}
 
       {/* Error banner */}
       {error && (

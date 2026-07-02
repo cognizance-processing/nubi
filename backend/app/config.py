@@ -66,10 +66,23 @@ class Settings(BaseSettings):
             )
         return value
 
-    # ── Google OAuth ─────────────────────────────────────────────────────────
-    GOOGLE_CLIENT_ID: str
-    GOOGLE_CLIENT_SECRET: str
-    GOOGLE_REDIRECT_URI: str
+    # ── Google OAuth (OPTIONAL) ──────────────────────────────────────────────
+    # All three empty ⇒ Google sign-in is disabled: the backend refuses the
+    # /auth/google/* routes and advertises google_oauth=false so the SPA hides
+    # the "Continue with Google" button. This lets both OSS and cloud deploy
+    # with email/password only, no Google project required.
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GOOGLE_REDIRECT_URI: str = ""
+
+    @property
+    def google_oauth_enabled(self) -> bool:
+        """True only when the full Google OAuth triple is configured."""
+        return bool(
+            self.GOOGLE_CLIENT_ID
+            and self.GOOGLE_CLIENT_SECRET
+            and self.GOOGLE_REDIRECT_URI
+        )
 
     # ── Application URLs ─────────────────────────────────────────────────────
     FRONTEND_URL: str

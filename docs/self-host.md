@@ -94,11 +94,21 @@ All configuration is passed as environment variables. The compose stack loads `.
 | Variable | Description | How to generate |
 |---|---|---|
 | `JWT_SECRET` | HS256 signing key (minimum 32 bytes; enforced at startup) | `python -c "import secrets; print(secrets.token_hex(32))"` |
+
+The backend validates `JWT_SECRET` at startup and refuses to start if it is shorter than 32 bytes (RFC 7518 §3.2).
+
+### Optional: Google sign-in
+
+Google OAuth is **optional**. Leave all three variables below empty and Nubi runs
+with email/password sign-in only — the backend disables the `/auth/google/*` routes
+and the SPA hides the "Continue with Google" button automatically. Set all three to
+enable it.
+
+| Variable | Description | How to generate |
+|---|---|---|
 | `GOOGLE_CLIENT_ID` | Google OAuth client ID | [Google Cloud Console](https://console.cloud.google.com) → APIs & Services → Credentials |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret | Same |
 | `GOOGLE_REDIRECT_URI` | OAuth callback URL | `https://<your-domain>/api/v1/auth/google/callback` |
-
-The backend validates `JWT_SECRET` at startup and refuses to start if it is shorter than 32 bytes (RFC 7518 §3.2).
 
 ### Recommended for production
 
@@ -311,7 +321,7 @@ docker compose logs backend
 Common causes:
 - `DATABASE_URL` unreachable — the entrypoint retries up to 60 times (1 s apart) before aborting.
 - `JWT_SECRET` shorter than 32 bytes — the backend raises a `ValueError` on startup.
-- Missing required env vars (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`).
+  (Google OAuth vars are optional — see "Optional: Google sign-in" above.)
 
 **Migrations fail**
 

@@ -402,6 +402,27 @@ export function googleStartUrl() {
   return `${BASE}/auth/google/start`
 }
 
+let _authConfigCache = null
+
+/**
+ * Fetch public (unauthenticated) auth capabilities — currently whether Google
+ * OAuth is configured on the backend. The sign-in pages use this to decide
+ * whether to render the "Continue with Google" button. Cached for the session;
+ * fails soft to ``{ google_oauth: false }`` so a hiccup never blocks sign-in.
+ * @returns {Promise<{ google_oauth: boolean }>}
+ */
+export async function fetchAuthConfig() {
+  if (_authConfigCache) return _authConfigCache
+  try {
+    const res = await fetch(`${BASE}/auth/config`, { credentials: 'same-origin' })
+    if (!res.ok) throw new Error(`auth/config ${res.status}`)
+    _authConfigCache = await res.json()
+  } catch {
+    _authConfigCache = { google_oauth: false }
+  }
+  return _authConfigCache
+}
+
 // ---------------------------------------------------------------------------
 // Query registry (M13-B)
 // ---------------------------------------------------------------------------

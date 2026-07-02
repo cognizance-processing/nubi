@@ -555,6 +555,37 @@ async def test_logout_without_cookie_204(client):
     assert resp.status_code == 204
 
 
+# ── Auth capabilities — /auth/config ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_auth_config_reports_google_enabled(client):
+    """GET /auth/config is public and reports google_oauth=true when configured
+    (conftest sets fake Google creds)."""
+    resp = await client.get("/api/v1/auth/config")
+    assert resp.status_code == 200
+    assert resp.json() == {"google_oauth": True}
+
+
+@pytest.mark.asyncio
+async def test_auth_config_and_start_when_google_disabled(client, monkeypatch):
+    """With no Google credentials: /auth/config → google_oauth=false and
+    /auth/google/start → 404 (route inert), so OSS/cloud can run without it."""
+    from app.config import get_settings
+
+    for var in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI"):
+        monkeypatch.setenv(var, "")
+    get_settings.cache_clear()
+    try:
+        cfg = await client.get("/api/v1/auth/config")
+        assert cfg.status_code == 200
+        assert cfg.json() == {"google_oauth": False}
+
+        start = await client.get("/api/v1/auth/google/start")
+        assert start.status_code == 404
+    finally:
+        get_settings.cache_clear()  # restore env-backed settings for later tests
+
+
 # ── Google OAuth — /google/start ──────────────────────────────────────────────
 
 @pytest.mark.asyncio

@@ -5,11 +5,11 @@
  * inline field error states, loading states, dark mode, a11y.
  */
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Eye, EyeOff, AlertCircle, Building2, FolderOpen } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext.jsx'
-import { googleStartUrl } from '../lib/api.js'
+import { googleStartUrl, fetchAuthConfig } from '../lib/api.js'
 import AuthLayout from '../components/AuthLayout.jsx'
 
 // ── Password strength ─────────────────────────────────────────────────────────
@@ -66,6 +66,13 @@ export default function Register() {
   const [showPw, setShowPw]           = useState(false)
   const [error, setError]             = useState(null)
   const [pending, setPending]         = useState(false)
+  const [googleEnabled, setGoogleEnabled] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    fetchAuthConfig().then(c => { if (alive) setGoogleEnabled(!!c.google_oauth) })
+    return () => { alive = false }
+  }, [])
 
   const firstName      = name.trim().split(/\s+/)[0]
   const orgPlaceholder = firstName ? `${firstName}'s Org` : 'My Org'
@@ -104,20 +111,24 @@ export default function Register() {
         </>
       }
     >
-      {/* Google OAuth */}
-      <button
-        type="button"
-        onClick={() => { window.location.href = googleStartUrl() }}
-        disabled={pending}
-        className="nubi-auth-social-btn"
-        aria-label="Continue with Google"
-      >
-        <GoogleIcon />
-        Continue with Google
-      </button>
+      {/* Google OAuth — only when the backend has it configured */}
+      {googleEnabled && (
+        <>
+          <button
+            type="button"
+            onClick={() => { window.location.href = googleStartUrl() }}
+            disabled={pending}
+            className="nubi-auth-social-btn"
+            aria-label="Continue with Google"
+          >
+            <GoogleIcon />
+            Continue with Google
+          </button>
 
-      {/* Divider */}
-      <div className="nubi-auth-divider">or sign up with email</div>
+          {/* Divider */}
+          <div className="nubi-auth-divider">or sign up with email</div>
+        </>
+      )}
 
       {/* Error banner */}
       {error && (
