@@ -18,6 +18,7 @@ import {
 } from './AdminUI.jsx'
 import { fmtDate } from './format.js'
 import { useAsyncLoad } from '../../hooks/useAsyncLoad.js'
+import AdminOrgBillingPanel from './AdminOrgBillingPanel.jsx'
 
 export default function AdminOrgDetailPage() {
   const { id } = useParams()
@@ -63,6 +64,9 @@ export default function AdminOrgDetailPage() {
           </div>
         </div>
       </AdminCard>
+
+      {/* ── Billing & limits (EE; degrades to a note on OSS) ────────────── */}
+      <AdminOrgBillingPanel orgId={id} />
 
       {/* ── Members ─────────────────────────────────────────────────────── */}
       <AdminCard title="Members">

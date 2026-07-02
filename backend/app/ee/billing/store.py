@@ -141,6 +141,46 @@ class BillingStore:
         """
         raise NotImplementedError
 
+    # -- Per-org billing overrides (superadmin manual controls) --------------
+
+    async def get_org_overrides(self, org_id: str) -> dict[str, Any] | None:
+        """Return the superadmin billing override row for *org_id*, or ``None``.
+
+        Shape::
+
+            {
+                org_id: str,
+                billing_disabled: bool,
+                tier_override: str | None,   # a BillingTier value or None
+                limit_overrides: dict,       # {max_* field: number | None}
+                note: str | None,
+                updated_by: str | None,
+                created_at: datetime,
+                updated_at: datetime,
+            }
+        """
+        raise NotImplementedError
+
+    async def upsert_org_overrides(
+        self,
+        org_id: str,
+        *,
+        billing_disabled: bool,
+        tier_override: str | None,
+        limit_overrides: dict[str, Any],
+        note: str | None = None,
+        updated_by: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or REPLACE the billing override row for *org_id*.
+
+        Full-replace semantics (not patch): the caller — the superadmin billing
+        panel — always sends the complete desired state, so every field is
+        overwritten.  This keeps ``tier_override`` clearable (``None`` means
+        "no override / use the subscription tier"), which patch-semantics could
+        not express.
+        """
+        raise NotImplementedError
+
 
 # ---------------------------------------------------------------------------
 # In-memory implementation (tests)
@@ -162,11 +202,14 @@ class InMemoryBillingStore(BillingStore):
         self._subscriptions: dict[str, Subscription] = {}
         # org_id -> list[billing_event dict]
         self._events: dict[str, list[dict[str, Any]]] = {}
+        # org_id -> billing override dict
+        self._overrides: dict[str, dict[str, Any]] = {}
 
     def reset(self) -> None:
         """Clear all stored state."""
         self._subscriptions.clear()
         self._events.clear()
+        self._overrides.clear()
 
     async def get_subscription(self, org_id: str) -> Subscription | None:
         row = self._subscriptions.get(str(org_id))
@@ -255,6 +298,36 @@ class InMemoryBillingStore(BillingStore):
         events = self._events.get(str(org_id), [])
         # Newest first
         return deepcopy(events[-limit:][::-1])
+
+    async def get_org_overrides(self, org_id: str) -> dict[str, Any] | None:
+        row = self._overrides.get(str(org_id))
+        return deepcopy(row) if row is not None else None
+
+    async def upsert_org_overrides(
+        self,
+        org_id: str,
+        *,
+        billing_disabled: bool,
+        tier_override: str | None,
+        limit_overrides: dict[str, Any],
+        note: str | None = None,
+        updated_by: str | None = None,
+    ) -> dict[str, Any]:
+        key = str(org_id)
+        now = datetime.now(timezone.utc)
+        existing = self._overrides.get(key)
+        row: dict[str, Any] = {
+            "org_id": key,
+            "billing_disabled": bool(billing_disabled),
+            "tier_override": tier_override,
+            "limit_overrides": deepcopy(limit_overrides or {}),
+            "note": note,
+            "updated_by": str(updated_by) if updated_by is not None else None,
+            "created_at": existing["created_at"] if existing else now,
+            "updated_at": now,
+        }
+        self._overrides[key] = row
+        return deepcopy(row)
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +455,83 @@ class PgBillingStore(BillingStore):
             limit,
         )
         return [dict(r) for r in rows]
+
+    @staticmethod
+    def _row_to_overrides(row: Any) -> dict[str, Any]:
+        """Normalise an ``org_billing_overrides`` row → dict.
+
+        ``limit_overrides`` (jsonb) may come back as a dict (asyncpg auto-decode)
+        or as a JSON string depending on the connection's codec — guard both,
+        matching the pattern in ``app.repos.pg``.
+        """
+        import json  # noqa: PLC0415
+
+        d = dict(row)
+        raw = d.get("limit_overrides")
+        if isinstance(raw, str):
+            try:
+                d["limit_overrides"] = json.loads(raw)
+            except (TypeError, ValueError):
+                d["limit_overrides"] = {}
+        elif raw is None:
+            d["limit_overrides"] = {}
+        return d
+
+    async def get_org_overrides(self, org_id: str) -> dict[str, Any] | None:
+        from app.db import fetchrow  # noqa: PLC0415
+
+        row = await fetchrow(
+            """
+            SELECT org_id::text, billing_disabled, tier_override,
+                   limit_overrides, note, updated_by::text,
+                   created_at, updated_at
+            FROM org_billing_overrides
+            WHERE org_id = $1::uuid
+            """,
+            org_id,
+        )
+        return self._row_to_overrides(row) if row is not None else None
+
+    async def upsert_org_overrides(
+        self,
+        org_id: str,
+        *,
+        billing_disabled: bool,
+        tier_override: str | None,
+        limit_overrides: dict[str, Any],
+        note: str | None = None,
+        updated_by: str | None = None,
+    ) -> dict[str, Any]:
+        import json  # noqa: PLC0415
+
+        from app.db import fetchrow  # noqa: PLC0415
+
+        row = await fetchrow(
+            """
+            INSERT INTO org_billing_overrides
+                (org_id, billing_disabled, tier_override, limit_overrides,
+                 note, updated_by)
+            VALUES
+                ($1::uuid, $2, $3, $4::jsonb, $5, $6::uuid)
+            ON CONFLICT (org_id) DO UPDATE SET
+                billing_disabled = EXCLUDED.billing_disabled,
+                tier_override    = EXCLUDED.tier_override,
+                limit_overrides  = EXCLUDED.limit_overrides,
+                note             = EXCLUDED.note,
+                updated_by       = EXCLUDED.updated_by,
+                updated_at       = now()
+            RETURNING org_id::text, billing_disabled, tier_override,
+                      limit_overrides, note, updated_by::text,
+                      created_at, updated_at
+            """,
+            org_id,
+            bool(billing_disabled),
+            tier_override,
+            json.dumps(limit_overrides or {}),
+            note,
+            updated_by,
+        )
+        return self._row_to_overrides(row)
 
 
 # ---------------------------------------------------------------------------

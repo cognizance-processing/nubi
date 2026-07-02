@@ -63,6 +63,7 @@ public_router = APIRouter(tags=["pricing"])
 # ``dep.call`` on the original router's routes after the fact, which was a no-op
 # because include_router discarded those mutated copies.)
 from app.auth.deps import current_user  # noqa: E402
+from app.auth.superadmin import require_superadmin  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +178,24 @@ class WalletAutoTopupConfigRequest(BaseModel):
     topup_amount_usd_cents: int | None = None
     monthly_topup_cap_usd_cents: int | None = None
     spend_cap_usd_cents: int | None = None
+
+
+class OrgBillingOverrideRequest(BaseModel):
+    """Body for PUT /ee/billing/admin/orgs/{org_id} (superadmin only).
+
+    Full desired state — the panel loads the current override then saves every
+    field, so this REPLACES the stored override.
+
+    ``limit_overrides`` maps an overridable ``max_*`` field (see
+    :data:`app.ee.billing.quota.OVERRIDE_KEYS`) to a number (hard cap) or
+    ``null`` (unlimited).  Omit a field entirely to fall back to the tier
+    default.
+    """
+
+    billing_disabled: bool = False
+    tier_override: str | None = None
+    limit_overrides: dict[str, Any] = {}
+    note: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +412,21 @@ async def create_checkout(
     from app.ee.billing.tiers import BillingTier, get_tier_limits  # noqa: PLC0415
 
     await _require_org_access(user, body.org_id, require_admin=True)
+
+    # Orgs whose billing is managed manually by a superadmin (e.g. enterprise
+    # accounts invoiced outside Paystack) must not be able to self-serve
+    # checkout — that would create a conflicting Paystack subscription.
+    from app.ee.billing.store import get_billing_store  # noqa: PLC0415
+
+    _ov = await get_billing_store().get_org_overrides(body.org_id)
+    if _ov and _ov.get("billing_disabled"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Self-serve billing is disabled for this organisation — it is "
+                "managed manually. Contact your account manager to change plans."
+            ),
+        )
 
     try:
         tier = BillingTier(body.tier.strip().lower())
@@ -978,6 +1012,162 @@ async def update_auto_topup_config(
     )
     # Mask authorization code before returning
     return {k: v for k, v in updated.items() if k != "paystack_authorization_code"}
+
+
+# ---------------------------------------------------------------------------
+# Superadmin billing-override routes (platform /admin portal)
+# ---------------------------------------------------------------------------
+#
+# These let a superadmin disable self-serve billing for an org and override its
+# resource limits dynamically — for enterprise / manually-managed accounts that
+# don't fit a published tier.  Guarded by ``require_superadmin`` (re-reads
+# users.is_superadmin from the DB on every request), NOT by ``_require_org_access``
+# — a superadmin acts across all orgs, not as a member of the target org.
+
+
+def _limits_override_view(limits: Any) -> dict[str, Any]:
+    """Project a TierLimits to the overridable-field dict (OVERRIDE_KEYS)."""
+    from app.ee.billing.quota import OVERRIDE_KEYS  # noqa: PLC0415
+
+    return {key: getattr(limits, key, None) for key in OVERRIDE_KEYS}
+
+
+async def _build_org_billing_state(org_id: str) -> dict[str, Any]:
+    """Assemble the full billing/override state for the admin panel."""
+    from app.ee.billing.quota import resolve_org_limits  # noqa: PLC0415
+    from app.ee.billing.store import get_billing_store  # noqa: PLC0415
+    from app.ee.billing.tiers import BillingTier, get_tier_limits  # noqa: PLC0415
+
+    store = get_billing_store()
+    sub = await store.get_subscription(org_id)
+    overrides = await store.get_org_overrides(org_id)
+
+    base_tier, effective_limits, billing_disabled = await resolve_org_limits(org_id)
+
+    return {
+        "org_id": org_id,
+        "subscription": (
+            {"tier": sub.get("tier"), "status": sub.get("status")} if sub else None
+        ),
+        "billing_disabled": billing_disabled,
+        "tier_override": (overrides or {}).get("tier_override"),
+        "note": (overrides or {}).get("note"),
+        "updated_at": (
+            _iso_or_none((overrides or {}).get("updated_at")) if overrides else None
+        ),
+        # Only the explicitly-set per-org overrides (absent keys = tier default).
+        "limit_overrides": (overrides or {}).get("limit_overrides") or {},
+        # The base tier the effective limits derive from + its catalogue defaults,
+        # so the UI can show "Default (N)" placeholders per field.
+        "base_tier": base_tier.value,
+        "tier_defaults": _limits_override_view(get_tier_limits(base_tier)),
+        # Effective limits after overrides (what enforcement actually uses).
+        "effective_limits": _limits_override_view(effective_limits),
+        "available_tiers": [t.value for t in BillingTier],
+    }
+
+
+def _iso_or_none(value: Any) -> Any:
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
+
+@router.get(
+    "/admin/orgs/{org_id}",
+    summary="[superadmin] Get an org's billing state, limits, and overrides",
+)
+async def admin_get_org_billing(
+    org_id: str,
+    _admin: Any = Depends(require_superadmin),
+) -> dict[str, Any]:
+    """Return the org's subscription, effective limits, and superadmin overrides.
+
+    Superadmin-only.  Consumed by the /admin org-detail billing panel.
+    """
+    return await _build_org_billing_state(org_id)
+
+
+@router.put(
+    "/admin/orgs/{org_id}",
+    summary="[superadmin] Disable billing / override limits for an org",
+)
+async def admin_set_org_billing(
+    org_id: str,
+    body: OrgBillingOverrideRequest,
+    admin: Any = Depends(require_superadmin),
+) -> dict[str, Any]:
+    """Create or replace the org's billing override (superadmin only).
+
+    Validates ``tier_override`` against the tier catalogue and ``limit_overrides``
+    against the overridable field set, then persists and audits the change.
+    """
+    from app.audit import record_audit  # noqa: PLC0415
+    from app.ee.billing.quota import OVERRIDE_KEYS  # noqa: PLC0415
+    from app.ee.billing.store import get_billing_store  # noqa: PLC0415
+    from app.ee.billing.tiers import BillingTier  # noqa: PLC0415
+
+    # -- Validate tier_override ------------------------------------------------
+    tier_override: str | None = None
+    if body.tier_override:
+        try:
+            tier_override = BillingTier(str(body.tier_override).strip().lower()).value
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unknown tier_override: {body.tier_override!r}",
+            )
+
+    # -- Validate limit_overrides ---------------------------------------------
+    clean_overrides: dict[str, Any] = {}
+    for key, val in (body.limit_overrides or {}).items():
+        if key not in OVERRIDE_KEYS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unknown limit override field: {key!r}",
+            )
+        if val is None:
+            clean_overrides[key] = None  # explicit unlimited
+            continue
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Limit override {key!r} must be a number or null.",
+            )
+        if val < 0:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Limit override {key!r} must be non-negative.",
+            )
+        # storage_gb is fractional; all other limits are integer counts.
+        clean_overrides[key] = float(val) if key == "max_storage_gb" else int(val)
+
+    actor_id = (
+        str(admin.get("id", "")) if isinstance(admin, dict) else str(getattr(admin, "id", ""))
+    )
+
+    await get_billing_store().upsert_org_overrides(
+        org_id,
+        billing_disabled=body.billing_disabled,
+        tier_override=tier_override,
+        limit_overrides=clean_overrides,
+        note=(body.note or None),
+        updated_by=actor_id or None,
+    )
+
+    await record_audit(
+        org_id=org_id,
+        actor_user_id=actor_id or None,
+        actor_kind="access",
+        action="billing.override.update",
+        resource_type="org",
+        resource_id=org_id,
+        summary={
+            "billing_disabled": body.billing_disabled,
+            "tier_override": tier_override,
+            "override_fields": sorted(clean_overrides.keys()),
+        },
+    )
+
+    return await _build_org_billing_state(org_id)
 
 
 # ---------------------------------------------------------------------------

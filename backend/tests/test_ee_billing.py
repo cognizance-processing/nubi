@@ -1067,3 +1067,135 @@ class TestQuotaChecker:
         limits = await get_usage_limits(org_id)
         # TEAM: 6,000 CU/month.
         assert limits.get("compute_units") == 6_000.0
+
+
+class TestQuotaOverrides:
+    """Superadmin per-org overrides layered on the tier catalogue.
+
+    - ``tier_override`` re-bases the org's effective limits (no subscription
+      row required).
+    - ``limit_overrides`` set per-dimension caps (number) or unlimited (None).
+    - ``billing_disabled`` turns off overage billing so effective limits become
+      hard caps — a manually-managed enterprise account.
+    """
+
+    def setup_method(self) -> None:
+        os.environ["NUBI_LICENSE_KEY"] = _PRO_LICENSE_KEY
+        from app.compute.metering import InMemorySink, set_sink
+        from app.ee.billing.store import InMemoryBillingStore, set_billing_store_for_tests
+        from app.ee.licensing.license import reset_license_cache
+        from app.features import reset_for_tests
+
+        reset_for_tests()
+        reset_license_cache()
+        set_billing_store_for_tests(InMemoryBillingStore())
+        set_sink(InMemorySink())
+
+    def teardown_method(self) -> None:
+        from app.compute.metering import set_sink
+        from app.ee.billing.store import set_billing_store_for_tests
+        from app.ee.licensing.license import reset_license_cache
+        from app.features import reset_for_tests
+
+        reset_for_tests()
+        set_billing_store_for_tests(None)
+        set_sink(None)
+        os.environ.pop("NUBI_LICENSE_KEY", None)
+        reset_license_cache()
+
+    async def _set_override(self, org_id: str, **kwargs: object) -> None:
+        from app.ee.billing.store import get_billing_store
+
+        kwargs.setdefault("billing_disabled", False)
+        kwargs.setdefault("tier_override", None)
+        kwargs.setdefault("limit_overrides", {})
+        await get_billing_store().upsert_org_overrides(org_id, **kwargs)  # type: ignore[arg-type]
+
+    async def _seed_usage(self, org_id: str, kind: str, units: float) -> None:
+        from app.compute.metering import record_usage
+
+        await record_usage(kind=kind, user_id="u1", org_id=org_id, units=units)
+
+    @pytest.mark.asyncio
+    async def test_tier_override_rebases_limits_without_subscription(self) -> None:
+        """tier_override=enterprise lifts a subscription-less org's AI-call limit."""
+        from app.ee.billing.quota import resolve_org_limits
+
+        org_id = str(uuid.uuid4())
+        await self._set_override(org_id, tier_override="enterprise")
+        tier, limits, disabled = await resolve_org_limits(org_id)
+        assert tier.value == "enterprise"
+        assert limits.max_ai_calls_per_month == 500  # ENTERPRISE default
+        assert disabled is False
+
+    @pytest.mark.asyncio
+    async def test_limit_override_number_and_unlimited(self) -> None:
+        """A numeric override caps a dimension; None makes it unlimited."""
+        from app.ee.billing.quota import resolve_org_limits
+
+        org_id = str(uuid.uuid4())
+        await self._set_override(
+            org_id,
+            tier_override="enterprise",
+            limit_overrides={"max_ai_calls_per_month": 100_000, "max_storage_gb": None},
+        )
+        _tier, limits, _ = await resolve_org_limits(org_id)
+        assert limits.max_ai_calls_per_month == 100_000
+        assert limits.max_storage_gb is None  # unlimited
+
+    @pytest.mark.asyncio
+    async def test_billing_disabled_turns_overage_into_hard_cap(self) -> None:
+        """With billing disabled, a billable-overage dimension hard-stops at the cap."""
+        from app.ee.billing.quota import billing_quota_checker
+
+        org_id = str(uuid.uuid4())
+        # ENTERPRISE ai_calls limit is 500 and normally billable (allow-and-meter).
+        await self._set_override(org_id, tier_override="enterprise", billing_disabled=True)
+        allowed, reason = await billing_quota_checker(
+            org_id=org_id, dimension="ai_calls", amount=1_000.0
+        )
+        assert allowed is False
+        assert "manually" in reason
+
+    @pytest.mark.asyncio
+    async def test_billing_disabled_allows_when_override_unlimited(self) -> None:
+        """billing_disabled + an unlimited override → never blocked."""
+        from app.ee.billing.quota import billing_quota_checker
+
+        org_id = str(uuid.uuid4())
+        await self._set_override(
+            org_id,
+            tier_override="enterprise",
+            billing_disabled=True,
+            limit_overrides={"max_ai_calls_per_month": None},
+        )
+        allowed, _ = await billing_quota_checker(
+            org_id=org_id, dimension="ai_calls", amount=999_999.0
+        )
+        assert allowed is True
+
+    @pytest.mark.asyncio
+    async def test_billing_enabled_overage_still_allowed(self) -> None:
+        """Sanity: without billing_disabled, an overage dimension stays billable."""
+        from app.ee.billing.quota import billing_quota_checker
+
+        org_id = str(uuid.uuid4())
+        await self._set_override(org_id, tier_override="enterprise", billing_disabled=False)
+        allowed, _ = await billing_quota_checker(
+            org_id=org_id, dimension="ai_calls", amount=1_000.0
+        )
+        assert allowed is True
+
+    @pytest.mark.asyncio
+    async def test_usage_limits_provider_reflects_override(self) -> None:
+        """The read-only provider surfaces overridden limits to the usage view."""
+        from app.ee.billing.quota import usage_limits_provider
+
+        org_id = str(uuid.uuid4())
+        await self._set_override(
+            org_id,
+            tier_override="team",
+            limit_overrides={"max_ai_calls_per_month": 42},
+        )
+        limits = await usage_limits_provider(org_id)
+        assert limits["ai_tokens"] == 42.0

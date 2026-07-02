@@ -8,7 +8,7 @@
  * the admin pages can render an explicit error state instead of crashing.
  */
 
-import { get } from './api.js'
+import { get, put } from './api.js'
 
 /** Build a ?search=&limit=&offset= query string. */
 function listQs({ search = '', limit = 50, offset = 0 } = {}) {
@@ -89,6 +89,52 @@ export async function getAdminOrg(id) {
     console.warn('[admin] getAdminOrg failed:', cause.message)
     return null
   }
+}
+
+/**
+ * GET /ee/billing/admin/orgs/{id}
+ *
+ * Superadmin billing/limits state for an org. Lives in the EE billing module,
+ * so on an OSS build (no EE mounted) this 404s — the helper returns null and
+ * the panel renders a muted "not enabled" note instead of crashing.
+ *
+ * @param {string} id
+ * @returns {Promise<{
+ *   org_id: string,
+ *   subscription: { tier: string, status: string } | null,
+ *   billing_disabled: boolean,
+ *   tier_override: string | null,
+ *   note: string | null,
+ *   updated_at: string | null,
+ *   limit_overrides: Record<string, number|null>,
+ *   base_tier: string,
+ *   tier_defaults: Record<string, number|null>,
+ *   effective_limits: Record<string, number|null>,
+ *   available_tiers: string[]
+ * } | null>}
+ */
+export async function getAdminOrgBilling(id) {
+  try {
+    return await get(`/ee/billing/admin/orgs/${id}`)
+  } catch (cause) {
+    console.warn('[admin] getAdminOrgBilling failed:', cause.message)
+    return null
+  }
+}
+
+/**
+ * PUT /ee/billing/admin/orgs/{id}
+ *
+ * Replace the org's billing override (disable billing, tier override, per-field
+ * limit overrides). Errors propagate so the caller can show save feedback.
+ *
+ * @param {string} id
+ * @param {{ billing_disabled: boolean, tier_override: string|null,
+ *   limit_overrides: Record<string, number|null>, note?: string|null }} body
+ * @returns {Promise<object>} the refreshed billing state (same shape as getAdminOrgBilling)
+ */
+export async function updateAdminOrgBilling(id, body) {
+  return put(`/ee/billing/admin/orgs/${id}`, body)
 }
 
 /**

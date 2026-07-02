@@ -26,6 +26,7 @@ core only sees the checker through the ``app.features`` registration hook.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -41,6 +42,91 @@ _DIMENSIONS: dict[str, tuple[str, str]] = {
     "agent_runs": ("max_agent_runs_per_month", "agent_run_zar_per_run"),
     "storage_gb": ("max_storage_gb", "storage_zar_per_gb_month"),
 }
+
+# ---------------------------------------------------------------------------
+# Superadmin per-org overrides
+# ---------------------------------------------------------------------------
+# TierLimits numeric-limit fields a superadmin may override per-org from the
+# /admin billing panel (see database/migrations/ee/0028_org_billing_overrides).
+# A stored override value is a number (hard cap) or ``None`` (unlimited); an
+# ABSENT key falls back to the tier default.  The set is intentionally the
+# ``max_*`` resource limits only — prices, feature flags, and overage rates are
+# NOT per-org overridable (they follow the effective tier).
+OVERRIDE_KEYS: tuple[str, ...] = (
+    "max_seats",
+    "max_viewer_seats",
+    "max_connectors",
+    "max_query_rows",
+    "max_dashboards",
+    "max_flows",
+    "max_storage_gb",
+    "max_compute_units_per_month",
+    "max_embedded_sessions_per_month",
+    "max_agent_runs_per_month",
+    "max_ai_calls_per_month",
+)
+
+
+def apply_limit_overrides(
+    limits: TierLimits, overrides: dict[str, object] | None
+) -> TierLimits:
+    """Return *limits* with any per-org *overrides* applied.
+
+    Only keys in :data:`OVERRIDE_KEYS` are honoured; a value of ``None`` means
+    "unlimited" for that dimension (mirrors the tier catalogue's ``None`` =
+    unlimited convention).  Keys not present preserve the tier default.
+    """
+    if not overrides:
+        return limits
+    patch: dict[str, object] = {
+        key: overrides[key] for key in OVERRIDE_KEYS if key in overrides
+    }
+    return replace(limits, **patch) if patch else limits
+
+
+async def resolve_org_limits(org_id: str) -> tuple[BillingTier, TierLimits, bool]:
+    """Resolve the effective ``(tier, limits, billing_disabled)`` for *org_id*.
+
+    Layers superadmin overrides on top of the published tier catalogue:
+
+    * effective tier   = ``tier_override`` → subscription tier → FREE
+    * effective limits = ``get_tier_limits(effective tier)`` with the per-org
+      ``limit_overrides`` applied
+    * ``billing_disabled`` = the org is managed outside self-serve billing
+      (checkout blocked; overage billing turned off — see :func:`_check`)
+
+    Never raises: any failure reading overrides falls back to the plain
+    subscription-tier limits (the pre-override behaviour).
+    """
+    from app.ee.billing.store import get_billing_store  # noqa: PLC0415
+
+    overrides: dict[str, object] | None = None
+    try:
+        overrides = await get_billing_store().get_org_overrides(org_id)
+    except Exception as exc:  # noqa: BLE001 — overrides are best-effort
+        logger.warning("Billing: failed to read overrides for org=%s: %s", org_id, exc)
+        overrides = None
+
+    tier: BillingTier | None = None
+    if overrides and overrides.get("tier_override"):
+        try:
+            tier = BillingTier(str(overrides["tier_override"]))
+        except ValueError:
+            logger.warning(
+                "Billing: org=%s has invalid tier_override %r — ignoring",
+                org_id,
+                overrides.get("tier_override"),
+            )
+            tier = None
+    if tier is None:
+        tier = await _resolve_tier(org_id)
+
+    limits = apply_limit_overrides(
+        get_tier_limits(tier),
+        (overrides or {}).get("limit_overrides") if overrides else None,  # type: ignore[arg-type]
+    )
+    billing_disabled = bool(overrides.get("billing_disabled")) if overrides else False
+    return tier, limits, billing_disabled
 
 
 async def billing_quota_checker(
@@ -70,13 +156,17 @@ async def _check(*, org_id: str, dimension: str, amount: float) -> tuple[bool, s
     if not get_license().is_paid:
         return True, ""
 
+    # Resolve the org's effective tier + limits + billing state once, honouring
+    # any superadmin per-org overrides (tier_override, limit_overrides,
+    # billing_disabled).
+    tier, limits, billing_disabled = await resolve_org_limits(org_id)
+
     # "warehouse" is a feature gate, not a numeric quota: heavy-query-pool
     # execution is available on tiers with has_warehouse and consumes normal
     # compute units (at WAREHOUSE_CU_MULTIPLIER), which the compute_units
     # dimension already meters and limits.
     if dimension == "warehouse":
-        tier = await _resolve_tier(org_id)
-        if get_tier_limits(tier).has_warehouse:
+        if limits.has_warehouse:
             return True, ""
         return False, (
             f"The hosted warehouse (heavy-query pool) is available on the Pro "
@@ -89,25 +179,33 @@ async def _check(*, org_id: str, dimension: str, amount: float) -> tuple[bool, s
         return True, ""  # unknown dimension → allow (mirrors is_within_quota)
     quota_attr, rate_attr = attrs
 
-    tier = await _resolve_tier(org_id)
-    limits: TierLimits = get_tier_limits(tier)
-
     quota = getattr(limits, quota_attr, None)
     if quota is None:
-        return True, ""  # unlimited
+        return True, ""  # unlimited (tier default or an override set to unlimited)
 
     rates: OverageRates = limits.overages
     rate: Decimal | None = getattr(rates, rate_attr, None)
-    if rate is not None:
+    if rate is not None and not billing_disabled:
         # Overages are billable on this tier (wallet first, then invoice —
         # overdraw allowed), so usage beyond the quota is never blocked.
+        # When billing is DISABLED for the org (manually-managed enterprise),
+        # there is no wallet/invoice to draw against, so the effective limit is
+        # enforced as a hard cap instead (fall through to the hard-stop path).
         return True, ""
 
-    # Hard stop: no overage rate for this dimension on this tier.
+    # Hard stop: either no overage rate for this dimension on this tier, or
+    # billing is disabled for the org so overages are not collectible.
     used = await _current_period_usage(org_id, dimension)
     if used + amount > float(quota):
+        pretty = dimension.replace("_", " ")
+        if billing_disabled:
+            return False, (
+                f"This organisation's {pretty} allowance ({quota:g} per month) "
+                f"has been reached ({used:g} used). Billing is managed manually "
+                f"for this account — contact your account manager to raise it."
+            )
         return False, (
-            f"The {tier.value} plan includes {quota:g} {dimension.replace('_', ' ')} "
+            f"The {tier.value} plan includes {quota:g} {pretty} "
             f"per month and has no overage billing for this dimension "
             f"({used:g} used). Upgrade your plan to continue."
         )
@@ -192,8 +290,7 @@ async def usage_limits_provider(org_id: str) -> dict[str, float | None]:
 
         if not get_license().is_paid:
             return {}
-        tier = await _resolve_tier(org_id)
-        limits: TierLimits = get_tier_limits(tier)
+        _tier, limits, _billing_disabled = await resolve_org_limits(org_id)
         out: dict[str, float | None] = {}
         for metric_id, attr in _USAGE_METRIC_TO_TIER_ATTR.items():
             value = getattr(limits, attr, None)
