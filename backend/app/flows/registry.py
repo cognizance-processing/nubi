@@ -119,31 +119,13 @@ if TYPE_CHECKING:
 # the sqlglot dialect name used for SQL generation.  When a task config
 # carries ``datastore_id``, ``_resolve_flow_connector`` looks up this dict to
 # determine the target dialect so sqlglot can produce warehouse-native SQL.
+#
+# The map now lives in the shared ``app.connectors.dialects`` module so the
+# ad-hoc query route (``app.routes.query``) can consult the same mapping.
+# Re-exported here for backwards compatibility.
 # ---------------------------------------------------------------------------
 
-CONNECTOR_DIALECT: dict[str, str] = {
-    "postgres": "postgres",
-    "redshift": "postgres",
-    "cockroachdb": "postgres",
-    "cloudsql": "postgres",
-    "duckdb": "duckdb",
-    "duckdb_storage": "duckdb",
-    "snowflake": "snowflake",
-    "bigquery": "bigquery",
-    "mysql": "mysql",
-    "mariadb": "mysql",
-    "sqlserver": "tsql",
-    "azuresql": "tsql",
-    "azuresynapse": "tsql",
-    "oracle": "oracle",
-    "clickhouse": "clickhouse",
-    "trino": "trino",
-    "presto": "presto",
-    "athena": "trino",
-    "databricks": "databricks",
-    "http_json": "postgres",
-    "jdbc": "postgres",
-}
+from app.connectors.dialects import CONNECTOR_DIALECT, dialect_for  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +317,7 @@ def _resolve_flow_connector(
     else:
         connector = factory(cfg)
 
-    target_dialect: str = CONNECTOR_DIALECT.get(ctype or "", "postgres")
+    target_dialect: str = dialect_for(ctype)
     return connector, target_dialect
 
 

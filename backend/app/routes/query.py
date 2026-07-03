@@ -114,6 +114,7 @@ from app.connectors import plan as planner_plan
 from app.connectors.arrow_io import ipc_stream_from_bytes, table_to_ipc_bytes
 from app.connectors.cache import get_cache
 from app.connectors.cache_key import compute_base_scan_key, scope_cache_key
+from app.connectors.dialects import DEFAULT_DIALECT, dialect_for
 from app.connectors.duckdb_conn import DuckDBConnector
 from app.connectors.planner import resolve_named_params
 from app.connectors.query_log import get_query_log
@@ -635,6 +636,104 @@ class _ResolvedPlan:
         self.effective_sql = effective_sql
 
 
+async def _resolve_effective_datastore_id(
+    body: "QueryIn",
+    registered,
+    identity: VerifiedIdentity,
+) -> str | None:
+    """Resolve the EFFECTIVE datastore id for a request (org-scoped).
+
+    Precedence: ``body.datastore_id`` → registered query binding, then the
+    embed connector-override claim (id-based, whole-dashboard). The ``__demo__``
+    sentinel collapses to ``None`` (the built-in DuckDB demo dataset).
+
+    This runs BEFORE planning so the planner can pick the target connector's
+    native sqlglot dialect for SQL generation.
+    """
+    from app.errors import AppError as _AppError
+
+    effective_datastore_id = body.datastore_id or (
+        registered.datastore_id if registered is not None else None
+    )
+
+    # ── EMBED CONNECTOR OVERRIDE (id-based, whole-dashboard) ─────────────────
+    # This is the "connector override" embedding capability: feature-equivalent
+    # to the legacy whole-dashboard connector selection, but selected BY ID.
+    # When an embed token carries a host-signed ``datastore`` claim
+    # (``identity.datastore``), that id becomes the EFFECTIVE datastore for ALL
+    # queries in the request — it overrides both ``body.datastore_id`` and the
+    # registered query's default binding. This lets a host point an embedded
+    # dashboard at a per-tenant datastore without re-registering its queries.
+    #
+    # SECURITY (org-scope): the claim can ONLY target a datastore that lives in
+    # the token's own org (``identity.org``). We resolve it org-scoped via the
+    # repo here; a missing row — which includes any cross-org id, since the repo
+    # lookup is scoped to ``identity.org`` — raises ``datastore_not_found`` (404)
+    # before planning continues. There is NO connector_type / type-fallback path:
+    # this is id-only. First-party (kind='access') tokens never carry this claim
+    # and are therefore unaffected. RLS still comes only from the token.
+    if identity.kind == "embed" and identity.datastore:
+        if not identity.org:
+            raise _AppError(
+                "datastore_not_found",
+                "Embed connector-override claim cannot be resolved without an "
+                "org in the token.",
+                404,
+            )
+        _override_id = str(identity.datastore)
+        _override_ds = await get_repo().get(
+            "datastores", identity.org, _override_id
+        )
+        if _override_ds is None:
+            # Org-scoped lookup miss → either truly absent OR cross-org. Either
+            # way the embed token may not route at this datastore.
+            raise _AppError(
+                "datastore_not_found",
+                f"Connector-override datastore {_override_id!r} not found in this org.",
+                404,
+            )
+        effective_datastore_id = _override_id
+
+    from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_CONNECTOR_ID
+
+    if effective_datastore_id == _DEMO_CONNECTOR_ID:
+        effective_datastore_id = None
+
+    return effective_datastore_id
+
+
+async def _resolve_target_dialect(
+    effective_datastore_id: str | None,
+    identity: VerifiedIdentity,
+) -> str:
+    """Resolve the target sqlglot dialect for SQL generation.
+
+    For a BYO connector (a resolved ``effective_datastore_id``) the datastore's
+    ``connector_type`` is mapped to its native sqlglot dialect via the shared
+    ``dialect_for`` helper, so warehouse-native SQL (e.g. ``TRY_CAST`` /
+    ``SAFE_CAST``) survives to the engine.
+
+    For the no-datastore / demo / lake fallback path — or if the datastore /
+    org cannot be resolved — the historical default (``"postgres"``) is kept so
+    existing planner behaviour is unchanged. Fail-safe: any lookup error falls
+    back to the default dialect rather than breaking the query path.
+    """
+    if effective_datastore_id is None:
+        return DEFAULT_DIALECT
+    try:
+        org_id, _ = await _resolve_caller_org(identity, get_repo())
+        if not org_id:
+            return DEFAULT_DIALECT
+        ds = await get_repo().get("datastores", org_id, effective_datastore_id)
+        if ds is None:
+            return DEFAULT_DIALECT
+        cfg: dict = dict(ds.get("config") or {})
+        ctype = cfg.get("connector_type") or cfg.get("type")
+        return dialect_for(ctype)
+    except Exception:  # noqa: BLE001 — fail-safe to the historical default.
+        return DEFAULT_DIALECT
+
+
 async def _resolve_request_plan(
     body: "QueryIn",
     request: Request,
@@ -841,6 +940,19 @@ async def _resolve_request_plan(
                     400,
                 )
 
+    # ── Target datastore + dialect resolution (BEFORE planning) ──────────────
+    # Resolve the effective datastore id and its native sqlglot dialect BEFORE
+    # planning so the planner emits warehouse-native SQL for BYO connectors —
+    # most importantly, safe-cast forms (``TRY_CAST`` / ``SAFE_CAST``) survive
+    # to the target engine instead of being downgraded to a plain ``CAST`` by a
+    # hardcoded ``postgres`` dialect (mirrors the flow query path).  The
+    # no-datastore / demo / lake fallback keeps the historical ``postgres``
+    # default so existing planner behaviour is preserved.
+    effective_datastore_id = await _resolve_effective_datastore_id(
+        body, registered, identity
+    )
+    target_dialect = await _resolve_target_dialect(effective_datastore_id, identity)
+
     # ── Plan (RLS predicates injected at the AST level) ──────────────────────
     # [LOW event-loop] planner_plan() is pure-Python (sqlglot parse + RLS AST
     # rewrite); offload to a worker thread so the event loop is never blocked.
@@ -850,6 +962,7 @@ async def _resolve_request_plan(
         sql=effective_sql,
         claims=claims,
         params=effective_params,
+        dialect=target_dialect,
     )
 
     # ── Conservative rollup routing (RLS preserved through the rewrite) ──────
@@ -873,53 +986,8 @@ async def _resolve_request_plan(
     except Exception:  # noqa: BLE001 — routing must never break the query path.
         pass
 
-    effective_datastore_id = body.datastore_id or (
-        registered.datastore_id if registered is not None else None
-    )
-
-    # ── EMBED CONNECTOR OVERRIDE (id-based, whole-dashboard) ─────────────────
-    # This is the "connector override" embedding capability: feature-equivalent
-    # to the legacy whole-dashboard connector selection, but selected BY ID.
-    # When an embed token carries a host-signed ``datastore`` claim
-    # (``identity.datastore``), that id becomes the EFFECTIVE datastore for ALL
-    # queries in the request — it overrides both ``body.datastore_id`` and the
-    # registered query's default binding. This lets a host point an embedded
-    # dashboard at a per-tenant datastore without re-registering its queries.
-    #
-    # SECURITY (org-scope): the claim can ONLY target a datastore that lives in
-    # the token's own org (``identity.org``). We resolve it org-scoped via the
-    # repo here; a missing row — which includes any cross-org id, since the repo
-    # lookup is scoped to ``identity.org`` — raises ``datastore_not_found`` (404)
-    # before planning continues. There is NO connector_type / type-fallback path:
-    # this is id-only. First-party (kind='access') tokens never carry this claim
-    # and are therefore unaffected. RLS still comes only from the token.
-    if identity.kind == "embed" and identity.datastore:
-        if not identity.org:
-            raise _AppError(
-                "datastore_not_found",
-                "Embed connector-override claim cannot be resolved without an "
-                "org in the token.",
-                404,
-            )
-        _override_id = str(identity.datastore)
-        _override_ds = await get_repo().get(
-            "datastores", identity.org, _override_id
-        )
-        if _override_ds is None:
-            # Org-scoped lookup miss → either truly absent OR cross-org. Either
-            # way the embed token may not route at this datastore.
-            raise _AppError(
-                "datastore_not_found",
-                f"Connector-override datastore {_override_id!r} not found in this org.",
-                404,
-            )
-        effective_datastore_id = _override_id
-
-    from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_CONNECTOR_ID
-
-    if effective_datastore_id == _DEMO_CONNECTOR_ID:
-        effective_datastore_id = None
-
+    # ``effective_datastore_id`` was already resolved above (BEFORE planning)
+    # so the planner could emit warehouse-native SQL in the target dialect.
     return _ResolvedPlan(
         physical_plan, registered, effective_datastore_id, effective_sql
     )
