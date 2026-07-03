@@ -283,15 +283,23 @@ def _introspect_tables_duckdb(connector: DuckDBConnector) -> list[dict[str, Any]
 def _introspect_columns_duckdb(
     connector: DuckDBConnector, table_name: str, schema: str = "main"
 ) -> list[dict[str, Any]]:
-    """Return [{name, type, nullable, pk, editable}] for columns in *table_name*.
+    """Return [{name, type, portable_type, nullable, pk, editable}] for columns.
 
-    ``pk`` flags columns that form the table's primary key (or, absent a PK, a
-    single-column UNIQUE constraint usable as a row identity).  ``editable`` is
-    True for every real column — the write endpoints decide per-request which
-    columns a given operation may touch (PK columns are not updatable via the
-    ``set`` clause, but they are settable on INSERT).
+    ``type`` is the DuckDB-native type string (from information_schema);
+    ``portable_type`` is the same value normalised to the portable vocabulary
+    (text|number|bool|date|timestamp|json) via the shared Arrow-type mapper, so
+    the shape matches the non-DuckDB probe path.  ``pk`` flags columns that form
+    the table's primary key (or, absent a PK, a single-column UNIQUE constraint
+    usable as a row identity).  ``editable`` is True for every real column — the
+    write endpoints decide per-request which columns a given operation may touch
+    (PK columns are not updatable via the ``set`` clause, but they are settable
+    on INSERT).
     """
     pk_cols = _detect_row_identity_duckdb(connector, table_name)
+    # Normalised portable type per column, from a zero-row Arrow probe (reuses
+    # the shared Arrow→portable mapper).  Best-effort: falls back to the native
+    # type string when the probe is unavailable.
+    portable = _portable_types_via_probe(connector, table_name)
     # Quote schema and table safely (already validated via allowlist before call)
     plan = _make_plan(
         f"SELECT column_name, data_type, is_nullable "
@@ -309,6 +317,7 @@ def _introspect_columns_duckdb(
             {
                 "name": n,
                 "type": t,
+                "portable_type": portable.get(n) or _portable_from_native_type(t),
                 "nullable": str(null).upper() in ("YES", "TRUE", "1"),
                 "pk": n in pk_cols,
                 "editable": True,
@@ -328,6 +337,7 @@ def _introspect_columns_duckdb(
                 {
                     "name": n,
                     "type": t,
+                    "portable_type": portable.get(n) or _portable_from_native_type(t),
                     "nullable": str(null).upper() in ("YES", "TRUE", "1"),
                     "pk": n in pk_cols,
                     "editable": True,
@@ -336,6 +346,86 @@ def _introspect_columns_duckdb(
             ]
         except Exception:
             return []
+
+
+# ---------------------------------------------------------------------------
+# Portable (normalised) type derivation — shared by every connector
+# ---------------------------------------------------------------------------
+#
+# The portable vocabulary (text|number|bool|date|timestamp|json) and its
+# Arrow-type mapper are defined ONCE in ``routes.query._portable_arrow_type``
+# and reused here so the data browser never invents a parallel vocabulary.
+
+
+def _portable_from_native_type(native: str) -> str:
+    """Best-effort native-type-string → portable vocabulary fallback.
+
+    Only used when the Arrow probe is unavailable (e.g. an information_schema
+    row whose type could not be probed).  Emits the SAME vocabulary as
+    ``_portable_arrow_type`` — it does not introduce new type names.
+    """
+    n = (native or "").strip().lower()
+    if n.startswith("bool"):
+        return "bool"
+    if "timestamp" in n or "datetime" in n:
+        return "timestamp"
+    if n.startswith("date"):
+        return "date"
+    if any(k in n for k in ("json", "struct", "list", "array", "map")):
+        return "json"
+    if any(
+        k in n
+        for k in ("int", "float", "double", "real", "decimal", "numeric", "number")
+    ):
+        return "number"
+    if any(k in n for k in ("char", "text", "string", "uuid")):
+        return "text"
+    return "text"
+
+
+def _portable_types_via_probe(connector: Any, table_name: str) -> dict[str, str]:
+    """Return ``{column_name: portable_type}`` from a zero-row Arrow probe.
+
+    Executes ``SELECT * FROM {table} LIMIT 0`` through *connector* and maps each
+    Arrow field via the shared ``_portable_arrow_type`` mapper.  Best-effort:
+    returns ``{}`` if the probe fails so callers can fall back.  Callers MUST
+    have validated *table_name* via :func:`_safe_identifier`.
+    """
+    try:
+        tbl = connector.execute(_make_plan(f"SELECT * FROM {table_name} LIMIT 0"))
+    except Exception:
+        return {}
+    from app.routes.query import _portable_arrow_type  # noqa: PLC0415
+
+    return {f.name: _portable_arrow_type(f.type) for f in tbl.schema}
+
+
+def _introspect_columns_via_probe(
+    connector: Any, table_name: str
+) -> list[dict[str, Any]]:
+    """Introspect columns for a non-DuckDB connector via a zero-row probe.
+
+    Executes ``SELECT * FROM {table} LIMIT 0`` through the resolved connector and
+    derives one entry per Arrow field: the native ``type`` (Arrow type string),
+    the normalised ``portable_type``, ``nullable`` from the field, and
+    ``pk``/``editable`` conservatively ``False`` (remote SQL sources are browsed
+    read-only).  Callers MUST have validated *table_name* via
+    :func:`_safe_identifier`.
+    """
+    from app.routes.query import _portable_arrow_type  # noqa: PLC0415
+
+    tbl = connector.execute(_make_plan(f"SELECT * FROM {table_name} LIMIT 0"))
+    return [
+        {
+            "name": f.name,
+            "type": str(f.type),
+            "portable_type": _portable_arrow_type(f.type),
+            "nullable": bool(f.nullable),
+            "pk": False,
+            "editable": False,
+        }
+        for f in tbl.schema
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -516,16 +606,44 @@ async def _resolve_connector_and_tables(
     cfg: dict = dict(ds.get("config") or {})
     ctype = cfg.get("connector_type") or cfg.get("type") or "duckdb"
 
-    if ctype != "duckdb":
-        raise AppError(
-            "not_supported",
-            f"Data browser currently supports duckdb connectors; got {ctype!r}.",
-            400,
-        )
+    if ctype == "duckdb":
+        connector = _build_duckdb_connector(cfg)
+        tables = _introspect_tables_duckdb(connector)
+        return connector, tables
 
-    connector = _build_duckdb_connector(cfg)
+    # Non-DuckDB connectors (postgres/bigquery/snowflake/…): build the connector
+    # generically through the shared connector-build path (registry + secret /
+    # network resolution) and introspect its tables through the SAME
+    # information_schema query used for DuckDB.  The connector only needs to
+    # expose ``.execute(plan)`` — every SQL connector does.
+    connector = await _build_remote_connector(datastore_id, org_id, repo)
     tables = _introspect_tables_duckdb(connector)
     return connector, tables
+
+
+async def _build_remote_connector(
+    datastore_id: str,
+    org_id: str | None,
+    repo: Repo,
+) -> Any:
+    """Build a non-DuckDB connector for read-only browsing.
+
+    Reuses ``routes.query._build_connector_for_plan`` — the single place that
+    resolves a datastore config into a live connector (registry factory + secret
+    injection + network-mode resolution).  A policy-free plan is passed so no
+    RLS predicate is required (browse never carries policies here).
+
+    The bridge-tunnel cleanup returned by that helper is a no-op in the default
+    ``direct`` network mode used by OSS self-host, so it is intentionally not
+    threaded back through the browse routes.
+    """
+    from app.routes.query import _build_connector_for_plan  # noqa: PLC0415
+
+    plan = _make_plan("")  # empty rls_claims → no policy-bearing browse
+    connector, _kind, _cleanup = await _build_connector_for_plan(
+        plan, datastore_id, org_id, None, repo
+    )
+    return connector
 
 
 # ---------------------------------------------------------------------------
@@ -599,18 +717,35 @@ async def list_columns(
         raise AppError("not_found", f"Table {table!r} not found in datastore {datastore_id!r}.", 404)
     if not _safe_identifier(table):
         raise AppError("invalid_identifier", f"Table name {table!r} is not a valid identifier.", 400)
-    columns = _introspect_columns_duckdb(connector, table)
-    # Writability: native BASE TABLEs (on-disk file connectors) OR parquet-backed
-    # tables that carry a _row_id identity (the editable per-project demo).  The
-    # virtual demo connector and plain read_parquet views stay read-only.
-    writable = False
-    primary_key: list[str] = []
     from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_CONNECTOR_ID
     cfg = (
         await _datastore_cfg(datastore_id, user, repo)
         if datastore_id != _DEMO_CONNECTOR_ID
         else None
     )
+    ctype = (
+        (cfg.get("connector_type") or cfg.get("type") or "duckdb") if cfg else "duckdb"
+    )
+
+    # Non-DuckDB connectors (postgres/bigquery/snowflake/…): derive columns from a
+    # zero-row Arrow probe through the resolved connector.  Remote SQL sources are
+    # browsed read-only, so writability is always False here.
+    if ctype != "duckdb":
+        columns = _introspect_columns_via_probe(connector, table)
+        return {
+            "table": table,
+            "columns": columns,
+            "datastore_id": datastore_id,
+            "writable": False,
+            "primary_key": [],
+        }
+
+    columns = _introspect_columns_duckdb(connector, table)
+    # Writability: native BASE TABLEs (on-disk file connectors) OR parquet-backed
+    # tables that carry a _row_id identity (the editable per-project demo).  The
+    # virtual demo connector and plain read_parquet views stay read-only.
+    writable = False
+    primary_key: list[str] = []
     # A user-set read-only connector is never editable in the data grid — report
     # writable=False up front so no edit affordances show (the write path also
     # gates on this, but the UI should reflect it before a write is attempted).

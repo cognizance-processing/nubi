@@ -38,6 +38,67 @@ from app.repos.provider import set_repo
 # /data/* routes on api_router ahead of the generic /{resource} catch-all.
 import app.routes.data_browser  # noqa: F401, E402
 
+from app.connectors.base import Connector  # noqa: E402
+from app.connectors.plan import PhysicalPlan  # noqa: E402
+from app.connectors.registry import get_connector_registry  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Fake non-DuckDB SQL connector (for the connector-uniform introspection path)
+# ---------------------------------------------------------------------------
+
+_FAKE_SQL_TYPE = "fake_probe_sql"
+
+# Zero-row Arrow schema returned by the LIMIT-0 probe for table "widgets".
+_WIDGETS_SCHEMA = pa.schema(
+    [
+        pa.field("id", pa.int64()),
+        pa.field("name", pa.utf8()),
+        pa.field("price", pa.float64()),
+        pa.field("created_at", pa.timestamp("us")),
+        pa.field("active", pa.bool_()),
+    ]
+)
+
+
+class _FakeSQLConnector(Connector):
+    """Minimal non-DuckDB connector used to exercise the probe path.
+
+    Answers exactly two SQL shapes the data browser issues: the
+    information_schema.tables introspection and the ``SELECT * FROM t LIMIT 0``
+    zero-row probe.  Everything else returns an empty table.
+    """
+
+    def __init__(self, config: dict) -> None:  # noqa: ARG002
+        self.validate_capabilities()
+
+    def capabilities(self) -> dict[str, bool]:
+        return {
+            "native_arrow": True,
+            "predicate_pushdown": True,
+            "projection_pushdown": True,
+            "partition_pushdown": False,
+            "predicate_rls": True,
+            "column_masking": False,
+            "streaming_cdc": False,
+        }
+
+    def execute(self, plan: PhysicalPlan) -> pa.Table:
+        sql = (plan.sql or "").lower()
+        if "information_schema.tables" in sql:
+            return pa.table({"table_schema": ["main"], "table_name": ["widgets"]})
+        if "widgets" in sql:  # the LIMIT 0 probe
+            return _WIDGETS_SCHEMA.empty_table()
+        return pa.table({})
+
+    def execute_stream(self, plan: PhysicalPlan):  # noqa: ARG002
+        yield from []  # pragma: no cover
+
+
+get_connector_registry().register(
+    _FAKE_SQL_TYPE, lambda config: _FakeSQLConnector(config)
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -118,6 +179,26 @@ async def test_list_demo_columns_returns_correct_schema(browser_client):
     assert "columns" in body
     col_names = {c["name"] for c in body["columns"]}
     assert {"id", "name", "value", "active"}.issubset(col_names)
+
+
+@pytest.mark.asyncio
+async def test_demo_columns_include_portable_type(browser_client):
+    """DuckDB (demo) columns carry a portable_type from the portable vocab.
+
+    Backward-compatible: the native ``type`` field is still present; only
+    ``portable_type`` is added.
+    """
+    ac, user_id, _org_id, _repo = browser_client
+    resp = await ac.get("/api/v1/data/tables/demo/columns", headers=_auth_headers(user_id))
+    assert resp.status_code == 200, resp.text
+    vocab = {"text", "number", "bool", "date", "timestamp", "json"}
+    for col in resp.json()["columns"]:
+        assert "type" in col  # native type preserved (backward compatible)
+        assert col["portable_type"] in vocab
+    by_name = {c["name"]: c for c in resp.json()["columns"]}
+    assert by_name["id"]["portable_type"] == "number"
+    assert by_name["name"]["portable_type"] == "text"
+    assert by_name["active"]["portable_type"] == "bool"
 
 
 @pytest.mark.asyncio
@@ -206,23 +287,70 @@ async def test_list_tables_unknown_datastore_returns_404(browser_client):
 
 
 @pytest.mark.asyncio
-async def test_list_tables_non_duckdb_connector_returns_400(browser_client):
-    """GET /data/{id}/tables for a postgres connector → 400 (unsupported)."""
+async def test_non_duckdb_connector_columns_via_probe(browser_client):
+    """GET /data/{id}/tables/{t}/columns for a non-DuckDB connector.
+
+    A fake SQL connector answers the information_schema.tables introspection and
+    the zero-row ``SELECT * FROM t LIMIT 0`` probe.  The columns response is
+    derived from the probe's Arrow schema and carries both the native ``type``
+    and the normalised ``portable_type`` for every column.
+    """
     ac, user_id, org_id, repo = browser_client
-    # Create a postgres connector row in the InMemoryRepo
     ds_row = await repo.create(
         resource="datastores",
         org_id=org_id,
         created_by=user_id,
-        name="pg-test",
-        config={"connector_type": "postgres", "host": "localhost"},
+        name="fake-sql",
+        config={"connector_type": _FAKE_SQL_TYPE},
     )
     ds_id = ds_row["id"]
+
+    # Tables endpoint now works for a non-DuckDB connector (no more 400).
     resp = await ac.get(
         f"/api/v1/data/{ds_id}/tables",
         headers=_auth_headers(user_id),
     )
-    assert resp.status_code == 400, resp.text
+    assert resp.status_code == 200, resp.text
+    assert "widgets" in {t["name"] for t in resp.json()["tables"]}
+
+    # Columns endpoint derives schema + portable types from the probe.
+    resp = await ac.get(
+        f"/api/v1/data/{ds_id}/tables/widgets/columns",
+        headers=_auth_headers(user_id),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["writable"] is False
+    by_name = {c["name"]: c for c in body["columns"]}
+    assert set(by_name) == {"id", "name", "price", "created_at", "active"}
+    # Native Arrow type strings are preserved alongside the portable type.
+    assert by_name["id"]["type"] == "int64"
+    assert by_name["id"]["portable_type"] == "number"
+    assert by_name["price"]["portable_type"] == "number"
+    assert by_name["name"]["portable_type"] == "text"
+    assert by_name["active"]["portable_type"] == "bool"
+    assert by_name["created_at"]["portable_type"] == "timestamp"
+    # Every column exposes the full contract shape.
+    for col in body["columns"]:
+        assert set(col) >= {"name", "type", "portable_type", "nullable", "pk", "editable"}
+
+
+@pytest.mark.asyncio
+async def test_non_duckdb_unknown_table_returns_404(browser_client):
+    """A table not present in the connector's introspected tables → 404."""
+    ac, user_id, org_id, repo = browser_client
+    ds_row = await repo.create(
+        resource="datastores",
+        org_id=org_id,
+        created_by=user_id,
+        name="fake-sql-2",
+        config={"connector_type": _FAKE_SQL_TYPE},
+    )
+    resp = await ac.get(
+        f"/api/v1/data/{ds_row['id']}/tables/not_a_table/columns",
+        headers=_auth_headers(user_id),
+    )
+    assert resp.status_code == 404, resp.text
 
 
 # ---------------------------------------------------------------------------
