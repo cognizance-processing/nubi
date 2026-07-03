@@ -201,6 +201,13 @@ def _query_spec_from_row(row: dict[str, Any]) -> dict[str, Any]:
     output_schema = config.get("output_schema")
     if isinstance(output_schema, list):
         spec["output_schema"] = output_schema
+    # Semantic-layer contract: carry the governed ``config.metric`` block (slug,
+    # measure, dimensions, time_dimension, default_filters, rls_keys, …) so a
+    # query-as-metric round-trips through export/import. Absent → omitted (a
+    # plain query stays plain on re-import — see _query_row_fields).
+    metric = config.get("metric")
+    if isinstance(metric, dict):
+        spec["metric"] = metric
     return spec
 
 
@@ -224,6 +231,13 @@ def _query_row_fields(env: dict[str, Any]) -> dict[str, Any]:
     output_schema = spec.get("output_schema")
     if isinstance(output_schema, list):
         config["output_schema"] = output_schema
+    # Re-import the governed ``config.metric`` block when the envelope declares
+    # one (skip entirely otherwise — a plain query stays plain). Validation of
+    # the block happens in _query_validate (reusing the metrics write-path
+    # validator) before this payload is persisted.
+    metric = spec.get("metric")
+    if isinstance(metric, dict):
+        config["metric"] = metric
     return {"name": name, "config": config}
 
 
@@ -267,6 +281,20 @@ def _query_validate(spec: dict[str, Any]) -> list[str]:
                     )
                 except Exception as exc:  # noqa: BLE001
                     issues.append(f"params[{idx}]: {exc}")
+
+    # Governed metric block: when the spec carries a ``metric`` block it IS a
+    # governed metric, so validate it through the SAME validator the /metrics
+    # write path runs (validate_query_metric_block → _build_definition). The spec
+    # already carries {metric, sql, datastore_id} at the shape that validator
+    # reads, so a malformed metric yields a structured 400 rather than silently
+    # importing an invalid definition. Lazy import avoids an import cycle.
+    if spec.get("metric") is not None:
+        from app.routes.metrics import validate_query_metric_block
+
+        try:
+            validate_query_metric_block(spec)
+        except AppError as exc:
+            issues.append(f"config.metric: {exc.message}")
 
     return issues
 

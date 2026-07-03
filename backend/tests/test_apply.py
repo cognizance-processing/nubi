@@ -185,6 +185,75 @@ class TestApplyHappyPath:
 
 
 # ---------------------------------------------------------------------------
+# 1b. Query-as-metric apply (config.metric block authored headlessly)
+# ---------------------------------------------------------------------------
+
+
+def _query_metric_envelope(name: str, slug: str) -> dict[str, Any]:
+    """A query envelope carrying a governed `config.metric` block (with rls_keys)."""
+    return {
+        "kind": "query",
+        "apiVersion": "nubi/v1",
+        "metadata": {"name": name},
+        "spec": {
+            "name": name,
+            "sql": "SELECT amount, region, ts FROM sales",
+            "params": [],
+            "metric": {
+                "slug": slug,
+                "measure": {"name": "revenue", "agg": "sum", "expr": "amount"},
+                "dimensions": [{"name": "region", "expr": "region", "type": "text"}],
+                "rls_keys": ["region"],
+            },
+        },
+    }
+
+
+class TestApplyQueryMetric:
+    @pytest.mark.asyncio
+    async def test_apply_query_with_metric_block(self, apply_setup):
+        """A query envelope with a config.metric block is applied + persists it."""
+        client, user_id, org_id, repo = apply_setup
+
+        resp = await client.post(
+            "/api/v1/apply",
+            json={
+                "resources": [_query_metric_envelope("Revenue", "revenue")],
+                "dry_run": False,
+            },
+            headers={**_auth(user_id), **_org_header(org_id)},
+        )
+        assert resp.status_code == 200, resp.text
+        r = resp.json()["results"][0]
+        assert r["action"] == "created"
+        assert r.get("id")
+
+        row = await repo.get("queries", org_id, r["id"])
+        assert row["config"]["metric"]["slug"] == "revenue"
+        assert row["config"]["metric"]["rls_keys"] == ["region"]
+
+    @pytest.mark.asyncio
+    async def test_apply_invalid_metric_block_fails(self, apply_setup):
+        """A malformed metric block is rejected (structured failure, HTTP 200 body)."""
+        client, user_id, org_id, repo = apply_setup
+
+        env = _query_metric_envelope("Bad", "bad")
+        # Non-count agg with no expr → invalid measure.
+        env["spec"]["metric"]["measure"] = {"name": "revenue", "agg": "sum", "expr": "*"}
+
+        resp = await client.post(
+            "/api/v1/apply",
+            json={"resources": [env], "dry_run": False},
+            headers={**_auth(user_id), **_org_header(org_id)},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["summary"]["failed"] == 1
+        assert data["results"][0]["action"] == "failed"
+        assert "metric" in (data["results"][0].get("error") or "").lower()
+
+
+# ---------------------------------------------------------------------------
 # 2. Idempotent re-apply
 # ---------------------------------------------------------------------------
 

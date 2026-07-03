@@ -207,6 +207,103 @@ async def test_query_export_import_roundtrip_json(port_client):
     assert len(queries) == 1
 
 
+# ── Query-as-metric round-trip (config.metric block, incl. rls_keys) ────────
+# A query row whose config carries a `metric` block IS a governed metric. The
+# portability round-trip must carry that block (with rls_keys + all metric
+# fields) on export and re-apply it on import, and reject a malformed block.
+
+_QUERY_METRIC_SPEC = {
+    "name": "Revenue",
+    "sql": "SELECT amount, region, ts FROM sales",
+    "params": [],
+    "datastore_id": None,
+    "metric": {
+        "slug": "revenue",
+        "measure": {"name": "revenue", "agg": "sum", "expr": "amount"},
+        "dimensions": [{"name": "region", "expr": "region", "type": "text"}],
+        "time_dimension": {
+            "column": "ts",
+            "grains": ["day", "month"],
+            "default_grain": "day",
+        },
+        "default_filters": [],
+        "rls_keys": ["region"],
+        "owner": "analytics@example.com",
+        "description": "Total revenue.",
+    },
+}
+
+
+@pytest.mark.asyncio
+async def test_query_metric_block_export_import_roundtrip(port_client):
+    client, alice_id, org_id, repo = port_client
+
+    created = await repo.create(
+        resource="queries",
+        org_id=org_id,
+        created_by=alice_id,
+        name="Revenue",
+        config=_QUERY_METRIC_SPEC,
+    )
+    qid = created["id"]
+
+    # Export — the metric block (incl. rls_keys) must be carried on the spec.
+    resp = await client.get(
+        f"/api/v1/export/query/{qid}?format=json", headers=_auth(alice_id)
+    )
+    assert resp.status_code == 200, resp.text
+    env = resp.json()
+    metric = env["spec"]["metric"]
+    assert metric["slug"] == "revenue"
+    assert metric["rls_keys"] == ["region"]
+    assert metric["measure"]["expr"] == "amount"
+    assert metric["time_dimension"]["column"] == "ts"
+
+    # Re-import → update in place; the metric block persists on config.
+    imp = await client.post("/api/v1/import", json=env, headers=_auth(alice_id))
+    assert imp.status_code == 200, imp.text
+    body = imp.json()
+    assert body["id"] == qid
+    assert body["config"]["metric"]["slug"] == "revenue"
+    assert body["config"]["metric"]["rls_keys"] == ["region"]
+
+    # A plain query (no metric block) must NOT gain a metric key (back-compat).
+    plain = await repo.create(
+        resource="queries",
+        org_id=org_id,
+        created_by=alice_id,
+        name="Plain",
+        config=_QUERY_SPEC,
+    )
+    presp = await client.get(
+        f"/api/v1/export/query/{plain['id']}?format=json", headers=_auth(alice_id)
+    )
+    assert presp.status_code == 200, presp.text
+    assert "metric" not in presp.json()["spec"]
+
+
+@pytest.mark.asyncio
+async def test_import_invalid_query_metric_block_returns_400(port_client):
+    client, alice_id, org_id, repo = port_client
+    env = {
+        "kind": "query",
+        "apiVersion": "nubi/v1",
+        "metadata": {"name": "Bad metric"},
+        "spec": {
+            "name": "Bad metric",
+            "sql": "SELECT amount FROM sales",
+            "params": [],
+            # Non-count agg with no expr → invalid measure (structured 400).
+            "metric": {
+                "slug": "bad_metric",
+                "measure": {"name": "revenue", "agg": "sum", "expr": "*"},
+            },
+        },
+    }
+    imp = await client.post("/api/v1/import", json=env, headers=_auth(alice_id))
+    assert imp.status_code == 400, imp.text
+
+
 # ── Error cases ─────────────────────────────────────────────────────────────
 
 
