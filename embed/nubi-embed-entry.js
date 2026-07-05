@@ -12,6 +12,7 @@
  *   nubi-kpi             — big-number metric card (vanilla)
  *   nubi-table           — data table (vanilla)
  *   nubi-chart           — auto chart (ECharts, vanilla)
+ *   nubi-chat            — streaming conversational chat (SSE, vanilla)
  *   nubi-kpi-react       — React KPI card
  *   nubi-explain         — root-cause contribution analysis
  *   nubi-query-editor    — SQL / metric authoring editor

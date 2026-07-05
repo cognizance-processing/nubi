@@ -10,6 +10,7 @@
  *   <nubi-kpi>    — big-number metric card
  *   <nubi-table>  — HTML data table
  *   <nubi-chart>  — auto-WebGL/SVG chart (scatter/line/bar)
+ *   <nubi-chat>   — streaming conversational chat (SSE)
  *
  * Usage (ESM):
  *   import { registerNubiWidgets } from './nubi-widgets.es.js'
@@ -28,6 +29,7 @@
 import { NubiKpi }    from './nubi-kpi.js'
 import { NubiTable }  from './nubi-table.js'
 import { NubiChart }  from './nubi-chart.js'
+import { NubiChat }   from './nubi-chat.js'
 
 // WEBGL_THRESHOLD is no longer applicable — the chart now uses ECharts (canvas).
 // Kept as a named export for backwards compatibility with any host code that
@@ -47,6 +49,9 @@ export function registerNubiWidgets() {
   }
   if (!customElements.get('nubi-chart')) {
     customElements.define('nubi-chart', NubiChart)
+  }
+  if (!customElements.get('nubi-chat')) {
+    customElements.define('nubi-chat', NubiChat)
   }
 }
 
