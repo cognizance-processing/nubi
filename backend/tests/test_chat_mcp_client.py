@@ -199,6 +199,39 @@ def test_ssrf_guard_rejects_private_ip():
             _guard_url(url)
 
 
+def test_resolve_pin_returns_ip_literal_and_preserves_host(monkeypatch):
+    """The outbound request pins to a validated IP literal (DNS-rebind defence)
+    while preserving the original hostname for Host + TLS SNI."""
+    import ipaddress
+
+    from app.chat import mcp_client
+
+    monkeypatch.setattr(
+        mcp_client, "_resolve_addresses", lambda h: [ipaddress.ip_address("93.184.216.34")]
+    )
+    pinned_url, host_header, sni_host = mcp_client._resolve_pin(
+        "https://host.example/agent/mcp"
+    )
+    assert pinned_url == "https://93.184.216.34:443/agent/mcp"  # connects to the IP
+    assert host_header == "host.example"  # original host preserved
+    assert sni_host == "host.example"
+
+
+def test_resolve_pin_blocks_rebind_to_private_ip(monkeypatch):
+    """Even if a name passed an earlier guard, _resolve_pin re-validates the
+    resolved address at request time and refuses a private target."""
+    import ipaddress
+
+    from app.chat import mcp_client
+    from app.chat.mcp_client import McpClientError
+
+    monkeypatch.setattr(
+        mcp_client, "_resolve_addresses", lambda h: [ipaddress.ip_address("10.0.0.5")]
+    )
+    with pytest.raises(McpClientError):
+        mcp_client._resolve_pin("https://host.example/agent/mcp")
+
+
 def test_list_tools_raises_on_ssrf_block():
     from app.chat.mcp_client import McpClientError, McpServerSpec, list_tools
 

@@ -45,7 +45,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.auth.deps import current_user
 from app.chat.gateway import handle_inbound
@@ -183,6 +183,16 @@ class ChatStreamRequest(BaseModel):
     #: Convenience single-URL form; normalised into a one-element ``mcp_servers``.
     #: ``mcp_servers`` is the canonical field.
     mcp_tools_url: str | None = None
+
+    @field_validator("mcp_servers", mode="before")
+    @classmethod
+    def _coerce_mcp_servers(cls, v: Any) -> Any:
+        """Accept a bare URL string per element (e.g. from the <nubi-chat> embed
+        element, which sends ``mcp_servers: ["https://…"]``) as shorthand for
+        ``{"url": "https://…"}`` — objects still work unchanged."""
+        if isinstance(v, list):
+            return [{"url": item} if isinstance(item, str) else item for item in v]
+        return v
 
     def resolved_mcp_servers(self) -> list[McpServerSpec] | None:
         """Return the effective MCP server list (canonical + convenience URL)."""

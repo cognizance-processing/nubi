@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel
 
@@ -127,6 +127,56 @@ def _guard_url(url: str) -> None:
             )
 
 
+def _resolve_pin(url: str) -> tuple[str, str, str]:
+    """Resolve+validate *url* ONCE and return ``(pinned_url, host_header, sni_host)``.
+
+    Closes the DNS-rebinding TOCTOU window that ``_guard_url`` alone leaves open:
+    the returned ``pinned_url`` points at a validated IP literal, so the HTTP
+    client connects there directly instead of re-resolving the hostname (which a
+    malicious host could rebind to a private address after the guard passed).
+    Mirrors :func:`app.connectors.ssrf.resolve_and_pin` but honours the
+    MCP-specific ``NUBI_MCP_ALLOW_PRIVATE_HOSTS`` flag. Raises
+    :class:`McpClientError` on any blocked / unresolvable target.
+    """
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    if scheme not in ("http", "https"):
+        raise McpClientError(
+            f"ssrf_blocked: URL scheme {scheme or '(none)'!r} is not allowed; "
+            "only http(s) MCP URLs may be called."
+        )
+    host = parts.hostname
+    if not host:
+        raise McpClientError("ssrf_blocked: MCP URL has no host component.")
+    default_port = 443 if scheme == "https" else 80
+    port = parts.port or default_port
+
+    allow_private = _allow_private_hosts()
+    addrs = _resolve_addresses(host)
+    if not addrs:
+        raise McpClientError(
+            f"ssrf_blocked: MCP host {host!r} does not resolve to any address."
+        )
+    safe_ip: str | None = None
+    for ip in addrs:
+        if _is_forbidden(ip, allow_private=allow_private):
+            raise McpClientError(
+                f"ssrf_blocked: refusing to call MCP host {host!r}: it resolves "
+                f"to a blocked address ({ip}). Internal, loopback, link-local, "
+                "and cloud-metadata targets are not permitted."
+            )
+        if safe_ip is None:
+            safe_ip = str(ip)
+
+    assert safe_ip is not None  # addrs non-empty and none forbidden
+    host_literal = f"[{safe_ip}]" if ":" in safe_ip else safe_ip
+    pinned_url = urlunsplit(
+        (scheme, f"{host_literal}:{port}", parts.path, parts.query, parts.fragment)
+    )
+    host_header = host if port == default_port else f"{host}:{port}"
+    return pinned_url, host_header, host
+
+
 async def _http_post_json(
     url: str, headers: dict[str, str], payload: dict[str, Any]
 ) -> dict[str, Any]:
@@ -138,9 +188,20 @@ async def _http_post_json(
     """
     import httpx  # noqa: PLC0415
 
+    # Pin to a validated IP literal so the connection cannot be DNS-rebound
+    # between validation and connect. The original hostname is preserved for the
+    # Host header and TLS SNI/cert verification (``sni_hostname`` extension).
+    pinned_url, host_header, sni_host = _resolve_pin(url)
+    req_headers = {k: v for k, v in (headers or {}).items() if k.lower() != "host"}
+    req_headers["Host"] = host_header
+
     async with httpx.AsyncClient(timeout=_TIMEOUT_S, follow_redirects=False) as client:
         async with client.stream(
-            "POST", url, json=payload, headers=headers or {}
+            "POST",
+            pinned_url,
+            json=payload,
+            headers=req_headers,
+            extensions={"sni_hostname": sni_host},
         ) as resp:
             if not (200 <= resp.status_code < 300):
                 raise McpClientError(
