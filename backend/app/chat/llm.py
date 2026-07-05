@@ -38,9 +38,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Iterator
 
 from app.chat.tools import openai_tool_specs, execute_tool
+
+# Namespaced host-tool names look like ``mcp__<label>__<tool>`` so they can never
+# collide with a built-in tool name.
+_MCP_PREFIX = "mcp__"
 
 # Hard cap on agentic iterations so a misbehaving model can't loop forever.
 _MAX_STEPS = 6
@@ -157,6 +162,102 @@ class _Turn:
 
 
 # ---------------------------------------------------------------------------
+# Host-supplied MCP tools (Nubi as MCP client — see app.chat.mcp_client)
+# ---------------------------------------------------------------------------
+
+
+def _run_async(coro: Any) -> Any:
+    """Run *coro* to completion from synchronous code.
+
+    ``stream_chat`` is a sync generator driven in a worker thread (the route
+    runs it via ``iterate_in_threadpool``), so there is normally no running
+    event loop; ``asyncio.run`` is the fast path.  If a loop *is* running we
+    off-load to a fresh thread so we never re-enter it.
+    """
+    import asyncio  # noqa: PLC0415
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is not None and loop.is_running():
+        import concurrent.futures  # noqa: PLC0415
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
+
+    return asyncio.run(coro)
+
+
+def _sanitize_label(label: str) -> str:
+    """Reduce *label* to the tool-name-safe ``[a-zA-Z0-9_-]`` alphabet."""
+    cleaned = re.sub(r"[^A-Za-z0-9_-]", "_", label).strip("_")
+    return cleaned or "srv"
+
+
+def _build_mcp_tools(
+    mcp_servers: list[Any],
+) -> tuple[list[dict[str, Any]], dict[str, tuple[Any, str]]]:
+    """Discover host MCP tools and return ``(openai_tool_specs, routing_map)``.
+
+    Each host tool is exposed to the model under a namespaced name
+    ``mcp__<label>__<tool>`` (label = server name or its index) so it can never
+    collide with a built-in tool.  The routing map is keyed by that namespaced
+    name and yields ``(server_spec, original_tool_name)`` so a tool call can be
+    dispatched back to the right server.
+
+    A server that fails to list its tools (SSRF block, network/protocol error)
+    simply contributes nothing — it must never crash the turn.
+    """
+    from app.chat import mcp_client  # noqa: PLC0415
+
+    tools: list[dict[str, Any]] = []
+    routing: dict[str, tuple[Any, str]] = {}
+    used: set[str] = set()
+
+    for index, server in enumerate(mcp_servers):
+        label = _sanitize_label(getattr(server, "name", None) or str(index))
+        try:
+            host_tools = _run_async(mcp_client.list_tools(server))
+        except Exception:  # noqa: BLE001 — a bad server contributes no tools
+            continue
+
+        for t in host_tools:
+            raw_name = str(t.get("name") or "").strip()
+            if not raw_name:
+                continue
+            namespaced = f"{_MCP_PREFIX}{label}__{_sanitize_label(raw_name)}"[:64]
+            # Guarantee uniqueness after truncation/sanitisation.
+            base = namespaced
+            n = 1
+            while namespaced in used:
+                namespaced = f"{base[:60]}_{n}"
+                n += 1
+            used.add(namespaced)
+
+            routing[namespaced] = (server, raw_name)
+            schema = t.get("inputSchema")
+            if not isinstance(schema, dict):
+                schema = {"type": "object"}
+            description = str(t.get("description") or "")
+            tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": namespaced,
+                        "description": (
+                            f"[Host tool via MCP server {label!r}] {description}"
+                        ).strip(),
+                        "parameters": schema,
+                    },
+                }
+            )
+
+    return tools, routing
+
+
+# ---------------------------------------------------------------------------
 # Real-provider streaming loop (LiteLLM / OpenAI-normalised chunks)
 # ---------------------------------------------------------------------------
 
@@ -165,6 +266,9 @@ def _stream_real(
     model: str,
     history: list[dict[str, Any]],
     turn: _Turn,
+    *,
+    system: str | None = None,
+    mcp_servers: list[Any] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Run the manual tool-use loop via LiteLLM, yielding live events.
 
@@ -186,9 +290,21 @@ def _stream_real(
 
     tools = openai_tool_specs()
 
+    # Merge host-supplied MCP tools (namespaced) alongside the built-in tools.
+    mcp_routing: dict[str, tuple[Any, str]] = {}
+    if mcp_servers:
+        mcp_tools, mcp_routing = _build_mcp_tools(mcp_servers)
+        tools = [*tools, *mcp_tools]
+
+    # The host system prompt is APPENDED to Nubi's base prompt — never replaces
+    # it — so the assistant keeps its core behaviour plus the host's context.
+    system_prompt = _SYSTEM_PROMPT
+    if system and system.strip():
+        system_prompt = f"{_SYSTEM_PROMPT}\n\n{system.strip()}"
+
     # Prepend system message (OpenAI convention — system lives in messages).
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         *history,
     ]
 
@@ -304,10 +420,22 @@ def _stream_real(
 
             yield {"type": "tool_use", "id": tool_id, "name": tool_name, "input": tool_input}
 
-            try:
-                output, extra = execute_tool(tool_name, tool_input)
-            except Exception as exc:  # noqa: BLE001
-                output, extra = {"error": str(exc)}, {}
+            if tool_name in mcp_routing:
+                # Host-supplied MCP tool → dispatch to the host's MCP server.
+                # call_tool never raises; any failure comes back as an error
+                # string that is fed to the model as the tool result.
+                server, original_name = mcp_routing[tool_name]
+                from app.chat import mcp_client  # noqa: PLC0415
+
+                result_str = _run_async(
+                    mcp_client.call_tool(server, original_name, tool_input)
+                )
+                output, extra = {"content": result_str}, {}
+            else:
+                try:
+                    output, extra = execute_tool(tool_name, tool_input)
+                except Exception as exc:  # noqa: BLE001
+                    output, extra = {"error": str(exc)}, {}
 
             if extra.get("spec"):
                 turn.spec = extra["spec"]
@@ -406,6 +534,9 @@ def _tokenise(text: str) -> list[str]:
 def stream_chat(
     history: list[dict[str, Any]],
     model: str,
+    *,
+    system: str | None = None,
+    mcp_servers: list[Any] | None = None,
 ) -> Iterator[tuple[dict[str, Any], _Turn]]:
     """Stream the assistant's turn for *history*, yielding ``(event, turn)``.
 
@@ -413,17 +544,41 @@ def stream_chat(
     with string or block content).  The *model* id is mapped to a LiteLLM
     provider-prefixed string via :func:`_resolve_model_string` before the call.
 
+    Optional host inputs (backward compatible — both default to today's
+    behaviour when absent):
+
+    * *system* — extra host context APPENDED to Nubi's base system prompt
+      (never replaces it).
+    * *mcp_servers* — a list of :class:`app.chat.mcp_client.McpServerSpec`
+      describing MCP servers hosted by the embedding application.  Their tools
+      are discovered and offered to the model (namespaced ``mcp__…``) in
+      addition to Nubi's built-in tools; when the model calls one it is routed
+      to that host server.  Ignored when ``NUBI_CHAT_MCP_ENABLED`` is False.
+
     The same mutable ``_Turn`` is yielded with every event; after iteration
     completes it holds the full assistant text, the list of tool calls, and any
     proposed dashboard spec — the route uses it to persist the turn and emit
     the terminal ``message`` event.
     """
     turn = _Turn()
+
+    # Master switch: ignore host MCP servers entirely when disabled in config.
+    if mcp_servers:
+        try:
+            from app.config import get_settings  # noqa: PLC0415
+
+            if not get_settings().NUBI_CHAT_MCP_ENABLED:
+                mcp_servers = None
+        except Exception:  # noqa: BLE001
+            pass
+
     try:
         credential = _resolve_anthropic_key()
         if credential:
             litellm_model = _resolve_model_string(model)
-            for ev in _stream_real(litellm_model, history, turn):
+            for ev in _stream_real(
+                litellm_model, history, turn, system=system, mcp_servers=mcp_servers
+            ):
                 yield ev, turn
         else:
             for ev in _stream_offline(history, turn):

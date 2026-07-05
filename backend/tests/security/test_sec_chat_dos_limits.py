@@ -300,7 +300,7 @@ class TestTurnTokenBudget:
 # ============================================================================
 
 
-def _make_slow_stream(history, model):
+def _make_slow_stream(history, model, *, system=None, mcp_servers=None):
     """Synchronous generator that sleeps for much longer than any test timeout."""
     import time
     time.sleep(10)  # blocks in threadpool; wait_for wrapping times it out on async side

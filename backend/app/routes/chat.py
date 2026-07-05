@@ -49,6 +49,7 @@ from pydantic import BaseModel
 
 from app.auth.deps import current_user
 from app.chat.gateway import handle_inbound
+from app.chat.mcp_client import McpServerSpec
 from app.errors import AppError
 
 
@@ -160,12 +161,35 @@ async def _resolve_org_id(user: dict[str, Any]) -> str:
 
 
 class ChatStreamRequest(BaseModel):
-    """Request body for POST /chat/stream."""
+    """Request body for POST /chat/stream.
+
+    The optional ``system`` and ``mcp_servers`` fields let the embedding
+    application extend a turn.  Both are backward compatible — when absent the
+    endpoint behaves exactly as before.
+    """
 
     chat_id: str | None = None
     board_id: str | None = None
     model: str
     message: str
+
+    #: Extra host context APPENDED to Nubi's base system prompt (never replaces it).
+    system: str | None = None
+
+    #: MCP servers hosted by the embedding application whose tools Nubi's chat
+    #: loop should discover and call in addition to its built-in tools.
+    mcp_servers: list[McpServerSpec] | None = None
+
+    #: Convenience single-URL form; normalised into a one-element ``mcp_servers``.
+    #: ``mcp_servers`` is the canonical field.
+    mcp_tools_url: str | None = None
+
+    def resolved_mcp_servers(self) -> list[McpServerSpec] | None:
+        """Return the effective MCP server list (canonical + convenience URL)."""
+        servers = list(self.mcp_servers or [])
+        if self.mcp_tools_url:
+            servers.append(McpServerSpec(url=self.mcp_tools_url))
+        return servers or None
 
 
 @router.get("/models")
@@ -245,10 +269,15 @@ async def chat_stream(
     def _sse(obj: dict[str, Any]) -> str:
         return "data: " + json.dumps(obj) + "\n\n"
 
+    host_system = body.system
+    host_mcp_servers = body.resolved_mcp_servers()
+
     def _sync_events():
         last_turn = None
         errored = False
-        for event, turn in stream_chat(history, model):
+        for event, turn in stream_chat(
+            history, model, system=host_system, mcp_servers=host_mcp_servers
+        ):
             last_turn = turn
             if event.get("type") == "error":
                 errored = True

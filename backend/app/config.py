@@ -274,6 +274,24 @@ class Settings(BaseSettings):
     SLACK_SIGNING_SECRET: str = ""      # HMAC-SHA256 key for X-Slack-Signature
     WHATSAPP_APP_SECRET: str = ""       # HMAC-SHA256 key for X-Hub-Signature-256
 
+    # ── Host-supplied MCP tools in streaming chat (Nubi as MCP CLIENT) ───────
+    # POST /chat/stream may carry ``mcp_servers`` — MCP endpoints hosted by the
+    # embedding application whose tools Nubi's agentic loop discovers and calls
+    # (in addition to Nubi's own built-in tools).  Nubi makes OUTBOUND HTTP calls
+    # to these host-supplied URLs, so both flags below are security-relevant.
+    #
+    # NUBI_CHAT_MCP_ENABLED — master switch.  When False, any ``mcp_servers`` on
+    #   a chat request are ignored entirely (built-in tools only).  Default True.
+    #
+    # NUBI_MCP_ALLOW_PRIVATE_HOSTS — SSRF escape hatch.  When False (default) the
+    #   MCP client rejects any server URL that resolves to a private / loopback /
+    #   link-local / reserved address, so a host cannot turn Nubi into an
+    #   internal-network proxy.  Set True ONLY for self-hosted/dev deployments
+    #   that legitimately point at localhost or RFC1918 MCP servers.  Link-local
+    #   and cloud-metadata addresses are ALWAYS blocked regardless of this flag.
+    NUBI_CHAT_MCP_ENABLED: bool = True
+    NUBI_MCP_ALLOW_PRIVATE_HOSTS: bool = False
+
     # ── Chat-over-channel org binding ─────────────────────────────────────────
     # Maps an inbound chat workspace/sender to a Nubi org so the agentic chat is
     # org-scoped (and only the allowlisted chat tools run — never arbitrary SQL).
