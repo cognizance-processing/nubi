@@ -453,3 +453,53 @@ def test_embed_token_origin_present_but_no_expected_origin_raises_403():
         verify_token(token, expected_origin=None)
     assert exc_info.value.status == 403
     assert exc_info.value.code == "origin_mismatch"
+
+
+# ── Host-mode org resolution via external_key (v0.4.2) ──────────────────────
+
+@pytest.mark.asyncio
+async def test_resolve_embed_org_passthrough_uuid():
+    """A UUID org claim is Nubi's internal id already — used as-is, no DB hit."""
+    from app.auth.verify import _resolve_embed_org
+
+    uid = "11111111-1111-1111-1111-111111111111"
+    assert await _resolve_embed_org(uid) == uid
+
+
+@pytest.mark.asyncio
+async def test_resolve_embed_org_resolves_external_key(monkeypatch):
+    """A non-UUID claim is resolved as a host external_key → internal org UUID."""
+    import app.auth.verify as verify_mod
+
+    org_uuid = "22222222-2222-2222-2222-222222222222"
+
+    async def _fake_fetchrow(sql, *args):
+        assert "external_key" in sql and args[0] == "freshco"
+        return {"id": org_uuid}
+
+    monkeypatch.setattr("app.db.fetchrow", _fake_fetchrow)
+    assert await verify_mod._resolve_embed_org("freshco") == org_uuid
+
+
+@pytest.mark.asyncio
+async def test_resolve_embed_org_unknown_key_returns_raw(monkeypatch):
+    """An unknown external_key returns the raw claim (fails downstream, as before)."""
+    from app.auth import verify as verify_mod
+
+    async def _none(sql, *args):
+        return None
+
+    monkeypatch.setattr("app.db.fetchrow", _none)
+    assert await verify_mod._resolve_embed_org("nope") == "nope"
+
+
+@pytest.mark.asyncio
+async def test_resolve_embed_org_db_error_returns_raw(monkeypatch):
+    """A DB failure must never break verification — fall back to the raw claim."""
+    from app.auth import verify as verify_mod
+
+    async def _boom(sql, *args):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("app.db.fetchrow", _boom)
+    assert await verify_mod._resolve_embed_org("freshco") == "freshco"

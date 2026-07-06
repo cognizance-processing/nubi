@@ -282,11 +282,17 @@ def _finish_embed_verification(
     public_key: Any,
     aud: str,
     expected_origin: str | None,
+    org_override: str | None = None,
 ) -> VerifiedIdentity:
     """Run the final PyJWT decode + origin check + build VerifiedIdentity.
 
     This is split out so both the sync and async paths share the same
     signature-verification + claims-building logic.
+
+    ``org_override`` (async path only) carries the org id already normalised
+    from the token's ``org`` claim via :func:`_resolve_embed_org` — so a
+    host-mode token that signs a stable ``external_key`` resolves to Nubi's
+    internal org UUID for ``identity.org``. ``None`` keeps the raw claim.
 
     Raises
     ------
@@ -333,7 +339,7 @@ def _finish_embed_verification(
     return VerifiedIdentity(
         kind="embed",
         user_id=str(claims["sub"]),
-        org=claims.get("org"),
+        org=org_override if org_override is not None else claims.get("org"),
         project=claims.get("project"),
         roles=list(claims.get("roles") or []),
         policies=dict(claims.get("policies") or {}),
@@ -382,6 +388,43 @@ def _verify_embed_token(
 # Embed-path verification — async (registry + DB-backed fallback)
 # ---------------------------------------------------------------------------
 
+def _looks_like_uuid(value: str) -> bool:
+    """True when *value* parses as a UUID (Nubi's internal org id shape)."""
+    import uuid as _uuid  # noqa: PLC0415
+
+    try:
+        _uuid.UUID(str(value))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+async def _resolve_embed_org(org_claim: str) -> str:
+    """Normalise an embed token's ``org`` claim to Nubi's internal org id.
+
+    A UUID-shaped claim is used as-is (it is already Nubi's internal id).
+    Otherwise the claim is treated as a host-controlled ``external_key`` and
+    resolved to the org's UUID (case-insensitive via the ``citext`` column). If
+    no org carries that key — or the DB is unavailable — the raw claim is
+    returned unchanged, so behaviour is identical for deployments that don't use
+    external keys (the unresolved value simply misses downstream, as before).
+
+    This runs on the UNVERIFIED claim only to normalise an identifier; the token
+    signature is still fully verified afterwards in _finish_embed_verification.
+    """
+    if not org_claim or _looks_like_uuid(org_claim):
+        return org_claim
+    try:
+        from app.db import fetchrow  # noqa: PLC0415
+
+        row = await fetchrow("SELECT id FROM orgs WHERE external_key = $1", org_claim)
+    except Exception:  # noqa: BLE001 — org normalisation must never break verify
+        return org_claim
+    if row and row.get("id"):
+        return str(row["id"])
+    return org_claim
+
+
 async def _verify_embed_token_async(
     token: str,
     header: dict[str, Any],
@@ -405,6 +448,16 @@ async def _verify_embed_token_async(
     iss, unverified_payload = _peek_embed_token(token, alg)
     kid: str | None = header.get("kid") or None
 
+    # Normalise the org claim ONCE up front: a host may sign its stable
+    # ``external_key`` (e.g. "freshco") instead of Nubi's internal org UUID.
+    # ``resolved_org`` is the internal UUID used for BOTH the org-scoped issuer
+    # lookup and ``identity.org`` (via org_override), so a host never has to
+    # capture Nubi's generated id. A UUID / unknown key passes through unchanged.
+    org_from_token: str | None = unverified_payload.get("org")
+    resolved_org: str | None = (
+        await _resolve_embed_org(org_from_token) if org_from_token else None
+    )
+
     # 1. In-process registry (fast path, always tried first).
     registry = get_issuer_registry()
     issuer_cfg = registry.get(iss)
@@ -413,19 +466,19 @@ async def _verify_embed_token_async(
         jwks = _resolve_jwks(issuer_cfg)
         public_key = _select_key_from_jwks(jwks, kid, alg)
         return _finish_embed_verification(
-            token, alg, iss, public_key, issuer_cfg.aud, expected_origin
+            token, alg, iss, public_key, issuer_cfg.aud, expected_origin,
+            org_override=resolved_org,
         )
 
     # 2. DB fallback — requires the token to carry an ``org`` claim so we can
     #    scope the lookup to the correct org's configured issuers.
-    org_from_token: str | None = unverified_payload.get("org")
     if not org_from_token:
         raise AppError("invalid_token", "Token is invalid or has expired.", 401)
 
     try:
         from app.security.issuers_store import get_issuers_store  # noqa: PLC0415
 
-        db_row = await get_issuers_store().get_enabled_by_iss(org_from_token, iss)
+        db_row = await get_issuers_store().get_enabled_by_iss(resolved_org, iss)
     except Exception:  # noqa: BLE001
         db_row = None
 
@@ -436,7 +489,8 @@ async def _verify_embed_token_async(
 
     public_key = resolve_signing_key(db_row, kid, alg)
     return _finish_embed_verification(
-        token, alg, iss, public_key, db_row.get("audience", ""), expected_origin
+        token, alg, iss, public_key, db_row.get("audience", ""), expected_origin,
+        org_override=resolved_org,
     )
 
 

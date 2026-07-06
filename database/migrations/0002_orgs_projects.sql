@@ -14,12 +14,19 @@
 -- On register the application creates a personal org + owner membership
 -- (handled in application code, not here).
 
+-- external_key: a stable, host-controlled identifier for this org (citext, so
+-- lookups are case-insensitive). Embedding hosts sign it in their JWT ``org``
+-- claim instead of Nubi's internal UUID, so host-mode embed tokens resolve to
+-- the right org WITHOUT the host having to capture Nubi's generated id (see
+-- app/auth/verify.py::_resolve_embed_org). Nullable — only host-integrated orgs
+-- set it; UNIQUE allows many NULLs in Postgres.
 CREATE TABLE IF NOT EXISTS orgs (
-    id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-    name       text        NOT NULL,
-    slug       citext      NOT NULL UNIQUE,
-    avatar_url text,
-    created_at timestamptz NOT NULL DEFAULT now()
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    name         text        NOT NULL,
+    slug         citext      NOT NULL UNIQUE,
+    external_key citext      UNIQUE,
+    avatar_url   text,
+    created_at   timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS org_members (

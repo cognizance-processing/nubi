@@ -100,7 +100,7 @@ async def admin_client(app, fake_db):
         {"user_id": normal_id, "org_id": org_id, "org_name": "Acme", "role": "owner"},
     ]
     org_row = {
-        "id": org_id, "name": "Acme", "slug": "acme-1234",
+        "id": org_id, "name": "Acme", "slug": "acme-1234", "external_key": None,
         "created_at": now, "member_count": 1, "project_count": 1,
     }
     member_rows = [

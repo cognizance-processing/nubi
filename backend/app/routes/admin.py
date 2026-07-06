@@ -24,10 +24,11 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 
 from app import geo as geo_module
 from app.auth.superadmin import require_superadmin
-from app.db import fetch, fetchrow
+from app.db import execute, fetch, fetchrow
 from app.errors import AppError
 from app.routes import api_router
 
@@ -272,7 +273,7 @@ async def admin_org_detail(
     """
     org_row = await fetchrow(
         """
-        SELECT o.id, o.name, o.slug, o.created_at,
+        SELECT o.id, o.name, o.slug, o.external_key, o.created_at,
                (SELECT count(*)::int FROM org_members om WHERE om.org_id = o.id) AS member_count,
                (SELECT count(*)::int FROM projects p WHERE p.org_id = o.id)      AS project_count
         FROM orgs o
@@ -310,6 +311,7 @@ async def admin_org_detail(
             "id": str(org_row["id"]),
             "name": org_row["name"],
             "slug": org_row["slug"],
+            "external_key": org_row["external_key"],
             "created_at": _iso(org_row["created_at"]),
             "member_count": int(org_row["member_count"] or 0),
             "project_count": int(org_row["project_count"] or 0),
@@ -394,6 +396,54 @@ async def admin_geo_summary(
         "total_located": int(totals.get("total_located") or 0),
         "total_events": int(totals.get("total_events") or 0),
     }
+
+
+class ExternalKeyBody(BaseModel):
+    """Body for setting an org's host-controlled external key."""
+
+    external_key: str | None = None
+
+
+@router.put("/orgs/{org_id}/external-key")
+async def admin_set_org_external_key(
+    org_id: str,
+    body: ExternalKeyBody,
+    _admin: dict[str, Any] = Depends(require_superadmin),
+) -> dict[str, Any]:
+    """Set (or clear) an org's stable ``external_key``.
+
+    An embedding host signs this value in its JWT ``org`` claim instead of
+    Nubi's internal org UUID, so host-mode embed tokens resolve to the right org
+    without the host capturing Nubi's generated id (see
+    app/auth/verify.py::_resolve_embed_org). Pass ``null`` to clear it. Keys are
+    case-insensitive (``citext``) and unique across orgs.
+
+    Returns 200 ``{id, external_key}``; 404 if the org is unknown; 409 if the key
+    is already used by another org.
+    """
+    key = (body.external_key or "").strip() or None
+
+    exists = await fetchrow("SELECT 1 FROM orgs WHERE id = $1::uuid", org_id)
+    if exists is None:
+        raise AppError("not_found", "Org not found.", 404)
+
+    if key is not None:
+        clash = await fetchrow(
+            "SELECT 1 FROM orgs WHERE external_key = $1 AND id <> $2::uuid",
+            key,
+            org_id,
+        )
+        if clash is not None:
+            raise AppError(
+                "conflict",
+                f"external_key {key!r} is already assigned to another org.",
+                409,
+            )
+
+    await execute(
+        "UPDATE orgs SET external_key = $1 WHERE id = $2::uuid", key, org_id
+    )
+    return {"id": org_id, "external_key": key}
 
 
 # ── Attach to the shared api_router (same pattern as the other modules) ──────
