@@ -50,6 +50,11 @@ COPY vite.embed.config.js vite.widgets.config.js ./
 # embed/vite.embed.config.js imports ../scripts/resolveVersion.mjs
 COPY scripts/ scripts/
 RUN npm run build:embed && npm run build:widgets
+# build:embed emits the self-contained kit to embed/dist/ (nubi-embed.js +
+# nubi-embed-<version>.js), but only dist-embed/ is served (EMBED_STATIC_DIR).
+# Copy the kit into the served dir so the documented /embed/nubi-embed.js URL
+# resolves (it registers all <nubi-*> elements). Fails the build if absent.
+RUN cp embed/dist/nubi-embed*.js dist-embed/
 
 # ── Stage 2: Python dependencies ────────────────────────────────────────────
 FROM python:3.13-slim AS pydeps
