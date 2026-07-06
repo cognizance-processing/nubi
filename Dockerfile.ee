@@ -101,8 +101,11 @@ ENV STATIC_DIR=/app/dist
 COPY --from=frontend /build/dist-embed /app/dist-embed
 ENV EMBED_STATIC_DIR=/app/dist-embed
 
-# Non-root user for security.
-RUN useradd --no-create-home --shell /bin/false appuser
+# Non-root user for security. --create-home gives appuser a writable HOME so
+# DuckDB can install/cache the httpfs extension (~/.duckdb) at runtime — without
+# it, S3/object-storage reads fail with "Can't find the home directory".
+RUN useradd --create-home --home-dir /home/appuser --shell /bin/false appuser
+ENV HOME=/home/appuser
 # demo_bundle regenerates parquet/duckdb seed artefacts under seed_data/.
 RUN chown -R appuser /app/backend/seed_data
 USER appuser
