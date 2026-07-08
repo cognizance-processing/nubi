@@ -1,8 +1,10 @@
 """Outbound notifications for Nubi — Prefect-style flow-run alerts.
 
-This module is the notification sink for the chat/gateway domain.  It sends a
-concise message to Slack (Incoming Webhook *or* bot token) and/or WhatsApp
-(Cloud API) when a flow run finalises, and is otherwise a no-op.
+This module is the notification sink for the chat/gateway domain.  Nubi is
+embedded BI, not a chat-ops platform, so the app-settings channel resolution
+here is intentionally email-only; per-org connected integrations
+(``app.notify.integrations.channels_for_org``) are the extensible path for
+anything else the embedding host wants to wire up.
 
 Design
 ------
@@ -12,17 +14,14 @@ Design
 - **Best-effort.**  Every send is wrapped so a delivery failure can never break
   the flow engine — the flow-run alert hook calls into here inside a broad
   ``try`` of its own as well (belt and braces).
-- **Reuses the channel implementations** in ``app.notify.channels`` (Slack /
-  WhatsApp / Null) so there is a single place that talks to the providers.
+- **Reuses the channel implementations** in ``app.notify.channels`` (Email /
+  Null) so there is a single place that talks to the providers.
 
 Alert config shape (per-flow, stored on ``flow["spec"]["alerts"]`` or
 ``flow["config"]["alerts"]``)::
 
     {
         "on": ["failed", "success"],   # which terminal states fire an alert
-        "slack_channel": "#data-ops",  # optional channel override (bot token)
-        "slack_webhook": "https://hooks.slack.com/...",  # optional override
-        "whatsapp_to": "+27821234567", # optional recipient override
     }
 
 Org-level defaults can be supplied by the caller (or, in future, a settings
@@ -234,79 +233,25 @@ def should_alert(config: dict[str, Any], state: str) -> bool:
 def channels_for(config: dict[str, Any], *, org_id: str | None = None) -> list[Any]:
     """Build the list of delivery channels for *config*.
 
-    Resolution order, per provider:
-
-    Slack — a ``slack_webhook`` / ``slack_channel`` override in *config*, else
-    the app settings (``SLACK_ALERT_WEBHOOK`` / ``SLACK_BOT_TOKEN`` +
-    ``SLACK_ALERT_CHANNEL``).
-
-    WhatsApp — a ``whatsapp_to`` override in *config* (combined with the app's
-    send token + phone number id), else the app settings
-    (``WHATSAPP_ALERT_RECIPIENT``).
+    Nubi ships email as its one app-settings channel (``ALERT_EMAIL_RECIPIENT``
+    is resolved by ``app.notify.alerts``, not here — this dispatch path is
+    purely additive on top of per-org connected integrations); everything else
+    is the embedding host's responsibility.
 
     Per-org connected integrations — when *org_id* is given, every ENABLED
-    integration the org connected (``org_integrations``) is ALSO appended via
-    :func:`app.notify.integrations.channels_for_org`. This is additive: the
-    config/app-settings channels above remain the fallback so existing
-    watch/flow-run behaviour is unchanged when no org integrations exist.
-
-    Channels with no usable credentials are skipped (``get_channel`` returns a
-    ``NullChannel`` which we drop).  When nothing is configured the result is an
-    empty list ⇒ ``notify_flow_run`` becomes a no-op.
+    integration the org connected (``org_integrations``) is appended via
+    :func:`app.notify.integrations.channels_for_org`. When nothing is
+    configured the result is an empty list ⇒ ``notify_flow_run`` becomes a
+    no-op.
 
     Returns
     -------
     list[Channel]
         Configured channels (never includes the placeholder ``NullChannel``).
     """
-    from app.notify.channels import NullChannel, get_channel  # noqa: PLC0415
-
     channels: list[Any] = []
 
-    settings = None
-    try:
-        from app.config import get_settings  # noqa: PLC0415
-
-        settings = get_settings()
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("notify: settings unavailable for channel resolution: %s", exc)
-
-    def _s(attr: str) -> str:
-        return str(getattr(settings, attr, "") or "") if settings else ""
-
-    # ── Slack ──────────────────────────────────────────────────────────────
-    slack_webhook = config.get("slack_webhook") or _s("SLACK_ALERT_WEBHOOK")
-    slack_token = _s("SLACK_BOT_TOKEN")
-    slack_channel = config.get("slack_channel") or _s("SLACK_ALERT_CHANNEL")
-    if slack_webhook or slack_token:
-        ch = get_channel(
-            "slack",
-            {
-                "webhook_url": slack_webhook,
-                "bot_token": slack_token,
-                "channel": slack_channel,
-            },
-        )
-        if not isinstance(ch, NullChannel):
-            channels.append(ch)
-
-    # ── WhatsApp ───────────────────────────────────────────────────────────
-    wa_to = config.get("whatsapp_to") or _s("WHATSAPP_ALERT_RECIPIENT")
-    wa_token = _s("WHATSAPP_SEND_TOKEN")
-    wa_phone_id = _s("WHATSAPP_PHONE_NUMBER_ID")
-    if wa_to and wa_token and wa_phone_id:
-        ch = get_channel(
-            "whatsapp",
-            {
-                "token": wa_token,
-                "phone_number_id": wa_phone_id,
-                "recipient": wa_to,
-            },
-        )
-        if not isinstance(ch, NullChannel):
-            channels.append(ch)
-
-    # ── Per-org connected integrations (additive) ──────────────────────────
+    # ── Per-org connected integrations ──────────────────────────────────────
     if org_id:
         channels.extend(_org_integration_channels(org_id))
 
@@ -370,8 +315,8 @@ def notify_flow_run(
         Flow-run event dict (see :func:`format_flow_alert`).
     config:
         Resolved alert config — used to build channels when *channels* is not
-        given.  Channel overrides (slack_channel/webhook, whatsapp_to) are read
-        from here.
+        given (currently only ``org_id``-driven org-integration resolution;
+        see :func:`channels_for`).
     channels:
         Explicit channel list (used by tests).  When given, *config* is ignored
         for channel resolution.

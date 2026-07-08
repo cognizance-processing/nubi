@@ -1,13 +1,13 @@
 """Notification system for Nubi.
 
-Provides multi-channel alert delivery (Slack, WhatsApp, Email, Null) and
-flow-failure listener registration.
+Provides alert delivery (Email, Null) and flow-failure listener registration.
+Nubi is embedded BI, not a chat-ops platform — email is the one outbound
+channel it ships; the embedding host owns any Slack/Teams/etc. notifications.
 
 Public API
 ----------
 from app.notify.channels import (
-    Channel, NullChannel, SlackChannel, WhatsAppChannel, EmailChannel,
-    GoogleChatChannel, TeamsChannel, get_channel,
+    Channel, NullChannel, EmailChannel, get_channel,
 )
 from app.notify.alerts import notify_alert
 from app.notify.integrations import (

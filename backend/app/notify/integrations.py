@@ -2,8 +2,10 @@
 
 A *connected integration* is one row in ``org_integrations`` (non-secret config
 in the ``config`` jsonb) paired with one encrypted blob in ``integration_secrets``
-(AES-256-GCM, mirroring ``app.connectors.secret_store``). One integration powers
-BOTH inbound chat and outbound alerts for the org.
+(AES-256-GCM, mirroring ``app.connectors.secret_store``). Today the only
+supported kind is ``email`` — Nubi is embedded BI, not a chat-ops platform, so
+the outbound-alert surface is intentionally just one channel; the embedding
+host owns any Slack/Teams/etc. notifications it wants.
 
 Two store implementations (provider pattern, mirroring
 :mod:`app.connectors.secret_store` and :mod:`app.auth.api_keys`)
@@ -23,12 +25,7 @@ in the non-secret ``config`` jsonb. ``SECRET_KEYS_BY_KIND`` is the allowlist of
 keys that belong in the secret blob.
 
     | kind         | non-secret config            | secret                    |
-    | slack        | channel, mode                | webhook_url OR bot_token  |
-    | whatsapp     | phone_number_id, to          | access_token              |
-    | google_chat  | space                        | webhook_url               |
-    | teams        | name                         | webhook_url               |
     | email        | recipients[]                 | (none) OR smtp_*          |
-    | webhook      | url_is_secret                | url                       |
 
 Security contract
 -----------------
@@ -42,7 +39,8 @@ Security contract
 The seam Agent B's dispatcher calls. Loads every ENABLED integration for the
 org, merges its non-secret config + decrypted secret, and builds a live
 ``Channel`` via ``app.notify.channels.get_channel``. Integrations whose
-secret/config is incomplete (``get_channel`` → ``NullChannel``) are skipped.
+secret/config is incomplete (``get_channel`` → ``NullChannel``), or whose
+``kind`` is no longer supported (e.g. a legacy pre-email-only row), are skipped.
 """
 
 from __future__ import annotations
@@ -69,21 +67,16 @@ __all__ = [
     "merged_channel_config",
 ]
 
-#: Integration kinds — must match the CHECK in 0011_notifications.sql and the
-#: kinds understood by ``app.notify.channels.get_channel``.
-VALID_KINDS: frozenset[str] = frozenset(
-    {"slack", "whatsapp", "google_chat", "teams", "email", "webhook"}
-)
+#: Integration kinds — must match the CHECK in database/migrations/0027_notifications_email_only.sql
+#: and the kinds understood by ``app.notify.channels.get_channel``. Nubi ships
+#: email as its one outbound channel; the embedding host owns chat/Slack-style
+#: notifications.
+VALID_KINDS: frozenset[str] = frozenset({"email"})
 
 #: The keys that belong in the encrypted secret blob, per kind. Anything not in
 #: this set stays in the non-secret ``config`` jsonb.
 SECRET_KEYS_BY_KIND: dict[str, frozenset[str]] = {
-    "slack": frozenset({"webhook_url", "bot_token"}),
-    "whatsapp": frozenset({"access_token"}),
-    "google_chat": frozenset({"webhook_url"}),
-    "teams": frozenset({"webhook_url"}),
     "email": frozenset({"smtp_password", "smtp_user", "smtp_host", "smtp_port"}),
-    "webhook": frozenset({"url"}),
 }
 
 
@@ -116,22 +109,14 @@ def merged_channel_config(kind: str, config: dict[str, Any], secret: dict[str, A
     """Merge non-secret *config* + decrypted *secret* into a ``get_channel`` config.
 
     Maps the stored field names onto the keyword names ``get_channel`` /
-    each ``Channel`` constructor expects (e.g. whatsapp ``access_token`` →
-    ``token``, ``to`` → ``recipient``; webhook ``url`` → ``webhook_url``).
+    each ``Channel`` constructor expects (``recipients``/``recipient`` →
+    ``recipient``; ``smtp_*`` passed through as-is).
     """
     kind = (kind or "").lower().strip()
     cfg = {**(config or {}), **(secret or {})}
 
-    if kind == "whatsapp":
-        merged: dict[str, Any] = {
-            "token": cfg.get("access_token") or cfg.get("token") or "",
-            "phone_number_id": cfg.get("phone_number_id") or "",
-            "recipient": cfg.get("to") or cfg.get("recipient") or "",
-        }
-        return merged
-
     if kind == "email":
-        merged = {
+        merged: dict[str, Any] = {
             "recipient": _first_recipient(cfg.get("recipients") or cfg.get("recipient")),
         }
         # Pass through optional smtp_* if present (EmailChannel uses app SMTP today).
@@ -140,12 +125,6 @@ def merged_channel_config(kind: str, config: dict[str, Any], secret: dict[str, A
                 merged[key] = cfg[key]
         return merged
 
-    if kind == "webhook":
-        # The generic webhook kind delivers via a Google-Chat-style {"text": ...}
-        # POST, so reuse GoogleChatChannel by mapping url -> webhook_url.
-        return {"webhook_url": cfg.get("url") or cfg.get("webhook_url") or ""}
-
-    # slack / google_chat / teams already use webhook_url / bot_token / channel.
     return dict(cfg)
 
 
@@ -159,9 +138,13 @@ def _first_recipient(value: Any) -> str:
 
 
 def _channel_kind_for(kind: str) -> str:
-    """Map a stored integration kind to the ``get_channel`` kind it builds."""
-    # The generic webhook kind is delivered through the Google-Chat webhook path.
-    return "google_chat" if kind == "webhook" else kind
+    """Map a stored integration kind to the ``get_channel`` kind it builds.
+
+    Identity today (only ``email`` is a valid stored kind); kept as a seam so
+    callers (``routes/integrations.py``, ``channels_for_org``) don't need to
+    change if a future kind needs remapping.
+    """
+    return kind
 
 
 def public_row(row: dict[str, Any], *, configured: bool) -> dict[str, Any]:

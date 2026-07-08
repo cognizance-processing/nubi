@@ -35,11 +35,11 @@ Job failure events (can also call notify_alert directly)
 Configuration
 -------------
 ``notify_alert`` resolves channels from app settings:
-  - SLACK_ALERT_WEBHOOK / SLACK_BOT_TOKEN + SLACK_ALERT_CHANNEL
-  - WHATSAPP_ALERT_TOKEN + WHATSAPP_PHONE_NUMBER_ID + WHATSAPP_ALERT_RECIPIENT
   - ALERT_EMAIL_RECIPIENT
-When none are configured, a NullChannel is used (alerts are recorded but not
-delivered — safe in test / development environments).
+  - per-org connected integrations (``app.notify.integrations.channels_for_org``)
+Nubi is embedded BI, not a chat-ops platform, so email is the one app-settings
+channel; when none are configured, a NullChannel is used (alerts are recorded
+but not delivered — safe in test / development environments).
 """
 
 from __future__ import annotations
@@ -156,38 +156,6 @@ def _get_configured_channels(org_id: str | None = None) -> list[Any]:
         from app.config import get_settings  # noqa: PLC0415
 
         settings = get_settings()
-
-        # ── Slack ────────────────────────────────────────────────────────────
-        slack_webhook = getattr(settings, "SLACK_ALERT_WEBHOOK", "") or ""
-        slack_token = getattr(settings, "SLACK_BOT_TOKEN", "") or ""
-        slack_channel = getattr(settings, "SLACK_ALERT_CHANNEL", "") or ""
-        if slack_webhook or slack_token:
-            channels.append(
-                get_channel(
-                    "slack",
-                    {
-                        "webhook_url": slack_webhook,
-                        "bot_token": slack_token,
-                        "channel": slack_channel,
-                    },
-                )
-            )
-
-        # ── WhatsApp ─────────────────────────────────────────────────────────
-        wa_token = getattr(settings, "WHATSAPP_SEND_TOKEN", "") or ""
-        wa_phone_id = getattr(settings, "WHATSAPP_PHONE_NUMBER_ID", "") or ""
-        wa_recipient = getattr(settings, "WHATSAPP_ALERT_RECIPIENT", "") or ""
-        if wa_token and wa_phone_id and wa_recipient:
-            channels.append(
-                get_channel(
-                    "whatsapp",
-                    {
-                        "token": wa_token,
-                        "phone_number_id": wa_phone_id,
-                        "recipient": wa_recipient,
-                    },
-                )
-            )
 
         # ── Email ────────────────────────────────────────────────────────────
         email_recipient = getattr(settings, "ALERT_EMAIL_RECIPIENT", "") or ""

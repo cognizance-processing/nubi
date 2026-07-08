@@ -1,10 +1,11 @@
 """Per-org connected-integration CRUD for Nubi.
 
-A *connected integration* (Slack / WhatsApp / Google Chat / Teams / Email /
-webhook) powers BOTH inbound chat and outbound alerts for an org. This router
-is real per-org persistence on top of :class:`app.notify.integrations.IntegrationStore`
-(non-secret config in ``org_integrations``, secret material AES-256-GCM encrypted
-in ``integration_secrets``).
+A *connected integration* (today: Email only — Nubi is embedded BI, not a
+chat-ops platform, so the embedding host owns Slack/Teams/etc. notifications)
+powers outbound alerts for an org. This router is real per-org persistence on
+top of :class:`app.notify.integrations.IntegrationStore` (non-secret config in
+``org_integrations``, secret material AES-256-GCM encrypted in
+``integration_secrets``).
 
 Endpoints
 ---------

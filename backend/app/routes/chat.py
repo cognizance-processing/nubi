@@ -1,19 +1,5 @@
 """Chat routes for Nubi.
 
-Webhook gateway (M22-A)
------------------------
-POST /chat/slack
-    Receive a Slack Events API webhook, process via the chat gateway, and
-    reply 200 OK.  Returns 401 if the Slack signature is invalid.
-
-POST /chat/whatsapp
-    Receive a WhatsApp Cloud API webhook, process via the chat gateway, and
-    reply 200 OK.  Returns 401 if the WhatsApp signature is invalid.
-
-These two endpoints do NOT require a Nubi auth token — they are external
-webhook entry points; signature verification is delegated to
-``gateway.verify_signature``.
-
 Streaming editor chat (Cursor-like)
 -----------------------------------
 GET  /chat/models                  → selectable Claude models.
@@ -25,6 +11,10 @@ These four endpoints are authenticated (first-party Bearer token) and
 org-scoped.  See ``app/chat/llm.py`` (streaming + tool use), ``app/chat/tools.py``
 (tools), ``app/chat/store.py`` (persistence), and ``app/chat/models.py``
 (model list).
+
+Nubi is embedded BI, not a chat-ops platform: there is no inbound Slack/
+WhatsApp webhook gateway here — chat is the in-app assistant only. The
+embedding host owns any chat-platform integrations it wants.
 
 Wiring
 ------
@@ -43,12 +33,11 @@ import json
 import os
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 
 from app.auth.deps import current_user
-from app.chat.gateway import handle_inbound
 from app.chat.mcp_client import McpServerSpec
 from app.errors import AppError
 
@@ -61,90 +50,6 @@ def _chat_turn_timeout() -> float:
         return 90.0
 
 router = APIRouter(prefix="/chat", tags=["chat"])
-
-
-async def _process(platform: str, request: Request) -> JSONResponse:
-    """Shared handler: verify → handle → respond.
-
-    Reads the raw request body ONCE (before JSON parsing) so that the
-    HMAC signature verifier receives the exact bytes that were signed.
-    Headers are normalised to lowercase for case-insensitive header lookup.
-
-    Parameters
-    ----------
-    platform:
-        ``"slack"`` or ``"whatsapp"``.
-    request:
-        The incoming FastAPI request.
-
-    Returns
-    -------
-    JSONResponse
-        ``200 {"ok": true}`` on success.
-
-    Raises
-    ------
-    HTTPException(401)
-        If the webhook signature is invalid.
-    """
-    # Read the raw body first — this is what was HMAC-signed by the platform.
-    raw_body: bytes = await request.body()
-
-    # Normalise headers to lowercase for case-insensitive lookup.
-    headers: dict[str, str] = {k.lower(): v for k, v in request.headers.items()}
-
-    try:
-        import json as _json  # noqa: PLC0415
-        payload: dict[str, Any] = _json.loads(raw_body) if raw_body else {}
-    except Exception:
-        payload = {}
-
-    try:
-        outbound = handle_inbound(platform, payload, raw_body=raw_body, headers=headers)
-    except AppError as exc:
-        if exc.status == 401:
-            raise HTTPException(
-                status_code=401,
-                detail={"code": exc.code, "message": exc.message},
-            )
-        raise HTTPException(
-            status_code=exc.status,
-            detail={"code": exc.code, "message": exc.message},
-        )
-
-    return JSONResponse(
-        status_code=200,
-        content={
-            "ok": True,
-            "text": outbound.text,
-            "has_image": outbound.image_png is not None,
-        },
-    )
-
-
-@router.post("/slack")
-async def slack_webhook(request: Request) -> JSONResponse:
-    """Receive a Slack Events API webhook.
-
-    Verifies the Slack request signature (HMAC-SHA256 over the raw body using
-    the ``SLACK_SIGNING_SECRET`` env var; permissive in tests when the secret
-    is absent).
-
-    Returns 200 on success, 401 if the signature is invalid.
-    """
-    return await _process("slack", request)
-
-
-@router.post("/whatsapp")
-async def whatsapp_webhook(request: Request) -> JSONResponse:
-    """Receive a WhatsApp Cloud API webhook.
-
-    Verifies the WhatsApp signature (HMAC-SHA256 ``X-Hub-Signature-256`` header
-    using the ``WHATSAPP_APP_SECRET`` env var; permissive in tests when absent).
-
-    Returns 200 on success, 401 if the signature is invalid.
-    """
-    return await _process("whatsapp", request)
 
 
 # ---------------------------------------------------------------------------

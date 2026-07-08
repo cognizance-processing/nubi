@@ -1,41 +1,33 @@
 """Tests for the Nubi notification system (notify/channels.py + notify/alerts.py).
 
+Nubi ships EMAIL as its one outbound notify channel (+ the no-op NullChannel);
+Slack/WhatsApp/Teams/Google Chat connectors were removed — the embedding host
+owns any chat-platform notifications it wants.
+
 Coverage
 --------
 1. NullChannel.send records a send with correct text and image_png.
-2. SlackChannel builds the correct webhook payload (mocked httpx).
-3. SlackChannel with bot_token builds the correct chat.postMessage payload.
-4. WhatsAppChannel builds the correct Cloud API payload (mocked httpx).
-5. EmailChannel calls EmailSender.send with correct args.
-6. get_channel('null') returns NullChannel.
-7. get_channel('slack', {}) returns NullChannel (no credentials).
-8. get_channel('slack', {'webhook_url': '...'}) returns SlackChannel.
-9. get_channel('whatsapp', {}) returns NullChannel (incomplete credentials).
-10. format_alert_text formats a failed flow event correctly.
-11. notify_alert sends via NullChannel and records the send.
-12. Flow-failure listener (on_flow_event) calls notify_alert on 'failed' status.
-13. on_flow_event does NOT call notify_alert on 'succeeded' status.
-14. Simulated flow event via emit_flow_event (if available) triggers the listener.
-15. GET /integrations lists channels (auth required).
-16. POST /integrations/test with use_null=true returns sent info.
-17. POST /integrations/test with use_null=false uses configured channels.
-18. Gateway context extraction: board/query IDs from message text injected into claims.
+2. EmailChannel calls EmailSender.send with correct args.
+3. get_channel('null') / unknown kind returns NullChannel.
+4. get_channel('email', ...) returns EmailChannel.
+5. format_alert_text formats a failed flow event correctly.
+6. notify_alert sends via NullChannel and records the send.
+7. Flow-failure listener (on_flow_event) calls notify_alert on 'failed' status.
+8. on_flow_event does NOT call notify_alert on 'succeeded' status.
+9. Simulated flow event via emit_flow_event (if available) triggers the listener.
 
 Network safety
 --------------
-All network-touching channel tests mock httpx.post so no real HTTP calls are made.
+No network calls are made anywhere in this suite (EmailChannel uses NullSender).
 """
 
 from __future__ import annotations
 
-import sys
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import patch
 
 
 # ---------------------------------------------------------------------------
-# 1-2: NullChannel
+# 1: NullChannel
 # ---------------------------------------------------------------------------
 
 
@@ -69,220 +61,7 @@ class TestNullChannel:
 
 
 # ---------------------------------------------------------------------------
-# 3: SlackChannel (mocked httpx)
-# ---------------------------------------------------------------------------
-
-
-class TestSlackChannel:
-    def test_webhook_post_payload(self):
-        from app.notify.channels import SlackChannel
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-
-        with patch("httpx.post", return_value=mock_resp) as mock_post:
-            ch = SlackChannel(webhook_url="https://hooks.slack.com/test")
-            ch.send("Test alert message")
-
-        mock_post.assert_called_once()
-        call_kwargs = mock_post.call_args
-        # Should post to the webhook URL
-        assert "hooks.slack.com" in str(call_kwargs[0][0]) or "hooks.slack.com" in str(call_kwargs)
-        # Payload should have 'text'
-        sent_json = call_kwargs[1].get("json") or call_kwargs[0][1] if len(call_kwargs[0]) > 1 else {}
-        assert "text" in sent_json or True  # at minimum the call was made
-
-    def test_webhook_failure_raises(self):
-        from app.notify.channels import SlackChannel, ChannelError
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 403
-        mock_resp.text = "Forbidden"
-
-        with patch("httpx.post", return_value=mock_resp):
-            ch = SlackChannel(webhook_url="https://hooks.slack.com/test")
-            with pytest.raises(ChannelError):
-                ch.send("fail test")
-
-    def test_bot_token_post_message(self):
-        from app.notify.channels import SlackChannel
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"ok": True}
-
-        with patch("httpx.post", return_value=mock_resp) as mock_post:
-            ch = SlackChannel(bot_token="xoxb-test-token", channel="#alerts")
-            ch.send("Bot token alert")
-
-        mock_post.assert_called_once()
-        call_kwargs = mock_post.call_args
-        posted_url = call_kwargs[0][0] if call_kwargs[0] else call_kwargs.args[0]
-        assert "chat.postMessage" in posted_url
-
-    def test_no_credentials_no_call(self):
-        """SlackChannel with no credentials should not raise but also not call httpx."""
-        from app.notify.channels import SlackChannel
-
-        with patch("httpx.post") as mock_post:
-            ch = SlackChannel()
-            ch.send("no creds")
-        mock_post.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# 4: WhatsAppChannel (mocked httpx)
-# ---------------------------------------------------------------------------
-
-
-class TestWhatsAppChannel:
-    def test_send_correct_payload(self):
-        from app.notify.channels import WhatsAppChannel
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-
-        with patch("httpx.post", return_value=mock_resp) as mock_post:
-            ch = WhatsAppChannel(
-                token="test-wa-token",
-                phone_number_id="123456789",
-                recipient="+27821234567",
-            )
-            ch.send("WhatsApp alert!")
-
-        mock_post.assert_called_once()
-        call_args = mock_post.call_args
-        url = call_args[0][0] if call_args[0] else call_args.args[0]
-        assert "graph.facebook.com" in url
-        payload = call_args[1].get("json") or {}
-        assert payload.get("messaging_product") == "whatsapp"
-        assert payload.get("to") == "+27821234567"
-        assert payload["text"]["body"] == "WhatsApp alert!"
-
-    def test_send_failure_raises(self):
-        from app.notify.channels import WhatsAppChannel, ChannelError
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 400
-        mock_resp.text = "Bad Request"
-
-        with patch("httpx.post", return_value=mock_resp):
-            ch = WhatsAppChannel(
-                token="t", phone_number_id="id", recipient="+1234"
-            )
-            with pytest.raises(ChannelError):
-                ch.send("fail")
-
-    def test_incomplete_credentials_no_call(self):
-        from app.notify.channels import WhatsAppChannel
-
-        with patch("httpx.post") as mock_post:
-            ch = WhatsAppChannel(token="only-token")
-            ch.send("no phone id or recipient")
-        mock_post.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# 4b: GoogleChatChannel + TeamsChannel (mocked httpx)
-# ---------------------------------------------------------------------------
-
-
-class TestGoogleChatChannel:
-    def test_send_correct_payload(self):
-        from app.notify.channels import GoogleChatChannel
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-
-        with patch("httpx.post", return_value=mock_resp) as mock_post:
-            ch = GoogleChatChannel(webhook_url="https://chat.googleapis.com/v1/spaces/x")
-            ch.send("Google Chat alert!")
-
-        mock_post.assert_called_once()
-        call_args = mock_post.call_args
-        url = call_args[0][0] if call_args[0] else call_args.args[0]
-        assert "chat.googleapis.com" in url
-        payload = call_args[1].get("json") or {}
-        assert payload == {"text": "Google Chat alert!"}
-
-    def test_send_failure_raises(self):
-        from app.notify.channels import GoogleChatChannel, ChannelError
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 404
-        mock_resp.text = "Not Found"
-
-        with patch("httpx.post", return_value=mock_resp):
-            ch = GoogleChatChannel(webhook_url="https://chat.googleapis.com/v1/spaces/x")
-            with pytest.raises(ChannelError):
-                ch.send("fail")
-
-    def test_no_webhook_no_call(self):
-        from app.notify.channels import GoogleChatChannel
-
-        with patch("httpx.post") as mock_post:
-            ch = GoogleChatChannel()
-            ch.send("no webhook")
-        mock_post.assert_not_called()
-
-    def test_get_channel_builds_google_chat(self):
-        from app.notify.channels import get_channel, GoogleChatChannel, NullChannel
-
-        ch = get_channel("google_chat", {"webhook_url": "https://chat.googleapis.com/x"})
-        assert isinstance(ch, GoogleChatChannel)
-        assert isinstance(get_channel("google_chat", {}), NullChannel)
-
-
-class TestTeamsChannel:
-    def test_send_correct_payload(self):
-        from app.notify.channels import TeamsChannel
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-
-        with patch("httpx.post", return_value=mock_resp) as mock_post:
-            ch = TeamsChannel(webhook_url="https://outlook.office.com/webhook/abc")
-            ch.send("Teams alert!")
-
-        mock_post.assert_called_once()
-        call_args = mock_post.call_args
-        url = call_args[0][0] if call_args[0] else call_args.args[0]
-        assert "outlook.office.com" in url
-        payload = call_args[1].get("json") or {}
-        assert payload.get("text") == "Teams alert!"
-        # MessageCard schema for reliable Teams rendering.
-        assert payload.get("@type") == "MessageCard"
-
-    def test_send_failure_raises(self):
-        from app.notify.channels import TeamsChannel, ChannelError
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 400
-        mock_resp.text = "Bad Request"
-
-        with patch("httpx.post", return_value=mock_resp):
-            ch = TeamsChannel(webhook_url="https://outlook.office.com/webhook/abc")
-            with pytest.raises(ChannelError):
-                ch.send("fail")
-
-    def test_no_webhook_no_call(self):
-        from app.notify.channels import TeamsChannel
-
-        with patch("httpx.post") as mock_post:
-            ch = TeamsChannel()
-            ch.send("no webhook")
-        mock_post.assert_not_called()
-
-    def test_get_channel_builds_teams(self):
-        from app.notify.channels import get_channel, TeamsChannel, NullChannel
-
-        ch = get_channel("teams", {"webhook_url": "https://outlook.office.com/webhook/x"})
-        assert isinstance(ch, TeamsChannel)
-        assert isinstance(get_channel("teams", {}), NullChannel)
-
-
-# ---------------------------------------------------------------------------
-# 5: EmailChannel
+# 2: EmailChannel
 # ---------------------------------------------------------------------------
 
 
@@ -334,7 +113,7 @@ class TestEmailChannel:
 
 
 # ---------------------------------------------------------------------------
-# 6-9: get_channel factory
+# 3-4: get_channel factory
 # ---------------------------------------------------------------------------
 
 
@@ -351,40 +130,13 @@ class TestGetChannel:
         ch = get_channel("sms", {})
         assert isinstance(ch, NullChannel)
 
-    def test_slack_no_creds_returns_null_channel(self):
+    def test_removed_chat_kinds_return_null_channel(self):
+        """Slack/WhatsApp/Teams/Google Chat are no longer recognised kinds."""
         from app.notify.channels import get_channel, NullChannel
 
-        ch = get_channel("slack", {})
-        assert isinstance(ch, NullChannel)
-
-    def test_slack_with_webhook_returns_slack_channel(self):
-        from app.notify.channels import get_channel, SlackChannel
-
-        ch = get_channel("slack", {"webhook_url": "https://hooks.slack.com/x"})
-        assert isinstance(ch, SlackChannel)
-        assert ch.webhook_url == "https://hooks.slack.com/x"
-
-    def test_slack_with_bot_token_returns_slack_channel(self):
-        from app.notify.channels import get_channel, SlackChannel
-
-        ch = get_channel("slack", {"bot_token": "xoxb-abc", "channel": "#test"})
-        assert isinstance(ch, SlackChannel)
-        assert ch.bot_token == "xoxb-abc"
-
-    def test_whatsapp_incomplete_returns_null_channel(self):
-        from app.notify.channels import get_channel, NullChannel
-
-        ch = get_channel("whatsapp", {"token": "t"})  # missing phone_number_id + recipient
-        assert isinstance(ch, NullChannel)
-
-    def test_whatsapp_complete_returns_whatsapp_channel(self):
-        from app.notify.channels import get_channel, WhatsAppChannel
-
-        ch = get_channel(
-            "whatsapp",
-            {"token": "t", "phone_number_id": "pid", "recipient": "+1234"},
-        )
-        assert isinstance(ch, WhatsAppChannel)
+        for kind in ("slack", "whatsapp", "teams", "google_chat", "webhook"):
+            ch = get_channel(kind, {"webhook_url": "https://example.com/hook"})
+            assert isinstance(ch, NullChannel), f"kind={kind!r} should degrade to NullChannel"
 
     def test_email_returns_email_channel(self):
         from app.notify.channels import get_channel, EmailChannel
@@ -394,7 +146,7 @@ class TestGetChannel:
 
 
 # ---------------------------------------------------------------------------
-# 10: format_alert_text
+# 5: format_alert_text
 # ---------------------------------------------------------------------------
 
 
@@ -432,7 +184,7 @@ class TestFormatAlertText:
 
 
 # ---------------------------------------------------------------------------
-# 11: notify_alert
+# 6: notify_alert
 # ---------------------------------------------------------------------------
 
 
@@ -490,7 +242,7 @@ class TestNotifyAlert:
 
 
 # ---------------------------------------------------------------------------
-# 12-14: Flow-failure listener (on_flow_event)
+# 7-9: Flow-failure listener (on_flow_event)
 # ---------------------------------------------------------------------------
 
 
@@ -559,6 +311,8 @@ class TestFlowListener:
 
     def test_emit_flow_event_integration(self):
         """If app.flows.events.emit_flow_event exists, call it and verify listener fires."""
+        import pytest
+
         try:
             from app.flows import events as flow_events
             emit_fn = getattr(flow_events, "emit_flow_event", None)
@@ -593,143 +347,3 @@ class TestFlowListener:
 
 # NOTE: per-org /integrations CRUD (the real route that replaced the old
 # app-settings channel-status shim) is covered in tests/test_integrations_route.py.
-
-
-# ---------------------------------------------------------------------------
-# 18: Gateway context extraction (board/query IDs from message)
-# ---------------------------------------------------------------------------
-
-
-class TestGatewayContextExtraction:
-    def test_board_id_extracted_from_message(self):
-        """board:<id> in message text → claims gets board_id."""
-        from app.chat.gateway import _extract_context_from_text
-
-        ctx = _extract_context_from_text("Show me board:dash-123 summary")
-        assert ctx.get("board_id") == "dash-123"
-
-    def test_query_id_extracted_from_message(self):
-        from app.chat.gateway import _extract_context_from_text
-
-        ctx = _extract_context_from_text("Run query:revenue-q1 for last month")
-        assert ctx.get("query_id") == "revenue-q1"
-
-    def test_dashboard_keyword_extracted(self):
-        from app.chat.gateway import _extract_context_from_text
-
-        ctx = _extract_context_from_text("What's in dashboard:exec-review?")
-        assert ctx.get("board_id") == "exec-review"
-
-    def test_no_context_returns_empty(self):
-        from app.chat.gateway import _extract_context_from_text
-
-        ctx = _extract_context_from_text("What is the total revenue?")
-        assert ctx == {}
-
-    def test_handle_inbound_injects_board_id_into_claims(self):
-        """handle_inbound with board_id param → claims augmented."""
-        from app.chat.gateway import handle_inbound, _sig_override, NullTransport
-
-        _sig_override["slack"] = True
-        try:
-            captured_claims: list[dict] = []
-
-            def fake_run_agent(messages, provider, claims, *, max_steps=8):
-                captured_claims.append(dict(claims))
-                return {"reply": "ok", "actions": []}
-
-            with patch.dict(sys.modules, {"app.ai.agent": MagicMock(run_agent=fake_run_agent)}):
-                from app.ai.provider import NullProvider
-                transport = NullTransport()
-                handle_inbound(
-                    "slack",
-                    {"event": {"text": "show revenue", "channel": "C123"}},
-                    provider=NullProvider(),
-                    transport=transport,
-                    claims={"org_id": "org-1"},
-                    board_id="dash-99",
-                )
-
-            assert len(captured_claims) == 1
-            assert captured_claims[0].get("board_id") == "dash-99"
-            assert captured_claims[0].get("org_id") == "org-1"
-        finally:
-            _sig_override.pop("slack", None)
-
-    def test_handle_inbound_extracts_board_id_from_message_text(self):
-        """board:<id> in message text → claims gets board_id (no explicit param)."""
-        from app.chat.gateway import handle_inbound, _sig_override, NullTransport
-
-        _sig_override["slack"] = True
-        try:
-            captured_claims: list[dict] = []
-
-            def fake_run_agent(messages, provider, claims, *, max_steps=8):
-                captured_claims.append(dict(claims))
-                return {"reply": "ok", "actions": []}
-
-            with patch.dict(sys.modules, {"app.ai.agent": MagicMock(run_agent=fake_run_agent)}):
-                from app.ai.provider import NullProvider
-                handle_inbound(
-                    "slack",
-                    {"event": {"text": "show board:exec-review trends", "channel": "C1"}},
-                    provider=NullProvider(),
-                    transport=NullTransport(),
-                )
-
-            assert captured_claims[0].get("board_id") == "exec-review"
-        finally:
-            _sig_override.pop("slack", None)
-
-
-# ---------------------------------------------------------------------------
-# SSRF guard on user-supplied webhook URLs (regression for the security audit)
-# ---------------------------------------------------------------------------
-
-
-class TestWebhookSSRF:
-    """User-supplied webhook_url channels must refuse internal/metadata targets."""
-
-    def test_slack_webhook_blocks_metadata_ip(self):
-        from app.errors import AppError
-        from app.notify.channels import SlackChannel
-
-        ch = SlackChannel(webhook_url="http://169.254.169.254/latest/meta-data/")
-        with patch("httpx.post") as mock_post:
-            with pytest.raises(AppError) as exc:
-                ch.send("hi")
-        assert exc.value.code == "ssrf_blocked"
-        mock_post.assert_not_called()  # blocked BEFORE any network call
-
-    def test_google_chat_webhook_blocks_loopback(self):
-        from app.errors import AppError
-        from app.notify.channels import GoogleChatChannel
-
-        ch = GoogleChatChannel(webhook_url="http://127.0.0.1:8080/internal")
-        with patch("httpx.post") as mock_post:
-            with pytest.raises(AppError) as exc:
-                ch.send("hi")
-        assert exc.value.code == "ssrf_blocked"
-        mock_post.assert_not_called()
-
-    def test_teams_webhook_blocks_metadata_ip(self):
-        from app.errors import AppError
-        from app.notify.channels import TeamsChannel
-
-        ch = TeamsChannel(webhook_url="http://169.254.169.254/")
-        with patch("httpx.post") as mock_post:
-            with pytest.raises(AppError) as exc:
-                ch.send("hi")
-        assert exc.value.code == "ssrf_blocked"
-        mock_post.assert_not_called()
-
-    def test_public_webhook_still_allowed(self):
-        """A normal public webhook URL passes the guard and posts."""
-        from app.notify.channels import GoogleChatChannel
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        ch = GoogleChatChannel(webhook_url="https://chat.googleapis.com/v1/spaces/x")
-        with patch("httpx.post", return_value=mock_resp) as mock_post:
-            ch.send("hi")
-        mock_post.assert_called_once()

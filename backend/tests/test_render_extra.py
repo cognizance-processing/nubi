@@ -1,10 +1,13 @@
-"""Extra unit tests for app/chat/render.py (render_chart_png).
+"""Unit tests for app/chat/render.py (render_chart_png).
 
-These cases complement the coverage in test_chat_gateway.py which verifies that
-bar/line/pie/scatter/empty return bytes starting with the PNG magic header.
+``TestRenderChartPng`` (below) covers the base cases — bar/line/pie/scatter/
+empty/missing-columns return bytes starting with the PNG magic header. This
+used to live in test_chat_gateway.py (the removed Slack/WhatsApp inbound
+gateway module); render_chart_png itself is gateway-agnostic (Nubi ships it as
+a standalone chart-to-PNG utility), so its tests moved here on gateway removal.
 
-New cases added here
---------------------
+Additional cases
+----------------
 1. title field is rendered without error (smoke — no assertion on pixel content).
 2. pyarrow Table input (``to_pylist()`` path) is accepted and returns PNG bytes.
 3. Non-numeric y values coerce to 0.0 instead of raising.
@@ -40,6 +43,63 @@ SCATTER_ROWS = [
     {"x": 2.0, "y": 20.0},
     {"x": 3.0, "y": 15.0},
 ]
+
+
+# ---------------------------------------------------------------------------
+# 0. Base coverage — moved from the removed test_chat_gateway.py
+# ---------------------------------------------------------------------------
+
+
+class TestRenderChartPng:
+    """render_chart_png must return PNG bytes starting with the magic header."""
+
+    def test_bar_chart_returns_png(self):
+        rows = [
+            {"region": "North", "revenue": 120},
+            {"region": "South", "revenue": 95},
+        ]
+        spec = {"type": "bar", "title": "Test", "x": "region", "y": "revenue"}
+        result = render_chart_png(spec, rows)
+        assert isinstance(result, bytes)
+        assert result[:4] == b"\x89PNG", f"Expected PNG magic, got {result[:4]!r}"
+        assert len(result) > 100  # sanity — should be many bytes
+
+    def test_line_chart_returns_png(self):
+        rows = [{"x": i, "y": i * 2} for i in range(5)]
+        spec = {"type": "line", "x": "x", "y": "y"}
+        result = render_chart_png(spec, rows)
+        assert result[:4] == b"\x89PNG"
+
+    def test_pie_chart_returns_png(self):
+        rows = [{"label": "A", "val": 30}, {"label": "B", "val": 70}]
+        spec = {"type": "pie", "x": "label", "y": "val"}
+        result = render_chart_png(spec, rows)
+        assert result[:4] == b"\x89PNG"
+
+    def test_scatter_chart_returns_png(self):
+        rows = [{"x": float(i), "y": float(i) ** 2} for i in range(5)]
+        spec = {"type": "scatter", "x": "x", "y": "y"}
+        result = render_chart_png(spec, rows)
+        assert result[:4] == b"\x89PNG"
+
+    def test_empty_rows_returns_png(self):
+        """An empty dataset should still produce a valid (possibly blank) chart."""
+        spec = {"type": "bar", "x": "region", "y": "revenue"}
+        result = render_chart_png(spec, [])
+        assert result[:4] == b"\x89PNG"
+
+    def test_missing_columns_fallback(self):
+        """When x/y are absent from spec, falls back to first two column names."""
+        rows = [{"alpha": 1, "beta": 2}, {"alpha": 3, "beta": 4}]
+        spec = {"type": "bar"}
+        result = render_chart_png(spec, rows)
+        assert result[:4] == b"\x89PNG"
+
+    def test_returns_bytes_not_str(self):
+        rows = [{"x": "A", "y": 10}]
+        spec = {"type": "bar", "x": "x", "y": "y"}
+        result = render_chart_png(spec, rows)
+        assert isinstance(result, bytes)
 
 
 # ---------------------------------------------------------------------------

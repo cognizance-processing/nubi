@@ -1,9 +1,10 @@
 /**
  * IntegrationsSettings — Settings → Integrations.
  *
- * Connect the org's notify channels (Slack / WhatsApp / Google Chat / Teams /
- * Email). One connected integration powers BOTH inbound chat and outbound
- * alerts (watches, flow runs, shares). This page is the full surface:
+ * Connect the org's notify channel. Nubi is embedded BI, not a chat-ops
+ * platform, so Email is the one supported kind — the embedding host owns any
+ * Slack/Teams/etc. notifications it wants. A connected integration powers
+ * outbound alerts (watches, flow runs, shares). This page is the full surface:
  *
  *   - lists connected integrations (kind, name, enabled, configured).
  *   - "Connect" picker → per-kind form (the right secret/non-secret fields).
@@ -35,11 +36,7 @@ import {
   Send,
   CheckCircle2,
   AlertTriangle,
-  Slack,
-  MessageCircle,
-  MessagesSquare,
   Mail,
-  Hash,
 } from 'lucide-react'
 
 import { useCanWrite } from '../../../contexts/OrgContext.jsx'
@@ -68,43 +65,6 @@ import { toast } from '../../../components/ui/Toast.jsx'
 // ---------------------------------------------------------------------------
 
 const KINDS = {
-  slack: {
-    label: 'Slack',
-    Icon: Slack,
-    blurb: 'Post alerts to a Slack channel via an incoming webhook.',
-    fields: [
-      { key: 'channel', label: 'Channel', placeholder: '#alerts' },
-      { key: 'webhook_url', label: 'Incoming webhook URL', secret: true, placeholder: 'https://hooks.slack.com/services/…' },
-    ],
-  },
-  whatsapp: {
-    label: 'WhatsApp',
-    Icon: MessageCircle,
-    blurb: 'Send alerts through the WhatsApp Business Cloud API.',
-    fields: [
-      { key: 'phone_number_id', label: 'Phone number ID', placeholder: '123456789012345' },
-      { key: 'to', label: 'Recipient number', placeholder: '+27…' },
-      { key: 'access_token', label: 'Access token', secret: true, placeholder: 'EAAB…' },
-    ],
-  },
-  google_chat: {
-    label: 'Google Chat',
-    Icon: Hash,
-    blurb: 'Post to a Google Chat space via an incoming webhook.',
-    fields: [
-      { key: 'space', label: 'Space label', placeholder: 'Alerts' },
-      { key: 'webhook_url', label: 'Webhook URL', secret: true, placeholder: 'https://chat.googleapis.com/v1/spaces/…' },
-    ],
-  },
-  teams: {
-    label: 'Microsoft Teams',
-    Icon: MessagesSquare,
-    blurb: 'Post to a Teams channel via an incoming webhook connector.',
-    fields: [
-      { key: 'name', label: 'Connector name', placeholder: 'Alerts' },
-      { key: 'webhook_url', label: 'Webhook URL', secret: true, placeholder: 'https://outlook.office.com/webhook/…' },
-    ],
-  },
   email: {
     label: 'Email',
     Icon: Mail,
@@ -115,7 +75,7 @@ const KINDS = {
   },
 }
 
-const KIND_ORDER = ['slack', 'whatsapp', 'google_chat', 'teams', 'email']
+const KIND_ORDER = ['email']
 
 function kindMeta(kind) {
   return KINDS[kind] ?? { label: kind, Icon: Plug, blurb: '', fields: [] }
@@ -606,7 +566,7 @@ export default function IntegrationsSettings() {
     <div className="space-y-6">
       <SettingsPageHeader
         title="Integrations"
-        description="Connect Slack, WhatsApp, Google Chat, Teams or Email. A connected integration powers both inbound chat and outbound alerts (watches, flow runs, shares)."
+        description="Connect an email channel. A connected integration powers outbound alerts (watches, flow runs, shares)."
       />
 
       {/* Connected list */}

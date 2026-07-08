@@ -1,18 +1,19 @@
 """Notification channel implementations for Nubi.
 
-Provides a ``Channel`` interface with four implementations:
-- ``NullChannel``     — records sends in memory; no network (tests / unconfigured).
-- ``SlackChannel``      — posts via Incoming Webhook URL or chat.postMessage bot token.
-- ``WhatsAppChannel``   — posts via WhatsApp Cloud API (Meta Graph API).
-- ``GoogleChatChannel`` — posts via a Google Chat incoming webhook URL.
-- ``TeamsChannel``      — posts via a Microsoft Teams incoming webhook URL.
-- ``EmailChannel``      — reuses the ``EmailSender`` protocol from jobs.report.
+Provides a ``Channel`` interface with two implementations:
+- ``NullChannel``  — records sends in memory; no network (tests / unconfigured).
+- ``EmailChannel`` — reuses the ``EmailSender`` protocol from jobs.report.
+
+Nubi is embedded BI, not a chat-ops platform — the host application owns its
+own notification/chat integrations. Email (scheduled reports + alerts) is the
+one outbound channel Nubi ships; everything else is a no-op ``NullChannel``.
 
 Factory
 -------
 get_channel(kind, config) -> Channel
     Return the appropriate Channel implementation for *kind*, initialised from
-    the *config* dict.  Falls back to ``NullChannel`` when credentials are absent.
+    the *config* dict.  Falls back to ``NullChannel`` when credentials are absent
+    or *kind* is not ``"email"``.
 
 All network calls are lazy (inside ``send``); the module-level import does no I/O.
 """
@@ -27,10 +28,6 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "Channel",
     "NullChannel",
-    "SlackChannel",
-    "WhatsAppChannel",
-    "GoogleChatChannel",
-    "TeamsChannel",
     "EmailChannel",
     "get_channel",
     "ChannelError",
@@ -93,265 +90,6 @@ class NullChannel:
         """Record the send without making any network call."""
         self.sent.append({"text": text, "image_png": image_png})
         logger.debug("NullChannel.send: %r", text[:120] if len(text) > 120 else text)
-
-
-# ---------------------------------------------------------------------------
-# SlackChannel — Incoming Webhook URL or chat.postMessage bot token
-# ---------------------------------------------------------------------------
-
-
-class SlackChannel:
-    """Send messages to Slack via Incoming Webhook or chat.postMessage.
-
-    Parameters
-    ----------
-    webhook_url:
-        Slack Incoming Webhook URL.  When set, used for simple text posts.
-    bot_token:
-        Slack bot token (``xoxb-…``).  Required for file uploads (chart PNGs).
-    channel:
-        Default Slack channel/conversation ID (e.g. ``#alerts`` or ``C12345``).
-        Used with *bot_token* when not supplied in ``send``.
-    """
-
-    def __init__(
-        self,
-        *,
-        webhook_url: str = "",
-        bot_token: str = "",
-        channel: str = "",
-    ) -> None:
-        self.webhook_url = webhook_url
-        self.bot_token = bot_token
-        self.channel = channel
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _post_webhook(self, text: str) -> None:
-        """POST a simple text message to the Incoming Webhook URL."""
-        import httpx  # lazy — no network at import time
-
-        from app.connectors.ssrf import guard_url  # noqa: PLC0415
-
-        guard_url(self.webhook_url)  # SSRF: webhook_url is user-supplied.
-        payload = {"text": text}
-        resp = httpx.post(self.webhook_url, json=payload, timeout=10)
-        if resp.status_code != 200:
-            raise ChannelError(
-                f"Slack webhook returned {resp.status_code}: {resp.text[:200]}"
-            )
-
-    def _post_message(self, text: str) -> None:
-        """Call chat.postMessage with the bot token."""
-        import httpx  # lazy
-
-        headers = {"Authorization": f"Bearer {self.bot_token}"}
-        payload = {"channel": self.channel, "text": text}
-        resp = httpx.post(
-            "https://slack.com/api/chat.postMessage",
-            json=payload,
-            headers=headers,
-            timeout=10,
-        )
-        data = resp.json()
-        if not data.get("ok"):
-            raise ChannelError(f"Slack chat.postMessage error: {data.get('error')}")
-
-    def _upload_file(self, text: str, image_png: bytes) -> None:
-        """Upload a PNG file to Slack (requires bot token)."""
-        import httpx  # lazy
-
-        headers = {"Authorization": f"Bearer {self.bot_token}"}
-        # Use files.getUploadURLExternal + files.completeUploadExternal (Slack v2 API)
-        # For simplicity, fall back to chat.postMessage with the text and a note.
-        # Full file upload is a multi-step flow; post text + note for now.
-        payload = {
-            "channel": self.channel,
-            "text": text + "\n_(chart image attached — see dashboard for full view)_",
-        }
-        resp = httpx.post(
-            "https://slack.com/api/chat.postMessage",
-            json=payload,
-            headers=headers,
-            timeout=10,
-        )
-        data = resp.json()
-        if not data.get("ok"):
-            raise ChannelError(f"Slack file post error: {data.get('error')}")
-
-    # ------------------------------------------------------------------
-    # Public send
-    # ------------------------------------------------------------------
-
-    def send(self, text: str, image_png: bytes | None = None) -> None:
-        """Deliver *text* (and optionally *image_png*) to Slack."""
-        if image_png is not None and self.bot_token:
-            self._upload_file(text, image_png)
-            return
-
-        if self.webhook_url:
-            self._post_webhook(text)
-            return
-
-        if self.bot_token:
-            self._post_message(text)
-            return
-
-        logger.warning("SlackChannel.send called but neither webhook_url nor bot_token is set.")
-
-
-# ---------------------------------------------------------------------------
-# WhatsAppChannel — WhatsApp Cloud API (Meta Graph API)
-# ---------------------------------------------------------------------------
-
-
-class WhatsAppChannel:
-    """Send messages via the WhatsApp Cloud API.
-
-    Parameters
-    ----------
-    token:
-        WhatsApp Cloud API send token (Graph API bearer token).
-    phone_number_id:
-        The sender's WhatsApp Business phone number ID.
-    recipient:
-        Default recipient phone number (E.164 format, e.g. ``+27821234567``).
-    """
-
-    _API_BASE = "https://graph.facebook.com/v19.0"
-
-    def __init__(
-        self,
-        *,
-        token: str = "",
-        phone_number_id: str = "",
-        recipient: str = "",
-    ) -> None:
-        self.token = token
-        self.phone_number_id = phone_number_id
-        self.recipient = recipient
-
-    def send(self, text: str, image_png: bytes | None = None) -> None:
-        """Deliver *text* to the configured *recipient* via WhatsApp Cloud API."""
-        if not self.token or not self.phone_number_id or not self.recipient:
-            logger.warning(
-                "WhatsAppChannel.send called but token/phone_number_id/recipient not fully set."
-            )
-            return
-
-        import httpx  # lazy
-
-        url = f"{self._API_BASE}/{self.phone_number_id}/messages"
-        headers = {
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": self.recipient,
-            "type": "text",
-            "text": {"body": text},
-        }
-        resp = httpx.post(url, json=payload, headers=headers, timeout=10)
-        if resp.status_code not in (200, 201):
-            raise ChannelError(
-                f"WhatsApp API returned {resp.status_code}: {resp.text[:200]}"
-            )
-
-
-# ---------------------------------------------------------------------------
-# GoogleChatChannel — Google Chat incoming webhook
-# ---------------------------------------------------------------------------
-
-
-class GoogleChatChannel:
-    """Send messages to a Google Chat space via an incoming webhook.
-
-    Google Chat incoming webhooks accept a simple ``POST {webhook_url}`` with a
-    JSON body of ``{"text": ...}`` (basic text message). A 2xx response is
-    success; anything else raises :class:`ChannelError`.
-
-    Parameters
-    ----------
-    webhook_url:
-        The Google Chat space incoming-webhook URL.
-    """
-
-    def __init__(self, *, webhook_url: str = "") -> None:
-        self.webhook_url = webhook_url
-
-    def send(self, text: str, image_png: bytes | None = None) -> None:
-        """Deliver *text* to the configured Google Chat webhook.
-
-        Google Chat incoming webhooks do not accept binary attachments, so
-        *image_png* is ignored (the text is delivered as-is).
-        """
-        if not self.webhook_url:
-            logger.warning("GoogleChatChannel.send called but webhook_url is not set.")
-            return
-
-        import httpx  # lazy — no network at import time
-
-        from app.connectors.ssrf import guard_url  # noqa: PLC0415
-
-        guard_url(self.webhook_url)  # SSRF: webhook_url is user-supplied.
-        payload = {"text": text}
-        resp = httpx.post(self.webhook_url, json=payload, timeout=10)
-        if resp.status_code not in (200, 201):
-            raise ChannelError(
-                f"Google Chat webhook returned {resp.status_code}: {resp.text[:200]}"
-            )
-
-
-# ---------------------------------------------------------------------------
-# TeamsChannel — Microsoft Teams incoming webhook
-# ---------------------------------------------------------------------------
-
-
-class TeamsChannel:
-    """Send messages to a Microsoft Teams channel via an incoming webhook.
-
-    Teams incoming webhooks accept a ``POST {webhook_url}``. We send a minimal
-    MessageCard payload (``{"text": ...}`` is also accepted by the connector,
-    but the legacy MessageCard schema renders reliably across Teams clients).
-    A 2xx response is success; anything else raises :class:`ChannelError`.
-
-    Parameters
-    ----------
-    webhook_url:
-        The Microsoft Teams incoming-webhook URL.
-    """
-
-    def __init__(self, *, webhook_url: str = "") -> None:
-        self.webhook_url = webhook_url
-
-    def send(self, text: str, image_png: bytes | None = None) -> None:
-        """Deliver *text* to the configured Teams webhook.
-
-        Teams incoming webhooks do not accept binary attachments, so
-        *image_png* is ignored (the text is delivered as-is).
-        """
-        if not self.webhook_url:
-            logger.warning("TeamsChannel.send called but webhook_url is not set.")
-            return
-
-        import httpx  # lazy
-
-        from app.connectors.ssrf import guard_url  # noqa: PLC0415
-
-        guard_url(self.webhook_url)  # SSRF: webhook_url is user-supplied.
-        payload = {
-            "@type": "MessageCard",
-            "@context": "https://schema.org/extensions",
-            "text": text,
-        }
-        resp = httpx.post(self.webhook_url, json=payload, timeout=10)
-        if resp.status_code not in (200, 201):
-            raise ChannelError(
-                f"Teams webhook returned {resp.status_code}: {resp.text[:200]}"
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -421,26 +159,17 @@ def get_channel(kind: str, config: dict[str, Any]) -> Channel:
 
     Supported kinds
     ---------------
-    ``"slack"``
-        Requires at least one of ``webhook_url`` or ``bot_token`` in *config*.
-        Falls back to ``NullChannel`` if neither is set.
-    ``"whatsapp"``
-        Requires ``token``, ``phone_number_id``, and ``recipient``.
-        Falls back to ``NullChannel`` if any are absent.
-    ``"google_chat"``
-        Requires ``webhook_url``.  Falls back to ``NullChannel`` if absent.
-    ``"teams"``
-        Requires ``webhook_url``.  Falls back to ``NullChannel`` if absent.
     ``"email"``
         Requires ``recipient``; uses ``NullSender`` when no real sender is
         supplied in ``config["sender"]``.
-    ``"null"`` (or any unknown kind)
-        Returns a ``NullChannel``.
+    ``"null"`` (or any unknown/unsupported kind)
+        Returns a ``NullChannel``.  Nubi ships email as its one outbound
+        channel — the embedding host owns any chat/Slack-style notifications.
 
     Parameters
     ----------
     kind:
-        Channel type identifier: ``"slack"``, ``"whatsapp"``, ``"email"``, ``"null"``.
+        Channel type identifier: ``"email"`` or ``"null"``.
     config:
         Dict of channel-specific configuration values (see above).
 
@@ -450,38 +179,6 @@ def get_channel(kind: str, config: dict[str, Any]) -> Channel:
         An initialised channel object.
     """
     kind = (kind or "").lower().strip()
-
-    if kind == "slack":
-        webhook_url = config.get("webhook_url") or ""
-        bot_token = config.get("bot_token") or ""
-        channel = config.get("channel") or ""
-        if not webhook_url and not bot_token:
-            logger.debug("get_channel('slack'): no credentials — returning NullChannel.")
-            return NullChannel()
-        return SlackChannel(webhook_url=webhook_url, bot_token=bot_token, channel=channel)
-
-    if kind == "whatsapp":
-        token = config.get("token") or ""
-        phone_number_id = config.get("phone_number_id") or ""
-        recipient = config.get("recipient") or ""
-        if not token or not phone_number_id or not recipient:
-            logger.debug("get_channel('whatsapp'): incomplete credentials — returning NullChannel.")
-            return NullChannel()
-        return WhatsAppChannel(token=token, phone_number_id=phone_number_id, recipient=recipient)
-
-    if kind == "google_chat":
-        webhook_url = config.get("webhook_url") or ""
-        if not webhook_url:
-            logger.debug("get_channel('google_chat'): no webhook_url — returning NullChannel.")
-            return NullChannel()
-        return GoogleChatChannel(webhook_url=webhook_url)
-
-    if kind == "teams":
-        webhook_url = config.get("webhook_url") or ""
-        if not webhook_url:
-            logger.debug("get_channel('teams'): no webhook_url — returning NullChannel.")
-            return NullChannel()
-        return TeamsChannel(webhook_url=webhook_url)
 
     if kind == "email":
         from app.jobs.report import NullSender  # lazy local import

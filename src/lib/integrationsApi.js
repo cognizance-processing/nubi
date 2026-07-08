@@ -1,10 +1,10 @@
 /**
  * integrationsApi.js — thin transport layer for per-org notify integrations.
  *
- * One *integration* is a connected channel (Slack / WhatsApp / Google Chat /
- * Teams / Email) that powers BOTH inbound chat and outbound alerts. The UI
- * lives in ``src/pages/app/settings/IntegrationsSettings.jsx`` and the watches
- * channel picker (``src/pages/app/WatchesPage.jsx``).
+ * One *integration* is a connected channel that powers outbound alerts. Nubi
+ * is embedded BI, not a chat-ops platform, so Email is the one supported
+ * kind — the embedding host owns any Slack/Teams/etc. notifications it wants.
+ * The UI lives in ``src/pages/app/settings/IntegrationsSettings.jsx``.
  *
  * Contract (backend/app/routes/integrations.py — paths under /api/v1):
  *   GET    /integrations              listIntegrations
@@ -36,7 +36,7 @@ import { get, post, put, del } from './api.js'
 const BASE = '/integrations'
 
 /** The kinds the UI knows how to connect. */
-export const INTEGRATION_KINDS = ['slack', 'whatsapp', 'google_chat', 'teams', 'email']
+export const INTEGRATION_KINDS = ['email']
 
 /**
  * List the active org's connected integrations.

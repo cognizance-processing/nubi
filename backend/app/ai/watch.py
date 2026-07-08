@@ -529,13 +529,13 @@ async def fire_watch(
 
     Builds an alert event and sends it through ``app.chat.notify.channels_for``
     + ``notify_flow_run`` — the SAME dispatch ``runtime._fire_flow_alert`` uses.
-    The watch's ``channel_config`` (slack_webhook / slack_channel / whatsapp_to)
-    selects the channels; with nothing configured the result is 0 (a no-op).
+    Nubi ships email as its one outbound channel (see ``app.notify.channels``);
+    with nothing configured (no connected integration) the result is 0 (a no-op).
 
     When *org_id* is known, an additional ``watch_breach`` outbound webhook is
     emitted to the org's subscribed endpoints. This is purely additive to the
-    Slack/WhatsApp channels above and is fire-and-forget — a webhook failure can
-    never affect the channel send or the caller.
+    channels above and is fire-and-forget — a webhook failure can never affect
+    the channel send or the caller.
 
     Returns the number of channels the message was delivered to.
     """

@@ -1,38 +1,18 @@
-"""Conversational gateway for Nubi (M22-A).
+"""In-app chat for Nubi.
 
-Provides headless chat over Slack/WhatsApp with chart-image replies.
+Nubi is embedded BI, not a chat-ops platform: chat is the in-app assistant
+(``app/routes/chat.py``'s ``POST /chat/stream``) only — there is no inbound
+Slack/WhatsApp webhook gateway. The embedding host owns any chat-platform
+integrations it wants.
 
 Public API
 ----------
 render_chart_png(chart_spec, rows) -> bytes
     Render a chart spec + data to PNG bytes (matplotlib, Agg backend).
-
-handle_inbound(platform, payload, *, provider, transport, claims) -> OutboundMessage
-    Normalize an inbound webhook payload, invoke the M21 agent, attach a
-    rendered chart PNG if the agent produced one, deliver via transport.
-
-OutboundMessage
-    Dataclass: {text: str, image_png: bytes | None}.
-
-ChatTransport (Protocol)
-    send(to: str, message: OutboundMessage) -> None.
-
-NullTransport
-    Records sends in .sent — use in tests; no network.
 """
 
-from app.chat.gateway import (
-    ChatTransport,
-    NullTransport,
-    OutboundMessage,
-    handle_inbound,
-)
 from app.chat.render import render_chart_png
 
 __all__ = [
     "render_chart_png",
-    "handle_inbound",
-    "OutboundMessage",
-    "ChatTransport",
-    "NullTransport",
 ]
