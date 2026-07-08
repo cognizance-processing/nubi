@@ -56,6 +56,23 @@ test('recommendNubi prices agent-run overage at R2/run (no fitting tier)', () =>
   assert.equal(agentItem.zar, 200 * 2)
 })
 
+test('recommendNubi prices AI-call overage at R5/call (no fitting tier)', () => {
+  // AI calls are bounded even on Enterprise (500/mo), so an AI-call count above
+  // that forces the "no exact fit" overage path. 700 calls → 200 over × R5.
+  const rec = recommendNubi(
+    { embedded_sessions: 0, agent_runs: 0, ai_calls: 700, connectors: 1 },
+    16.26,
+  )
+  const aiItem = rec.overages.find((o) => /ai call/i.test(o.label))
+  assert.ok(aiItem, 'expected an AI-call overage line')
+  assert.equal(aiItem.zar, 200 * 5)
+})
+
+test('recommendNubi treats missing ai_calls as 0 (back-compat with callers that omit it)', () => {
+  const rec = recommendNubi({ embedded_sessions: 0, agent_runs: 0, connectors: 1 }, null)
+  assert.equal(rec.tier.id, 'free', 'omitting ai_calls must not force a paid tier')
+})
+
 // ---------------------------------------------------------------------------
 // Flow runs are NOT a billing meter — must never bump the tier
 // ---------------------------------------------------------------------------

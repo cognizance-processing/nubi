@@ -475,12 +475,12 @@ export const WALLET_OVERAGE_RATES = {
 const NUBI_TIERS_CALC = [
   {
     id: 'free', name: 'Free', usd_monthly: 0,
-    quotas: { connectors: 3, embedded_sessions: 0, agent_runs: 0 },
+    quotas: { connectors: 3, embedded_sessions: 0, agent_runs: 0, ai_calls: 0 },
     overages: null,
   },
   {
     id: 'starter', name: 'Starter', usd_monthly: 9,
-    quotas: { connectors: 5, embedded_sessions: 1000, agent_runs: 0 },
+    quotas: { connectors: 5, embedded_sessions: 1000, agent_runs: 0, ai_calls: 5 },
     overages: {
       ai_call_zar_per_call: WALLET_OVERAGE_RATES.ai_call_zar_per_call,
       session_zar_per_10k: WALLET_OVERAGE_RATES.session_zar_per_10k,
@@ -489,7 +489,7 @@ const NUBI_TIERS_CALC = [
   },
   {
     id: 'team', name: 'Team', usd_monthly: 49,
-    quotas: { connectors: 15, embedded_sessions: 5000, agent_runs: 10 },
+    quotas: { connectors: 15, embedded_sessions: 5000, agent_runs: 10, ai_calls: 15 },
     overages: {
       ai_call_zar_per_call: WALLET_OVERAGE_RATES.ai_call_zar_per_call,
       session_zar_per_10k: WALLET_OVERAGE_RATES.session_zar_per_10k,
@@ -498,7 +498,7 @@ const NUBI_TIERS_CALC = [
   },
   {
     id: 'pro', name: 'Pro', usd_monthly: 149,
-    quotas: { connectors: Infinity, embedded_sessions: 25000, agent_runs: 50 },
+    quotas: { connectors: Infinity, embedded_sessions: 25000, agent_runs: 50, ai_calls: 50 },
     overages: {
       ai_call_zar_per_call: WALLET_OVERAGE_RATES.ai_call_zar_per_call,
       session_zar_per_10k: WALLET_OVERAGE_RATES.session_zar_per_10k,
@@ -507,7 +507,7 @@ const NUBI_TIERS_CALC = [
   },
   {
     id: 'enterprise', name: 'Enterprise', usd_monthly: 1000,
-    quotas: { connectors: Infinity, embedded_sessions: Infinity, agent_runs: 1000 },
+    quotas: { connectors: Infinity, embedded_sessions: Infinity, agent_runs: 1000, ai_calls: 500 },
     overages: {
       ai_call_zar_per_call: WALLET_OVERAGE_RATES.ai_call_zar_per_call,
       session_zar_per_10k: 0,
@@ -519,7 +519,7 @@ const NUBI_TIERS_CALC = [
 /**
  * Recommend a Nubi tier for the given usage and compute total ZAR cost.
  *
- * @param {{ embedded_sessions, agent_runs, connectors, flow_runs_per_month }} usage
+ * @param {{ embedded_sessions, ai_calls, agent_runs, connectors, flow_runs_per_month }} usage
  * @param {number|null} fxRate
  * @param {{ minTierId?: string }} [opts]  minTierId floors the recommendation
  * @returns {{ tier, base_zar, overage_zar, total_zar, overages, is_exact_fit }}
@@ -538,7 +538,8 @@ export function recommendNubi(usage, fxRate, opts = {}) {
     const fits =
       (q.connectors === Infinity || q.connectors >= usage.connectors) &&
       (q.embedded_sessions === Infinity || q.embedded_sessions >= usage.embedded_sessions) &&
-      (q.agent_runs === Infinity || q.agent_runs >= usage.agent_runs)
+      (q.agent_runs === Infinity || q.agent_runs >= usage.agent_runs) &&
+      (q.ai_calls === Infinity || q.ai_calls >= (usage.ai_calls ?? 0))
 
     if (fits) {
       const base_zar = computeZar(tier.usd_monthly, rate)
@@ -568,6 +569,12 @@ export function recommendNubi(usage, fxRate, opts = {}) {
       const cost = runs * ov.agent_run_zar_per_run
       overage_zar += cost
       overageItems.push({ label: `${runs} extra agent runs`, zar: cost })
+    }
+    if (q.ai_calls !== Infinity && (usage.ai_calls ?? 0) > q.ai_calls && ov.ai_call_zar_per_call) {
+      const calls = usage.ai_calls - q.ai_calls
+      const cost = calls * ov.ai_call_zar_per_call
+      overage_zar += cost
+      overageItems.push({ label: `${calls.toLocaleString()} extra AI calls`, zar: cost })
     }
 
     const base_zar = computeZar(tier.usd_monthly, rate)

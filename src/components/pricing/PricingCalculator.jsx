@@ -27,7 +27,7 @@
 
 import { useState, useMemo, useCallback } from 'react'
 import {
-  ChevronDown, ChevronUp, Info, Users, Zap, Globe, Cpu,
+  ChevronDown, ChevronUp, Info, Users, Zap, Globe, Cpu, Sparkles,
   GitBranch, Server, BarChart3, Wallet,
 } from 'lucide-react'
 import {
@@ -462,6 +462,7 @@ function OrchComparisonSection({ competitors, orchUsage, onOrchUsage, fxRate, re
 
 const DEFAULT_USAGE = {
   embedded_sessions: 10000,
+  ai_calls: 50,
   agent_runs: 20,
   connectors: 5,
   flow_runs_per_month: 2000,
@@ -526,6 +527,13 @@ export default function PricingCalculator({
             value={usage.embedded_sessions}
             onChange={(v) => setField('embedded_sessions', v)}
             min={0} max={200000} step={1000}
+          />
+          <UsageInput
+            label="AI / LLM calls / month"
+            icon={Sparkles}
+            value={usage.ai_calls}
+            onChange={(v) => setField('ai_calls', v)}
+            min={0} max={5000} step={10}
           />
           <UsageInput
             label="Agent / kernel runs / month"
