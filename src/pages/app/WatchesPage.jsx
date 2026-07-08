@@ -5,13 +5,13 @@
  *
  * A *watch* monitors a single governed metric and fires when a threshold (or a
  * change-over-time rule) is breached. On breach the backend composes an AI
- * explanation and dispatches it to a notify channel (Slack). This page is the
- * full CRUD + manual-evaluate surface:
+ * explanation and dispatches it to a connected notify channel (Email). This
+ * page is the full CRUD + manual-evaluate surface:
  *
  *  - lists watches (name, metric, condition summary, enabled, last state).
  *  - create / edit form (modal): pick a metric, choose dimensions / time grain,
- *    set a threshold (op + value) OR a change_pct rule, set channel config
- *    (Slack webhook / channel), enabled toggle.
+ *    set a threshold (op + value) OR a change_pct rule, pick a connected
+ *    integration to alert, enabled toggle.
  *  - "Evaluate now" per watch → POST /evaluate, shows {breached, value,
  *    explanation}.
  *  - delete (inline confirm).
@@ -307,8 +307,6 @@ function blankDraft() {
     changeOp: '>',
     changeValue: '',
     integrationId: '',
-    slackWebhook: '',
-    slackChannel: '',
     enabled: true,
   }
 }
@@ -329,8 +327,6 @@ function draftFromWatch(watch) {
     changeOp: r.comparison?.op ?? '>',
     changeValue: r.comparison?.value ?? '',
     integrationId: cfg.channel_config?.integration_id ?? '',
-    slackWebhook: cfg.channel_config?.slack_webhook ?? '',
-    slackChannel: cfg.channel_config?.slack_channel ?? '',
     enabled: cfg.enabled === undefined ? true : Boolean(cfg.enabled),
   }
 }
@@ -371,13 +367,8 @@ function bodyFromDraft(draft) {
   }
 
   const channel_config = {}
-  // Prefer a connected integration; fall back to the free-form Slack fields
-  // (kept for orgs that have not connected any integration yet).
   if (draft.integrationId) {
     channel_config.integration_id = draft.integrationId
-  } else {
-    if (draft.slackWebhook.trim()) channel_config.slack_webhook = draft.slackWebhook.trim()
-    if (draft.slackChannel.trim()) channel_config.slack_channel = draft.slackChannel.trim()
   }
   if (Object.keys(channel_config).length > 0) config.channel_config = channel_config
 
@@ -620,8 +611,7 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
             </div>
           )}
 
-          {/* Channel config — pick a connected integration, or fall back to a
-              free-form Slack webhook when none are connected. */}
+          {/* Channel config — pick a connected integration (Email). */}
           <div className="rounded-lg border border-border bg-surface-2/30 p-3 space-y-3">
             <p className="text-xs font-semibold text-fg/80">Alert channel</p>
 
@@ -650,37 +640,11 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
                 </p>
               </>
             ) : (
-              <>
-                <p className="text-[11px] text-muted">
-                  No integrations connected — enter a Slack webhook below, or connect a
-                  channel in <span className="font-medium text-fg/80">Settings → Integrations</span>.
-                </p>
-                <div>
-                  <label htmlFor="watch-slack-webhook" className={LABEL_CLS}>Webhook URL</label>
-                  <input
-                    id="watch-slack-webhook"
-                    type="text"
-                    value={draft.slackWebhook}
-                    onChange={e => set({ slackWebhook: e.target.value })}
-                    placeholder="https://hooks.slack.com/services/…"
-                    className={[FIELD_CLS, 'font-mono text-xs'].join(' ')}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="watch-slack-channel" className={LABEL_CLS}>Channel</label>
-                  <input
-                    id="watch-slack-channel"
-                    type="text"
-                    value={draft.slackChannel}
-                    onChange={e => set({ slackChannel: e.target.value })}
-                    placeholder="#alerts"
-                    className={FIELD_CLS}
-                  />
-                </div>
-                <p className="text-[11px] text-muted">
-                  Leave blank to evaluate without notifying (test mode).
-                </p>
-              </>
+              <p className="text-[11px] text-muted">
+                No integrations connected — connect an email channel in{' '}
+                <span className="font-medium text-fg/80">Settings → Integrations</span>{' '}
+                to be alerted, or leave this watch to evaluate in test mode (no notification sent).
+              </p>
             )}
           </div>
 

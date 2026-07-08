@@ -3,8 +3,8 @@
  *
  * A *watch* monitors a single governed metric and fires when a threshold (or a
  * change-over-time rule) is breached: it composes an AI explanation and
- * dispatches it to a notify channel (Slack). This module is the thin transport
- * layer in front of the backend routes; the UI lives in
+ * dispatches it to a connected notify channel (Email). This module is the
+ * thin transport layer in front of the backend routes; the UI lives in
  * ``src/pages/app/WatchesPage.jsx``.
  *
  * All read helpers degrade gracefully (catch transport/auth errors and return a
@@ -30,7 +30,7 @@
  *       // exactly one breach rule:
  *       threshold:  { op: '<'|'<='|'>'|'>='|'==', value: number },
  *       comparison: { kind: 'change_pct', vs: 'previous_period', op, value },
- *       channel_config: { slack_webhook?: string, slack_channel?: string },
+ *       channel_config: { integration_id?: string },
  *       enabled: boolean,
  *     }
  *   }

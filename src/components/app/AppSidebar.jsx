@@ -15,7 +15,6 @@
  *   Data         /data
  *   Queries      /queries
  *   Dashboards   /dashboards
- *   Canvases     /canvases
  *   Flows        /flows
  *   Watches      /watches
  *   Automations  /automations
@@ -40,7 +39,6 @@ import {
   Settings,
   Shield,
   BookOpen,
-  PanelTop,
   Compass,
   LayoutGrid,
   ListChecks,
@@ -64,7 +62,6 @@ const NAV_ITEMS = [
   { label: 'Queries',     to: '/queries',     Icon: FileCode2 },
   { label: 'Explore',     to: '/explore',     Icon: Compass },
   { label: 'Dashboards',  to: '/dashboards',  Icon: LayoutDashboard },
-  { label: 'Canvases',    to: '/canvases',    Icon: PanelTop },
   { label: 'Flows',       to: '/flows',       Icon: Workflow },
   { label: 'Lineage',     to: '/lineage',     Icon: GitBranch },
   { label: 'Watches',     to: '/watches',     Icon: BellRing },
