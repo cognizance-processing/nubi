@@ -7,7 +7,7 @@
  *
  * Layout
  * ------
- * 1. Usage sliders (storage, compute, embedded sessions, agent runs, connectors)
+ * 1. Usage sliders (embedded sessions, agent runs, connectors, flow runs)
  * 2. Team-size inputs (editors + viewers — only used for competitor comparison)
  * 3. Nubi cost recommendation box
  * 4. TWO CLEARLY-DISTINCT comparison sections behind tabs:

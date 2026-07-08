@@ -71,7 +71,7 @@ const WALLET_STEPS = [
     color: 'text-accent',
     bg: 'bg-accent/10',
     title: 'Flat plan subscription',
-    body: 'Pay a fixed monthly or annual fee for your tier. Your included quota — storage, compute, AI calls, embedded sessions — is consumed first at no extra charge.',
+    body: 'Pay a fixed monthly or annual fee for your tier. Your included quota — embedded sessions, AI calls, agent runs — is consumed first at no extra charge.',
   },
   {
     icon: Wallet,
@@ -173,12 +173,11 @@ function WalletExplainerBody() {
       {/* Callout: what counts as metered usage */}
       <div className="px-5 py-4 border-t border-border bg-surface-2">
         <p className="text-xs font-semibold text-muted uppercase tracking-wide mb-2">Metered usage drawn from wallet</p>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
           {[
-            { label: 'AI / LLM calls', note: 'per call' },
-            { label: 'Storage', note: 'per GB-month' },
-            { label: 'Compute units', note: 'per 1,000 CUs' },
             { label: 'Embedded sessions', note: 'per 10,000' },
+            { label: 'AI / LLM calls', note: 'per call' },
+            { label: 'Agent / kernel runs', note: 'per run' },
           ].map(({ label, note }) => (
             <div key={label} className="rounded-lg border border-border bg-surface px-3 py-2">
               <p className="text-xs font-semibold text-fg">{label}</p>
@@ -196,10 +195,8 @@ function WalletExplainerBody() {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_OVERAGES = [
-  { metric: 'Storage',            rate: 'R 0.33 / GB-month',       note: 'Available on all paid tiers; drawn from wallet (Cloudflare R2 parity)' },
-  { metric: 'Compute',            rate: 'R 100 / 1,000 CU',        note: 'Starter+; drawn from wallet' },
-  { metric: 'AI / LLM calls',     rate: 'R 5 / call',              note: 'Haiku grounding or Sonnet chat; drawn from wallet' },
   { metric: 'Embedded sessions',  rate: 'R 50 / 10,000 sessions',  note: 'Free on Enterprise; drawn from wallet' },
+  { metric: 'AI / LLM calls',     rate: 'R 5 / call',              note: 'Haiku grounding or Sonnet chat; drawn from wallet' },
   { metric: 'Agent / kernel run', rate: 'R 2 / run',               note: 'Team+ remote kernel (E2B); drawn from wallet' },
 ]
 
