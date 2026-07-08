@@ -30,7 +30,7 @@ import { fetchPricingData } from '../lib/pricing.js'
 import MarketingStyles from '../components/marketing/MarketingStyles.jsx'
 import useReveal from '../components/marketing/useReveal.js'
 import CalcShell from '../components/marketing/CalcShell.jsx'
-import { SliderField } from '../components/marketing/LakehouseCalculator.jsx'
+import { SliderField } from '../components/marketing/SliderField.jsx'
 
 const fmtUSD = (n) => {
   if (!n) return '$0'

@@ -78,3 +78,6 @@ backend/.coverage
 # build artifacts / generated metadata (should not be tracked)
 dist-embed/
 *.egg-info/
+
+# Stray Fly configs (deploy lives in the nubi-cloud repo)
+fly.toml

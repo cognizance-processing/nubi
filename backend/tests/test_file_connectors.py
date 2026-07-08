@@ -23,8 +23,6 @@ Coverage
 from __future__ import annotations
 
 import io
-import os
-import tempfile
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -501,90 +499,7 @@ def test_ftp_open_rejects_oversized_download(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 7. storage file interface over the local backend (duckdb_storage)
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def local_storage_connector():
-    import duckdb
-
-    d = tempfile.mkdtemp()
-    dbp = os.path.join(d, "wh.duckdb")
-    con = duckdb.connect(dbp)
-    con.execute("CREATE TABLE t(x int)")
-    con.close()
-    os.makedirs(os.path.join(d, "outbound"))
-    with open(os.path.join(d, "outbound", "a.csv"), "w") as fh:
-        fh.write("hello")
-    with open(os.path.join(d, "outbound", "b.txt"), "w") as fh:
-        fh.write("yy")
-
-    from app.connectors.duckdb_storage import DuckDBStorageConnector
-
-    return DuckDBStorageConnector.from_config({"database": dbp}), d
-
-
-def test_storage_connector_is_both_queryable_and_file_capable(local_storage_connector):
-    conn, _ = local_storage_connector
-    caps = conn.capabilities()
-    # Query contract intact (DuckDB).
-    assert caps["native_arrow"] is True
-    # File interface + target flags on for a local-backed bucket.
-    assert caps["file_interface"] is True
-    assert caps["stream_load"] is True
-    # Local backend isn't a bulk-load staging scheme.
-    assert caps["bulk_load_from"] == []
-
-
-def test_storage_list_open_over_local(local_storage_connector):
-    conn, _ = local_storage_connector
-    files = conn.list_files("outbound/*.csv")
-    assert [f.path for f in files] == ["outbound/a.csv"]
-    fs = files[0]
-    assert fs.size == 5
-    assert fs.mtime is not None
-    assert fs.etag is not None  # local surrogate etag
-    with conn.open("outbound/a.csv") as fh:
-        assert fh.read() == b"hello"
-
-
-def test_storage_move_and_delete_over_local(local_storage_connector):
-    conn, _ = local_storage_connector
-    conn.move("outbound/a.csv", "archive/a.csv")
-    assert [f.path for f in conn.list_files("outbound/*.csv")] == []
-    assert [f.path for f in conn.list_files("archive/*.csv")] == ["archive/a.csv"]
-    conn.delete("archive/a.csv")
-    assert [f.path for f in conn.list_files("archive/*.csv")] == []
-
-
-def test_in_memory_storage_has_no_file_interface():
-    from app.connectors.duckdb_storage import DuckDBStorageConnector
-
-    conn = DuckDBStorageConnector.from_config({"database": ":memory:"})
-    assert conn.capabilities()["file_interface"] is False
-    with pytest.raises(AppError) as ei:
-        conn.list_files("*")
-    assert ei.value.code == "file_interface_unavailable"
-
-
-def test_storage_bulk_load_from_for_s3_scheme():
-    # An s3:// files root advertises s3 bulk-load + stream-load (target flags),
-    # without opening any connection (capabilities only reads config).
-    from app.connectors.duckdb_storage import _storage_file_uri, DuckDBStorageConnector
-
-    cfg = {"database": ":memory:", "storage_uri": "s3://my-bucket"}
-    assert _storage_file_uri(cfg) == "s3://my-bucket"
-    conn = DuckDBStorageConnector.for_memory()
-    conn._config = cfg
-    caps = conn.capabilities()
-    assert caps["file_interface"] is True
-    assert caps["bulk_load_from"] == ["s3"]
-    assert caps["stream_load"] is True
-
-
-# ---------------------------------------------------------------------------
-# 8. bridge-routing path selection (no file-specific bridge code)
+# 7. bridge-routing path selection (no file-specific bridge code)
 # ---------------------------------------------------------------------------
 
 

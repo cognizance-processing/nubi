@@ -50,10 +50,8 @@ const INVOICE_STATUS_STYLES = {
 // ---------------------------------------------------------------------------
 
 const CYCLE_DIMS = [
-  { key: 'compute_units', limit: 'max_compute_units_per_month', label: 'Compute units', unit: 'CU' },
-  { key: 'ai_calls', limit: 'max_ai_calls_per_month', label: 'AI calls', unit: '' },
   { key: 'embedded_sessions', limit: 'max_embedded_sessions_per_month', label: 'Embedded sessions', unit: '' },
-  { key: 'storage_gb', limit: 'max_storage_gb', label: 'Storage', unit: 'GB' },
+  { key: 'ai_calls', limit: 'max_ai_calls_per_month', label: 'AI calls', unit: '' },
   { key: 'agent_runs', limit: 'max_agent_runs_per_month', label: 'Agent runs', unit: '' },
 ]
 
@@ -103,12 +101,6 @@ function CurrentCycleCard({ cycle }) {
             unit={d.unit}
           />
         ))}
-        {Number(cycle.usage?.warehouse_cu ?? 0) > 0 && (
-          <p className="text-[11px] text-muted -mt-1.5 pl-0.5">
-            of which warehouse queries (billed at 4×):{' '}
-            {Number(cycle.usage.warehouse_cu).toLocaleString('en-ZA')} CU
-          </p>
-        )}
       </div>
       <div className="flex items-center justify-between border-t border-border pt-3 text-sm">
         <span className="text-muted">Projected overage this cycle</span>

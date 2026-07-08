@@ -1,7 +1,5 @@
 """Tests for the layered metric compiler: derived measures, time-intelligence,
-top-N, percentile, latest_snapshot, RLS soundness, governance, and the
-real-world CCBSA KPI acceptance suite.
-
+top-N, percentile, latest_snapshot, RLS soundness, governance.
 Pure pytest — no DB, no FastAPI.
 """
 
@@ -710,149 +708,6 @@ def test_top_n_unknown_measure_rejected() -> None:
             ),
         )
     assert ei.value.code == "bad_top_n"
-
-
-# ---------------------------------------------------------------------------
-# 8. CCBSA KPI acceptance suite
-# ---------------------------------------------------------------------------
-#
-# Each of the 5 CCBSA KPIs is expressed as a MetricDefinition + MetricQuery
-# with NO raw SQL. The test verifies:
-#   - compile_metric succeeds (no exception)
-#   - the output SQL contains the layered CTE pattern (WITH __base AS)
-#   - the defining column for the ratio appears
-
-
-def _ccbsa_base_metric(
-    metric_id: str,
-    primary_measure: Measure,
-    extra_measures: tuple,
-    derived_measures: tuple,
-    **kwargs,
-) -> MetricDefinition:
-    """Helper to build a CCBSA-style metric."""
-    return MetricDefinition(
-        id=metric_id,
-        name=metric_id,
-        measure=primary_measure,
-        base_table="ccbsa_sales",
-        dimensions=(
-            Dimension(name="store"),
-            Dimension(name="sku"),
-            Dimension(name="category"),
-        ),
-        time_dimension=TimeDimension(
-            column="sale_date",
-            grains=("day", "week", "month"),
-            default_grain="day",
-        ),
-        extra_measures=extra_measures,
-        derived_measures=derived_measures,
-        rls_keys=("org_id",),
-        **kwargs,
-    )
-
-
-def test_ccbsa_pvd() -> None:
-    """PvD = delivered / ordered."""
-    m = _ccbsa_base_metric(
-        "pvd",
-        primary_measure=Measure(name="delivered", agg="sum", expr="delivered_qty"),
-        extra_measures=(Measure(name="ordered", agg="sum", expr="ordered_qty"),),
-        derived_measures=(
-            DerivedMeasure(name="pvd", formula="delivered / ordered", format="percent"),
-        ),
-    )
-    mq = MetricQuery(metric_id="pvd", dimensions=("store", "sku"))
-    sql, params = compile_metric(m, mq)
-    assert "WITH __base AS" in sql or "WITH __BASE AS" in sql.upper()
-    assert "pvd" in sql.lower()
-    assert "NULLIF" in sql.upper()
-    assert params == {}
-
-
-def test_ccbsa_oos() -> None:
-    """OOS rate = oos_count / total_items."""
-    m = _ccbsa_base_metric(
-        "oos",
-        primary_measure=Measure(name="oos_count", agg="sum", expr="oos_qty"),
-        extra_measures=(Measure(name="total_items", agg="sum", expr="total_qty"),),
-        derived_measures=(
-            DerivedMeasure(name="oos_rate", formula="oos_count / total_items", format="percent"),
-        ),
-    )
-    mq = MetricQuery(metric_id="oos", dimensions=("store",))
-    sql, _ = compile_metric(m, mq)
-    assert "oos_rate" in sql.lower()
-    assert "NULLIF" in sql.upper()
-
-
-def test_ccbsa_fbr() -> None:
-    """FBR = fulfilled / booked."""
-    m = _ccbsa_base_metric(
-        "fbr",
-        primary_measure=Measure(name="fulfilled", agg="sum", expr="fulfilled_qty"),
-        extra_measures=(Measure(name="booked", agg="sum", expr="booked_qty"),),
-        derived_measures=(
-            DerivedMeasure(name="fbr", formula="fulfilled / booked", format="percent"),
-        ),
-    )
-    mq = MetricQuery(metric_id="fbr", dimensions=("sku",))
-    sql, _ = compile_metric(m, mq)
-    assert "fbr" in sql.lower()
-    assert "NULLIF" in sql.upper()
-
-
-def test_ccbsa_days_of_cover() -> None:
-    """Days of cover = stock / (sales / days_in_period)  =  stock * days / sales."""
-    m = _ccbsa_base_metric(
-        "doc",
-        primary_measure=Measure(name="stock", agg="sum", expr="stock_qty"),
-        extra_measures=(
-            Measure(name="sales", agg="sum", expr="sales_qty"),
-            Measure(name="days", agg="max", expr="days_in_period"),
-        ),
-        derived_measures=(
-            DerivedMeasure(
-                name="days_of_cover",
-                formula="stock * days / sales",
-                format="number",
-            ),
-        ),
-    )
-    mq = MetricQuery(metric_id="doc", dimensions=("store", "sku"))
-    sql, _ = compile_metric(m, mq)
-    assert "days_of_cover" in sql.lower()
-    assert "NULLIF" in sql.upper()  # sales denominator guarded
-
-
-def test_ccbsa_rolling_mix() -> None:
-    """Rolling 28-day revenue mix per category."""
-    m = _ccbsa_base_metric(
-        "rev_mix",
-        primary_measure=Measure(name="revenue", agg="sum", expr="net_sales"),
-        extra_measures=(),
-        derived_measures=(),
-    )
-    mq = MetricQuery(
-        metric_id="rev_mix",
-        dimensions=("category",),
-        time_grain="day",
-        time_comparisons=(
-            TimeComparison(
-                measure="revenue",
-                kind="rolling_sum",
-                periods=28,
-                name="revenue_rolling_28d",
-            ),
-        ),
-    )
-    sql, _ = compile_metric(m, mq)
-    assert "WITH __base AS" in sql or "WITH __BASE AS" in sql.upper()
-    assert "revenue_rolling_28d" in sql.lower()
-    assert "27" in sql  # ROWS BETWEEN 27 PRECEDING
-    assert "SUM" in sql.upper()
-    assert "OVER" in sql.upper()
 
 
 # ---------------------------------------------------------------------------
@@ -4792,7 +4647,7 @@ def test_unary_minus_denominator_divide_guard_executes_in_duckdb() -> None:
 
 
 def test_top_n_no_grain_exact_n_rows_with_default_limit_present() -> None:
-    """[LOW #1] No-time-grain top_n=N returns EXACTLY N rows (N+ties), and the
+    """[LOW #1] No-time-grain top_n=N returns EXACTLY N rows (N+ties).
     bare default outer LIMIT does NOT truncate the QUALIFY result.
 
     QUALIFY RANK() <= N is logically applied BEFORE the outer LIMIT in DuckDB,
@@ -5389,7 +5244,7 @@ def _two_tenant_top_n_metric() -> MetricDefinition:
 def _seed_two_tenant_sales(con) -> None:
     """org_a's top member (m1=20) ranks BELOW org_b's top member (m3=200) globally.
 
-    So a GLOBAL top-1 membership would pick m3 (org_b) for both tenants, and the
+    So a GLOBAL top-1 membership would pick m3 (org_b) for both tenants.
     outer per-tenant RLS filter would then exclude org_a's true top member m1.
     """
     con.execute(

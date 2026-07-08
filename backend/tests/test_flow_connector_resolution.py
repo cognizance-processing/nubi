@@ -125,7 +125,7 @@ def test_connector_dialect_keys_present() -> None:
     """All expected connector types are present in the dialect map."""
     expected = {
         "postgres", "redshift", "cockroachdb", "cloudsql",
-        "duckdb", "duckdb_storage", "snowflake", "bigquery",
+        "duckdb", "snowflake", "bigquery",
         "mysql", "mariadb", "sqlserver", "azuresql", "azuresynapse",
         "oracle", "clickhouse", "trino", "presto", "athena",
         "databricks", "http_json", "jdbc",

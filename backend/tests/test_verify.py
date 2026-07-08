@@ -474,11 +474,11 @@ async def test_resolve_embed_org_resolves_external_key(monkeypatch):
     org_uuid = "22222222-2222-2222-2222-222222222222"
 
     async def _fake_fetchrow(sql, *args):
-        assert "external_key" in sql and args[0] == "freshco"
+        assert "external_key" in sql and args[0] == "acme"
         return {"id": org_uuid}
 
     monkeypatch.setattr("app.db.fetchrow", _fake_fetchrow)
-    assert await verify_mod._resolve_embed_org("freshco") == org_uuid
+    assert await verify_mod._resolve_embed_org("acme") == org_uuid
 
 
 @pytest.mark.asyncio
@@ -502,4 +502,4 @@ async def test_resolve_embed_org_db_error_returns_raw(monkeypatch):
         raise RuntimeError("db down")
 
     monkeypatch.setattr("app.db.fetchrow", _boom)
-    assert await verify_mod._resolve_embed_org("freshco") == "freshco"
+    assert await verify_mod._resolve_embed_org("acme") == "acme"

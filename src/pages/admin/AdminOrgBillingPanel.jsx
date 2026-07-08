@@ -26,8 +26,6 @@ const LIMIT_FIELDS = [
   { key: 'max_query_rows', label: 'Query rows' },
   { key: 'max_dashboards', label: 'Dashboards' },
   { key: 'max_flows', label: 'Flows' },
-  { key: 'max_storage_gb', label: 'Storage (GB)', float: true },
-  { key: 'max_compute_units_per_month', label: 'Compute units / mo' },
   { key: 'max_embedded_sessions_per_month', label: 'Embedded sessions / mo' },
   { key: 'max_agent_runs_per_month', label: 'Agent runs / mo' },
   { key: 'max_ai_calls_per_month', label: 'AI calls / mo' },

@@ -28,9 +28,7 @@ import {
   RefreshCw,
   Loader2,
   AlertTriangle,
-  Database,
   Cpu,
-  HardDrive,
   Sparkles,
   Workflow,
   FileSearch,
@@ -58,12 +56,11 @@ const PERIODS = [
 // Metric id → icon (purely cosmetic; unknown ids fall back to Gauge).
 const METRIC_ICONS = {
   queries: FileSearch,
-  compute_units: Cpu,
-  bytes_scanned: Database,
   flow_runs: Workflow,
   ai_tokens: Sparkles,
+  ai_calls: Sparkles,
+  agent_runs: Cpu,
   embedded_sessions: MonitorSmartphone,
-  storage_gb: HardDrive,
 }
 
 // Progress-bar colour by utilisation band.

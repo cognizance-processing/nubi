@@ -93,6 +93,11 @@ import app.routes.insights  # noqa: F401, E402
 # Import preagg route so it registers itself on api_router at import time.
 import app.routes.preagg  # noqa: F401, E402
 
+# Import compute route (on-demand Python kernel: E2B/Modal/local) so it registers
+# itself on api_router at import time. This is the wedge's escape hatch — the
+# browser Pyodide kernel handles the common case; this runs the ~10% that can't.
+import app.routes.compute  # noqa: F401, E402
+
 # Import embed route so it registers itself on api_router at import time.
 import app.routes.embed  # noqa: F401, E402
 

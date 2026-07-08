@@ -449,7 +449,7 @@ async def _verify_embed_token_async(
     kid: str | None = header.get("kid") or None
 
     # Normalise the org claim ONCE up front: a host may sign its stable
-    # ``external_key`` (e.g. "freshco") instead of Nubi's internal org UUID.
+    # ``external_key`` (e.g. "acme") instead of Nubi's internal org UUID.
     # ``resolved_org`` is the internal UUID used for BOTH the org-scoped issuer
     # lookup and ``identity.org`` (via org_override), so a host never has to
     # capture Nubi's generated id. A UUID / unknown key passes through unchanged.
