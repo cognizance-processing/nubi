@@ -69,7 +69,7 @@ Route classes
 Requests are classified into one of four buckets (or SKIP):
 
     auth        /api/v1/auth/*
-    query       /api/v1/query*  and  /api/v1/metrics/*/query|sql|explain
+    query       /api/v1/query*  and  /api/v1/metrics/*/query|sql
     flow-run    /api/v1/flows/*/run  or  /api/v1/flows/run-cell
     chat        /api/v1/chat/stream, /api/v1/ai/chat*, /api/v1/ai/ask,
                 /api/v1/ai/dashboard, /api/v1/ai/sql, /api/v1/ai/canvas*
@@ -115,7 +115,6 @@ Embed exemption (cockpit tiles — FINDING 6B)
     Paths exempted for VERIFIED embed tokens only:
         POST /api/v1/metrics/{id}/query
         POST /api/v1/metrics/{id}/sql
-        POST /api/v1/metrics/{id}/explain
         POST /api/v1/query  (and /api/v1/query/*)
 
     First-party (kind="access") tokens on these paths remain subject to the
@@ -498,7 +497,7 @@ def _classify(path: str) -> tuple[str | None, int]:
 
     # Query: POST /api/v1/query (exact or with trailing /registry etc.)
     # Board provider data: POST /api/v1/boards/<id>/providers/<pid>/data
-    # Metrics read surface: /api/v1/metrics/{id}/query|sql|explain
+    # Metrics read surface: /api/v1/metrics/{id}/query|sql
     # Embed tokens never face billing but still drive server compute; classifying
     # these routes into the 'query' bucket gives them the same hard rpm ceiling so a
     # cache-busting embed token cannot trigger unbounded live flow executions.
@@ -517,11 +516,10 @@ def _classify(path: str) -> tuple[str | None, int]:
     # Metrics read surface (semantic layer execute paths).
     # /api/v1/metrics/<id>/query  — compile + execute (Arrow)
     # /api/v1/metrics/<id>/sql    — dry compile (no execution)
-    # /api/v1/metrics/<id>/explain — root-cause contribution analysis
     if path.startswith("/api/v1/metrics/"):
         parts = path.split("/")
         # Expected: ['', 'api', 'v1', 'metrics', <id>, <action>]
-        if len(parts) == 6 and parts[5] in ("query", "sql", "explain"):
+        if len(parts) == 6 and parts[5] in ("query", "sql"):
             return "query", _cfg.query_rpm
 
     return None, 0
@@ -542,7 +540,7 @@ _UNKNOWN_IDENTITY = "unknown"
 # there is no regex overhead per request.
 _EMBED_EXEMPT_PREFIXES = (
     "/api/v1/query",     # covers /api/v1/query and /api/v1/query/*
-    "/api/v1/metrics/",  # covers /api/v1/metrics/<id>/query|sql|explain (checked below)
+    "/api/v1/metrics/",  # covers /api/v1/metrics/<id>/query|sql (checked below)
 )
 
 
@@ -586,14 +584,13 @@ def _is_embed_exempt_path(path: str) -> bool:
         /api/v1/query/*       — sub-paths
         /api/v1/metrics/<id>/query
         /api/v1/metrics/<id>/sql
-        /api/v1/metrics/<id>/explain
     """
     if path == "/api/v1/query" or path.startswith("/api/v1/query/"):
         return True
     if path.startswith("/api/v1/metrics/"):
         parts = path.split("/")
         # ['', 'api', 'v1', 'metrics', <id>, <action>]
-        if len(parts) == 6 and parts[5] in ("query", "sql", "explain"):
+        if len(parts) == 6 and parts[5] in ("query", "sql"):
             return True
     return False
 

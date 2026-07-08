@@ -12,7 +12,6 @@ import './index.css'
 // side-effect-only; registration is idempotent.
 // ---------------------------------------------------------------------------
 import '../embed/widgets/authoring-index.js'
-import '../embed/widgets/nubi-explain.js'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>

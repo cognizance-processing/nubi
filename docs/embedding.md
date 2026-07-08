@@ -435,7 +435,6 @@ A cockpit dashboard fires multiple metric tile queries concurrently. Throttling 
 |-------------|-------------|
 | `POST /api/v1/metrics/{id}/query` | Metric tile queries |
 | `POST /api/v1/metrics/{id}/sql` | Metric SQL export |
-| `POST /api/v1/metrics/{id}/explain` | Metric dimension drill-down |
 | `POST /api/v1/query` and `/api/v1/query/*` | General registered-query path |
 
 The exemption applies **only to verified embed tokens** (`kind: "embed"`, RS256/ES256 signature checked against your registered JWKS). First-party tokens on these same paths remain subject to the per-org query bucket. An invalid or forged embed token does not obtain the exemption — it falls back to IP-keyed rate limiting like any unauthenticated request.

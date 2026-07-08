@@ -178,12 +178,12 @@ demo pages always display something meaningful.
 
 ### Inline data injection
 
-All vanilla widgets (`<nubi-kpi>`, `<nubi-table>`, `<nubi-chart>`, `<nubi-explain>`) accept a `data` attribute for static/SSR embeds:
+All vanilla widgets (`<nubi-kpi>`, `<nubi-table>`, `<nubi-chart>`) accept a `data` attribute for static/SSR embeds:
 
 | Attribute | Widgets | Meaning |
 |-----------|---------|---------|
-| `data` | kpi, table, chart, explain | Inline JSON data. When present, skips all fetching and renders directly. Array of row objects for kpi/table/chart; response-shaped JSON for explain. |
-| `no-sample-fallback` | kpi, table, chart, explain | Boolean. When set, a fetch failure renders a clean error state instead of sample data. Default: show sample (back-compat). |
+| `data` | kpi, table, chart | Inline JSON data. When present, skips all fetching and renders directly. Array of row objects for kpi/table/chart. |
+| `no-sample-fallback` | kpi, table, chart | Boolean. When set, a fetch failure renders a clean error state instead of sample data. Default: show sample (back-compat). |
 
 **Example — static KPI with target and RAG:**
 
@@ -261,31 +261,6 @@ Data table for query results. Renders Arrow IPC rows as a paginated HTML table.
 
 **Events emitted:**
 - `nubi:select` — `{ column, value, row }` — user clicked a cell.
-
----
-
-### `<nubi-explain>`
-
-Root-cause contribution analysis widget. Calls `POST /api/v1/metrics/{id}/explain`
-and renders per-dimension member delta bars sorted by explanatory power.
-
-| Attribute | Required | Meaning |
-|-----------|----------|---------|
-| `get-token` / `token` | — | Bearer JWT |
-| `backend` | No | API base URL. Default `http://localhost:8000`. |
-| `metric-id` | Yes | Metric slug to analyze. |
-| `current-start` | Yes | ISO datetime for current period start. |
-| `current-end` | Yes | ISO datetime for current period end. |
-| `comparison-start` | Yes | ISO datetime for comparison period start. |
-| `comparison-end` | Yes | ISO datetime for comparison period end. |
-| `top-n` | No | Max members per dimension (1–50, default `10`). |
-| `include-summary` | No | `"true"` to request a natural-language summary from the AI provider. |
-
-**Events emitted:**
-- `nubi:select` — `{ dimension, member, delta, direction, share }` — user clicked a member bar.
-- `nubi:error` — `{ message }` — fetch failed.
-
-**Sample fallback:** renders sample contribution data on any fetch failure.
 
 ---
 
@@ -456,10 +431,10 @@ document.querySelector('nubi-query-editor').addEventListener('nubi:run', e => {
 | `nubi:run` | `{ sql?, queryId?, metricId?, dimensions?, timeGrain?, params? }` | query-editor, metric-explorer |
 | `nubi:save` | `{ queryId?, sql?, name? }` | query-editor |
 | `nubi:dirty` | `{ dirty: boolean }` | query-editor |
-| `nubi:select` | `{ column?, value?, row?, dimension?, member?, delta?, direction?, share?, node? }` | table, metric-explorer, explain, lineage |
+| `nubi:select` | `{ column?, value?, row?, node? }` | table, metric-explorer, lineage |
 | `nubi:widget-ready` | `{ rows?, renderer: string, nodes?, edges?, score?, grade?, datasets? }` | kpi, lineage, health |
 | `nubi:widget-error` | `{ message: string }` | kpi, lineage, health |
-| `nubi:error` | `{ message: string, code?: string }` | query-editor, metric-explorer, explain |
+| `nubi:error` | `{ message: string, code?: string }` | query-editor, metric-explorer |
 
 ---
 

@@ -102,11 +102,12 @@ class TestForgedEmbedNeverGetsExemption:
         assert _is_embed_exempt_path("/api/v1/query/registry") is True
         assert _is_embed_exempt_path("/api/v1/metrics/retail_nsv/query") is True
         assert _is_embed_exempt_path("/api/v1/metrics/retail_nsv/sql") is True
-        assert _is_embed_exempt_path("/api/v1/metrics/retail_nsv/explain") is True
         # NOT exempt: writes / auth / arbitrary other metrics sub-paths.
         assert _is_embed_exempt_path("/api/v1/metrics") is False
         assert _is_embed_exempt_path("/api/v1/metrics/retail_nsv") is False
         assert _is_embed_exempt_path("/api/v1/metrics/retail_nsv/revert/1") is False
+        # /explain was removed (model-explainability feature retired) — never exempt.
+        assert _is_embed_exempt_path("/api/v1/metrics/retail_nsv/explain") is False
         assert _is_embed_exempt_path("/api/v1/connectors") is False
         assert _is_embed_exempt_path("/api/v1/auth/login") is False
 

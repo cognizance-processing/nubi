@@ -38,7 +38,6 @@
     nubi-kpi    { width: 100%; height: 140px; }
     nubi-table  { width: 100%; height: 240px; }
     nubi-chart  { width: 100%; height: 240px; }
-    nubi-explain { width: 100%; height: 280px; }
 
     /* Light section */
     .section-light {
@@ -87,18 +86,6 @@
         backend="http://localhost:59999"
         theme="dark"
       ></nubi-chart>
-
-      <!-- nubi-explain with no-sample-fallback -->
-      <nubi-explain
-        no-sample-fallback
-        metric-id="revenue"
-        current-start="2024-01-01T00:00:00"
-        current-end="2024-01-31T23:59:59"
-        comparison-start="2023-12-01T00:00:00"
-        comparison-end="2023-12-31T23:59:59"
-        backend="http://localhost:59999"
-        theme="dark"
-      ></nubi-explain>
     </div>
   </div>
 
@@ -136,18 +123,6 @@
         backend="http://localhost:59999"
         theme="light"
       ></nubi-chart>
-
-      <!-- nubi-explain with no-sample-fallback (light) -->
-      <nubi-explain
-        no-sample-fallback
-        metric-id="revenue"
-        current-start="2024-01-01T00:00:00"
-        current-end="2024-01-31T23:59:59"
-        comparison-start="2023-12-01T00:00:00"
-        comparison-end="2023-12-31T23:59:59"
-        backend="http://localhost:59999"
-        theme="light"
-      ></nubi-explain>
     </div>
   </div>
 

@@ -128,14 +128,13 @@ npm run test:e2e:api
 Without `RUN_E2E=1` the entire suite is skipped with a clear message — safe to
 run in CI pipelines that don't have a live database.
 
-**Coverage** (61 tests)
+**Coverage** (52 tests)
 
 | File | Area |
 |------|------|
 | `test_auth_tenancy.py` | JWT scopes, org isolation, 401/403/404 |
 | `test_query.py` | Raw SQL (`author:sql` scope), registered queries, Arrow IPC |
 | `test_metric_query.py` | Governed metrics — dimensions, filters, top_n, ordering |
-| `test_explain.py` | Delta/driver analysis, dimension breakdown, RAG arithmetic |
 | `test_kpi_targets.py` | Green/amber/red RAG columns (`_target`, `_vs_target`, `_pct_to_goal`, `_rag`) |
 | `test_webhooks.py` | CRUD, SSRF guard (localhost/RFC1918/cloud-metadata/file/ftp blocked) |
 | `test_provisioning.py` | `/apply` portability bundles — idempotent, dry_run |

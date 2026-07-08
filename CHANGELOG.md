@@ -118,20 +118,12 @@ Conventions:
   (never fails the upstream run).
   See [lineage § Lineage-driven auto-rebuild](docs/lineage.md#lineage-driven-auto-rebuild).
 
-- **`explain_metric_change` AI agent tool.** The in-app AI assistant can now
-  explain why a metric moved between two time windows in natural language. The
-  tool runs the same dimension-contribution decomposition as
-  `POST /metrics/{id}/explain` — delta totals, per-dimension explanatory power
-  and coverage, top-N members sorted by absolute delta — and verbalizes the
-  findings in the chat panel. RLS enforced identically to `query_metric`.
-  See [ai-and-mcp § explain_metric_change](docs/ai-and-mcp.md#explain_metric_change-conversational-metric-drill-downs).
-
 - **Per-org rate limiting + embed token exemption.** The rate-limit middleware
   now keys token buckets on the **verified org** from the JWT (HS256
   first-party or RS256/ES256 embed), not on IP alone. A forged `org` claim
   triggers a verification failure and falls back to IP-keyed limiting. Verified
   embed tokens (`kind: "embed"`) are fully exempt from the per-org query bucket
-  on metric and registered-query read paths (`POST /metrics/{id}/query|sql|explain`
+  on metric and registered-query read paths (`POST /metrics/{id}/query|sql`
   and `POST /query`/`/query/*`) so cockpit dashboards can fire tile queries
   concurrently without hitting the cap. First-party tokens on those paths remain
   subject to the per-org bucket.
@@ -213,7 +205,7 @@ Conventions:
   (org-scoped, fail-closed, zero-cost when no hierarchy is configured). All
   passable via embed-token `policies` claims.
 - **Embed kit.** Two new web components — `<nubi-lineage>` (dependency DAG) and
-  `<nubi-health>` (score gauge + freshness). Now 10 components total.
+  `<nubi-health>` (score gauge + freshness). Now 9 components total.
 - **App.** First-party SPA gains top-level **Overview** (workspace stats + data
   health) and **Workqueue** (attention inbox) pages; `/explore` dogfoods the
   embed components live against the session token.

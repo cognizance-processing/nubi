@@ -666,13 +666,6 @@ test.describe('light theme — all widgets in widgets.html', () => {
     expect(bg).toBe('#ffffff')
   })
 
-  test('nubi-explain with theme=light has light --nubi-bg token', async ({ page }) => {
-    await page.goto(PAGE)
-    await waitForLightBg(page, '#light-explain')
-    const bg = await getHostBg(page, '#light-explain')
-    expect(bg).toBe('#ffffff')
-  })
-
   test('nubi-metric-explorer with theme=light has light --nubi-bg token', async ({ page }) => {
     await page.goto(PAGE)
     await waitForLightBg(page, '#light-metric-explorer')

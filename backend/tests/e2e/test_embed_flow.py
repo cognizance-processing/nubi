@@ -12,7 +12,6 @@ Specifically covered:
   A2. embed token + raw SQL (no query_id) → 403 query_not_registered     (M3-SEC)
   A3. embed token + raw SQL even with author:sql claim → 403              (M3-SEC)
   A4. embed token + author:metric → POST /metrics/{id}/query → 200 rows   (metric path)
-  A5. embed token + /metrics/{id}/explain → 200 (read:query satisfies the gate)
   A6. embed token cannot reach write/admin routes → 403 forbidden
        - POST /metrics (create) → 403
        - POST /webhooks (send) → 401/403
@@ -450,37 +449,6 @@ class TestEmbedTokenContract:
         )
         assert resp.status_code == 200, (
             f"Expected 200 for read:query embed metric, got {resp.status_code}: {resp.text}"
-        )
-
-    # -----------------------------------------------------------------------
-    # A5: embed token + /metrics/{id}/explain → 200 (read:query satisfies gate)
-    # -----------------------------------------------------------------------
-
-    def test_embed_metric_explain_allowed(self, e2e_ctx):
-        """embed token with read:query can call /metrics/{id}/explain → 200."""
-        metric_id = "retail_nsv"
-        if metric_id not in e2e_ctx.metric_ids:
-            pytest.skip(f"Metric {metric_id!r} not in demo DB")
-
-        token = self._tok(scope=["read:query"])
-
-        resp = e2e_ctx.client.post(
-            f"/metrics/{metric_id}/explain",
-            json={
-                "current": {"start": "2025-01-01", "end": "2025-02-01"},
-                "comparison": {"start": "2024-01-01", "end": "2024-02-01"},
-                "dimensions": ["region"],
-            },
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Origin": _EMBED_ORIGIN,
-            },
-        )
-        # 200 with analysis OR 400 for missing time_dimension on seed data —
-        # either is acceptable; what must NOT happen is 401/403.
-        assert resp.status_code not in (401, 403), (
-            f"embed token should be allowed to call /explain, "
-            f"got {resp.status_code}: {resp.text}"
         )
 
     # -----------------------------------------------------------------------

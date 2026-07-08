@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Nubi widgets demo — kpi / table / chart / explain</title>
+  <title>Nubi widgets demo — kpi / table / chart</title>
   <script type="module" src="../dist/nubi-embed.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -15,7 +15,6 @@
     .light h2 { color: #4a5568; }
     nubi-kpi, nubi-table, nubi-chart { display: block; min-height: 140px; }
     nubi-chart { min-height: 240px; }
-    nubi-explain { display: block; min-height: 320px; }
   </style>
 </head>
 <body>
@@ -29,9 +28,6 @@
     <nubi-chart type="bar" x="name" y="value" backend="http://localhost:9"></nubi-chart>
   </div>
 
-  <h2>Explain — root-cause contribution (dark)</h2>
-  <nubi-explain metric-id="revenue" backend="http://localhost:9"></nubi-explain>
-
   <div class="light">
     <h2>Light theme</h2>
     <div class="grid">
@@ -39,7 +35,6 @@
       <nubi-table id="light-table" theme="light" backend="http://localhost:9"></nubi-table>
       <nubi-chart id="light-chart" type="bar" x="name" y="value" theme="light" backend="http://localhost:9"></nubi-chart>
     </div>
-    <nubi-explain id="light-explain" metric-id="revenue" theme="light" backend="http://localhost:9"></nubi-explain>
     <nubi-metric-explorer id="light-metric-explorer" theme="light" backend="http://localhost:9" style="min-height:320px;display:block;margin-top:16px"></nubi-metric-explorer>
   </div>
 </body>

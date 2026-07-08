@@ -14,7 +14,6 @@
  *   nubi-chart           — auto chart (ECharts, vanilla)
  *   nubi-chat            — streaming conversational chat (SSE, vanilla)
  *   nubi-kpi-react       — React KPI card
- *   nubi-explain         — root-cause contribution analysis
  *   nubi-query-editor    — SQL / metric authoring editor
  *   nubi-metric-explorer — governed metric query builder
  *   nubi-dashboard       — read-only dashboard embed
@@ -49,10 +48,6 @@ import './widgets/index.js'
 // defineNubiElement() inside nubi-kpi-react.js calls customElements.define()
 // at module evaluation time, so the import is sufficient.
 import './widgets/nubi-kpi-react.js'
-
-// ── Explain widget (nubi-explain) ─────────────────────────────────────────────
-// nubi-explain.js has a guarded customElements.define() at module level.
-import './widgets/nubi-explain.js'
 
 // ── Authoring widgets (nubi-query-editor, nubi-metric-explorer) ──────────────
 // authoring-index.js auto-registers on import.

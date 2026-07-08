@@ -22,8 +22,6 @@ _Last reviewed: 2026-07-01 · branch `docs/full-coverage`._
 |---|---|---|---|
 | Registered queries + typed `{{params}}` | ✅ | `POST /query`, `/query/registry` | [queries-and-params](docs/queries-and-params.md) |
 | Governed semantic metrics — serving | ✅ | `POST /metrics/{id}/query` | [metrics-reference](docs/metrics-reference.md) |
-| Metric explainability — dimension-contribution decomposition (why a number moved) | ✅ | `POST /metrics/{id}/explain` | [metrics-reference](docs/metrics-reference.md#contribution-analysis-post-metricsidexplain) |
-| **Conversational metric drill-down (`explain_metric_change` agent tool)** | ✅ | AI agent tool; same computation as `POST /metrics/{id}/explain`, verbalized in chat | [ai-and-mcp](docs/ai-and-mcp.md#explain_metric_change-conversational-metric-drill-downs) |
 | Metric authoring (derived/ratio, time-intel, top-N) | ✅ | `/metrics` CRUD (`author:metric`) | [semantic-and-data-apps](docs/semantic-and-data-apps.md) |
 | Pre-aggregations / rollups (transparent routing) | ✅ | auto, query-log mined | [pre-aggregations](docs/pre-aggregations.md) |
 | Connectors (Postgres, DuckDB, MySQL, JDBC, HttpJson, BYO) | ✅ | `/connectors` | [connectors](docs/connectors.md) |
@@ -134,7 +132,7 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 
 | Capability | Status | Contract | Docs |
 |---|---|---|---|
-| Framework-agnostic web components (10) | ✅ | `<nubi-dashboard/kpi/table/chart/explain/query-editor/metric-explorer/lineage/health>` | [embed-api](docs/embed-api.md) |
+| Framework-agnostic web components (9) | ✅ | `<nubi-dashboard/kpi/table/chart/query-editor/metric-explorer/lineage/health>` | [embed-api](docs/embed-api.md) |
 | Per-viewer JWT (RS256/ES256), token-locked params | ✅ | `get-token` bridge | [embedding](docs/embedding.md) |
 | 25-token theme contract, cross-filter bus, scope gating | ✅ | `NubiContext` | [embed-api](docs/embed-api.md) |
 | **Per-org rate limiting + embed exemption** — token-bucket keyed by verified org; verified embed tokens exempt on metric/query read paths | ✅ | `middleware/ratelimit.py`; `NUBI_RATELIMIT_QUERY_RPM` (default 120) | [embedding](docs/embedding.md#rate-limiting-and-embed-exemption) |
@@ -155,18 +153,15 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 |---|---|---|
 | MDM / probabilistic entity matching (Splink, embeddings) | ⛔ | Not BI; host's data-mastering concern |
 | ML demand forecasting / price elasticity | ⛔ | Domain modelling, not the semantic/serving layer |
-| **Model** explainability — SHAP / per-prediction feature attribution | ⛔ | Attribution over the **host's own** models (demand forecast, price elasticity, MDM match-scoring) — "why did the model predict X for this SKU/store." Nubi does no ML modelling. Not to be confused with **metric** explainability (why a number moved), which **is** in scope and owned by Nubi — see §A `POST /metrics/{id}/explain`. |
+| **Model / predictive explainability** — SHAP / per-prediction feature attribution, metric root-cause contribution decomposition | ⛔ | Data-science tooling, not embedded dashboard BI. Attribution over the **host's own** models (demand forecast, price elasticity, MDM match-scoring) — "why did the model predict X for this SKU/store" — stays host-side; Nubi does no ML modelling and does not compute contribution/decomposition breakdowns itself. |
 | Retail cockpit / domain-specific engines | ⛔ | Host application logic |
 | Host app infra (CI/CD, Docker, deploy) | ⛔ | Host's platform |
 | Billing / Paystack / metered wallet | ⛔ (CE) | EE-only; not in the open-core/embeddable substrate |
 
-> **Metric vs. model explainability — the boundary.** Nubi owns **metric**
-> explainability: `POST /metrics/{id}/explain` decomposes *why a metric number
-> moved* across dimensions (per-member delta/share, plus per-dimension
-> coverage/explanatory_power). It is pure math over the semantic layer — no
-> model is involved.
-> **Model** explainability (per-prediction feature attribution / SHAP on the
-> host's own predictive models) stays host-side; Nubi does no ML modelling.
+> **Explainability — fully out of scope.** Nubi does not compute *why a metric
+> number moved* (root-cause/contribution decomposition) or *why a model predicted
+> X* (SHAP / per-prediction feature attribution). Both are data-science surfaces,
+> not embedded dashboard BI, and stay host-side.
 >
 > The one nuance: the generic **compute kernel** (sandboxed Python) is available
 > to hosts as a domain-agnostic **bring-your-own-model attribution runner** —
