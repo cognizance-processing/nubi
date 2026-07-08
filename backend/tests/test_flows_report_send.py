@@ -562,60 +562,6 @@ class TestPoliciesOwnerSnapshotEnforced:
         )
         assert captured_claims[0]["policies"] != foreign_policies
 
-    def test_config_policies_do_not_override_owner_snapshot_canvas(self):
-        """Canvas path: a foreign-tenant config.policies does NOT change the
-        applied RLS — render_claims keeps the owner's verified policies."""
-        owner_policies = {"tenant_id": "owner_tenant"}
-        foreign_policies = {"tenant_id": "other_tenant"}
-
-        canvas = {
-            "id": str(uuid.uuid4()),
-            "org_id": "org-test",
-            "name": "Test Canvas",
-            "config": {"doc": {"title": "Test Canvas", "blocks": []}},
-        }
-
-        config: dict[str, Any] = {
-            "canvas_id": canvas["id"],
-            "org_id": canvas["org_id"],
-            "format": "html",
-            "recipients": ["a@x.com"],
-            # Malicious: attempt to override owner RLS with a foreign tenant.
-            "policies": foreign_policies,
-        }
-        exec_claims: dict[str, Any] = {
-            "org_id": canvas["org_id"],
-            "policies": owner_policies,
-        }
-
-        captured_claims: list[dict] = []
-
-        def _capture_render(canvas_obj, fmt, *, org_id="", render_claims=None, extra_params=None):
-            captured_claims.append(dict(render_claims or {}))
-            return "<html>report</html>"
-
-        sender = NullSender()
-        with patch(
-            "app.flows.handlers.report_send._resolve_canvas_sync",
-            return_value=canvas,
-        ):
-            with patch("app.jobs.report.get_default_sender", return_value=sender):
-                with patch(
-                    "app.flows.handlers.report_send._render_canvas",
-                    side_effect=_capture_render,
-                ):
-                    result = report_send_handle(config, _ctx(), claims=exec_claims)
-
-        assert result["emails_sent"] == 1
-        assert result["errors"] == []
-        assert len(captured_claims) == 1
-        assert captured_claims[0]["policies"] == owner_policies, (
-            "config.policies must NOT override the owner-verified RLS snapshot "
-            f"on the canvas path. Got {captured_claims[0]['policies']!r}, "
-            f"expected {owner_policies!r}."
-        )
-        assert captured_claims[0]["policies"] != foreign_policies
-
     def test_owner_snapshot_preserved_when_no_config_policies(self):
         """When config has no policies, the owner snapshot in exec_claims is used."""
         board = _make_board()

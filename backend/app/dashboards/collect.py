@@ -146,36 +146,6 @@ def _execute_and_convert(
     return columns, rows
 
 
-def _execute_and_convert_api(
-    connector: object,
-    api_plan: object,
-    cap: int,
-    el_id: str = "",
-) -> "tuple[list[str], list[list[Any]]]":
-    """Execute an API (HTTP_JSON) connector plan off the event loop.
-
-    Identical in structure to :func:`_execute_and_convert` but uses *el_id*
-    in the truncation warning so Canvas binding logs are identifiable.
-    """
-    lock = _get_connector_lock(connector)
-    with lock:
-        result_table: pa.Table = connector.execute(api_plan)  # type: ignore[attr-defined]
-
-    if cap > 0 and len(result_table) > cap:
-        logger.warning(
-            "collect_canvas: api binding el_id=%r returned %d rows, "
-            "truncating to %d (set NUBI_COLLECT_ROW_CAP to raise limit)",
-            el_id,
-            len(result_table),
-            cap,
-        )
-        result_table = result_table.slice(0, cap)
-
-    columns = list(result_table.schema.names)
-    rows_raw = result_table.to_pylist()
-    rows: list[list[Any]] = [[r.get(c) for c in columns] for r in rows_raw]
-    return columns, rows
-
 # Maximum rows materialised per widget into Python memory.
 # Override via NUBI_COLLECT_ROW_CAP env-var (integer).  0 = unlimited.
 _DEFAULT_ROW_CAP = 100_000
@@ -190,15 +160,15 @@ _WIDGET_CONCURRENCY: int = max(
 )
 
 # Process-global widget concurrency semaphore.
-# Without a global cap, N concurrent canvas/board loads each fan out up to
+# Without a global cap, N concurrent board loads each fan out up to
 # _WIDGET_CONCURRENCY coroutines → N × _WIDGET_CONCURRENCY simultaneous DB
-# queries.  This semaphore is shared across ALL canvas/board loads in the
+# queries.  This semaphore is shared across ALL board loads in the
 # process so total concurrent widget execution is bounded to
 # _GLOBAL_WIDGET_CONCURRENCY regardless of how many concurrent loads are in
 # flight.
 #
 # The default is 4 × _WIDGET_CONCURRENCY, giving headroom for a few concurrent
-# canvas loads at full width while still capping the global total.  Set
+# board loads at full width while still capping the global total.  Set
 # NUBI_WIDGET_GLOBAL_CONCURRENCY to tune the limit (must be >=1).
 _DEFAULT_GLOBAL_WIDGET_CONCURRENCY_MULTIPLIER = 4
 _DEFAULT_GLOBAL_WIDGET_CONCURRENCY: int = (
@@ -227,13 +197,6 @@ def _get_global_widget_sem() -> "asyncio.Semaphore":
                 _global_widget_sem = asyncio.Semaphore(_GLOBAL_WIDGET_CONCURRENCY)
     return _global_widget_sem
 
-# Maximum number of Canvas bindings processed per collect call.
-# Override via NUBI_MAX_CANVAS_BINDINGS env-var (integer).  0 = unlimited.
-_DEFAULT_MAX_CANVAS_BINDINGS = 500
-_MAX_CANVAS_BINDINGS: int = int(
-    os.environ.get("NUBI_MAX_CANVAS_BINDINGS", _DEFAULT_MAX_CANVAS_BINDINGS)
-)
-
 # Maximum number of board widgets processed per collect_board_data call.
 # Override via NUBI_MAX_BOARD_WIDGETS env-var (integer).  0 = unlimited.
 _DEFAULT_MAX_BOARD_WIDGETS = 500
@@ -243,7 +206,7 @@ _MAX_BOARD_WIDGETS: int = int(
 
 # Maximum concurrent repo.get("datastores", …) calls issued by _prefetch_datastores.
 # The widget path has Semaphore(_WIDGET_CONCURRENCY=8); the prefetch path was
-# previously unbounded — up to _MAX_CANVAS_BINDINGS (500) concurrent calls could
+# previously unbounded — up to _MAX_BOARD_WIDGETS (500) concurrent calls could
 # exhaust the DB pool before any widget ran.  Bound it here to avoid that burst.
 # Override via NUBI_PREFETCH_CONCURRENCY env-var (integer, positive).
 _DEFAULT_PREFETCH_CONCURRENCY = 10
@@ -253,10 +216,10 @@ _PREFETCH_CONCURRENCY: int = max(
 )
 
 # Process-global prefetch semaphore.
-# Without a global cap, N concurrent canvas/board loads each call _prefetch_datastores
+# Without a global cap, N concurrent board loads each call _prefetch_datastores
 # with a fresh per-call Semaphore(_PREFETCH_CONCURRENCY) → N × _PREFETCH_CONCURRENCY
 # simultaneous repo.get('datastores') calls, exhausting the DB pool before any widget
-# query runs.  This semaphore is shared across ALL canvas/board loads in the process so
+# query runs.  This semaphore is shared across ALL board loads in the process so
 # the total concurrent prefetch repo.get calls are bounded to
 # _GLOBAL_PREFETCH_CONCURRENCY regardless of how many concurrent loads are in flight.
 #
@@ -362,13 +325,13 @@ async def run_query_rows(
     ----------
     ds_cache:
         Optional request-scoped ``{ds_id: row}`` mapping.  Forwarded to
-        :func:`_resolve_connector` so that a board/canvas collector can
+        :func:`_resolve_connector` so that a board collector can
         pre-fetch all referenced datastores once and avoid N identical
         ``repo.get("datastores", …)`` round-trips for N widgets that share a
         single datastore.
     extra_params:
         Optional override values for the query's declared named params (e.g.
-        per-recipient locked params on a scheduled canvas send).  These are
+        per-recipient locked params on a scheduled report send).  These are
         merged ON TOP of the registered param defaults before the ``{{name}}``
         placeholders are resolved to positional ``$N`` binds, so a recipient's
         ``{region: 'X'}`` actually NARROWS that recipient's data via the named
@@ -468,7 +431,7 @@ async def _resolve_connector(
     ----------
     ds_cache:
         Optional request-scoped ``{ds_id: row}`` mapping pre-fetched by the
-        board/canvas collector.  When provided, a datastore lookup is served
+        board collector.  When provided, a datastore lookup is served
         from the cache without an extra repo round-trip.  The cache is
         populated by :func:`_prefetch_datastores`.
 
@@ -552,20 +515,20 @@ async def _prefetch_datastores(
     cache so that downstream code falls through to the normal
     ``datastore_not_found`` error path inside :func:`_resolve_connector`.
 
-    This is called once at the start of :func:`collect_board_data` and
-    :func:`collect_canvas_data` to eliminate N identical ``repo.get`` calls
-    when N widgets/bindings share the same datastore.
+    This is called once at the start of :func:`collect_board_data`
+    to eliminate N identical ``repo.get`` calls
+    when N widgets share the same datastore.
 
     Concurrency is capped by two semaphores held simultaneously:
 
     1. **per-call semaphore** (``_PREFETCH_CONCURRENCY``, env
        ``NUBI_PREFETCH_CONCURRENCY``, default 10) — limits concurrent prefetch
-       fetches *within* a single canvas/board load so one load cannot issue 500
+       fetches *within* a single board load so one load cannot issue 500
        simultaneous DB calls on its own.
     2. **process-global semaphore** (``_GLOBAL_PREFETCH_CONCURRENCY``, env
        ``NUBI_PREFETCH_GLOBAL_CONCURRENCY``, default ``_PREFETCH_CONCURRENCY*2=20``)
        — limits the *total* concurrent prefetch fetches across ALL simultaneous
-       canvas/board loads in the process.  Without this, N concurrent loads each
+       board loads in the process.  Without this, N concurrent loads each
        create a fresh per-call semaphore and can still issue N × 10 simultaneous
        DB calls.
 
@@ -701,9 +664,9 @@ async def collect_board_data(
 
     # Run widget queries concurrently bounded by two semaphores:
     # 1. per-call semaphore (_WIDGET_CONCURRENCY) — limits widgets within this
-    #    single canvas/board load so one load cannot monopolise all slots.
+    #    single board load so one load cannot monopolise all slots.
     # 2. process-global semaphore (_GLOBAL_WIDGET_CONCURRENCY) — limits total
-    #    concurrent widget execution across ALL simultaneous canvas/board loads
+    #    concurrent widget execution across ALL simultaneous board loads
     #    so N concurrent loads do not fan out to N × _WIDGET_CONCURRENCY DB
     #    queries.  Both must be held before a widget query runs.
     per_call_sem = asyncio.Semaphore(_WIDGET_CONCURRENCY)
@@ -719,311 +682,3 @@ async def collect_board_data(
     )
 
     return out
-
-
-# ---------------------------------------------------------------------------
-# Canvas data collector (Canvas Wave 1)
-# ---------------------------------------------------------------------------
-
-
-async def collect_canvas_data(
-    canvas_id: str,
-    org_id: str,
-    claims: dict[str, Any],
-    repo: Repo,
-    *,
-    canvas: dict[str, Any] | None = None,
-    extra_params: dict[str, Any] | None = None,
-) -> dict[str, list[dict[str, Any]]]:
-    """Collect per-binding data for an org-scoped Canvas document.
-
-    Resolves the canvas (org-scoped) from *repo*, iterates the ``bindings``
-    map in ``config.doc``, and runs each binding against the appropriate
-    backend (query registry, metric compiler, HTTP_JSON connector), returning a
-    dict keyed by ``el_id``::
-
-        {
-            "el_1": {"columns": [...], "rows": [...]},
-            "el_2": {"columns": [...], "rows": [...]},
-            "el_3": {"error": "query_not_registered"},
-        }
-
-    Security model (identical to collect_board_data)
-    -------------------------------------------------
-    * The canvas is resolved **org-scoped** — never cross-org.
-    * RLS predicates come from ``claims["policies"]`` (the verified token) only.
-    * Query execution reuses ``run_query_rows``, which enforces RLS at the AST
-      level via the planner — never from the request body.
-    * API (HTTP_JSON) connector resolution reuses ``_resolve_connector`` — the
-      ``source_unsupported_rls`` guard applies unchanged.
-
-    Parameters
-    ----------
-    canvas_id:
-        The canvas id to resolve (org-scoped).
-    org_id:
-        The caller's org id.
-    claims:
-        The verified token's claims.  Only ``claims["policies"]`` is used here.
-    repo:
-        Active repository implementation.
-    canvas:
-        Optional pre-fetched canvas row.  When supplied, the repo lookup is
-        skipped.
-    extra_params:
-        Optional per-recipient named-param overrides (e.g. a scheduled canvas
-        send's ``locked_params[recipient]``).  Forwarded to
-        :func:`run_query_rows` for ``query`` / ``metric`` bindings so the
-        recipient's ``{region: 'X'}`` actually NARROWS that recipient's binding
-        data via the named query binding — the per-recipient render no longer
-        collapses to the unfiltered owner view.  These bind named ``{{param}}``
-        placeholders ONLY; they NEVER alter the RLS policy slice, which comes
-        from ``claims["policies"]`` (the owner's verified snapshot) exclusively.
-
-    Returns
-    -------
-    dict[str, list[dict]]
-        Mapping from ``el_id`` → ``{columns, rows}`` or ``{error: code}``.
-
-    Raises
-    ------
-    AppError("canvas_not_found", 404)
-        When no canvas with *canvas_id* exists in *org_id*.
-    """
-    if canvas is None:
-        canvas = await repo.get("canvases", org_id, canvas_id)
-    if canvas is None:
-        raise AppError("canvas_not_found", f"Canvas {canvas_id!r} not found.", 404)
-
-    config = canvas.get("config") or {}
-    doc_raw = config.get("doc") or {}
-    bindings_raw = doc_raw.get("bindings") or {}
-
-    # RLS comes from the verified token's policies claim only.
-    policies: dict[str, Any] = dict((claims or {}).get("policies") or {})
-
-    # [LOW prefetch-before-cap] Cap bindings BEFORE prefetch so a 5000-binding
-    # document cannot create 5000 prefetch coroutines before the cap fires.
-    bindings_items = list(bindings_raw.items())
-    max_bindings = _MAX_CANVAS_BINDINGS
-    if max_bindings > 0 and len(bindings_items) > max_bindings:
-        logger.warning(
-            "collect_canvas: canvas_id=%r has %d bindings, truncating to %d "
-            "(set NUBI_MAX_CANVAS_BINDINGS to raise limit)",
-            canvas_id,
-            len(bindings_items),
-            max_bindings,
-        )
-        bindings_items = bindings_items[:max_bindings]
-
-    # Pre-fetch the unique datastores referenced by all (capped) bindings in one
-    # asyncio.gather so N bindings sharing one datastore cost exactly 1 lookup.
-    # "api" bindings carry the datastore id directly (connector_id); "query"
-    # bindings need a registry lookup to find their datastore_id.
-    registry = get_query_registry()
-    unique_ds_ids: set[str] = set()
-    for _el_id, binding in bindings_items:
-        kind = binding.get("kind")
-        if kind == "api":
-            cid = binding.get("connector_id") or ""
-            if cid:
-                unique_ds_ids.add(cid)
-        elif kind in ("query", "metric"):
-            qid = binding.get("query_id") or (
-                # metric bindings back onto queries via source_query_id
-                binding.get("metric_id") or ""
-            )
-            reg = registry.get(qid) if qid else None
-            if reg is not None:
-                ds_id = getattr(reg, "datastore_id", None)
-                if ds_id:
-                    unique_ds_ids.add(ds_id)
-    ds_cache = await _prefetch_datastores(unique_ds_ids, org_id, repo)
-
-    async def _fetch_binding(el_id: str, binding: dict[str, Any]) -> dict[str, Any]:
-        entry: dict[str, Any] = {"el_id": el_id}
-        kind = binding.get("kind")
-        try:
-            if kind == "query":
-                query_id = binding.get("query_id") or ""
-                columns, rows = await run_query_rows(
-                    query_id, org_id, repo, policies,
-                    ds_cache=ds_cache, extra_params=extra_params,
-                )
-                entry["columns"] = columns
-                entry["rows"] = rows
-
-            elif kind == "metric":
-                # Reuse query execution via the metric registry.
-                metric_id = binding.get("metric_id") or ""
-                try:
-                    from app.metrics.registry import get_metric_registry  # noqa: PLC0415
-                    mreg = get_metric_registry()
-                    mdef = mreg.get(metric_id)
-                    if mdef is None:
-                        raise AppError(
-                            "metric_not_registered",
-                            f"No registered metric for id={metric_id!r}.",
-                            404,
-                        )
-                    # Metrics back onto queries — resolve via the query_id on
-                    # the metric definition (the source query_id).
-                    source_query_id = getattr(mdef, "query_id", None) or metric_id
-                    columns, rows = await run_query_rows(
-                        source_query_id, org_id, repo, policies,
-                        ds_cache=ds_cache, extra_params=extra_params,
-                    )
-                    entry["columns"] = columns
-                    entry["rows"] = rows
-                except ImportError:
-                    raise AppError(
-                        "metric_not_supported",
-                        "Metric registry is not available in this build.",
-                        501,
-                    )
-
-            elif kind == "api":
-                # HTTP_JSON connector — resolve the datastore config, merge the
-                # binding's 'path' onto the base URL, and use 'select' as
-                # record_path so the connector fetches the correct endpoint.
-                connector_id = binding.get("connector_id") or ""
-                from app.connectors import plan as planner_plan  # noqa: PLC0415
-                from app.connectors.http_json import HttpJsonConnector  # noqa: PLC0415
-
-                # Use the pre-fetched cache to avoid a per-binding repo round-trip.
-                if ds_cache is not None and connector_id in ds_cache:
-                    ds = ds_cache[connector_id]
-                else:
-                    ds = await repo.get("datastores", org_id, connector_id)
-                if ds is None:
-                    raise AppError(
-                        "datastore_not_found",
-                        f"API datastore {connector_id!r} not found.",
-                        404,
-                    )
-                base_cfg: dict[str, Any] = dict(ds.get("config") or {})
-
-                # Merge binding's path onto the base URL (strip trailing slash
-                # from the base URL and leading slash from the path so we always
-                # get exactly one slash at the join point).
-                binding_path: str = binding.get("path") or ""
-                binding_select: str | None = binding.get("select") or None
-
-                # [MED path-traversal] Validate that binding_path is a safe
-                # relative path before joining it onto the connector base URL.
-                # URL-decode the path first so %2e%2e, .%2e, %2e. bypass attempts
-                # are normalised to '..' before the segment check.
-                # Reject: URL schemes (contains "://"), protocol-relative URLs
-                # ("//"), and paths containing ".." segments that could escape
-                # the base URL's path hierarchy.
-                if binding_path:
-                    # Decode percent-encoding to a fixpoint so double-encoded
-                    # sequences like %252e%252e are fully expanded before the
-                    # safety checks.  Cap iterations to prevent pathological
-                    # inputs from looping forever.
-                    _path_norm = binding_path
-                    for _ in range(16):
-                        _next = urllib.parse.unquote(_path_norm)
-                        if _next == _path_norm:
-                            break
-                        _path_norm = _next
-                    _path_norm = _path_norm.strip()
-                    if (
-                        "://" in _path_norm
-                        or _path_norm.startswith("//")
-                        or ".." in _path_norm.split("/")
-                    ):
-                        raise AppError(
-                            "invalid_binding_path",
-                            f"Canvas API binding el_id={el_id!r} has an unsafe path: "
-                            f"{binding_path!r}. Paths must be relative, must not contain "
-                            f"'..' segments, and must not include a URL scheme or '//'. "
-                            "They are joined under the connector's base URL only.",
-                            400,
-                        )
-                    # [MED injection] Reject query strings and fragments — a path like
-                    # 'endpoint?tenant_id=other' injects arbitrary query params into
-                    # the outbound HTTP request, defeating API-level tenant scoping.
-                    _parsed_path = urllib.parse.urlsplit(_path_norm)
-                    if _parsed_path.query or _parsed_path.fragment:
-                        raise AppError(
-                            "invalid_binding_path",
-                            f"Canvas API binding el_id={el_id!r} has an unsafe path: "
-                            f"{binding_path!r}. Paths must not contain a query string "
-                            "('?') or fragment ('#'). Static query parameters belong "
-                            "on the connector's base URL, not the binding path.",
-                            400,
-                        )
-
-                merged_cfg: dict[str, Any] = dict(base_cfg)
-                if binding_path:
-                    base_url: str = str(merged_cfg.get("url") or "").rstrip("/")
-                    path_suffix: str = binding_path.lstrip("/")
-                    merged_cfg["url"] = f"{base_url}/{path_suffix}" if path_suffix else base_url
-
-                # 'select' is a JSONPath-style selector; the HTTP_JSON connector
-                # exposes this as 'record_path' (dot-separated key traversal).
-                if binding_select is not None:
-                    # Strip the leading "$." prefix that JSONPath uses, since
-                    # record_path expects bare dot-separated keys (e.g. "data.items").
-                    record_path_val = binding_select.lstrip("$").lstrip(".")
-                    if record_path_val:
-                        merged_cfg["record_path"] = record_path_val
-
-                connector = HttpJsonConnector(merged_cfg)
-                connector_owned = True
-                try:
-                    # [LOW event-loop] planner_plan() is pure-Python; run off-loop.
-                    api_plan = await asyncio.to_thread(
-                        planner_plan,
-                        sql="SELECT *",
-                        claims={"policies": policies},
-                        params=[],
-                    )
-                    # [MED event-loop] _execute_and_convert_api acquires the
-                    # per-connector lock, executes the plan, slices to cap, and
-                    # runs to_pylist() + row comprehension — all inside the
-                    # worker thread so the event loop is never blocked by the
-                    # HTTP fetch or Python conversion.
-                    cap = _ROW_CAP
-                    columns, rows = await asyncio.to_thread(
-                        _execute_and_convert_api, connector, api_plan, cap, el_id
-                    )
-                    entry["columns"] = columns
-                    entry["rows"] = rows
-                finally:
-                    if connector_owned:
-                        connector.close()
-            else:
-                raise AppError(
-                    "unknown_binding_kind",
-                    f"Canvas binding el_id={el_id!r} has unknown kind={kind!r}.",
-                    400,
-                )
-
-        except AppError as exc:
-            entry["error"] = exc.code
-        except Exception as exc:  # noqa: BLE001 — best-effort collection
-            entry["error"] = f"collect_failed: {exc.__class__.__name__}"
-
-        return entry
-
-    # bindings_items is already capped above (before prefetch).
-    # Run binding fetches concurrently bounded by two semaphores (same pattern
-    # as collect_board_data — see comment there for rationale).
-    per_call_sem = asyncio.Semaphore(_WIDGET_CONCURRENCY)
-    global_sem = _get_global_widget_sem()
-
-    async def _fetch_guarded(el_id: str, binding: dict[str, Any]) -> dict[str, Any]:
-        async with per_call_sem:
-            async with global_sem:
-                return await _fetch_binding(el_id, binding)
-
-    results = list(
-        await asyncio.gather(
-            *(_fetch_guarded(el_id, binding) for el_id, binding in bindings_items)
-        )
-    )
-
-    # Return as a dict keyed by el_id (matching the bindings map shape).
-    return {entry["el_id"]: {k: v for k, v in entry.items() if k != "el_id"} for entry in results}

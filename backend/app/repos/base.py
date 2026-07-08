@@ -24,7 +24,6 @@ from typing import Any, Protocol, runtime_checkable
 RESOURCE_TABLE_MAP: dict[str, str] = {
     "datastores": "datastores",
     "boards": "boards",
-    "canvases": "canvases",
     "queries": "queries",
     "widgets": "widgets",
 }

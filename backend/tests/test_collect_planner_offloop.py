@@ -1,9 +1,8 @@
 """Tests that planner_plan() is offloaded from the asyncio event loop.
 
 FIX: planner.plan() (sqlglot parse + RLS AST rewrite, pure-Python) was called
-synchronously on the event loop at three call sites:
+synchronously on the event loop at multiple call sites:
   - collect.py run_query_rows (~341)
-  - collect.py canvas API binding branch (~846)
   - routes/query.py (~799)
 
 The fix wraps each call in ``await asyncio.to_thread(planner_plan, ...)``.

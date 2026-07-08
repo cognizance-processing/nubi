@@ -1,7 +1,7 @@
 """Tests for the process-global widget concurrency semaphore.
 
 Covers:
-1. Total concurrent widget execution across simultaneous canvas/board loads is
+1. Total concurrent widget execution across simultaneous board loads is
    bounded by the global cap (_GLOBAL_WIDGET_CONCURRENCY), regardless of how
    many concurrent loads are in flight.
 2. The global semaphore constant defaults to 4 × _WIDGET_CONCURRENCY and can
@@ -23,7 +23,7 @@ import unittest.mock as mock
 import pytest
 
 import app.dashboards.collect as _collect
-from app.dashboards.collect import collect_board_data, collect_canvas_data
+from app.dashboards.collect import collect_board_data
 from app.queries.registry import get_query_registry
 from app.queries.registry import reset_for_tests as reset_query_registry
 from app.repos.memory import InMemoryRepo
@@ -49,10 +49,6 @@ def _board_spec(widgets: list[dict]) -> dict:
     }
 
 
-def _canvas_doc(bindings: dict) -> dict:
-    return {"config": {"doc": {"bindings": bindings}}}
-
-
 @pytest.fixture(autouse=True)
 def _reset_global_sem():
     """Reset the module-level global semaphore before each test so tests are isolated."""
@@ -75,20 +71,20 @@ def repo() -> InMemoryRepo:
 
 
 # ---------------------------------------------------------------------------
-# 1. Global cap bounds total concurrent widget execution across canvas loads
+# 1. Global cap bounds total concurrent widget execution across board loads
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_global_cap_bounds_total_concurrent_widgets(repo: InMemoryRepo) -> None:
-    """Simultaneous canvas loads must not exceed _GLOBAL_WIDGET_CONCURRENCY total
+    """Simultaneous board loads must not exceed _GLOBAL_WIDGET_CONCURRENCY total
     concurrent widget executions.
 
     Strategy
     --------
     * Set global cap to 3.
-    * Launch 2 simultaneous collect_canvas_data calls, each with 4 "query"
-      bindings (8 total widgets across the two loads).
+    * Launch 2 simultaneous collect_board_data calls, each with 4 widgets
+      (8 total widgets across the two loads).
     * Instrument run_query_rows with a fake that:
         - increments a shared counter when it starts,
         - records the peak value of that counter,
@@ -97,7 +93,7 @@ async def test_global_cap_bounds_total_concurrent_widgets(repo: InMemoryRepo) ->
     * Assert all 8 widgets are collected (no data loss / deadlock).
     """
     GLOBAL_CAP = 3
-    WIDGETS_PER_CANVAS = 4
+    WIDGETS_PER_BOARD = 4
 
     # Force a fresh global semaphore with the reduced cap.
     _collect._GLOBAL_WIDGET_CONCURRENCY = GLOBAL_CAP
@@ -105,38 +101,37 @@ async def test_global_cap_bounds_total_concurrent_widgets(repo: InMemoryRepo) ->
 
     # Register queries.
     reg = get_query_registry()
-    for i in range(WIDGETS_PER_CANVAS):
-        for canvas_idx in ("a", "b"):
-            qid = f"q-gc-{canvas_idx}-{i}"
+    for i in range(WIDGETS_PER_BOARD):
+        for board_idx in ("a", "b"):
+            qid = f"q-gc-{board_idx}-{i}"
             if reg.get(qid) is None:
                 reg.register(id=qid, sql="SELECT 1", name=qid)
 
-    # Create canvases.
-    bindings_a = {
-        f"el-a-{i}": {"kind": "query", "query_id": f"q-gc-a-{i}"}
-        for i in range(WIDGETS_PER_CANVAS)
-    }
-    bindings_b = {
-        f"el-b-{i}": {"kind": "query", "query_id": f"q-gc-b-{i}"}
-        for i in range(WIDGETS_PER_CANVAS)
-    }
+    # Create boards.
+    widgets_a = [
+        {"id": f"el-a-{i}", "query_id": f"q-gc-a-{i}"}
+        for i in range(WIDGETS_PER_BOARD)
+    ]
+    widgets_b = [
+        {"id": f"el-b-{i}", "query_id": f"q-gc-b-{i}"}
+        for i in range(WIDGETS_PER_BOARD)
+    ]
 
-    canvas_a_id = "canvas-gc-a"
-    canvas_b_id = "canvas-gc-b"
+    board_a_id = "board-gc-a"
+    board_b_id = "board-gc-b"
     await repo.create(
-        "canvases", org_id=_ORG, created_by="test", name="Canvas A",
-        id=canvas_a_id, **_canvas_doc(bindings_a),
+        "boards", org_id=_ORG, created_by="test", name="Board A",
+        id=board_a_id, **_board_spec(widgets_a),
     )
     await repo.create(
-        "canvases", org_id=_ORG, created_by="test", name="Canvas B",
-        id=canvas_b_id, **_canvas_doc(bindings_b),
+        "boards", org_id=_ORG, created_by="test", name="Board B",
+        id=board_b_id, **_board_spec(widgets_b),
     )
 
     # Instrumented fake for run_query_rows.
     active_counter = 0
     peak_concurrent = 0
     completed_widgets = 0
-    barrier = asyncio.Event()  # lets us synchronise all widgets at their peak
 
     async def _fake_run_query_rows(query_id, org_id, repo_arg, policies, **_kw):
         nonlocal active_counter, peak_concurrent, completed_widgets
@@ -151,11 +146,11 @@ async def test_global_cap_bounds_total_concurrent_widgets(repo: InMemoryRepo) ->
 
     with mock.patch.object(_collect, "run_query_rows", _fake_run_query_rows):
         results_a, results_b = await asyncio.gather(
-            collect_canvas_data(canvas_a_id, _ORG, {}, repo),
-            collect_canvas_data(canvas_b_id, _ORG, {}, repo),
+            collect_board_data(board_a_id, _ORG, {}, repo),
+            collect_board_data(board_b_id, _ORG, {}, repo),
         )
 
-    total_widgets = WIDGETS_PER_CANVAS * 2
+    total_widgets = WIDGETS_PER_BOARD * 2
     assert completed_widgets == total_widgets, (
         f"Expected {total_widgets} widgets completed, got {completed_widgets}"
     )
@@ -164,11 +159,11 @@ async def test_global_cap_bounds_total_concurrent_widgets(repo: InMemoryRepo) ->
         f"global cap {GLOBAL_CAP}"
     )
 
-    # All bindings in both canvases must have data (no errors).
-    for el_id, entry in results_a.items():
-        assert "error" not in entry, f"Canvas A el_id={el_id!r} has error: {entry}"
-    for el_id, entry in results_b.items():
-        assert "error" not in entry, f"Canvas B el_id={el_id!r} has error: {entry}"
+    # All widgets in both boards must have data (no errors).
+    for entry in results_a:
+        assert "error" not in entry, f"Board A widget has error: {entry}"
+    for entry in results_b:
+        assert "error" not in entry, f"Board B widget has error: {entry}"
 
 
 # ---------------------------------------------------------------------------

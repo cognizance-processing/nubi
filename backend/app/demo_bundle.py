@@ -78,18 +78,6 @@ def load_flows() -> list[dict[str, Any]]:
         return json.load(f)
 
 
-def load_canvases() -> list[dict[str, Any]]:
-    """Return canvas fixtures ``[{seed_id, name, doc}, ...]``.
-
-    Returns empty list when canvases.json is absent.
-    """
-    canvases_path = _DEMO_DIR / "canvases.json"
-    if not canvases_path.exists():
-        return []
-    with open(canvases_path) as f:
-        return json.load(f)
-
-
 def referenced_query_keys(boards: list[dict[str, Any]]) -> list[str]:
     """Logical query keys referenced by the given boards (via ``@key`` placeholders)."""
     keys: set[str] = set()

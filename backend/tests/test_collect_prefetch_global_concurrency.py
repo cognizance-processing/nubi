@@ -1,7 +1,7 @@
 """Tests for the process-global prefetch semaphore in _prefetch_datastores.
 
 The bug: _prefetch_datastores created a fresh asyncio.Semaphore(_PREFETCH_CONCURRENCY=10)
-per call.  With N concurrent canvas/board loads each creating their own semaphore, up to
+per call.  With N concurrent board loads each creating their own semaphore, up to
 N × 10 simultaneous repo.get('datastores') calls could exhaust the DB pool.
 
 The fix: a process-global prefetch semaphore (_get_global_prefetch_sem) is acquired

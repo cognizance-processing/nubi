@@ -84,9 +84,7 @@ import NotFound from './pages/NotFound.jsx'
 // path. Marketing routes above remain eager. All render inside the top-level
 // <Suspense> boundary around <Routes>.
 const DashboardViewPage = lazy(() => import('./pages/DashboardViewPage.jsx'))
-const CanvasViewPage = lazy(() => import('./pages/CanvasViewPage.jsx'))
 const EditorPage = lazy(() => import('./pages/EditorPage.jsx'))
-const CanvasEditor = lazy(() => import('./editor/CanvasEditor.jsx'))
 
 const HomePage = lazy(() => import('./pages/app/HomePage.jsx'))
 const InviteAcceptPage = lazy(() => import('./pages/app/InviteAcceptPage.jsx'))
@@ -94,7 +92,6 @@ const ConnectorsPage = lazy(() => import('./pages/app/ConnectorsPage.jsx'))
 const QueriesPage = lazy(() => import('./pages/app/QueriesPage.jsx'))
 const BlendBuilder = lazy(() => import('./pages/app/BlendBuilder.jsx'))
 const DashboardsPage = lazy(() => import('./pages/app/DashboardsPage.jsx'))
-const CanvasesPage = lazy(() => import('./pages/app/CanvasesPage.jsx'))
 const FlowsPage = lazy(() => import('./pages/app/FlowsPage.jsx'))
 const WatchesPage = lazy(() => import('./pages/app/WatchesPage.jsx'))
 const AutomationsPage = lazy(() => import('./pages/app/AutomationsPage.jsx'))
@@ -308,7 +305,6 @@ export default function App() {
           <Route path="queries/:id" element={<QueriesPage />} />
           <Route path="queries/blend" element={<BlendBuilder />} />
           <Route path="dashboards" element={<DashboardsPage />} />
-          <Route path="canvases" element={<CanvasesPage />} />
           <Route path="flows" element={<FlowsPage />} />
           <Route path="flows/:id" element={<FlowsPage />} />
           {/* Metrics are now authored on the query (config.metric); the
@@ -325,7 +321,6 @@ export default function App() {
           <Route path="usage" element={<Navigate to="/settings/usage" replace />} />
           <Route path="editor" element={<EditorPage />} />
           <Route path="editor/:id" element={<EditorPage />} />
-          <Route path="canvas/:id" element={<CanvasEditor />} />
           {/* Playground merged into Queries — keep route as a redirect so old links work */}
           <Route path="playground" element={<Navigate to="/queries" replace />} />
           {/* Settings — sub-nav layout with per-section routes */}
@@ -400,24 +395,6 @@ export default function App() {
             </ProtectedRoute>
           }
         />
-        <Route
-          path="c/:id"
-          element={
-            <ProtectedRoute>
-              {/* Canvas public viewer — same provider setup as /d/:id */}
-              <UiProvider>
-                <OrgProvider>
-                  <ProjectProvider>
-                    <EnvProvider>
-                      <CanvasViewPage />
-                    </EnvProvider>
-                  </ProjectProvider>
-                </OrgProvider>
-              </UiProvider>
-            </ProtectedRoute>
-          }
-        />
-
         {/* ── Dev only ─────────────────────────────────────────────────── */}
         <Route path="dev/illustrations" element={<IllustrationGallery />} />
 

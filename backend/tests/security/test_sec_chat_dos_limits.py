@@ -182,7 +182,6 @@ def test_chat_classify_ai_endpoints():
         assert _classify("/api/v1/ai/ask")[0] == "chat"
         assert _classify("/api/v1/ai/dashboard")[0] == "chat"
         assert _classify("/api/v1/ai/sql")[0] == "chat"
-        assert _classify("/api/v1/ai/canvas")[0] == "chat"
         # Schema/context endpoints are read-only and not classified as 'chat'.
         assert _classify("/api/v1/ai/context")[0] is None
         assert _classify("/api/v1/ai/dashboard/schema")[0] is None

@@ -41,7 +41,6 @@ from typing import Any
 from app.demo_bundle import (
     export_demo_parquet_local,
     load_boards,
-    load_canvases,
     load_flows,
     load_queries,
     local_parquet_datastore_config,
@@ -55,7 +54,7 @@ SAMPLE_DS = "sample:datastore:duckdb"
 
 # Resource tables the bundle touches (order matters for remove: boards →
 # queries → datastores, so nothing dangling is left if interrupted).
-_SAMPLE_TABLES = ("boards", "queries", "datastores", "canvases")
+_SAMPLE_TABLES = ("boards", "queries", "datastores")
 
 
 # ── Idempotency helpers ─────────────────────────────────────────────────────────
@@ -193,23 +192,7 @@ async def seed_sample_bundle(
         if b_created:
             created.append("boards")
 
-    # ── 5. Canvases — resolve @placeholders in bindings ───────────────────────
-    canvas_ids: list[str] = []
-    try:
-        canvases_fixture = load_canvases()
-        for c in canvases_fixture:
-            doc = resolve_placeholders(c["doc"], idmap)
-            canvas, c_created = await _upsert(
-                repo, "canvases", org_id, created_by, c["name"],
-                {"doc": doc}, f"sample:{c['seed_id']}", project_id,
-            )
-            canvas_ids.append(str(canvas["id"]))
-            if c_created:
-                created.append("canvases")
-    except Exception:  # noqa: BLE001 — never fail seeding over canvases
-        pass
-
-    # ── 6. Flows ───────────────────────────────────────────────────────────────
+    # ── 5. Flows ───────────────────────────────────────────────────────────────
     flow_ids: list[str] = []
     try:
         from app.flows.store import get_flow_store  # noqa: PLC0415
@@ -246,7 +229,7 @@ async def seed_sample_bundle(
     except Exception:  # noqa: BLE001 — never fail seeding over flows
         pass
 
-    # ── 7. Watch — monitor retail NSV metric (threshold alert demo) ───────────
+    # ── 6. Watch — monitor retail NSV metric (threshold alert demo) ───────────
     watch_ids: list[str] = []
     try:
         import json as _json
@@ -296,7 +279,7 @@ async def seed_sample_bundle(
     except Exception:  # noqa: BLE001 — best-effort; never fail seeding over watches
         pass
 
-    # ── 8. Job — schedule a demo report job ───────────────────────────────────
+    # ── 7. Job — schedule a demo report job ───────────────────────────────────
     job_ids: list[str] = []
     try:
         from app.jobs.store import get_job_store  # noqa: PLC0415
@@ -323,7 +306,6 @@ async def seed_sample_bundle(
     return {
         "datastore_id": datastore_id,
         "board_ids": board_ids,
-        "canvas_ids": canvas_ids,
         "flow_ids": flow_ids,
         "watch_ids": watch_ids,
         "job_ids": job_ids,

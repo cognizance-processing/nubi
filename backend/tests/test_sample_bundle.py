@@ -162,7 +162,6 @@ async def test_remove_then_restore_round_trips(monkeypatch) -> None:
 
     n_queries, n_boards = _expected_counts()
     removed = await remove_sample_bundle(org, project, repo)
-    # canvases key is optional — present only when the seeder created canvases
     assert removed.get("boards") == n_boards
     assert removed.get("queries") == n_queries
     assert removed.get("datastores") == 1

@@ -72,7 +72,7 @@ Requests are classified into one of four buckets (or SKIP):
     query       /api/v1/query*  and  /api/v1/metrics/*/query|sql
     flow-run    /api/v1/flows/*/run  or  /api/v1/flows/run-cell
     chat        /api/v1/chat/stream, /api/v1/ai/chat*, /api/v1/ai/ask,
-                /api/v1/ai/dashboard, /api/v1/ai/sql, /api/v1/ai/canvas*
+                /api/v1/ai/dashboard, /api/v1/ai/sql
     (skip)      /health, /api/v1/health, /embed/*, /assets/*
                 and everything else (no-op)
 
@@ -467,13 +467,10 @@ def _classify(path: str) -> tuple[str | None, int]:
     #   POST /api/v1/ai/ask               — text-to-SQL
     #   POST /api/v1/ai/dashboard         — dashboard generation
     #   POST /api/v1/ai/sql               — SQL generation
-    #   POST /api/v1/ai/canvas            — canvas generation
-    #   POST /api/v1/ai/canvas/edit       — canvas edit
     if path == "/api/v1/chat/stream" or (
         path.startswith("/api/v1/ai/") and path not in (
             "/api/v1/ai/context",
             "/api/v1/ai/dashboard/schema",
-            "/api/v1/ai/canvas/schema",
         ) and not path.endswith("/schema")
     ):
         return "chat", _cfg.chat_rpm

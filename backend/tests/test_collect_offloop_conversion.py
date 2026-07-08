@@ -1,9 +1,9 @@
 """Tests that execute + to_pylist + row-comprehension happen off the event loop.
 
 The fix in collect.py moves the Arrow → Python conversion (to_pylist + row
-comprehension) inside the asyncio.to_thread call via _execute_and_convert /
-_execute_and_convert_api helpers, so the event loop is NEVER blocked by CPU-
-intensive conversion of large result sets.
+comprehension) inside the asyncio.to_thread call via the _execute_and_convert
+helper, so the event loop is NEVER blocked by CPU-intensive conversion of
+large result sets.
 
 Covered:
 1. _execute_and_convert returns (columns, rows) and runs synchronously (the
@@ -13,8 +13,7 @@ Covered:
    (columns, rows) correctly — no post-to_thread conversion on the event loop.
 3. _execute_and_convert respects the row cap: truncation happens inside the
    helper (off-loop), not after it returns.
-4. _execute_and_convert_api works the same way for Canvas API bindings.
-5. run_query_rows with _execute_and_convert: mock verifies exactly one
+4. run_query_rows with _execute_and_convert: mock verifies exactly one
    to_thread call containing the conversion helper (not two separate calls).
 """
 
@@ -35,7 +34,6 @@ import pytest
 import app.dashboards.collect as _collect
 from app.dashboards.collect import (
     _execute_and_convert,
-    _execute_and_convert_api,
     run_query_rows,
 )
 from app.queries.registry import get_query_registry
@@ -128,49 +126,6 @@ def test_execute_and_convert_cap_zero_means_unlimited() -> None:
     columns, rows = _execute_and_convert(connector, object(), cap=0, query_id="q-unlimited")
 
     assert len(rows) == 50
-
-
-# ---------------------------------------------------------------------------
-# 3. _execute_and_convert_api mirrors the same contract
-# ---------------------------------------------------------------------------
-
-
-def test_execute_and_convert_api_returns_columns_and_rows() -> None:
-    """_execute_and_convert_api must return (cols, rows) for Canvas API bindings."""
-    table = pa.table({"name": ["alice", "bob"], "score": [99, 88]})
-
-    class _FakeConnector:
-        def execute(self, plan: object) -> pa.Table:
-            return table
-
-    connector = _FakeConnector()
-    columns, rows = _execute_and_convert_api(connector, object(), cap=0, el_id="el-1")
-
-    assert columns == ["name", "score"]
-    assert rows == [["alice", 99], ["bob", 88]]
-
-
-def test_execute_and_convert_api_is_synchronous() -> None:
-    """_execute_and_convert_api must be a plain synchronous function."""
-    import inspect
-
-    assert not inspect.iscoroutinefunction(_execute_and_convert_api), (
-        "_execute_and_convert_api must be a plain synchronous function."
-    )
-
-
-def test_execute_and_convert_api_truncates_to_cap() -> None:
-    """_execute_and_convert_api must truncate to cap inside the worker thread."""
-    table = pa.table({"v": list(range(15))})
-
-    class _FakeConnector:
-        def execute(self, plan: object) -> pa.Table:
-            return table
-
-    connector = _FakeConnector()
-    columns, rows = _execute_and_convert_api(connector, object(), cap=7, el_id="el-api")
-
-    assert len(rows) == 7
 
 
 # ---------------------------------------------------------------------------

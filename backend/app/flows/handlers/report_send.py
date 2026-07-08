@@ -1,7 +1,7 @@
 """Task handler for the ``report_send`` flow task kind.
 
 Converges scheduled report sending onto the Flows engine so a daily/cron flow
-can render a board **or canvas** and deliver it to recipients — the same way
+can render a board and deliver it to recipients — the same way
 ``snapshot_refresh`` keeps embed snapshots fresh.
 
 Handler signature
@@ -13,20 +13,17 @@ Config shape
 ::
 
     {
-        # Resource identification — supply EITHER board_id OR canvas_id.
-        "board_id":  "<uuid>",   # board path (unchanged)
-        "canvas_id": "<uuid>",   # canvas path (Wave 5)
+        # Resource identification.
+        "board_id":  "<uuid>",   # board to render
         "org_id":    "<uuid>",   # optional — falls back to ctx.org_id / claims
 
         # Render
-        "format":   "csv" | "pdf" | "html" | "pptx",  # default: "csv"
-        # canvas_id path: "html" renders a self-contained email body (default
-        # for canvases); "pdf" produces a PDF attachment.
+        "format":   "csv" | "pdf" | "pptx",  # default: "csv"
         "params":   {},                         # base named params
 
         # Delivery
         "recipients": ["alice@example.com", ...],  # required (non-empty)
-        "subject":    "Weekly Report",             # default: board/canvas name
+        "subject":    "Weekly Report",             # default: board name
         "body":       "Please find attached ...",  # optional
 
         # Per-recipient RLS (optional)
@@ -48,11 +45,7 @@ Config shape
 Returns
 -------
 dict
-    For the board path:
     ``{board_id, format, recipients_count, emails_sent, channel_notifications,
-       errors}``
-    For the canvas path:
-    ``{canvas_id, format, recipients_count, emails_sent, channel_notifications,
        errors}``
 
 Scheduling
@@ -62,7 +55,6 @@ exactly like ``snapshot_refresh``:
 
 ::
 
-    # Board schedule (unchanged)
     {
         "key": "daily_report",
         "kind": "report_send",
@@ -76,24 +68,9 @@ exactly like ``snapshot_refresh``:
         }
     }
 
-    # Canvas schedule (Wave 5)
-    {
-        "key": "canvas_weekly",
-        "kind": "report_send",
-        "config": {
-            "canvas_id":  "...",
-            "org_id":     "...",
-            "format":     "html",
-            "recipients": ["alice@corp.com"],
-            "subject":    "Weekly Canvas Report",
-            "locked_params": {"alice@corp.com": {"tenant_id": "acme"}},
-            "policies":   {}
-        }
-    }
-
 Security / open-core
 --------------------
-No EE imports.  Board/canvas resolution is org-scoped.  The ``policies`` dict
+No EE imports.  Board resolution is org-scoped.  The ``policies`` dict
 in ``config`` plays the same role as in ``snapshot_refresh`` — it carries the
 captured RLS view at schedule-definition time (no user JWT at tick time).
 ``locked_params`` handles per-recipient row-level data isolation.
@@ -130,11 +107,7 @@ def handle(
     ctx: "TaskContext",
     claims: dict[str, Any],
 ) -> dict[str, Any]:
-    """Render a board or canvas and deliver the report to all configured recipients.
-
-    Dispatches on ``config['canvas_id']`` (Canvas path, Wave 5) vs
-    ``config['board_id']`` (Board path, unchanged).  The board path is
-    byte-identical to the pre-Wave-5 implementation.
+    """Render a board and deliver the report to all configured recipients.
 
     Parameters
     ----------
@@ -151,28 +124,17 @@ def handle(
     Returns
     -------
     dict
-        Board path: ``{board_id, format, recipients_count, emails_sent,
-           channel_notifications, errors}``
-        Canvas path: ``{canvas_id, format, recipients_count, emails_sent,
+        ``{board_id, format, recipients_count, emails_sent,
            channel_notifications, errors}``
 
     Raises
     ------
     AppError("board_not_found", 404)
-        When the board cannot be resolved (board path).
-    AppError("canvas_not_found", 404)
-        When the canvas cannot be resolved (canvas path).
+        When the board cannot be resolved.
     AppError("invalid_task_config", 400)
         When required fields are missing or invalid.
     """
     from app.errors import AppError  # noqa: PLC0415
-
-    # ── Dispatch: canvas_id takes precedence over board_id ────────────────────
-    canvas_id: str | None = config.get("canvas_id")
-    if canvas_id:
-        return _handle_canvas(config, ctx, claims)
-
-    # ── Board path (unchanged — byte-identical to pre-Wave-5) ─────────────────
     from app.jobs.report import (  # noqa: PLC0415
         get_default_sender,
         inject_locked_params,
@@ -500,356 +462,3 @@ def _render_pptx(
         from app.jobs.report import render_report  # noqa: PLC0415
         return render_report(board, params, format="csv")  # type: ignore[return-value]
 
-
-# ---------------------------------------------------------------------------
-# Canvas path helpers (Canvas Wave 5)
-# ---------------------------------------------------------------------------
-
-
-def _resolve_canvas_sync(canvas_id: str, org_id: str) -> dict[str, Any] | None:
-    """Synchronous canvas lookup — mirrors :func:`~app.jobs.report.resolve_board_sync`.
-
-    Runs :func:`repo.get("canvases", org_id, canvas_id)` in a thread when an
-    event loop is already running, otherwise creates a temporary loop.
-
-    Returns ``None`` when the canvas is not found.
-    """
-    import asyncio  # noqa: PLC0415
-
-    from app.repos.provider import get_repo  # noqa: PLC0415
-
-    async def _fetch() -> dict[str, Any] | None:
-        repo = get_repo()
-        return await repo.get("canvases", org_id, canvas_id)
-
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures  # noqa: PLC0415
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(asyncio.run, _fetch())
-                return future.result()
-        else:
-            return loop.run_until_complete(_fetch())
-    except RuntimeError:
-        return asyncio.run(_fetch())
-
-
-def _collect_canvas_data_sync(
-    canvas: dict[str, Any],
-    org_id: str,
-    render_claims: dict[str, Any],
-    extra_params: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Collect per-binding data for *canvas* synchronously.
-
-    Runs :func:`~app.dashboards.collect.collect_canvas_data` (async) in a
-    thread or temporary event loop.
-
-    Parameters
-    ----------
-    canvas:
-        Pre-fetched canvas row (org-scoped).
-    org_id:
-        The owning org id.
-    render_claims:
-        Claims dict whose ``"policies"`` key carries the captured RLS context.
-        SECURITY: these are the *owner's* verified token policies only — they
-        are NEVER overwritten by request-body ``locked_params`` (that would be
-        an RLS-predicate injection allowing cross-tenant data exfiltration).
-    extra_params:
-        Per-recipient locked params, forwarded to ``collect_canvas_data`` as
-        extra *named query params* (the board-path equivalent of
-        :func:`~app.jobs.report.inject_locked_params`).  These bind named
-        ``{{param}}`` placeholders in the canvas' queries — they do NOT and
-        cannot alter the RLS policy slice, which comes from *render_claims*
-        only.  Forwarded only when the collector supports it (forward-compat).
-
-    Returns
-    -------
-    dict[str, dict]
-        Mapping from ``el_id`` → ``{columns, rows}`` or ``{error: code}``.
-        Empty dict on any catastrophic error.
-    """
-    import asyncio  # noqa: PLC0415
-    import inspect  # noqa: PLC0415
-
-    from app.dashboards.collect import collect_canvas_data  # noqa: PLC0415
-    from app.repos.provider import get_repo  # noqa: PLC0415
-
-    canvas_id: str = canvas.get("id") or ""
-
-    # Forward extra_params only if the collector's signature accepts it, so we
-    # never raise a TypeError on collectors that predate named-param support.
-    _supports_extra_params = "extra_params" in inspect.signature(
-        collect_canvas_data
-    ).parameters
-
-    async def _fetch() -> dict[str, Any]:
-        repo = get_repo()
-        kwargs: dict[str, Any] = {
-            "claims": render_claims,
-            "repo": repo,
-            "canvas": canvas,  # pass pre-fetched canvas to skip redundant lookup
-        }
-        if _supports_extra_params and extra_params:
-            kwargs["extra_params"] = dict(extra_params)
-        return await collect_canvas_data(
-            canvas_id,
-            org_id,
-            **kwargs,
-        )
-
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures  # noqa: PLC0415
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(asyncio.run, _fetch())
-                return future.result()
-        else:
-            return loop.run_until_complete(_fetch())
-    except RuntimeError:
-        return asyncio.run(_fetch())
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("report_send: canvas data collection failed: %s", exc)
-        return {}
-
-
-def _render_canvas(
-    canvas: dict[str, Any],
-    fmt: str,
-    *,
-    org_id: str = "",
-    render_claims: dict[str, Any] | None = None,
-    extra_params: dict[str, Any] | None = None,
-) -> bytes | str:
-    """Render a canvas to *fmt* (``'html'`` or ``'pdf'``).
-
-    Parameters
-    ----------
-    canvas:
-        Pre-fetched canvas row.
-    fmt:
-        ``'html'`` — self-contained HTML email body (str).
-        ``'pdf'`` — PDF bytes.
-    org_id:
-        The owning org id (for RLS-aware data collection).
-    render_claims:
-        Claims with captured policies — the owner's verified RLS slice only.
-    extra_params:
-        Per-recipient locked params, forwarded as extra *named query params*
-        (never as RLS policy overrides).  See :func:`_collect_canvas_data_sync`.
-
-    Returns
-    -------
-    bytes | str
-        Rendered canvas content.
-    """
-    from app.dashboards.canvas import CanvasDoc  # noqa: PLC0415
-    from app.dashboards.render_canvas import render_canvas_html, render_canvas_pdf  # noqa: PLC0415
-
-    config = canvas.get("config") or {}
-    doc_raw = config.get("doc") or {}
-    try:
-        doc = CanvasDoc.model_validate(doc_raw)
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"Canvas doc parse error: {exc}") from exc
-
-    # Collect binding data.  Per-recipient RLS is honoured via render_claims
-    # (owner's verified policies); per-recipient locked_params flow in as
-    # extra NAMED params only — they can never alter the RLS slice.
-    element_data = _collect_canvas_data_sync(
-        canvas, org_id, render_claims or {}, extra_params=extra_params
-    )
-
-    if fmt == "pdf":
-        return render_canvas_pdf(doc, element_data, title=doc.title or canvas.get("name"))
-    # Default: html
-    return render_canvas_html(doc, element_data, title=doc.title or canvas.get("name"))
-
-
-def _handle_canvas(
-    config: dict[str, Any],
-    ctx: "TaskContext",
-    claims: dict[str, Any],
-) -> dict[str, Any]:
-    """Canvas-path handler — called by :func:`handle` when ``canvas_id`` is set.
-
-    Implements the same RLS/locked_params/notify_channels logic as the board
-    path but dispatches to :func:`_render_canvas` instead of :func:`_render`.
-
-    Supported formats: ``'html'`` (default for canvases), ``'pdf'``.
-    """
-    from app.errors import AppError  # noqa: PLC0415
-    from app.jobs.report import (  # noqa: PLC0415
-        get_default_sender,
-        send_report,
-    )
-    from app.notify.channels import get_channel  # noqa: PLC0415
-
-    # ── 1. Resolve config fields ──────────────────────────────────────────────
-    canvas_id: str = config["canvas_id"]  # guaranteed non-empty by caller
-
-    org_id: str = (
-        config.get("org_id")
-        or (ctx.org_id if ctx.org_id else None)
-        or (claims or {}).get("org_id", "")
-        or ""
-    )
-    if not org_id:
-        raise AppError(
-            "invalid_task_config",
-            "report_send task requires 'org_id' in config (or ctx.org_id).",
-            400,
-        )
-
-    fmt: str = (config.get("format") or "html").lower().strip()
-    if fmt not in ("html", "pdf"):
-        raise AppError(
-            "invalid_task_config",
-            f"report_send (canvas): unsupported format {fmt!r}. Expected 'html' or 'pdf'.",
-            400,
-        )
-
-    recipients: list[str] = list(config.get("recipients") or [])
-    if not recipients:
-        raise AppError(
-            "invalid_task_config",
-            "report_send task requires at least one recipient in config['recipients'].",
-            400,
-        )
-    if len(recipients) > _MAX_RECIPIENTS:
-        logger.warning(
-            "report_send(canvas): recipients list truncated from %d to %d (cap=%d). "
-            "Update the stored flow config to remove excess recipients.",
-            len(recipients),
-            _MAX_RECIPIENTS,
-            _MAX_RECIPIENTS,
-        )
-        recipients = recipients[:_MAX_RECIPIENTS]
-
-    subject: str = config.get("subject") or ""
-    body: str = config.get("body") or ""
-    apply_rls: bool = bool(config.get("apply_user_permissions", False))
-    locked_params: dict[str, dict[str, Any]] = dict(config.get("locked_params") or {})
-
-    # Notify channels.
-    notify_channels_cfg: list[dict[str, Any]] = list(config.get("notify_channels") or [])
-
-    # ── 2. Resolve canvas ─────────────────────────────────────────────────────
-    canvas = _resolve_canvas_sync(canvas_id, org_id)
-    if canvas is None:
-        raise AppError(
-            "canvas_not_found",
-            f"Canvas {canvas_id!r} not found in org {org_id!r}.",
-            404,
-        )
-
-    if not subject:
-        subject = f"Nubi Report: {canvas.get('name', canvas_id)}"
-
-    # ── 3. Build render_claims ────────────────────────────────────────────────
-    # SECURITY [RLS cross-tenant]: render_claims is ALWAYS exactly the
-    # runtime-stamped exec_claims (the flow OWNER's verified policy snapshot,
-    # applied by _claims_with_owner_policies BEFORE handle() runs).  We must NOT
-    # let user-supplied config['policies'] override it — that would bypass the
-    # owner-policy snapshot and exfiltrate cross-tenant rows via a scheduled
-    # canvas report.  Per-recipient isolation flows through locked_params as
-    # extra NAMED query params only (extra_params), never as policy overrides.
-    render_claims: dict[str, Any] = dict(claims or {})
-
-    # ── 4. Render + deliver ───────────────────────────────────────────────────
-    sender = get_default_sender()
-    errors: list[str] = []
-    emails_sent: int = 0
-
-    if apply_rls and locked_params:
-        import json as _json  # noqa: PLC0415
-
-        _rendered_cache: dict[str, bytes | str] = {}
-
-        for recipient in recipients:
-            per_locked = locked_params.get(recipient, {})
-            cache_key = _json.dumps(per_locked, sort_keys=True)
-            if cache_key not in _rendered_cache:
-                # SECURITY [RLS predicate injection]: render_claims carries the
-                # OWNER's verified token policies and must NOT be mutated by the
-                # schedule-request-body ``locked_params``.  Previously this path
-                # did ``per_claims['policies'].update(per_locked)`` — a writer
-                # could craft locked_params (e.g. {'tenant_id': 'other_tenant'})
-                # to OVERWRITE the owner's RLS slice and exfiltrate cross-tenant
-                # rows into the scheduled email.  We now mirror the BOARD path:
-                # locked_params flow in as extra NAMED query params only
-                # (extra_params), NEVER as policy overrides.  per_claims stays
-                # exactly the owner's verified policies.
-                per_claims = dict(render_claims)
-                try:
-                    _rendered_cache[cache_key] = _render_canvas(
-                        canvas,
-                        fmt,
-                        org_id=org_id,
-                        render_claims=per_claims,
-                        extra_params=per_locked,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    msg = f"report_send(canvas): render failed for {recipient!r}: {exc}"
-                    logger.warning(msg)
-                    errors.append(msg)
-                    _rendered_cache[cache_key] = None  # type: ignore[assignment]
-
-            rendered_for_recipient = _rendered_cache[cache_key]
-            if rendered_for_recipient is None:
-                continue
-            try:
-                per_target = {
-                    "recipients": [recipient],
-                    "subject": subject,
-                    "body": body,
-                    "format": fmt,
-                }
-                emails_sent += send_report(sender, per_target, rendered_for_recipient)
-            except Exception as exc:  # noqa: BLE001
-                msg = f"report_send(canvas): send failed for {recipient!r}: {exc}"
-                logger.warning(msg)
-                errors.append(msg)
-    else:
-        try:
-            rendered = _render_canvas(canvas, fmt, org_id=org_id, render_claims=render_claims)
-            target = {
-                "recipients": recipients,
-                "subject": subject,
-                "body": body,
-                "format": fmt,
-            }
-            emails_sent = send_report(sender, target, rendered)
-        except Exception as exc:  # noqa: BLE001
-            msg = f"report_send(canvas): render/send failed: {exc}"
-            logger.warning(msg)
-            errors.append(msg)
-
-    # ── 5. Notify channels (best-effort) ──────────────────────────────────────
-    channel_notifications: int = 0
-    if notify_channels_cfg:
-        canvas_name = canvas.get("name") or canvas_id
-        channel_text = f"Report ready: {canvas_name}\n{subject}"
-        for ch_cfg in notify_channels_cfg:
-            kind_str = (ch_cfg.get("kind") or "null").lower().strip()
-            try:
-                ch = get_channel(kind_str, ch_cfg)
-                ch.send(channel_text)
-                channel_notifications += 1
-            except Exception as exc:  # noqa: BLE001
-                msg = f"report_send(canvas): channel notify failed ({kind_str!r}): {exc}"
-                logger.warning(msg)
-                errors.append(msg)
-
-    return {
-        "canvas_id": canvas_id,
-        "org_id": org_id,
-        "format": fmt,
-        "recipients_count": len(recipients),
-        "emails_sent": emails_sent,
-        "channel_notifications": channel_notifications,
-        "errors": errors,
-    }
