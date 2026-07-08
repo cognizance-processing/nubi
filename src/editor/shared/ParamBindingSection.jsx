@@ -1,7 +1,7 @@
 /**
  * shared/ParamBindingSection.jsx — Widget parameter binding editor.
  * Edits widget.params: maps param names to either literal values or { ref: varName }.
- * Shared between DashboardEditor and CanvasEditor.
+ * Shared editor primitives (used by DashboardEditor).
  *
  * Props:
  *   widget          object    — spec widget

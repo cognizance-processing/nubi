@@ -1,6 +1,6 @@
 /**
  * shared/FilterConfig.jsx — Filter, Text, and Placement configuration panels.
- * Shared between DashboardEditor and CanvasEditor.
+ * Shared editor primitives (used by DashboardEditor).
  *
  * Exports:
  *   PlacementControl   React component

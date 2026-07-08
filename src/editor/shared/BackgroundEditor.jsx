@@ -1,7 +1,7 @@
 /**
  * shared/BackgroundEditor.jsx — Background descriptor editor used for
  * dashboard/tab/widget backgrounds.
- * Shared between DashboardEditor and CanvasEditor.
+ * Shared editor primitives (used by DashboardEditor).
  *
  * Props:
  *   value    object|undefined  — background descriptor { type, color, from, to, ... }

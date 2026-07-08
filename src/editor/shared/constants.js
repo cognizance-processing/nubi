@@ -1,6 +1,6 @@
 /**
  * shared/constants.js — Inspector-level constants shared between DashboardEditor
- * and the upcoming CanvasEditor. These mirror the constants in DashboardEditor.jsx
+ * These mirror the constants in DashboardEditor.jsx
  * so both editors stay in sync without diverging.
  */
 

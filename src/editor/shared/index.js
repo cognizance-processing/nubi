@@ -1,7 +1,7 @@
 /**
  * src/editor/shared/index.js — Barrel for shared inspector panels.
  *
- * Import from here in both DashboardEditor and CanvasEditor so the two editors
+ * Import from here so the editor's components
  * reuse the exact same components without coupling to each other's internals.
  */
 

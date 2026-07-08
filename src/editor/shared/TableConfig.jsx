@@ -1,7 +1,7 @@
 /**
  * shared/TableConfig.jsx — Table widget configuration panel, including
  * ColumnFormatsEditor and ConditionalRulesEditor sub-panels.
- * Shared between DashboardEditor and CanvasEditor.
+ * Shared editor primitives (used by DashboardEditor).
  *
  * Exports:
  *   TableConfig            React component

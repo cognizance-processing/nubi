@@ -1,6 +1,6 @@
 /**
  * shared/QueryPicker.jsx — Query-ID selector with a fallback free-text input.
- * Shared between DashboardEditor and CanvasEditor.
+ * Shared editor primitives (used by DashboardEditor).
  *
  * Props:
  *   value    string    — current query_id

@@ -1,6 +1,6 @@
 /**
  * shared/KpiConfig.jsx — KPI and Metric widget configuration panel.
- * Shared between DashboardEditor and CanvasEditor.
+ * Shared editor primitives (used by DashboardEditor).
  *
  * Props:
  *   widget    object    — spec widget (type='kpi' or type='metric')

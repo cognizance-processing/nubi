@@ -1,6 +1,6 @@
 /**
  * shared/ChartConfig.jsx — Chart widget configuration panel.
- * Shared between DashboardEditor and CanvasEditor.
+ * Shared editor primitives (used by DashboardEditor).
  *
  * Exposes all 17 chart types supported by embed/widgets/chart-options.js and
  * the full config schema: legend, stacking, orientation, data labels, palette,

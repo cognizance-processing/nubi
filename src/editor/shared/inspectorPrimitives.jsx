@@ -1,6 +1,6 @@
 /**
  * shared/inspectorPrimitives.jsx — Low-level UI building blocks for widget
- * inspector panels. Shared between DashboardEditor and CanvasEditor so the two
+ * inspector panels. Shared editor primitives so the
  * editors render identical inspector chrome without diverging.
  *
  * Exports:

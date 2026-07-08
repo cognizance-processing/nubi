@@ -1,6 +1,6 @@
 /**
  * shared/useInspectorData.js — Data-fetching hooks for inspector panels.
- * Shared between DashboardEditor and CanvasEditor.
+ * Shared editor primitives (used by DashboardEditor).
  *
  * Exports:
  *   useColumnIntrospection(queryId) → { columns: string[], introspecting: bool }
