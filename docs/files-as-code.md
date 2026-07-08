@@ -428,7 +428,9 @@ threshold:                    # a threshold, comparison, OR change rule is requi
 config:                       # optional — evaluation + channel settings
   dimensions: [region]        # optional: group by these dimensions before reducing
   time_grain: day             # optional: bucket the metric at this grain
-  channel_config: {}          # optional: {slack_webhook: "...", slack_channel: "..."}
+  channel_config: {}          # optional, reserved — breach delivery goes through the
+                               # org's connected email integration + the watch_breach
+                               # webhook (see notifications-and-integrations.md)
   enabled: true               # default true
 labels:                       # optional — arbitrary host-supplied metadata
   team: analytics

@@ -77,7 +77,6 @@ Below the selectors is the main nav. The active item shows a tinted background a
 | **Queries** | `/queries` | Author SQL in a Monaco editor, run queries, and save registered queries. |
 | **Explore** | `/explore` | Metric explorer: select a metric, apply dimension filters, choose a time grain, and view results as a chart and table — no SQL required. |
 | **Dashboards** | `/dashboards` | View, search, and open live dashboards. |
-| **Canvases** | `/canvases` | HTML-native companion to dashboards — freeform layout with `<nubi-kpi>` / `<nubi-table>` / `<nubi-chart>` elements bound to registered queries. |
 | **Flows** | `/flows` | Build multi-step pipelines — cells arranged as a canvas or notebook. |
 | **Watches** | `/watches` | Proactive metric alerts: a watch monitors a governed metric against a threshold or change-over-time rule, and on breach sends an AI explanation to a notify channel. |
 | **Automations** | `/automations` | Schedule flows and jobs to run on a cron schedule. |
@@ -376,7 +375,7 @@ Navigate to **Settings** (sidebar bottom or account menu) to open the unified se
 | **Account** | Profile | `/settings/profile` | Display name, avatar, email (read-only). |
 | **Organization** | General | `/settings/organization` | Org name and other org-level settings. |
 | | Members | `/settings/members` | Invite members, view roles, remove members. |
-| | Integrations | `/settings/integrations` | Connect notify channels — Slack, WhatsApp, Google Chat, Teams, Email. |
+| | Integrations | `/settings/integrations` | Connect the org's outbound email integration for alerts. |
 | | Security | `/settings/security` | JWT issuers — register the public keys or JWKS endpoints your backend uses to sign embed tokens. |
 | | Usage | `/settings/usage` | Read-only usage metering for the org — queries, compute, bytes scanned, flow runs, AI usage and more. |
 | | Billing | `/billing` | Cloud/EE only. |

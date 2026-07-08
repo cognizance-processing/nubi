@@ -58,7 +58,7 @@ parity test before anything builds on it.
 - **T3 — PDF renderer.** ✅ `app/embedding/render_pdf.py` — cairosvg (preferred) / svglib+reportlab fallback; vector PDF with selectable text.
 - **T4 — PPTX renderer.** ✅ `app/embedding/render_pptx.py` — python-pptx with native SVG + PNG fallback per slide.
 - **T5 — Export-layout config.** ✅ `app/dashboards/spec.py::ExportConfig` / `get_export_config` — page size, header/footer, title slide, per-widget hints.
-- **T6 — Report sending → Flows.** ✅ `app/flows/handlers/report_send.py` — `report_send` task kind; per-recipient RLS; Slack/Teams notify channels.
+- **T6 — Report sending → Flows.** ✅ `app/flows/handlers/report_send.py` — `report_send` task kind; per-recipient RLS; email delivery.
 - **T7 — Export menu + docs.** ✅ `src/components/ExportShareMenu.jsx`; `GET /boards/{id}/export.{csv,json,pdf,pptx}` and `POST /boards/{id}/export/public`.
 
 ## Wave 2 — Unified editor surfaces (frontend, visual iteration) ✅ Shipped

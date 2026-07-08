@@ -189,20 +189,9 @@ These are committed to `docs/screenshots/` and served as GitHub-relative paths.
 
 > **Captured (standalone):** `flows.png` (Retail Monthly Summary DAG — pull_sales →
 > pull_budget → blend_variance with React Flow minimap) is committed to `docs/screenshots/`
-> and wired into `flows.md`. The `/canvases` backend returned 500 on this stack, so
-> `canvas.png` was not captured.
+> and wired into `flows.md`.
 | `automations.png` | `/automations` | 1440×900 | Scheduled flows list — name, schedule, next/last run |
 | `flows-sweep.png` | `/flows` (Runs tab, sweep) | 1440×900 | Sweep results — diff surface table |
-| `flows-writeback-preview.png` | Swagger or app | 1440×900 | Write-back dry-run diff |
-| `flows-writeback-approval.png` | App UI | 1440×900 | Pending approval card with Approve/Reject buttons |
-
-### Canvas
-
-| File | Page / route | Viewport | What to show |
-|---|---|---|---|
-| `canvas-editor.png` | `/canvas/:id` | 1440×900 | Code + visual split editor with RHS binding inspector |
-| `canvas-viewer.png` | `/c/:id` | 1440×900 | Public Canvas viewer with variable filter |
-| `canvas-bindings.png` | `/canvas/:id` (inspector) | 1440×900 | RHS binding inspector — element selected, binding form |
 
 ### Metrics (semantic layer)
 
@@ -215,7 +204,7 @@ These are committed to `docs/screenshots/` and served as GitHub-relative paths.
 
 | File | Page / route | Viewport | What to show |
 |---|---|---|---|
-| `api-swagger.png` | `/docs` | 1440×900 | Swagger UI — metrics and canvas endpoints expanded |
+| `api-swagger.png` | `/docs` | 1440×900 | Swagger UI — metrics endpoints expanded |
 | `api-arrow-response.png` | Network tab | 1440×900 | `application/vnd.apache.arrow.stream` response |
 
 ### Embedding

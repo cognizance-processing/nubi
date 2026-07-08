@@ -413,8 +413,8 @@ the LLM budget or holding server connections open indefinitely.
 ### 1. Rate limit — `NUBI_RATELIMIT_CHAT_RPM`
 
 All chat and AI endpoints (`/chat/stream`, `/ai/chat`, `/ai/chat/stream`,
-`/ai/ask`, `/ai/dashboard`, `/ai/sql`, `/ai/canvas`, `/ai/canvas/edit`) share
-a dedicated rate-limit bucket, separate from the query and auth buckets.
+`/ai/ask`, `/ai/dashboard`, `/ai/sql`) share a dedicated rate-limit bucket,
+separate from the query and auth buckets.
 
 | Env var | Default | Notes |
 |---|---|---|

@@ -153,7 +153,7 @@ the cache (per-worker hit/miss) already make.
 
 The unified action audit log records org-scoped metadata for every mutation
 (create / update / delete) across boards, queries, datastores, widgets,
-canvases, connectors, MCP servers, and secrets.
+connectors, MCP servers, and secrets.
 
 **POPIA compliance:** the audit log stores metadata only — no row data, no
 SQL text with literals, no credential material. The `summary` field contains
@@ -220,8 +220,8 @@ watches on a cron and emits `WATCH_BREACH` webhook events so the host
    - An AI explanation is generated (deterministic template under `NullProvider`).
    - A `WATCH_BREACH` outbound webhook is emitted to every subscribed endpoint
      for the org (via `app.webhooks.events.emit_watch_breach`).
-   - The in-app notification feed and configured channels (Slack, WhatsApp) are
-     also updated (additive to the webhook).
+   - The in-app notification feed, Web Push, and the org's connected email
+     integration (if any) are also updated (additive to the webhook).
 4. Each watch is **best-effort**: a single watch error is recorded as
    `state='error'` and logged; the sweep continues to the next watch.
 5. The job run records `row_count = breached_count` and a summary message in

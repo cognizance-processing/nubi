@@ -9,9 +9,8 @@ contents to jump to the feature you need.
 
 1. [Semantic metrics — define, query, extend](#1-semantic-metrics)
 2. [Pre-aggregations — build and monitor rollups](#2-pre-aggregations)
-3. [Flows — sweep, backfill, triggers, write-back, action widgets](#3-flows-data-app-engine)
-4. [Canvas — author, bind data, schedule sends](#4-canvas-authoring)
-5. [DataProvider boards — per-board query fusion](#5-dataprovider-boards)
+3. [Flows — sweep, backfill, triggers](#3-flows-data-app-engine)
+4. [DataProvider boards — per-board query fusion](#4-dataprovider-boards)
 
 ---
 
@@ -314,7 +313,7 @@ identical dimension sets are skipped.
 
 Flows runs cell-based DAGs on a schedule, trigger, or on demand. The
 data-app extensions add compute resources, artifact storage, sweep/backfill,
-triggers, and governed write-back.
+and triggers.
 
 ### 3.1 Per-cell resource requests
 
@@ -446,260 +445,15 @@ POST /api/v1/flows/triggers/fire
 { "event_key": "order.completed", "params": { "order_id": "12345" } }
 ```
 
-### 3.6 Governed write-back
-
-Write-back is the close-the-loop primitive: a flow computes a decision and
-writes it back to the source connector.
-
-**Step 1 — preview (dry run):**
-```http
-POST /api/v1/flows/writeback/preview
-{
-  "rows": [
-    { "sku_id": "A1", "recommended_price": 12.99 },
-    { "sku_id": "B2", "recommended_price": 8.49 }
-  ],
-  "target": { "connector_id": "pg_warehouse", "table": "product_prices" },
-  "mode": "upsert",
-  "key_columns": ["sku_id"]
-}
-```
-
-Returns the rows and diff — nothing is written to the connector.
-
-**Step 2 — commit (with idempotency key):**
-```http
-POST /api/v1/flows/writeback
-{
-  "rows": [...],
-  "target": { "connector_id": "pg_warehouse", "table": "product_prices" },
-  "mode": "upsert",
-  "key_columns": ["sku_id"],
-  "idempotency_key": "run-uuid:write_prices",
-  "approval_required": false
-}
-```
-
-**Step 3 — with approval gate:**
-```http
-POST /api/v1/flows/writeback
-{ ..., "approval_required": true }
-→ { "id": "wb-uuid", "state": "pending_approval" }
-
-# An approver (owner/admin) reviews and approves:
-POST /api/v1/flows/writeback/wb-uuid/approval
-{ "action": "approve" }
-→ { "id": "wb-uuid", "state": "committed" }
-```
-
-**RBAC:** Writers (owner/admin/member) may submit. Approvers (owner/admin)
-may approve/reject. Viewers are always denied.
-
-**Server-wide approval policy:** Set `NUBI_WRITEBACK_REQUIRE_APPROVAL=true`
-to force approval_required=true on every write-back submitted to this
-instance, regardless of what the caller sends.
-
-### 3.7 Action widgets in Canvas
-
-Action widgets in a Canvas let a viewer approve, reject, or trigger a write-back
-from a dashboard UI without touching the API directly. An action widget binds to
-a write-back record by its `id`:
-
-```html
-<!-- Inside a CanvasDoc html field -->
-<section>
-  <h2>Price Recommendations</h2>
-  <nubi-table data-el-id="el_prices"></nubi-table>
-  <nubi-action data-el-id="el_approve"
-               action="approve-writeback"
-               target-id="{{ wb_id }}"
-               label="Approve prices">
-  </nubi-action>
-</section>
-```
-
-The binding for `el_approve` is `{ "kind": "api", "connector_id": "...", "path": "/flows/writeback/{{wb_id}}/approval" }`. The viewer clicks the button; the Canvas runtime calls the approval endpoint on their behalf. Role enforcement (approver-only) applies server-side regardless of what the Canvas declares.
-
 ---
 
-## 4. Canvas authoring
-
-A Canvas is an HTML document that comes alive through `<nubi-*>` custom
-elements and a side `bindings` map.
-
-### 4.1 CanvasDoc structure
-
-```json
-{
-  "version": 1,
-  "title": "Q3 Exec Brief",
-  "html": "<section>\n  <h1>Q3 Summary</h1>\n  <nubi-kpi data-el-id=\"el_1\"></nubi-kpi>\n  <p>Fill rate this month: <nubi-value data-el-id=\"el_2\"></nubi-value></p>\n  <nubi-chart data-el-id=\"el_3\"></nubi-chart>\n</section>",
-  "bindings": {
-    "el_1": {
-      "kind": "query",
-      "query_id": "revenue_total",
-      "field": "total",
-      "format": "currency"
-    },
-    "el_2": {
-      "kind": "metric",
-      "metric_id": "pvd",
-      "dimensions": [],
-      "time_grain": "month"
-    },
-    "el_3": {
-      "kind": "query",
-      "query_id": "revenue_by_region_month"
-    }
-  },
-  "variables": [
-    { "name": "region", "type": "select", "default": "EMEA" }
-  ]
-}
-```
-
-### 4.2 Binding kinds
-
-| Kind | What it does |
-|---|---|
-| `query` | Runs a registered query. `field` extracts a single scalar for inline injection via `<nubi-value>`. Without `field`, the full result drives a table or chart element. |
-| `metric` | Compiles a semantic-layer metric via the metric compiler. Supports the full `MetricQuery` shape (dimensions, time_grain, filters). |
-| `api` | Calls an HTTP JSON connector. `path` is appended to the connector's base URL. `select` is a JSONPath expression applied to the response. |
-
-All three binding kinds go through the same RLS / data layer as dashboard
-widgets.
-
-### 4.3 Custom element vocabulary
-
-| Element | Purpose |
-|---|---|
-| `<nubi-kpi>` | Single KPI metric card |
-| `<nubi-table>` | Tabular data grid |
-| `<nubi-chart>` | Chart (attribute `type`: scatter / bar / line / pie / area) |
-| `<nubi-metric>` | Semantic-layer metric value |
-| `<nubi-filter>` | Variable filter control |
-| `<nubi-text>` | Rich-text / Markdown panel |
-| `<nubi-value>` | Inline scalar injection (`{{ field }}` style) |
-
-All elements require `data-el-id` when they are data-bound. Plain HTML
-elements (e.g. `<p>`, `<span>`) can also carry `data-el-id` to receive scalar
-text injection from a `query` or `api` binding.
-
-### 4.4 Create a Canvas via the API
-
-```http
-POST /api/v1/canvases
-Authorization: Bearer <access-token>
-Content-Type: application/json
-
-{
-  "name": "Q3 Exec Brief",
-  "config": {
-    "doc": {
-      "version": 1,
-      "title": "Q3 Exec Brief",
-      "html": "<section><h1>Revenue</h1><nubi-kpi data-el-id=\"kpi1\"></nubi-kpi></section>",
-      "bindings": {
-        "kpi1": { "kind": "query", "query_id": "revenue_total", "field": "revenue", "format": "currency" }
-      }
-    }
-  }
-}
-```
-
-Validation (XSS sanitizer + binding consistency) runs automatically on save.
-
-### 4.5 Generate a Canvas with the LLM
-
-```http
-POST /api/v1/ai/canvas
-{ "question": "Exec brief showing total revenue, fill rate by region, and top 5 products" }
-```
-
-The backend:
-1. Builds the catalog (registered queries + metric names).
-2. Grounds the question against the catalog.
-3. Calls the LLM with the `nubi-*` element vocabulary and binding schema.
-4. Runs a validate → repair loop (up to `MAX_DASHBOARD_REPAIR_ROUNDS` rounds).
-5. Returns `{doc, html, grounding, provider, valid, issues}`.
-
-Apply the generated doc to your Canvas:
-```http
-PUT /api/v1/canvases/{canvas_id}
-{ "config": { "doc": <doc from response> } }
-```
-
-### 4.6 Edit a Canvas with the LLM
-
-```http
-POST /api/v1/ai/canvas/edit
-{
-  "doc": { ... existing CanvasDoc ... },
-  "instruction": "Add a monthly trend chart and make the header dark blue"
-}
-```
-
-Returns the updated doc. The model edits the HTML string directly — no
-intermediate spec representation.
-
-### 4.7 Validate a Canvas
-
-```http
-POST /api/v1/canvas/validate
-{ "doc": { ... } }
-```
-
-Returns `{valid, errors, warnings}`. Errors are hard failures (script
-injection, unknown binding ids); warnings are advisory (unknown metric_id,
-connector not found).
-
-### 4.8 Schedule a Canvas send
-
-```http
-POST /api/v1/canvases/{canvas_id}/schedule
-{
-  "format": "html",
-  "recipients": ["cfo@example.com"],
-  "subject": "Weekly Q3 Brief",
-  "cron": "0 8 * * MON",
-  "locked_params": {
-    "cfo@example.com": { "region": "EMEA" }
-  }
-}
-```
-
-This creates a `report_send` flow that renders and delivers the canvas every
-Monday at 08:00 UTC. `locked_params` pins per-recipient query parameters
-(acts as per-viewer RLS for the scheduled report).
-
-### 4.9 View a Canvas
-
-| Route | Surface |
-|---|---|
-| `/canvas/:id` | Editor (code + visual split, RHS binding inspector) |
-| `/c/:id` | Public viewer (read-only, URL ↔ variable sync) |
-| `/canvases` | Canvas list page |
-
-### 4.10 Security model
-
-Canvas HTML passes through two independent layers:
-
-1. **Server** — `validate_canvas_doc` on save. Blocks `<script>`, `on*=`,
-   `javascript:`, `data:` URIs, and unknown `nubi-*` tags. Also checks that
-   every `data-el-id` in `bindings` appears in the HTML, and that `api`
-   bindings reference connectors the org owns.
-2. **Client** — `sanitizeDashboardHtml` (DOMPurify allowlist) before
-   `innerHTML` is set. A second independent sanitize pass.
-
----
-
-## 5. DataProvider boards
+## 4. DataProvider boards
 
 A `DataProvider` in a `DashboardSpec` declares multiple result queries sharing
 a base CTE. The resolver runs them in one round-trip and caches by
 `(provider_id, params, rls_hash)`.
 
-### 5.1 Declare a DataProvider in a DashboardSpec
+### 4.1 Declare a DataProvider in a DashboardSpec
 
 ```yaml
 version: 1
@@ -721,7 +475,7 @@ providers:
         sql: SELECT SUM(revenue) AS revenue FROM revenue_provider
 ```
 
-### 5.2 Fetch provider data
+### 4.2 Fetch provider data
 
 ```http
 POST /api/v1/boards/{board_id}/providers/revenue_provider/data
@@ -746,7 +500,7 @@ const tables = await parseMultiTableIPC(await resp.arrayBuffer())
 // tables.by_region, tables.by_month, tables.grand_total
 ```
 
-### 5.3 Cache behaviour
+### 4.3 Cache behaviour
 
 The cache key is `(provider_id, frozen_params, rls_hash)` where
 `rls_hash = sha256(json(policies))[:16]`. Two tenants with identical params
@@ -763,9 +517,4 @@ never share a cache entry (the RLS hash diverges). The cache TTL is 5 minutes.
 | ![Rollup panel suggestions](screenshots/preagg-suggestions.png) | `/queries` (Rollups tab) | Suggested rollups panel with score and chips | This page §2.1 |
 | ![Rollup active](screenshots/preagg-active.png) | `/queries` (Rollups tab) | Active rollup card with HIT counter | This page §2.4 |
 | ![Flows sweep](screenshots/flows-sweep.png) | `/flows` (Runs tab) | Sweep results table (diff surface) | This page §3.3 |
-| ![Writeback preview](screenshots/flows-writeback-preview.png) | App UI or Swagger | Write-back dry-run diff | This page §3.6 |
-| ![Writeback approval](screenshots/flows-writeback-approval.png) | App UI | Pending approval card with Approve/Reject buttons | This page §3.6 |
-| ![Canvas editor](screenshots/canvas-editor.png) | `/canvas/:id` | Canvas code+visual split editor | This page §4 |
-| ![Canvas public viewer](screenshots/canvas-viewer.png) | `/c/:id` | Public Canvas viewer with variables | This page §4.9 |
-| ![Canvas binding inspector](screenshots/canvas-bindings.png) | `/canvas/:id` | RHS binding inspector panel | This page §4.3 |
-| ![DataProvider response](screenshots/dataprovider-response.png) | Network tab | Multi-table IPC response | This page §5.2 |
+| ![DataProvider response](screenshots/dataprovider-response.png) | Network tab | Multi-table IPC response | This page §4.2 |

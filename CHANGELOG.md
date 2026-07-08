@@ -10,14 +10,58 @@ Conventions:
   `[Unreleased]` and updates the matching row in [CAPABILITIES.md](./CAPABILITIES.md).
 - On release, stamp `[Unreleased]` with a version + date.
 
+## [0.6.0] - 2026-07-09
+
+### Removed
+
+Four features are cut from this release. Each was a net-additive surface with
+real maintenance cost that didn't earn its keep for a small embedded-BI team;
+in every case the removal narrows Nubi back toward its core wedge (governed
+data + dashboards) rather than a general-purpose app platform.
+
+- **Writeback.** The governed connector/dashboard writeback engine
+  (`POST /flows/writeback[/preview]`, approval gates, `ActionWidget`) is gone.
+  Flows can still write computed output to a connector via the existing
+  `connector_write` task — what's gone is the interactive, approval-gated
+  "write a decision back to the source from a dashboard" primitive. A host
+  that wants a review/approve step drives it itself, off the `flow_completed` /
+  `watch_breach` webhooks.
+- **Canvas (the standalone resource).** The freeform HTML authoring product
+  (`CanvasDoc`, the `/canvases` resource, `/c/:id` public viewer, `/ai/canvas`
+  generate/edit) is gone — consolidated onto **Dashboards**, which already
+  render freeform HTML via the `HtmlWidget` widget type. "Canvas" as a
+  *dashboard-rendering* term (the DAG canvas view in Flows, the grid canvas in
+  the dashboard editor) is unaffected — only the standalone Canvas resource is
+  removed.
+- **Predictive / SHAP explainability.** Metric root-cause decomposition, the
+  `ExplainDrawer`, and the `nubi-explain` embed widget are gone. Nubi does not
+  do data-science attribution over a host's own ML models — this was
+  documented as out-of-scope in [CAPABILITIES.md](./CAPABILITIES.md) even
+  before removal, and now the code matches. The generic, domain-agnostic
+  bring-your-own-model attribution runner on the sandboxed compute kernel is
+  unaffected — see [compute-kernel-attribution-runner](docs/compute-kernel-attribution-runner.md).
+- **Notify channels (Slack / WhatsApp / Microsoft Teams / Google Chat).** The
+  chat-ops integrations and inbound chat gateway are gone. **Email** is now the
+  one outbound notify channel Nubi ships (scheduled reports + alerts), backed
+  by a per-org connected integration, an in-app notification feed, and Web
+  Push. The `org_integrations.kind` check constraint is now `CHECK (kind IN
+  ('email'))` (migration `0027_notifications_email_only.sql`); embedding hosts
+  that want Slack/Teams/etc. own that integration themselves off Nubi's
+  outbound webhooks. See [Notifications & Integrations](docs/notifications-and-integrations.md).
+
+Docs updated across `docs/`, `README.md`, and `CAPABILITIES.md` to remove
+references to all four; existing `[Unreleased]` entries below predate this
+removal pass and are otherwise unaffected.
+
+---
+
 ## [Unreleased]
 
 ### Security
 
 - **Chat cost-DoS limits.** Three independent guards now protect all chat and
   AI endpoints (`/chat/stream`, `/ai/chat`, `/ai/chat/stream`, `/ai/ask`,
-  `/ai/dashboard`, `/ai/sql`, `/ai/canvas`, `/ai/canvas/edit`) from runaway
-  LLM spend and resource exhaustion:
+  `/ai/dashboard`, `/ai/sql`) from runaway LLM spend and resource exhaustion:
   1. **Rate limit** — a dedicated `chat` rate-limit class
      (`NUBI_RATELIMIT_CHAT_RPM`, default 20 rpm, burst 1.5×, Redis-backed)
      returns `HTTP 429 + Retry-After` when the cap is hit. Separate from the

@@ -189,7 +189,7 @@ cross a threshold:
 POST /api/v1/metrics/<id>/watch
 {
   "condition": "total > 10000",
-  "channel": "slack"
+  "channel": "email"
 }
 ```
 

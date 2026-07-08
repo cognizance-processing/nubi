@@ -355,145 +355,6 @@ the revert is auditable.
 
 ---
 
-## Canvas
-
-### `POST /canvas/validate`
-
-Stateless validation oracle for a `CanvasDoc`. Never persists anything.
-
-**Auth:** First-party access token.
-
-**Request body:**
-```json
-{ "doc": { "version": 1, "title": "...", "html": "...", "bindings": {} } }
-```
-
-**Response `200`:**
-```json
-{
-  "valid": true,
-  "errors": [],
-  "warnings": ["[WARN] binding el_3: connector_id not found in registry"]
-}
-```
-
----
-
-### `GET /canvases`
-
-List all canvases for the caller's org.
-
-**Auth:** First-party access token.
-
-**Response `200`:** Array of canvas records `[{id, org_id, created_by, name, config, created_at, updated_at}]`.
-
----
-
-### `POST /canvases`
-
-Create a new canvas resource.
-
-**Auth:** First-party access token, writer role. Embed tokens are blocked.
-
-**Request body:**
-```json
-{
-  "name": "Q3 Exec Brief",
-  "config": {
-    "doc": {
-      "version": 1,
-      "title": "Q3 Exec Brief",
-      "html": "<section><h1>Q3 Summary</h1><nubi-kpi data-el-id=\"el_1\"></nubi-kpi></section>",
-      "bindings": {
-        "el_1": { "kind": "query", "query_id": "revenue_total", "field": "total", "format": "currency" }
-      },
-      "variables": []
-    }
-  }
-}
-```
-
-When `config.doc` is provided it is parsed as a `CanvasDoc` and validated.
-Hard validation failures (script injection, missing bindings) return `400`.
-
-**Response `201`:** Canvas record.
-
----
-
-### `GET /canvases/{canvas_id}`
-
-Retrieve a canvas by id (org-scoped).
-
-**Response `200`:** Canvas record.
-
-**Errors:** `404 canvas_not_found`.
-
----
-
-### `PUT /canvases/{canvas_id}`
-
-Update a canvas name and/or config.
-
-**Auth:** First-party access token, writer role.
-
-**Request body (all fields optional):**
-```json
-{ "name": "New title", "config": { "doc": { ... } } }
-```
-
-At least one of `name` or `config` must be provided. `config.doc` is
-re-validated when present.
-
-**Response `200`:** Updated canvas record.
-
----
-
-### `DELETE /canvases/{canvas_id}`
-
-Delete a canvas (org-scoped, writer role).
-
-**Response `204`:** No content.
-
----
-
-### `POST /canvases/{canvas_id}/schedule`
-
-Create a `report_send` flow that delivers a canvas on a schedule.
-
-**Auth:** First-party access token, writer role.
-
-**Request body:**
-```json
-{
-  "format": "html",
-  "recipients": ["cfo@example.com", "ceo@example.com"],
-  "subject": "Weekly Q3 Brief",
-  "body": "Please find the weekly report attached.",
-  "params": { "region": "EMEA" },
-  "locked_params": { "cfo@example.com": { "region": "EMEA" } },
-  "cron": "0 8 * * MON",
-  "flow_name": "q3_brief_weekly"
-}
-```
-
-| Field | Required | Description |
-|---|---|---|
-| `format` | No | `"html"` (default) or `"pdf"` |
-| `recipients` | Yes | Email addresses |
-| `subject` | No | Email subject (defaults to canvas name) |
-| `body` | No | Plain-text email body |
-| `params` | No | Base query parameters |
-| `locked_params` | No | Per-recipient param overrides (for RLS) |
-| `cron` | No | Cron expression e.g. `"0 8 * * MON"` |
-| `flow_name` | No | Human name for the created flow |
-
-**Response `201`:**
-```json
-{ "flow_id": "...", "canvas_id": "...", "format": "html", "recipients_count": 2 }
-```
-
----
-
 ## AI endpoints
 
 All AI endpoints require first-party access tokens. AI calls are metered
@@ -629,61 +490,6 @@ string. Uses the catalog for grounding and the configured LLM provider.
 ```json
 { "sql": "SELECT product_id, SUM(amount) AS revenue FROM orders ...", "provider": "litellm" }
 ```
-
----
-
-### `POST /ai/canvas`
-
-Generate a `CanvasDoc` from a natural-language description. Runs a
-generate → validate → repair loop (up to `MAX_DASHBOARD_REPAIR_ROUNDS`).
-
-**Request body:**
-```json
-{ "question": "Exec brief showing total revenue and fill rate by region", "model": null }
-```
-
-**Response `200`:**
-```json
-{
-  "doc": { "version": 1, "title": "...", "html": "...", "bindings": {} },
-  "html": "<section>...</section>",
-  "grounding": { ... },
-  "provider": "litellm",
-  "valid": true,
-  "issues": []
-}
-```
-
-**Errors:** `422 canvas_generation_failed` — LLM output still invalid after max repair rounds.
-
----
-
-### `POST /ai/canvas/edit`
-
-Apply a natural-language edit to an existing `CanvasDoc`. Runs the same
-validate → repair loop.
-
-**Request body:**
-```json
-{
-  "doc": { "version": 1, "title": "...", "html": "...", "bindings": {} },
-  "instruction": "Make the header blue and add a revenue KPI",
-  "model": null
-}
-```
-
-**Response `200`:** Same shape as `POST /ai/canvas`.
-
-**Errors:** `422 canvas_edit_failed`.
-
----
-
-### `GET /ai/canvas/schema`
-
-Return the JSON Schema for `CanvasDoc` and the `CanvasBinding` types. Use
-this to ground an LLM before authoring Canvas HTML.
-
-**Response `200`:** JSON Schema dict.
 
 ---
 
@@ -979,105 +785,6 @@ Fire a named event, triggering any flows registered on that event key.
 ```json
 { "triggered": 2, "flow_ids": ["flow-uuid-1", "flow-uuid-2"] }
 ```
-
----
-
-### `POST /flows/writeback/preview`
-
-Dry-run a write-back — returns the rows/diff that would be written without
-touching the connector.
-
-**Auth:** Writer role (owner / admin / member).
-
-**Request body:**
-```json
-{
-  "rows": [{ "sku_id": "A1", "price": 9.99 }],
-  "target": { "connector_id": "pg_warehouse", "table": "prices" },
-  "mode": "upsert",
-  "key_columns": ["sku_id"]
-}
-```
-
-**Response `200`:**
-```json
-{
-  "rows": [{ "sku_id": "A1", "price": 9.99 }],
-  "row_count": 1,
-  "target_object": "prices",
-  "mode": "upsert",
-  "dry_run": true
-}
-```
-
-**Errors:**
-- `400 row_cap_exceeded` — rows exceeds server cap (default 10 000, configurable via `NUBI_MAX_WRITEBACK_ROWS`).
-
----
-
-### `POST /flows/writeback`
-
-Submit a write-back (commit immediately or gate for approval).
-
-**Auth:** Writer role.
-
-**Request body:**
-```json
-{
-  "rows": [{ "sku_id": "A1", "price": 9.99 }],
-  "target": { "connector_id": "pg_warehouse", "table": "prices" },
-  "mode": "upsert",
-  "key_columns": ["sku_id"],
-  "idempotency_key": "run-uuid:write_prices",
-  "approval_required": false,
-  "dry_run": false
-}
-```
-
-| Field | Description |
-|---|---|
-| `mode` | `"upsert"` / `"insert"` / `"replace"` |
-| `key_columns` | Required for upsert — columns that identify the row. |
-| `idempotency_key` | Caller-supplied key; a second call with the same key returns the existing record without re-applying. Recommended: `<flow_run_id>:<task_key>`. |
-| `approval_required` | When `true`, the record enters `pending_approval` state. When the server-wide `NUBI_WRITEBACK_REQUIRE_APPROVAL=true` env var is set, approval is forced regardless of this field. |
-| `dry_run` | When `true`, handled identically to `POST /flows/writeback/preview`. |
-
-**Response `201`:** Write-back record `{id, state, rows, row_count, target_object, mode, idempotency_key, created_at}`.
-
-States: `submitted` → `committed` (immediate) or `pending_approval` → `committed` / `rejected`.
-
----
-
-### `POST /flows/writeback/{id}/approval`
-
-Approve or reject a pending write-back.
-
-**Auth:** Approver role (owner / admin).
-
-**Request body:**
-```json
-{ "action": "approve" }
-```
-
-`action` ∈ `"approve"` | `"reject"`.
-
-**Response `200`:** Updated write-back record with new `state`.
-
----
-
-### `GET /flows/writeback`
-
-List write-back records for the caller's org.
-
-**Response `200`:** Array of write-back records.
-
----
-
-### `GET /flows/writeback/{id}`
-
-Retrieve a single write-back record.
-
-**Response `200`:** Write-back record.
 
 ---
 
@@ -1834,14 +1541,10 @@ Delete a variable.
 | `query_not_registered` | 403 | Embed token referenced an unregistered query_id. |
 | `origin_mismatch` | 403 | `embed_origin` claim does not match the request `Origin` header. |
 | `metric_not_found` | 404 | Unknown metric or cross-org attempt. |
-| `canvas_not_found` | 404 | Unknown canvas or cross-org attempt. |
 | `org_not_found` | 404 | User has no org membership. |
 | `quota_exceeded` | 402 | Compute or AI quota exhausted. |
-| `row_cap_exceeded` | 400 | Write-back row count exceeds the server cap. |
 | `invalid_definition` | 400 | Malformed `MetricDefinition` body. |
-| `invalid_canvas_doc` | 400 | Canvas doc fails security validation. |
 | `sweep_timeout` | 504 | Sweep exceeded the wall-clock limit. |
-| `canvas_generation_failed` | 422 | LLM output invalid after max repair rounds. |
 | `source_unsupported_rls` | 501 | Connector does not support predicate-level RLS. |
 
 ---
@@ -1947,7 +1650,7 @@ Same shape as `GET /audit` but pre-filtered to a single resource's history.
 
 | Resource | Covered actions |
 |---|---|
-| boards, queries, datastores, widgets, canvases | `.create`, `.update`, `.delete` (via generic `/{resource}` CRUD) |
+| boards, queries, datastores, widgets | `.create`, `.update`, `.delete` (via generic `/{resource}` CRUD) |
 | connectors | `connector.create`, `connector.update`, `connector.delete` |
 | mcp_server | `mcp_server.create`, `mcp_server.update`, `mcp_server.delete` |
 | secret | `secret.set`, `secret.delete` |

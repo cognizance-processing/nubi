@@ -222,7 +222,8 @@ For each tick:
 1. The board is resolved org-scoped.
 2. The report is rendered via `_render_pdf` / `_render_pptx` / `render_report`.
 3. The rendered bytes are sent to all recipients via the configured email sender.
-4. Optional notify channels (Slack/Teams webhooks) are triggered best-effort.
+4. If the org has a connected email integration (`app.notify.integrations`),
+   the same event is also dispatched through it, best-effort.
 
 Per-recipient RLS: when `apply_user_permissions: true` + `locked_params` are
 set, one render+send is issued per recipient with their locked params injected.
@@ -483,77 +484,17 @@ still injected so within-run retries are deterministic.
 - `flag_sla_breach(flow_run, expected_s, now)` — SLA helper: returns `True` if the run exceeded the expected duration.
 - Run-history is queryable; SLA breaches are surfaced in the ops UI.
 
-### Governed write-back
-
-`backend/app/connectors/writeback.py` — idempotent, dry-run, RBAC, approval gates:
-
-**State machine**:
-```
-pending_approval  ──approve/edit──►  committed  ──(error)──►  failed
-        └──reject──►  rejected
-When approval_required=False:   submitted ──► committed (or failed)
-```
-
-**Key capabilities**:
-
-| Feature | Detail |
-|---|---|
-| Dry-run | `POST /flows/writeback/preview` returns the rows + diff without touching the connector |
-| Idempotency | `idempotency_key` (caller-supplied UUID / `flow_run_id+task_key`) — a retry never double-applies |
-| RBAC | Writers: `owner / admin / member`. Approvers: `owner / admin`. `viewer` always denied |
-| Approval gate | `approval_required=True` holds the write in `pending_approval`; only an approver can commit |
-| Transactional | The connector_write result is passed pre-computed; the apply step either fully commits or fails (no partial writes) |
-| Audit | Every record carries `org_id`, `state`, `committed_at`, the rows written, and the approving claims |
-
-Cross-org isolation: every record is org-scoped; a lookup with the wrong `org_id` returns not-found (no information leak).
-
----
-
-## Canvas: HTML-native sibling to Dashboards (Axis C)
-
-Canvas is a first-class document type (`canvases` resource, `config.doc`) whose
-source of truth is HTML the author (human or LLM) writes directly.
-
-### What it adds
-
-| Capability | Detail |
-|---|---|
-| Free-form HTML surface | Any semantic HTML; data comes alive through `<nubi-*>` custom elements and `{{token}}` interpolation |
-| Side-binding map | `bindings: {el_id → CanvasBinding}` keyed by `data-el-id` — editor mutates bindings without rewriting the HTML string |
-| Three binding kinds | `query` (registered query + optional field extract), `metric` (semantic layer), `api` (HTTP_JSON connector + JSONPath select) |
-| Shared data/RLS layer | Reuses `collect_board_data` / `run_query_rows` / `_resolve_connector` unchanged — RLS and org-scoping are identical |
-| Scheduled sending | `report_send` flow handler generalised to dispatch on `canvas_id` OR `board_id`; per-recipient RLS, Slack/Teams notify |
-| LLM generate / edit / repair | `backend/app/ai/canvas.py` — generate→validate→repair loop with `MAX_DASHBOARD_REPAIR_ROUNDS`; `POST /ai/canvas` + `POST /ai/canvas/edit` |
-| Code + visual editor | `/canvas/:id` — split code/visual panes; click-to-select with RHS binding inspector |
-| Public viewer | `/c/:id` — same as `/d/:id` but for Canvas; URL ↔ variable sync |
-
-### Security model (unchanged from dashboards)
-
-Canvas HTML passes through `sanitizeDashboardHtml` (DOMPurify allowlist) on the
-client **and** through `validate_canvas_doc` (extended `validate_dashboard_html`)
-on save. No `<script>`, `on*=`, or `javascript:/data:` URI survives either path.
-The extended allowlist adds `nubi-metric`, `nubi-filter`, `nubi-text`,
-`nubi-value` to the existing `nubi-kpi`, `nubi-table`, `nubi-chart` set.
-
-Data flows through the same `collect.py` pipeline — per-org RLS predicates and
-`source_unsupported_rls` guards apply unchanged.
-
-### Economics
-
-Canvas views share the same browser-compute wedge as dashboards. A Canvas bound
-to a frozen snapshot renders entirely in the browser (zero server compute per
-view). A Canvas bound to live queries follows the same metering path as a
-dashboard widget (`scan_zar_per_tib` for the query execution; zero per view if
-served from cache). Scheduled Canvas sends are metered as `compute_zar_per_1000_cu`
-(render + Flows delivery), identical to `report_send` for boards.
-
 ---
 
 ## The close-the-loop architecture
 
-Most BI tools do one thing: **display**. Nubi closes the loop: compute a
-decision (Flow), show it (Dashboard or Canvas), act on it (write-back /
-approval widget), write back to the source, re-trigger the next compute cycle.
+Most BI tools do one thing: **display**. Nubi closes the loop as far as *read*
+goes: compute a decision (Flow), materialize it, govern it as a semantic
+metric, and display it on a Dashboard — with a downstream trigger that can
+kick off the next compute cycle. Writing a decision back into a source system
+is a host-owned step: Nubi hands the host a signed, idempotent webhook
+(`watch_breach`, `flow_completed`, …) and the host drives its own write-back
+against its own connector.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -583,26 +524,28 @@ approval widget), write back to the source, re-trigger the next compute cycle.
 │        │                             │ Arrow IPC                │
 │        │                             ▼                          │
 │        │              ┌──────────────────────────┐             │
-│        │              │  Dashboard / Canvas       │             │
+│        │              │  Dashboard                │             │
 │        │              │  (display + filter)       │             │
 │        │              │  - DuckDB-WASM in browser │             │
 │        │              │  - $0/view marginal cost  │             │
 │        │              └──────────────┬────────────┘             │
-│        │                             │ action / approval widget  │
+│        │                             │ watch_breach /            │
+│        │                             │ flow_completed webhook    │
 │        │                             ▼                          │
 │        │              ┌──────────────────────────┐             │
-│        └─────────────►│  Write-back              │             │
-│                        │  (idempotent, dry-run,   │             │
-│                        │   RBAC, approval gate)   │             │
+│        └─────────────►│  Host's own write-back    │             │
+│                        │  (host-owned connector,  │             │
+│                        │   Nubi hands it the event)│             │
 │                        └──────────────────────────┘             │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 **The full cycle in one sentence**: a Flow computes a decision and materialises
-it to a table; the semantic model governs how that table is queried; a Dashboard
-or Canvas displays the result with live cross-filtering; an action or approval
-widget triggers a governed write-back; the write-back updates the source table;
-a downstream trigger fires the next Flow run.
+it to a table; the semantic model governs how that table is queried; a
+Dashboard displays the result with live cross-filtering; an outbound webhook
+notifies the host of the event, and a downstream trigger fires the next Flow
+run — closing the read half of the loop natively, and handing the host
+everything it needs to close the write half against its own systems.
 
 No step breaks the wedge invariant: browser-side compute handles display, server
 compute is metered only for the steps that have a real COGS line.
@@ -636,8 +579,8 @@ Shipped across four waves committed to `main`:
 |---|---|---|
 | Wave 1 | `e444178`, `9c4de46` | `MetricDefinition` derived/ratio measures, time-intelligence compiler, dynamic top-N, `DataProvider` spec, consumption viz |
 | Wave 2 | `6091a34` | Pre-agg routes windowed/derived metrics, `__base`-aware router, query fusion + shared cache key, per-cell compute resources + run lineage |
-| Wave 3 | `4518488` | `DataProvider` resolver, Canvas resource (`backend/app/dashboards/canvas.py`), flow artifact channel |
-| Wave 4 | `813ce8b` | Scenario sweep / backfill, event / webhook / downstream triggers + run-history + SLA, Canvas scheduled send + public viewer |
+| Wave 3 | `4518488` | `DataProvider` resolver, flow artifact channel |
+| Wave 4 | `813ce8b` | Scenario sweep / backfill, event / webhook / downstream triggers + run-history + SLA |
 
 Do not rely on this document as a feature-completeness guarantee for all
 roadmap items; refer to `docs/roadmap-embedding-reporting.md`, `docs/semantic-and-data-apps.md`, and the test

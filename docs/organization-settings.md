@@ -11,7 +11,7 @@ Settings use a two-column layout: a sticky sidebar on the left, grouped by scope
 | **Account** | Profile | `/settings/profile` | Your display name and avatar |
 | **Organization** | General | `/settings/organization` | Org name, avatar, deletion |
 | **Organization** | Members | `/settings/members` | Invites, roles, removals |
-| **Organization** | Integrations | `/settings/integrations` | Slack / WhatsApp / Google Chat / Teams / Email channels |
+| **Organization** | Integrations | `/settings/integrations` | Connected email integration for outbound alerts |
 | **Organization** | Security | `/settings/security` | Embed JWT issuers (host-signed token trust) |
 | **Organization** | Usage | `/settings/usage` | Read-only usage metering for the org |
 | **Organization** | Billing *(Cloud/EE only)* | `/billing` | Plan, wallet, invoices — link-out, shown only when billing is enabled |
@@ -114,24 +114,23 @@ Click the trash icon on the member's row. The last-owner protection applies here
 
 ## Organization — Integrations
 
-**Settings → Integrations** connects the org's notification channels. One connected integration powers **both** inbound chat and outbound alerts (watches, flow runs, shares), so you configure each channel once.
+**Settings → Integrations** connects the org's outbound notify channel. Nubi
+is embedded BI, not a chat-ops platform, so **email** is the one supported
+kind — the embedding host owns any Slack/Teams/etc. notifications it wants to
+layer on top (see [Notifications & Integrations](/docs/notifications-and-integrations)
+for why). A connected integration powers outbound alerts (watches, flow runs,
+shares).
 
 ![Settings — Integrations: connected channels with Test / Enable / Edit / Delete controls, and the connect-a-channel picker](/docs/screenshots/settings-integrations.png)
 
-Five channel kinds are available:
-
 | Channel | How it sends | Fields |
 |---|---|---|
-| **Slack** | Incoming webhook | Channel, webhook URL *(secret)* |
-| **WhatsApp** | WhatsApp Business Cloud API | Phone number ID, recipient number, access token *(secret)* |
-| **Google Chat** | Incoming webhook | Space label, webhook URL *(secret)* |
-| **Microsoft Teams** | Incoming webhook connector | Connector name, webhook URL *(secret)* |
-| **Email** | App SMTP | Recipients (comma- or newline-separated) |
+| **Email** | App SMTP (or custom SMTP, per-integration) | Recipients (comma- or newline-separated) |
 
-### Connect a channel
+### Connect the email integration
 
-1. In the **Connect a channel** card, pick a kind — the form opens with the right fields for it.
-2. Give it a **Name**, fill in the fields, and click **Connect**. New integrations are enabled immediately.
+1. In the **Connect a channel** card, click **Email** — the form opens with the recipient field.
+2. Give it a **Name**, fill in the recipients, and click **Connect**. New integrations are enabled immediately.
 
 ### Secrets are write-only
 

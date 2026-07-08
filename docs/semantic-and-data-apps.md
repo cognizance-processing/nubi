@@ -1,11 +1,15 @@
 # Semantic Layer, Data Apps, and the Close-the-Loop Architecture
 
-This document consolidates four shipped capabilities that together form Nubi's
+This document consolidates three shipped capabilities that together form Nubi's
 "operational BI" stack: a governed semantic layer (Bet 1), a smart query engine
-that serves that layer from pre-agg rollups (Bet 2), Flows as a first-class
-data-app engine (Axis B), and Canvas — an HTML-native sibling to Dashboards
-(Axis C). It concludes with a worked diagram of the close-the-loop cycle that
-unifies all four.
+that serves that layer from pre-agg rollups (Bet 2), and Flows as a first-class
+data-app engine (Axis B). It concludes with a worked diagram of the close-the-loop
+cycle that unifies all three.
+
+> Freeform HTML authoring (binding data directly into hand-or-LLM-written
+> HTML, rather than a fixed grid of typed widgets) is not a separate resource —
+> it lives on **Dashboards**, whose widget kit already includes an HTML
+> widget for exactly this case. See [Dashboards](dashboards.md).
 
 Related docs:
 - [Architecture & Economics](architecture-and-economics.md) — compute model, billing COGS mapping, wedge economics
@@ -249,8 +253,9 @@ The smart engine is what makes "viewers are free" scale under load:
 
 Flows is Nubi's orchestration layer: a DAG of typed tasks (SQL query, Python
 cell, materialize, map fan-out, etc.) that runs on a schedule, on a trigger, or
-on demand. The data-app extensions (Waves 2–4) make it a compute / decision /
-write-back engine.
+on demand. The data-app extensions (Waves 2–4) make it a compute / decision
+engine — governed compute resources, reproducible stochastic runs, a typed
+artifact channel, and sweep/backfill/trigger orchestration.
 
 ### Per-cell compute resources
 
@@ -367,189 +372,18 @@ SLA: `flag_sla_breach(flow_run, expected_s, now)` returns `True` if the run
 exceeded `expected_duration_s`. Breaches are surfaced in the run-history API
 response and queryable in the ops UI.
 
-### Governed write-back
-
-Write-back is the "close-the-loop" primitive: a Flow cell computes a decision
-(e.g. a recommended price change) and writes it back to the source connector.
-
-```http
-# Preview — never touches the connector
-POST /flows/writeback/preview
-{ "rows": [...], "target": "prices", "mode": "upsert", "key_columns": ["sku_id"] }
-→ { "rows": [...], "row_count": 12, "dry_run": true }
-
-# Commit (dry_run=false and approval_required=false → immediate)
-POST /flows/writeback
-{ "rows": [...], "target": "prices", "mode": "upsert",
-  "key_columns": ["sku_id"], "idempotency_key": "<flow_run_id>:<task_key>" }
-→ { "id": "wb_...", "state": "committed", ... }
-
-# With approval gate
-POST /flows/writeback
-{ ..., "approval_required": true }
-→ { "id": "wb_...", "state": "pending_approval" }
-# An approver (role: owner / admin) calls:
-POST /flows/writeback/{id}/approve
-→ { "id": "wb_...", "state": "committed" }
-```
-
-State machine:
-
-```
-submitted
-    │  approval_required=false
-    ▼
-committed ── (error) ──► failed
-
-submitted
-    │  approval_required=true
-    ▼
-pending_approval ─── approve ──► committed
-                 └── reject  ──► rejected
-```
-
-RBAC: `writer` roles (owner / admin / member) may submit. `approver` roles
-(owner / admin) may approve / reject / edit. `viewer` is always denied.
-
-Idempotency: `idempotency_key` (caller-supplied, e.g. `flow_run_id + ":" + task_key`) — a
-network retry returns the existing record without re-applying the write.
-
----
-
-## Axis C — Canvas: HTML-native sibling to Dashboards
-
-### What Canvas is
-
-A Dashboard is a JSON/Pydantic spec (`DashboardSpec`) rendered onto a CSS grid
-of typed widgets. Canvas is the opposite end of the flexibility spectrum: the
-source of truth is an HTML document that the author (human or LLM) writes
-directly. Data comes alive through `<nubi-*>` custom elements and `{{token}}`
-interpolation.
-
-Canvas reuses the dashboards data layer (`collect.py`, `run_query_rows`,
-`_resolve_connector`, RLS, variables, cross-filter runtime) and the
-`report_send` flow handler. It adds: a code+visual HTML editor, a right-hand
-binding inspector, the `/c/:id` public viewer, and an LLM generate/edit/repair
-loop.
-
-### CanvasDoc model
-
-```json
-{
-  "version": 1,
-  "title": "Q3 Exec Brief",
-  "html": "<section>\n  <h1>Q3 Summary</h1>\n  <nubi-kpi data-el-id=\"el_1\"></nubi-kpi>\n  <p>Fill rate: <nubi-value data-el-id=\"el_2\"></nubi-value></p>\n</section>",
-  "bindings": {
-    "el_1": { "kind": "query",  "query_id": "rev_total", "field": "total", "format": "currency" },
-    "el_2": { "kind": "metric", "metric_id": "pvd", "dimensions": [], "time_grain": "month" },
-    "el_3": { "kind": "api",    "connector_id": "shopify_http", "path": "/orders/count.json",
-              "select": "$.count", "format": "number" }
-  },
-  "variables": [{ "name": "region", "type": "select", "default": "EMEA" }]
-}
-```
-
-The side `bindings` map (keyed by `data-el-id`) is the editor's unit of work.
-HTML stays readable and LLM-writable; the editor mutates bindings without
-rewriting the HTML string. Validation (server-side, `validate_canvas_doc`)
-cross-checks that every `data-el-id` in `bindings` exists in the HTML and vice
-versa, and resolves `query_id` / `metric_id` / `connector_id` against their
-registries.
-
-### Binding kinds
-
-| Kind | What it does |
-|---|---|
-| `query` | Runs a registered query; optionally extracts a single field (`field`) for `{{token}}`-style scalar injection |
-| `metric` | Runs a semantic-layer metric via `compile_metric` — dimensions, time_grain, and filters are configurable per element |
-| `api` | Calls an HTTP_JSON connector; `path` is appended to the connector's base URL; `select` is a JSONPath expression applied to the response JSON |
-
-All three binding kinds honour RLS: data flows through the same
-`collect.py` / `run_query_rows` / `_resolve_connector` pipeline as dashboard
-widgets, so per-org predicates and `source_unsupported_rls` guards apply
-unchanged.
-
-### Custom element vocabulary
-
-Canvas uses the `nubi-*` client convention. All elements require `data-el-id`
-when data-bound:
-
-| Element | Purpose |
-|---|---|
-| `<nubi-kpi>` | Single KPI metric card |
-| `<nubi-table>` | Tabular data grid |
-| `<nubi-chart>` | Chart (type attribute: scatter / bar / line / pie / area) |
-| `<nubi-metric>` | Semantic-layer metric value |
-| `<nubi-filter>` | Variable filter control |
-| `<nubi-text>` | Rich-text / Markdown panel |
-| `<nubi-value>` | Inline single scalar (`{{token}}`-style injection) |
-
-Plain HTML elements can also carry `data-el-id` to receive `{{token}}` text or
-attribute injection from a `query` or `api` binding.
-
-### Security model
-
-Canvas HTML passes through two independent safety layers:
-
-1. **Client**: `sanitizeDashboardHtml` (DOMPurify allowlist) before `innerHTML`
-   is set. No `<script>`, `on*=`, or `javascript:/data:` URI survives.
-2. **Server**: `validate_canvas_doc` (extends `validate_dashboard_html`) on save.
-   Same block list plus binding consistency checks.
-
-The extended allowlist adds `nubi-metric`, `nubi-filter`, `nubi-text`,
-`nubi-value` to the existing `nubi-kpi`, `nubi-table`, `nubi-chart` set.
-New tags require explicit allowlisting with justification; the sanitizer trust
-boundary is never relaxed.
-
-### LLM integration
-
-`backend/app/ai/canvas.py` mirrors the dashboard AI module:
-
-- `generate_canvas_doc(question, catalog, …)` — teaches the LLM the `nubi-*`
-  element vocabulary, the `bindings` map shape, and the safety rules; runs a
-  generate → validate → repair loop (up to `MAX_DASHBOARD_REPAIR_ROUNDS`
-  rounds); raises a loud HTTP 422 on final failure.
-- `edit_canvas_doc(doc, instruction, catalog, …)` — diff-style edit ("make the
-  header red", "bind el_3 to the revenue metric") with the same validate/repair loop.
-  Canvas shines here because the model edits HTML directly instead of a constrained spec.
-
-Routes: `POST /ai/canvas`, `POST /ai/canvas/edit`, `GET /ai/canvas/schema`,
-`POST /canvas/validate` (stateless validation oracle).
-
-### Scheduled sending
-
-The `report_send` flow handler is generalised to dispatch on `canvas_id` OR
-`board_id`. A Canvas can be sent on a schedule to recipients (html/pdf) with
-per-recipient RLS (`locked_params` + captured `policies`), email, and optional
-Slack/Teams notify channels — identical to the board `report_send` flow, no
-forked code.
-
-The editor's "Schedule" dialog writes a `report_send`-style flow task config
-with `{canvas_id, format, recipients, params, locked_params, …}`.
-
-### Routes and navigation
-
-| Route | Surface |
-|---|---|
-| `GET /canvas/:id` | Canvas editor (code + visual split, RHS inspector) |
-| `GET /c/:id` | Public viewer (read-only, URL ↔ variable sync) |
-| `GET /canvases` | Canvas list page (mirrors `/dashboards`) |
-| `POST /canvases` | Create a Canvas (CRUD via repo, mirrors boards) |
-| `PUT /canvases/:id` | Save / update |
-| `POST /canvas/validate` | Stateless validation oracle |
-| `POST /ai/canvas` | LLM generate |
-| `POST /ai/canvas/edit` | LLM edit |
-
----
 
 ## The close-the-loop architecture
 
 ### The thesis
 
-Most BI tools do one thing: display data. Nubi closes the loop: compute a
-decision (Flow), show it (Dashboard or Canvas), act on it (action / approval
-widget → write-back), write the result back to the source, re-trigger the next
-compute cycle.
+Most BI tools do one thing: display data. Nubi closes the loop as far as
+*read* goes: compute a decision (Flow), materialize it, govern it as a
+semantic metric, and display it on a Dashboard — with a downstream trigger
+that can kick off the next compute cycle when the upstream Flow completes.
+(Writing a decision back to the source system is a host-owned step — see
+[Outbound webhooks](#outbound-webhooks) for how a host subscribes to Flow/watch
+events to drive its own write-back.)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -571,27 +405,28 @@ compute cycle.
 │  │    channel      │                   │   - derived / ratio     │  │
 │  │  - sweep /      │                   │   - time intelligence   │  │
 │  │    backfill     │                   │   - top-N               │  │
-│  └─────────────────┘                   │   - rls_keys            │  │
-│         │                              └───────────┬─────────────┘  │
-│         │ write-back                               │ compile_metric  │
-│         │ (idempotent,                             ▼                │
-│         │  dry-run,             ┌──────────────────────────────┐   │
-│         │  RBAC,                │  Pre-agg rollup (optional)   │   │
-│         │  approval gate)       │  build_rollup_for_metric      │   │
-│         │                       │  __base-aware router          │   │
-│         │                       └──────────────┬───────────────┘   │
-│         │                                       │ Arrow IPC         │
-│         │                                       ▼                   │
-│         │                       ┌──────────────────────────────┐   │
-│         │                       │  Dashboard / Canvas           │   │
-│         │                       │  (display + filter)           │   │
-│         │                       │  - DuckDB-WASM in browser     │   │
-│         │                       │  - $0 / view marginal cost    │   │
-│         │                       │  - variables, cross-filter    │   │
-│         │                       │  - scheduled send (PDF/HTML)  │   │
-│         │                       └──────────────┬───────────────┘   │
-│         │                                       │ action / approval  │
-│         └───────────────────────────────────────┘  widget           │
+│  └────────┬────────┘                   │   - rls_keys            │  │
+│           │                            └───────────┬─────────────┘  │
+│           │ event / webhook                        │ compile_metric  │
+│           │ trigger (host's                        ▼                │
+│           │ own write-back,       ┌──────────────────────────────┐   │
+│           │ if any)               │  Pre-agg rollup (optional)   │   │
+│           │                       │  build_rollup_for_metric      │   │
+│           │                       │  __base-aware router          │   │
+│           │                       └──────────────┬───────────────┘   │
+│           │                                       │ Arrow IPC         │
+│           │                                       ▼                   │
+│           │                       ┌──────────────────────────────┐   │
+│           │                       │  Dashboard                    │   │
+│           │                       │  (display + filter)           │   │
+│           │                       │  - DuckDB-WASM in browser     │   │
+│           │                       │  - $0 / view marginal cost    │   │
+│           │                       │  - variables, cross-filter    │   │
+│           │                       │  - scheduled send (PDF/HTML)  │   │
+│           │                       └──────────────┬───────────────┘   │
+│           │                                       │ watch_breach /     │
+│           └───────────────────────────────────────┘ flow_completed     │
+│                                                       webhook           │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -615,18 +450,15 @@ compute cycle.
    the rollup instead of the raw table. The browser fetches the Arrow result and
    runs DuckDB-WASM locally — zero server compute per view.
 
-5. **Dashboard or Canvas**: a structured grid (`DashboardSpec`) or a freeform
-   HTML document (`CanvasDoc`) binds to the metric, query, or API connector.
-   Both surfaces use the same data/RLS layer and the same browser-compute wedge.
+5. **Dashboard**: a structured grid (`DashboardSpec`) — including, where an
+   author wants freeform layout, an `HtmlWidget` — binds to the metric, query,
+   or API connector. Display runs entirely on the browser-compute wedge.
 
-6. **Action / approval widget**: a Canvas element (or a dashboard action widget)
-   lets a user review the Flow's recommendation and approve / reject / edit it.
-
-7. **Write-back**: the approved value is written back to the source connector via
-   the governed write-back engine (idempotent, RBAC, dry-run preview).
-
-8. **Downstream trigger**: the write-back completion fires a registered
-   downstream trigger, which spawns the next Flow run. The loop closes.
+6. **Downstream trigger / webhook**: a `watch_breach` or `flow_completed` event
+   can fire a registered downstream trigger (spawning the next Flow run) and/or
+   an outbound webhook the host subscribes to. If the host wants to act on the
+   decision — e.g. write an approved price change back to its own system — it
+   owns that write path; Nubi hands it the event, signed and idempotent.
 
 ### What each step costs
 
@@ -635,10 +467,8 @@ compute cycle.
 | Flow run (Python / SQL cell) | Yes | `compute_zar_per_1000_cu` |
 | Rollup build | Yes (one-time) | `compute_zar_per_1000_cu` |
 | Snapshot refresh | Yes (periodic) | `scan_zar_per_tib` + `storage_zar_per_gb_month` |
-| Dashboard / Canvas view | **No** (browser computes) | zero |
-| Write-back preview (dry-run) | Minimal (diff only) | zero |
-| Write-back commit | Yes (connector write) | `compute_zar_per_1000_cu` |
-| Scheduled Canvas/board send | Yes (render + deliver) | `compute_zar_per_1000_cu` |
+| Dashboard view | **No** (browser computes) | zero |
+| Scheduled board send | Yes (render + deliver) | `compute_zar_per_1000_cu` |
 | Viewer seats | **No** | zero at every tier |
 
 The wedge invariant is preserved at every step. The billing model meters what
@@ -648,12 +478,12 @@ the server does, not who views the result.
 
 ## Open-core boundary
 
-All four capabilities above are part of the OSS core (`backend/app/`, `src/`).
+All three capabilities above are part of the OSS core (`backend/app/`, `src/`).
 Billing meters (`app/ee/billing/tiers.py`), Paystack integration, and
 cloud-specific provisioning stay in `ee/`. The `agent_run_zar_per_run` and
-`compute_zar_per_1000_cu` meters that Flow runs and write-backs consume are
-defined in `ee/` and injected into the OSS runtime via the billing hooks —
-the OSS core never imports from `ee/` directly.
+`compute_zar_per_1000_cu` meters that Flow runs consume are defined in `ee/`
+and injected into the OSS runtime via the billing hooks — the OSS core never
+imports from `ee/` directly.
 
 ---
 
