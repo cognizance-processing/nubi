@@ -106,4 +106,5 @@ pywebpush>=1.14.0
 # Test dependencies
 pytest>=8.0
 pytest-asyncio>=1.0
+pytest-timeout>=2.3   # per-test timeout (pytest.ini) — stops a hung test wedging CI
 # httpx is already listed above (needed for both runtime and tests)

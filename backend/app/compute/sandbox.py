@@ -204,6 +204,12 @@ def truncate_output(raw: bytes, cap: int) -> tuple[bytes, bool]:
 # run_sandboxed — the shared hardened subprocess executor
 # ---------------------------------------------------------------------------
 
+# Bounded wait for draining pipes AFTER a timeout-kill. A grandchild that
+# escaped the process group (started its own session) can hold stdout/stderr
+# open; without this bound the post-kill communicate() blocks forever, which is
+# exactly how a single kernel run could wedge the whole test suite.
+_DRAIN_TIMEOUT_S = 5
+
 
 @dataclass
 class SandboxedRun:
@@ -272,7 +278,17 @@ def run_sandboxed(
         raw_stdout, raw_stderr = proc.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired:
         kill_process_group(proc)
-        proc.communicate()  # drain pipes to avoid zombie
+        # Drain to reap the process — but BOUND the wait. If a grandchild escaped
+        # the process group into its own session it can hold the pipes open and
+        # make an unbounded communicate() hang forever; escalate, then give up.
+        try:
+            proc.communicate(timeout=_DRAIN_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            proc.kill()  # SIGKILL the direct child once more
+            try:
+                proc.communicate(timeout=_DRAIN_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                pass  # pipe still held by an escaped grandchild — abandon the drain
         return SandboxedRun(
             returncode=proc.returncode,
             stdout=b"",
