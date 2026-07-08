@@ -46,8 +46,8 @@ result.
 The default path for private data. The `<nubi-dashboard>` component sends the
 viewer's host-signed embed JWT to `/api/v1/query`. The backend verifies the
 signature, injects the `policies` dict as AST-level `WHERE` predicates, and
-executes the query against the live data warehouse. Results stream back as Arrow
-IPC.
+pushes the query down to the customer's own live data warehouse via the
+registered connector. Results stream back as Arrow IPC.
 
 Billing: bytes scanned against the warehouse hit the `scan_zar_per_tib` meter
 (first 1 TiB/month free, then R83/TiB at the reference rate). This is the only

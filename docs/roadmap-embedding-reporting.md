@@ -120,7 +120,7 @@ Map the new server-side actions to EXISTING COGS lines — no per-seat/per-view 
 
 ## Wave 2.5 — Demo-as-file + browser-compute ✅ Shipped
 
-- **D1 — Demo = lakehouse only.** ✅ Demo data is static Parquet served at `GET /api/v1/demo-parquet/*`. The `__demo__` virtual connector points at these files. `app/sample.py` seeds new projects with demo data via `provision_demo_parquet`.
+- **D1 — Demo = browser-WASM only.** ✅ Demo data is static Parquet served at `GET /api/v1/demo-parquet/*`. The `__demo__` virtual connector points at these files. `app/sample.py` seeds new projects with demo data via `provision_demo_parquet`.
 - **D2 — Read-only demo computes in the browser.** ✅ `src/lib/wasmRuntime.js::runArrowQueryById` transparently routes demo queries (those in the demo query map) through DuckDB-WASM `read_parquet` — zero `POST /api/v1/query` calls for demo data. The "free in-browser demo" wedge is live.
 - **D3 — Connector creation: demo or blank.** ✅ New-connector flow includes the `__demo__` option.
 - **D4 — New-project seeding.** ✅ `app/sample.py::provision_demo_parquet` seeds connector + queries + dashboards as a starter template.

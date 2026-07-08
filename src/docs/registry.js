@@ -49,7 +49,6 @@ const mdFiles = import.meta.glob(
     '/docs/files-as-code.md',
     '/docs/git-sync.md',
     '/docs/bridges.md',
-    '/docs/lakehouse.md',
     '/docs/development.md',
     '/docs/docs-and-screenshots.md',
     // Feature docs (shipped + linked from README/index, previously unreachable in-app)
@@ -62,7 +61,6 @@ const mdFiles = import.meta.glob(
     '/docs/governance.md',
     '/docs/mcp.md',
     '/docs/embed-api.md',
-    '/docs/custody-tier.md',
     '/docs/compute-kernel-attribution-runner.md',
   ],
   { query: '?raw', import: 'default', eager: true }
@@ -83,8 +81,8 @@ const LAYOUT = [
   { section: 'Nubi Cloud',          group: 'Cloud & billing',   slugs: ['cloud', 'billing-and-usage'] },
 
   { section: 'Open-source project', group: 'Self-host',         slugs: ['self-host', 'open-core', 'architecture-open-core'] },
-  { section: 'Open-source project', group: 'Security & internals', slugs: ['connector-security', 'kernel-security', 'custody-tier', 'cache-key-spec', 'conformance', 'secrets'] },
-  { section: 'Open-source project', group: 'Build on Nubi',     slugs: ['sdk-and-cli', 'files-as-code', 'git-sync', 'bridges', 'lakehouse', 'compute-kernel-attribution-runner'] },
+  { section: 'Open-source project', group: 'Security & internals', slugs: ['connector-security', 'kernel-security', 'cache-key-spec', 'conformance', 'secrets'] },
+  { section: 'Open-source project', group: 'Build on Nubi',     slugs: ['sdk-and-cli', 'files-as-code', 'git-sync', 'bridges', 'compute-kernel-attribution-runner'] },
   { section: 'Open-source project', group: 'Contributing',      slugs: ['development', 'docs-and-screenshots'] },
 ]
 

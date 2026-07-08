@@ -368,5 +368,4 @@ You've done the three core things: connected a source, run a query, and built a 
 - **[Exports & Scheduled Reports](/docs/exports-and-jobs)** — email a query or board on a schedule.
 - **[Embedding](/docs/embedding)** — put a live, row-level-secured dashboard inside your own app.
 - **[Git sync](/docs/git-sync)** — version-control your queries, dashboards, and flows in GitHub or GitLab.
-- **[Lakehouse](/docs/lakehouse)** — query files on object storage through DuckDB, or provision the one-click managed lakehouse.
 - **[Self-host](/docs/self-host)** — detailed deployment guide, SSL, managed Postgres, and production hardening.

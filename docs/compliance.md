@@ -114,7 +114,7 @@ These are **not yet done** and are tracked as roadmap:
 ## 7. Sub-processors (current, to be formalised)
 | Sub-processor | Purpose | Notes |
 |---|---|---|
-| Cloudflare R2 | Object storage (lakehouse Parquet, assets) | Region to be pinned/documented |
+| Cloudflare R2 | Object storage (materialized flow targets, assets, cache) | Region to be pinned/documented |
 | Fly.io | Application + scale-to-zero compute | — |
 | Paystack | Billing (EE only; ZAR) | Open-core: billing lives in `ee/`, out of OSS core |
 | LLM provider (configurable) | AI authoring / answers (only when an API key is set) | NullProvider default = no external calls |

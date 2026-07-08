@@ -137,7 +137,6 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 | Framework-agnostic web components (10) | ✅ | `<nubi-dashboard/kpi/table/chart/explain/query-editor/metric-explorer/lineage/health>` | [embed-api](docs/embed-api.md) |
 | Per-viewer JWT (RS256/ES256), token-locked params | ✅ | `get-token` bridge | [embedding](docs/embedding.md) |
 | 25-token theme contract, cross-filter bus, scope gating | ✅ | `NubiContext` | [embed-api](docs/embed-api.md) |
-| Data-custody tier (BYO storage, CMEK, region pin) | ✅ | opt-in | [custody-tier](docs/custody-tier.md) |
 | **Per-org rate limiting + embed exemption** — token-bucket keyed by verified org; verified embed tokens exempt on metric/query read paths | ✅ | `middleware/ratelimit.py`; `NUBI_RATELIMIT_QUERY_RPM` (default 120) | [embedding](docs/embedding.md#rate-limiting-and-embed-exemption) |
 
 ## I. Audit & governance reads

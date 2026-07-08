@@ -29,7 +29,7 @@ It shows one card per metric:
 | **Flow runs** | count | Remote-kernel / agent flow runs |
 | **AI usage** | tokens | AI generate/chat calls (tokens where recorded) |
 | **Embedded sessions** | count | Embedded dashboard view sessions |
-| **Storage** | GB | Period **peak** from periodic storage snapshots (the managed lakehouse emits these) |
+| **Storage** | GB | Period **peak** from periodic storage snapshots (materialized flow targets and dataset uploads emit these) |
 
 Click a card to chart that metric over time below the grid.
 
@@ -128,7 +128,7 @@ We meter only the six dimensions that map to a real cost we pay on your behalf:
 |-------------------|------------------|
 | **Storage (GB)** | Object storage your org consumes |
 | **Compute units (CU)** | Flow runs + query compute on Nubi's nodes. Each server-side query execution records one event (compute-seconds); cached reads are never metered |
-| **Bytes scanned (TiB)** | Bytes read by DuckDB across your queries (cache hits scan nothing). The first **1 TiB/month per org is free** (matches BigQuery's free tier); beyond that it's billed per TiB. **Warehouse queries** (the hosted heavy-query pool, Pro+) use this same bytes-scanned meter — there is **no separate warehouse rate or CU multiplier** |
+| **Bytes scanned (TiB)** | Bytes read by DuckDB across your queries (cache hits scan nothing). The first **1 TiB/month per org is free** (matches BigQuery's free tier); beyond that it's billed per TiB. **Warehouse queries** (pushed down to your connected warehouse, Pro+) use this same bytes-scanned meter — there is **no separate warehouse rate or CU multiplier** |
 | **Embedded sessions** | Embedded dashboard loads per month |
 | **AI calls** | Text-to-SQL, MCP tools, and agent steps |
 | **Agent / kernel runs** | On-demand server kernels (Team & Pro+) |

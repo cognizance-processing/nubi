@@ -37,7 +37,7 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 | [**Lineage**](/docs/lineage) | Inter-model dependency DAG (`GET /lineage/dag`), metric lineage, flow/cell column lineage |
 | [**Data Health**](/docs/data-health) | Freshness registry (`GET /health/freshness`), weighted health scoring (`GET /health/score`), estate graph |
 | [**Transformation**](/docs/transformation) | Flow spec version history + revert, env pinning, `POST /transpile` (SQL dialect conversion) |
-| [**Materialization**](/docs/materialization) | Named managed tables for flows — the data-plane path for hosts without a warehouse; `full` / `incremental` Parquet targets, query registry wiring, RLS, watermarks |
+| [**Materialization**](/docs/materialization) | Named managed tables for flows — materialize-once, serve-many caching for expensive projections; `full` / `incremental` Parquet targets, query registry wiring, RLS, watermarks |
 | [**Governance**](/docs/governance) | RLS policy schema (scalar/list/range), hierarchical scope expansion, authoring scopes (`author:sql`, `author:metric`) |
 | [**AI, Chat & MCP**](/docs/ai-and-mcp) | Grounded ask, agentic chat, 14 agent tools, MCP server (15 tools), Slack/WhatsApp gateway |
 | [**MCP integration**](/docs/mcp) | Host integration contract: registering external MCP servers, agent tool dispatch, Nubi as MCP server (JSON-RPC, tool catalog, auth) |
@@ -67,7 +67,6 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 | [**Open-Core Architecture**](/docs/architecture-open-core) | Feature-gate API, Docker CE/EE images, how EE billing slots in |
 | [**Architecture & Economics**](/docs/architecture-and-economics) | The compute-placement model, embedding modes, and how each maps to billing COGS |
 | [**Compliance**](/docs/compliance) | Posture document (not a certification) — implemented controls today, gaps disclosed, POPIA/GDPR-relevant custody controls |
-| [**Data-Custody Tier**](/docs/custody-tier) | BYO storage + customer-managed keys + region pinning + host write/export API — the opt-in residency tier |
 | [**Connector Security**](/docs/connector-security) | AES-256-GCM secret encryption, key rotation, network modes |
 | [**Kernel Security**](/docs/kernel-security) | The two-kernel trust boundary — browser DuckDB-WASM vs. server Python sandbox |
 | [**Compute-Kernel Attribution Runner**](/docs/compute-kernel-attribution-runner) | Domain-agnostic bring-your-own-model attribution runner on the sandboxed kernel — submit Python + Arrow arrays + a serialized model, get attribution values back; carries no domain semantics |
@@ -79,7 +78,6 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 | [**Files-as-Code**](/docs/files-as-code) | The local project format — flows, queries, and dashboards as committed files; CLI round-trips and CI/CD |
 | [**Git Sync**](/docs/git-sync) | GitHub App + GitLab push; commit queries and dashboards as code |
 | [**Bridges**](/docs/bridges) | Agent-per-VPC reverse tunnel, WebSocket protocol, reachability modes |
-| [**Lakehouse**](/docs/lakehouse) | Datasets on object storage queried through DuckDB; one-click managed lakehouse |
 | [**Developing Nubi**](/docs/development) | Contributor guide — dev stack, seeding, test suites, repo layout, conventions |
 | [**Docs & Screenshots**](/docs/docs-and-screenshots) | How docs are authored and registered; the automated screenshot pipeline |
 

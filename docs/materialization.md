@@ -2,11 +2,12 @@
 
 This page documents the **named managed table** pattern: a Flow that computes
 a projection and writes the result to a persistent, queryable Parquet table
-that downstream metrics and registered queries can SELECT from — without the
-host needing a warehouse of their own.
+that downstream metrics and registered queries can SELECT from — a
+materialize-once, serve-many cache that sits in front of your connectors.
 
-This is the recommended data-plane path for embedding hosts that have no
-BYO warehouse.
+This is the recommended path when a projection is expensive or shared across
+many viewers and you'd rather pay for the compute once per refresh than once
+per dashboard view.
 
 > For the general blend (multi-source materialize-then-serve) pattern see
 > [Flows](/docs/flows.md) and the API reference.  The incremental environments
@@ -35,12 +36,13 @@ The key properties:
 
 ---
 
-## The data-plane gap this fills
+## The materialize-then-serve gap this fills
 
-Nubi's default "live federation" path requires a warehouse connector on every
-query.  Hosts without their own warehouse — or hosts that want materialize-
-then-serve economics (query cost paid once per refresh, not per viewer) — need
-a different target.
+Nubi's default "live federation" path re-runs the query against a connector on
+every view. When a projection is expensive or its result is read by many
+viewers, materialize-then-serve economics (query cost paid once per refresh,
+not per viewer) call for a different target than re-querying the connector
+live.
 
 The `materialize` cell with `kind='full'` or `kind='incremental'` writes the
 computed result to a Parquet file.  After writing, `register_parquet_query`
@@ -313,7 +315,7 @@ pointing at the actual written path after each run.
 | **Registration** | `register_blend_query` (DuckDB) / `register_parquet_query` (Parquet) | `register_parquet_query` |
 | **RLS** | `rls_keys` verified on every run | Same |
 | **Watermark** | Per-task, per-env, in `flow_watermarks` | Same |
-| **Use case** | Multi-source federation materialized for dashboards | Single-source projection for hosts with no warehouse |
+| **Use case** | Multi-source federation materialized for dashboards | Single-source projection materialized as a shared cache |
 
 ---
 

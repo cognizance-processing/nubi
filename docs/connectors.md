@@ -18,7 +18,6 @@ Connectors live on the **Connectors** page (`/connectors` in the app sidebar). C
 Open **Connectors** from the sidebar. The page shows:
 
 - A header with a **Refresh** button and an **Add connector** button (visible to writers and admins only).
-- A **Managed lakehouse** panel at the top — the Nubi-managed datastore is managed here, not on a separate page (see [Managed lakehouse](#managed-lakehouse)).
 - A list of connector cards — one per data source you have added.
 - A built-in **Demo data** card at the top of the list when you are in the org's demo/default project (see [Demo data connector](#demo-data-connector)).
 
@@ -36,31 +35,6 @@ Each connector card shows:
 The card's action buttons are **View data**, **Test**, **Edit** (pencil), and **Delete** (trash). Edit and Delete require write permission; the Demo data connector has no Edit button because it has no configurable fields.
 
 If you have no connectors yet, an empty state invites you to *Add your first connector*. Read-only members see a message to ask an admin.
-
----
-
-## Managed lakehouse
-
-The **Managed lakehouse** is a Nubi-managed datastore: isolated, secure storage Nubi runs for you — no bucket to provision, no credentials to wire up. It is managed from the top of the **Connectors** page (there is no standalone Lakehouse page), and the **Add connector** picker opens with the same choice: *Use Nubi managed lakehouse* (recommended) or *bring your own bucket / source* via the connector types below it.
-
-The panel has three states:
-
-- **Not available** — the deployment has no central storage configured (e.g. a local / self-hosted build). A subtle note explains that the managed lakehouse needs central storage configured by your administrator; bring-your-own connectors still work. (The API degrades the same way: `GET /lakehouse` returns `configured: false`, and provision attempts return `409 managed_lake_unconfigured`.)
-- **Not provisioned** — a **Provision managed lakehouse** button (writers and admins only), with a *Seed demo data so I can explore right away* checkbox.
-- **Provisioned** — the card shows **Storage used** (billed by usage; also visible under **Settings › Usage**), the **Demo data** seed status with a *Seed / Re-seed demo data* action, a **Browse lakehouse data** link that opens the managed datastore in the Data Browser, and a destructive **Disconnect** action with a confirm dialog (*Delete managed lakehouse?* — the storage and all data in it are permanently deleted).
-
-Under the hood, each org's lake is an isolated prefix (`orgs/<org_id>/lake/`) in the central bucket, and the storage path is **server-pinned**: the managed datastore's config cannot be edited via the connectors API (`PUT /connectors/{id}` returns `409 managed_lake_immutable`), so it can never be repointed at another org's prefix or an arbitrary URL.
-
-The REST surface is:
-
-| Method | Path | Notes |
-|--------|------|-------|
-| `GET` | `/api/v1/lakehouse` | Status: `configured`, `provisioned`, `prefix`, `datastore_id`, `demo_seeded`, `usage_bytes` / `usage_gb`. |
-| `POST` | `/api/v1/lakehouse/provision` | Idempotent; add `?seed_demo=true` to also seed the demo datasets. |
-| `POST` | `/api/v1/lakehouse/demo` | Seed (or re-seed) the demo datasets into the lake. |
-| `DELETE` | `/api/v1/lakehouse` | Deprovision — deletes the org's objects and the managed datastore row. |
-
-For the broader lakehouse data plane (uploads, datasets, materialisation), see [Lakehouse](/docs/lakehouse).
 
 ---
 
@@ -127,7 +101,7 @@ The **Add connector** picker groups types into six categories.
 
 You need writer or admin permission in the org.
 
-1. On the **Connectors** page, click **Add connector**. A slide-over panel opens from the right, asking *Where should your data live?* — choosing **Use Nubi managed lakehouse** closes the panel and takes you to the [Managed lakehouse](#managed-lakehouse) card; the connector type list below it is the bring-your-own path.
+1. On the **Connectors** page, click **Add connector**. A slide-over panel opens from the right with the connector type picker.
 2. **Pick a type.** The picker shows all types grouped by category. Use the **search box** to filter by name or description (e.g. type `post` to find PostgreSQL). Click a type tile to continue.
 3. **Name the connector.** Give it a clear name such as `prod-postgres` or `analytics-bigquery`. This name appears on the card and in the connector picker when you write queries.
 4. **Fill in the connection details.** The form is generated from the type you chose — only the relevant fields appear. Required fields are marked; optional ones say *(optional)*. Sensible defaults (ports, SSL mode, etc.) are pre-filled.
@@ -150,7 +124,7 @@ A **PostgreSQL** connector asks for:
 
 A **BigQuery** connector asks for a **GCP Project ID** and a **Service account JSON** key (upload a `.json` file or paste it). Leave the key blank to use Application Default Credentials.
 
-An **Object storage** connector asks for a single **File URL** (`s3://…`, `gs://…`, or `https://…` pointing at a Parquet or DuckDB file), plus optional endpoint / region and access keys for private buckets. The custom **Endpoint** field is how you point it at a MinIO host instead of AWS S3. Behind the scenes this is the `duckdb_storage` connector type: a DuckDB engine that auto-detects the scheme from the file URL and bootstraps `httpfs` + S3 secrets for `s3://` URIs — the same type that backs [managed lakehouse](#managed-lakehouse) datastores.
+An **Object storage** connector asks for a single **File URL** (`s3://…`, `gs://…`, or `https://…` pointing at a Parquet or DuckDB file), plus optional endpoint / region and access keys for private buckets. The custom **Endpoint** field is how you point it at a MinIO host instead of AWS S3. Behind the scenes this is the `duckdb_storage` connector type: a DuckDB engine that auto-detects the scheme from the file URL and bootstraps `httpfs` + S3 secrets for `s3://` URIs, so queries are pushed down to your own bucket rather than copied into Nubi.
 
 ---
 

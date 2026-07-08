@@ -221,8 +221,6 @@ Connectors is where you link Nubi to your data sources. One card per source — 
 
 Click **Add connector** to open a slide-over picker. Search or scroll through the category groups, fill in the connection details, and click **Add connector** to save. Your credentials are encrypted at rest with AES-256-GCM and are never returned by the API.
 
-The **Managed lakehouse** panel at the top of the page lets you provision a Nubi-managed datastore — isolated, secure storage with no bucket to set up yourself.
-
 See [Connectors](/docs/connectors) for the full supported-types list, credential handling details, and private-network bridge setup.
 
 ---
