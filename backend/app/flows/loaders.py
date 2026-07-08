@@ -8,7 +8,7 @@ connector's ``capabilities()`` and moves the staged data into the final target:
 ============================================  ==========  ==================================
 Target class                                  Strategy    Mechanism
 ============================================  ==========  ==================================
-Object storage (incl. managed lakehouse)      ``promote`` server-side copy staging → final
+Object storage (customer bucket)              ``promote`` server-side copy staging → final
 Warehouse with a compatible bulk loader       ``bulk``    (phase 4 — SEAM only here)
 Everything else (Postgres, MySQL, …)          ``stream``  worker reads Parquet, streams batches
 ============================================  ==========  ==================================

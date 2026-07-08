@@ -11,9 +11,8 @@ Why a sidecar
 -------------
 * One self-contained file per snapshot — easy to copy, cache at the edge, hand
   to a CDN, or ship to an air-gapped viewer.
-* Reuses the project's storage layer (``DuckDBStorageConnector.write_result``
-  COPYs through DuckDB's native httpfs for ``s3://`` and writes the filesystem
-  directly for local/``file://`` paths), and the
+* Reuses the project's ``app.storage`` layer (uploads to ``s3://`` / cloud
+  destinations and writes local/``file://`` paths directly), and the
   ``FLOWS_MATERIALIZE_BASE_URI`` storage-URI convention from
   :mod:`app.config`.
 
@@ -214,7 +213,7 @@ def _write_sidecar(
 
     Local / ``file://`` destinations are written in place; ``s3://`` (and other
     cloud) destinations are written to a temp file and uploaded through the
-    ``app.storage`` client (the same backends ``DuckDBStorageConnector`` uses).
+    ``app.storage`` client.
 
     Per-widget errors carried in *widgets* (entries with an ``error`` key) are
     recorded in the manifest but produce no table — the artifact only contains

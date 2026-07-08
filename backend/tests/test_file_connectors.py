@@ -4,20 +4,17 @@ Coverage
 --------
 1.  FileStat shape  — exact fields (path, size, mtime, etag) + defaults.
 2.  file_capabilities helper — safe defaults / explicit values.
-3.  capabilities() extension flags on sftp / ftp / duckdb_storage; query
-    connectors keep the strict 7-flag contract and default file flags off.
+3.  capabilities() extension flags on sftp / ftp; query connectors keep the
+    strict 7-flag contract and default file flags off.
 4.  sftp list_files / open / move / delete against a fake paramiko module
     (paramiko is not installed in CI — the connector imports it lazily).
 5.  sftp host-key pinning / TOFU policy selection.
 6.  ftp list_files / open against a fake ftplib.FTP (MLSD path).
-7.  storage file interface (list/open/move/delete) over the LOCAL backend via
-    duckdb_storage — proving a bucket connector is both queryable and
-    file-capable.
-8.  bridge-routing path selection — file connectors receive proxied host/port
+7.  bridge-routing path selection — file connectors receive proxied host/port
     from network resolution exactly like query connectors (no file-specific
     bridge code).
-9.  registry registers sftp + ftp lazily.
-10. SSRF guard fires on a loopback host.
+8.  registry registers sftp + ftp lazily.
+9.  SSRF guard fires on a loopback host.
 """
 
 from __future__ import annotations

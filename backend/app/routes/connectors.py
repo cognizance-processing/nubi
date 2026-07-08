@@ -234,10 +234,9 @@ class CreateConnectorIn(BaseModel):
     type: ConnectorType
     config: ConnectorConfig = ConnectorConfig()
     secret: ConnectorSecret = ConnectorSecret()
-    # Optional seed: when "demo", the connector is seeded with a copy of the demo
-    # parquet lakehouse (the user's own editable or read-only copy, depending on
-    # whether managed lakehouse storage is configured).  "blank" (default) creates
-    # an empty connector with whatever config the caller supplies.
+    # Optional seed: when "demo", the connector is seeded with a read-only copy
+    # of the demo parquet dataset.  "blank" (default) creates an empty connector
+    # with whatever config the caller supplies.
     seed: Literal["demo", "blank"] | None = None
 
     @model_validator(mode="after")
@@ -764,9 +763,9 @@ async def test_connector(
 
     # Verify the secret layer resolves. ``get`` returns the decrypted dict when a
     # secret exists (proves the key works), or ``None`` when the connector simply
-    # has no secret — both are valid. A secret-less connector includes the
-    # local-file-backend managed lakehouse (no cloud creds) and any connector
-    # created without secret material. Only a genuine decryption error (raised)
+    # has no secret — both are valid. A secret-less connector includes any
+    # connector created without secret material (e.g. a local DuckDB file).
+    # Only a genuine decryption error (raised)
     # is a real failure.
     secret_ok = False
     try:

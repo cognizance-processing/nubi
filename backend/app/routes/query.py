@@ -935,9 +935,8 @@ async def _build_connector_for_plan(
 
     Mirrors the connector-construction block of POST /query: datastore lookup
     (org-scoped), secret injection, network-mode resolution, connector build,
-    and the capability-gated RLS refusal. The heavy-query-pool forwarding and
-    the metering live in the /query handler only — estimate never forwards or
-    meters.
+    and the capability-gated RLS refusal. The metering lives in the /query
+    handler only — estimate never meters.
 
     Returns ``(connector, conn_kind, net_cleanup)``. ``net_cleanup`` tears down
     any ephemeral bridge tunnel and MUST be called by the caller in a finally.
@@ -1765,9 +1764,8 @@ async def query_estimate(
     never reveal rows outside the caller's scope.
 
     Unlike POST /query this route NEVER executes the query, reads or writes the
-    result cache, forwards to the heavy-query pool, or meters usage. It still
-    enforces the EE compute-units quota up front (an estimate consumes a small
-    amount of planning/dry-run budget and the front-end gates the run on it).
+    result cache, or meters usage — it is a pure dry-run (parse + plan + EXPLAIN)
+    the front-end uses to gate the run.
 
     Returns
     -------

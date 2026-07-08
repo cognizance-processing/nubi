@@ -23,7 +23,7 @@ _ENV_FILE_PATH = _ENV_FILE if os.path.isabs(_ENV_FILE) else str(_REPO_ROOT / _EN
 # Also export the env file into os.environ (real env always wins). Several
 # subsystems read os.getenv directly rather than Settings — notably the
 # S3/MinIO parquet machinery (S3_ENDPOINT_URL / S3_ACCESS_KEY / S3_SECRET_KEY
-# in demo_bundle.py, connectors/duckdb_conn.py, duckdb_storage.py) — so keys
+# in demo_bundle.py, connectors/duckdb_conn.py) — so keys
 # defined only in .env must land in the process environment too.
 try:
     from dotenv import load_dotenv

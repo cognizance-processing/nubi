@@ -312,7 +312,7 @@ class FileConnectorMixin:
     ``capabilities()`` and is usable as an ingestion *source* (and, for
     object-storage targets, a *promote* destination).  It is orthogonal to the
     SQL query interface: a connector may implement the query interface only,
-    the file interface only (``sftp`` / ``ftp``), or both (``duckdb_storage``).
+    the file interface only (``sftp`` / ``ftp``), or both.
 
     Only :meth:`list_files` and :meth:`open` are required.  :meth:`move` and
     :meth:`delete` are optional (used by ``post_action`` archive/cleanup); the

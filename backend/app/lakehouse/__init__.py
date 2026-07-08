@@ -1,9 +1,11 @@
-"""Managed lakehouse — the self-managing DuckDB optimizer (Wave 4, §1/§4).
+"""Auto pre-aggregation optimizer.
 
-The managed lakehouse makes Nubi "feel like BigQuery": you query *logical*
-tables and a single optimizer owns the mapping to the *physical* structures it
-maintains (layout, materializations, rewrite).  It is automatic by default
-(posture C+A) and customizable per table via ``nubi.toml``.
+The optimizer owns the mine → decide → build → maintain loop for pre-aggregations:
+it observes the query log, decides which rollups are worth materialising, and
+keeps them fresh — so repeated/embedded queries collapse onto compact,
+edge-cached aggregates (queried in the browser or pushed down to the customer's
+warehouse) instead of re-scanning. It is automatic by default and customizable
+per table via ``nubi.toml``.
 
 This package is intentionally thin scaffolding around machinery that already
 exists elsewhere in core:
