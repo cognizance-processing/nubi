@@ -17,13 +17,11 @@ import QueryWorkspace from '../../components/illustrations/QueryWorkspace.jsx'
 import DashboardCanvas from '../../components/illustrations/DashboardCanvas.jsx'
 import OpenCoreSplit from '../../components/illustrations/OpenCoreSplit.jsx'
 import SelfHostTopology from '../../components/illustrations/SelfHostTopology.jsx'
-import LakehouseFlow from '../../components/illustrations/LakehouseFlow.jsx'
 import TrustBoundary from '../../components/illustrations/TrustBoundary.jsx'
 
 const ITEMS = [
   ['OpenCoreSplit', OpenCoreSplit],
   ['SelfHostTopology', SelfHostTopology],
-  ['LakehouseFlow', LakehouseFlow],
   ['TrustBoundary', TrustBoundary],
   ['QueryWorkspace', QueryWorkspace],
   ['DashboardCanvas', DashboardCanvas],

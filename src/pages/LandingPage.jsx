@@ -39,7 +39,6 @@ import {
   Globe,
   Bot,
   Workflow,
-  Warehouse,
   ChevronRight,
   Check,
   X,
@@ -76,11 +75,9 @@ import {
 import { CONNECTOR_TYPES } from '../data/connectors.js'
 import { fetchPricingData } from '../lib/pricing.js'
 import { useCurrency } from '../contexts/CurrencyContext.jsx'
-import LakehouseCalculator from '../components/marketing/LakehouseCalculator.jsx'
 import KernelInBrowser from '../components/illustrations/KernelInBrowser.jsx'
 import EdgeCache from '../components/illustrations/EdgeCache.jsx'
 import WebGLPerf from '../components/illustrations/WebGLPerf.jsx'
-import LakehouseFlow from '../components/illustrations/LakehouseFlow.jsx'
 // Dev-centric features read better as real code than abstract art.
 import { FlowCode, LlmDashboardCode, FilesAsCodeCli } from '../components/illustrations/CodeTile.jsx'
 
@@ -127,17 +124,6 @@ const TOUR_TABS = [
     title: 'Orchestrate SQL + Python. Canvas, notebook, or code.',
     body: 'A built-in workflow orchestrator: wire query, Python, and export tasks into a DAG, schedule it, and watch runs live. The same flow is editable as a canvas, a notebook, or generated Python files.',
     chips: ['DAG canvas', 'Notebook cells', 'Files-as-code'],
-  },
-  {
-    id: 'lakehouse',
-    label: 'Lakehouse',
-    icon: Warehouse,
-    url: 'app.nubi.dev/data',
-    img: '/docs/screenshots/data-explorer.png',
-    alt: 'The Nubi data explorer browsing lakehouse datasets stored on object storage',
-    title: 'A managed lakehouse, one click away.',
-    body: 'Provision a per-org lakehouse on object storage and query it through DuckDB — Parquet in, dashboards out. Land flow outputs there, or bring your own bucket.',
-    chips: ['Object storage', 'DuckDB over Parquet', 'Per-org isolation'],
   },
 ]
 
@@ -399,19 +385,7 @@ const DECISIONS = [
     chip: 'predicate_rls=False → 501',
   },
   {
-    id: 'warehouse', index: '07', tag: 'pro & enterprise', icon: Warehouse, accent: '#6366f1',
-    hook: 'Big tables, no warehouse tax.',
-    body: (
-      <>
-        <B>Open Parquet on object storage</B>, queried by DuckDB on dedicated machines at
-        plain compute rates — no per-TB scan fees. <B>Outgrow it and nothing migrates</B>:
-        leaving is a connection string.
-      </>
-    ),
-    chip: 'open formats · zero lock-in',
-  },
-  {
-    id: 'flows', index: '08', tag: 'workflows', icon: Workflow, accent: '#14b8a6',
+    id: 'flows', index: '07', tag: 'workflows', icon: Workflow, accent: '#14b8a6',
     hook: 'The orchestrator bill, deleted.',
     body: (
       <>
@@ -1408,17 +1382,6 @@ function LpPricingSection() {
             <CalcShell index="02" slug="orchestration-cost">
               <LpOrchCalculator />
             </CalcShell>
-          </div>
-
-          {/* Calculator 3 — lakehouse data cost (shared with /pricing) */}
-          <div className="mt-10">
-            <p className="text-sm text-muted max-w-2xl mb-4">
-              The lakehouse stores your data as open Parquet on object storage and bills{' '}
-              <strong className="text-fg font-semibold">$5/TiB scanned</strong> (first 1 TiB/month
-              free) plus <strong className="text-fg font-semibold">$0.02/GB/month</strong> storage —
-              no always-on cluster, and dashboard views scan zero bytes.
-            </p>
-            <LakehouseCalculator />
           </div>
         </div>
       </div>

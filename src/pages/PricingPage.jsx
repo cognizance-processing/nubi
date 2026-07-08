@@ -20,7 +20,7 @@ import {
   Check, X, ArrowRight, ChevronRight, Headset, Star,
   Zap, Database, Bot, Server, Users, XCircle, CheckCircle2,
   SlidersHorizontal, TrendingDown, Shield, Wallet, GitFork, Gauge,
-  HardDrive, Construction,
+  Construction,
 } from 'lucide-react'
 import {
   TIERS, BILLING_MODEL, BI_COMPARISON, ORCH_COMPARISON, PRICING_FAQ, ENTERPRISE_NOTE,
@@ -30,7 +30,7 @@ import { fetchPricingData } from '../lib/pricing.js'
 import MarketingStyles from '../components/marketing/MarketingStyles.jsx'
 import useReveal from '../components/marketing/useReveal.js'
 import CalcShell from '../components/marketing/CalcShell.jsx'
-import LakehouseCalculator, { SliderField } from '../components/marketing/LakehouseCalculator.jsx'
+import { SliderField } from '../components/marketing/LakehouseCalculator.jsx'
 
 const fmtUSD = (n) => {
   if (!n) return '$0'
@@ -524,7 +524,7 @@ function CostCalculator() {
         ))}
       </div>
       <p className="px-5 sm:px-8 pb-6 font-mono text-[10.5px] text-muted opacity-70 leading-relaxed">
-        Estimated annual cost from each vendor’s public model (BI platform only; lakehouse data cost is separate).
+        Estimated annual cost from each vendor’s public model (before your own warehouse compute).
         † Looker is quote-only; figure is directional. Your actual cost depends on contract terms — verify before switching.
       </p>
     </CalcShell>
@@ -875,7 +875,7 @@ export default function PricingPage() {
                     { v: '$0', l: 'marginal cost per dashboard view' },
                     { v: '∞', l: 'editors & viewers on every plan' },
                     { v: '$9', l: 'first paid tier — usd, billed in zar' },
-                    { v: '1 TiB', l: 'free lakehouse scan, every month' },
+                    { v: '10–50×', l: 'fewer warehouse scans vs naive use' },
                   ].map(s => (
                     <div key={s.l} className="px-4 sm:px-8 py-2 lg:py-0 text-center">
                       <div className="lp-hero-gradient-text font-display text-3xl sm:text-4xl lg:text-[2.6rem] font-bold tracking-tight">
@@ -1046,7 +1046,7 @@ export default function PricingPage() {
                 What <span className="lp-hero-gradient-text">500 viewers</span> cost
               </h2>
               <p className="text-sm sm:text-base text-muted max-w-2xl mx-auto">
-                Illustrative annual cost to serve ~500 dashboard viewers (lakehouse data cost is separate),
+                Illustrative annual cost to serve ~500 dashboard viewers (before your own warehouse compute),
                 derived from each vendor’s public model.{' '}
                 <strong className="text-fg font-semibold">Everyone else scales with viewers or queries. We don’t.</strong>
               </p>
@@ -1112,40 +1112,15 @@ export default function PricingPage() {
         </section>
 
         {/* ════════════════════════════════════════════════════════════════════
-            LAKEHOUSE — what it is, what it costs + Calculator 3
+            BYO WAREHOUSE — pushdown note
         ════════════════════════════════════════════════════════════════════ */}
-        <section className="py-14 sm:py-20">
-          <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-            <Reveal className="text-center mb-10">
-              <Eyebrow>
-                <span className="inline-flex items-center gap-1.5">
-                  <HardDrive size={12} /> lakehouse data · all plans
-                </span>
-              </Eyebrow>
-              <h2 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-fg mb-3">
-                Pay per TiB scanned — <span className="lp-hero-gradient-text">dashboard views are free</span>
-              </h2>
-              <p className="text-sm sm:text-base text-muted max-w-2xl mx-auto">
-                Your data lives as open Parquet on Cloudflare R2. DuckDB queries it on-demand —
-                you pay <strong className="text-fg font-semibold">$5/TiB scanned</strong> (first 1 TiB/month always free),
-                plus <strong className="text-fg font-semibold">$0.02/GB/month</strong> storage. That's cheaper than
-                BigQuery. Dashboard views run in the user's browser — the DuckDB-WASM kernel costs us
-                nothing, so we charge you nothing for them. When you outgrow the single-node lakehouse,
-                connect your own BigQuery or Snowflake — Nubi pushes queries down to their engine while
-                dashboards, RLS, and caching stay in Nubi.
+        <section className="py-10 sm:py-14">
+          <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+            <Reveal>
+              <p className="text-sm sm:text-base text-muted">
+                Already run BigQuery or Snowflake? <strong className="text-fg font-semibold">Point Nubi at it and go</strong> —
+                Nubi pushes queries down to your engine while dashboards, RLS, and caching stay in Nubi.
               </p>
-            </Reveal>
-
-            {/* Calculator 3 — lakehouse */}
-            <Reveal className="text-center mb-8">
-              <Eyebrow>
-                <span className="inline-flex items-center gap-1.5">
-                  <SlidersHorizontal size={12} /> calculator 03 · lakehouse data cost
-                </span>
-              </Eyebrow>
-            </Reveal>
-            <Reveal delay={80}>
-              <LakehouseCalculator />
             </Reveal>
           </div>
         </section>
