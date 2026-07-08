@@ -43,7 +43,6 @@ import HtmlWidget from './widgets/HtmlWidget.jsx'
 import MetricWidget from './widgets/MetricWidget.jsx'
 import PivotWidget from './widgets/PivotWidget.jsx'
 import SectionWidget from './widgets/SectionWidget.jsx'
-import ActionWidget from './widgets/ActionWidget.jsx'
 import { VariableProvider, useSetVariable, useResolvedParams } from './VariableStore.jsx'
 import { CrossFilterProvider } from './CrossFilterContext.jsx'
 import { RefreshContext } from './RefreshContext.jsx'
@@ -218,7 +217,6 @@ function WidgetComponent({ widget, onOpenDrawer, editMode = false, providerTable
     case 'filter':  return <FilterWidgetLoader widget={w} editMode={editMode} />
     case 'text':    return <TextWidget   widget={w} />
     case 'section': return <SectionWidget widget={w} />
-    case 'action':  return <ActionWidget  widget={w} />
     default:
       return (
         <div className="flex items-center justify-center h-full px-4">

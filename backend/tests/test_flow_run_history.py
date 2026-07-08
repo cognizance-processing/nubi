@@ -516,39 +516,6 @@ async def test_fire_trigger_scope_uses_identity_not_hardcoded():
 
 
 # ---------------------------------------------------------------------------
-# FIX 1: Writeback GET routes registered only once (no duplicate)
-# ---------------------------------------------------------------------------
-
-
-def test_writeback_routes_registered_once():
-    """Each writeback GET path must appear exactly once in the router.
-
-    Duplicate registrations silently cause FastAPI to prefer the first
-    handler, hiding the second.  Assert the path is registered exactly once.
-
-    Note: the router uses prefix="/flows" so stored paths are /flows/writeback.
-    """
-    import app.routes.flows as flows_mod
-
-    wb_list_count = 0
-    wb_detail_count = 0
-    for route in flows_mod.router.routes:
-        path = getattr(route, "path", "")
-        methods = getattr(route, "methods", set()) or set()
-        if path in ("/flows/writeback", "/writeback") and "GET" in methods:
-            wb_list_count += 1
-        if path in ("/flows/writeback/{wb_id}", "/writeback/{wb_id}") and "GET" in methods:
-            wb_detail_count += 1
-
-    assert wb_list_count == 1, (
-        f"GET writeback list route registered {wb_list_count} times — expected exactly 1"
-    )
-    assert wb_detail_count == 1, (
-        f"GET writeback detail route registered {wb_detail_count} times — expected exactly 1"
-    )
-
-
-# ---------------------------------------------------------------------------
 # FIX 2 & 3: /flows/{id}/runs is row-capped and paginated
 # ---------------------------------------------------------------------------
 

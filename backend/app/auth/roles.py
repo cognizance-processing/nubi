@@ -150,7 +150,7 @@ async def require_approver_default(
 
     Approver roles are owner and admin only.  Members, viewers, and unauthenticated
     callers are rejected with 403.  Use on routes that require elevated approval
-    permission (e.g. POST /flows/writeback/{id}/approval).
+    permission (e.g. POST /access-grants).
     """
     _require_write_scope_from_request(request)
     user_id = str(user["id"])
