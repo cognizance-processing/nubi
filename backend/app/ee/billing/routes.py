@@ -207,8 +207,6 @@ def _build_tier_display(tier_limits: Any) -> dict[str, Any]:
     """Convert a TierLimits dataclass to a JSON-serialisable display dict."""
     from decimal import Decimal  # noqa: PLC0415
 
-    from app.ee.billing.tiers import WAREHOUSE_CU_MULTIPLIER  # noqa: PLC0415
-
     def _dec(v: Any) -> Any:
         """Convert Decimal to str for JSON safety; leave None/int/float as-is."""
         return str(v) if isinstance(v, Decimal) else v
@@ -226,8 +224,6 @@ def _build_tier_display(tier_limits: Any) -> dict[str, Any]:
             "max_query_rows": tier_limits.max_query_rows,
             "max_dashboards": tier_limits.max_dashboards,
             "max_flows": tier_limits.max_flows,
-            "max_storage_gb": tier_limits.max_storage_gb,
-            "max_compute_units_per_month": tier_limits.max_compute_units_per_month,
             "max_embedded_sessions_per_month": tier_limits.max_embedded_sessions_per_month,
             "max_agent_runs_per_month": tier_limits.max_agent_runs_per_month,
             "max_ai_calls_per_month": tier_limits.max_ai_calls_per_month,
@@ -235,8 +231,6 @@ def _build_tier_display(tier_limits: Any) -> dict[str, Any]:
             "security_dial_max": tier_limits.security_dial_max,
         },
         "overages": {
-            "storage_zar_per_gb_month": _dec(ov.storage_zar_per_gb_month),
-            "compute_zar_per_1000_cu": _dec(ov.compute_zar_per_1000_cu),
             "ai_call_zar_per_call": _dec(ov.ai_call_zar_per_call),
             "embedded_session_zar_per_10k": _dec(ov.embedded_session_zar_per_10k),
             "agent_run_zar_per_run": _dec(ov.agent_run_zar_per_run),
@@ -251,12 +245,7 @@ def _build_tier_display(tier_limits: Any) -> dict[str, Any]:
             "has_rls": tier_limits.has_rls,
             "has_sso_google": tier_limits.has_sso_google,
             "has_multi_tenant_workspaces": tier_limits.has_multi_tenant_workspaces,
-            "has_byoc": tier_limits.has_byoc,
             "has_custom_domain": tier_limits.has_custom_domain,
-            "has_warehouse": tier_limits.has_warehouse,
-            "warehouse_cu_multiplier": (
-                WAREHOUSE_CU_MULTIPLIER if tier_limits.has_warehouse else None
-            ),
             "audit_log_retention_days": tier_limits.audit_log_retention_days,
             "has_priority_support": tier_limits.has_priority_support,
             # SLA fields — present on Pro (uptime only) and Enterprise (full contractual SLA)
@@ -376,7 +365,6 @@ async def _get_org_tier_info(org_id: str) -> dict[str, Any]:
             "max_query_rows": limits.max_query_rows,
             "max_dashboards": limits.max_dashboards,
             "max_flows": limits.max_flows,
-            "max_storage_gb": limits.max_storage_gb,
             "security_dial_min": limits.security_dial_min,
             "security_dial_max": limits.security_dial_max,
         },
@@ -826,8 +814,6 @@ async def current_cycle_projection(
         "period_end": period_end.isoformat() if hasattr(period_end, "isoformat") else str(period_end),
         "usage": usage.to_dict(),
         "limits": {
-            "max_storage_gb": limits.max_storage_gb,
-            "max_compute_units_per_month": limits.max_compute_units_per_month,
             "max_ai_calls_per_month": limits.max_ai_calls_per_month,
             "max_embedded_sessions_per_month": limits.max_embedded_sessions_per_month,
             "max_agent_runs_per_month": limits.max_agent_runs_per_month,
@@ -1137,8 +1123,9 @@ async def admin_set_org_billing(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Limit override {key!r} must be non-negative.",
             )
-        # storage_gb is fractional; all other limits are integer counts.
-        clean_overrides[key] = float(val) if key == "max_storage_gb" else int(val)
+        # All overridable limits are integer counts (no fractional dimensions
+        # remain now that storage/compute-unit quotas have been removed).
+        clean_overrides[key] = int(val)
 
     actor_id = (
         str(admin.get("id", "")) if isinstance(admin, dict) else str(getattr(admin, "id", ""))

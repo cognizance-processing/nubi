@@ -20,22 +20,19 @@ Closes one billing cycle for one organisation:
        and advance the subscription period.
     8. Email the invoice to the customer (best-effort).
 
-Pricing dimensions (v4 — June 2026)
--------------------------------------
+Pricing dimensions (post-warehouse — two real meters + one escape hatch)
+-------------------------------------------------------------------------
+Nubi does not host a warehouse: there is no server-side bytes-scanned,
+compute-unit, or storage dimension to price.  The only marginal COGS lines
+left are CDN egress/edge-compute for embedded sessions and Anthropic token
+pass-through for AI calls, plus a small on-demand remote-kernel escape hatch
+(agent runs).
+
 | Dimension                       | Rate            | Free allowance        |
 |---------------------------------|-----------------|-----------------------|
-| storage_zar_per_gb_month        | R0.33/GB        | per-tier quota GB     |
-| scan_zar_per_tib (query_scan)   | R83/TiB         | 1 TiB/month (global)  |
-| compute_zar_per_1000_cu         | R100/1,000 CU   | per-tier quota CU     |
 | ai_call_zar_per_call            | R5.00/call      | per-tier quota calls  |
 | embedded_session_zar_per_10k    | R50/10K sess    | per-tier quota sess   |
 | agent_run_zar_per_run           | R2.00/run       | per-tier quota runs   |
-
-Bytes-scanned (``query_scan``) events are recorded by the core metering hook
-(W4-A) via ``record_usage(kind="query_scan", units=<bytes>)``.  Reconciliation
-sums all ``query_scan`` bytes for the period, converts bytes → TiB, subtracts
-the :data:`~app.ee.billing.tiers.SCAN_FREE_ALLOWANCE_TIB` allowance, and
-prices the remainder at the tier's ``scan_zar_per_tib`` rate.
 
 Everything that touches the network (Paystack) or sends mail is injectable so
 the cycle can be run end-to-end in tests and the simulation harness with no
@@ -65,7 +62,6 @@ from app.ee.billing.invoice import (
 from app.ee.billing.tiers import (
     BillingTier,
     OverageRates,
-    SCAN_FREE_ALLOWANCE_TIB,
     TierLimits,
     get_tier_limits,
 )
@@ -86,64 +82,34 @@ ChargeFn = Callable[..., Awaitable[dict[str, Any]]]
 class UsageSnapshot:
     """An org's metered usage over one billing period.
 
-    Storage is a peak/representative GB figure for the period; the other
-    dimensions are period totals.
-
-    Attributes
-    ----------
-    query_scan_bytes:
-        Total bytes scanned by DuckDB queries during the period, summed from
-        ``query_scan`` usage events recorded by the core metering hook.
-        Converted to TiB during overage computation; the first
-        :data:`~app.ee.billing.tiers.SCAN_FREE_ALLOWANCE_TIB` TiB/month are
-        free.  Recorded as raw bytes so precision is not lost at metering time.
-    warehouse_cu:
-        Informational breakout: the portion of compute_units consumed on the
-        warehouse (heavy-query pool).  NOT a separate billable dimension — it
-        is a subset of compute_units.  WAREHOUSE_CU_MULTIPLIER is now 1, so
-        these units carry no penalty; the field is retained for invoice display
-        ("of which warehouse") and ops visibility.
+    Nubi has no hosted warehouse, so there is no storage / compute-unit /
+    bytes-scanned dimension here — only the two real wedge meters plus the
+    on-demand remote-kernel escape hatch.
     """
 
-    storage_gb: float = 0.0
-    compute_units: int = 0
     ai_calls: int = 0
     embedded_sessions: int = 0
     agent_runs: int = 0
-    # Bytes-scanned dimension (v4): total bytes read by DuckDB across all
-    # queries in the period; metered via kind="query_scan" usage events.
-    query_scan_bytes: int = 0
-    # Informational warehouse breakout (multiplier=1 since v4; no billing impact).
-    warehouse_cu: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "storage_gb": self.storage_gb,
-            "compute_units": self.compute_units,
             "ai_calls": self.ai_calls,
             "embedded_sessions": self.embedded_sessions,
             "agent_runs": self.agent_runs,
-            "query_scan_bytes": self.query_scan_bytes,
-            "warehouse_cu": self.warehouse_cu,
         }
 
 
-# Maps a usage_events ``kind`` to a UsageSnapshot dimension.  ``"kernel"`` is
-# the legacy compute kind already recorded by app.compute.metering.
-# ``"query_scan"`` is the v4 bytes-scanned dimension recorded by the core
-# metering hook (W4-A) via record_usage(kind="query_scan", units=<bytes>).
+# Maps a usage_events ``kind`` to a UsageSnapshot dimension.  Only the two
+# real wedge meters (ai_calls, embedded_sessions) plus the agent-run escape
+# hatch remain — Nubi has no hosted warehouse, so compute/storage/scan kinds
+# recorded by legacy events are simply ignored (unknown kind → dropped).
 _KIND_TO_DIMENSION = {
-    "kernel": "compute_units",
-    "compute": "compute_units",
     "ai_call": "ai_calls",
     "ai": "ai_calls",
     "embedded_session": "embedded_sessions",
     "embed": "embedded_sessions",
     "agent_run": "agent_runs",
     "agent": "agent_runs",
-    # Bytes-scanned dimension (v4).
-    "query_scan": "query_scan_bytes",
-    "scan": "query_scan_bytes",
 }
 
 
@@ -162,36 +128,23 @@ async def aggregate_usage_for_org(
         rows = await fetch(
             """
             SELECT kind,
-                   (tier LIKE '%:warehouse') AS is_warehouse,
                    COALESCE(SUM(units), 0) AS total_units,
-                   COUNT(*) AS n, COALESCE(MAX(units), 0) AS max_units
+                   COUNT(*) AS n
             FROM usage_events
             WHERE org_id = $1::uuid
               AND created_at >= $2 AND created_at < $3
-            GROUP BY kind, (tier LIKE '%:warehouse')
+            GROUP BY kind
             """,
             str(org_id), period_start, period_end,
         )
         events: list[dict[str, Any]] = []
         for r in rows:
             kind = (r["kind"] or "").lower()
-            if kind == "storage":
-                events.append({"kind": "storage", "units": float(r["max_units"] or 0)})
-            elif kind in ("kernel", "compute"):
-                events.append(
-                    {
-                        "kind": "compute",
-                        "units": float(r["total_units"] or 0),
-                        "warehouse": bool(r["is_warehouse"]),
-                    }
-                )
-            elif kind in ("query_scan", "scan"):
-                # Bytes-scanned dimension (v4): units are raw bytes, summed.
-                events.append({"kind": "query_scan", "units": float(r["total_units"] or 0)})
-            else:
-                # Count of events for discrete dimensions (ai_call, embed, agent).
-                for _ in range(int(r["n"])):
-                    events.append({"kind": kind, "units": 1})
+            if kind not in _KIND_TO_DIMENSION:
+                continue
+            # Count of events for discrete dimensions (ai_call, embed, agent).
+            for _ in range(int(r["n"])):
+                events.append({"kind": kind, "units": 1})
         return aggregate_usage_from_events(events)
     except Exception:  # noqa: BLE001 — DB not available → fall back to in-memory sink
         try:
@@ -208,44 +161,23 @@ def aggregate_usage_from_events(events: list[dict[str, Any]]) -> UsageSnapshot:
 
     Convention
     ----------
-    - ``kind="kernel"/"compute"`` → compute units (summed ``units``).
-    - ``kind="ai_call"`` → AI calls (count, or summed ``units`` when > 1).
-    - ``kind="embedded_session"`` → embedded sessions (count / ``units``).
-    - ``kind="agent_run"`` → agent runs (count / ``units``).
-    - ``kind="storage"`` → storage GB (max ``units`` over the period).
-    - ``kind="query_scan"/"scan"`` → bytes scanned (summed ``units``, raw
-      bytes recorded by the core metering hook).  Converted bytes→TiB during
-      overage pricing; the first :data:`~app.ee.billing.tiers.SCAN_FREE_ALLOWANCE_TIB`
-      TiB/month are free.
+    - ``kind="ai_call"/"ai"`` → AI calls (count, or summed ``units`` when > 1).
+    - ``kind="embedded_session"/"embed"`` → embedded sessions (count / ``units``).
+    - ``kind="agent_run"/"agent"`` → agent runs (count / ``units``).
+
+    Any other ``kind`` (e.g. legacy compute/storage/scan events from a
+    pre-migration deployment) is ignored — Nubi has no hosted warehouse to
+    price those against.
     """
     snap = UsageSnapshot()
-    storage_peak = 0.0
     for ev in events:
         kind = (ev.get("kind") or "").lower()
         units = ev.get("units")
-        if kind == "storage":
-            storage_peak = max(storage_peak, float(units or ev.get("output_bytes", 0) / 1e9))
-            continue
         dim = _KIND_TO_DIMENSION.get(kind)
         if dim is None:
             continue
         amount = units if units is not None else 1
-        if dim == "compute_units":
-            snap.compute_units += int(round(float(amount)))
-            # Warehouse breakout: pre-aggregated DB rows carry a "warehouse"
-            # flag; raw in-memory sink events carry the ":warehouse" tier
-            # suffix stamped by the heavy-query pool.  WAREHOUSE_CU_MULTIPLIER
-            # is 1 since v4 so warehouse_cu is informational only.
-            if ev.get("warehouse") or str(ev.get("tier") or "").endswith(":warehouse"):
-                snap.warehouse_cu += int(round(float(amount)))
-        elif dim == "query_scan_bytes":
-            # Bytes are summed (not counted as discrete events).  units MUST
-            # be the raw byte count; fall back to 0 rather than 1 to avoid
-            # phantom scan charges when the field is missing.
-            snap.query_scan_bytes += int(round(float(amount or 0)))
-        else:
-            setattr(snap, dim, getattr(snap, dim) + int(round(float(amount or 1))))
-    snap.storage_gb = storage_peak
+        setattr(snap, dim, getattr(snap, dim) + int(round(float(amount or 1))))
     return snap
 
 
@@ -291,60 +223,6 @@ def compute_overage_line_items(
                 unit_price_zar=rate,
             )
         )
-
-    # Storage — billed per GB-month over the included allowance.
-    over_storage = _overage(usage.storage_gb, limits.max_storage_gb)
-    if over_storage > 0:
-        amount = (Decimal(str(over_storage)) * r.storage_zar_per_gb_month).quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_UP
-        ) if r.storage_zar_per_gb_month else Decimal("0")
-        if amount > 0:
-            items.append(
-                InvoiceLineItem(
-                    f"Storage overage ({over_storage:.2f} GB over {limits.max_storage_gb:g} GB)",
-                    amount, kind="overage",
-                    quantity=Decimal(str(round(over_storage, 2))), unit="GB",
-                    unit_price_zar=r.storage_zar_per_gb_month,
-                )
-            )
-
-    # Bytes scanned (v4) — billed per TiB beyond the free monthly allowance.
-    # The free allowance (SCAN_FREE_ALLOWANCE_TIB) is per org per month and is
-    # applied globally (not per query).  Conversion: bytes → TiB = bytes / 2^40.
-    _BYTES_PER_TIB = 2 ** 40  # 1,099,511,627,776 bytes
-    scan_tib = usage.query_scan_bytes / _BYTES_PER_TIB
-    over_scan_tib = _overage(scan_tib, SCAN_FREE_ALLOWANCE_TIB)
-    if over_scan_tib > 0 and r.scan_zar_per_tib:
-        amount = (Decimal(str(over_scan_tib)) * r.scan_zar_per_tib).quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_UP
-        )
-        if amount > 0:
-            items.append(
-                InvoiceLineItem(
-                    f"Bytes scanned overage ({over_scan_tib:.4f} TiB over {SCAN_FREE_ALLOWANCE_TIB:g} TiB free)",
-                    amount, kind="overage",
-                    quantity=Decimal(str(round(over_scan_tib, 6))), unit="TiB",
-                    unit_price_zar=r.scan_zar_per_tib,
-                )
-            )
-
-    # Compute units — billed per 1,000 CU.
-    over_cu = _overage(usage.compute_units, limits.max_compute_units_per_month)
-    if over_cu > 0 and r.compute_zar_per_1000_cu:
-        amount = (Decimal(str(over_cu)) / Decimal("1000") * r.compute_zar_per_1000_cu).quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_UP
-        )
-        if amount > 0:
-            items.append(
-                InvoiceLineItem(
-                    f"Compute overage ({int(over_cu):,} CU over {limits.max_compute_units_per_month:,})".replace(",", " "),
-                    amount, kind="overage",
-                    # Quantity is in the priced unit (1k CU) so the printed
-                    # quantity × unit price reproduces the line amount.
-                    quantity=Decimal(str(int(over_cu))) / Decimal("1000"), unit="1k CU",
-                    unit_price_zar=r.compute_zar_per_1000_cu,
-                )
-            )
 
     # AI calls — billed per call.
     over_ai = _overage(usage.ai_calls, limits.max_ai_calls_per_month)

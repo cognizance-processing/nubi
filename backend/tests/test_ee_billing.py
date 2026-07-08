@@ -153,26 +153,24 @@ class TestTiers:
         assert limits.max_query_rows is None
         assert limits.max_dashboards is None
         assert limits.max_flows is None
-        # Hosted ENTERPRISE: max_storage_gb=500; BYOC is unlimited (handled externally).
-        # max_storage_gb is 500 for hosted. Test that unlimited quotas are None.
         assert limits.max_viewer_seats is None
         assert limits.max_embedded_sessions_per_month is None
 
     def test_free_limits_are_bounded_by_compute_not_seats(self) -> None:
-        """Blueprint v1.0: Free tier is rate-limited by compute quota, not seat count.
+        """Blueprint v1.0: Free tier is rate-limited by usage quota, not seat count.
 
-        Seats are unlimited (None) at all tiers. Compute, connectors, and
-        query rows remain bounded to prevent abuse.
+        Seats are unlimited (None) at all tiers. Connectors and query rows
+        remain bounded to prevent abuse (Nubi has no server-side compute
+        dimension to bound now that the hosted warehouse is gone).
         """
         from app.ee.billing.tiers import BillingTier, get_tier_limits
 
         limits = get_tier_limits(BillingTier.FREE)
-        # Seats now unlimited — rate-limiting via compute quota instead.
+        # Seats now unlimited — rate-limiting via other usage quotas instead.
         assert limits.max_seats is None
         assert limits.max_viewer_seats is None
         # Non-seat quotas remain bounded.
         assert limits.max_query_rows is not None and limits.max_query_rows > 0
-        assert limits.max_compute_units_per_month is not None and limits.max_compute_units_per_month > 0
         assert limits.max_connectors is not None and limits.max_connectors > 0
 
     def test_security_dial_low_maps_to_free(self) -> None:
@@ -878,39 +876,39 @@ class TestQuotaChecker:
         assert allowed is False
 
     @pytest.mark.asyncio
-    async def test_free_org_compute_allowed_under_quota(self) -> None:
-        """FREE includes 500 CU/month — usage below that is allowed."""
+    async def test_compute_units_dimension_is_no_longer_metered(self) -> None:
+        """Nubi has no hosted warehouse — ``compute_units`` is an unknown
+        dimension to the quota checker now, so it is always allowed regardless
+        of usage (the checker's "unknown dimension → allow" fallback)."""
         from app.ee.billing.quota import billing_quota_checker
 
         org_id = str(uuid.uuid4())
-        await self._seed_usage(org_id, "kernel", 499)
+        await self._seed_usage(org_id, "kernel", 10_000)
         allowed, _ = await billing_quota_checker(
             org_id=org_id, dimension="compute_units", amount=1.0
         )
         assert allowed is True
 
     @pytest.mark.asyncio
-    async def test_free_org_compute_hard_stops_at_500_cu(self) -> None:
-        """The documented FREE '500 CU hard stop' — usage at quota is denied."""
-        from app.ee.billing.quota import billing_quota_checker
-
-        org_id = str(uuid.uuid4())
-        await self._seed_usage(org_id, "kernel", 500)
-        allowed, reason = await billing_quota_checker(
-            org_id=org_id, dimension="compute_units", amount=1.0
-        )
-        assert allowed is False
-        assert "500" in reason
-
-    @pytest.mark.asyncio
     async def test_other_orgs_usage_does_not_count(self) -> None:
-        """Usage events are org-scoped — another org's burn never blocks us."""
+        """Usage events are org-scoped — another org's burn never blocks us.
+
+        Uses ``billing_disabled`` to force the hard-stop path (a normal paid
+        tier always has an overage rate for ai_calls/embedded/agent_runs, so
+        it never hard-stops — see ``_check`` in quota.py).
+        """
         from app.ee.billing.quota import billing_quota_checker
+        from app.ee.billing.store import get_billing_store
 
         other_org, my_org = str(uuid.uuid4()), str(uuid.uuid4())
-        await self._seed_usage(other_org, "kernel", 10_000)
+        await self._seed_subscription(other_org, "team")
+        await self._seed_subscription(my_org, "team")
+        await get_billing_store().upsert_org_overrides(
+            my_org, billing_disabled=True, tier_override=None, limit_overrides={},
+        )
+        await self._seed_usage(other_org, "ai_call", 10_000)  # TEAM quota is 15
         allowed, _ = await billing_quota_checker(
-            org_id=my_org, dimension="compute_units", amount=1.0
+            org_id=my_org, dimension="ai_calls", amount=1.0
         )
         assert allowed is True
 
@@ -1023,13 +1021,13 @@ class TestQuotaChecker:
         org_id = str(uuid.uuid4())
         await self._seed_subscription(org_id, "starter")
         limits = await usage_limits_provider(org_id)
-        # STARTER: 2,000 CU/month, 5 AI calls, 1,000 embed sessions, 5 GB storage,
-        # 0 agent runs (flow_runs).
-        assert limits["compute_units"] == 2_000.0
+        # STARTER: 5 AI calls, 1,000 embed sessions, 0 agent runs (flow_runs).
+        # No compute_units/storage_gb — Nubi has no hosted warehouse to meter.
         assert limits["ai_tokens"] == 5.0
         assert limits["embedded_sessions"] == 1_000.0
-        assert limits["storage_gb"] == 5.0
         assert limits["flow_runs"] == 0.0
+        assert "compute_units" not in limits
+        assert "storage_gb" not in limits
 
     @pytest.mark.asyncio
     async def test_usage_limits_provider_unlimited_maps_to_none(self) -> None:
@@ -1065,8 +1063,9 @@ class TestQuotaChecker:
         from app.features import get_usage_limits
 
         limits = await get_usage_limits(org_id)
-        # TEAM: 6,000 CU/month.
-        assert limits.get("compute_units") == 6_000.0
+        # TEAM: 15 AI calls/month (no compute_units dimension — no warehouse).
+        assert limits.get("ai_tokens") == 15.0
+        assert "compute_units" not in limits
 
 
 class TestQuotaOverrides:
@@ -1137,11 +1136,14 @@ class TestQuotaOverrides:
         await self._set_override(
             org_id,
             tier_override="enterprise",
-            limit_overrides={"max_ai_calls_per_month": 100_000, "max_storage_gb": None},
+            limit_overrides={
+                "max_ai_calls_per_month": 100_000,
+                "max_agent_runs_per_month": None,
+            },
         )
         _tier, limits, _ = await resolve_org_limits(org_id)
         assert limits.max_ai_calls_per_month == 100_000
-        assert limits.max_storage_gb is None  # unlimited
+        assert limits.max_agent_runs_per_month is None  # unlimited
 
     @pytest.mark.asyncio
     async def test_billing_disabled_turns_overage_into_hard_cap(self) -> None:

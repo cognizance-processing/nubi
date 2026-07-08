@@ -104,38 +104,30 @@ async def _run(tier, usage, *, charge=None, sender=None, use_wallet=True,
 
 class TestOverageComputation:
     def test_no_overage_within_quota(self):
-        usage = UsageSnapshot(storage_gb=10, compute_units=5000, ai_calls=10,
-                              embedded_sessions=1000, agent_runs=5)
+        usage = UsageSnapshot(ai_calls=10, embedded_sessions=1000, agent_runs=5)
         items, total = compute_overage_line_items(usage, BillingTier.PRO)
         assert items == []
         assert total == Decimal("0.00")
 
-    def test_ai_and_compute_overage_priced(self):
-        # Pro: 50 AI calls, 15 000 CU included. Use 130 AI (80 over @ R5) and
-        # 17 000 CU (2 000 over → 2 × R100 = R200).
-        usage = UsageSnapshot(compute_units=17_000, ai_calls=130)
+    def test_ai_overage_priced(self):
+        # Pro: 50 AI calls included. Use 130 AI (80 over @ R5 = R400).
+        usage = UsageSnapshot(ai_calls=130)
         items, total = compute_overage_line_items(usage, BillingTier.PRO)
         kinds = {li.description.split()[0] for li in items}
-        assert "AI" in kinds and "Compute" in kinds
+        assert "AI" in kinds
         ai = next(li for li in items if li.description.startswith("AI"))
         assert ai.amount_zar == Decimal("400.00")  # 80 × R5
-        cu = next(li for li in items if li.description.startswith("Compute"))
-        assert cu.amount_zar == Decimal("200.00")  # 2 × R100
-        assert total == Decimal("600.00")
+        assert total == Decimal("400.00")
 
     def test_metered_lines_qty_times_unit_price_equals_amount(self):
         # A TAX INVOICE prints QTY | UNIT PRICE | AMOUNT side by side — the
         # printed columns must multiply out (quantities are stored in the
-        # PRICED unit: 1k CU, 10k sessions), or the invoice contradicts itself.
-        usage = UsageSnapshot(storage_gb=120, compute_units=17_000,
-                              ai_calls=130, embedded_sessions=30_000)
+        # PRICED unit: 10k sessions), or the invoice contradicts itself.
+        usage = UsageSnapshot(ai_calls=130, embedded_sessions=30_000)
         items, _ = compute_overage_line_items(usage, BillingTier.PRO)
-        assert len(items) == 4
+        assert len(items) == 2
         for li in items:
             assert (li.quantity * li.unit_price_zar).quantize(Decimal("0.01")) == li.amount_zar
-        cu = next(li for li in items if li.description.startswith("Compute"))
-        assert cu.quantity == Decimal("2")        # 2 000 CU over = 2 × 1k CU
-        assert cu.unit == "1k CU"
         embed = next(li for li in items if li.description.startswith("Embedded"))
         assert embed.quantity == Decimal("0.5")   # 5 000 over = 0.5 × 10k sess
         assert embed.unit == "10k sess"
@@ -148,18 +140,15 @@ class TestOverageComputation:
 
     def test_aggregate_from_events(self):
         events = [
-            {"kind": "kernel", "units": 1500.0},
-            {"kind": "compute", "units": 500.0},
             {"kind": "ai_call", "units": 1},
             {"kind": "ai_call", "units": 1},
             {"kind": "agent_run", "units": 1},
-            {"kind": "storage", "units": 22.5},
+            {"kind": "embedded_session", "units": 1},
         ]
         snap = aggregate_usage_from_events(events)
-        assert snap.compute_units == 2000
         assert snap.ai_calls == 2
         assert snap.agent_runs == 1
-        assert snap.storage_gb == 22.5
+        assert snap.embedded_sessions == 1
 
 
 # ── full cycle ───────────────────────────────────────────────────────────────

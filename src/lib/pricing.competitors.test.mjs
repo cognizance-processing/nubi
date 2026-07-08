@@ -1,7 +1,8 @@
 /**
  * pricing.competitors.test.mjs — guards the pricing-calculator fairness fixes:
- *   - storage overage rate matches the backend (R0.33/GB, not the old R1.50)
- *   - flow/pipeline runs are NOT a tier-gating meter (cost flows through compute)
+ *   - Nubi has no hosted warehouse: no storage / compute-unit billing meter
+ *   - flow/pipeline runs are NOT a tier-gating meter (Nubi has no warehouse
+ *     compute dimension for their cost to flow through)
  *   - competitor models are finite, non-negative, and free of the old
  *     embedded-sessions→viewers inflation
  *   - the reconciled per-competitor numbers (Hex $50, Lightdash $150/dev,
@@ -22,9 +23,9 @@ import {
   FALLBACK_TIERS,
 } from './pricing.js'
 
-const BI_USAGE = { storage_gb: 25, compute_units: 10000, embedded_sessions: 10000, agent_runs: 20, connectors: 5 }
+const BI_USAGE = { embedded_sessions: 10000, agent_runs: 20, connectors: 5 }
 const SEATS = { editors: 8, viewers: 500 }
-const ZERO_USAGE = { storage_gb: 0, compute_units: 0, embedded_sessions: 0, agent_runs: 0, connectors: 1 }
+const ZERO_USAGE = { embedded_sessions: 0, agent_runs: 0, connectors: 1 }
 const ZERO_SEATS = { editors: 1, viewers: 0 }
 const ORCH_USAGE = {
   flow_runs_per_month: 5000, serverless_minutes: 5000, workers: 2, deployments: 1,
@@ -33,22 +34,26 @@ const ORCH_USAGE = {
 }
 
 // ---------------------------------------------------------------------------
-// Storage overage rate — must match backend tiers.py (R0.33/GB)
+// No storage / compute-unit dimension — Nubi has no hosted warehouse
 // ---------------------------------------------------------------------------
 
-test('storage overage rate is R0.33/GB (R2 parity), not the stale R1.50', () => {
-  assert.equal(WALLET_OVERAGE_RATES.storage_zar_per_gb, 0.33)
+test('wallet overage rates have no storage or compute-unit dimension', () => {
+  assert.equal(WALLET_OVERAGE_RATES.storage_zar_per_gb, undefined)
+  assert.equal(WALLET_OVERAGE_RATES.compute_zar_per_1000_cu, undefined)
+  assert.equal(WALLET_OVERAGE_RATES.ai_call_zar_per_call, 5)
 })
 
-test('recommendNubi prices storage overage at R0.33/GB', () => {
-  // 600 GB used — beyond Enterprise's 500 GB → 100 GB billable at R0.33.
+test('recommendNubi prices agent-run overage at R2/run (no fitting tier)', () => {
+  // Connectors and embedded sessions are unlimited on Enterprise, so the only
+  // dimension that can force the "no exact fit" overage path is agent_runs
+  // (bounded at 1,000/mo even on Enterprise). 1,200 runs → 200 over × R2.
   const rec = recommendNubi(
-    { storage_gb: 600, compute_units: 1000, embedded_sessions: 0, agent_runs: 0, connectors: 1 },
+    { embedded_sessions: 0, agent_runs: 1200, connectors: 1 },
     16.26,
   )
-  const storageItem = rec.overages.find((o) => /storage/i.test(o.label))
-  assert.ok(storageItem, 'expected a storage overage line')
-  assert.equal(storageItem.zar, 100 * 0.33) // 33, not 150 (the old R1.50 rate)
+  const agentItem = rec.overages.find((o) => /agent/i.test(o.label))
+  assert.ok(agentItem, 'expected an agent-run overage line')
+  assert.equal(agentItem.zar, 200 * 2)
 })
 
 // ---------------------------------------------------------------------------
@@ -57,7 +62,7 @@ test('recommendNubi prices storage overage at R0.33/GB', () => {
 
 test('recommendNubi does not bump the tier on flow_runs_per_month', () => {
   const rec = recommendNubi(
-    { storage_gb: 1, compute_units: 10, embedded_sessions: 0, agent_runs: 0, connectors: 1, flow_runs_per_month: 100000 },
+    { embedded_sessions: 0, agent_runs: 0, connectors: 1, flow_runs_per_month: 100000 },
     null,
   )
   assert.equal(rec.tier.id, 'free', 'huge flow-run count must not force a paid tier')
@@ -92,8 +97,8 @@ function bi(id) {
 }
 
 test('Hex Team is $50/editor (not the stale $75)', () => {
-  // 8 editors, no compute → 8 × 50 = 400.
-  assert.equal(bi('hex_team').model({ compute_units: 0 }, { editors: 8 }), 400)
+  // 8 editors → 8 × 50 = 400 (Hex's compute-hours add-on is not modelled here).
+  assert.equal(bi('hex_team').model({}, { editors: 8 }), 400)
 })
 
 test('Lightdash Cloud Pro is per-developer $150 (not $3,000 flat)', () => {

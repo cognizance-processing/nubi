@@ -73,8 +73,6 @@ export const FALLBACK_TIERS = [
     description: 'For indie devs, OSS evaluators, and small experiments.',
     features: [
       'Unlimited editors & viewers',
-      '1 GB storage',
-      '500 compute units / month',
       'Up to 5 dashboards',
       '2 scheduled flows',
       '3 built-in connectors (CSV, DuckDB, Postgres)',
@@ -101,8 +99,6 @@ export const FALLBACK_TIERS = [
     description: 'For hobbyists and side-projects that need more headroom.',
     features: [
       'Unlimited editors & viewers — no per-seat charge',
-      '5 GB storage',
-      '2,000 compute units / month',
       '1,000 embedded sessions / month',
       '5 connectors',
       '10 dashboards · 3 scheduled flows',
@@ -131,8 +127,6 @@ export const FALLBACK_TIERS = [
     description: 'For small teams collaborating on production analytics.',
     features: [
       'Unlimited editors & viewers — no per-seat charge',
-      '15 GB storage',
-      '6,000 compute units / month',
       '5,000 embedded sessions / month',
       '15 connectors (incl. cloud)',
       '30 dashboards · 8 scheduled flows',
@@ -161,11 +155,8 @@ export const FALLBACK_TIERS = [
     description: 'For growing teams shipping production embedded analytics.',
     features: [
       'Unlimited editors & viewers — no per-seat charge',
-      '50 GB storage',
-      '15,000 compute units / month',
       '25,000 embedded sessions / month',
       '50 AI calls / month · 50 agent / kernel runs',
-      'Lakehouse queries — pay per TiB scanned ($5/TiB, first 1 TiB/mo free)',
       'All connectors',
       '100 dashboards · 20 scheduled flows',
       'Full RLS with JWT claims',
@@ -194,11 +185,8 @@ export const FALLBACK_TIERS = [
     description: 'For enterprise teams that need SLA guarantees and dedicated support.',
     features: [
       'Unlimited editors & viewers — no per-seat charge',
-      '500 GB+ storage (hosted) or unlimited (BYOC)',
-      '200,000 compute units / month',
       'Unlimited embedded sessions',
       '500 AI calls / month · 1,000 agent / kernel runs',
-      'Lakehouse queries — pay per TiB scanned ($5/TiB, first 1 TiB/mo free)',
       'All connectors + custom connector SDK',
       'Unlimited dashboards & scheduled flows',
       'Full RLS + host-signed JWT pass-through',
@@ -206,7 +194,6 @@ export const FALLBACK_TIERS = [
       'Full white-label + custom JS SDK (coming soon)',
       'Unlimited audit log + SIEM export',
       'Usage wallet — prepaid credits, auto-topup, spend cap',
-      'BYOC / air-gap / on-prem deployment',
       'BAA / HIPAA on request',
     ],
     cta_label: 'Contact sales',
@@ -227,7 +214,7 @@ export const FALLBACK_TIERS = [
 
 /**
  * Each competitor model: pricing as a pure function (usage, seats) → USD/month.
- * usage = { storage_gb, compute_units, embedded_sessions, agent_runs, connectors }
+ * usage = { embedded_sessions, agent_runs, connectors }
  * seats = { editors, viewers }
  *
  * Data sourced from publicly available pricing pages, June 2026.
@@ -285,10 +272,10 @@ export const FALLBACK_COMPETITORS_BI = [
     id: 'hex_team',
     name: 'Hex Team',
     url: 'https://hex.tech/pricing',
-    note: '$50/editor/mo + compute hours',
+    note: '$50/editor/mo + compute hours (compute-hours add-on not modelled here)',
     highlight_seat_penalty: true,
-    model({ compute_units }, { editors }) {
-      return editors * 50 + (compute_units / 1000) * 30
+    model(_usage, { editors }) {
+      return editors * 50
     },
   },
   {
@@ -462,95 +449,6 @@ export const FALLBACK_COMPETITORS_ORCHESTRATION = [
 ]
 
 // ---------------------------------------------------------------------------
-// Lakehouse data pricing — pay-per-scan + storage (BigQuery-comparable model)
-// ---------------------------------------------------------------------------
-
-/**
- * Nubi lakehouse: pay per TiB scanned + storage on Cloudflare R2.
- * Dashboard views are FREE — they compute in the user's browser (DuckDB-WASM).
- * The first 1 TiB of scan per month is free (BigQuery parity).
- *
- * Pricing (USD):
- *   Scan:    $5.00 / TiB  (BigQuery charges $6.25/TiB — we are cheaper)
- *   Storage: $0.02 / GB-month  (R2 rate — same as BigQuery's storage tier)
- *   Free:    first 1 TiB scanned / month always free
- */
-export const LAKEHOUSE_SCAN_USD_PER_TIB   = 5.00
-export const LAKEHOUSE_STORAGE_USD_PER_GB = 0.02
-export const LAKEHOUSE_FREE_SCAN_TIB      = 1        // first 1 TiB/mo free
-
-/**
- * Estimate monthly USD cost for a lakehouse workload.
- *
- * cost = max(0, tb_scanned - FREE_SCAN_TIB) * SCAN_RATE
- *       + storage_gb * STORAGE_RATE
- *
- * Dashboard views are free — they run the DuckDB-WASM kernel in the browser
- * and never touch the server. This cost is purely for server-side / heavy
- * queries and data storage.
- *
- * @param {{ queries_per_month: number, avg_gb_scanned: number, storage_gb: number }} params
- * @returns {{ scan_usd: number, storage_usd: number, total_usd: number, tb_scanned: number }}
- */
-export function estimateLakehouseCost({ queries_per_month, avg_gb_scanned, storage_gb }) {
-  const tb_scanned = (queries_per_month * avg_gb_scanned) / 1024
-  const billable_tb = Math.max(0, tb_scanned - LAKEHOUSE_FREE_SCAN_TIB)
-  const scan_usd = billable_tb * LAKEHOUSE_SCAN_USD_PER_TIB
-  const storage_usd = (storage_gb ?? 0) * LAKEHOUSE_STORAGE_USD_PER_GB
-  return {
-    scan_usd,
-    storage_usd,
-    total_usd: scan_usd + storage_usd,
-    tb_scanned,
-    billable_tb,
-  }
-}
-
-/**
- * @deprecated Use estimateLakehouseCost() instead.
- * Kept for backward compatibility. The 4× CU multiplier model has been
- * replaced by the pay-per-TiB-scan + storage model.
- */
-export const WAREHOUSE_CU_MULTIPLIER = 4
-
-/**
- * @deprecated Use estimateLakehouseCost() instead.
- */
-export function estimateWarehouseCu({ queries_per_month, avg_gb_scanned }) {
-  const secondsPerQuery = Math.max(avg_gb_scanned / 1.0, 0.1)
-  return Math.ceil(queries_per_month * secondsPerQuery * WAREHOUSE_CU_MULTIPLIER)
-}
-
-/**
- * Reference data: the primary comparable is BigQuery on-demand.
- * Nubi is ~20% cheaper on scan ($5/TiB vs $6.25/TiB), same storage rate,
- * and dashboard views are free (BigQuery charges for every query including
- * dashboard refreshes). Kept as a reference object; not used for head-to-head
- * price comparison tables.
- */
-export const BIGQUERY_REFERENCE = {
-  id: 'bigquery_ondemand',
-  name: 'Google BigQuery (on-demand)',
-  url: 'https://cloud.google.com/bigquery/pricing',
-  scan_usd_per_tib: 6.25,
-  storage_usd_per_gb: 0.02,
-  free_scan_tib: 1,
-  free_storage_gb: 10,
-  note: '$6.25/TiB scanned (Nubi: $5/TiB) — same pay-per-scan model. First 1 TiB/mo free. Storage $0.02/GB.',
-}
-
-/**
- * @deprecated The lakehouse is no longer positioned as a competitor to
- * dedicated warehouses. Use it for BI-scale workloads; connect your own
- * BigQuery/Snowflake/ClickHouse as a Nubi datastore for multi-TB workloads
- * and Nubi pushes queries down to their engine.
- *
- * Kept for backward compatibility with any callers; the PricingCalculator
- * no longer renders a head-to-head competitor bar chart for warehouses.
- */
-export const FALLBACK_COMPETITORS_WAREHOUSE = []
-
-// ---------------------------------------------------------------------------
 // Nubi tier engine for the calculator — Free / Starter / Team / Pro / Enterprise
 // ---------------------------------------------------------------------------
 
@@ -559,20 +457,16 @@ export const FALLBACK_COMPETITORS_WAREHOUSE = []
  * beyond the tier's included quota.
  *
  * What draws from the wallet:
- *   - Snapshot storage sidecar files  → storage_zar_per_gb
- *   - Snapshot / report server queries → (scan rate via backend; not exposed here)
- *   - PDF / PPT export renders         → compute_zar_per_1000_cu
- *   - Scheduled report sends           → compute_zar_per_1000_cu
- *   - Public/CDN export files          → storage_zar_per_gb + session_zar_per_10k
+ *   - AI calls (Anthropic token pass-through) → ai_call_zar_per_call
+ *   - Embedded sessions (CDN egress + edge compute) → session_zar_per_10k
+ *   - Agent / kernel runs (on-demand remote-kernel escape hatch) → agent_run_zar_per_run
  *
  * What is ALWAYS FREE (zero wallet draw, zero server COGS):
- *   - Demo / read-only / client-computed views: DuckDB-WASM runs in the
- *     browser — no server scan, no server compute, no egress billed.
+ *   - Nubi has no hosted warehouse: every dashboard view runs DuckDB-WASM in
+ *     the browser — no server scan, no server compute, no server storage.
  *   - Viewer seats at any tier: viewing a pre-computed dashboard is free.
  */
 export const WALLET_OVERAGE_RATES = {
-  storage_zar_per_gb:       0.33,   // R0.33/GB-month (Cloudflare R2 parity; matches backend tiers.py)
-  compute_zar_per_1000_cu:  100,    // R100/1,000 CUs (exports, scheduled reports, server-side renders)
   ai_call_zar_per_call:     5,      // R5/AI call (Haiku grounding or Sonnet chat)
   session_zar_per_10k:      50,     // R50/10,000 embedded sessions (CDN egress; public exports)
   agent_run_zar_per_run:    2,      // R2/agent or kernel run (Pro+ E2B)
@@ -581,15 +475,13 @@ export const WALLET_OVERAGE_RATES = {
 const NUBI_TIERS_CALC = [
   {
     id: 'free', name: 'Free', usd_monthly: 0,
-    quotas: { connectors: 3, storage_gb: 1, compute_units: 500, embedded_sessions: 0, agent_runs: 0 },
+    quotas: { connectors: 3, embedded_sessions: 0, agent_runs: 0 },
     overages: null,
   },
   {
     id: 'starter', name: 'Starter', usd_monthly: 9,
-    quotas: { connectors: 5, storage_gb: 5, compute_units: 2000, embedded_sessions: 1000, agent_runs: 0 },
+    quotas: { connectors: 5, embedded_sessions: 1000, agent_runs: 0 },
     overages: {
-      storage_zar_per_gb: WALLET_OVERAGE_RATES.storage_zar_per_gb,
-      compute_zar_per_1000_cu: WALLET_OVERAGE_RATES.compute_zar_per_1000_cu,
       ai_call_zar_per_call: WALLET_OVERAGE_RATES.ai_call_zar_per_call,
       session_zar_per_10k: WALLET_OVERAGE_RATES.session_zar_per_10k,
       agent_run_zar_per_run: null,
@@ -597,10 +489,8 @@ const NUBI_TIERS_CALC = [
   },
   {
     id: 'team', name: 'Team', usd_monthly: 49,
-    quotas: { connectors: 15, storage_gb: 15, compute_units: 6000, embedded_sessions: 5000, agent_runs: 10 },
+    quotas: { connectors: 15, embedded_sessions: 5000, agent_runs: 10 },
     overages: {
-      storage_zar_per_gb: WALLET_OVERAGE_RATES.storage_zar_per_gb,
-      compute_zar_per_1000_cu: WALLET_OVERAGE_RATES.compute_zar_per_1000_cu,
       ai_call_zar_per_call: WALLET_OVERAGE_RATES.ai_call_zar_per_call,
       session_zar_per_10k: WALLET_OVERAGE_RATES.session_zar_per_10k,
       agent_run_zar_per_run: WALLET_OVERAGE_RATES.agent_run_zar_per_run,
@@ -608,10 +498,8 @@ const NUBI_TIERS_CALC = [
   },
   {
     id: 'pro', name: 'Pro', usd_monthly: 149,
-    quotas: { connectors: Infinity, storage_gb: 50, compute_units: 15000, embedded_sessions: 25000, agent_runs: 50 },
+    quotas: { connectors: Infinity, embedded_sessions: 25000, agent_runs: 50 },
     overages: {
-      storage_zar_per_gb: WALLET_OVERAGE_RATES.storage_zar_per_gb,
-      compute_zar_per_1000_cu: WALLET_OVERAGE_RATES.compute_zar_per_1000_cu,
       ai_call_zar_per_call: WALLET_OVERAGE_RATES.ai_call_zar_per_call,
       session_zar_per_10k: WALLET_OVERAGE_RATES.session_zar_per_10k,
       agent_run_zar_per_run: WALLET_OVERAGE_RATES.agent_run_zar_per_run,
@@ -619,10 +507,8 @@ const NUBI_TIERS_CALC = [
   },
   {
     id: 'enterprise', name: 'Enterprise', usd_monthly: 1000,
-    quotas: { connectors: Infinity, storage_gb: 500, compute_units: 200000, embedded_sessions: Infinity, agent_runs: 1000 },
+    quotas: { connectors: Infinity, embedded_sessions: Infinity, agent_runs: 1000 },
     overages: {
-      storage_zar_per_gb: WALLET_OVERAGE_RATES.storage_zar_per_gb,
-      compute_zar_per_1000_cu: WALLET_OVERAGE_RATES.compute_zar_per_1000_cu,
       ai_call_zar_per_call: WALLET_OVERAGE_RATES.ai_call_zar_per_call,
       session_zar_per_10k: 0,
       agent_run_zar_per_run: WALLET_OVERAGE_RATES.agent_run_zar_per_run,
@@ -633,10 +519,9 @@ const NUBI_TIERS_CALC = [
 /**
  * Recommend a Nubi tier for the given usage and compute total ZAR cost.
  *
- * @param {{ storage_gb, compute_units, embedded_sessions, agent_runs, connectors, flow_runs_per_month }} usage
+ * @param {{ embedded_sessions, agent_runs, connectors, flow_runs_per_month }} usage
  * @param {number|null} fxRate
  * @param {{ minTierId?: string }} [opts]  minTierId floors the recommendation
- *   (e.g. 'pro' for warehouse workloads — the heavy-query pool is Pro+).
  * @returns {{ tier, base_zar, overage_zar, total_zar, overages, is_exact_fit }}
  */
 export function recommendNubi(usage, fxRate, opts = {}) {
@@ -647,13 +532,11 @@ export function recommendNubi(usage, fxRate, opts = {}) {
 
   for (const tier of NUBI_TIERS_CALC.slice(minIdx)) {
     const q = tier.quotas
-    // NOTE: flow/pipeline RUNS are NOT a separate billing meter — their cost
-    // flows through compute_units (matches backend tiers.py, which has no
-    // flow-run quota). So tier fit is never gated on flow_runs_per_month.
+    // NOTE: flow/pipeline RUNS are NOT a separate billing meter — Nubi has no
+    // hosted warehouse or compute-unit dimension, so tier fit is never gated
+    // on flow_runs_per_month.
     const fits =
       (q.connectors === Infinity || q.connectors >= usage.connectors) &&
-      (q.storage_gb === Infinity || q.storage_gb >= usage.storage_gb) &&
-      (q.compute_units === Infinity || q.compute_units >= usage.compute_units) &&
       (q.embedded_sessions === Infinity || q.embedded_sessions >= usage.embedded_sessions) &&
       (q.agent_runs === Infinity || q.agent_runs >= usage.agent_runs)
 
@@ -674,18 +557,6 @@ export function recommendNubi(usage, fxRate, opts = {}) {
     const overageItems = []
     let overage_zar = 0
 
-    if (q.storage_gb !== Infinity && usage.storage_gb > q.storage_gb) {
-      const gb = usage.storage_gb - q.storage_gb
-      const cost = gb * ov.storage_zar_per_gb
-      overage_zar += cost
-      overageItems.push({ label: `${gb} GB extra storage`, zar: cost })
-    }
-    if (q.compute_units !== Infinity && usage.compute_units > q.compute_units) {
-      const cu = usage.compute_units - q.compute_units
-      const cost = (cu / 1000) * ov.compute_zar_per_1000_cu
-      overage_zar += cost
-      overageItems.push({ label: `${cu.toLocaleString()} extra CUs`, zar: cost })
-    }
     if (q.embedded_sessions !== Infinity && usage.embedded_sessions > q.embedded_sessions) {
       const sessions = usage.embedded_sessions - q.embedded_sessions
       const cost = (sessions / 10000) * ov.session_zar_per_10k
@@ -728,7 +599,6 @@ const BASE = (import.meta.env?.DEV || !_backendUrl) ? '/api/v1' : _backendUrl + 
  *   fx: { rate: number, updated_at: string | null, fallback: boolean },
  *   competitors_bi: object[],
  *   competitors_orchestration: object[],
- *   lakehouse: { scan_usd_per_tib: number, storage_usd_per_gb: number, free_scan_tib: number },
  * }} PricingData
  */
 
@@ -738,11 +608,6 @@ const BASE = (import.meta.env?.DEV || !_backendUrl) ? '/api/v1' : _backendUrl + 
  * @returns {Promise<PricingData>}
  */
 export async function fetchPricingData() {
-  const lakehouseFallback = {
-    scan_usd_per_tib: LAKEHOUSE_SCAN_USD_PER_TIB,
-    storage_usd_per_gb: LAKEHOUSE_STORAGE_USD_PER_GB,
-    free_scan_tib: LAKEHOUSE_FREE_SCAN_TIB,
-  }
   try {
     const res = await fetch(`${BASE}/pricing`, { credentials: 'omit' })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -756,8 +621,6 @@ export async function fetchPricingData() {
       competitors_orchestration: Array.isArray(data?.competitors_orchestration) && data.competitors_orchestration.length
         ? data.competitors_orchestration
         : FALLBACK_COMPETITORS_ORCHESTRATION,
-      // Lakehouse pricing constants — always from frontend (authoritative source).
-      lakehouse: lakehouseFallback,
     }
   } catch {
     return {
@@ -765,7 +628,6 @@ export async function fetchPricingData() {
       fx: { rate: 16.26, updated_at: null, fallback: true },
       competitors_bi: FALLBACK_COMPETITORS_BI,
       competitors_orchestration: FALLBACK_COMPETITORS_ORCHESTRATION,
-      lakehouse: lakehouseFallback,
     }
   }
 }

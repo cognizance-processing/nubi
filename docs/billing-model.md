@@ -5,6 +5,12 @@ a real cost-of-goods-sold (COGS) line** we actually pay.  Dimensions with near-z
 marginal COGS (seats, connector count, dashboards, saved queries, flow definitions)
 are never metered.
 
+Nubi does not host a warehouse — there is no server-side bytes-scanned,
+compute-unit, or storage dimension.  The only real marginal COGS left are CDN
+egress + per-request edge compute for **embedded sessions** and Anthropic
+token pass-through for **AI calls**, plus a small **agent runs** meter (an
+on-demand remote-kernel escape hatch).
+
 Authoritative values live in `backend/app/ee/billing/tiers.py`.  This document
 is a human-readable summary of what is in that file.
 
@@ -38,7 +44,7 @@ Five tiers (June 2026 reference amounts at R16.26 + 2% FX buffer):
 | **Starter** | $9 | R150 | $90 | 86.6% |
 | **Team** | $49 | R820 | $490 | 85.6% |
 | **Pro** | $149 | R2,480 | $1,490 | 79.7% |
-| **Enterprise** | $1,000 floor | R16,590 floor | $10,000 floor | 75.5% hosted / ~86% BYOC |
+| **Enterprise** | $1,000 floor | R16,590 floor | $10,000 floor | 75.5% |
 
 Annual pricing: 10 months charged, 2 months free (e.g. Pro = $1,490/yr).
 
@@ -50,45 +56,26 @@ All tiers meet or exceed the ≥75% gross-margin target.
 
 **All tiers provide unlimited seats and viewers.** There is no per-seat pricing
 at any tier.  One additional user = one database row + one auth check ≈
-R0.001/month incremental COGS.  Rate-limiting is enforced by compute quota
-(CU/month), not user count.
+R0.001/month incremental COGS.  Rate-limiting is enforced by the metered usage
+quotas (embedded sessions / AI calls / agent runs), not user count.
 
 ---
 
 ## Metered Dimensions
 
-Nubi meters only the dimensions that map to real COGS lines:
+Nubi has no hosted warehouse — there is no server-side bytes-scanned,
+compute-unit, or storage dimension left to price.  Nubi meters only the
+dimensions that map to real COGS lines:
 
 | Metric | COGS line | Overage rate (ZAR) |
 |--------|-----------|--------------------|
-| **Storage GB/month** | Object-storage (S3/R2) + Postgres WAL | R0.33/GB/mo |
-| **Bytes scanned/TiB/month** (`scan_zar_per_tib`) | DuckDB CPU + R2 egress (~R15/TiB, pending benchmark); first 1 TiB/org/month free | R83/TiB |
-| **Compute units/month** (flow runs + query compute) | Container-compute (ECS/k8s) + DuckDB CPU-time | R100/1,000 CU |
-| **Embedded sessions/10K** | Egress bandwidth + per-request compute (CDN) | R50/10K sessions |
-| **AI / agent calls** | Anthropic Claude API token cost | R5.00/call |
-| **Agent runs** | Remote kernel compute | R2.00/run |
+| **Embedded sessions/10K** | CDN egress + per-request edge compute | R50/10K sessions |
+| **AI calls** | Anthropic Claude API token pass-through | R5.00/call |
+| **Agent runs** | On-demand remote-kernel escape hatch (container compute) | R2.00/run |
 
 Overage rates are drawn from the org's **usage wallet** (prepaid credit balance).
 Overages are available from Starter tier upward.  The Free tier has hard stops;
 overages require an upgrade.
-
-### Warehouse queries (heavy-query pool)
-
-Queries against datastores flagged for the **hosted DuckDB warehouse** (the
-heavy-query pool — same engine on 8 GB+ machines, for big-table sorts/joins
-and ~1B-row workloads) are billed identically to standard queries via the
-**bytes-scanned** meter (`scan_zar_per_tib`) — see above.
-
-> **Changed from earlier pricing.** Warehouse queries previously consumed
-> compute units at a **4× multiplier** (`WAREHOUSE_CU_MULTIPLIER`). As of the
-> bytes-scanned billing model, `WAREHOUSE_CU_MULTIPLIER = 1` (the constant is
-> retained only so the `NUBI_CU_MULTIPLIER` env var and any code reading it
-> stay a no-op) — there is no separate warehouse rate, meter, or penalty.
-> "Warehouse vs. standard" no longer appears as a distinct invoice line.
-> Availability of the warehouse itself is still a tier feature: **Pro and
-> Enterprise** (`has_warehouse`); Free/Starter/Team queries always run on
-> standard machines (the quota checker denies the `warehouse` dimension with
-> an upgrade prompt).
 
 ---
 
@@ -113,13 +100,9 @@ The following have near-zero marginal COGS and are never charged:
 | Max query rows | 10K | 100K | 1M | 5M | Unlimited |
 | Dashboards | 5 | 10 | 30 | 100 | Unlimited |
 | Flows | 2 | 3 | 8 | 20 | Unlimited |
-| Storage | 1 GB | 5 GB | 15 GB | 50 GB | 500 GB hosted |
-| Compute units/mo | 500 | 2,000 | 6,000 | 15,000 | 200,000 hosted |
 | Embedded sessions/mo | 0 | 1,000 | 5,000 | 25,000 | Unlimited |
 | Agent runs/mo | 0 | 0 | 10 | 50 | 1,000 |
 | AI calls/mo | 0 | 5 | 15 | 50 | 500 |
-| Bytes scanned free allowance/mo | 1 TiB | 1 TiB | 1 TiB | 1 TiB | 1 TiB |
-| Warehouse (heavy-query pool) | — | — | — | ✓ (bytes-scanned, no multiplier) | ✓ (bytes-scanned, no multiplier) |
 
 ---
 
@@ -171,8 +154,6 @@ via Paystack.
 | `TOPUP_PROMO` | Promotional/granted credit |
 | `TOPUP_FAILED` | Failed auto-topup attempt (no balance change) |
 | `USAGE_LLM` | AI/agent call debit |
-| `USAGE_STORAGE` | Storage overage debit |
-| `USAGE_COMPUTE` | Compute-unit overage debit |
 | `USAGE_EMBED` | Embedded-session overage debit |
 | `USAGE_OVERAGE` | Generic overage debit |
 | `ADJUSTMENT_CREDIT` / `ADJUSTMENT_DEBIT` | Manual admin adjustments |
@@ -205,7 +186,6 @@ audit stringency.  Paid tiers unlock wider ranges:
 | SAML SSO | — | — | — | 1 IdP | Unlimited IdPs |
 | SCIM provisioning | — | — | — | — | Yes |
 | Multi-tenant workspaces | — | — | — | — | Yes |
-| BYOC / on-prem | — | — | — | — | Yes |
 | Custom domain | — | — | — | Yes | Yes |
 | Audit log retention | None | 7 days | 30 days | 90 days | Unlimited |
 | Priority support | — | — | — | Email + Slack | Dedicated CSM |

@@ -18,13 +18,11 @@ export const BILLING_MODEL = {
   neverBilled: [
     'Dashboard views — compute runs in your users’ browsers',
     'Per-viewer “seats” for people who only look at dashboards',
-    'Warehouse compute for cached / pre-aggregated reads',
+    'Unlimited editors, connectors, dashboards, and saved queries',
   ],
   metered: [
-    { label: 'Storage (GB)', desc: 'Object storage consumed by your org — maps directly to our S3/R2 bill.' },
-    { label: 'Compute units', desc: 'Flow runs + query compute on our nodes — maps to container CPU time.' },
-    { label: 'Embedded sessions', desc: 'Embedded dashboard loads / mo — egress + per-request compute cost.' },
-    { label: 'AI calls', desc: 'Text-to-SQL, MCP tools, and agent steps — maps to Anthropic API tokens.' },
+    { label: 'Embedded sessions', desc: 'Embedded dashboard loads / mo — CDN egress + per-request edge compute cost.' },
+    { label: 'AI calls', desc: 'Text-to-SQL, MCP tools, and agent steps — maps to Anthropic API token pass-through.' },
     { label: 'Agent / kernel runs', desc: 'On-demand server kernels (native wheels) — scale-to-zero, only when used.' },
   ],
 }
@@ -34,8 +32,6 @@ export const BILLING_MODEL = {
 // includes a monthly quota; usage beyond it draws from your prepaid wallet
 // first, then lands on your monthly invoice. No per-viewer / per-seat overage.
 export const OVERAGE_RATES = [
-  { label: 'Storage', rate: '$0.02', unit: '/ GB / mo', desc: "Beyond your plan's included storage." },
-  { label: 'Compute', rate: '$6', unit: '/ 1,000 CU', desc: 'Flow + query compute past your monthly units.' },
   { label: 'AI calls', rate: '$0.30', unit: '/ call', desc: 'Text-to-SQL, MCP tools, and agent steps.' },
   { label: 'Embedded sessions', rate: '$3', unit: '/ 10,000', desc: 'Embedded dashboard loads past your quota.' },
   { label: 'Agent / kernel runs', rate: '$0.12', unit: '/ run', desc: 'On-demand server kernels (Team & Pro+).' },
@@ -51,7 +47,7 @@ export const OVERAGE_NOTE =
 // Source of truth: backend/app/ee/billing/tiers.py
 // 5 tiers: free / starter / team / pro / enterprise
 // ALL tiers — unlimited seats and viewers (no per-seat pricing at any tier).
-// Metered: storage · compute units · embedded sessions · AI calls · agent runs.
+// Nubi has no hosted warehouse — metered: embedded sessions · AI calls · agent runs.
 export const TIERS = [
   {
     id: 'free',
@@ -65,7 +61,6 @@ export const TIERS = [
     features: [
       'Unlimited editors & viewers — no per-seat charge',
       'DuckDB-WASM kernel in the browser',
-      '1 GB storage · 500 compute units / mo',
       '3 connectors',
       '5 dashboards · 2 scheduled flows',
       '10k query row cap per execution',
@@ -84,7 +79,6 @@ export const TIERS = [
     highlight: false,
     features: [
       'Unlimited editors & viewers — no per-seat charge',
-      '5 GB storage · 2,000 compute units / mo',
       '1,000 embedded sessions / mo',
       '5 connectors · 10 dashboards · 3 flows',
       '5 AI calls / mo',
@@ -104,7 +98,6 @@ export const TIERS = [
     features: [
       'Everything in Starter, plus:',
       'Unlimited editors & viewers — no per-seat charge',
-      '15 GB storage · 6,000 compute units / mo',
       '5,000 embedded sessions / mo',
       '10 agent runs · 15 AI calls / mo',
       '15 connectors · 30 dashboards · 8 flows',
@@ -125,7 +118,6 @@ export const TIERS = [
     features: [
       'Everything in Team, plus:',
       'Unlimited editors & viewers — no per-seat charge',
-      '50 GB storage · 15,000 compute units / mo',
       '25,000 embedded sessions / mo',
       '50 agent runs · 50 AI calls / mo',
       'All connectors · 100 dashboards · 20 flows',
@@ -139,7 +131,7 @@ export const TIERS = [
     name: 'Enterprise',
     price: '$1,000',
     cadence: 'per month',
-    tagline: 'Unlimited scale, BYOC, and white-glove support.',
+    tagline: 'Unlimited scale and white-glove support.',
     cta: 'Talk to us',
     href: '/register',
     highlight: false,
@@ -153,23 +145,23 @@ export const TIERS = [
     features: [
       'Everything in Pro, plus:',
       'Unlimited editors & viewers — no per-seat charge',
-      '500 GB+ storage · 200,000 compute units / mo',
       'Unlimited embedded sessions',
       '1,000 agent runs · 500 AI calls / mo',
       'Full RLS + HIPAA-alignable deployment',
       'SAML SSO + SCIM provisioning (coming soon) · multi-tenant workspaces',
       'Dedicated CSM · 99.95% uptime SLA · P1 < 30 min (contractual, at signing)',
-      'BYOC / on-prem available on request · BAA on request',
+      'BAA on request',
     ],
   },
 ]
 
 export const ENTERPRISE_NOTE =
-  'Enterprise contracts include a 99.95% uptime SLA, dedicated CSM, and 24/7 P1 on-call — terms are agreed at signing. Need BYOC, on-prem, or custom pricing? Enterprise is custom-quoted.'
+  'Enterprise contracts include a 99.95% uptime SLA, dedicated CSM, and 24/7 P1 on-call — terms are agreed at signing. Need custom pricing? Enterprise is custom-quoted.'
 
 // ── BI competitor comparison: the "viewer tax" ──────────────────────────────
-// cost500 = illustrative annual cost to serve ~500 dashboard viewers, BEFORE
-// warehouse compute, derived from each vendor's public model.
+// cost500 = illustrative annual cost to serve ~500 dashboard viewers, derived
+// from each vendor's public model. Nubi has no hosted warehouse to bill
+// against — viewers run DuckDB-WASM client-side, so cost500 is $0.
 // annual_lo / annual_hi = the same figure as a numeric USD/yr range for the
 // to-scale chart on /pricing (null = unpriced: quote-only or usage-based).
 export const BI_COMPARISON = [
@@ -420,18 +412,18 @@ export const CALC_OPTIONS = [
 // ORCH_COMPARISON sourceUrl).
 //
 // The honest result: managed orchestrators carry a large per-ENVIRONMENT floor
-// you pay regardless of volume; Nubi Flows has NO floor — it meters only the
-// compute to process your data (≈ $0.36/compute-hour, from $6/1,000 CU), so it
-// scales smoothly from near-zero. Your plan's compute quota covers light use.
+// you pay regardless of volume; Nubi Flows has NO floor and no data-volume
+// meter — flow orchestration runs on the same Postgres as the rest of Nubi
+// and is included in your platform subscription (only on-demand remote-kernel
+// agent runs are separately metered — see OVERAGE_RATES).
 const ORCH_GB_PER_COMPUTE_HOUR = 50          // ~50 GB processed per compute-hour
-const ORCH_NUBI_USD_PER_CH = 0.36            // $6 / 1,000 CU @ 60 CU per compute-hour
 const _ch = (gb) => Math.max(0, gb || 0) / ORCH_GB_PER_COMPUTE_HOUR   // compute-hours / mo
 
 export const ORCH_CALC_OPTIONS = [
   {
     name: 'Nubi Flows', isNubi: true,
-    note: 'No per-env floor — metered compute on data processed (~$0.36/compute-hr)',
-    annual: (envs, gb) => Math.round(_ch(gb) * ORCH_NUBI_USD_PER_CH * 12),
+    note: 'Included in your plan — no per-env floor, no data-volume meter',
+    annual: () => 0,
   },
   {
     name: 'Prefect Cloud', note: '$100/mo Starter → $400/mo Team (per-seat; serverless-minute allowance)',
@@ -458,7 +450,7 @@ export const ORCH_CALC_OPTIONS = [
 export const PRICING_FAQ = [
   {
     q: 'Why don’t you charge per viewer?',
-    a: 'Because we don’t pay per viewer. Dashboards compute in the user’s browser (DuckDB-WASM), so an extra viewer costs us essentially nothing — and we pass that on. You’re billed for editors, AI, and warehouse throughput, never for someone looking at a chart.',
+    a: 'Because we don’t pay per viewer. Dashboards compute in the user’s browser (DuckDB-WASM), so an extra viewer costs us essentially nothing — and we pass that on. You’re billed for embedded sessions, AI calls, and agent runs, never for editors or for someone looking at a chart.',
   },
   {
     q: 'What counts as an “embed view”?',
@@ -478,6 +470,6 @@ export const PRICING_FAQ = [
   },
   {
     q: 'What does “dedicated support” on Enterprise include?',
-    a: 'A dedicated Customer Success Manager (CSM), a private Slack/Teams channel, 24/7 P1 on-call (< 30 min first response for site-down incidents), P2 < 2 hours, monthly business reviews, and a contractual 99.95% uptime SLA. Onboarding, architecture review, and optional BYOC deployment are included.',
+    a: 'A dedicated Customer Success Manager (CSM), a private Slack/Teams channel, 24/7 P1 on-call (< 30 min first response for site-down incidents), P2 < 2 hours, monthly business reviews, and a contractual 99.95% uptime SLA. Onboarding and architecture review are included.',
   },
 ]

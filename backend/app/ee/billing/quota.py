@@ -36,11 +36,9 @@ logger = logging.getLogger("nubi.billing.quota")
 
 # UsageSnapshot dimension → (TierLimits quota attr, OverageRates rate attr).
 _DIMENSIONS: dict[str, tuple[str, str]] = {
-    "compute_units": ("max_compute_units_per_month", "compute_zar_per_1000_cu"),
     "ai_calls": ("max_ai_calls_per_month", "ai_call_zar_per_call"),
     "embedded_sessions": ("max_embedded_sessions_per_month", "embedded_session_zar_per_10k"),
     "agent_runs": ("max_agent_runs_per_month", "agent_run_zar_per_run"),
-    "storage_gb": ("max_storage_gb", "storage_zar_per_gb_month"),
 }
 
 # ---------------------------------------------------------------------------
@@ -59,8 +57,6 @@ OVERRIDE_KEYS: tuple[str, ...] = (
     "max_query_rows",
     "max_dashboards",
     "max_flows",
-    "max_storage_gb",
-    "max_compute_units_per_month",
     "max_embedded_sessions_per_month",
     "max_agent_runs_per_month",
     "max_ai_calls_per_month",
@@ -161,19 +157,6 @@ async def _check(*, org_id: str, dimension: str, amount: float) -> tuple[bool, s
     # billing_disabled).
     tier, limits, billing_disabled = await resolve_org_limits(org_id)
 
-    # "warehouse" is a feature gate, not a numeric quota: heavy-query-pool
-    # execution is available on tiers with has_warehouse and consumes normal
-    # compute units (at WAREHOUSE_CU_MULTIPLIER), which the compute_units
-    # dimension already meters and limits.
-    if dimension == "warehouse":
-        if limits.has_warehouse:
-            return True, ""
-        return False, (
-            f"The hosted warehouse (heavy-query pool) is available on the Pro "
-            f"and Enterprise plans. The {tier.value} plan executes queries on "
-            f"standard machines. Upgrade your plan to run warehouse queries."
-        )
-
     attrs = _DIMENSIONS.get(dimension)
     if attrs is None:
         return True, ""  # unknown dimension → allow (mirrors is_within_quota)
@@ -266,14 +249,11 @@ def register_quota_checker() -> None:
 # ---------------------------------------------------------------------------
 
 # Core usage-metric id (app.usage.aggregate.METRICS) → TierLimits attr.
-# Metrics with no tier limit (e.g. bytes_scanned uses a global TiB allowance,
-# not a per-tier cap) are simply omitted → core treats them as unlimited.
+# Metrics with no tier limit are simply omitted → core treats them as unlimited.
 _USAGE_METRIC_TO_TIER_ATTR: dict[str, str] = {
-    "compute_units": "max_compute_units_per_month",
     "ai_tokens": "max_ai_calls_per_month",
     "embedded_sessions": "max_embedded_sessions_per_month",
     "flow_runs": "max_agent_runs_per_month",
-    "storage_gb": "max_storage_gb",
 }
 
 

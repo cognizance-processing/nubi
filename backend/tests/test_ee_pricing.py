@@ -13,13 +13,12 @@ Coverage
        - max_connectors is None at Pro/Enterprise
        - max_dashboards is None at Enterprise
        - max_flows is None at Enterprise (flow defs = DB rows, ~0 COGS)
-7.  Metered dimensions map to real COGS lines:
-       - max_storage_gb is bounded (object-storage cost)
-       - max_compute_units_per_month is bounded (container/query compute cost)
-       - max_embedded_sessions_per_month is bounded on Free/Starter/Pro
-         (egress + per-request compute cost); None = unlimited on Enterprise
-       - max_ai_calls_per_month is bounded (Anthropic API token cost)
-       - max_agent_runs_per_month is bounded (container compute cost)
+7.  Metered dimensions map to real COGS lines (Nubi has no hosted warehouse —
+    no storage / compute-unit / bytes-scanned dimension exists at all):
+       - max_embedded_sessions_per_month is bounded on Free/Starter/Team/Pro
+         (CDN egress + per-request edge compute cost); None = unlimited on Enterprise
+       - max_ai_calls_per_month is bounded (Anthropic API token pass-through cost)
+       - max_agent_runs_per_month is bounded (on-demand remote-kernel escape-hatch cost)
 8.  Security-dial → tier mapping.
 9.  Feature flags per tier.
 10. Overage rates — present on Starter+, correct values.
@@ -309,29 +308,24 @@ class TestUnlimitedNonCOGSDimensions:
 
 
 class TestMeteredDimensions:
-    """Dimensions that have real COGS must be bounded (non-None) on relevant tiers."""
+    """Dimensions that have real COGS must be bounded (non-None) on relevant tiers.
+
+    Nubi has no hosted warehouse: there is no storage / compute-unit / bytes-
+    scanned dimension left to bound — those attributes no longer exist on
+    :class:`TierLimits` at all.
+    """
 
     def _limits(self, tier_name: str):
         from app.ee.billing.tiers import BillingTier, get_tier_limits
         return get_tier_limits(BillingTier(tier_name))
 
-    def test_storage_gb_bounded_at_hosted_tiers(self) -> None:
-        """Storage = object-storage COGS; must be bounded on hosted tiers."""
-        for tier_name in ("free", "starter", "team", "pro", "enterprise"):
-            limits = self._limits(tier_name)
-            assert limits.max_storage_gb is not None, (
-                f"{tier_name}: max_storage_gb should be bounded (object-storage COGS)"
-            )
-            assert limits.max_storage_gb > 0
-
-    def test_compute_units_bounded_at_all_tiers(self) -> None:
-        """Compute = container/query CPU COGS; must be bounded."""
-        for tier_name in ("free", "starter", "team", "pro", "enterprise"):
-            limits = self._limits(tier_name)
-            assert limits.max_compute_units_per_month is not None, (
-                f"{tier_name}: max_compute_units should be bounded (container compute COGS)"
-            )
-            assert limits.max_compute_units_per_month > 0
+    def test_storage_and_compute_dimensions_removed(self) -> None:
+        """The hosted-warehouse dimensions no longer exist on TierLimits."""
+        limits = self._limits("enterprise")
+        assert not hasattr(limits, "max_storage_gb")
+        assert not hasattr(limits, "max_compute_units_per_month")
+        assert not hasattr(limits, "has_warehouse")
+        assert not hasattr(limits, "has_byoc")
 
     def test_embedded_sessions_bounded_at_starter_and_pro(self) -> None:
         """Embedded sessions = egress + per-request compute COGS."""
@@ -351,43 +345,24 @@ class TestMeteredDimensions:
         """Agent runs = remote kernel container-compute COGS."""
         assert self._limits("pro").max_agent_runs_per_month is not None
 
-    def test_compute_units_increase_tier_over_tier(self) -> None:
-        """Higher tiers must include more compute — monotonically increasing."""
+    def test_embedded_sessions_increase_tier_over_tier(self) -> None:
+        """Higher tiers must include more embedded-session volume — monotonic."""
         from app.ee.billing.tiers import BillingTier, get_tier_limits
 
         tiers_in_order = [
             BillingTier.FREE,
             BillingTier.STARTER,
+            BillingTier.TEAM,
             BillingTier.PRO,
-            BillingTier.ENTERPRISE,
         ]
-        prev_cu = 0
+        prev = -1
         for tier in tiers_in_order:
-            cu = get_tier_limits(tier).max_compute_units_per_month
-            assert cu is not None
-            assert cu > prev_cu, (
-                f"{tier.value}: compute units {cu} not > previous {prev_cu}"
+            sessions = get_tier_limits(tier).max_embedded_sessions_per_month
+            assert sessions is not None
+            assert sessions > prev, (
+                f"{tier.value}: embedded sessions {sessions} not > previous {prev}"
             )
-            prev_cu = cu
-
-    def test_storage_gb_increases_tier_over_tier(self) -> None:
-        """Storage quotas must increase monotonically across hosted tiers."""
-        from app.ee.billing.tiers import BillingTier, get_tier_limits
-
-        tiers_in_order = [
-            BillingTier.FREE,
-            BillingTier.STARTER,
-            BillingTier.PRO,
-            BillingTier.ENTERPRISE,
-        ]
-        prev_gb = 0.0
-        for tier in tiers_in_order:
-            gb = get_tier_limits(tier).max_storage_gb
-            assert gb is not None  # all hosted tiers have a storage cap
-            assert gb > prev_gb, (
-                f"{tier.value}: storage {gb} GB not > previous {prev_gb} GB"
-            )
-            prev_gb = gb
+            prev = sessions
 
     def test_free_no_embedded_sessions(self) -> None:
         """Free tier has no embedded session quota."""
@@ -424,50 +399,37 @@ class TestCogsMapping:
         doc = tiers_module.__doc__ or ""
         return doc
 
-    def test_snapshot_storage_maps_to_storage_cogs_line(self) -> None:
+    def test_embedded_sessions_documented_as_cdn_egress_cogs(self) -> None:
         doc = self._docstring()
-        assert "storage_zar_per_gb_month" in doc, (
-            "Docstring must map snapshot storage to storage_zar_per_gb_month"
+        assert "embedded" in doc.lower() and "session" in doc.lower(), (
+            "Docstring must document the embedded-sessions COGS line"
         )
-        assert "snapshot" in doc.lower(), (
-            "Docstring must mention snapshot storage action"
+        assert "cdn" in doc.lower() or "egress" in doc.lower(), (
+            "Docstring must map embedded sessions to CDN egress / edge-compute COGS"
         )
 
-    def test_snapshot_query_maps_to_scan_cogs_line(self) -> None:
+    def test_ai_calls_documented_as_anthropic_pass_through(self) -> None:
         doc = self._docstring()
-        assert "scan_zar_per_tib" in doc, (
-            "Docstring must map snapshot/report queries to scan_zar_per_tib"
+        assert "anthropic" in doc.lower(), (
+            "Docstring must map AI calls to Anthropic token pass-through COGS"
         )
 
-    def test_export_render_maps_to_compute_cogs_line(self) -> None:
+    def test_agent_runs_documented_as_remote_kernel_escape_hatch(self) -> None:
         doc = self._docstring()
-        assert "compute_zar_per_1000_cu" in doc, (
-            "Docstring must map PDF/PPT renders to compute_zar_per_1000_cu"
-        )
-        # Both render actions mentioned
-        assert "pdf" in doc.lower() or "render_pdf" in doc.lower(), (
-            "Docstring must mention PDF export action"
-        )
-        assert "pptx" in doc.lower() or "ppt" in doc.lower(), (
-            "Docstring must mention PPT/PPTX export action"
+        assert "agent run" in doc.lower(), (
+            "Docstring must document the agent-runs escape-hatch meter"
         )
 
-    def test_scheduled_report_maps_to_compute_cogs_line(self) -> None:
+    def test_warehouse_dimensions_no_longer_documented_as_billable(self) -> None:
+        """The removed dimensions must not appear as active OverageRates fields."""
         doc = self._docstring()
-        # Scheduled report send draws compute
-        assert "report" in doc.lower() and "compute_zar_per_1000_cu" in doc, (
-            "Docstring must map scheduled report sends to compute_zar_per_1000_cu"
-        )
-
-    def test_public_export_maps_to_storage_and_bandwidth_cogs(self) -> None:
-        doc = self._docstring()
-        assert "public" in doc.lower() or "cdn" in doc.lower(), (
-            "Docstring must mention public/CDN export"
-        )
-        # Public file uses both storage and embedded_session/CDN bandwidth lines
-        assert "embedded_session_zar_per_10k" in doc or "session" in doc.lower(), (
-            "Docstring must reference CDN/bandwidth line for public exports"
-        )
+        for removed in (
+            "storage_zar_per_gb_month",
+            "scan_zar_per_tib",
+            "compute_zar_per_1000_cu",
+            "WAREHOUSE_CU_MULTIPLIER",
+        ):
+            assert removed not in doc, f"Docstring must not reference removed dimension {removed!r}"
 
     def test_demo_client_computed_documented_as_unmetered(self) -> None:
         """The demo/browser DuckDB-WASM path must be documented as free/unmetered."""
@@ -630,8 +592,9 @@ class TestFeatureFlags:
     def test_enterprise_hipaa_rls(self) -> None:
         assert self._limits("enterprise").has_rls == "full_hipaa_ready"
 
-    def test_enterprise_byoc(self) -> None:
-        assert self._limits("enterprise").has_byoc is True
+    def test_enterprise_has_no_byoc_attr(self) -> None:
+        """BYOC (custody tier) has been dropped from the billing model entirely."""
+        assert not hasattr(self._limits("enterprise"), "has_byoc")
 
     def test_enterprise_audit_logs_unlimited(self) -> None:
         assert self._limits("enterprise").audit_log_retention_days is None
@@ -661,16 +624,16 @@ class TestOverageRates:
 
     def test_free_no_overages(self) -> None:
         ov = self._overages("free")
-        assert ov.storage_zar_per_gb_month is None
-        assert ov.compute_zar_per_1000_cu is None
+        assert ov.ai_call_zar_per_call is None
+        assert ov.embedded_session_zar_per_10k is None
+        assert ov.agent_run_zar_per_run is None
 
-    def test_starter_storage_overage_maps_to_object_storage_cogs(self) -> None:
-        """R0.33/GB → ~27% margin: confirms COGS line is object-storage (R2 parity)."""
-        assert self._overages("starter").storage_zar_per_gb_month == Decimal("0.33")
-
-    def test_starter_compute_overage_maps_to_container_compute_cogs(self) -> None:
-        """R100/1000 CU → ~77% margin: confirms COGS line is container/query compute."""
-        assert self._overages("starter").compute_zar_per_1000_cu == Decimal("100.00")
+    def test_overage_rates_has_no_storage_or_compute_fields(self) -> None:
+        """The storage/compute-unit overage dimensions have been dropped entirely."""
+        ov = self._overages("starter")
+        assert not hasattr(ov, "storage_zar_per_gb_month")
+        assert not hasattr(ov, "compute_zar_per_1000_cu")
+        assert not hasattr(ov, "scan_zar_per_tib")
 
     def test_starter_ai_call_overage_maps_to_llm_api_cogs(self) -> None:
         """R5/call → ~93% margin: confirms COGS line is Anthropic API tokens."""
@@ -703,13 +666,11 @@ class TestOverageRates:
         assert self._overages("enterprise").embedded_session_zar_per_10k == Decimal("0.00")
 
     def test_overage_rates_consistent_across_paid_tiers(self) -> None:
-        """Storage, compute, and AI overage rates are the same at Starter, Pro, Enterprise."""
+        """AI-call overage rate is the same at Starter, Team, Pro, Enterprise."""
         from app.ee.billing.tiers import BillingTier, get_tier_limits
 
         for tier in (BillingTier.STARTER, BillingTier.TEAM, BillingTier.PRO, BillingTier.ENTERPRISE):
             ov = get_tier_limits(tier).overages
-            assert ov.storage_zar_per_gb_month == Decimal("0.33")
-            assert ov.compute_zar_per_1000_cu == Decimal("100.00")
             assert ov.ai_call_zar_per_call == Decimal("5.00")
 
 
@@ -751,9 +712,10 @@ class TestIsFeatureAvailable:
         from app.ee.billing.tiers import BillingTier, is_feature_available
         assert not is_feature_available(BillingTier.PRO, "scim")
 
-    def test_enterprise_byoc_available(self) -> None:
+    def test_byoc_feature_removed(self) -> None:
+        """BYOC (custody tier) has been dropped from the billing model entirely."""
         from app.ee.billing.tiers import BillingTier, is_feature_available
-        assert is_feature_available(BillingTier.ENTERPRISE, "byoc")
+        assert not is_feature_available(BillingTier.ENTERPRISE, "byoc")
 
     def test_unknown_feature_returns_false(self) -> None:
         from app.ee.billing.tiers import BillingTier, is_feature_available
@@ -1174,7 +1136,9 @@ class TestPublicPricingEndpoint:
         for tier_data in body["tiers"]:
             assert "limits" in tier_data, f"{tier_data['tier']}: missing limits"
             assert "max_seats" in tier_data["limits"]
-            assert "max_compute_units_per_month" in tier_data["limits"]
+            assert "max_embedded_sessions_per_month" in tier_data["limits"]
+            assert "max_compute_units_per_month" not in tier_data["limits"]
+            assert "max_storage_gb" not in tier_data["limits"]
 
     @pytest.mark.asyncio
     async def test_pricing_tiers_have_overages_block(self) -> None:
