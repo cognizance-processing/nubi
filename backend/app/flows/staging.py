@@ -1,16 +1,24 @@
-"""Staging area + manifest verification for ingestion (design §5).
+"""Flows staging area — transient per-run scratch space for the ETL pipeline.
 
-A *staging area* is a per-run, prefix-isolated transient store where an
-ingestion producer (a central worker today; a bridge agent in phase 3) lands
-Parquet/object bytes BEFORE they are promoted/loaded into a target connector.
+A *staging area* is a per-run, prefix-isolated transient store where a Flows
+task (``file_ingest`` / ``connector_write`` / a ``python`` cell's
+``ctx.staging``) lands Parquet bytes BEFORE they are loaded into a target
+connector (:mod:`app.flows.loaders`).
+
+This is scratch space for ONE flow run, not a hosted data-warehouse product —
+Nubi does not operate a persistent, billed "managed lakehouse" (that surface
+was removed).  Resolution order:
+
+  1. A dedicated staging bucket/dir the deployer configured
+     (``NUBI_STAGING_BUCKET_URI`` / ``NUBI_STAGING_DIR``) — useful in
+     production so staging bytes never touch local disk.
+  2. A process-local ephemeral temp directory (created lazily, reused for the
+     life of the process) — the zero-config default so Flows staging just
+     works out of the box without any bucket.
 
 Layout (server-pinned, never user input)::
 
     <staging-store>/orgs/<org_id>/staging/<run_id>/<rel-path>
-
-The store root + org/run prefix are resolved by
-:func:`app.lakehouse.managed.get_staging_area`; this module owns the *writer*,
-*reader*, and the **manifest build + verify** helpers that gate promotion.
 
 Manifest contract (design §5)
 -----------------------------
@@ -35,11 +43,12 @@ consistent with the :class:`~app.storage.base.StorageClient` abstraction.
 from __future__ import annotations
 
 import hashlib
+import os
+import tempfile
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from app.lakehouse.managed import CentralStorage
     from app.storage.base import StorageClient
 
 
@@ -102,6 +111,131 @@ def sha256_bytes(data: bytes) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Staging-store resolution (design: scratch space, not a hosted product)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CentralStorage:
+    """Resolved staging-store settings.
+
+    ``scheme`` is ``"s3"`` when a dedicated staging bucket is configured, or
+    ``"file"`` for a local directory (deployer-configured OR the zero-config
+    ephemeral fallback).
+    """
+
+    scheme: str          # "s3" | "file"
+    bucket: str          # bucket name (s3) or absolute root dir (file)
+    creds: dict[str, str]  # storage-client creds (s3 only); empty for file
+
+    def base_uri(self) -> str:
+        if self.scheme == "file":
+            return f"file://{self.bucket}"
+        return f"s3://{self.bucket}"
+
+
+def _s3_creds_from_env() -> dict[str, str]:
+    creds: dict[str, str] = {}
+    key = os.getenv("S3_ACCESS_KEY") or os.getenv("AWS_ACCESS_KEY_ID")
+    secret = os.getenv("S3_SECRET_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY")
+    endpoint = os.getenv("S3_ENDPOINT_URL") or os.getenv("AWS_ENDPOINT_URL")
+    region = os.getenv("AWS_DEFAULT_REGION") or os.getenv("AWS_REGION")
+    if key:
+        creds["aws_access_key_id"] = key
+    if secret:
+        creds["aws_secret_access_key"] = secret
+    if endpoint:
+        creds["endpoint_url"] = endpoint
+    if region:
+        creds["region_name"] = region
+    return creds
+
+
+_ephemeral_root_dir: str | None = None
+
+
+def _ephemeral_root() -> str:
+    """Return (creating once) a process-local temp dir for zero-config staging."""
+    global _ephemeral_root_dir
+    if _ephemeral_root_dir is None or not os.path.isdir(_ephemeral_root_dir):
+        _ephemeral_root_dir = tempfile.mkdtemp(prefix="nubi-flows-staging-")
+    return _ephemeral_root_dir
+
+
+def resolve_staging_storage() -> CentralStorage:
+    """Return the configured staging store — never ``None`` (always available).
+
+    Resolution order:
+      1. Dedicated staging bucket (S3) — ``NUBI_STAGING_BUCKET_URI``.
+      2. Dedicated staging dir (local) — ``NUBI_STAGING_DIR``.
+      3. Zero-config fallback — a process-local ephemeral temp directory.
+    """
+    bucket_uri = os.getenv("NUBI_STAGING_BUCKET_URI", "")
+    if bucket_uri.startswith("s3://"):
+        bucket = bucket_uri[len("s3://"):].split("/")[0]
+        if bucket:
+            return CentralStorage(scheme="s3", bucket=bucket, creds=_s3_creds_from_env())
+
+    staging_dir = os.getenv("NUBI_STAGING_DIR")
+    if staging_dir:
+        return CentralStorage(scheme="file", bucket=os.path.abspath(staging_dir), creds={})
+
+    return CentralStorage(scheme="file", bucket=_ephemeral_root(), creds={})
+
+
+def org_staging_prefix(org_id: str, run_id: str) -> str:
+    """Server-pinned per-run staging key prefix for *org_id* / *run_id*.
+
+    The ONLY definition of the staging prefix — derived purely from trusted ids
+    so a producer can never escape its own run's prefix (design §5).
+    """
+    safe_run = str(run_id).strip().strip("/") or "_run"
+    return f"orgs/{org_id}/staging/{safe_run}/"
+
+
+def get_staging_area(org_id: str, run_id: str) -> "StagingArea":
+    """Return a :class:`StagingArea` for *org_id* / *run_id*.
+
+    Always resolves (staging is process-local scratch space, not a hosted
+    product that can be "unconfigured") — the org/run prefix is pinned here
+    from trusted ids; callers pass only *relative* sub-paths.
+    """
+    staging = resolve_staging_storage()
+    return StagingArea(central=staging, org_id=org_id, run_id=run_id)
+
+
+def _object_size(client: Any, key: str) -> int:
+    if getattr(client, "SCHEME", "") == "s3":
+        try:
+            resp = client._client().head_object(Bucket=client._bucket, Key=key.lstrip("/"))
+            return int(resp.get("ContentLength", 0))
+        except Exception:  # noqa: BLE001
+            return 0
+    if getattr(client, "SCHEME", "") == "file":
+        try:
+            return int(os.path.getsize(client._abs(key)))
+        except Exception:  # noqa: BLE001
+            return 0
+    try:
+        return len(client.download_bytes(key))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _delete_object(client: Any, key: str) -> None:
+    """Delete *key* via the backend's native delete."""
+    if getattr(client, "SCHEME", "") == "s3":
+        client._client().delete_object(Bucket=client._bucket, Key=key.lstrip("/"))
+        return
+    if getattr(client, "SCHEME", "") == "file":
+        path = client._abs(key)
+        if os.path.isfile(path):
+            os.remove(path)
+        return
+    raise RuntimeError(f"delete not supported for backend {client!r}")
+
+
+# ---------------------------------------------------------------------------
 # Staging area
 # ---------------------------------------------------------------------------
 
@@ -109,18 +243,16 @@ def sha256_bytes(data: bytes) -> str:
 class StagingArea:
     """A per-run, prefix-pinned view over a staging store.
 
-    Construct via :func:`app.lakehouse.managed.get_staging_area` (which pins the
-    org/run prefix from trusted ids).  Callers pass only RELATIVE sub-paths;
-    every key is joined under ``orgs/<org>/staging/<run>/`` so user-supplied
-    paths can never escape the prefix.
+    Construct via :func:`get_staging_area` (which pins the org/run prefix from
+    trusted ids).  Callers pass only RELATIVE sub-paths; every key is joined
+    under ``orgs/<org>/staging/<run>/`` so user-supplied paths can never escape
+    the prefix.
     """
 
     def __init__(self, central: "CentralStorage", org_id: str, run_id: str) -> None:
         self._central = central
         self._org_id = org_id
         self._run_id = run_id
-        from app.lakehouse.managed import org_staging_prefix  # noqa: PLC0415
-
         self._prefix = org_staging_prefix(org_id, run_id)
 
     # -- introspection -----------------------------------------------------
@@ -142,7 +274,7 @@ class StagingArea:
     # -- storage client / key pinning -------------------------------------
 
     def _storage(self) -> "StorageClient":
-        # Mirror PrefixIsolatedProvider._storage: build the local client from the
+        # Mirror the storage-client resolution: build the local client from the
         # absolute root directly (file:// round-trip is lossy for deep roots).
         if self._central.scheme == "file":
             from app.storage.local import LocalStorageClient  # noqa: PLC0415
@@ -218,17 +350,15 @@ class StagingArea:
     def cleanup(self) -> None:
         """Best-effort delete of every object under this run's staging prefix.
 
-        Failed-run cleanup is otherwise handled by the dedicated bucket's
-        lifecycle policy (design §5); this is the in-band cleanup after a
-        successful promote/load on the same-bucket posture.
+        Staging is ephemeral scratch space — cleanup after a successful
+        promote/load (or best-effort on a failed run) keeps it from growing
+        unbounded, since there is no lifecycle-policy backstop bucket here.
         """
         client = self._storage()
         try:
             keys = client.list(self._prefix)
         except Exception:  # noqa: BLE001
             return
-        from app.lakehouse.managed import _delete_object  # noqa: PLC0415
-
         for key in keys:
             try:
                 _delete_object(client, key)

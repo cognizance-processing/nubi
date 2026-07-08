@@ -23,7 +23,6 @@ CONNECTOR_DIALECT: dict[str, str] = {
     "cockroachdb": "postgres",
     "cloudsql": "postgres",
     "duckdb": "duckdb",
-    "duckdb_storage": "duckdb",
     "snowflake": "snowflake",
     "bigquery": "bigquery",
     "mysql": "mysql",

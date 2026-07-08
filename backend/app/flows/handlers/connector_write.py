@@ -3,7 +3,7 @@
 The WRITE-side sibling of ``file_ingest`` (and ``bucket_load``): instead of
 pulling files from a source connector, it takes an UPSTREAM flow task's result
 (row-shaped / Arrow), stages it as Parquet in the per-run staging prefix
-(:mod:`app.lakehouse.staging`), verifies the manifest, and loads it into ANY
+(:mod:`app.flows.staging`), verifies the manifest, and loads it into ANY
 target connector through the SAME loader layer (:mod:`app.flows.loaders`) —
 ``promote`` for object stores, ``bulk`` for bulk-capable warehouses
 (BigQuery / Snowflake / Redshift / ClickHouse), ``stream`` for everything else.
@@ -48,7 +48,7 @@ from app.flows.loaders import load_staged
 
 if TYPE_CHECKING:
     from app.flows.executor import TaskContext
-    from app.lakehouse.staging import StagingArea
+    from app.flows.staging import StagingArea
 
 
 _VALID_MODES = {"append", "overwrite", "merge"}

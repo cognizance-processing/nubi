@@ -1258,7 +1258,7 @@ def _promote_python_staging(
     """
     import uuid  # noqa: PLC0415
 
-    from app.lakehouse.managed import get_staging_area  # noqa: PLC0415
+    from app.flows.staging import get_staging_area  # noqa: PLC0415
 
     org_id = ctx.org_id or (claims or {}).get("org_id") or ""
     run_id = getattr(ctx, "run_id", None) or str(uuid.uuid4())

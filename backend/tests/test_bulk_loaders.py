@@ -41,8 +41,8 @@ from app.flows.bulk_loaders import (
     snowflake_copy_statement,
 )
 from app.flows.loaders import choose_strategy
-from app.lakehouse.managed import CentralStorage
-from app.lakehouse.staging import StagingArea
+from app.flows.staging import CentralStorage
+from app.flows.staging import StagingArea
 
 
 # ---------------------------------------------------------------------------

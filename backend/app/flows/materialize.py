@@ -437,14 +437,32 @@ def _get_settings() -> Any:
         return None
 
 
-def _open_storage_connector(physical_target: str) -> Any:
-    """Open a DuckDBStorageConnector suitable for writing *physical_target*.
+class _StorageConnHandle:
+    """Minimal shim exposing the ``._inner._conn`` shape ``apply_incremental``
+    expects — a raw DuckDB connection with any httpfs/S3 bootstrap applied.
 
-    For ``s3://`` targets the connector installs httpfs + the S3 secret; for
-    local paths it uses an in-memory DuckDB connection that can COPY TO / read
-    Parquet on the local filesystem.
+    Replaces the (removed) ``DuckDBStorageConnector`` wrapper: Nubi does not
+    operate a managed storage connector any more, but a plain hardened DuckDB
+    connection + :func:`app.connectors.duckdb_conn.setup_s3_httpfs` gives the
+    same capability for a BYO ``s3://``/local materialize target.
     """
-    from app.connectors.duckdb_storage import DuckDBStorageConnector  # noqa: PLC0415
+
+    def __init__(self, conn: Any) -> None:
+        self._inner = self
+        self._conn = conn
+
+
+def _open_storage_connector(physical_target: str) -> Any:
+    """Open a DuckDB connection suitable for writing *physical_target*.
+
+    For ``s3://`` (or other object-storage) targets, httpfs + an S3 SECRET are
+    installed (credentials resolved from environment variables — see
+    :func:`app.connectors.duckdb_conn.setup_s3_httpfs`); local paths use a
+    plain in-memory connection that can COPY TO / read Parquet on disk.
+    """
+    import duckdb as _duckdb  # noqa: PLC0415
+
+    from app.connectors.duckdb_conn import setup_s3_httpfs  # noqa: PLC0415
 
     effective = (
         physical_target[len("file://"):]
@@ -452,25 +470,13 @@ def _open_storage_connector(physical_target: str) -> Any:
         else physical_target
     )
     is_remote = bool(re.match(r"^(s3|s3a|gs|gcs|az|abfss?)://", effective, re.IGNORECASE))
+    conn = _duckdb.connect(database=":memory:")
     if is_remote:
-        settings = _get_settings()
-        cfg: dict[str, Any] = {"database": effective}
-        # Pull S3 credentials from settings when present (best-effort).
-        for src, dst in (
-            ("S3_ENDPOINT", "endpoint"),
-            ("S3_ACCESS_KEY_ID", "access_key_id"),
-            ("S3_SECRET_ACCESS_KEY", "secret_access_key"),
-            ("S3_REGION", "region"),
-            ("AWS_ACCESS_KEY_ID", "access_key_id"),
-            ("AWS_SECRET_ACCESS_KEY", "secret_access_key"),
-            ("AWS_REGION", "region"),
-        ):
-            val = getattr(settings, src, None) if settings is not None else None
-            if val and dst not in cfg:
-                cfg[dst] = val
-        return DuckDBStorageConnector.from_config(cfg)
-    # Local target: an in-memory connection can COPY TO / read local Parquet.
-    return DuckDBStorageConnector.for_memory()
+        try:
+            setup_s3_httpfs(conn)
+        except Exception:  # noqa: BLE001 — best-effort; write will surface any real failure
+            pass
+    return _StorageConnHandle(conn)
 
 
 def _close_storage_connector(storage: Any) -> None:

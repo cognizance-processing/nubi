@@ -924,28 +924,25 @@ def _select_backend(
         logger.warning("redis cache: availability check failed, using memory: %s", exc)
         inner = _get_memory_singleton(max_entries=max_entries, ttl=ttl)
 
-    # Custody capability 4: transparent query-cache encryption at rest.
-    # Lazy import guards against any circular-import risk at module load time.
+    # Transparent query-cache encryption at rest (NUBI_CACHE_ENCRYPTION_KEY).
     #
     # FAIL-CLOSED (Bug 3 fix): when a cache encryption key IS configured but
     # the EncryptedCache wrapper cannot be constructed (bad/short base64 key,
     # import error, etc.), we MUST NOT silently fall back to plaintext — that
-    # would defeat the custody guarantee the operator asked for.  Instead we
-    # raise a clear RuntimeError naming the misconfig so the process fails to
-    # start rather than running with unencrypted cache storage.
+    # would defeat the guarantee the operator asked for.  Instead we raise a
+    # clear RuntimeError naming the misconfig so the process fails to start
+    # rather than running with unencrypted cache storage.
     #
     # The "no key configured" path (enc_key is empty / falsy) still returns
     # the plain inner backend — that is correct and intentional.
     enc_key: str = ""
     try:
-        from app.lakehouse.custody import cache_encryption_key  # noqa: PLC0415
+        from app.config import get_settings  # noqa: PLC0415
 
-        enc_key = cache_encryption_key()
-    except Exception as exc:  # noqa: BLE001 — import / call failure
-        # If we cannot even determine whether a key is set, treat as "no key"
-        # (custody module not present → not a custody deployment).
+        enc_key = (get_settings().NUBI_CACHE_ENCRYPTION_KEY or "").strip()
+    except Exception as exc:  # noqa: BLE001 — settings read failure
         logger.warning(
-            "cache: could not read cache_encryption_key(); treating as no-key: %s",
+            "cache: could not read NUBI_CACHE_ENCRYPTION_KEY; treating as no-key: %s",
             exc,
         )
         return inner

@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from typing import Any
 
 from fastapi import Depends, Request
@@ -961,16 +960,11 @@ async def execute_metric_query(
         try:
             from app.compute.metering import record_usage_safe as _record_usage_safe
 
-            _cu_multiplier = 1.0
-            try:
-                _cu_multiplier = max(float(os.getenv("NUBI_CU_MULTIPLIER", "1")), 1.0)
-            except ValueError:
-                pass
             _record_usage_safe(
                 kind="compute",
                 user_id=str(identity.user_id or "embed"),
                 org_id=org_id,
-                units=(_elapsed_ms / 1000.0) * _cu_multiplier,
+                units=_elapsed_ms / 1000.0,
                 tier=conn_kind,
                 elapsed_ms=_elapsed_ms,
                 output_bytes=len(full_bytes),

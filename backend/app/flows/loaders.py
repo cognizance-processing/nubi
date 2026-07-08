@@ -2,7 +2,7 @@
 
 Ingestion is ``source connector → staging → target connector``.  Once a
 producer has landed verified Parquet in the per-run staging prefix
-(:mod:`app.lakehouse.staging`), the loader picks a strategy from the TARGET
+(:mod:`app.flows.staging`), the loader picks a strategy from the TARGET
 connector's ``capabilities()`` and moves the staged data into the final target:
 
 ============================================  ==========  ==================================
@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Iterator
 
 if TYPE_CHECKING:
-    from app.lakehouse.staging import StagingArea, StagingManifest
+    from app.flows.staging import StagingArea, StagingManifest
 
 
 # Phase-4 seam: per-warehouse bulk loads (BigQuery load jobs, Snowflake COPY

@@ -446,13 +446,6 @@ def _reset_state():
         except Exception:
             pass
 
-        # ── Export job store ──────────────────────────────────────────────────
-        try:
-            from app.routes.lake_export import set_export_job_store
-            set_export_job_store(None)
-        except Exception:
-            pass
-
         # ── Writeback store (B3) ──────────────────────────────────────────────
         # Reset to a fresh in-memory store between tests; the default PgWritebackStore
         # cannot run against the fake DB.

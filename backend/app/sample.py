@@ -7,21 +7,12 @@ via ``app/demo_bundle.py``) — the FULL set: four demo datasets (retail sales,
 SaaS metrics, web analytics, finance ops — 17 tables), all registered queries,
 and all 10 dashboards — pointing at a single REAL ``duckdb`` datastore that
 behaves exactly like a user-created connector (parquet + ``read_parquet`` views,
-no demo special-casing in the query pipeline):
+no demo special-casing in the query pipeline).
 
-- **Managed lakehouse configured** (S3 in cloud OR the local-file backend in
-  dev — ``NUBI_BUCKET_URI``/``S3_*`` or ``NUBI_MANAGED_LAKE_DIR``): every dataset
-  is provisioned per-PROJECT to
-  ``<lake>/orgs/<org>/projects/<project>/demo/<dataset>/<table>.parquet`` (each
-  table carrying a synthetic ``_row_id`` identity), and the datastore exposes all
-  17 tables as ``read_parquet`` views.  These tables are EDITABLE via
-  rewrite-on-edit in ``routes/data_browser.py`` (``app/demo_lakehouse.py``).  Each
-  project gets its own isolated file set; idempotent re-seeds are safe.
-
-- **No managed lakehouse** (offline dev / CI with nothing configured): the
-  parquet files are written once to the shared local directory
-  ``backend/seed_data/parquet/<dataset>/<table>.parquet`` and the datastore views
-  read those — the legacy READ-ONLY view demo (no ``_row_id``, not editable).
+The parquet files are written once to the shared local directory
+``backend/seed_data/parquet/<dataset>/<table>.parquet`` and the datastore views
+read those — a READ-ONLY view demo (Nubi does not host a writable managed
+lakehouse; this is local/offline data served straight from disk).
 
 Every row created here is tagged ``config.sample = true`` (plus a stable
 ``config.sample_id`` for idempotency) so the whole bundle can be bulk-removed —
@@ -56,11 +47,6 @@ from app.demo_bundle import (
     local_parquet_datastore_config,
     referenced_query_keys,
     resolve_placeholders,
-)
-from app.demo_lakehouse import (
-    editable_demo_datastore_config,
-    editable_demo_supported,
-    provision_demo_parquet,
 )
 from app.repos.provider import Repo, get_repo
 
@@ -128,12 +114,9 @@ async def seed_sample_bundle(
 ) -> dict[str, Any]:
     """Idempotently seed the removable starter bundle into *org_id* / *project_id*.
 
-    When S3 is configured (``S3_ACCESS_KEY`` / ``AWS_ACCESS_KEY_ID`` env vars),
-    exports all four demo datasets to per-project S3 parquet files BEFORE creating
-    the datastore row, so the connector is live-backed by real object storage from
-    day one.  When S3 is absent, the same parquet files are written to the local
-    ``seed_data/parquet/`` directory and the views read those — both modes flow
-    through the identical parquet + ``read_parquet`` connector shape.
+    The demo parquet files are written to the local ``seed_data/parquet/``
+    directory and the datastore's ``view_sql`` reads those via ``read_parquet``
+    — a real ``duckdb`` connector, no demo special-casing in the query pipeline.
 
     Creates a "Sample" DuckDB datastore, every query the demo boards reference,
     and ALL demo dashboards from the shared fixtures — all tagged ``sample=true``.
@@ -143,46 +126,14 @@ async def seed_sample_bundle(
     repo = repo or get_repo()
 
     # ── 1. Build / resolve the datastore config ────────────────────────────────
-    #
-    # Two paths, decided purely from the server storage config (never user
-    # input):
-    #
-    #   A. EDITABLE per-project parquet (managed lakehouse configured — S3 in
-    #      cloud OR the local-file backend in dev) — the demo data becomes the
-    #      user's OWN, per-project, EDITABLE files; the Supabase-style grid edits
-    #      cells via rewrite-on-edit (load → mutate → COPY back).  Preferred
-    #      whenever a central lakehouse storage exists (the product directive).
-    #   B. Local read-only views (no managed lakehouse configured at all) — the
-    #      legacy offline parquet-view demo (shared seed_data/parquet dir).
     ds_config: dict[str, Any]
     name = "Sample"
 
-    if editable_demo_supported():
-        # A. Editable per-project parquet connector — the user's owned, writable copy.
-        try:
-            uris = provision_demo_parquet(org_id, project_id)
-            if not uris:  # storage vanished between check and use
-                raise RuntimeError("no central lakehouse storage resolved")
-            ds_config = editable_demo_datastore_config(uris)
-            name = "Demo Lakehouse"
-        except Exception as exc:  # noqa: BLE001 — fall back to the view-based demo
-            try:
-                export_demo_parquet_local()
-                ds_config = local_parquet_datastore_config()
-            except Exception as exc2:  # noqa: BLE001
-                return {
-                    "skipped": (
-                        f"editable demo failed: {exc}; local view fallback also "
-                        f"failed: {exc2}"
-                    )
-                }
-    else:
-        # B. Local read-only view path (no managed lakehouse configured).
-        try:
-            export_demo_parquet_local()
-            ds_config = local_parquet_datastore_config()
-        except Exception as exc:  # noqa: BLE001 — never fail signup over the sample bundle
-            return {"skipped": f"demo parquet unavailable: {exc}"}
+    try:
+        export_demo_parquet_local()
+        ds_config = local_parquet_datastore_config()
+    except Exception as exc:  # noqa: BLE001 — never fail signup over the sample bundle
+        return {"skipped": f"demo parquet unavailable: {exc}"}
 
     created: list[str] = []
 

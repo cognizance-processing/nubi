@@ -96,9 +96,6 @@ import app.routes.preagg  # noqa: F401, E402
 # Import embed route so it registers itself on api_router at import time.
 import app.routes.embed  # noqa: F401, E402
 
-# Import compute route so it registers itself on api_router at import time.
-import app.routes.compute  # noqa: F401, E402
-
 # Import data-browser route (the /data/* table + row endpoints the Data page
 # calls) so it self-registers on api_router. Without this import the routes are
 # never mounted and /data/* falls through to the /{resource} catch-all, 404-ing
@@ -210,11 +207,6 @@ import app.routes.jwt_issuers  # noqa: F401, E402
 # /{resource} catch-all in resources.py.
 import app.webhooks.router  # noqa: F401, E402
 
-# Import datasets route (lakehouse CSV upload + materialise + catalog) BEFORE
-# resources so the /datasets prefix routes are registered ahead of the generic
-# /{resource} catch-all in resources.py.
-import app.routes.datasets  # noqa: F401, E402
-
 # Import super-admin routes (/admin/*, gated by require_superadmin) BEFORE
 # resources so the /admin prefix routes are registered ahead of the generic
 # /{resource} catch-all in resources.py.
@@ -258,22 +250,6 @@ api_router.include_router(ops_router)
 # generic /{resource} catch-all in resources.py. Reads the core usage_events
 # table; billing stays in EE. Self-registers on api_router at import time.
 import app.routes.usage  # noqa: F401, E402
-
-# Import managed-lakehouse route (/lakehouse — provision/use/delete a Nubi-managed
-# per-org isolated storage area) BEFORE resources so its /lakehouse prefix routes
-# are registered ahead of the generic /{resource} catch-all in resources.py.
-# Self-registers on api_router at import time. Distinct from the /lakehouse
-# OPTIMIZER package (app.lakehouse) — this is the provisioning surface.
-import app.routes.lakehouse  # noqa: F401, E402
-
-# Data-custody tier (opt-in, gated by NUBI_CUSTODY_ENABLED).  These mount the
-# /lake/* surfaces — the versioned write/ingest API and bulk export-to-bucket —
-# and self-register on api_router at import time.  The routes themselves
-# fail-closed (403 custody_disabled) when the tier is off, so importing them
-# unconditionally is safe; the prefixes are specific (/lake/...) so they sit
-# ahead of the generic /{resource} catch-all in resources.py below.
-import app.routes.ingest  # noqa: F401, E402
-import app.routes.lake_export  # noqa: F401, E402
 
 # Import demo-parquet serving route (D2: browser-side demo compute) BEFORE
 # resources so the /demo-parquet/* prefix routes register ahead of the generic

@@ -4,7 +4,7 @@ Symmetric to ``bucket_load`` but in the INGEST direction: it pulls files from a
 *source* connector that exposes the file interface
 (:class:`app.connectors.base.FileConnectorMixin` — ``sftp`` / ``ftp`` / a
 storage-backed bucket), normalises each file to Parquet, lands it in the
-per-run STAGING prefix (:mod:`app.lakehouse.staging`), verifies the manifest,
+per-run STAGING prefix (:mod:`app.flows.staging`), verifies the manifest,
 and LOADS it into any *target* connector via the loader layer
 (:mod:`app.flows.loaders`).  One code path covers FTP / SFTP / bucket because
 the handler talks ONLY to the file-connector interface and the loader layer.
@@ -58,7 +58,7 @@ from app.flows.loaders import LoadTarget, load_staged
 if TYPE_CHECKING:
     from app.connectors.base import FileConnectorMixin, FileStat
     from app.flows.executor import TaskContext
-    from app.lakehouse.staging import ManifestEntry, StagingArea, StagingManifest
+    from app.flows.staging import ManifestEntry, StagingArea, StagingManifest
 
 
 _VALID_FORMATS = {"csv", "json", "ndjson", "parquet", "zip", "auto"}
@@ -312,9 +312,10 @@ def _resolve_source_connector(connector_id: str, org_id: str) -> "FileConnectorM
 def _resolve_target(connector_id: str, object_name: str, org_id: str) -> LoadTarget:
     """Build a :class:`LoadTarget` for the target connector (design §4).
 
-    Object-storage-class targets (managed lakehouse / ``duckdb_storage`` over a
-    storage URI) get a ``promote`` callable backed by the storage client; every
-    other connector (Postgres, MySQL, …) gets a ``stream`` callable.  The
+    Object-storage-class targets (a BYO connector whose ``database``/``path``
+    is an object-storage URI) get a ``promote`` callable backed by the storage
+    client; every other connector (Postgres, MySQL, …) gets a ``stream``
+    callable.  The
     capabilities dict is synthesised so :func:`loaders.choose_strategy` selects
     correctly even before a connector advertises the §4 extension flags.
     """
@@ -362,28 +363,18 @@ def _object_storage_target(
     cfg: dict[str, Any],
     database: str,
 ) -> LoadTarget:
-    """Promote-strategy target: server-side copy staging → final storage path."""
+    """Promote-strategy target: server-side copy staging → final storage path.
+
+    Object-storage targets here are always a BYO connector the caller owns
+    (Nubi does not operate a managed/hosted lakehouse) — credentials come from
+    that connector's own secret store, never a central store.
+    """
     from app.connectors.base import file_capabilities  # noqa: PLC0415
-    from app.lakehouse.managed import resolve_central_storage  # noqa: PLC0415
     from app.storage.base import get_storage_client, parse_uri  # noqa: PLC0415
 
-    # Resolve a storage client + base URI for the destination.  For a MANAGED
-    # lake row the base is the server-pinned per-datastore prefix the provider
-    # wrote into ``config.database`` at provision time
-    # (``orgs/<org>/lake/<datastore_id>/``). That value is server-pinned and the
-    # connectors PUT route refuses storage-path edits, so it can't be repointed
-    # cross-org. We still source creds from the central store (never config).
-    managed = cfg.get("managed_lake") is True
-    if managed:
-        central = resolve_central_storage()
-        if central is None:
-            raise ValueError("Managed lakehouse target requires central storage.")
-        base_uri = database.rstrip("/")
-        creds = central.creds or None
-    else:
-        base_uri = database.rstrip("/")
-        # Resolve creds from the secret store (same shape as query resolution).
-        creds = _target_creds(connector_id, org_id)
+    base_uri = database.rstrip("/")
+    # Resolve creds from the secret store (same shape as query resolution).
+    creds = _target_creds(connector_id, org_id)
 
     client = get_storage_client(base_uri + "/", creds)
     _scheme, _bucket, base_key = parse_uri(base_uri + "/")
@@ -548,6 +539,77 @@ def _infer_staged_schema(staging: "StagingArea", staged_rel: str) -> list[dict[s
         return []
 
 
+# ---------------------------------------------------------------------------
+# Schema-sidecar helpers (auto-DDL / schema-drift contract)
+# ---------------------------------------------------------------------------
+# These used to persist a JSON sidecar under the managed-lake prefix so a
+# target's schema contract survived across runs.  Nubi no longer operates a
+# persistent central/managed-lake store, so there is nowhere durable to keep
+# the sidecar; both helpers degrade to their pre-existing "no central storage
+# configured" behaviour (``_load_table_schema`` always returns ``None`` — the
+# callers below already treat that as "first ingest, nothing to validate
+# against" / "no contract to extend").  ``_check_schema_compatible`` is pure
+# comparison logic and needs no storage at all.
+
+
+def _load_table_schema(
+    org_id: str, datastore_id: str, table_key: str  # noqa: ARG001
+) -> list[dict[str, str]] | None:
+    """Return ``None`` — no persistent schema sidecar (no managed-lake store)."""
+    return None
+
+
+def _save_table_schema(
+    org_id: str,  # noqa: ARG001
+    datastore_id: str,  # noqa: ARG001
+    table_key: str,  # noqa: ARG001
+    schema: list[dict[str, str]],  # noqa: ARG001
+) -> None:
+    """No-op — no persistent schema sidecar (no managed-lake store)."""
+    return None
+
+
+def _check_schema_compatible(
+    existing: list[dict[str, str]], incoming: list[dict[str, str]], partition: str | None
+) -> None:
+    """Assert that *incoming* schema is backward-compatible with *existing*.
+
+    Append-mode schema evolution rules:
+      * Columns present in *existing* must also appear in *incoming* with the
+        SAME type (narrowing/type-change is rejected).
+      * New columns in *incoming* not in *existing* are allowed (additive).
+      * Removing an existing column is rejected (narrowing).
+
+    Raises ``AppError("schema_incompatible", 409)`` on incompatibility.
+    """
+    from app.errors import AppError  # noqa: PLC0415
+
+    existing_map = {c["name"]: c["type"] for c in existing}
+    incoming_map = {c["name"]: c["type"] for c in incoming}
+    removed = set(existing_map) - set(incoming_map)
+    if removed:
+        raise AppError(
+            "schema_incompatible",
+            f"Append would remove existing columns {sorted(removed)!r}. "
+            "Schema narrowing is not allowed; only additive changes are permitted. "
+            f"Partition: {partition!r}",
+            409,
+        )
+    changed = [
+        name
+        for name in existing_map
+        if name in incoming_map and incoming_map[name] != existing_map[name]
+    ]
+    if changed:
+        details = {n: (existing_map[n], incoming_map[n]) for n in changed}
+        raise AppError(
+            "schema_incompatible",
+            f"Append changes existing column types: {details!r}. "
+            "Type changes are not allowed; only additive columns are permitted.",
+            409,
+        )
+
+
 def _contract_check(
     org_id: str,
     datastore_id: str,
@@ -580,8 +642,6 @@ def _contract_check(
     first_staged_rel:
         Relative path of the first staged Parquet object.
     """
-    from app.routes.ingest import _load_table_schema, _check_schema_compatible  # noqa: PLC0415
-
     existing = _load_table_schema(org_id, datastore_id, table_key)
     if not existing:
         # No stored schema yet — first ingest, nothing to validate against.
@@ -728,10 +788,6 @@ def handle(
     # Runs AFTER a successful load so a failed load never writes a contract.
     # Only acts when at least one file was staged (empty runs are no-ops).
     if auto_create and entries:
-        from app.routes.ingest import (  # noqa: PLC0415
-            _load_table_schema,
-            _save_table_schema,
-        )
         incoming = _infer_staged_schema(staging, entries[0].path)
         if incoming:
             existing = _load_table_schema(org_id, tgt_connector_id, tgt_object)
@@ -779,7 +835,7 @@ def handle(
 
 
 def _resolve_staging(org_id: str, run_id: str) -> "StagingArea":
-    from app.lakehouse.managed import get_staging_area  # noqa: PLC0415
+    from app.flows.staging import get_staging_area  # noqa: PLC0415
 
     area = get_staging_area(org_id, run_id)
     if area is None:

@@ -53,7 +53,7 @@ from app.errors import AppError
 
 if TYPE_CHECKING:
     from app.flows.loaders import LoadTarget
-    from app.lakehouse.staging import StagingArea, StagingManifest
+    from app.flows.staging import StagingArea, StagingManifest
 
 
 # ---------------------------------------------------------------------------

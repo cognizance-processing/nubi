@@ -33,8 +33,8 @@ from app.connectors.base import file_capabilities
 from app.flows.executor import TaskContext
 from app.flows.handlers.connector_write import handle
 from app.flows.loaders import LoadTarget
-from app.lakehouse.managed import CentralStorage
-from app.lakehouse.staging import StagingArea
+from app.flows.staging import CentralStorage
+from app.flows.staging import StagingArea
 
 
 # ---------------------------------------------------------------------------

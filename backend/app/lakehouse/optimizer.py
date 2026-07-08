@@ -1,17 +1,18 @@
-"""The managed-lakehouse optimizer skeleton (MANAGED_LAKEHOUSE.md §1 & §4).
+"""The pre-aggregation optimizer skeleton.
 
 One self-managing optimizer owns the mapping from the *logical* tables you query
-to the *physical* structures it maintains (layout, materializations, rewrite).
-It is automatic by default (posture **C+A**) and customizable per table via
-``nubi.toml``.
+to the *physical* rewrite it can prove sound.  It is automatic by default and
+customizable per table via ``nubi.toml``.
 
-The optimizer is **application logic on DuckDB, not a new engine** (§1).  Pre-agg
+The optimizer is **application logic on DuckDB, not a new engine**.  Pre-agg
 splits into three parts and only the third is per-connector:
 
 1. **Rewrite/routing** — :func:`app.connectors.planner.route_to_rollup_shape`
    (sqlglot, connector-agnostic).
-2. **Materialization** — always lands in the lakehouse (Parquet in R2, queried
-   by DuckDB).
+2. **Materialization** — computed ONCE, in-process (pushdown / local DuckDB),
+   as a compact rollup artifact — NOT a durable, Nubi-hosted warehouse dataset.
+   Repeat reads are served by the content-hashed edge cache
+   (:mod:`app.connectors.cache`), same as any other query result.
 3. **Refresh** — the only per-connector bit; run the aggregate via
    ``connector.execute()``.
 
@@ -22,7 +23,7 @@ phase             existing core machinery
 ================  =========================================================
 observe           :func:`app.connectors.preagg.mine` over the query log
 decide            rank candidates × :class:`QueryEstimate` (``Connector.estimate``)
-build             :func:`app.connectors.preagg.build_rollup` (local DuckDB; R2 future)
+build             :func:`app.connectors.preagg.build_rollup` (local DuckDB, in-process)
 maintain          full rebuild via ``build_rollup``; incremental refresh future
 rewrite           :func:`app.connectors.planner.route_to_rollup_shape`
 ================  =========================================================
@@ -43,16 +44,22 @@ What is REAL here today
 What is REAL here today (all phases)
 -------------------------------------
 * :meth:`Optimizer.build` — calls :func:`app.connectors.preagg.build_rollup` for
-  each auto-build rollup in the plan; writes a local DuckDB file.  Returns a list
-  of :class:`~app.connectors.preagg.BuiltRollup`.  Future upgrade: swap the local
-  DuckDB write for **Parquet in R2** once the R2 write path lands (§3).
+  each auto-build rollup in the plan; writes a local DuckDB file used purely as
+  an in-process acceleration structure for THIS deployment (not a hosted /
+  billed storage product).  Returns a list of
+  :class:`~app.connectors.preagg.BuiltRollup`.
 * :meth:`Optimizer.maintain` — full rebuild of every registered rollup (minimum
   viable; always correct).  Returns a summary dict.  Future upgrade: incremental
   refresh (``WHERE ts > watermark`` via ``MaterializedConfig``) + lambda freshness.
 
 What is marked TODO (deeper bits)
 ---------------------------------
-* R2 remote-write in :meth:`Optimizer.build` (documented inside the method).
+* TODO(warehouse-side materialization): today's rollup is a local,
+  process-local DuckDB file — an acceleration structure, not a durable
+  Nubi-hosted dataset. A future connector-native option (materializing the
+  rollup INTO a customer's own warehouse via pushdown, e.g. a Snowflake/
+  BigQuery table THEY own) is an optional seam here, not a Nubi storage
+  product.
 * Incremental refresh in :meth:`Optimizer.maintain` (documented inside the method).
 * Sketch-based measures (HLL / t-digest) for non-additive grains.
 * Partition pruning inside the rewrite (extend ``route_to_rollup_shape``).
@@ -311,7 +318,7 @@ def detect_cluster_keys(
 
 
 class Optimizer:
-    """The self-managing managed-lakehouse optimizer (§1/§4).
+    """The self-managing pre-aggregation optimizer.
 
     Lifecycle: ``observe(log) → decide(candidates, estimates) → build(plan) →
     maintain()``, with :meth:`rewrite` applied per-query at read time.
@@ -548,15 +555,16 @@ class Optimizer:
         one per successfully built rollup.  Failures per-rollup are logged and
         skipped so one bad candidate cannot block the rest.
 
-        Future upgrade (R2 remote-write path)
-        --------------------------------------
-        Today ``build_rollup`` writes a **local DuckDB** file.  The
-        managed-lakehouse target is **Parquet in R2** (sorted by the
-        :class:`LayoutHint` partition key, clustered by the cluster keys, zstd,
-        column statistics) so httpfs range-requests prune to MBs (§3 of the
-        spec).  Once the R2 write path lands, replace the ``build_rollup`` call
-        here with the R2 materializer; the rest of the orchestration stays
-        identical.
+        TODO(warehouse-side materialization) — optional future seam
+        -------------------------------------------------------------
+        ``build_rollup`` writes a **local DuckDB** file: a process-local
+        acceleration structure for THIS deployment, not a durable, Nubi-hosted
+        storage product.  Repeat reads of the same rollup shape are served by
+        the content-hashed edge cache, same as any other query.  A possible
+        future upgrade is a connector-native materialization that writes the
+        rollup INTO a customer's OWN warehouse (pushdown — e.g. a table they
+        own in Snowflake/BigQuery) rather than any Nubi-operated storage;
+        the rest of the orchestration would stay identical.
 
         Parameters
         ----------

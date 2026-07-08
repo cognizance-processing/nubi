@@ -27,8 +27,8 @@ from app.flows.loaders import (
     load_staged,
     read_parquet_batches,
 )
-from app.lakehouse.managed import CentralStorage, org_staging_prefix
-from app.lakehouse.staging import (
+from app.flows.staging import CentralStorage, org_staging_prefix
+from app.flows.staging import (
     ManifestVerificationError,
     StagingArea,
     sha256_bytes,
@@ -136,7 +136,7 @@ def test_manifest_verify_rejects_missing_file():
     with tempfile.TemporaryDirectory() as tmp:
         area = _local_staging(tmp)
         # Build a manifest entry for a file we never wrote.
-        from app.lakehouse.staging import ManifestEntry
+        from app.flows.staging import ManifestEntry
 
         fake = ManifestEntry(path="ghost.parquet", size=10, sha256=sha256_bytes(b"x" * 10))
         manifest = area.build_manifest([fake], {})

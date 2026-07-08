@@ -187,75 +187,6 @@ async def _load_query_vars(
 
 
 # ---------------------------------------------------------------------------
-# Heavy-query pool forwarding (cloud "warehouse machine class")
-# ---------------------------------------------------------------------------
-# One architecture, two machine sizes: a datastore flagged
-# config.query_pool="heavy" gets its cache-MISS queries proxied verbatim to a
-# pool of bigger machines running the SAME image/code (on Fly: the `query`
-# process group, reachable over private networking).  The pool re-verifies the
-# token, re-plans, enforces quota, executes, and meters — this forwarder adds
-# no security or billing surface of its own.
-#
-# Env contract:
-#   NUBI_HEAVY_QUERY_URL  — base URL of the pool. Point it at a proxy-fronted
-#       (autoscaling) address like "http://nubi.flycast:8001" so the pool can
-#       scale to zero and load-balance, or at the process group directly
-#       ("http://query.process.nubi.internal:8000") for an always-on pool.
-#       Unset → never forward (self-host / local dev: everything runs in-process).
-#   NUBI_QUERY_POOL=heavy — set ON the pool machines; short-circuits
-#       forwarding so the pool always executes locally (loop guard #1).
-# Loop guard #2: forwarded requests carry X-Nubi-Forwarded and are never
-# re-forwarded.
-
-
-async def _forward_heavy_query(request: Request, body: "QueryIn"):
-    """Proxy this query to the heavy pool; return the httpx response.
-
-    Returns ``None`` when the query should execute locally instead: no pool
-    configured, this process IS the pool, the request was already forwarded,
-    or the pool is unreachable (fail-open to local execution — the
-    per-connection DuckDB memory limit keeps that safe).  HTTP error
-    responses from the pool (4xx/5xx, e.g. 402 quota_exceeded) are returned
-    for verbatim propagation, NOT treated as fallback — falling back would
-    bypass the pool's quota/plan errors.
-    """
-    if os.getenv("NUBI_QUERY_POOL", "").strip().lower() == "heavy":
-        return None
-    base = os.getenv("NUBI_HEAVY_QUERY_URL", "").strip().rstrip("/")
-    if not base:
-        return None
-    if request.headers.get("x-nubi-forwarded"):
-        return None
-
-    import httpx  # noqa: PLC0415 — lazy: only the forwarding path needs it
-
-    headers: dict[str, str] = {
-        "content-type": "application/json",
-        "x-nubi-forwarded": "1",
-    }
-    # The pool re-runs full auth: forward the bearer token and the Origin
-    # header (embed_origin enforcement happens there too).
-    for h in ("authorization", "origin"):
-        v = request.headers.get(h)
-        if v:
-            headers[h] = v
-
-    try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(300.0, connect=5.0)
-        ) as client:
-            return await client.post(
-                f"{base}/api/v1/query",
-                content=body.model_dump_json(exclude_none=True),
-                headers=headers,
-            )
-    except Exception:  # noqa: BLE001 — pool down/unreachable → execute locally
-        logger.warning(
-            "heavy-query pool %s unreachable — executing locally", base
-        )
-        return None
-
-# ---------------------------------------------------------------------------
 # Output-shape contract validation (A4)
 # ---------------------------------------------------------------------------
 # A registered query may declare its output columns + portable types via
@@ -366,26 +297,6 @@ def _is_uuid_str(value: object) -> bool:
     except (ValueError, TypeError, AttributeError):
         return False
     return True
-
-
-def _cfg_uses_s3_only(cfg: dict) -> bool:
-    """True when a parquet-view connector reads object storage EXCLUSIVELY.
-
-    Used to decide whether to block the local filesystem during hardening. An
-    ``s3_views`` dict / ``view_sql`` may carry s3:// URIs (managed cloud) OR
-    LOCAL parquet paths (the local-file lakehouse backend) — only block local FS
-    when every referenced URI is ``s3://``.  Returns False when there are no
-    parquet-view references at all.
-    """
-    s3_views = cfg.get("s3_views")
-    if isinstance(s3_views, dict) and s3_views:
-        return all(
-            isinstance(v, str) and v.startswith("s3://") for v in s3_views.values()
-        )
-    view_sql = cfg.get("view_sql")
-    if isinstance(view_sql, str) and "read_parquet(" in view_sql:
-        return "s3://" in view_sql
-    return False
 
 
 async def _apply_embed_env_pin(
@@ -1176,23 +1087,11 @@ async def _build_connector_for_plan(
             import duckdb as _duckdb_mem
 
             _mem_conn = _duckdb_mem.connect(database=":memory:")
+            # Execute view_sql if present — e.g. the local-parquet demo/sample
+            # datastore config registers ``CREATE VIEW <t> AS
+            # read_parquet('<local path>')`` statements here (see
+            # app.demo_bundle.local_parquet_datastore_config).
             _view_sql: str | None = cfg.get("view_sql")
-            if not _view_sql and cfg.get("s3_views"):
-                try:
-                    from app.routes.data_browser import (  # noqa: PLC0415
-                        _build_view_sql_from_s3_views,
-                    )
-
-                    _view_sql = _build_view_sql_from_s3_views(cfg["s3_views"])
-                except Exception:  # noqa: BLE001
-                    _view_sql = None
-            if (_view_sql and "s3://" in _view_sql) or cfg.get("s3_views"):
-                try:
-                    from app.connectors.duckdb_conn import setup_s3_httpfs  # noqa: PLC0415
-
-                    setup_s3_httpfs(_mem_conn, cfg)
-                except Exception:  # noqa: BLE001
-                    pass
             if _view_sql:
                 for _stmt in _view_sql.split(";"):
                     _stmt = _stmt.strip()
@@ -1204,13 +1103,7 @@ async def _build_connector_for_plan(
                         pass
             from app.connectors.duckdb_conn import harden_connection as _harden
 
-            _parquet_ref = str(cfg.get("parquet_path") or "")
-            # Only block the LocalFileSystem when the views actually read s3://
-            # URIs. An s3_views dict (or view_sql) may instead hold LOCAL parquet
-            # paths (the local-file lakehouse backend) — blocking local FS there
-            # would break every read_parquet view.
-            _s3_only = _cfg_uses_s3_only(cfg) or _parquet_ref.startswith("s3://")
-            _harden(_mem_conn, block_local_fs=_s3_only)
+            _harden(_mem_conn, block_local_fs=False)
             connector = factory(_mem_conn)
     elif ctype == "postgres":
         _dsn: str | None = cfg.get("dsn")
@@ -1430,44 +1323,6 @@ async def query(
         ctype: str | None = cfg.get("connector_type") or cfg.get("type")
         _conn_kind = ctype or "unknown"
 
-        # ── Heavy-query pool routing ──────────────────────────────────────────
-        # Datastores flagged query_pool="heavy" execute on the big-machine
-        # pool when one is configured.  Happens BEFORE secret injection /
-        # network resolution so this machine never opens tunnels or builds
-        # connectors for work it won't run.  The pool's Arrow bytes are
-        # cached here under the same content-addressed cache key, so
-        # subsequent identical queries are local HITs.
-        if str(cfg.get("query_pool") or "").strip().lower() == "heavy":
-            # Warehouse execution is tier-gated (EE: Pro+).  Enforced on the
-            # app machine before forwarding AND on the pool itself (this
-            # block runs in both processes — the pool just never forwards).
-            await _enforce_quota(org_id, "warehouse", amount=1.0)
-            _pool_resp = await _forward_heavy_query(request, body)
-            if _pool_resp is not None:
-                if _pool_resp.status_code == 200:
-                    cache.put(
-                        _scoped_cache_key,
-                        _pool_resp.content,
-                        tags=[f"org:{org_id}", f"datastore:{effective_datastore_id}"],
-                    )
-                    return StreamingResponse(
-                        ipc_stream_from_bytes(_pool_resp.content),
-                        media_type=_ARROW_STREAM_MEDIA_TYPE,
-                        headers={
-                            "X-Nubi-Cache": _pool_resp.headers.get(
-                                "x-nubi-cache", "MISS"
-                            ),
-                            "X-Nubi-Pool": "heavy",
-                        },
-                    )
-                # Pool answered with an error (quota 402, plan 400, …):
-                # propagate it verbatim — do NOT fall back to local execution.
-                return Response(
-                    content=_pool_resp.content,
-                    status_code=_pool_resp.status_code,
-                    media_type=_pool_resp.headers.get("content-type"),
-                )
-
         # ── (a) Secret injection (M22-A) ──────────────────────────────────────
         # Fetch the decrypted secret for this datastore (if any) and merge the
         # credential fields that each connector type expects into cfg.
@@ -1586,32 +1441,12 @@ async def query(
                 import duckdb as _duckdb_mem
 
                 _mem_conn = _duckdb_mem.connect(database=":memory:")
-                # Execute view_sql if present (e.g. datasets that register a
-                # Parquet-backed view: CREATE VIEW dataset AS read_parquet(...)).
+                # Execute view_sql if present (e.g. the local-parquet demo/sample
+                # datastore config registers ``CREATE VIEW <t> AS
+                # read_parquet('<local path>')`` — see
+                # app.demo_bundle.local_parquet_datastore_config).
                 _view_sql: str | None = cfg.get("view_sql")
-                # Multi-table S3 datastores (e.g. the per-project demo) may use
-                # an s3_views dict instead of a view_sql string.
-                if not _view_sql and cfg.get("s3_views"):
-                    try:
-                        from app.routes.data_browser import (  # noqa: PLC0415
-                            _build_view_sql_from_s3_views,
-                        )
-                        _view_sql = _build_view_sql_from_s3_views(cfg["s3_views"])
-                    except Exception:  # noqa: BLE001
-                        _view_sql = None
-                # If the views read from object storage (s3://), httpfs + an S3
-                # SECRET MUST be set up BEFORE the CREATE VIEW statements run —
-                # otherwise read_parquet('s3://...') fails and the views silently
-                # never exist, surfacing later as "Table not found".
-                if (_view_sql and "s3://" in _view_sql) or cfg.get("s3_views"):
-                    try:
-                        from app.connectors.duckdb_conn import setup_s3_httpfs  # noqa: PLC0415
-                        setup_s3_httpfs(_mem_conn, cfg)
-                    except Exception:  # noqa: BLE001
-                        pass
                 if _view_sql:
-                    # view_sql may carry MULTIPLE statements (one CREATE VIEW per
-                    # table for a multi-table S3 datastore) — execute each.
                     for _stmt in _view_sql.split(";"):
                         _stmt = _stmt.strip()
                         if not _stmt:
@@ -1620,16 +1455,9 @@ async def query(
                             _mem_conn.execute(_stmt)
                         except Exception:  # noqa: BLE001
                             pass
-                # Harden AFTER httpfs/secret setup and view creation
-                # (lock_configuration freezes settings).  Views scan lazily at
-                # query time, so the local filesystem is blocked only when the
-                # datastore reads object storage exclusively — a local-Parquet
-                # view still needs FS reads at scan time.
                 from app.connectors.duckdb_conn import harden_connection as _harden
 
-                _parquet_ref = str(cfg.get("parquet_path") or "")
-                _s3_only = _cfg_uses_s3_only(cfg) or _parquet_ref.startswith("s3://")
-                _harden(_mem_conn, block_local_fs=_s3_only)
+                _harden(_mem_conn, block_local_fs=False)
                 connector = factory(_mem_conn)
         elif ctype == "postgres":
             # PostgresConnector takes a DSN string, not a raw config dict.
@@ -1758,10 +1586,6 @@ async def query(
     # ── 5b. Meter the execution (billing: compute_units) ─────────────────────
     # One event per cache MISS — hits cost no compute and are not metered.
     # units = compute-seconds (reconcile sums these into compute_units).
-    # On the heavy-query pool (the "warehouse machine class"), CUs are billed
-    # at a multiplier (NUBI_CU_MULTIPLIER, canonical value
-    # ee.billing.tiers.WAREHOUSE_CU_MULTIPLIER) and the event tier carries a
-    # ":warehouse" suffix for observability.
     # Best-effort: metering must never break the query path.
     #
     # SCALABILITY (HIGH): the response is NO LONGER blocked on the metering
@@ -1782,23 +1606,14 @@ async def query(
         try:
             from app.compute.metering import record_usage_safe as _record_usage_safe
 
-            _cu_multiplier = 1.0
-            try:
-                _cu_multiplier = max(float(os.getenv("NUBI_CU_MULTIPLIER", "1")), 1.0)
-            except ValueError:
-                pass
-            _meter_tier = _conn_kind
-            if os.getenv("NUBI_QUERY_POOL", "").strip().lower() == "heavy":
-                _meter_tier = f"{_conn_kind}:warehouse"
-
             # Fire-and-forget: not awaited, so the response is not delayed by the
             # compute INSERT. Identical fields to the previous awaited call.
             _record_usage_safe(
                 kind="compute",
                 user_id=str(identity.user_id or "embed"),
                 org_id=org_id,
-                units=(_elapsed_ms / 1000.0) * _cu_multiplier,
-                tier=_meter_tier,
+                units=_elapsed_ms / 1000.0,
+                tier=_conn_kind,
                 elapsed_ms=_elapsed_ms,
                 output_bytes=len(full_bytes),
             )

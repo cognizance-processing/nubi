@@ -55,7 +55,7 @@ ConnectorType = Literal[
     # Query engines
     "athena", "trino", "presto",
     # Lakehouse & files
-    "duckdb", "duckdb_storage",
+    "duckdb",
     # File-only ingestion sources (design §2 — FileConnectorMixin, not queryable)
     "sftp", "ftp",
     # APIs & custom
@@ -350,31 +350,9 @@ def _key_is_not_a_value(key: str, row: dict[str, Any]) -> bool:
     return True  # post-sanitise we trust the explicit scrubbing above
 
 
-# ── Managed-lakehouse row shaping (usage) ─────────────────────────────────────
-
-
 async def _shape_row(row: dict[str, Any], org_id: str, repo: Repo) -> dict[str, Any]:
-    """Sanitise *row* and, for a managed-lakehouse row, attach usage_bytes/gb.
-
-    A managed lakehouse is a normal connector (``config.managed_lake: true``);
-    the frontend renders it as a distinct card and shows its storage usage. We
-    compute usage on demand (cheap size-aware listing over the row's OWN prefix)
-    only for managed rows so the list stays inexpensive for everything else.
-    """
-    safe = _sanitise(row)
-    config = safe.get("config")
-    if isinstance(config, dict) and config.get("managed_lake") is True:
-        from app.lakehouse.managed import get_provider, usage_fields  # noqa: PLC0415
-
-        used = 0
-        provider = get_provider(repo)
-        if provider is not None:
-            try:
-                used = await provider.usage_bytes(org_id, str(row["id"]))
-            except Exception:  # noqa: BLE001 — usage must never break the list
-                used = 0
-        safe.update(usage_fields(used))
-    return safe
+    """Sanitise *row* for a list/get response."""
+    return _sanitise(row)
 
 
 # ── Connector-type label for datastores.config ───────────────────────────────
@@ -391,49 +369,18 @@ def _build_config(connector_type: str, non_secret_config: dict[str, Any]) -> dic
 async def _build_demo_seed_config(org_id: str, request: Request) -> dict[str, Any]:
     """Build a ``duckdb`` connector config pre-loaded with demo parquet data.
 
-    Reuses the same two-path logic as ``app/sample.py``:
-
-    - **Managed lakehouse configured**: provisions per-project editable parquet
-      files under the caller's project prefix, returns an ``editable_parquet``
-      config with ``s3_views``.  Each created connector gets its own isolated
-      copy of the 17 demo tables.
-    - **No managed lakehouse** (offline / CI): exports once to the shared local
-      ``seed_data/parquet/`` directory and returns a read-only ``view_sql``
-      config.
+    Exports (idempotently) to the shared local ``seed_data/parquet/`` directory
+    and returns a read-only ``view_sql`` config — same shape as ``app/sample.py``.
 
     The resulting config is tagged ``demo_seeded=True`` (non-secret, stored in
     datastores.config) so callers can identify it without relying on the name.
     The connector is NOT marked ``sample=True`` or ``system=True`` — the user
-    fully owns it and it appears as a normal connector card (editable on the
-    managed-lake path, read-only otherwise).
+    fully owns it and it appears as a normal connector card.
 
-    Raises :class:`AppError` (500) if neither path can produce data.
+    Raises :class:`AppError` (500) if the local parquet export fails.
     """
     from app.demo_bundle import export_demo_parquet_local, local_parquet_datastore_config  # noqa: PLC0415
-    from app.demo_lakehouse import (  # noqa: PLC0415
-        editable_demo_datastore_config,
-        editable_demo_supported,
-        provision_demo_parquet,
-    )
 
-    # Resolve the active project id for this request (if any) — so per-project
-    # parquet files land under the right prefix.
-    active_project = await _active_project_id(org_id, request)
-
-    if editable_demo_supported():
-        try:
-            uris = provision_demo_parquet(org_id, active_project)
-            if uris:
-                cfg = editable_demo_datastore_config(uris)
-                cfg["demo_seeded"] = True
-                # User-owned copy: no sample/system flags — it renders as a normal
-                # connector and the user can delete it without touching the shared demo.
-                cfg.pop("sample", None)
-                return cfg
-        except Exception:  # noqa: BLE001 — fall through to local path
-            pass
-
-    # Local read-only parquet path (no managed lakehouse / fallback).
     try:
         export_demo_parquet_local()
         cfg = local_parquet_datastore_config()
@@ -481,10 +428,10 @@ async def create_connector(
 
     # ── Demo-seeded connector ─────────────────────────────────────────────────
     # When seed="demo" the caller wants a real, user-owned duckdb connector
-    # pre-loaded with a copy of the demo parquet lakehouse (editable if managed
-    # lakehouse storage is configured, read-only via local parquet otherwise).
-    # We resolve the connector config from the demo seeding logic and ignore
-    # whatever config the caller supplied (name is kept as-is).
+    # pre-loaded with a read-only copy of the demo parquet dataset (local
+    # parquet + read_parquet views — Nubi does not host a writable managed
+    # lakehouse).  We resolve the connector config from the demo seeding logic
+    # and ignore whatever config the caller supplied (name is kept as-is).
     non_secret_config_override: dict[str, Any] | None = None
     if body.seed == "demo":
         non_secret_config_override = await _build_demo_seed_config(org_id, request)
@@ -662,20 +609,6 @@ async def update_connector(
     if not isinstance(existing.get("config"), dict) or "connector_type" not in existing["config"]:
         raise AppError("not_found", "Connector not found.", 404)
 
-    # SECURITY: a managed-lakehouse datastore's storage path is server-pinned to
-    # its isolated prefix (orgs/<org_id>/lake/<datastore_id>/). RENAMING is fine
-    # (it's a normal connector), but its storage path must NOT be editable here —
-    # otherwise a user could repoint `database`/`managed_prefix` at another org's
-    # prefix or an arbitrary URL. Reject config edits to managed rows; allow name.
-    is_managed = existing["config"].get("managed_lake") is True
-    if is_managed and (body.config is not None or (body.secret is not None and not body.secret.is_empty())):
-        raise AppError(
-            "managed_lake_immutable",
-            "This is a Nubi-managed lakehouse — its storage path and credentials "
-            "are server-managed and cannot be edited. You may rename it (name only).",
-            409,
-        )
-
     # Build the update fields dict
     fields: dict[str, Any] = {}
     if body.name is not None:
@@ -754,23 +687,6 @@ async def delete_connector(
         raise AppError("not_found", "Connector not found.", 404)
     if not isinstance(existing.get("config"), dict) or "connector_type" not in existing["config"]:
         raise AppError("not_found", "Connector not found.", 404)
-
-    # A managed lakehouse is a normal connector: DELETE == DEPROVISION. Route the
-    # delete through the provider so it also removes the org's prefix objects
-    # (orgs/<org>/lake/<id>/) + the encrypted central-creds secret — not just the
-    # row (which would orphan billable storage). Org-scoped; cross-org already
-    # 404'd above via repo.get.
-    if existing["config"].get("managed_lake") is True:
-        from app.lakehouse.managed import get_provider  # noqa: PLC0415
-
-        provider = get_provider(repo)
-        if provider is not None:
-            await provider.deprovision(org_id, connector_id)
-        else:
-            # Central storage unconfigured (degrade): no objects/secret to clean
-            # up — just remove the row so the stale managed card disappears.
-            await repo.delete("datastores", org_id, connector_id)
-        return Response(status_code=204)
 
     deleted = await repo.delete("datastores", org_id, connector_id)
     if not deleted:

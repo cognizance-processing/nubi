@@ -8,7 +8,6 @@ the custody work cannot silently regress them:
   - First-party tokens with an explicit non-author scope cannot author metrics.
   - The author:metric / author:sql wildcard semantics are intact.
   - Webhook SSRF guard (guard_url + resolve_and_pin) blocks metadata / private.
-  - Export SELECT-only + file-access guards still reject the classic payloads.
 """
 
 from __future__ import annotations
@@ -23,7 +22,6 @@ from app.auth.scopes import (
 from app.auth.verify import VerifiedIdentity
 from app.connectors.ssrf import guard_url, resolve_and_pin
 from app.errors import AppError
-from app.routes.lake_export import _validate_export_sql
 from app.routes.metrics import _require_first_party_write
 
 
@@ -105,24 +103,3 @@ def test_resolve_and_pin_pins_public_host():
     assert pinned.host == "example.com"
     assert pinned.port == 443
     assert pinned.ip  # a concrete validated IP literal
-
-
-# ---------------------------------------------------------------------------
-# Export SQL guards (classic payloads)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "sql",
-    [
-        "DROP TABLE orders",
-        "INSERT INTO orders VALUES (1)",
-        "ATTACH 'evil.db' AS evil",
-        "SELECT 1; DROP TABLE orders",
-        "SELECT * FROM read_csv('/etc/passwd')",
-    ],
-)
-def test_export_sql_classic_payloads_rejected(sql):
-    with pytest.raises(AppError) as ei:
-        _validate_export_sql(sql)
-    assert ei.value.code == "invalid_export_sql"

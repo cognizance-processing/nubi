@@ -169,11 +169,6 @@ def _bootstrap(registry: ConnectorRegistry) -> None:
         ``PostgresConnector`` — ADBC-backed, native Arrow, full push-down + RLS.
     ``'duckdb'``
         ``DuckDBConnector`` — local DuckDB, used for fixtures and conformance.
-    ``'duckdb_storage'``
-        ``DuckDBStorageConnector`` — object-storage-aware DuckDB connector.
-        Supports local file paths AND ``s3://`` URIs (MinIO / AWS S3 via
-        httpfs).  Auto-detects scheme from ``config["database"]``.  Use this
-        type for lakehouse datastores backed by MinIO or S3.
     ``'http_json'``
         ``HttpJsonConnector`` — REST/JSON API source; post-fetch RLS via
         ``apply_rls_postfetch`` (fail-closed).  No predicate push-down.
@@ -183,7 +178,6 @@ def _bootstrap(registry: ConnectorRegistry) -> None:
     from app.connectors.clickhouse import ClickHouseConnector
     from app.connectors.databricks import DatabricksConnector
     from app.connectors.duckdb_conn import DuckDBConnector
-    from app.connectors.duckdb_storage import DuckDBStorageConnector
     from app.connectors.http_json import HttpJsonConnector
     from app.connectors.jdbc import JDBCConnector
     from app.connectors.mariadb import MariaDBConnector
@@ -196,16 +190,6 @@ def _bootstrap(registry: ConnectorRegistry) -> None:
 
     registry.register("postgres", PostgresConnector)
     registry.register("duckdb", DuckDBConnector)
-    # ``duckdb_storage`` is the object-storage-aware variant of the DuckDB
-    # connector.  It auto-detects the scheme from ``config["database"]`` and
-    # bootstraps httpfs + S3 secrets for s3:// URIs; for local paths it
-    # behaves identically to opening a read-only DuckDB file.  Use
-    # ``connector_type: "duckdb_storage"`` in the datastore config when the
-    # database lives in MinIO / S3 or is referenced by an s3:// URI.
-    registry.register(
-        "duckdb_storage",
-        lambda config: DuckDBStorageConnector.from_config(config),
-    )
     registry.register("http_json", lambda config: HttpJsonConnector(config))
 
     # MySQL / MariaDB: the connector takes a MySQL-URI DSN, but the registry
