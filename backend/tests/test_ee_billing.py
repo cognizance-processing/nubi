@@ -1021,9 +1021,11 @@ class TestQuotaChecker:
         org_id = str(uuid.uuid4())
         await self._seed_subscription(org_id, "starter")
         limits = await usage_limits_provider(org_id)
-        # STARTER: 5 AI calls, 1,000 embed sessions, 0 agent runs (flow_runs).
-        # No compute_units/storage_gb — Nubi has no hosted warehouse to meter.
-        assert limits["ai_tokens"] == 5.0
+        # STARTER: 1,000,000 free AI tokens/month (the ACTIVE AI billing
+        # dimension — see app.ee.billing.tiers.max_ai_tokens_per_month),
+        # 1,000 embed sessions, 0 agent runs (flow_runs). No compute_units/
+        # storage_gb — Nubi has no hosted warehouse to meter.
+        assert limits["ai_tokens"] == 1_000_000.0
         assert limits["embedded_sessions"] == 1_000.0
         assert limits["flow_runs"] == 0.0
         assert "compute_units" not in limits
@@ -1063,8 +1065,8 @@ class TestQuotaChecker:
         from app.features import get_usage_limits
 
         limits = await get_usage_limits(org_id)
-        # TEAM: 15 AI calls/month (no compute_units dimension — no warehouse).
-        assert limits.get("ai_tokens") == 15.0
+        # TEAM: 5,000,000 free AI tokens/month (no compute_units dimension — no warehouse).
+        assert limits.get("ai_tokens") == 5_000_000.0
         assert "compute_units" not in limits
 
 
@@ -1151,7 +1153,12 @@ class TestQuotaOverrides:
         from app.ee.billing.quota import billing_quota_checker
 
         org_id = str(uuid.uuid4())
-        # ENTERPRISE ai_calls limit is 500 and normally billable (allow-and-meter).
+        # ENTERPRISE ai_calls limit is 500. The legacy per-call rate is retired
+        # (ai_call_zar_per_call is None on every tier — token-passthrough
+        # billing replaced it), so this dimension is ALWAYS a hard cap now,
+        # independent of billing_disabled — this test still exercises the
+        # billing_disabled hard-stop MESSAGE/path, just via a dimension that
+        # was already hard-capped rather than one billing_disabled newly caps.
         await self._set_override(org_id, tier_override="enterprise", billing_disabled=True)
         allowed, reason = await billing_quota_checker(
             org_id=org_id, dimension="ai_calls", amount=1_000.0
@@ -1178,26 +1185,65 @@ class TestQuotaOverrides:
 
     @pytest.mark.asyncio
     async def test_billing_enabled_overage_still_allowed(self) -> None:
-        """Sanity: without billing_disabled, an overage dimension stays billable."""
+        """Sanity: without billing_disabled, an overage dimension stays billable.
+
+        Uses ``agent_runs`` (still has a live OverageRates rate on Enterprise)
+        rather than ``ai_calls`` — the legacy per-call AI rate is retired
+        (token-passthrough billing replaced it; see
+        app.ee.billing.token_billing), so ``ai_calls`` is always hard-capped
+        now regardless of billing_disabled and would not exercise this path.
+        """
         from app.ee.billing.quota import billing_quota_checker
 
         org_id = str(uuid.uuid4())
         await self._set_override(org_id, tier_override="enterprise", billing_disabled=False)
         allowed, _ = await billing_quota_checker(
-            org_id=org_id, dimension="ai_calls", amount=1_000.0
+            org_id=org_id, dimension="agent_runs", amount=1_000.0
         )
         assert allowed is True
 
     @pytest.mark.asyncio
+    async def test_ai_tokens_overage_allowed_on_paid_tier(self) -> None:
+        """ai_tokens (the ACTIVE AI billing dimension) is allow-and-meter on any
+        paid tier, regardless of the (now-unused) OverageRates.ai_call_zar_per_call."""
+        from app.ee.billing.quota import billing_quota_checker
+
+        org_id = str(uuid.uuid4())
+        await self._set_override(org_id, tier_override="starter", billing_disabled=False)
+        allowed, _ = await billing_quota_checker(
+            org_id=org_id, dimension="ai_tokens", amount=10_000_000.0
+        )
+        assert allowed is True
+
+    @pytest.mark.asyncio
+    async def test_ai_tokens_hard_stops_on_free_tier(self) -> None:
+        """ai_tokens hard-stops on FREE once the free monthly allowance is used."""
+        from app.ee.billing.quota import billing_quota_checker
+
+        org_id = str(uuid.uuid4())
+        await self._set_override(org_id, tier_override="free", billing_disabled=False)
+        await self._seed_usage(org_id, "ai_call", 100_000.0)  # FREE allowance exhausted
+        allowed, reason = await billing_quota_checker(
+            org_id=org_id, dimension="ai_tokens", amount=1.0
+        )
+        assert allowed is False
+        assert "ai tokens" in reason.lower()
+
+    @pytest.mark.asyncio
     async def test_usage_limits_provider_reflects_override(self) -> None:
-        """The read-only provider surfaces overridden limits to the usage view."""
+        """The read-only provider surfaces overridden limits to the usage view.
+
+        ``ai_tokens`` (the usage-view metric id) now maps to
+        ``max_ai_tokens_per_month`` — the ACTIVE token-based AI billing
+        dimension — not the legacy ``max_ai_calls_per_month`` quota.
+        """
         from app.ee.billing.quota import usage_limits_provider
 
         org_id = str(uuid.uuid4())
         await self._set_override(
             org_id,
             tier_override="team",
-            limit_overrides={"max_ai_calls_per_month": 42},
+            limit_overrides={"max_ai_tokens_per_month": 42},
         )
         limits = await usage_limits_provider(org_id)
         assert limits["ai_tokens"] == 42.0

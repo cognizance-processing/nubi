@@ -12,6 +12,21 @@ Conventions:
 
 ## [Unreleased]
 
+### Added
+
+- **LiteLLM multi-provider AI + token-passthrough billing.** `LiteLLMProvider`
+  is now the primary completion path for Anthropic/OpenAI/Gemini (`litellm`
+  is a real dependency, not optional) — every metered call is priced via
+  `litellm.completion_cost` and billed in real time: `usd_marked_up = usd_cost
+  * (1 + NUBI_TOKEN_MARKUP_PCT/100)`, charged from the org's usage wallet only
+  for tokens beyond the tier's free monthly allowance
+  (`TierLimits.max_ai_tokens_per_month` — the new active AI billing dimension,
+  replacing the flat per-call `ai_calls` overage rate). Orgs on any paid tier
+  can bring their own vendor API key (`POST`/`DELETE /ai/keys`, AES-256-GCM
+  encrypted at rest) — BYO calls are never charged from the wallet.
+  `GET /ai/providers` exposes enabled providers/models + the caller's BYO
+  status. New env vars: `NUBI_AI_ENABLED_PROVIDERS`, `NUBI_TOKEN_MARKUP_PCT`.
+
 ### Removed
 
 - **Data-lineage feature (dependency DAG + column-level SQL lineage).** Cut as

@@ -233,7 +233,20 @@ class TierLimits:
     max_agent_runs_per_month:
         Maximum agent/flow remote kernel runs per month.  ``None`` means unlimited.
     max_ai_calls_per_month:
-        Maximum AI generate/grounding calls per month.  ``None`` means unlimited.
+        Legacy per-call AI quota.  Retained for BACK-COMPAT (older overrides,
+        the ``ai_calls`` UsageSnapshot dimension) but no longer the ENFORCED
+        AI dimension — see ``max_ai_tokens_per_month``.  ``None`` means
+        unlimited.
+    max_ai_tokens_per_month:
+        Free monthly LLM TOKEN allowance (prompt + completion tokens summed
+        across every metered AI call).  This is the ACTIVE AI billing meter:
+        ``app.routes.ai`` / ``app.routes.chat`` enforce it pre-flight (hard
+        stop when exhausted and no overage capability — i.e. FREE tier) and
+        ``app.ee.billing.token_billing`` charges the org's usage wallet in
+        real time, at cost + ``NUBI_TOKEN_MARKUP_PCT``, for any token beyond
+        it once the tier allows overage.  ``None`` means unlimited (no wallet
+        draw ever — reserved for a future "unmetered AI" tier; every current
+        tier sets a finite number so real dollars are always tracked).
     security_dial_min:
         Minimum security-dial value that this tier maps to (inclusive).
     security_dial_max:
@@ -287,6 +300,7 @@ class TierLimits:
     max_embedded_sessions_per_month: int | None
     max_agent_runs_per_month: int | None
     max_ai_calls_per_month: int | None
+    max_ai_tokens_per_month: int | None
     security_dial_min: int
     security_dial_max: int
     overages: OverageRates = field(default_factory=OverageRates)
@@ -332,6 +346,10 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
         max_embedded_sessions_per_month=0,
         max_agent_runs_per_month=0,
         max_ai_calls_per_month=0,
+        # Free trial allowance: 100k LLM tokens/month (small but usable — enough
+        # for a handful of grounded chat turns), hard-stopped with no wallet
+        # passthrough once exhausted (Free has no wallet / no billing relationship).
+        max_ai_tokens_per_month=100_000,
         security_dial_min=0,
         security_dial_max=40,
         overages=OverageRates(),  # no overages — upgrade required
@@ -373,11 +391,18 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
         max_flows=3,
         max_embedded_sessions_per_month=1_000,
         max_agent_runs_per_month=0,   # no remote kernel on entry tier
-        max_ai_calls_per_month=5,     # Haiku grounding only
+        max_ai_calls_per_month=5,     # legacy call quota — back-compat only, no longer enforced
+        max_ai_tokens_per_month=1_000_000,  # 1M tokens/month free; wallet covers overage
         security_dial_min=0,
         security_dial_max=60,
         overages=OverageRates(
-            ai_call_zar_per_call=Decimal("5.00"),          # ~93% margin; COGS = Anthropic API tokens
+            # ai_call_zar_per_call retired: AI is now billed real-time, per-token,
+            # at cost + NUBI_TOKEN_MARKUP_PCT (app.ee.billing.token_billing) once
+            # max_ai_tokens_per_month is exceeded — see the docstring above and
+            # app.ee.billing.quota's "ai_tokens" dimension. The flat R5/call rate
+            # would otherwise double-bill the same usage via the monthly
+            # reconciliation cycle (app.ee.billing.reconcile).
+            ai_call_zar_per_call=None,
             embedded_session_zar_per_10k=Decimal("50.00"), # ~99% margin; COGS = egress + CDN
             agent_run_zar_per_run=None,                    # not available on Starter
             seat_zar_per_seat_month=None,                  # no per-seat pricing at any tier
@@ -422,11 +447,12 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
         max_flows=8,
         max_embedded_sessions_per_month=5_000,
         max_agent_runs_per_month=10,    # entry-level remote kernel allowance
-        max_ai_calls_per_month=15,      # Haiku grounding + light Sonnet chat
+        max_ai_calls_per_month=15,      # legacy call quota — back-compat only, no longer enforced
+        max_ai_tokens_per_month=5_000_000,  # 5M tokens/month free; wallet covers overage
         security_dial_min=0,
         security_dial_max=70,
         overages=OverageRates(
-            ai_call_zar_per_call=Decimal("5.00"),          # ~93% margin; COGS = Anthropic API tokens
+            ai_call_zar_per_call=None,                     # retired — see Starter comment above
             embedded_session_zar_per_10k=Decimal("50.00"), # ~99% margin; COGS = egress + CDN
             agent_run_zar_per_run=Decimal("2.00"),         # ~99% margin; COGS = remote kernel compute
             seat_zar_per_seat_month=None,                  # no per-seat pricing at any tier
@@ -470,11 +496,12 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
         max_flows=20,
         max_embedded_sessions_per_month=25_000,
         max_agent_runs_per_month=50,     # remote kernel included
-        max_ai_calls_per_month=50,       # Haiku grounding + Sonnet chat
+        max_ai_calls_per_month=50,       # legacy call quota — back-compat only, no longer enforced
+        max_ai_tokens_per_month=15_000_000,  # 15M tokens/month free; wallet covers overage
         security_dial_min=0,
         security_dial_max=80,
         overages=OverageRates(
-            ai_call_zar_per_call=Decimal("5.00"),          # ~93% margin; COGS = Anthropic API tokens
+            ai_call_zar_per_call=None,                     # retired — see Starter comment above
             embedded_session_zar_per_10k=Decimal("50.00"), # ~99% margin; COGS = egress + CDN
             agent_run_zar_per_run=Decimal("2.00"),         # ~99% margin; COGS = remote kernel compute
             seat_zar_per_seat_month=None,                  # no per-seat pricing at any tier
@@ -525,11 +552,12 @@ _TIER_CATALOGUE: dict[BillingTier, TierLimits] = {
         max_flows=None,         # unlimited — flow definitions are DB rows (~R0.001/flow/mo COGS)
         max_embedded_sessions_per_month=None,  # unlimited embed sessions
         max_agent_runs_per_month=1_000,
-        max_ai_calls_per_month=500,
+        max_ai_calls_per_month=500,      # legacy call quota — back-compat only, no longer enforced
+        max_ai_tokens_per_month=100_000_000,  # 100M tokens/month free; wallet covers overage
         security_dial_min=0,
         security_dial_max=100,
         overages=OverageRates(
-            ai_call_zar_per_call=Decimal("5.00"),
+            ai_call_zar_per_call=None,                      # retired — see Starter comment above
             embedded_session_zar_per_10k=Decimal("0.00"),  # unlimited embed included → R0 overage
             agent_run_zar_per_run=Decimal("2.00"),
             seat_zar_per_seat_month=None,                  # unlimited seats

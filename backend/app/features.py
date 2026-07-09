@@ -360,6 +360,186 @@ def register_org_settings_provider(provider: OrgSettingsProvider | None) -> None
     _ORG_SETTINGS_PROVIDER = provider
 
 
+# ---------------------------------------------------------------------------
+# AI provider resolution hook (BYO keys — EE billing only)
+# ---------------------------------------------------------------------------
+#
+# Core AI call sites (app.routes.ai, app.routes.chat) resolve the LLM provider
+# to use for a given org through this hook instead of importing app.ee
+# directly.  EE billing registers a resolver that swaps in the org's BYO
+# vendor key (paid tiers only — app.ee.billing.org_ai_keys) when configured;
+# with no resolver registered (OSS build), every org gets the operator's
+# default provider (app.ai.provider.get_provider()) and is never BYO.
+#
+# Signature: resolver(org_id: str | None) -> (provider, is_byo)  (may be sync
+# or async).  ``provider`` is an app.ai.provider.LLMProvider instance.
+
+AiProviderResolver = Callable[["str | None"], "tuple[Any, bool] | Awaitable[tuple[Any, bool]]"]
+
+_AI_PROVIDER_RESOLVER: AiProviderResolver | None = None
+
+
+def register_ai_provider_resolver(resolver: AiProviderResolver | None) -> None:
+    """Register *resolver* as the org-aware AI provider resolver (EE billing only).
+
+    Pass ``None`` to remove the registered resolver (OSS default: always the
+    operator's provider, never BYO).
+
+    Raises
+    ------
+    TypeError
+        When *resolver* is neither callable nor ``None``.
+    """
+    if resolver is not None and not callable(resolver):
+        raise TypeError(f"register_ai_provider_resolver: resolver must be callable or None, got {type(resolver)!r}")
+    global _AI_PROVIDER_RESOLVER  # noqa: PLW0603
+    _AI_PROVIDER_RESOLVER = resolver
+
+
+async def resolve_ai_provider(org_id: str | None) -> tuple[Any, bool]:
+    """Return ``(provider, is_byo)`` for *org_id*.
+
+    Falls back to ``app.ai.provider.get_provider()`` (operator default,
+    ``is_byo=False``) when no resolver is registered (OSS build) or the
+    resolver raises (fail-open: a broken BYO resolver must never block an AI
+    call — it just loses the BYO discount for that request).
+    """
+    from app.ai.provider import get_provider  # noqa: PLC0415
+
+    if _AI_PROVIDER_RESOLVER is None:
+        return get_provider(), False
+    try:
+        result: Any = _AI_PROVIDER_RESOLVER(org_id)
+        if inspect.isawaitable(result):
+            result = await result
+        provider, is_byo = result
+        return provider, bool(is_byo)
+    except Exception:  # noqa: BLE001
+        return get_provider(), False
+
+
+# ---------------------------------------------------------------------------
+# AI usage metering hook (token→wallet charging — EE billing only)
+# ---------------------------------------------------------------------------
+#
+# Core AI call sites report completed-call usage through this hook so EE
+# billing can charge the org's usage wallet for metered (non-BYO) token
+# overage in real time (app.ee.billing.token_billing).  A no-op in OSS builds
+# (no wallet to charge).  Core is still responsible for the VISIBILITY-only
+# usage_events recording (kind="ai_call") — this hook is charging only.
+#
+# Signature: meter(*, org_id, user_id, endpoint, prompt_tokens,
+#   completion_tokens, total_tokens, usd_cost, is_byo) -> None | Awaitable[None]
+
+AiUsageMeter = Callable[..., "None | Awaitable[None]"]
+
+_AI_USAGE_METER: AiUsageMeter | None = None
+
+
+def register_ai_usage_meter(meter: AiUsageMeter | None) -> None:
+    """Register *meter* as the AI token→wallet charging hook (EE billing only).
+
+    Pass ``None`` to remove the registered meter (OSS default: no charging).
+
+    Raises
+    ------
+    TypeError
+        When *meter* is neither callable nor ``None``.
+    """
+    if meter is not None and not callable(meter):
+        raise TypeError(f"register_ai_usage_meter: meter must be callable or None, got {type(meter)!r}")
+    global _AI_USAGE_METER  # noqa: PLW0603
+    _AI_USAGE_METER = meter
+
+
+async def meter_ai_usage(
+    *,
+    org_id: str | None,
+    user_id: str,
+    endpoint: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    total_tokens: int,
+    usd_cost: float,
+    is_byo: bool,
+) -> None:
+    """Charge the org's usage wallet for metered AI token overage, if registered.
+
+    No-op when no meter is registered (OSS build) or ``org_id`` is ``None``.
+    Fail-open: a broken meter never raises into the request path (billing
+    completeness is best-effort against an already-completed LLM call — see
+    ``app.ee.billing.token_billing.meter_and_charge`` for the fail-open
+    rationale on wallet errors specifically).
+    """
+    if _AI_USAGE_METER is None or org_id is None:
+        return
+    try:
+        result: Any = _AI_USAGE_METER(
+            org_id=org_id,
+            user_id=user_id,
+            endpoint=endpoint,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            usd_cost=usd_cost,
+            is_byo=is_byo,
+        )
+        if inspect.isawaitable(result):
+            await result
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# ---------------------------------------------------------------------------
+# AI BYO-status hook (GET /ai/providers — EE billing only)
+# ---------------------------------------------------------------------------
+#
+# Signature: provider(org_id: str | None) -> {"can_byo": bool,
+#   "providers": {<provider_id>: bool}}  (may be sync or async).
+
+AiByoStatusProvider = Callable[["str | None"], "dict[str, Any] | Awaitable[dict[str, Any]]"]
+
+_AI_BYO_STATUS_PROVIDER: AiByoStatusProvider | None = None
+
+
+def register_ai_byo_status_provider(provider: AiByoStatusProvider | None) -> None:
+    """Register *provider* as the BYO-eligibility/status source (EE billing only).
+
+    Pass ``None`` to remove the registered provider (OSS default: BYO never
+    available).
+
+    Raises
+    ------
+    TypeError
+        When *provider* is neither callable nor ``None``.
+    """
+    if provider is not None and not callable(provider):
+        raise TypeError(
+            f"register_ai_byo_status_provider: provider must be callable or None, got {type(provider)!r}"
+        )
+    global _AI_BYO_STATUS_PROVIDER  # noqa: PLW0603
+    _AI_BYO_STATUS_PROVIDER = provider
+
+
+async def get_ai_byo_status(org_id: str | None) -> dict[str, Any]:
+    """Return ``{can_byo, providers: {<id>: bool}}`` for *org_id*.
+
+    Defaults to ``{"can_byo": False, "providers": {}}`` when no provider is
+    registered (OSS build) or it raises (fail-closed — BYO status must never
+    be reported as available when it can't actually be resolved).
+    """
+    default: dict[str, Any] = {"can_byo": False, "providers": {}}
+    if _AI_BYO_STATUS_PROVIDER is None or org_id is None:
+        return default
+    try:
+        result: Any = _AI_BYO_STATUS_PROVIDER(org_id)
+        if inspect.isawaitable(result):
+            result = await result
+        return dict(result or default)
+    except Exception:
+        return default
+
+
 def reset_for_tests() -> None:
     """Clear all registered checkers and restore original commercial set.
 
@@ -376,3 +556,9 @@ def reset_for_tests() -> None:
     _ORG_SETTINGS.clear()
     global _ORG_SETTINGS_PROVIDER  # noqa: PLW0603
     _ORG_SETTINGS_PROVIDER = None
+    global _AI_PROVIDER_RESOLVER  # noqa: PLW0603
+    _AI_PROVIDER_RESOLVER = None
+    global _AI_USAGE_METER  # noqa: PLW0603
+    _AI_USAGE_METER = None
+    global _AI_BYO_STATUS_PROVIDER  # noqa: PLW0603
+    _AI_BYO_STATUS_PROVIDER = None

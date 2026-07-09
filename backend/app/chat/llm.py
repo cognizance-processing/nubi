@@ -155,6 +155,12 @@ class _Turn:
         #: (app.ai.cost_ceiling) actually accumulates real spend instead of
         #: always recording 0.0 — see SECURITY note on _stream_real below.
         self.cost_usd: float = 0.0
+        #: Total prompt+completion tokens across all agentic steps. Fed to the
+        #: token-passthrough billing hook (app.ee.billing.token_billing via
+        #: app.features.meter_ai_usage) so real-time wallet overage charging
+        #: has an accurate token count to prorate against the free allowance —
+        #: see app.routes.chat.chat_stream.
+        self.total_tokens: int = 0
 
     @property
     def text(self) -> str:
@@ -357,6 +363,9 @@ def _stream_real(
             return
 
         # Accumulate tokens from this step's usage metadata (when available).
+        # Also fed onto turn.total_tokens (distinct from the per-turn `budget`
+        # local below) for the token-passthrough billing hook — see the
+        # `total_tokens` docstring on _Turn.
         try:
             usage = rebuilt.usage
             if usage is not None:
@@ -366,6 +375,7 @@ def _stream_real(
                     + (getattr(usage, "completion_tokens", 0) or 0)
                 )
                 tokens_used += step_tokens
+                turn.total_tokens += int(step_tokens)
         except Exception:  # noqa: BLE001
             pass
 

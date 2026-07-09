@@ -121,6 +121,33 @@ def _register_quota_checker() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _register_ai_billing_hooks() -> None:
+    """Register the AI provider-resolution + token-metering hooks (BYO + wallet).
+
+    Core AI call sites (app.routes.ai, app.routes.chat) resolve the provider
+    for an org and report completed-call usage through
+    ``app.features.resolve_ai_provider`` / ``app.features.meter_ai_usage``
+    rather than importing app.ee directly.  Without this registration (OSS
+    build) every org gets the operator's default provider and is never
+    charged/BYO — see the hook docstrings in app.features.
+    """
+    try:
+        from app.ee.billing.org_ai_keys import org_byo_status, resolve_provider_for_org  # noqa: PLC0415
+        from app.ee.billing.token_billing import meter_and_charge  # noqa: PLC0415
+        from app.features import (  # noqa: PLC0415
+            register_ai_byo_status_provider,
+            register_ai_provider_resolver,
+            register_ai_usage_meter,
+        )
+
+        register_ai_provider_resolver(resolve_provider_for_org)
+        register_ai_usage_meter(meter_and_charge)
+        register_ai_byo_status_provider(org_byo_status)
+        logger.debug("EE billing: AI provider resolver + usage meter + BYO status registered")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("EE billing: could not register AI billing hooks — %s", exc)
+
+
 def _register_fx_refresh_task() -> None:
     """Register the ``'fx_refresh'`` task kind in the core flows registry.
 
@@ -223,6 +250,7 @@ def setup(app: Any | None = None) -> None:
     """
     _register_billing_features()
     _register_quota_checker()
+    _register_ai_billing_hooks()
     _register_fx_refresh_task()
     # The daily FX-refresh flow is DB-backed, so it is created at app STARTUP
     # (after init_db()) via ensure_fx_refresh_flow_async() — awaited by
@@ -236,3 +264,9 @@ def setup(app: Any | None = None) -> None:
             mount_routes(app)
         except Exception as exc:  # noqa: BLE001
             logger.warning("EE billing: failed to mount routes — %s", exc)
+        try:
+            from app.ee.billing.ai_keys_routes import setup as mount_ai_key_routes  # noqa: PLC0415
+
+            mount_ai_key_routes(app)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("EE billing: failed to mount AI key routes — %s", exc)

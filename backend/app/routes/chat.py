@@ -65,6 +65,36 @@ async def _resolve_org_id(user: dict[str, Any]) -> str:
     return await get_user_org(str(user["id"]), get_repo())
 
 
+async def _meter_chat_stream_usage(
+    org_id: str, user_id: str, total_tokens: int, usd_cost: float
+) -> None:
+    """Record token usage + charge wallet overage for one /chat/stream turn.
+
+    Mirrors ``app.routes.ai._meter_ai_call`` — CORE records the visibility
+    event (``kind="ai_call"``, real token count); the EE-registered
+    ``app.features.meter_ai_usage`` hook (no-op in OSS builds) charges the
+    wallet for the portion beyond the tier's free monthly allowance.
+    ``is_byo`` is always False — this editor-chat path has no BYO key wiring
+    (see the NOTE in ``chat_stream`` above).
+    """
+    from app.compute.metering import record_usage  # noqa: PLC0415
+    from app.features import meter_ai_usage  # noqa: PLC0415
+
+    await record_usage(
+        kind="ai_call", user_id=user_id, org_id=org_id, units=float(total_tokens), tier="chat_stream"
+    )
+    await meter_ai_usage(
+        org_id=org_id,
+        user_id=user_id,
+        endpoint="chat_stream",
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=total_tokens,
+        usd_cost=usd_cost,
+        is_byo=False,
+    )
+
+
 class ChatStreamRequest(BaseModel):
     """Request body for POST /chat/stream.
 
@@ -152,17 +182,22 @@ async def chat_stream(
 
     await check_chat_budget(org_id, user_id)
 
-    # ── BILLING: AI calls are metered (tiers.max_ai_calls_per_month) ─────────
-    # Quota enforcement is a no-op in OSS builds (no EE checker registered).
-    # The call is recorded up-front: a streamed turn consumes the call when
-    # dispatched even if the client abandons the stream mid-flight.
-    from app.compute.metering import record_usage  # noqa: PLC0415
+    # ── BILLING: AI usage is metered by TOKENS (tiers.max_ai_tokens_per_month),
+    # not a flat per-call count — token-passthrough billing replaces the old
+    # flat ai_calls quota (see app.ee.billing.token_billing). Quota enforcement
+    # is a no-op in OSS builds (no EE checker registered). Unlike the old flat
+    # metering, actual usage can only be recorded AFTER the turn completes
+    # (we don't know tokens/cost up-front) — see the post-turn block below.
+    #
+    # NOTE: this editor-chat path (app.chat.llm.stream_chat) resolves its own
+    # LiteLLM credentials independently of app.ai.provider.get_provider() /
+    # app.features.resolve_ai_provider, so BYO org keys are NOT wired here —
+    # only the operator's own vendor key is ever used, and every metered call
+    # here is charged (is_byo=False). BYO is fully wired for the app.routes.ai
+    # endpoints (/ai/ask, /ai/chat, /ai/sql, ...).
     from app.features import enforce_quota  # noqa: PLC0415
 
-    await enforce_quota(org_id, "ai_calls", amount=1.0)
-    await record_usage(
-        kind="ai_call", user_id=user_id, org_id=org_id, units=1.0, tier="chat_stream"
-    )
+    await enforce_quota(org_id, "ai_tokens", amount=1.0)
 
     # Resolve / create the chat row (org-scoped).
     chat_id = body.chat_id
@@ -223,6 +258,16 @@ async def chat_stream(
             # bypass the per-user/per-org daily ceiling entirely.
             turn_cost = last_turn.cost_usd if last_turn else 0.0
             anyio.from_thread.run(record_chat_cost, org_id, user_id, turn_cost)
+
+            # ── BILLING: token-passthrough metering + wallet overage charge ──
+            # Real token count is only known now (post-turn). Records
+            # kind="ai_call" usage (visibility, works in OSS builds) and, via
+            # the EE-registered app.features.meter_ai_usage hook, charges the
+            # org's usage wallet for any tokens beyond the tier's free monthly
+            # allowance — a no-op in OSS builds. is_byo is always False here
+            # (see the NOTE above enforce_quota — this path has no BYO wiring).
+            turn_tokens = last_turn.total_tokens if last_turn else 0
+            anyio.from_thread.run(_meter_chat_stream_usage, org_id, user_id, turn_tokens, turn_cost)
 
             final: dict[str, Any] = {
                 "type": "message",

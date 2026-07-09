@@ -635,9 +635,12 @@ class TestOverageRates:
         assert not hasattr(ov, "compute_zar_per_1000_cu")
         assert not hasattr(ov, "scan_zar_per_tib")
 
-    def test_starter_ai_call_overage_maps_to_llm_api_cogs(self) -> None:
-        """R5/call → ~93% margin: confirms COGS line is Anthropic API tokens."""
-        assert self._overages("starter").ai_call_zar_per_call == Decimal("5.00")
+    def test_starter_ai_call_overage_retired_in_favor_of_token_billing(self) -> None:
+        """The flat per-call rate is retired: AI overage is now real-time,
+        per-token, at cost + NUBI_TOKEN_MARKUP_PCT (app.ee.billing.token_billing),
+        gated by max_ai_tokens_per_month instead. A non-None flat rate here
+        would double-bill token overage already drawn from the wallet."""
+        assert self._overages("starter").ai_call_zar_per_call is None
 
     def test_starter_embedded_session_overage_maps_to_egress_cogs(self) -> None:
         """R50/10K sessions → ~99% margin: confirms COGS line is egress + CDN."""
@@ -666,12 +669,30 @@ class TestOverageRates:
         assert self._overages("enterprise").embedded_session_zar_per_10k == Decimal("0.00")
 
     def test_overage_rates_consistent_across_paid_tiers(self) -> None:
-        """AI-call overage rate is the same at Starter, Team, Pro, Enterprise."""
+        """The retired flat per-call AI rate is None at every paid tier — token
+        overage is billed real-time instead (see the retirement test above)."""
         from app.ee.billing.tiers import BillingTier, get_tier_limits
 
         for tier in (BillingTier.STARTER, BillingTier.TEAM, BillingTier.PRO, BillingTier.ENTERPRISE):
             ov = get_tier_limits(tier).overages
-            assert ov.ai_call_zar_per_call == Decimal("5.00")
+            assert ov.ai_call_zar_per_call is None
+
+    def test_ai_token_allowance_scales_with_tier_price(self) -> None:
+        """max_ai_tokens_per_month is finite and increases with the tier price."""
+        from app.ee.billing.tiers import BillingTier, get_tier_limits
+
+        tokens = [
+            get_tier_limits(t).max_ai_tokens_per_month
+            for t in (
+                BillingTier.FREE,
+                BillingTier.STARTER,
+                BillingTier.TEAM,
+                BillingTier.PRO,
+                BillingTier.ENTERPRISE,
+            )
+        ]
+        assert all(t is not None and t > 0 for t in tokens)
+        assert tokens == sorted(tokens)
 
 
 # ============================================================================

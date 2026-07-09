@@ -288,13 +288,28 @@ litellm completion model=anthropic/claude-opus-4-8 prompt_tokens=812 completion_
 - **Per request** — `LiteLLMProvider.usage` (an `LLMUsage` with `prompt_tokens`, `completion_tokens`, `total_tokens`, `cost_usd`, `calls`).
 - **Per process** — `app.ai.provider.get_process_usage()` returns the running total since start; call `.as_dict()` for a JSON snapshot.
 
-> **Scope.** Process-wide usage is in-memory: it does not survive a restart and is not shared across replicas. It is for local cost visibility and the soft single-process budget guard — **not** multi-tenant billing. For org-scoped budgets, hard rpm/tpm throttling, and provider fallbacks across a fleet, run the [LiteLLM proxy/Router](https://docs.litellm.ai/docs/proxy/quick_start) as a separate service and point `LITELLM_MODEL` at it.
+> **Scope.** Process-wide usage (`get_process_usage()`) is in-memory: it does not survive a restart and is not shared across replicas. It is for local cost visibility and the soft single-process budget guard. **Multi-tenant, per-org billing is a separate, persistent layer** — see "Token-passthrough billing (EE)" below — not this in-memory accumulator. For hard rpm/tpm throttling and provider fallbacks across a fleet, run the [LiteLLM proxy/Router](https://docs.litellm.ai/docs/proxy/quick_start) as a separate service and point `LITELLM_MODEL` at it.
 
-> **Everything runs through LiteLLM.** All AI surfaces now route through the LiteLLM SDK:
+> **Everything runs through LiteLLM.** LiteLLM is the PRIMARY completion path — `get_provider()` ALWAYS routes anthropic/openai/gemini through `LiteLLMProvider` (via `app.ai.provider.make_litellm_for_vendor`), never the legacy native `AnthropicProvider`/`OpenAIProvider`/`GeminiProvider` classes (still importable for direct/explicit construction, just no longer auto-selected). All AI surfaces route through it:
 > - **Non-streaming** (grounded text-to-SQL, dashboard generation, `/ai/ask`) and the **global assistant** (`/ai/chat`, `/ai/chat/stream`) call `provider.complete()` → `LiteLLMProvider`.
 > - The **dashboard-editor chat** (`/chat/stream`, `app/chat/llm.py`) streams via `litellm.completion(stream=True)` with OpenAI-format tools, reading token deltas from `chunk.choices[0].delta.content` and assembling tool calls with `litellm.stream_chunk_builder`. Editor model ids (`claude-opus-4-8`, …) are mapped to LiteLLM provider strings (`anthropic/claude-opus-4-8`, …) by `app/chat/models.py::to_litellm_model`, so the editor chat now works on any provider, not just Anthropic.
 >
 > With no provider key configured, both chat surfaces fall back to the same deterministic offline mode as before.
+
+#### Token-passthrough billing (EE)
+
+On a licensed EE deployment, every metered (non-BYO) AI call is billed in **real time** off `provider.usage` — see `app/ee/billing/token_billing.py`:
+
+```
+usd_marked_up = usd_cost * (1 + NUBI_TOKEN_MARKUP_PCT / 100)   # markup on litellm.completion_cost
+zar_charge    = usd_marked_up * fx_rate                          # app.ee.billing.fx, no FX buffer
+```
+
+Only the portion of a call's tokens beyond the org's tier's free monthly allowance (`TierLimits.max_ai_tokens_per_month`) is charged — the allowance is covered by the subscription itself. This is the ACTIVE AI billing dimension; the legacy flat per-call `ai_calls` overage rate is retired (`OverageRates.ai_call_zar_per_call` is `None` on every tier). FREE tier has no wallet relationship — its allowance is a hard stop (`app.ee.billing.quota`'s `ai_tokens` dimension), enforced pre-flight by `app.features.enforce_quota`.
+
+**Bring your own key.** Any org on a paid tier may store its own vendor API key — `POST /ai/keys` `{org_id, provider, api_key}` / `DELETE /ai/keys` `{org_id, provider}` (org admin/owner or superadmin; `provider` is `anthropic`/`openai`/`gemini`). Encrypted at rest with the same AES-256-GCM mechanism as connector secrets (`CONNECTOR_SECRET_KEY`). When present, `app.features.resolve_ai_provider(org_id)` swaps the org's key into a fresh `LiteLLMProvider` and tags it `is_byo=True` — the wallet is never charged for that call (the org already pays the vendor directly). `GET /ai/providers` returns `{providers: [...], byo: {can_byo, providers: {<id>: bool}}}` — enabled providers/models (gated by `NUBI_AI_ENABLED_PROVIDERS`) plus the caller's org BYO eligibility/configuration.
+
+In an OSS (non-EE) build, `app.features.resolve_ai_provider` / `meter_ai_usage` / `get_ai_byo_status` are no-ops registered by `app.ee.billing.setup()` — every org gets the operator's default provider, is never charged, and BYO is unavailable.
 
 ---
 

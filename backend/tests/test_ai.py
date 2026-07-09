@@ -384,8 +384,10 @@ class TestGetProvider:
         assert isinstance(provider, NullProvider)
 
     def test_anthropic_provider_selected_when_key_set(self, monkeypatch):
-        """With ANTHROPIC_API_KEY set, AnthropicProvider should be returned."""
-        from app.ai.provider import AnthropicProvider
+        """With ANTHROPIC_API_KEY set, a LiteLLMProvider routed to anthropic
+        should be returned — LiteLLM is the PRIMARY completion path, so the
+        legacy native AnthropicProvider class is no longer auto-selected."""
+        from app.ai.provider import LiteLLMProvider
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-key-for-testing")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -393,9 +395,12 @@ class TestGetProvider:
         from app.config import get_settings
         get_settings.cache_clear()
         provider = get_provider()
-        assert isinstance(provider, AnthropicProvider)
+        assert isinstance(provider, LiteLLMProvider)
         # Confirm no network was opened (just a class instance check).
         assert provider.name == "anthropic"
+        assert provider.vendor == "anthropic"
+        assert provider._api_key == "sk-ant-fake-key-for-testing"
+        assert provider._default_model == "anthropic/claude-opus-4-8"
 
     def test_explicit_llm_provider_env_raises_when_key_missing(self, monkeypatch):
         """LLM_PROVIDER=anthropic + no key → AppError(llm_not_configured, 503)."""

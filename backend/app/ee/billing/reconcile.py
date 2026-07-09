@@ -88,21 +88,23 @@ class UsageSnapshot:
     """
 
     ai_calls: int = 0
+    ai_tokens: int = 0
     embedded_sessions: int = 0
     agent_runs: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ai_calls": self.ai_calls,
+            "ai_tokens": self.ai_tokens,
             "embedded_sessions": self.embedded_sessions,
             "agent_runs": self.agent_runs,
         }
 
 
-# Maps a usage_events ``kind`` to a UsageSnapshot dimension.  Only the two
-# real wedge meters (ai_calls, embedded_sessions) plus the agent-run escape
-# hatch remain — Nubi has no hosted warehouse, so compute/storage/scan kinds
-# recorded by legacy events are simply ignored (unknown kind → dropped).
+# Maps a usage_events ``kind`` to a UsageSnapshot COUNT dimension.  Only the
+# two real wedge meters (ai_calls, embedded_sessions) plus the agent-run
+# escape hatch remain — Nubi has no hosted warehouse, so compute/storage/scan
+# kinds recorded by legacy events are simply ignored (unknown kind → dropped).
 _KIND_TO_DIMENSION = {
     "ai_call": "ai_calls",
     "ai": "ai_calls",
@@ -110,6 +112,16 @@ _KIND_TO_DIMENSION = {
     "embed": "embedded_sessions",
     "agent_run": "agent_runs",
     "agent": "agent_runs",
+}
+
+# ``ai_call``/``ai`` events ALSO feed a SUM dimension: since
+# app.routes.ai / app.routes.chat now record the actual token count in
+# ``units`` (rather than a flat 1.0 per call — see app.ee.billing.token_billing),
+# ``ai_tokens`` is the sum of those units, distinct from ``ai_calls`` (the
+# plain event count, kept for back-compat).
+_SUM_KINDS_TO_DIMENSION = {
+    "ai_call": "ai_tokens",
+    "ai": "ai_tokens",
 }
 
 
@@ -137,15 +149,20 @@ async def aggregate_usage_for_org(
             """,
             str(org_id), period_start, period_end,
         )
-        events: list[dict[str, Any]] = []
+        snap = UsageSnapshot()
         for r in rows:
             kind = (r["kind"] or "").lower()
-            if kind not in _KIND_TO_DIMENSION:
-                continue
-            # Count of events for discrete dimensions (ai_call, embed, agent).
-            for _ in range(int(r["n"])):
-                events.append({"kind": kind, "units": 1})
-        return aggregate_usage_from_events(events)
+            count_dim = _KIND_TO_DIMENSION.get(kind)
+            if count_dim is not None:
+                setattr(snap, count_dim, getattr(snap, count_dim) + int(r["n"]))
+            sum_dim = _SUM_KINDS_TO_DIMENSION.get(kind)
+            if sum_dim is not None:
+                setattr(
+                    snap,
+                    sum_dim,
+                    getattr(snap, sum_dim) + int(round(float(r["total_units"] or 0))),
+                )
+        return snap
     except Exception:  # noqa: BLE001 — DB not available → fall back to in-memory sink
         try:
             from app.compute.metering import get_usage  # noqa: PLC0415
@@ -161,7 +178,9 @@ def aggregate_usage_from_events(events: list[dict[str, Any]]) -> UsageSnapshot:
 
     Convention
     ----------
-    - ``kind="ai_call"/"ai"`` → AI calls (count, or summed ``units`` when > 1).
+    - ``kind="ai_call"/"ai"`` → AI calls (COUNT, back-compat) AND AI tokens
+      (SUM of ``units`` — the ACTIVE billing dimension; see
+      ``app.ee.billing.token_billing``).
     - ``kind="embedded_session"/"embed"`` → embedded sessions (count / ``units``).
     - ``kind="agent_run"/"agent"`` → agent runs (count / ``units``).
 
@@ -173,11 +192,16 @@ def aggregate_usage_from_events(events: list[dict[str, Any]]) -> UsageSnapshot:
     for ev in events:
         kind = (ev.get("kind") or "").lower()
         units = ev.get("units")
-        dim = _KIND_TO_DIMENSION.get(kind)
-        if dim is None:
-            continue
         amount = units if units is not None else 1
-        setattr(snap, dim, getattr(snap, dim) + int(round(float(amount or 1))))
+        count_dim = _KIND_TO_DIMENSION.get(kind)
+        if count_dim is not None:
+            # Discrete dimensions (embedded_sessions, agent_runs) count events,
+            # except ai_calls which — for events carrying a real per-call
+            # ``units`` value — still counts 1 per event (COUNT, not SUM).
+            setattr(snap, count_dim, getattr(snap, count_dim) + 1)
+        sum_dim = _SUM_KINDS_TO_DIMENSION.get(kind)
+        if sum_dim is not None:
+            setattr(snap, sum_dim, getattr(snap, sum_dim) + int(round(float(amount or 0))))
     return snap
 
 

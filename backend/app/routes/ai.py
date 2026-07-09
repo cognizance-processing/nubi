@@ -81,7 +81,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.ai.grounding import build_catalog, build_prompt, ground
-from app.ai.provider import get_provider
 from app.auth.deps import current_user, verified_identity
 from app.auth.roles import require_writer, require_writer_default
 from app.auth.verify import VerifiedIdentity
@@ -115,27 +114,86 @@ async def _resolve_org_id(user: dict[str, Any]) -> str | None:
         return None
 
 
-async def _enforce_ai_quota(user: dict[str, Any]) -> str | None:
-    """Resolve the caller's org and enforce the ai_calls quota.
+async def _prepare_ai_call(user: dict[str, Any]) -> tuple[Any, str | None, bool]:
+    """Resolve the caller's org, enforce the token quota, and pick a provider.
 
-    Returns the org_id for subsequent metering.  Raises
-    ``AppError("quota_exceeded", …, 402)`` when the EE-registered quota
-    checker denies (e.g. FREE tier: 0 AI calls, no overage billing).
-    A no-op allow in OSS builds (no checker registered).
+    Returns ``(provider, org_id, is_byo)``:
+
+    - ``provider`` is the operator's default LLM provider, or — on a paid
+      tier with a stored BYO key for the same vendor — the org's own key
+      (``app.features.resolve_ai_provider``, EE-registered; a no-op in OSS
+      builds that always returns the operator default).
+    - ``is_byo`` tags whether *provider* is using the org's own vendor key
+      (threaded into the post-call metering hook so BYO calls are never
+      charged from the wallet).
+
+    Raises ``AppError("quota_exceeded", …, 402)`` when the EE-registered
+    quota checker denies (e.g. FREE tier: free monthly token allowance
+    exhausted, no overage billing).  A no-op allow in OSS builds (no checker
+    registered).  ``ai_tokens`` is the ACTIVE AI billing dimension — the
+    legacy ``ai_calls`` per-call quota is no longer enforced here (kept only
+    for back-compat / the monthly-reconciliation UsageSnapshot).
     """
     org_id = await _resolve_org_id(user)
-    await enforce_quota(org_id, "ai_calls", amount=1.0)
-    return org_id
+    await enforce_quota(org_id, "ai_tokens", amount=1.0)
+    from app.features import resolve_ai_provider  # noqa: PLC0415
+
+    provider, is_byo = await resolve_ai_provider(org_id)
+    return provider, org_id, is_byo
 
 
-async def _record_ai_call(user: dict[str, Any], org_id: str | None, *, endpoint: str) -> None:
-    """Record one ai_call usage event (kind='ai_call', units=1)."""
+async def _meter_ai_call(
+    user: dict[str, Any],
+    org_id: str | None,
+    provider: Any,
+    *,
+    endpoint: str,
+    is_byo: bool,
+) -> None:
+    """Record token usage + charge wallet overage for one completed AI call.
+
+    Reads the provider's accumulated per-request usage
+    (``provider.usage`` — an ``app.ai.provider.LLMUsage``, present on
+    ``LiteLLMProvider``; ``NullProvider`` and any provider without a
+    ``.usage`` attribute report zero tokens/cost, so NullProvider turns are
+    recorded but never charged).
+
+    Two effects, always both attempted:
+    1. CORE: record ``kind="ai_call"`` usage with the REAL token count (not a
+       flat ``1.0``) — feeds ``app.usage``'s ``ai_tokens`` visibility metric
+       and ``app.ee.billing.reconcile``'s period-usage aggregation. Works in
+       OSS builds with no EE billing present.
+    2. EE (``app.features.meter_ai_usage``, no-op in OSS): charge the org's
+       usage wallet for the portion of this call's tokens beyond the tier's
+       free monthly allowance, at cost + ``NUBI_TOKEN_MARKUP_PCT`` — skipped
+       entirely for BYO calls (the org already pays the vendor directly).
+    """
+    usage = getattr(provider, "usage", None)
+    prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+    completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+    total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
+    usd_cost = float(getattr(usage, "cost_usd", 0.0) or 0.0)
+    user_id = str(user.get("id", ""))
+
     await record_usage(
         kind="ai_call",
-        user_id=str(user.get("id", "")),
+        user_id=user_id,
         org_id=org_id,
-        units=1.0,
+        units=float(total_tokens),
         tier=endpoint,
+    )
+
+    from app.features import meter_ai_usage  # noqa: PLC0415
+
+    await meter_ai_usage(
+        org_id=org_id,
+        user_id=user_id,
+        endpoint=endpoint,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        usd_cost=usd_cost,
+        is_byo=is_byo,
     )
 
 
@@ -233,11 +291,10 @@ async def ask(
         If ``body.model`` is supplied but is not in the resolved provider's
         allowlist (raised by ``provider.complete`` and propagated here).
     """
-    org_id = await _enforce_ai_quota(_user)
+    provider, org_id, is_byo = await _prepare_ai_call(_user)
 
     catalog = build_catalog()
     grounding = ground(body.question, catalog)
-    provider = get_provider()
     system_prompt, user_prompt = build_prompt(body.question, grounding)
     # Offload the blocking LLM call (+ any multi-round repair) to a thread so
     # the asyncio event loop is not blocked during the 5-30 s provider round-trip.
@@ -250,7 +307,7 @@ async def ask(
             provider.complete, user_prompt, system=system_prompt
         )
 
-    await _record_ai_call(_user, org_id, endpoint="ai_ask")
+    await _meter_ai_call(_user, org_id, provider, endpoint="ai_ask", is_byo=is_byo)
 
     return AskResponse(
         grounding=grounding,
@@ -307,10 +364,9 @@ async def create_dashboard(
     from app.ai.dashboard import generate_dashboard_spec, validate_dashboard_html  # noqa: PLC0415
     from app.dashboards.spec import spec_to_html  # noqa: PLC0415
 
-    org_id = await _enforce_ai_quota(_user)
+    provider, org_id, is_byo = await _prepare_ai_call(_user)
 
     catalog = build_catalog()
-    provider = get_provider()
     # Offload the blocking generate_dashboard_spec call (LLM + multi-round repair)
     # to a thread so the asyncio event loop is not blocked.
     spec = await asyncio.to_thread(
@@ -324,7 +380,7 @@ async def create_dashboard(
     # deterministic, no network).
     grounding = ground(body.question, catalog)
 
-    await _record_ai_call(_user, org_id, endpoint="ai_dashboard")
+    await _meter_ai_call(_user, org_id, provider, endpoint="ai_dashboard", is_byo=is_byo)
 
     return DashboardResponse(
         spec=spec.model_dump(),
@@ -334,6 +390,62 @@ async def create_dashboard(
         valid=ok,
         issues=issues,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /ai/providers — provider/model metadata + BYO eligibility
+# ---------------------------------------------------------------------------
+
+
+@api_router.get("/ai/providers", tags=["ai"])
+async def ai_providers(
+    _user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    """Return enabled AI providers + their models, and the caller's BYO status.
+
+    Reads ``NUBI_AI_ENABLED_PROVIDERS`` (default ``"anthropic,openai,gemini"``)
+    to decide which providers to advertise, and the per-provider ``ALLOWED_MODELS``
+    allowlist (``app.ai.provider``) for the model list — the SAME allowlist
+    ``provider.complete(model=...)`` enforces, so nothing advertised here can
+    ever 400 as ``model_not_allowed``.
+
+    Requires a valid Bearer token (same auth as other AI endpoints).
+
+    Returns
+    -------
+    dict
+        ``{
+          "providers": [
+            {"id": "anthropic", "display_name": "Anthropic (Claude)",
+             "configured": true,
+             "models": [{"id": "claude-opus-4-8", "display_name": "claude-opus-4-8",
+                         "default": true}, ...]},
+            ...
+          ],
+          "byo": {"can_byo": bool, "providers": {"anthropic": bool, ...}}
+        }``
+
+        ``configured`` reflects whether the OPERATOR has a vendor key set for
+        that provider (this deployment can serve metered calls for it).
+        ``byo.can_byo`` is true only on a paid tier (EE billing); ``byo.providers``
+        maps each supported provider id to whether the CALLER'S org has already
+        stored a BYO key for it (never the key itself).  Both default to
+        ``False``/``{}`` in OSS builds (no EE billing present).
+
+    Raises
+    ------
+    AppError("unauthorized", 401)
+        If no valid Bearer token is provided.
+    """
+    from app.ai.provider import list_provider_metadata  # noqa: PLC0415
+    from app.config import get_settings  # noqa: PLC0415
+    from app.features import get_ai_byo_status  # noqa: PLC0415
+
+    settings = get_settings()
+    org_id = await _resolve_org_id(_user)
+    providers = list_provider_metadata(settings.ai_enabled_providers)
+    byo = await get_ai_byo_status(org_id)
+    return {"providers": providers, "byo": byo}
 
 
 # ---------------------------------------------------------------------------
@@ -829,9 +941,7 @@ async def ai_chat(
     """
     from app.ai.agent import run_agent  # noqa: PLC0415
 
-    org_id = await _enforce_ai_quota(_user)
-
-    provider = get_provider()
+    provider, org_id, is_byo = await _prepare_ai_call(_user)
 
     # Build first-party claims from the authenticated user.
     # SECURITY: carry the resolved org so metric tools can tenant-scope a
@@ -867,7 +977,7 @@ async def ai_chat(
             504,
         )
 
-    await _record_ai_call(_user, org_id, endpoint="ai_chat")
+    await _meter_ai_call(_user, org_id, provider, endpoint="ai_chat", is_byo=is_byo)
 
     return ChatResponse(
         reply=result["reply"],
@@ -897,13 +1007,7 @@ async def ai_chat_stream(
 
     from app.ai.agent import run_agent_stream  # noqa: PLC0415
 
-    org_id = await _enforce_ai_quota(_user)
-
-    provider = get_provider()
-
-    # Record the AI call up-front: a streamed agent run consumes the call
-    # when dispatched (the stream may be abandoned mid-flight by the client).
-    await _record_ai_call(_user, org_id, endpoint="ai_chat_stream")
+    provider, org_id, is_byo = await _prepare_ai_call(_user)
 
     # Propagate any RLS policies from the verified token — same reasoning as
     # ai_chat above (defense-in-depth for scoped / service-to-service callers).
@@ -933,29 +1037,46 @@ async def ai_chat_stream(
         inner = iterate_in_threadpool(_sync_events())
         deadline = asyncio.get_event_loop().time() + timeout_s
         try:
-            while True:
-                remaining = deadline - asyncio.get_event_loop().time()
-                if remaining <= 0:
-                    raise asyncio.TimeoutError()
-                try:
-                    chunk = await asyncio.wait_for(inner.__anext__(), timeout=remaining)
-                    yield chunk
-                except StopAsyncIteration:
-                    break
-        except asyncio.TimeoutError:
-            yield (
-                "data: "
-                + _json.dumps(
-                    {
-                        "type": "error",
-                        "message": (
-                            f"Turn timeout ({timeout_s:.0f}s) exceeded. "
-                            "The response was cut short."
-                        ),
-                    }
+            try:
+                while True:
+                    remaining = deadline - asyncio.get_event_loop().time()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError()
+                    try:
+                        chunk = await asyncio.wait_for(inner.__anext__(), timeout=remaining)
+                        yield chunk
+                    except StopAsyncIteration:
+                        break
+            except asyncio.TimeoutError:
+                yield (
+                    "data: "
+                    + _json.dumps(
+                        {
+                            "type": "error",
+                            "message": (
+                                f"Turn timeout ({timeout_s:.0f}s) exceeded. "
+                                "The response was cut short."
+                            ),
+                        }
+                    )
+                    + "\n\n"
                 )
-                + "\n\n"
-            )
+        finally:
+            # Meter whatever tokens/cost the provider accumulated by now, even
+            # on a timeout or an early client disconnect (`finally` always
+            # runs). This runs on the REQUEST's own event loop (unlike
+            # _sync_events, which runs in a worker thread via
+            # iterate_in_threadpool) — no cross-thread hand-off needed. Token
+            # totals are only known AFTER (some of) the run completes, unlike
+            # the old flat per-call metering, which recorded up-front — see
+            # _meter_ai_call. A run still executing in the background thread
+            # past a timeout is not cancelled (pre-existing limitation, same
+            # as app.routes.chat's turn persistence); any tokens it generates
+            # after this point are not billed.
+            try:
+                await _meter_ai_call(_user, org_id, provider, endpoint="ai_chat_stream", is_byo=is_byo)
+            except Exception:  # noqa: BLE001 — metering must never break the stream
+                logger.exception("ai_chat_stream: post-turn metering failed org=%s", org_id)
 
     return StreamingResponse(
         _event_stream(),
@@ -1039,11 +1160,10 @@ async def generate_sql_endpoint(
     from app.ai.sql import generate_sql  # noqa: PLC0415
     from app.queries.registry import QueryParam, get_query_registry  # noqa: PLC0415
 
-    org_id = await _enforce_ai_quota(_user)
+    provider, org_id, is_byo = await _prepare_ai_call(_user)
 
     catalog = build_catalog()
     grounding = ground(body.question, catalog)
-    provider = get_provider()
 
     # Offload the blocking generate_sql call (LLM + sqlglot validation)
     # to a thread so the asyncio event loop is not blocked.
@@ -1095,7 +1215,7 @@ async def generate_sql_endpoint(
             ) from _exc
         registered_id = scoped_id
 
-    await _record_ai_call(_user, org_id, endpoint="ai_sql")
+    await _meter_ai_call(_user, org_id, provider, endpoint="ai_sql", is_byo=is_byo)
 
     return SqlResponse(
         sql=sql,

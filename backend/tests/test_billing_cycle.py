@@ -109,21 +109,33 @@ class TestOverageComputation:
         assert items == []
         assert total == Decimal("0.00")
 
-    def test_ai_overage_priced(self):
-        # Pro: 50 AI calls included. Use 130 AI (80 over @ R5 = R400).
+    def test_ai_call_overage_retired_no_flat_fee_line_item(self):
+        # The flat per-call AI overage rate is retired (ai_call_zar_per_call is
+        # None on every tier): AI is now billed real-time, per-token, at cost +
+        # NUBI_TOKEN_MARKUP_PCT (app.ee.billing.token_billing), directly against
+        # the wallet — NOT as a monthly reconciliation line item. A count of
+        # legacy `ai_calls` usage must therefore never produce an overage line,
+        # or the org would be double-billed for the same tokens.
         usage = UsageSnapshot(ai_calls=130)
         items, total = compute_overage_line_items(usage, BillingTier.PRO)
+        assert items == []
+        assert total == Decimal("0.00")
+
+    def test_agent_run_overage_priced(self):
+        # Pro: 50 agent runs included. Use 250 (200 over @ R2 = R400).
+        usage = UsageSnapshot(agent_runs=250)
+        items, total = compute_overage_line_items(usage, BillingTier.PRO)
         kinds = {li.description.split()[0] for li in items}
-        assert "AI" in kinds
-        ai = next(li for li in items if li.description.startswith("AI"))
-        assert ai.amount_zar == Decimal("400.00")  # 80 × R5
+        assert "Agent" in kinds
+        agent = next(li for li in items if li.description.startswith("Agent"))
+        assert agent.amount_zar == Decimal("400.00")  # 200 × R2
         assert total == Decimal("400.00")
 
     def test_metered_lines_qty_times_unit_price_equals_amount(self):
         # A TAX INVOICE prints QTY | UNIT PRICE | AMOUNT side by side — the
         # printed columns must multiply out (quantities are stored in the
         # PRICED unit: 10k sessions), or the invoice contradicts itself.
-        usage = UsageSnapshot(ai_calls=130, embedded_sessions=30_000)
+        usage = UsageSnapshot(agent_runs=250, embedded_sessions=30_000)
         items, _ = compute_overage_line_items(usage, BillingTier.PRO)
         assert len(items) == 2
         for li in items:
@@ -166,7 +178,7 @@ class TestBillingCycle:
         assert base.amount_zar == expected_base
 
     async def test_vat_applied_when_registered(self, stores):
-        res = await _run(BillingTier.PRO, UsageSnapshot(ai_calls=130), use_wallet=False)
+        res = await _run(BillingTier.PRO, UsageSnapshot(agent_runs=250), use_wallet=False)
         inv = res.invoice
         assert inv.vat_amount_zar == (inv.subtotal_zar * Decimal("0.15")).quantize(Decimal("0.01"))
         assert inv.total_zar == inv.subtotal_zar + inv.vat_amount_zar
@@ -200,9 +212,9 @@ class TestBillingCycle:
 
     async def test_wallet_covers_overage_fully(self, stores):
         org = "11111111-1111-1111-1111-111111111111"
-        # Overage = 80 AI × R5 = R400. Fund the wallet generously ($100 = R1842).
+        # Overage = 200 agent runs × R2 = R400. Fund the wallet generously ($100 = R1842).
         await stores["wallet"].set_balance(org, 10_000)
-        res = await _run(BillingTier.PRO, UsageSnapshot(ai_calls=130))
+        res = await _run(BillingTier.PRO, UsageSnapshot(agent_runs=250))
         # A negative wallet-credit line offsets (almost) the full R400 overage.
         # The wallet draw floors to whole USD cents so it never over-draws —
         # leaving at most a sub-rand rounding remainder billed on the invoice.
@@ -220,15 +232,15 @@ class TestBillingCycle:
 
     async def test_wallet_partial_then_invoice_remainder(self, stores):
         org = "11111111-1111-1111-1111-111111111111"
-        # Fund only $5 = R92.10 against a R400 overage → partial credit.
+        # Fund only $5 = R92.10 against a R400 (agent-run) overage → partial credit.
         await stores["wallet"].set_balance(org, 500)
-        res = await _run(BillingTier.PRO, UsageSnapshot(ai_calls=130))
+        res = await _run(BillingTier.PRO, UsageSnapshot(agent_runs=250))
         assert Decimal("0.00") < res.wallet_applied_zar < Decimal("400.00")
         wallet_line = next(li for li in res.invoice.line_items if li.kind == "wallet")
         assert wallet_line.amount_zar == -res.wallet_applied_zar
 
     async def test_invoice_pdf_is_valid(self, stores):
-        res = await _run(BillingTier.PRO, UsageSnapshot(ai_calls=130), use_wallet=False)
+        res = await _run(BillingTier.PRO, UsageSnapshot(agent_runs=250), use_wallet=False)
         assert res.pdf_bytes.startswith(b"%PDF-1.4")
         assert res.pdf_bytes.rstrip().endswith(b"%%EOF")
         assert res.invoice.pdf_filename.endswith(".pdf")
@@ -292,9 +304,9 @@ class TestBillingCycle:
     async def test_rerun_same_period_does_not_double_debit_wallet(self, stores):
         org = "11111111-1111-1111-1111-111111111111"
         await stores["wallet"].set_balance(org, 10_000)
-        r1 = await _run(BillingTier.PRO, UsageSnapshot(ai_calls=130))
+        r1 = await _run(BillingTier.PRO, UsageSnapshot(agent_runs=250))
         bal_after_first = (await stores["wallet"].get_balance(org))["balance_usd_cents"]
-        r2 = await _run(BillingTier.PRO, UsageSnapshot(ai_calls=130))
+        r2 = await _run(BillingTier.PRO, UsageSnapshot(agent_runs=250))
         assert (await stores["wallet"].get_balance(org))["balance_usd_cents"] == bal_after_first
         assert r2.wallet_applied_zar == r1.wallet_applied_zar
         ledger = await stores["wallet"].list_ledger(org, entry_type="USAGE_OVERAGE")

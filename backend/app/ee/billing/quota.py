@@ -35,8 +35,15 @@ from app.ee.billing.tiers import BillingTier, OverageRates, TierLimits, get_tier
 logger = logging.getLogger("nubi.billing.quota")
 
 # UsageSnapshot dimension → (TierLimits quota attr, OverageRates rate attr).
-_DIMENSIONS: dict[str, tuple[str, str]] = {
-    "ai_calls": ("max_ai_calls_per_month", "ai_call_zar_per_call"),
+# "ai_tokens" has no OverageRates rate attr (its rate_attr is None) — token
+# overage is billed real-time, per-call, at cost + markup (see
+# app.ee.billing.token_billing), not a flat per-unit OverageRates line item.
+# Its overage-capability is resolved specially in _check(): any tier above
+# FREE may draw the wallet for token overage; FREE hard-stops at the free
+# monthly allowance (no wallet / no billing relationship).
+_DIMENSIONS: dict[str, tuple[str, str | None]] = {
+    "ai_calls": ("max_ai_calls_per_month", "ai_call_zar_per_call"),  # legacy — back-compat only
+    "ai_tokens": ("max_ai_tokens_per_month", None),  # ACTIVE AI billing dimension
     "embedded_sessions": ("max_embedded_sessions_per_month", "embedded_session_zar_per_10k"),
     "agent_runs": ("max_agent_runs_per_month", "agent_run_zar_per_run"),
 }
@@ -60,6 +67,7 @@ OVERRIDE_KEYS: tuple[str, ...] = (
     "max_embedded_sessions_per_month",
     "max_agent_runs_per_month",
     "max_ai_calls_per_month",
+    "max_ai_tokens_per_month",
 )
 
 
@@ -166,9 +174,18 @@ async def _check(*, org_id: str, dimension: str, amount: float) -> tuple[bool, s
     if quota is None:
         return True, ""  # unlimited (tier default or an override set to unlimited)
 
-    rates: OverageRates = limits.overages
-    rate: Decimal | None = getattr(rates, rate_attr, None)
-    if rate is not None and not billing_disabled:
+    if dimension == "ai_tokens":
+        # Token overage is billed in REAL TIME via direct wallet debits
+        # (app.ee.billing.token_billing), not a flat per-unit OverageRates line
+        # item, so there is no `rate_attr` to consult — any tier above FREE has
+        # a wallet to draw from and is therefore overage-capable.
+        overage_capable = tier != BillingTier.FREE
+    else:
+        rates: OverageRates = limits.overages
+        rate: Decimal | None = getattr(rates, rate_attr, None) if rate_attr else None
+        overage_capable = rate is not None
+
+    if overage_capable and not billing_disabled:
         # Overages are billable on this tier (wallet first, then invoice —
         # overdraw allowed), so usage beyond the quota is never blocked.
         # When billing is DISABLED for the org (manually-managed enterprise),
@@ -251,7 +268,7 @@ def register_quota_checker() -> None:
 # Core usage-metric id (app.usage.aggregate.METRICS) → TierLimits attr.
 # Metrics with no tier limit are simply omitted → core treats them as unlimited.
 _USAGE_METRIC_TO_TIER_ATTR: dict[str, str] = {
-    "ai_tokens": "max_ai_calls_per_month",
+    "ai_tokens": "max_ai_tokens_per_month",
     "embedded_sessions": "max_embedded_sessions_per_month",
     "flow_runs": "max_agent_runs_per_month",
 }

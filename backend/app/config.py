@@ -315,6 +315,37 @@ class Settings(BaseSettings):
     GITLAB_TOKEN: str = ""                 # GitLab access token
     GITLAB_HOST: str = "gitlab.com"        # GitLab host (override for self-hosted)
 
+    # ── LLM providers (LiteLLM multi-provider — app/ai/provider.py) ──────────
+    # LiteLLMProvider is the PRIMARY completion path: one SDK fronts Anthropic /
+    # OpenAI / Gemini via "provider/model" strings, with built-in per-model
+    # pricing (litellm.completion_cost) feeding the token-passthrough billing
+    # in app/ee/billing/token_billing.py. Set the vendor key(s) below for
+    # whichever provider(s) you want the operator-level default to use; org-level
+    # BYO keys (paid tiers only) are stored separately — see
+    # app/ee/billing/org_ai_keys.py. All empty ⇒ NullProvider (no network calls).
+    ANTHROPIC_API_KEY: str = ""
+    OPENAI_API_KEY: str = ""
+    GEMINI_API_KEY: str = ""
+    # Explicit provider selection: '' (auto-detect) | 'litellm' | 'anthropic' |
+    # 'openai' | 'gemini'. See app.ai.provider.get_provider() for the full
+    # resolution order.
+    LLM_PROVIDER: str = ""
+    # Comma-separated list of provider ids this deployment exposes via
+    # GET /ai/providers and allows BYO keys for (app/routes/ai.py,
+    # app/ee/billing/org_ai_keys.py). Providers outside this list are neither
+    # advertised nor accepted as a BYO key target, even if the operator has
+    # configured a vendor key for them above.
+    NUBI_AI_ENABLED_PROVIDERS: str = "anthropic,openai,gemini"
+    # Markup percentage applied on top of the raw litellm.completion_cost when
+    # charging a metered (non-BYO) AI call's token overage from the org's
+    # usage wallet. usd_marked_up = usd_cost * (1 + NUBI_TOKEN_MARKUP_PCT/100).
+    NUBI_TOKEN_MARKUP_PCT: float = 7.5
+
+    @property
+    def ai_enabled_providers(self) -> List[str]:
+        """``NUBI_AI_ENABLED_PROVIDERS`` parsed into a list of provider ids."""
+        return [p.strip().lower() for p in self.NUBI_AI_ENABLED_PROVIDERS.split(",") if p.strip()]
+
     @model_validator(mode="after")
     def _resolve_flows_scheduler_enabled(self) -> "Settings":
         """Inherit the flows-scheduler switch from the legacy flags when unset.

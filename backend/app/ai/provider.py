@@ -65,6 +65,59 @@ ALLOWED_MODELS: dict[str, list[str]] = {
 }
 
 
+#: Vendor id → LiteLLM model-string prefix builder.  Mirrors
+#: ``app.chat.models.to_litellm_model`` (the editor-chat model mapping) so the
+#: two call sites agree on how a bare model id becomes a LiteLLM routing
+#: string.  We delegate to that function rather than duplicating the mapping.
+def to_litellm_model(provider: str, bare_model: str) -> str:
+    """Return the LiteLLM ``"provider/model"`` string for *bare_model*.
+
+    Parameters
+    ----------
+    provider:
+        One of ``"anthropic"``, ``"openai"``, ``"gemini"`` (a key of
+        :data:`ALLOWED_MODELS`).
+    bare_model:
+        A bare model id from :data:`ALLOWED_MODELS`, e.g. ``"claude-opus-4-8"``,
+        ``"gpt-4o"``, ``"gemini-1.5-flash"``.
+
+    Returns
+    -------
+    str
+        ``"anthropic/claude-opus-4-8"``, ``"gpt-4o"`` (OpenAI needs no
+        prefix), ``"gemini/gemini-1.5-flash"``.
+    """
+    from app.chat.models import to_litellm_model as _to_litellm  # noqa: PLC0415
+
+    if provider == "anthropic" and not bare_model.startswith("anthropic/"):
+        return f"anthropic/{bare_model}"
+    if provider == "gemini" and not bare_model.startswith("gemini/"):
+        return f"gemini/{bare_model}"
+    if provider == "openai":
+        return bare_model
+    # Fall back to the shared prefix-sniffing helper for anything else
+    # (defensive — every id we pass through here comes from ALLOWED_MODELS).
+    return _to_litellm(bare_model)
+
+
+def vendor_for_litellm_model(model: str) -> str | None:
+    """Best-effort reverse mapping: a LiteLLM model string → vendor id.
+
+    Returns ``"anthropic"``, ``"openai"``, or ``"gemini"`` when recognisable,
+    else ``None``.  Used to label a :class:`LiteLLMProvider` constructed from
+    an operator-supplied ``LITELLM_MODEL`` string (rather than through the
+    per-vendor auto-routing path) so BYO-key resolution and ``GET
+    /ai/providers`` can still identify which vendor it talks to.
+    """
+    if model.startswith("anthropic/") or model.startswith("claude"):
+        return "anthropic"
+    if model.startswith("gemini/") or model.startswith("gemini"):
+        return "gemini"
+    if model.startswith("gpt") or model.startswith("o1") or model.startswith("o3"):
+        return "openai"
+    return None
+
+
 def resolve_model(
     requested: str | None,
     default: str,
@@ -500,6 +553,8 @@ class LiteLLMProvider(LLMProvider):
         num_retries: int | None = None,
         timeout: float | None = None,
         max_budget_usd: float | None = None,
+        provider_label: str | None = None,
+        is_byo: bool = False,
     ) -> None:
         # Do NOT import litellm or open a connection here.
         self._default_model = model
@@ -513,6 +568,20 @@ class LiteLLMProvider(LLMProvider):
         self._max_budget_usd = max_budget_usd
         #: Per-instance (typically per-request) token + cost totals.
         self.usage = LLMUsage()
+        #: Vendor id ("anthropic" | "openai" | "gemini") this instance routes
+        #: to, when constructed via the per-vendor auto-routing path
+        #: (``get_provider()`` selecting/auto-detecting anthropic/openai/gemini,
+        #: or ``resolve_provider_for_org`` swapping in an org's BYO key).  ``None``
+        #: when constructed from a raw operator ``LITELLM_MODEL`` string — in
+        #: that case ``.name`` stays the generic ``"litellm"`` for back-compat.
+        self.vendor: str | None = provider_label
+        if provider_label:
+            self.name = provider_label
+        #: True when ``._api_key`` is an org-supplied BYO key rather than the
+        #: operator's own vendor key.  Consulted by the billing metering hook
+        #: (``app.ee.billing.token_billing``) to skip charging the org's
+        #: wallet — a BYO call's cost is the org's own vendor bill, not ours.
+        self.is_byo: bool = is_byo
 
     def complete(
         self,
@@ -677,8 +746,78 @@ def _make_litellm(env) -> LLMProvider:
     )
 
 
+#: Env var name holding the vendor API key, per ``ALLOWED_MODELS`` key.
+_VENDOR_KEY_ENV: dict[str, str] = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
+
+
+def make_litellm_for_vendor(
+    provider_name: str,
+    api_key: str,
+    *,
+    is_byo: bool = False,
+) -> LiteLLMProvider:
+    """Build a :class:`LiteLLMProvider` routed to vendor *provider_name*.
+
+    This is the PRIMARY construction path for the anthropic/openai/gemini
+    vendors: it maps :data:`ALLOWED_MODELS` bare ids to LiteLLM
+    ``"provider/model"`` strings (see :func:`to_litellm_model`), so a single
+    ``LiteLLMProvider`` instance fronts the vendor with the SAME allowlist +
+    default model the legacy native provider classes used, plus LiteLLM's
+    per-model cost tracking.
+
+    Parameters
+    ----------
+    provider_name:
+        One of the :data:`ALLOWED_MODELS` keys (``"anthropic"``, ``"openai"``,
+        ``"gemini"``).
+    api_key:
+        The vendor API key to use for this instance — either the operator's
+        own key (``get_provider()``) or an org's BYO key
+        (``app.ee.billing.org_ai_keys.resolve_provider_for_org``).
+    is_byo:
+        Tag the instance as using an org-supplied key (see
+        :attr:`LiteLLMProvider.is_byo`).
+
+    Raises
+    ------
+    AppError("llm_not_configured", 503)
+        If *provider_name* is not a recognised vendor.
+    """
+    from app.errors import AppError  # noqa: PLC0415
+
+    bare_models = ALLOWED_MODELS.get(provider_name)
+    if not bare_models:
+        raise AppError(
+            "llm_not_configured",
+            f"Unknown AI provider {provider_name!r}.",
+            503,
+        )
+    litellm_models = [to_litellm_model(provider_name, m) for m in bare_models]
+    return LiteLLMProvider(
+        litellm_models[0],
+        litellm_models[1:],
+        api_key=api_key,
+        provider_label=provider_name,
+        is_byo=is_byo,
+    )
+
+
 def get_provider() -> LLMProvider:
     """Return the configured LLM provider, or NullProvider when none is set.
+
+    LiteLLM is the PRIMARY completion path: the anthropic/openai/gemini
+    vendors are ALWAYS routed through :class:`LiteLLMProvider` (via
+    :func:`make_litellm_for_vendor`) rather than the legacy native provider
+    classes, so every real completion gets LiteLLM's per-model pricing table
+    and token accounting (``provider.usage`` — see
+    ``app.ee.billing.token_billing``).  ``AnthropicProvider`` /
+    ``OpenAIProvider`` / ``GeminiProvider`` remain defined for direct/explicit
+    construction (and as a fallback shape for callers that don't need billing
+    integration) but are no longer returned by this factory.
 
     Selection order
     ---------------
@@ -723,53 +862,109 @@ def get_provider() -> LLMProvider:
         provider_name = explicit.lower()
         if provider_name == "litellm":
             return _make_litellm(_env)
-        if provider_name == "anthropic":
-            key = _env("ANTHROPIC_API_KEY")
+        if provider_name in _VENDOR_KEY_ENV:
+            key = _env(_VENDOR_KEY_ENV[provider_name])
             if not key:
                 raise AppError(
                     "llm_not_configured",
-                    "ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic.",
+                    f"{_VENDOR_KEY_ENV[provider_name]} is required when "
+                    f"LLM_PROVIDER={provider_name}.",
                     503,
                 )
-            return AnthropicProvider(key)
-        if provider_name == "openai":
-            key = _env("OPENAI_API_KEY")
-            if not key:
-                raise AppError(
-                    "llm_not_configured",
-                    "OPENAI_API_KEY is required when LLM_PROVIDER=openai.",
-                    503,
-                )
-            return OpenAIProvider(key)
-        if provider_name == "gemini":
-            key = _env("GEMINI_API_KEY")
-            if not key:
-                raise AppError(
-                    "llm_not_configured",
-                    "GEMINI_API_KEY is required when LLM_PROVIDER=gemini.",
-                    503,
-                )
-            return GeminiProvider(key)
+            return make_litellm_for_vendor(provider_name, key)
         # Unknown provider name — fall through to auto-detect.
 
     # ── Auto-detect from available config (priority order) ──────────────────
     # LiteLLM first: when LITELLM_MODEL is set the operator has opted into the
-    # unified router, even if a raw provider key is also present (LiteLLM needs
-    # those keys itself).
+    # unified router with an explicit model string, even if a raw vendor key is
+    # also present (LiteLLM needs those keys itself).
     if _env("LITELLM_MODEL"):
         return _make_litellm(_env)
 
-    anthropic_key = _env("ANTHROPIC_API_KEY")
-    if anthropic_key:
-        return AnthropicProvider(anthropic_key)
-
-    openai_key = _env("OPENAI_API_KEY")
-    if openai_key:
-        return OpenAIProvider(openai_key)
-
-    gemini_key = _env("GEMINI_API_KEY")
-    if gemini_key:
-        return GeminiProvider(gemini_key)
+    for provider_name, env_key in _VENDOR_KEY_ENV.items():
+        key = _env(env_key)
+        if key:
+            return make_litellm_for_vendor(provider_name, key)
 
     # ── Default: NullProvider ────────────────────────────────────────────────
     return NullProvider()
+
+
+# ---------------------------------------------------------------------------
+# Provider / model metadata (GET /ai/providers)
+# ---------------------------------------------------------------------------
+
+
+def list_provider_metadata(enabled_providers: list[str] | None = None) -> list[dict]:
+    """Return ``[{id, display_name, models, configured}]`` for enabled providers.
+
+    Parameters
+    ----------
+    enabled_providers:
+        Provider ids to include (from ``settings.ai_enabled_providers`` /
+        ``NUBI_AI_ENABLED_PROVIDERS``).  Unknown ids (not a key of
+        :data:`ALLOWED_MODELS`) are silently skipped.  ``None`` defaults to
+        every known provider.
+
+    Returns
+    -------
+    list[dict]
+        One entry per enabled provider::
+
+            {
+                "id": "anthropic",
+                "display_name": "Anthropic (Claude)",
+                "configured": true,   # operator vendor key present
+                "models": [
+                    {"id": "claude-opus-4-8", "display_name": "claude-opus-4-8",
+                     "default": true},
+                    ...
+                ],
+            }
+
+        ``configured`` reflects whether the OPERATOR has a vendor key set for
+        this provider (i.e. the deployment can serve metered calls for it) —
+        it says nothing about any individual org's BYO key.
+    """
+    display_names = {
+        "anthropic": "Anthropic (Claude)",
+        "openai": "OpenAI",
+        "gemini": "Google (Gemini)",
+    }
+    ids = enabled_providers if enabled_providers is not None else list(ALLOWED_MODELS)
+
+    def _configured(provider_name: str) -> bool:
+        env_key = _VENDOR_KEY_ENV.get(provider_name)
+        if not env_key:
+            return False
+        try:
+            from app.config import get_settings  # noqa: PLC0415
+
+            settings = get_settings()
+            if getattr(settings, env_key, None):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        return bool(os.environ.get(env_key))
+
+    out: list[dict] = []
+    for provider_name in ids:
+        bare_models = ALLOWED_MODELS.get(provider_name)
+        if not bare_models:
+            continue
+        out.append(
+            {
+                "id": provider_name,
+                "display_name": display_names.get(provider_name, provider_name),
+                "configured": _configured(provider_name),
+                "models": [
+                    {
+                        "id": m,
+                        "display_name": m,
+                        "default": i == 0,
+                    }
+                    for i, m in enumerate(bare_models)
+                ],
+            }
+        )
+    return out
