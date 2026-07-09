@@ -1,4 +1,4 @@
-"""Nubi EE (Enterprise Edition) package.
+"""Nubi ``ee/`` package — billing / paid-tier code (open, activates in Cloud).
 
 This package is **optional** — the open-source core works fully without it.
 ``main.py`` calls :func:`load_ee` once at startup; when this package is

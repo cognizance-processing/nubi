@@ -2,7 +2,7 @@
 
 _Last updated: [DATE]_  ·  _This is a template and not legal advice — have it reviewed by qualified counsel before relying on it._
 
-These Terms of Service (the **"Terms"**) are a binding agreement between you and **[LEGAL ENTITY NAME]** (registration number **[COMPANY REGISTRATION NUMBER]**), a company incorporated in South Africa with its registered address at **[REGISTERED ADDRESS]** (**"Nubi"**, **"we"**, **"us"**, or **"our"**). They govern your access to and use of the **Nubi Cloud** managed service, the **nubi.io** website, and the related commercial and Enterprise Edition (EE) features we make available (together, the **"Service"**).
+These Terms of Service (the **"Terms"**) are a binding agreement between you and **[LEGAL ENTITY NAME]** (registration number **[COMPANY REGISTRATION NUMBER]**), a company incorporated in South Africa with its registered address at **[REGISTERED ADDRESS]** (**"Nubi"**, **"we"**, **"us"**, or **"our"**). They govern your access to and use of the **Nubi Cloud** managed service, the **nubi.io** website, and the related paid features we make available (together, the **"Service"**).
 
 > **Open source is governed separately.** The Nubi open-source core is licensed under the **Apache License, Version 2.0** (the **"Apache-2.0 Licence"**). If you self-host the open-source core, your use of that software is governed by the Apache-2.0 Licence and **not** by these Terms. These Terms apply only to your use of Nubi Cloud, nubi.io, and our commercial/EE features. See Section 4.
 

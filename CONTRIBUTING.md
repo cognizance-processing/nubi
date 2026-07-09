@@ -121,9 +121,10 @@ sync to the in-process registry immediately — no restart required.
 
 ## Open-core boundary
 
-Everything under `backend/app/ee/` and `src/ee/` is **Enterprise Edition** code
-(billing, Paystack, licensing). Core code must **never** import from `app.ee` or
-`src/ee/`. Use the feature-gate instead:
+Everything under `backend/app/ee/` and `src/ee/` is Nubi's **paid-tier code**
+(billing, Paystack, licensing). It ships **open** under the repo's Apache-2.0
+license — it is not a sold "edition"; it just activates in Nubi Cloud. Core code
+must **never** import from `app.ee` or `src/ee/`. Use the feature-gate instead:
 
 ```python
 from app.features import feature_enabled
