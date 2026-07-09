@@ -87,52 +87,56 @@ function AddGrantForm({ onSaved, onCancel }) {
 
   return (
     <div className="rounded-2xl border border-border bg-surface p-4 space-y-3">
-      <div>
-        <label className={LABEL_CLS} htmlFor="ag-subject-type">Subject type</label>
-        <select
-          id="ag-subject-type"
-          value={form.subject_type}
-          onChange={(e) => setField('subject_type', e.target.value)}
-          className={inputCls}
-        >
-          <option value="user">user</option>
-          <option value="group">group</option>
-          <option value="role">role</option>
-        </select>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label className={LABEL_CLS} htmlFor="ag-subject-type">Subject type</label>
+          <select
+            id="ag-subject-type"
+            value={form.subject_type}
+            onChange={(e) => setField('subject_type', e.target.value)}
+            className={inputCls}
+          >
+            <option value="user">user</option>
+            <option value="group">group</option>
+            <option value="role">role</option>
+          </select>
+        </div>
+        <div>
+          <label className={LABEL_CLS} htmlFor="ag-subject-id">Subject ID</label>
+          <input
+            id="ag-subject-id"
+            type="text"
+            value={form.subject_id}
+            onChange={(e) => setField('subject_id', e.target.value)}
+            placeholder="e.g. user_abc123 or role_admin"
+            className={inputCls}
+            autoFocus
+          />
+        </div>
       </div>
-      <div>
-        <label className={LABEL_CLS} htmlFor="ag-subject-id">Subject ID</label>
-        <input
-          id="ag-subject-id"
-          type="text"
-          value={form.subject_id}
-          onChange={(e) => setField('subject_id', e.target.value)}
-          placeholder="e.g. user_abc123 or role_admin"
-          className={inputCls}
-          autoFocus
-        />
-      </div>
-      <div>
-        <label className={LABEL_CLS} htmlFor="ag-dimension">Dimension</label>
-        <input
-          id="ag-dimension"
-          type="text"
-          value={form.dimension}
-          onChange={(e) => setField('dimension', e.target.value)}
-          placeholder="e.g. country"
-          className={inputCls}
-        />
-      </div>
-      <div>
-        <label className={LABEL_CLS} htmlFor="ag-value">Value</label>
-        <input
-          id="ag-value"
-          type="text"
-          value={form.value}
-          onChange={(e) => setField('value', e.target.value)}
-          placeholder="e.g. ZA"
-          className={inputCls}
-        />
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label className={LABEL_CLS} htmlFor="ag-dimension">Dimension</label>
+          <input
+            id="ag-dimension"
+            type="text"
+            value={form.dimension}
+            onChange={(e) => setField('dimension', e.target.value)}
+            placeholder="e.g. country"
+            className={inputCls}
+          />
+        </div>
+        <div>
+          <label className={LABEL_CLS} htmlFor="ag-value">Value</label>
+          <input
+            id="ag-value"
+            type="text"
+            value={form.value}
+            onChange={(e) => setField('value', e.target.value)}
+            placeholder="e.g. ZA"
+            className={inputCls}
+          />
+        </div>
       </div>
 
       {error && (

@@ -8,6 +8,13 @@
  *   <SettingsCard>        — bordered card, optional header, optional footer
  *                           bar (where the Save button lives)
  *   <Field>               — label + control + hint with consistent spacing
+ *                           (single-column; used inside compact inline forms)
+ *   <FieldRowGroup>/
+ *   <FieldRow>             — label + description on the left, control on the
+ *                           right on wide screens (single column on mobile).
+ *                           Use inside a <SettingsCard> for the "one setting
+ *                           per row" pattern instead of Field when the card
+ *                           has room to breathe.
  *   <PrimaryButton>       — brand-gradient action button with busy spinner
  *   <SavedBadge>          — transient "Saved" confirmation
  *   <ErrorText>           — inline error message
@@ -84,6 +91,47 @@ export function Field({ label, htmlFor, hint, children }) {
       )}
       {children}
       {hint && <p className="text-xs text-muted leading-relaxed">{hint}</p>}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// FieldRow — the "one setting per row" two-column layout
+// ---------------------------------------------------------------------------
+
+/**
+ * FieldRowGroup — wraps a set of <FieldRow> siblings inside a SettingsCard,
+ * giving them a shared divider between rows (first/last rows lose their
+ * outer padding so they sit flush with the card's own padding).
+ */
+export function FieldRowGroup({ children, className = '' }) {
+  return <div className={['divide-y divide-border', className].join(' ')}>{children}</div>
+}
+
+/**
+ * FieldRow — label + description on the left, control on the right, on
+ * screens wide enough to afford it (lg+). Stacks to a single column (label
+ * above control, like <Field>) on narrower screens. Meant to live inside a
+ * <FieldRowGroup> inside a <SettingsCard> so a wide card doesn't leave a
+ * form stranded in a narrow column with empty space beside it.
+ */
+export function FieldRow({ label, htmlFor, description, hint, children }) {
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,15rem)_1fr] gap-x-8 gap-y-2 py-5 first:pt-0 last:pb-0">
+      <div className="min-w-0">
+        {label && (
+          <label className="block text-sm font-medium text-fg" htmlFor={htmlFor}>
+            {label}
+          </label>
+        )}
+        {description && (
+          <p className="text-xs text-muted mt-1 leading-relaxed">{description}</p>
+        )}
+      </div>
+      <div className="min-w-0 max-w-lg space-y-1.5">
+        {children}
+        {hint && <p className="text-xs text-muted leading-relaxed">{hint}</p>}
+      </div>
     </div>
   )
 }

@@ -15,7 +15,8 @@ import { updateMe } from '../../../lib/settings.js'
 import {
   SettingsPageHeader,
   SettingsCard,
-  Field,
+  FieldRowGroup,
+  FieldRow,
   PrimaryButton,
   SavedBadge,
   ErrorText,
@@ -70,9 +71,10 @@ export default function ProfileSettings() {
             </>
           }
         >
-          <div className="space-y-5 max-w-md">
-            <Field
+          <FieldRowGroup>
+            <FieldRow
               label="Avatar"
+              description="Shown next to your name across the app."
               hint={
                 !avatarUrl && user?.avatar_url
                   ? 'Using your Google profile picture. Set a custom URL or upload a file to override it.'
@@ -84,9 +86,13 @@ export default function ProfileSettings() {
                 onChange={setAvatarUrl}
                 fallbackName={name || user?.email || '?'}
               />
-            </Field>
+            </FieldRow>
 
-            <Field label="Display name" htmlFor="profile-name">
+            <FieldRow
+              label="Display name"
+              htmlFor="profile-name"
+              description="How other members see you in this workspace."
+            >
               <input
                 id="profile-name"
                 type="text"
@@ -95,17 +101,21 @@ export default function ProfileSettings() {
                 placeholder="Your name"
                 className={inputCls}
               />
-            </Field>
+            </FieldRow>
 
-            <Field label="Email address" hint="Your email address cannot be changed here.">
+            <FieldRow
+              label="Email address"
+              description="Used to sign in and receive notifications."
+              hint="Your email address cannot be changed here."
+            >
               <div
                 className="px-3 py-2 rounded-xl bg-bg/60 border border-border text-sm text-muted select-all truncate"
                 title={user?.email ?? undefined}
               >
                 {user?.email ?? '—'}
               </div>
-            </Field>
-          </div>
+            </FieldRow>
+          </FieldRowGroup>
         </SettingsCard>
       </form>
     </div>

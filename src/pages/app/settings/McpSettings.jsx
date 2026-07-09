@@ -65,17 +65,31 @@ function AddServerForm({ onSaved, onCancel }) {
 
   return (
     <div className="rounded-2xl border border-border bg-surface p-4 space-y-3">
-      <div>
-        <label className={LABEL_CLS} htmlFor="mcp-name">Name</label>
-        <input
-          id="mcp-name"
-          type="text"
-          value={form.name}
-          onChange={(e) => set('name', e.target.value)}
-          placeholder="My MCP server"
-          className={inputCls}
-          autoFocus
-        />
+      <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3">
+        <div>
+          <label className={LABEL_CLS} htmlFor="mcp-name">Name</label>
+          <input
+            id="mcp-name"
+            type="text"
+            value={form.name}
+            onChange={(e) => set('name', e.target.value)}
+            placeholder="My MCP server"
+            className={inputCls}
+            autoFocus
+          />
+        </div>
+        <div className="sm:w-36">
+          <label className={LABEL_CLS} htmlFor="mcp-transport">Transport</label>
+          <select
+            id="mcp-transport"
+            value={form.transport}
+            onChange={(e) => set('transport', e.target.value)}
+            className={inputCls}
+          >
+            <option value="http">http</option>
+            <option value="sse">sse</option>
+          </select>
+        </div>
       </div>
       <div>
         <label className={LABEL_CLS} htmlFor="mcp-url">URL</label>
@@ -87,18 +101,6 @@ function AddServerForm({ onSaved, onCancel }) {
           placeholder="https://mcp.example.com"
           className={inputCls}
         />
-      </div>
-      <div>
-        <label className={LABEL_CLS} htmlFor="mcp-transport">Transport</label>
-        <select
-          id="mcp-transport"
-          value={form.transport}
-          onChange={(e) => set('transport', e.target.value)}
-          className={inputCls}
-        >
-          <option value="http">http</option>
-          <option value="sse">sse</option>
-        </select>
       </div>
       <div>
         <label className={LABEL_CLS} htmlFor="mcp-token">Auth token</label>

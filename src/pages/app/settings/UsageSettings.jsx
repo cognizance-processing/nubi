@@ -359,7 +359,7 @@ export default function UsageSettings() {
       {!loading && !error && metrics.length > 0 && (
         <div className="space-y-5">
           {/* Metric cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
             {metrics.map((m) => (
               <UsageCard
                 key={m.id}

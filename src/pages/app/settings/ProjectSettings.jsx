@@ -23,7 +23,8 @@ import { toast } from '../../../components/ui/Toast.jsx'
 import {
   SettingsPageHeader,
   SettingsCard,
-  Field,
+  FieldRowGroup,
+  FieldRow,
   PrimaryButton,
   SavedBadge,
   ErrorText,
@@ -169,7 +170,6 @@ export default function ProjectSettings() {
       <form onSubmit={handleSave}>
         <SettingsCard
           title="Project name"
-          description="Shown in the sidebar project picker and across the app."
           footer={
             <>
               <PrimaryButton
@@ -184,8 +184,12 @@ export default function ProjectSettings() {
             </>
           }
         >
-          <div className="max-w-md">
-            <Field htmlFor="project-name">
+          <FieldRowGroup>
+            <FieldRow
+              label="Name"
+              htmlFor="project-name"
+              description="Shown in the sidebar project picker and across the app."
+            >
               <input
                 id="project-name"
                 type="text"
@@ -195,8 +199,8 @@ export default function ProjectSettings() {
                 className={inputCls}
                 disabled={!canWrite}
               />
-            </Field>
-          </div>
+            </FieldRow>
+          </FieldRowGroup>
         </SettingsCard>
       </form>
 

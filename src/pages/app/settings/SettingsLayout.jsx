@@ -90,8 +90,14 @@ function SettingsNavItem({ to, label, Icon, end = true, external = false }) {
 
 function NavGroup({ label, context, children }) {
   return (
-    <div>
-      <div className="flex items-baseline gap-1 px-2.5 mb-1 min-w-0">
+    <div
+      className="
+        flex items-center gap-1 shrink-0 pr-3 mr-1 border-r border-border/50
+        last:border-r-0 last:pr-0 last:mr-0
+        lg:block lg:pr-0 lg:mr-0 lg:border-0
+      "
+    >
+      <div className="hidden lg:flex items-baseline gap-1 px-2.5 mb-1 min-w-0">
         <span className="text-[10px] font-semibold uppercase tracking-widest text-muted/60 shrink-0">
           {label}
         </span>
@@ -101,7 +107,7 @@ function NavGroup({ label, context, children }) {
           </span>
         )}
       </div>
-      <div className="flex flex-wrap gap-0.5 lg:flex-col lg:flex-nowrap">
+      <div className="flex gap-1 shrink-0 lg:flex-col lg:gap-0.5">
         {children}
       </div>
     </div>
@@ -117,53 +123,69 @@ export default function SettingsLayout() {
   const { activeProject } = useProject()
   const billingEnabled = useFeature('billing')
 
+  const navGroups = (
+    <>
+      <NavGroup label="Account">
+        <SettingsNavItem to="/settings/profile" label="Profile" Icon={User} />
+      </NavGroup>
+
+      <NavGroup label="Organization" context={activeOrg?.name}>
+        <SettingsNavItem to="/settings/organization" label="General"      Icon={Building2} />
+        <SettingsNavItem to="/settings/members"      label="Members"      Icon={Users} />
+        <SettingsNavItem to="/settings/integrations" label="Integrations" Icon={Plug} />
+        <SettingsNavItem to="/settings/mcp"          label="MCP servers"  Icon={Cpu} />
+        <SettingsNavItem to="/settings/bridges"      label="Bridges"      Icon={Network} />
+        <SettingsNavItem to="/settings/security"     label="Security"     Icon={ShieldCheck} />
+        <SettingsNavItem to="/settings/usage"        label="Usage"        Icon={Gauge} />
+        <SettingsNavItem to="/settings/access-grants" label="Access grants" Icon={Key} />
+        {billingEnabled && (
+          <SettingsNavItem to="/billing" label="Billing" Icon={CreditCard} external />
+        )}
+      </NavGroup>
+
+      <NavGroup label="Project" context={activeProject?.name}>
+        <SettingsNavItem to="/settings/project" label="General" Icon={FolderGit2} />
+      </NavGroup>
+    </>
+  )
+
   return (
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 lg:py-10">
+    <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 lg:py-10">
       {/* Page header */}
-      <header className="mb-8">
+      <header className="mb-6 lg:mb-8">
         <h1 className="font-display font-semibold text-2xl text-fg tracking-tight">Settings</h1>
         <p className="text-muted text-sm mt-1 leading-relaxed">
           Manage your account, organisation, and project configuration.
         </p>
       </header>
 
+      {/* Mobile / tablet nav — a single horizontally-scrolling tab strip.
+          Sticky under the page header so it stays reachable while scrolling
+          a long section (e.g. Members). Hidden at lg+ in favour of the
+          grouped sidebar below. */}
+      <nav
+        className="lg:hidden sticky top-0 z-10 -mx-4 sm:-mx-6 mb-6 bg-bg/95 backdrop-blur border-y border-border"
+        aria-label="Settings navigation"
+      >
+        <div className="flex items-center gap-1.5 overflow-x-auto px-4 sm:px-6 py-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {navGroups}
+        </div>
+      </nav>
+
       {/* Sidebar + content */}
-      <div className="flex flex-col lg:flex-row gap-8 lg:gap-12 items-start">
+      <div className="flex flex-col lg:flex-row gap-8 lg:gap-10 items-start">
         <nav
-          className="
-            w-full lg:w-48 shrink-0 lg:sticky lg:top-6
-            flex flex-col gap-5
-            p-3 lg:p-0
-            rounded-xl lg:rounded-none
-            border border-border lg:border-0
-            bg-surface lg:bg-transparent
-          "
+          className="hidden lg:flex w-56 shrink-0 lg:sticky lg:top-6 flex-col gap-5"
           aria-label="Settings navigation"
         >
-          <NavGroup label="Account">
-            <SettingsNavItem to="/settings/profile" label="Profile" Icon={User} />
-          </NavGroup>
-
-          <NavGroup label="Organization" context={activeOrg?.name}>
-            <SettingsNavItem to="/settings/organization" label="General"      Icon={Building2} />
-            <SettingsNavItem to="/settings/members"      label="Members"      Icon={Users} />
-            <SettingsNavItem to="/settings/integrations" label="Integrations" Icon={Plug} />
-            <SettingsNavItem to="/settings/mcp"          label="MCP servers"  Icon={Cpu} />
-            <SettingsNavItem to="/settings/bridges"      label="Bridges"      Icon={Network} />
-            <SettingsNavItem to="/settings/security"     label="Security"     Icon={ShieldCheck} />
-            <SettingsNavItem to="/settings/usage"        label="Usage"        Icon={Gauge} />
-            <SettingsNavItem to="/settings/access-grants" label="Access grants" Icon={Key} />
-            {billingEnabled && (
-              <SettingsNavItem to="/billing" label="Billing" Icon={CreditCard} external />
-            )}
-          </NavGroup>
-
-          <NavGroup label="Project" context={activeProject?.name}>
-            <SettingsNavItem to="/settings/project" label="General" Icon={FolderGit2} />
-          </NavGroup>
+          {navGroups}
         </nav>
 
-        {/* Section content */}
+        {/* Section content fills the rest of the shell — individual
+            paragraphs/fields cap their own width (see SettingsPageHeader,
+            FieldRow) so text stays readable even though the card itself
+            uses the full available width instead of floating in empty
+            space. */}
         <div className="flex-1 min-w-0 w-full">
           <Outlet />
         </div>

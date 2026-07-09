@@ -30,7 +30,8 @@ import { updateOrg, deleteOrg, getOrgDeletionImpact } from '../../../lib/setting
 import {
   SettingsPageHeader,
   SettingsCard,
-  Field,
+  FieldRowGroup,
+  FieldRow,
   PrimaryButton,
   SavedBadge,
   ErrorText,
@@ -181,15 +182,22 @@ export default function OrgSettings() {
                   </>
                 }
               >
-                <div className="space-y-5 max-w-md">
-                  <Field label="Organisation avatar">
+                <FieldRowGroup>
+                  <FieldRow
+                    label="Organisation avatar"
+                    description="Shown in the org switcher and across the app."
+                  >
                     <AvatarField
                       value={avatarUrl}
                       onChange={setAvatarUrl}
                       fallbackName={orgName || activeOrg?.name || '?'}
                     />
-                  </Field>
-                  <Field label="Organisation name" htmlFor="org-name">
+                  </FieldRow>
+                  <FieldRow
+                    label="Organisation name"
+                    htmlFor="org-name"
+                    description="Shown to all members and on invites."
+                  >
                     <input
                       id="org-name"
                       type="text"
@@ -198,8 +206,8 @@ export default function OrgSettings() {
                       placeholder="My Organisation"
                       className={inputCls}
                     />
-                  </Field>
-                </div>
+                  </FieldRow>
+                </FieldRowGroup>
               </SettingsCard>
             </form>
           ) : (
