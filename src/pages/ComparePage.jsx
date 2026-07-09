@@ -39,6 +39,14 @@ import {
   GitFork,
   Users,
   Lock,
+  Cpu,
+  ArrowLeftRight,
+  BarChart3,
+  Database,
+  Code2,
+  Sparkles,
+  Wallet,
+  Server,
 } from 'lucide-react'
 import {
   INTRO,
@@ -346,6 +354,81 @@ function SelfHostChip({ text }) {
         {short}
       </span>
     </Tooltip>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/*  Comparison dimensions — shared iconography + one-line "Nubi edge".          */
+/*  Keyed by the matrix.md dimension keys (kernel, transport, …). The icons     */
+/*  let the dense matrix + tables scan by glyph instead of reading every cell,  */
+/*  and drive the at-a-glance scorecard. Every label / edge line restates       */
+/*  existing SEO copy — nothing new is claimed here.                            */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+const DIMENSION_META = {
+  kernel:    { icon: Cpu,            accent: '#17b3a3', label: 'Compute kernel',   edge: 'DuckDB-WASM runs in the viewer’s browser' },
+  transport: { icon: ArrowLeftRight, accent: '#38bdf8', label: 'Result transport', edge: 'Arrow IPC over WebSocket — zero-copy to charts' },
+  viz:       { icon: BarChart3,      accent: '#2456a6', label: 'Viz & row ceiling', edge: 'ECharts on canvas, straight off Arrow buffers' },
+  caching:   { icon: Database,       accent: '#17b3a3', label: 'Caching & pre-agg', edge: 'Edge cache + auto pre-aggregations from the query log' },
+  embedding: { icon: Code2,          accent: '#38bdf8', label: 'Embedding model',   edge: 'Core surface: <nubi-dashboard>, JWKS-native' },
+  modeling:  { icon: Layers,         accent: '#2456a6', label: 'Modeling tax',      edge: 'Point at a warehouse and go — auth-as-code' },
+  ai:        { icon: Sparkles,       accent: '#17b3a3', label: 'AI features',       edge: 'Lineage-grounded LLM + MCP server' },
+  pricing:   { icon: Wallet,         accent: '#38bdf8', label: 'Pricing model',     edge: 'Usage-based, unlimited seats, billed in ZAR' },
+  selfHost:  { icon: Server,         accent: '#2456a6', label: 'Self-host',         edge: 'Docker Compose stack + self-host connector' },
+}
+
+const DIMENSION_ORDER = ['kernel', 'transport', 'viz', 'caching', 'embedding', 'modeling', 'ai', 'pricing', 'selfHost']
+
+/** Small square icon chip for a comparison dimension (table row labels). */
+function DimIcon({ dimKey, size = 12 }) {
+  const meta = DIMENSION_META[dimKey]
+  if (!meta) return null
+  const Icon = meta.icon
+  return (
+    <span
+      className="inline-flex items-center justify-center w-5 h-5 rounded-md shrink-0"
+      style={{ color: meta.accent, background: `${meta.accent}18` }}
+      aria-hidden="true"
+    >
+      <Icon size={size} strokeWidth={2} />
+    </span>
+  )
+}
+
+/**
+ * AtAGlanceScorecard — icon-led spec strip that primes the reader before the
+ * dense tables. One card per matrix dimension; skim the glyphs, then dive into
+ * the full matrix below. Pure summary of existing copy — no new claims.
+ */
+function AtAGlanceScorecard() {
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
+      {DIMENSION_ORDER.map((key, i) => {
+        const d = DIMENSION_META[key]
+        const Icon = d.icon
+        return (
+          <Reveal key={key} delay={(i % 3) * 70}>
+            <div
+              className="cp-card h-full p-4 sm:p-5 flex items-start gap-3"
+              style={{ '--cp-accent': d.accent }}
+            >
+              <span
+                className="shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-xl text-white shadow-sm"
+                style={{ background: `linear-gradient(135deg, ${d.accent}, ${d.accent}cc)` }}
+              >
+                <Icon size={16} strokeWidth={1.9} />
+              </span>
+              <div className="min-w-0">
+                <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted mb-1">
+                  {d.label}
+                </p>
+                <p className="text-[13px] leading-snug text-fg font-medium">{d.edge}</p>
+              </div>
+            </div>
+          </Reveal>
+        )
+      })}
+    </div>
   )
 }
 
@@ -753,48 +836,56 @@ function AllCompetitorsTable() {
 const PRIMARY_ROWS = [
   {
     label: 'Shape',
+    icon: GitFork,
     hex:  'Notebook + published apps',
     cube: 'Headless semantic layer + API',
     nubi: 'Batteries-included BI + embed — authoring and output included',
   },
   {
     label: 'Compute kernel',
+    icon: Cpu,
     hex:  'Python per session, Hex cloud (10–30 s cold, per-minute billing)',
     cube: 'n/a — warehouse + Cube Store; hourly infra billing',
     nubi: 'DuckDB-WASM (SQL) in browser by default; on-demand server (E2B/Modal, scale-to-zero) for Python and heavy workloads',
   },
   {
     label: 'Result transport',
+    icon: ArrowLeftRight,
     hex:  'JSON via pandas — no Arrow path',
     cube: 'JSON / SQL API — no Arrow IPC',
     nubi: 'Arrow IPC over WebSocket — columnar, zero-copy to viz',
   },
   {
     label: 'Viz ceiling',
+    icon: BarChart3,
     hex:  'Plotly/SVG — chokes past ~50 k rows',
     cube: 'Bring-your-own frontend; no built-in viz',
     nubi: 'Apache ECharts (canvas) on Arrow buffers — fast on large result sets',
   },
   {
     label: 'Caching',
+    icon: Database,
     hex:  'Per-session; weak cross-user sharing; no auto pre-agg',
     cube: 'Pre-aggs in Cube Store (hand-written schema required)',
     nubi: 'Content-hashed edge cache + automatic pre-aggregations mined from query log',
   },
   {
     label: 'Modeling tax',
+    icon: Layers,
     hex:  'Medium — notebook cells; no formal semantic layer',
     cube: 'High — must define cube schema (JS/YAML) before any query works',
     nubi: 'Low — point at a warehouse and go; auth-as-code in repo',
   },
   {
     label: 'Embedding',
+    icon: Code2,
     hex:  'Enterprise add-on only; bolt-on auth; not a core surface',
     cube: 'Core strength (headless only); JWT→SQL RLS; viewer seats $20+/month',
     nubi: 'Core product surface: <nubi-dashboard> plus cell-level <nubi-kpi>/<nubi-table>/<nubi-chart>; JWKS-native; no separate SDK',
   },
   {
     label: 'Pricing',
+    icon: Wallet,
     hex:  'Per-seat + compute add-on (kernels cost real money)',
     cube: 'Per-developer + hourly infra (on top of seats)',
     nubi: 'No per-seat pricing at any tier: Starter $9/mo | Team $49/mo | Pro $149/mo | Enterprise from $1,000/mo. Pay for compute, storage, AI calls, and embed sessions — never for users. Billed in ZAR via Paystack.',
@@ -840,7 +931,12 @@ function PrimaryTable() {
           {PRIMARY_ROWS.map((row) => (
             <tr key={row.label} className="cp-row cp-matrix-row border-b border-border last:border-0 transition-colors">
               <td className="cp-row-cell px-5 py-4 text-xs font-semibold text-fg align-top bg-surface border-r border-border transition-colors">
-                {row.label}
+                <span className="inline-flex items-center gap-2">
+                  <span className="inline-flex items-center justify-center w-5 h-5 rounded-md shrink-0 text-brand-teal bg-brand-teal/10" aria-hidden="true">
+                    <row.icon size={12} strokeWidth={2} />
+                  </span>
+                  {row.label}
+                </span>
               </td>
               <td className="cp-row-cell px-5 py-4 text-xs text-muted align-top bg-surface border-r border-border transition-colors leading-relaxed">
                 <CellText text={row.hex} />
@@ -924,6 +1020,7 @@ function FullMatrix() {
                 style={{ minWidth: 160, width: 160 }}
               >
                 <Tooltip text={dim.description}>
+                  <DimIcon dimKey={dim.key} />
                   <span className="text-xs font-semibold text-fg">
                     {dim.label}
                   </span>
@@ -1614,6 +1711,28 @@ export default function ComparePage() {
             BI & EMBEDDED ANALYTICS TAB
         ══════════════════════════════════════════════════════════ */}
         <div className={tab === 'bi' ? '' : 'hidden'}>
+
+        {/* ══════════════════════════════════════════════════════════
+            §3b0  AT A GLANCE — icon-led spec strip. Primes the reader
+            with the nine comparison dimensions (each an icon + one-line
+            Nubi edge) before the dense tables unpack them in full.
+        ══════════════════════════════════════════════════════════ */}
+        <section className="py-16 sm:py-24 bg-bg">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+
+            <SectionHead
+              wide
+              eyebrow="At a glance"
+              title={<>Nubi&apos;s edge, <span className="text-brand-gradient">dimension by dimension.</span></>}
+            >
+              Nine architectural dimensions the tables below unpack in full — each maps to a row in the{' '}
+              <strong className="text-fg font-semibold">feature matrix</strong>. Skim the icons first,
+              then dive into the detail.
+            </SectionHead>
+
+            <AtAGlanceScorecard />
+          </div>
+        </section>
 
         {/* ══════════════════════════════════════════════════════════
             §3c  PRIMARY TABLE — Nubi vs Hex vs Cube
