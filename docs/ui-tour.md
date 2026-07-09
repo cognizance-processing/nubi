@@ -75,7 +75,7 @@ Below the selectors is the main nav. The active item shows a tinted background a
 | **Connectors** | `/connectors` | Add and manage data sources (Postgres, BigQuery, HTTP/JSON, and more). |
 | **Data** | `/data` | Browse and explore your connectors' data: pick a connector, search its tables, then flip between Data (rows) and Schema (columns) tabs. |
 | **Queries** | `/queries` | Author SQL in a Monaco editor, run queries, and save registered queries. |
-| **Explore** | `/explore` | Metric explorer: select a metric, apply dimension filters, choose a time grain, and view results as a chart and table — no SQL required. |
+| **Explore** | `/explore` | No-SQL metric exploration: select a metric, apply dimension filters, choose a time grain, and view results as a chart and table — no SQL required. |
 | **Dashboards** | `/dashboards` | View, search, and open live dashboards. |
 | **Flows** | `/flows` | Build multi-step pipelines — cells arranged as a canvas or notebook. |
 | **Watches** | `/watches` | Proactive metric alerts: a watch monitors a governed metric against a threshold or change-over-time rule, and on breach sends an AI explanation to a notify channel. |
@@ -268,7 +268,7 @@ The Queries workspace is Nubi's SQL IDE. Write SQL against any connector, add `{
 <td width="50%"><img src="screenshots/explore-dark.png" alt="Explore — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
-Explore is a no-SQL metric explorer powered by Nubi's governed metric layer. It surfaces the same `<nubi-metric-explorer>` web component that you can embed in your own app — so Explore also serves as an in-app dogfood of the embedding SDK.
+Explore is a no-SQL metric explorer powered by Nubi's governed metric layer. It surfaces the same `<nubi-query-editor>` web component (in metric mode) that you can embed in your own app — so Explore also serves as an in-app dogfood of the embedding SDK.
 
 **What you can do:**
 
@@ -277,7 +277,7 @@ Explore is a no-SQL metric explorer powered by Nubi's governed metric layer. It 
 3. **Set a time grain** — day, week, month, quarter, or year, with an optional time comparison (e.g. period-over-period).
 4. **Run** — Nubi executes the governed metric query (via `POST /metrics/{id}/query`) and shows the result as both a chart and a data table.
 
-No raw SQL surfaces: Explore is the governed, analyst-safe way to slice a metric without writing code. The result updates live as you change dimensions or grain. See [AI, Chat & MCP](/docs/ai-and-mcp) and [Embed API](/docs/embed-api) for embedding the metric explorer in your own application.
+No raw SQL surfaces: Explore is the governed, analyst-safe way to slice a metric without writing code. The result updates live as you change dimensions or grain. See [AI, Chat & MCP](/docs/ai-and-mcp) and [Embed API](/docs/embed-api) for embedding governed metric queries in your own application.
 
 ---
 

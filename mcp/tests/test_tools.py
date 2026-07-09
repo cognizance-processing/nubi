@@ -1,7 +1,7 @@
 """Tests for Nubi MCP tool implementation functions.
 
 These tests exercise the *plain* tool-logic functions (_list_dashboards,
-_run_query, _list_lineage, _propose_materialized_view) directly — no MCP
+_run_query, _propose_materialized_view) directly — no MCP
 transport is required.
 
 Strategy
@@ -10,9 +10,6 @@ Strategy
   are present with the expected ids and names.
 - _run_query: use 'demo_points_10k' which relies only on DuckDB's built-in
   generate_series; no seed table is required.
-- _list_lineage: assert the result is a dict with an 'available' key;
-  if M7-A is not yet shipped the tool returns a friendly unavailability
-  message — that is also a valid (tested) outcome.
 - _propose_materialized_view: assert the result is a list (may be empty
   because the query log is fresh in a test process).
 """
@@ -36,7 +33,6 @@ import pytest
 # Import the plain tool functions (no MCP transport needed).
 from nubi_mcp.server import (
     _list_dashboards,
-    _list_lineage,
     _propose_materialized_view,
     _run_query,
 )
@@ -143,45 +139,6 @@ class TestRunQuery:
     def test_row_count_positive(self) -> None:
         result = _run_query("demo_points_10k", limit=1)
         assert result["row_count"] > 0
-
-
-# ---------------------------------------------------------------------------
-# list_lineage
-# ---------------------------------------------------------------------------
-
-
-class TestListLineage:
-    """Tests for _list_lineage()."""
-
-    def test_returns_dict(self) -> None:
-        result = _list_lineage()
-        assert isinstance(result, dict), f"Expected dict, got {type(result)}"
-
-    def test_has_available_key(self) -> None:
-        result = _list_lineage()
-        assert "available" in result, f"Missing 'available' key: {result}"
-
-    def test_available_is_bool(self) -> None:
-        result = _list_lineage()
-        assert isinstance(result["available"], bool)
-
-    def test_unavailable_has_reason(self) -> None:
-        """When lineage is not available, a human-readable reason is present."""
-        result = _list_lineage()
-        if not result["available"]:
-            assert "reason" in result, (
-                "Expected 'reason' key when available=False"
-            )
-            assert isinstance(result["reason"], str)
-            assert len(result["reason"]) > 0
-
-    def test_available_has_graph(self) -> None:
-        """When lineage IS available, a 'graph' key is present."""
-        result = _list_lineage()
-        if result["available"]:
-            assert "graph" in result, (
-                "Expected 'graph' key when available=True"
-            )
 
 
 # ---------------------------------------------------------------------------

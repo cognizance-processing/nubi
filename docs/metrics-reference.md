@@ -349,14 +349,3 @@ Authorization: Bearer <author:metric token>
 ```
 
 **Auth:** Requires `author:metric` scope (same as create/update).
-
----
-
-## Metric lineage — `GET /metrics/{id}/lineage`
-
-Returns the full input-column lineage for a metric: which physical tables and
-columns feed the measure, plus any derived measure formulas.
-
-See [docs/lineage.md](lineage.md) for the complete lineage API reference
-including `GET /lineage/dag`, `GET /lineage/dag/{node_id}?hops=`, and
-`GET /lineage/query/{id}`.

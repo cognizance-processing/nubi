@@ -10,6 +10,30 @@ Conventions:
   `[Unreleased]` and updates the matching row in [CAPABILITIES.md](./CAPABILITIES.md).
 - On release, stamp `[Unreleased]` with a version + date.
 
+## [Unreleased]
+
+### Removed
+
+- **Data-lineage feature (DAG + column-level SQL lineage).** Cut as a
+  second-tier governance feature to stay focused. Removed the
+  `backend/app/lineage/` package (`extract_lineage`, `LineageGraph`,
+  `DependencyDAG`, `resolve_metric_lineage`, `resolve_column_lineage`), the
+  `GET /lineage`, `/lineage/dag`, `/lineage/dag/{node_id}`,
+  `/lineage/query/{id}`, `/lineage/columns/{node_id}`, `POST /lineage/plan`,
+  `POST /lineage/cell` routes, `GET /metrics/{id}/lineage`, the orphaned
+  lineage-driven flow auto-rebuild hook (`on_materialized_model_complete`,
+  never wired into the live completion path), and the `list_lineage` MCP
+  tool (now 14 tools, down from 15). The `<nubi-lineage>` embed widget and
+  `/lineage` docs are gone. The AI grounding catalog and notebook
+  auto-dependency inference — which used the lineage SQL-parsing utility
+  internally — now use a relocated, neutrally-named
+  `app/queries/sql_table_columns.py` / `app/queries/query_graph.py` so
+  those host features are unaffected.
+- **`nubi-metric-explorer` embed widget.** Cut entirely along with its
+  demo page, e2e coverage, and docs section. `nubi-query-editor` remains
+  the supported authoring widget (it shares the same metric-query helpers
+  in `embed/widgets/shared.js`).
+
 ## [0.6.2] - 2026-07-09
 
 ### Removed

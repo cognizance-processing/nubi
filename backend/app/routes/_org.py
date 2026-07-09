@@ -8,7 +8,7 @@ side-effect, registering the greedy ``/{resource}`` catch-all *ahead* of any
 prefixed router (``/flows``, ``/preagg``, …) that imported the helper before its
 own routes were registered — silently shadowing those endpoints with 404s.
 
-Several routers (``jobs``, ``flows``, ``lineage``) even copy-pasted
+Several routers (``jobs``, ``flows``) even copy-pasted
 ``get_user_org`` verbatim just to avoid importing ``resources``.  This module is
 the shared, import-safe home for that logic: it registers **no** routes, so
 importing it can never perturb route ordering.

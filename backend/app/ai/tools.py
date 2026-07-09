@@ -102,7 +102,7 @@ class ToolDef:
 def _tool_get_schema(claims: dict[str, Any]) -> dict[str, Any]:
     """Return the catalog schema (tables + columns) visible to the caller.
 
-    The catalog is built from the live query registry and the lineage graph.
+    The catalog is built from the live query registry and the query graph.
     No filtering by claims is applied here — the catalog only exposes
     registered (already allowlisted) metadata, not raw data.
     """

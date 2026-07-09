@@ -1,4 +1,4 @@
-"""Adversarial security audit tests — MCP / Grants / Transpile / Health / Lineage.
+"""Adversarial security audit tests — MCP / Grants / Transpile / Health.
 
 Coverage (new surface — 2026-06-26)
 ------------------------------------
@@ -33,13 +33,10 @@ Transpile (POST /transpile)
   3f. SQL injection payload in body is just transpiled text (never executed).
   3g. Malformed (non-JSON) body → 422, no traceback leak.
 
-Health + Lineage (IDOR / scope)
+Health (IDOR / scope)
   4a. Health: unauthenticated → 401.
   4b. Health: org A's dataset not visible to org B (FreshnessStore org-scoped get returns None → 404).
   4c. Health score: org-scoped, non-existent dataset for wrong org → 404.
-  4d. Lineage: unauthenticated → 401.
-  4e. Lineage DAG: authenticated call returns dict with nodes/edges keys.
-  4f. Lineage DAG node: non-existent node → 404.
   4g. Health estate: org-scoped (uses org_id from identity, not request body).
 
 Quick regressions (one assertion each)
@@ -760,7 +757,7 @@ class TestTranspileEndpoint:
 
 
 # ===========================================================================
-# 4. Health + Lineage (IDOR / scope)
+# 4. Health (IDOR / scope)
 # ===========================================================================
 
 
@@ -896,108 +893,6 @@ class TestHealthIDOR:
         assert data.get("org_id") == org_id, (
             f"SECURITY: health estate org_id must come from identity, "
             f"got {data.get('org_id')!r} expected {org_id!r}"
-        )
-
-
-class TestLineageIDOR:
-    """4d-4f: Lineage endpoint auth and 404 for unknown nodes."""
-
-    @pytest.mark.asyncio
-    async def test_lineage_requires_auth(self, client):
-        """4d: GET /lineage without auth → 401."""
-        resp = await client.get("/api/v1/lineage")
-        assert resp.status_code in (401, 403), (
-            f"Lineage must require auth, got {resp.status_code}"
-        )
-
-    @pytest.mark.asyncio
-    async def test_lineage_dag_returns_nodes_edges(self, app, fake_db):
-        """4e: Authenticated GET /lineage/dag returns dict with nodes and edges."""
-        from httpx import ASGITransport, AsyncClient
-        from app.auth.jwt import mint_access_token
-        from app.repos.memory import InMemoryRepo
-        from app.repos.provider import set_repo
-
-        user_id = str(uuid.uuid4())
-        org_id = str(uuid.uuid4())
-        fake_db.users[user_id] = {
-            "id": user_id, "email": "dag@test.com", "name": "DAG",
-            "avatar_url": None, "email_verified": True,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-        repo = InMemoryRepo()
-        repo.seed_org_member(org_id=org_id, user_id=user_id, role="viewer")
-        set_repo(repo)
-        token = mint_access_token(user_id)
-
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as ac:
-            ac.headers["Authorization"] = f"Bearer {token}"
-            resp = await ac.get("/api/v1/lineage/dag")
-
-        set_repo(None)
-        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
-        data = resp.json()
-        assert "nodes" in data, "lineage/dag must return nodes key"
-        assert "edges" in data, "lineage/dag must return edges key"
-
-    @pytest.mark.asyncio
-    async def test_lineage_dag_nonexistent_node_returns_404(self, app, fake_db):
-        """4f: GET /lineage/dag/{nonexistent} → 404 not found."""
-        from httpx import ASGITransport, AsyncClient
-        from app.auth.jwt import mint_access_token
-        from app.repos.memory import InMemoryRepo
-        from app.repos.provider import set_repo
-
-        user_id = str(uuid.uuid4())
-        org_id = str(uuid.uuid4())
-        fake_db.users[user_id] = {
-            "id": user_id, "email": "nonode@test.com", "name": "NoNode",
-            "avatar_url": None, "email_verified": True,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-        repo = InMemoryRepo()
-        repo.seed_org_member(org_id=org_id, user_id=user_id, role="viewer")
-        set_repo(repo)
-        token = mint_access_token(user_id)
-
-        node_id = f"nonexistent_{uuid.uuid4()}"
-
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as ac:
-            ac.headers["Authorization"] = f"Bearer {token}"
-            resp = await ac.get(f"/api/v1/lineage/dag/{node_id}")
-
-        set_repo(None)
-        assert resp.status_code == 404, (
-            f"Non-existent lineage node must return 404, got {resp.status_code}"
-        )
-
-    @pytest.mark.asyncio
-    async def test_lineage_query_nonexistent_returns_404(self, app, fake_db):
-        """4f: GET /lineage/query/{nonexistent_id} → 404."""
-        from httpx import ASGITransport, AsyncClient
-        from app.auth.jwt import mint_access_token
-        from app.repos.memory import InMemoryRepo
-        from app.repos.provider import set_repo
-
-        user_id = str(uuid.uuid4())
-        org_id = str(uuid.uuid4())
-        fake_db.users[user_id] = {
-            "id": user_id, "email": "noq@test.com", "name": "NoQ",
-            "avatar_url": None, "email_verified": True,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-        repo = InMemoryRepo()
-        repo.seed_org_member(org_id=org_id, user_id=user_id, role="viewer")
-        set_repo(repo)
-        token = mint_access_token(user_id)
-
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as ac:
-            ac.headers["Authorization"] = f"Bearer {token}"
-            resp = await ac.get(f"/api/v1/lineage/query/{uuid.uuid4()}")
-
-        set_repo(None)
-        assert resp.status_code == 404, (
-            f"Non-existent lineage query must return 404, got {resp.status_code}"
         )
 
 

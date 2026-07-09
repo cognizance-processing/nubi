@@ -57,7 +57,6 @@ const mdFiles = import.meta.glob(
     '/docs/transformation.md',
     '/docs/materialization.md',
     '/docs/data-health.md',
-    '/docs/lineage.md',
     '/docs/governance.md',
     '/docs/mcp.md',
     '/docs/embed-api.md',
@@ -78,7 +77,7 @@ const LAYOUT = [
   { section: null,                  group: 'Home',              slugs: ['home'] },
 
   { section: 'Using Nubi',          group: 'Get started',       slugs: ['quickstart', 'getting-started', 'ui-tour'] },
-  { section: 'Using Nubi',          group: 'Work with data',    slugs: ['connectors', 'queries-and-params', 'metrics-reference', 'pre-aggregations', 'dashboards', 'data-health', 'lineage', 'governance', 'exports-and-jobs'] },
+  { section: 'Using Nubi',          group: 'Work with data',    slugs: ['connectors', 'queries-and-params', 'metrics-reference', 'pre-aggregations', 'dashboards', 'data-health', 'governance', 'exports-and-jobs'] },
   { section: 'Using Nubi',          group: 'Automate & build',  slugs: ['flows', 'notebooks', 'transformation', 'materialization', 'semantic-and-data-apps', 'ai-and-mcp', 'mcp', 'embedding', 'embed-api'] },
   { section: 'Using Nubi',          group: 'Your account',      slugs: ['organization-settings', 'notifications-and-integrations'] },
   { section: 'Using Nubi',          group: 'Reference',         slugs: ['how-to', 'api-reference'] },

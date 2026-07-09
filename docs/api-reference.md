@@ -940,8 +940,7 @@ dimensions: freshness (default 0.50), completeness (0.30), availability (0.20).
 
 Return a source → raw → model → feature flow map annotated with each node's
 health and freshness status. Composed from the flows store and the freshness
-registry. When the full lineage DAG is available, edges include
-`lineage_confirmed: true`.
+registry.
 
 **Auth:** Any valid token with a read scope.
 
@@ -959,9 +958,8 @@ registry. When the full lineage DAG is available, edges include
     }
   ],
   "edges": [
-    { "source_key": "raw/orders", "target_key": "model/revenue", "flow_id": "...", "lineage_confirmed": true }
-  ],
-  "lineage_module_present": true
+    { "source_key": "raw/orders", "target_key": "model/revenue", "flow_id": "..." }
+  ]
 }
 ```
 
@@ -1022,91 +1020,6 @@ dataset has no baseline snapshot (never been observed).
   "events": [...]
 }
 ```
-
----
-
-## Lineage DAG
-
-All lineage endpoints require a valid first-party Bearer token (`current_user`).
-
-### `GET /lineage/dag`
-
-Return the full inter-model dependency DAG (queries + metrics + tables) for the
-caller's org.
-
-**Auth:** First-party Bearer token.
-
-**Response `200`:**
-```json
-{
-  "nodes": [
-    { "id": "query:revenue", "type": "query", "name": "Revenue", "tables": ["orders"], "outputs": ["revenue"], "columns": {} }
-  ],
-  "edges": [
-    { "from": "table:orders", "to": "query:revenue", "via": "select" }
-  ]
-}
-```
-
----
-
-### `GET /lineage/dag/{node_id}?hops=N`
-
-Return the upstream/downstream neighbourhood of a single DAG node.
-
-**Auth:** First-party Bearer token.
-
-**Path parameters:**
-
-| Param | Type | Description |
-|---|---|---|
-| `node_id` | string | Id of the query, metric, or table node (may contain `/`). |
-
-**Query parameters:**
-
-| Param | Default | Max | Description |
-|---|---|---|---|
-| `hops` | `3` | `20` | Maximum traversal depth. |
-
-**Response `200`:**
-```json
-{
-  "node_id": "query:revenue",
-  "node": { "id": "query:revenue", "type": "query", "name": "Revenue", "tables": [...], "outputs": [...], "columns": {} },
-  "hops": 3,
-  "upstream": ["table:orders"],
-  "downstream": ["metric:revenue"]
-}
-```
-
-**Errors:** `404 node_not_found` — unknown node id.
-
----
-
-### `GET /metrics/{id}/lineage`
-
-Return the column-level lineage for a single governed metric: input columns,
-upstream source tables, and per-derived-measure formula decomposition.
-
-**Auth:** Any valid token with a read scope. Org-scoped — cross-org metric id
-returns `404`.
-
-**Response `200`:**
-```json
-{
-  "metric_id": "revenue",
-  "name": "Revenue",
-  "measure": { "name": "revenue", "agg": "sum", "expr": "amount" },
-  "formula": [],
-  "input_columns": [
-    { "table": "orders", "column": "amount" },
-    { "table": "orders", "column": "created_at" }
-  ],
-  "upstream": ["orders"]
-}
-```
-
-**Errors:** `404 metric_not_found` — unknown metric or cross-org attempt.
 
 ---
 

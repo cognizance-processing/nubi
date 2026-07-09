@@ -294,7 +294,7 @@ def infer_notebook_edges(cells: list[CellSpec]) -> list[CellSpec]:
 
     1. **SQL cells** (cell_type='sql' or kind='query'): scan the SQL for
        ``cell_<key>`` table refs.  Any matched key that names an earlier cell
-       is added to ``needs``.  Tries ``extract_lineage`` (sqlglot) first;
+       is added to ``needs``.  Tries ``extract_table_columns`` (sqlglot) first;
        falls back to regex on import failure.
     2. **Python cells** (cell_type='python' or kind='python'): ``ast.parse``
        the code and find ``inputs["<key>"]`` subscript patterns.  Matched
@@ -337,9 +337,9 @@ def infer_notebook_edges(cells: list[CellSpec]) -> list[CellSpec]:
             if sql_source:
                 # Attempt sqlglot-based table extraction.
                 try:
-                    from app.lineage.extract import extract_lineage  # noqa: PLC0415
-                    lineage = extract_lineage(sql_source)
-                    for tbl in lineage.get("tables", []):
+                    from app.queries.sql_table_columns import extract_table_columns  # noqa: PLC0415
+                    refs = extract_table_columns(sql_source)
+                    for tbl in refs.get("tables", []):
                         tbl_norm = str(tbl).lower()
                         if tbl_norm in available:
                             inferred.append(tbl_norm)

@@ -1,8 +1,8 @@
-"""SQL lineage extraction via sqlglot AST walking (M7-A).
+"""SQL table/column reference extraction via sqlglot AST walking.
 
 Public API
 ----------
-extract_lineage(sql, dialect="postgres") -> dict
+extract_table_columns(sql, dialect="postgres") -> dict
 
     Parse *sql* and return a dict with three keys:
 
@@ -43,6 +43,12 @@ Notes
   idioms) the function falls back to manual alias resolution.
 - CTE names are excluded from the ``tables`` list (they are not real tables).
 - Subquery aliases are excluded from the ``tables`` list.
+
+This is a generic SQL-introspection utility used by the AI grounding catalog
+(``app.ai.grounding``), notebook cell auto-dependency inference
+(``app.flows.notebook``), and the health/estate graph enrichment
+(``app.routes.health``).  It is deliberately NOT part of a "lineage"
+governance feature — those DAG/column-lineage endpoints were removed.
 """
 
 from __future__ import annotations
@@ -253,8 +259,8 @@ def _collect_outputs(select: exp.Select) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def extract_lineage(sql: str, dialect: str = "postgres") -> dict[str, Any]:
-    """Extract table/column lineage from a SQL SELECT statement.
+def extract_table_columns(sql: str, dialect: str = "postgres") -> dict[str, Any]:
+    """Extract table/column references from a SQL SELECT statement.
 
     Parameters
     ----------
@@ -283,7 +289,7 @@ def extract_lineage(sql: str, dialect: str = "postgres") -> dict[str, Any]:
     try:
         tree = sqlglot.parse_one(sql, dialect=dialect)
     except Exception as exc:
-        logger.debug("lineage parse failure: %s", exc)
+        logger.debug("SQL table/column extraction parse failure: %s", exc)
         return {**empty, "error": f"parse_error: {exc}"}
 
     if not isinstance(tree, exp.Select):

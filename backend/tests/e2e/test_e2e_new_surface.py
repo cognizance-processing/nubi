@@ -1,4 +1,4 @@
-"""E2E: Live coverage for health / lineage / transpile / MCP endpoints.
+"""E2E: Live coverage for health / transpile / MCP endpoints.
 
 Tests run against a REAL uvicorn + demo-seeded Postgres + DuckDB.
 Gated: RUN_E2E=1 (see conftest.py).
@@ -10,10 +10,6 @@ Health
     GET /health/freshness/{key}    — path-encoded lookup, status returned
     GET /health/score              — numeric scores, grades, dimensions
     GET /health/estate             — nodes + edges graph
-
-Lineage
-    GET /lineage/dag               — nodes + edges for org's queries/metrics
-    GET /metrics/retail_nsv/lineage — input_columns + upstream
 
 Transpile
     POST /transpile  (valid dialects) — 200 + transpiled sql
@@ -230,79 +226,6 @@ class TestHealthEstate:
     def test_estate_requires_auth(self, e2e_ctx: E2EContext) -> None:
         """Unauthenticated call is rejected."""
         resp = e2e_ctx.client.get("/health/estate")
-        assert resp.status_code in (401, 403), (
-            f"Expected 401/403, got {resp.status_code}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Lineage
-# ---------------------------------------------------------------------------
-
-
-class TestLineageDag:
-    """GET /lineage/dag — full inter-model DAG."""
-
-    def test_dag_returns_nodes_and_edges(self, e2e_ctx: E2EContext) -> None:
-        """Response has 'nodes' and 'edges' keys (even if both are empty)."""
-        resp = e2e_ctx.client.get("/lineage/dag", headers=e2e_ctx.su_headers())
-        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
-        data = resp.json()
-        assert "nodes" in data, f"No 'nodes' key in /lineage/dag response: {data}"
-        assert "edges" in data, f"No 'edges' key in /lineage/dag response: {data}"
-        assert isinstance(data["nodes"], (list, dict)), "nodes is unexpected type"
-        assert isinstance(data["edges"], (list, dict)), "edges is unexpected type"
-
-    def test_dag_requires_auth(self, e2e_ctx: E2EContext) -> None:
-        """Unauthenticated call is rejected."""
-        resp = e2e_ctx.client.get("/lineage/dag")
-        assert resp.status_code in (401, 403), (
-            f"Expected 401/403, got {resp.status_code}"
-        )
-
-    def test_dag_read_token_allowed(self, e2e_ctx: E2EContext) -> None:
-        """read:* token (no author:sql) can still read the DAG."""
-        resp = e2e_ctx.client.get("/lineage/dag", headers=e2e_ctx.read_headers())
-        # lineage/dag uses current_user (not verified_identity with scope check)
-        # so it should succeed for any valid token
-        assert resp.status_code == 200, (
-            f"Expected 200 for read-only token, got {resp.status_code}: {resp.text}"
-        )
-
-
-class TestMetricLineage:
-    """GET /metrics/{id}/lineage — column-level metric lineage."""
-
-    def test_retail_nsv_lineage_shape(self, e2e_ctx: E2EContext) -> None:
-        """retail_nsv lineage returns metric_id, input_columns, and upstream."""
-        resp = e2e_ctx.client.get(
-            "/metrics/retail_nsv/lineage",
-            headers=e2e_ctx.su_headers(),
-        )
-        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
-        data = resp.json()
-        assert "metric_id" in data, f"No 'metric_id' in lineage response: {data}"
-        assert "input_columns" in data, f"No 'input_columns' in lineage response: {data}"
-        assert "upstream" in data, f"No 'upstream' in lineage response: {data}"
-        assert isinstance(data["input_columns"], list), "input_columns is not a list"
-        assert isinstance(data["upstream"], list), "upstream is not a list"
-        assert data["metric_id"] == "retail_nsv", (
-            f"Expected metric_id='retail_nsv', got {data['metric_id']!r}"
-        )
-
-    def test_metric_lineage_not_found(self, e2e_ctx: E2EContext) -> None:
-        """Unknown metric id returns 404."""
-        resp = e2e_ctx.client.get(
-            "/metrics/nonexistent_metric_xyz/lineage",
-            headers=e2e_ctx.su_headers(),
-        )
-        assert resp.status_code == 404, (
-            f"Expected 404 for unknown metric, got {resp.status_code}"
-        )
-
-    def test_metric_lineage_requires_auth(self, e2e_ctx: E2EContext) -> None:
-        """Unauthenticated call is rejected."""
-        resp = e2e_ctx.client.get("/metrics/retail_nsv/lineage")
         assert resp.status_code in (401, 403), (
             f"Expected 401/403, got {resp.status_code}"
         )

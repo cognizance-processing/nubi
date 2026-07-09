@@ -2,18 +2,17 @@
 
 A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server for
 the Nubi analytics platform. Exposes Nubi's query registry, execution pipeline,
-lineage graph, pre-aggregation suggester, and dashboard authoring tools to any
+pre-aggregation suggester, and dashboard authoring tools to any
 MCP-compatible client (Claude Desktop, Claude Code, etc.).
 
 ## Tools
 
-15 tools are registered. Core authoring tools:
+14 tools are registered. Core authoring tools:
 
 | Tool | Signature | Description |
 |------|-----------|-------------|
 | `list_dashboards` | `() → [{id, name}]` | List all registered dashboards/queries in the Nubi query registry. |
 | `run_query` | `(query_id, limit=100) → {columns, rows, row_count}` | Execute a registered query via DuckDB and return a compact JSON preview. |
-| `list_lineage` | `() → {available, graph|reason}` | Return the SQL lineage graph, or `{available: false, reason: "…"}` when unavailable. |
 | `propose_materialized_view` | `() → [{base_table, dimensions, measures, hit_count, bytes_saved}]` | Analyse the query log and return pre-aggregation rollup suggestions. |
 | `create_dashboard` | `(name, spec_or_html, org_id="mcp") → {id, name}` | Validate and store a dashboard (DashboardSpec dict or HTML). |
 | `author_dashboard` | `(question) → {id, html_preview}` | Generate a dashboard from a natural-language question and store it in one call. |
@@ -131,19 +130,13 @@ Or add it manually to your Claude Code project settings
 
 The MCP server (`nubi_mcp/server.py`) adds `nubi/backend/` to `sys.path` at
 import time so that `app.*` modules (query registry, DuckDB connector, preagg,
-lineage, AI pipeline) are importable without installing the backend as a package.
+AI pipeline) are importable without installing the backend as a package.
 
 Each tool's business logic lives in a plain Python function (e.g. `_list_dashboards`,
-`_run_query`, `_list_lineage`, `_propose_materialized_view`, `_create_dashboard`,
+`_run_query`, `_propose_materialized_view`, `_create_dashboard`,
 `_author_dashboard`, `_get_context`, `_validate_spec`, and others) that the
 `@server.tool(...)` decorator wraps. This separation makes the tool logic unit-testable
 without any MCP transport.
-
-### Lineage (M7-A dependency)
-
-`list_lineage` uses a defensive import: if `app.lineage` is not yet available
-(M7-A not yet built), the tool returns `{available: false, reason: "…"}` instead
-of crashing the server. Build Wave M7-A to unlock the full lineage graph.
 
 ### Dashboard authoring tools
 

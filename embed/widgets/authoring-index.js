@@ -10,20 +10,15 @@
  * -------
  *  registerNubiAuthoringWidgets() — idempotent registration
  *  NubiQueryEditor
- *  NubiMetricExplorer
  */
 
-import { NubiQueryEditor }    from './nubi-query-editor.js'
-import { NubiMetricExplorer } from './nubi-metric-explorer.js'
+import { NubiQueryEditor } from './nubi-query-editor.js'
 
-export { NubiQueryEditor, NubiMetricExplorer }
+export { NubiQueryEditor }
 
 export function registerNubiAuthoringWidgets() {
   if (!customElements.get('nubi-query-editor')) {
     customElements.define('nubi-query-editor', NubiQueryEditor)
-  }
-  if (!customElements.get('nubi-metric-explorer')) {
-    customElements.define('nubi-metric-explorer', NubiMetricExplorer)
   }
 }
 

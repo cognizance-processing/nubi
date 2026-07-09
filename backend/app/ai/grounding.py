@@ -1,14 +1,14 @@
-"""Deterministic AI grounding over the lineage catalog (M7-B).
+"""Deterministic AI grounding over the query catalog (M7-B).
 
 All functions in this module are pure / deterministic — no LLM calls, no
 network I/O.  The grounding pipeline runs entirely on local data (registry
-+ lineage graph) and uses simple token-overlap scoring to rank relevant
++ query graph) and uses simple token-overlap scoring to rank relevant
 tables and columns.
 
 Public API
 ----------
 build_catalog() -> dict
-    Build a snapshot catalog from the live query registry and lineage graph.
+    Build a snapshot catalog from the live query registry and query graph.
 
 ground(question, catalog) -> dict
     Tokenize *question* and score each table/column by token overlap.
@@ -139,7 +139,7 @@ def _score(candidate: str, question_tokens: list[str]) -> float:
 
 
 def build_catalog() -> dict[str, Any]:
-    """Build an in-memory catalog from the query registry and lineage graph.
+    """Build an in-memory catalog from the query registry and query graph.
 
     The catalog is a plain dict that can be cached and passed to ``ground()``.
     It is computed synchronously and is safe to recompute on each request
@@ -190,12 +190,12 @@ def build_catalog() -> dict[str, Any]:
         to a query knows the real parameter names and output column names —
         the chief source of invalid specs is guessing these.
     """
-    from app.lineage.graph import build_graph  # noqa: PLC0415
+    from app.queries.query_graph import build_query_graph  # noqa: PLC0415
     from app.queries.registry import get_query_registry  # noqa: PLC0415
 
     registry = get_query_registry()
     all_queries = registry.all()
-    graph = build_graph(all_queries)
+    graph = build_query_graph(all_queries)
 
     # ── Build tables → columns mapping ─────────────────────────────────────
     tables: dict[str, list[str]] = {}
@@ -423,7 +423,7 @@ RULES (follow strictly):
 4. If the question cannot be answered with the provided schema, respond with:
    -- Unable to generate SQL: insufficient schema information
 
-SCHEMA (grounded from the Nubi lineage index):
+SCHEMA (grounded from the Nubi query catalog):
 {snippets}
 """.strip()
 

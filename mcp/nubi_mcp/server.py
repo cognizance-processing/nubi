@@ -1,7 +1,7 @@
 """Nubi MCP server — stdio transport.
 
 This module is the entry-point for the Nubi Model Context Protocol server.
-It exposes four tools to MCP clients (e.g. Claude Desktop, Claude Code):
+It exposes three tools to MCP clients (e.g. Claude Desktop, Claude Code):
 
     list_dashboards()
         List all registered queries/dashboards in the Nubi query registry.
@@ -9,10 +9,6 @@ It exposes four tools to MCP clients (e.g. Claude Desktop, Claude Code):
     run_query(query_id, limit=100)
         Execute a registered query via the DuckDB connector and return a
         compact JSON preview: {columns, rows (<=limit), row_count}.
-
-    list_lineage()
-        Return the full lineage graph when the lineage module (M7-A) is
-        available, or a clear 'lineage unavailable' message when it is not.
 
     propose_materialized_view()
         Analyse the query log and return pre-aggregation rollup suggestions
@@ -161,61 +157,6 @@ def _run_query(query_id: str, limit: int = 100) -> dict[str, Any]:
         "rows": rows,
         "row_count": total_rows,
     }
-
-
-def _list_lineage() -> dict[str, Any]:
-    """Return the lineage graph or a clear unavailability message.
-
-    Attempts to import ``app.lineage`` (M7-A module).  If the module is not
-    yet available (e.g. M7-A not yet shipped) or is incomplete, returns a
-    structured ``{available: false, reason: "..."}`` message instead of
-    crashing.
-
-    Returns
-    -------
-    dict
-        On success: ``{available: true, graph: <LineageGraph dict>}``
-        On failure: ``{available: false, reason: "<explanation>"}``
-    """
-    try:
-        from app.lineage import build_graph
-        from app.queries.registry import get_query_registry
-
-        registry = get_query_registry()
-        queries = registry.all()
-        graph = build_graph(queries)
-
-        # LineageGraph should be serialisable; try dict() or __dict__.
-        if hasattr(graph, "to_dict"):
-            graph_data = graph.to_dict()
-        elif hasattr(graph, "__dict__"):
-            graph_data = _make_serialisable(vars(graph))
-        else:
-            graph_data = str(graph)
-
-        return {"available": True, "graph": graph_data}
-
-    except ImportError as exc:
-        return {
-            "available": False,
-            "reason": (
-                f"Lineage module (M7-A) is not yet available: {exc}. "
-                "Build Wave M7-A first."
-            ),
-        }
-    except AttributeError as exc:
-        return {
-            "available": False,
-            "reason": (
-                f"Lineage module is present but incomplete (missing symbol): {exc}. "
-                "Ensure M7-A is fully built."
-            ),
-        }
-    except Exception as exc:  # pylint: disable=broad-except
-        return {
-            "available": False,
-            "reason": f"Lineage graph build failed: {type(exc).__name__}: {exc}",
-        }
 
 
 def _create_dashboard(
@@ -1130,19 +1071,6 @@ def _run_async(coro: Any) -> Any:
         return future.result()
 
 
-def _make_serialisable(obj: Any) -> Any:
-    """Recursively convert an object to JSON-serialisable Python primitives."""
-    if isinstance(obj, dict):
-        return {k: _make_serialisable(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_make_serialisable(i) for i in obj]
-    if isinstance(obj, (str, int, float, bool)) or obj is None:
-        return obj
-    if hasattr(obj, "__dict__"):
-        return _make_serialisable(vars(obj))
-    return str(obj)
-
-
 # ---------------------------------------------------------------------------
 # MCP server wiring
 # ---------------------------------------------------------------------------
@@ -1157,7 +1085,7 @@ except ImportError:  # pragma: no cover
 
 
 def _build_mcp_server() -> "_FastMCP":  # type: ignore[return]
-    """Construct and return the FastMCP server with all four tools registered."""
+    """Construct and return the FastMCP server with all three tools registered."""
     if not _mcp_available:
         raise RuntimeError(
             "The 'mcp' package is not installed.  "
@@ -1169,8 +1097,7 @@ def _build_mcp_server() -> "_FastMCP":  # type: ignore[return]
         instructions=(
             "Nubi analytics MCP server. "
             "Use list_dashboards to discover queries, run_query to execute them, "
-            "list_lineage to explore SQL lineage, and propose_materialized_view "
-            "for pre-aggregation suggestions. "
+            "and propose_materialized_view for pre-aggregation suggestions. "
             "To author a dashboard end-to-end, follow the loop: get_context "
             "(discover queries/params/columns) -> get_spec_schema (the contract) "
             "-> draft a DashboardSpec -> validate_spec (repair until valid) -> "
@@ -1207,19 +1134,6 @@ def _build_mcp_server() -> "_FastMCP":  # type: ignore[return]
     def run_query(query_id: str, limit: int = 100) -> dict[str, Any]:
         """Run a registered query and return {columns, rows, row_count}."""
         return _run_query(query_id, limit)
-
-    @server.tool(
-        name="list_lineage",
-        description=(
-            "Return the SQL lineage graph for all registered queries. "
-            "The graph maps query ids to their source tables and columns. "
-            "Returns {available: true, graph: ...} when the lineage module is "
-            "ready, or {available: false, reason: '...'} when it is not yet built."
-        ),
-    )
-    def list_lineage() -> dict[str, Any]:
-        """Return the lineage graph (or unavailability notice)."""
-        return _list_lineage()
 
     @server.tool(
         name="propose_materialized_view",

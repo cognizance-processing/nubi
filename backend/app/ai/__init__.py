@@ -2,7 +2,7 @@
 
 Provides:
 - LLMProvider abstraction with NullProvider (no network) and lazy real providers.
-- Deterministic retrieval-based grounding over the lineage catalog.
+- Deterministic retrieval-based grounding over the query catalog.
 - A factory that picks the configured provider (defaults to NullProvider).
 
 Public API
@@ -11,7 +11,7 @@ get_provider() -> LLMProvider
     Return the configured provider instance.  NullProvider when no API keys are set.
 
 build_catalog() -> dict
-    Build a catalog of tables/columns/queries from the registry + lineage graph.
+    Build a catalog of tables/columns/queries from the registry + query graph.
 
 ground(question, catalog) -> dict
     Deterministic keyword/token-overlap ranking over the catalog.

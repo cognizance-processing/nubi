@@ -22,9 +22,6 @@ GET  /health/score
 GET  /health/estate
     Return a source→raw→model→feature flow map annotated with each node's
     health/freshness status.  Composed from flows + datasets in the org.
-    If the full lineage DAG endpoint is present its edges are composable;
-    this endpoint builds a minimal estate from existing flows/datasets and
-    notes which nodes have confirmed lineage edges.
 
 Security
 --------
@@ -204,14 +201,6 @@ async def get_health_estate(
     ``model``    — transformed/modelled dataset (downstream flow outputs).
     ``feature``  — final metric/query target datasets.
 
-    Composition with full lineage DAG
-    ----------------------------------
-    If the ``GET /lineage`` endpoint is available on this branch its edges
-    are composable: the estate graph uses the same dataset_key/query_id
-    namespace.  Edges in this response include ``lineage_confirmed: true``
-    when a corresponding lineage edge exists; ``false`` otherwise (inferred
-    from flow task order heuristics).
-
     When no flows or datasets exist the graph is empty (``nodes: []``,
     ``edges: []``).
     """
@@ -225,28 +214,10 @@ async def get_health_estate(
     # Load flow-level dataset nodes.
     nodes, edges = await _build_estate_nodes(org_id, freshness_by_key)
 
-    # Attempt to enrich from the lineage graph (optional — may not be on branch).
-    lineage_edges: set[tuple[str, str]] = set()
-    try:
-        from app.lineage.graph import build_graph
-        from app.queries.registry import get_query_registry
-
-        graph = build_graph(get_query_registry().list())
-        for edge in graph.edges:
-            lineage_edges.add((edge.get("source", ""), edge.get("target", "")))
-    except Exception:  # noqa: BLE001
-        pass  # lineage module absent or failed — estate still valid without it
-
-    # Annotate edges with lineage confirmation.
-    for edge in edges:
-        src, tgt = edge.get("source_key", ""), edge.get("target_key", "")
-        edge["lineage_confirmed"] = (src, tgt) in lineage_edges
-
     return {
         "org_id": org_id,
         "nodes": nodes,
         "edges": edges,
-        "lineage_module_present": bool(lineage_edges),
     }
 
 
@@ -350,7 +321,6 @@ async def _build_estate_nodes(
                         "source_key": src,
                         "target_key": tgt,
                         "flow_id": str(flow.get("id", "")),
-                        "lineage_confirmed": False,
                     })
     except Exception:  # noqa: BLE001
         pass

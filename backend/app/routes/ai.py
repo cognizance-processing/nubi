@@ -201,7 +201,7 @@ async def ask(
 
     Pipeline
     --------
-    1. Build the catalog from the live query registry + lineage graph.
+    1. Build the catalog from the live query registry + query graph.
     2. Run deterministic grounding (token-overlap scoring) to find the most
        relevant tables and columns for the question.
     3. Construct a grounded prompt (system + user) from the grounding context.
@@ -273,7 +273,7 @@ async def create_dashboard(
 
     Pipeline
     --------
-    1. Build the catalog from the live query registry + lineage graph.
+    1. Build the catalog from the live query registry + query graph.
     2. Run deterministic grounding to find relevant tables/columns/queries.
     3. Call ``generate_dashboard_spec`` — with NullProvider (the default) this
        is a pure in-memory operation that produces a canonical DashboardSpec
@@ -552,8 +552,7 @@ async def _visible_query_row_ids(user: dict[str, Any], org_id: str | None) -> se
 def _query_visible_to_org(
     rq: Any, *, caller_org: str | None, row_ids: set[str] | None
 ) -> bool:
-    """Tenant-isolation gate for a registry entry in GET /ai/context (and,
-    by reuse, ``app.routes.lineage``).
+    """Tenant-isolation gate for a registry entry in GET /ai/context.
 
     An entry is visible to the caller when ANY of:
     - ``rq.system`` — built-in/seed queries (demo_*) are globally shared;
@@ -1005,7 +1004,7 @@ async def generate_sql_endpoint(
 
     Pipeline
     --------
-    1. Build the catalog from the live query registry + lineage graph.
+    1. Build the catalog from the live query registry + query graph.
     2. Run deterministic grounding (token-overlap scoring) to find the most
        relevant tables and columns for the question.
     3. Call ``generate_sql`` which builds a SQL-focused grounded prompt, calls

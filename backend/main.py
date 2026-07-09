@@ -107,10 +107,6 @@ import app.routes.embed  # noqa: F401, E402
 # as "Unknown resource: 'data'". Must be before resources.py's catch-all below.
 import app.routes.data_browser  # noqa: F401, E402
 
-# Import lineage route BEFORE resources so its concrete /lineage prefix routes
-# are registered ahead of the generic /{resource} catch-all in resources.py.
-import app.routes.lineage  # noqa: F401, E402
-
 # Import AI grounding route so it registers itself on api_router at import time.
 import app.routes.ai  # noqa: F401, E402
 

@@ -21,7 +21,7 @@ POST /query/complete
 
 GET /query/schema
     Returns ``{tables: {name: [cols...]}}`` derived from the AI grounding
-    catalog (registered queries + lineage index).  The editor uses this to
+    catalog (registered queries + query graph).  The editor uses this to
     seed schema-aware autocomplete (table + column suggestions).
 
 GET /datastores/{datastore_id}/tables
@@ -433,7 +433,7 @@ async def schema(
 ) -> SchemaOut:
     """Return ``{tables: {name: [cols...]}}`` for schema-aware autocomplete.
 
-    Sourced from the AI grounding catalog (registered queries + lineage index),
+    Sourced from the AI grounding catalog (registered queries + query graph),
     the single source of truth already used for text-to-SQL grounding.  Returns
     an empty mapping (never raises) when no catalog data is available.
     """

@@ -10,7 +10,7 @@ This page covers:
 - **Grounded text-to-SQL** — turning a question into a validated query.
 - **Natural-language dashboard generation** — describing a dashboard and watching it build.
 - The **dashboard editor assistant** — conversational edits on a live board.
-- The **MCP server** — 15 tools that external agents use to author dashboards, run queries, validate specs, explore metrics, and promote builds.
+- The **MCP server** — 14 tools that external agents use to author dashboards, run queries, validate specs, explore metrics, and promote builds.
 
 ---
 
@@ -78,7 +78,7 @@ The assistant only ever queries data you're allowed to see. Its access is scoped
 
 ## Grounded text-to-SQL
 
-When you ask a data question, Nubi doesn't send a blank prompt to the model and hope. It **grounds** the request first: it reads your query registry and lineage graph to find the tables and columns that actually relate to your question, then instructs the model to write SQL against only those real names. The generated SQL is parsed and validated before you see it.
+When you ask a data question, Nubi doesn't send a blank prompt to the model and hope. It **grounds** the request first: it reads your query registry and query graph to find the tables and columns that actually relate to your question, then instructs the model to write SQL against only those real names. The generated SQL is parsed and validated before you see it.
 
 In chat this happens automatically inside the **Generate SQL** tool block. Expand it to see:
 
@@ -131,7 +131,7 @@ This is the conversational counterpart to the drag-and-drop canvas: edit by hand
 
 ## MCP server — let external agents author dashboards
 
-Nubi ships a **Model Context Protocol (MCP)** server. Register it with an MCP client (Claude Desktop, Claude Code, etc.) and that agent can discover your queries, run them, explore SQL lineage, and author dashboards directly in your Nubi workspace — all over a local stdio connection.
+Nubi ships a **Model Context Protocol (MCP)** server. Register it with an MCP client (Claude Desktop, Claude Code, etc.) and that agent can discover your queries, run them, and author dashboards directly in your Nubi workspace — all over a local stdio connection.
 
 ### The tools
 
@@ -139,11 +139,10 @@ Nubi ships a **Model Context Protocol (MCP)** server. Register it with an MCP cl
 |---|---|---|
 | `list_dashboards` | `() → [{id, name}]` | List every entry in the query registry so the agent can discover ids. |
 | `run_query` | `(query_id, limit=100) → {columns, rows, row_count}` | Execute a registered query and return a JSON preview (up to `limit` rows). |
-| `list_lineage` | `() → {available, graph}` | Return the SQL lineage graph (which queries derive from which tables). Returns `{available: false, reason: "..."}` when the lineage module is not yet built. |
 | `propose_materialized_view` | `() → [{base_table, dimensions, measures, hits, est_bytes_saved}]` | Analyse the query log and suggest pre-aggregation rollups for high-frequency GROUP BY patterns. |
 | `create_dashboard` | `(name, spec_or_html, org_id="mcp") → {id, name}` | Validate and store a dashboard. Accepts a DashboardSpec dict (preferred) or an HTML string. Non-conforming content is rejected. |
 | `author_dashboard` | `(question) → {id, html_preview}` | Generate a dashboard from a natural-language question and store it in one call. |
-| `get_context` | `(q?, compact?) → {schema, queries, ...}` | Return workspace context (schema, query registry, lineage) for grounding agent prompts. |
+| `get_context` | `(q?, compact?) → {schema, queries, ...}` | Return workspace context (schema, query registry) for grounding agent prompts. |
 | `get_spec_schema` | `() → {schema}` | Return the full DashboardSpec JSON schema so agents can construct valid specs. |
 | `validate_spec` | `(spec) → {valid, errors}` | Validate a DashboardSpec dict; returns per-field errors on failure. |
 | `estimate_query` | `(query_id, ...) → {row_count, bytes_scanned}` | Dry-run a query to estimate cost before execution. |

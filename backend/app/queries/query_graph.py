@@ -1,15 +1,19 @@
-"""Lineage graph builder over registered queries (M7-A).
+"""Table/column inverted index over registered queries.
 
 Public API
 ----------
-build_graph(queries) -> LineageGraph
-    Run ``extract_lineage`` over every ``RegisteredQuery`` and produce an
-    inverted index mapping tables and columns to the query IDs that reference
-    them.
+build_query_graph(queries) -> QueryGraph
+    Run ``extract_table_columns`` over every ``RegisteredQuery`` and produce
+    an inverted index mapping tables and columns to the query IDs that
+    reference them.
 
-LineageGraph
+QueryGraph
     A dataclass holding the full graph.  Use ``for_query(id)`` to look up the
-    lineage detail for a single query.
+    detail for a single query.
+
+Consumers: the AI grounding catalog (``app.ai.grounding``) uses this to
+enumerate real table/column names for anti-hallucination prompt grounding;
+``app.routes.health`` optionally uses it to annotate estate-graph edges.
 """
 
 from __future__ import annotations
@@ -17,8 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.lineage.extract import extract_lineage
 from app.queries.registry import RegisteredQuery
+from app.queries.sql_table_columns import extract_table_columns
 
 
 # ---------------------------------------------------------------------------
@@ -27,13 +31,13 @@ from app.queries.registry import RegisteredQuery
 
 
 @dataclass
-class LineageGraph:
-    """Lineage graph over a set of registered queries.
+class QueryGraph:
+    """Table/column graph over a set of registered queries.
 
     Attributes
     ----------
     queries : dict[str, dict]
-        Per-query lineage detail keyed by query id.
+        Per-query detail keyed by query id.
         Each value is a dict:
         ``{"sql": str, "name": str, "tables": [...], "columns": [...],
         "outputs": [...], "error"?: str}``.
@@ -57,7 +61,7 @@ class LineageGraph:
     # ------------------------------------------------------------------
 
     def for_query(self, query_id: str) -> dict[str, Any] | None:
-        """Return the lineage detail dict for *query_id*, or ``None`` if unknown.
+        """Return the detail dict for *query_id*, or ``None`` if unknown.
 
         Parameters
         ----------
@@ -78,12 +82,12 @@ class LineageGraph:
 # ---------------------------------------------------------------------------
 
 
-def build_graph(queries: list[RegisteredQuery]) -> LineageGraph:
-    """Build a ``LineageGraph`` over *queries*.
+def build_query_graph(queries: list[RegisteredQuery]) -> QueryGraph:
+    """Build a ``QueryGraph`` over *queries*.
 
     For each query:
-    1. Run ``extract_lineage`` on its SQL.
-    2. Store per-query lineage in ``graph.queries``.
+    1. Run ``extract_table_columns`` on its SQL.
+    2. Store per-query detail in ``graph.queries``.
     3. Update the inverted table index (``graph.tables``).
     4. Update the inverted column index (``graph.columns``).
 
@@ -95,9 +99,9 @@ def build_graph(queries: list[RegisteredQuery]) -> LineageGraph:
 
     Returns
     -------
-    LineageGraph
-        A fully populated lineage graph.  The graph is computed synchronously
-        and is safe to cache in memory for the lifetime of the application.
+    QueryGraph
+        A fully populated graph.  The graph is computed synchronously and is
+        safe to cache in memory for the lifetime of the application.
 
     Notes
     -----
@@ -107,36 +111,36 @@ def build_graph(queries: list[RegisteredQuery]) -> LineageGraph:
     - The lists in ``tables`` and ``columns`` are sorted for deterministic
       output.
     """
-    graph = LineageGraph()
+    graph = QueryGraph()
 
     for rq in queries:
-        lineage = extract_lineage(rq.sql)
+        detail_raw = extract_table_columns(rq.sql)
 
         # Store per-query detail.
         detail: dict[str, Any] = {
             "sql": rq.sql,
             "name": rq.name,
-            "tables": lineage["tables"],
-            "columns": lineage["columns"],
-            "outputs": lineage["outputs"],
+            "tables": detail_raw["tables"],
+            "columns": detail_raw["columns"],
+            "outputs": detail_raw["outputs"],
         }
-        if "error" in lineage:
-            detail["error"] = lineage["error"]
+        if "error" in detail_raw:
+            detail["error"] = detail_raw["error"]
 
         graph.queries[rq.id] = detail
 
         # Only update indexes for successfully parsed queries.
-        if "error" in lineage:
+        if "error" in detail_raw:
             continue
 
         # ── Table inverted index ──────────────────────────────────────────
-        for table_name in lineage["tables"]:
+        for table_name in detail_raw["tables"]:
             graph.tables.setdefault(table_name, [])
             if rq.id not in graph.tables[table_name]:
                 graph.tables[table_name].append(rq.id)
 
         # ── Column inverted index ─────────────────────────────────────────
-        for col_ref in lineage["columns"]:
+        for col_ref in detail_raw["columns"]:
             t = col_ref.get("table") or "_"
             c = col_ref.get("column") or ""
             key = f"{t}.{c}"

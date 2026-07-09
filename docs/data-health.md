@@ -164,9 +164,7 @@ Node types are inferred from naming conventions:
 | `metric/`, `feature/`, `agg/` | `"feature"` |
 | anything else | `"source"` |
 
-Edges are inferred from flow task order heuristics. When the full lineage DAG
-is available (i.e. `GET /lineage/dag` is reachable), edges include
-`lineage_confirmed: true` when a corresponding lineage edge exists in the DAG.
+Edges are inferred from flow task order heuristics.
 
 **Response:**
 ```json
@@ -192,11 +190,9 @@ is available (i.e. `GET /lineage/dag` is reachable), edges include
     {
       "source_key": "raw/orders",
       "target_key": "model/revenue",
-      "flow_id": "uuid",
-      "lineage_confirmed": true
+      "flow_id": "uuid"
     }
-  ],
-  "lineage_module_present": true
+  ]
 }
 ```
 

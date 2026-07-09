@@ -20,7 +20,7 @@ You work on a flow in **three views**: as a **notebook** (a top-to-bottom list o
 Go to **Flows** (`/flows`) in the app. The workspace has three regions:
 
 - A **flow list** — your org's saved flows and any unsaved drafts. On desktop it lives in the collapsible right-hand sidebar; on mobile, tap the list icon in the top bar to open it as a bottom sheet.
-- A **top bar** with the **Builder / Runs** switcher, the three-way **Canvas / Notebook / Code** view switcher, the flow name, and the **Validate · Save · Checkpoint · History · Schedule · Run** actions (plus **Lineage** in notebook view).
+- A **top bar** with the **Builder / Runs** switcher, the three-way **Canvas / Notebook / Code** view switcher, the flow name, and the **Validate · Save · Checkpoint · History · Schedule · Run** actions.
 - The **main pane**, which shows either the builder (Builder tab) or run history and the live run view (Runs tab).
 
 The run **environment** is *not* selected here — it is global app state, chosen with the environment selector in the left sidebar (beneath the project selector). See [Environments](#environments).
@@ -53,7 +53,7 @@ There is no "primary" view and no separate copy: editing in any view edits the s
 
 ![Notebook view — Note, SQL, and Python cells in order, each with its own Run button](/docs/screenshots/flows-notebook.png)
 
-The notebook renders cells as an ordered, top-to-bottom list. This is the fastest way to author and iterate: each cell has a **Run** button that runs a fast interactive preview and shows the result inline. The top bar grows three extra buttons — **+ SQL**, **+ Python**, and **+ Note** — and a **Lineage** toggle.
+The notebook renders cells as an ordered, top-to-bottom list. This is the fastest way to author and iterate: each cell has a **Run** button that runs a fast interactive preview and shows the result inline. The top bar grows three extra buttons — **+ SQL**, **+ Python**, and **+ Note**.
 
 What you can do in notebook view:
 
@@ -62,7 +62,6 @@ What you can do in notebook view:
 - **Delete** a cell with its delete button.
 - **Run a cell** to preview its output. The result grid, row count, and elapsed time appear below the cell. Previews are capped at 500 rows and run without persisting a flow run. The backend re-executes the upstream cells in the dependency chain first, so cross-cell references always resolve.
 - **Run all** to launch a full durable run of the whole flow (behind the [plan gate](#full-durable-run)).
-- **Lineage** toggle to see how cells feed each other across the flow.
 
 Cells share data. A downstream cell can reference an upstream cell's result by its **key**: in SQL write `SELECT * FROM cell_key`; in Python read `inputs["cell_key"]`.
 
@@ -418,17 +417,16 @@ Click any node in the run view to open the **task result** panel. It shows:
 - A collapsible **Logs** drawer with the cell's captured output.
 - The **result** payload (rows, computed values) as formatted JSON.
 
-### Run history and lineage
+### Run history
 
 - The **Runs tab** (no live run open) lists past runs of the flow, newest first, each with its state, trigger (`manual` or `schedule`), and timestamp. Click any run to reopen its live view.
-- The **Lineage** toggle (notebook view, top bar) shows how cells feed one another across the flow — useful for understanding impact before a change.
 
 ---
 
 ## Tips
 
 - **Build in the notebook, review on the canvas, diff in code.** Iterate with cheap cell previews, switch to the canvas to refine the dependency structure, and use the code view when you want to read or edit the whole flow as files.
-- **Keep keys meaningful.** Cell keys are how other cells reference results (`FROM orders`, `inputs["orders"]`), they name the files in the code view, and they appear throughout the run inspector and lineage view.
+- **Keep keys meaningful.** Cell keys are how other cells reference results (`FROM orders`, `inputs["orders"]`), they name the files in the code view, and they appear throughout the run inspector.
 - **Let SQL declare its own dependencies.** Reference an upstream cell in `FROM`/`JOIN` and the edge is inferred — no manual wiring needed.
 - **Checkpoint before big changes, promote when ready.** Versions are cheap snapshots; pinning and promoting them between `dev` and `prod` is how a flow ships safely.
 - **Materialize once, read many.** Turn an expensive multi-source SQL cell into a materialized table on a schedule, then point dashboards at the cheap result instead of recomputing on every view.

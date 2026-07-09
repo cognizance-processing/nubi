@@ -3,7 +3,7 @@
 Public API
 ----------
 generate_sql(question, catalog, provider, datastore_id=None) -> dict
-    Ground the question on the catalog/lineage, build a SQL-focused prompt,
+    Ground the question on the catalog, build a SQL-focused prompt,
     call the LLM provider, and validate the returned SQL via sqlglot.
 
     Returns::
@@ -18,7 +18,7 @@ generate_sql(question, catalog, provider, datastore_id=None) -> dict
     REAL table from the catalog is returned — no network call, tests pass offline.
 
     With a real provider the model is given a grounded prompt that includes ONLY
-    real tables/columns from the lineage index (anti-hallucination principle).
+    real tables/columns from the query catalog (anti-hallucination principle).
 
 Design notes
 ------------
@@ -57,7 +57,7 @@ RULES (follow strictly):
 5. If the question cannot be answered with the provided schema, output exactly:
    SELECT 1 -- Unable to generate SQL: insufficient schema information
 
-SCHEMA (grounded from the Nubi lineage index):
+SCHEMA (grounded from the Nubi query catalog):
 {snippets}
 """.strip()
 
@@ -222,7 +222,7 @@ def generate_sql(
     question:
         The natural-language question to convert to SQL.
     catalog:
-        Output of ``build_catalog()`` — the live registry + lineage snapshot.
+        Output of ``build_catalog()`` — the live registry + query-graph snapshot.
     provider:
         An ``LLMProvider`` instance.
     datastore_id:

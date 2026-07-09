@@ -2,17 +2,14 @@
 <!--
   live-embed-test.html — Part B fixture for real embed E2E tests.
 
-  This page mounts <nubi-metric-explorer> and <nubi-query-editor> against
-  a LIVE backend URL.  The backend URL and token endpoint are injected via
-  URL query parameters so the Playwright test can point at the per-run
-  uvicorn port:
+  This page mounts <nubi-query-editor> against a LIVE backend URL.  The
+  backend URL and token endpoint are injected via URL query parameters so
+  the Playwright test can point at the per-run uvicorn port:
 
     ?backend=http://127.0.0.1:<PORT>/api/v1
     &token=<JWT string>          (pre-minted by the test; avoids needing a token endpoint)
 
   Components:
-    #me-metric   — <nubi-metric-explorer> for retail_nsv metric
-    #me-readonly — <nubi-metric-explorer> with read-only (read:query only) token
     #qe-metric   — <nubi-query-editor> in metric mode (author:metric token)
 
   State indicators written to DOM by the page script so Playwright can poll:
@@ -53,7 +50,6 @@
     .status-bar span { color: #68d391; }
     .error-msg { color: #fc8181; font-size: 11px; font-family: monospace; }
     .data-rows { color: #68d391; font-size: 11px; font-family: monospace; }
-    nubi-metric-explorer { min-height: 300px; width: 100%; border-radius: 8px; }
     nubi-query-editor    { height: 260px;     width: 100%; border-radius: 8px; }
   </style>
 </head>
@@ -64,31 +60,7 @@
   Backend: <span id="backend-display">—</span>
 </div>
 
-<!-- ── Section 1: metric-explorer with author:metric token ────────────────── -->
-<div class="section" id="section-me-author">
-  <h2>metric-explorer — author:metric token (live backend)</h2>
-  <div class="data-rows" id="rows-me-author">rows: —</div>
-  <div class="error-msg" id="error-me-author"></div>
-  <nubi-metric-explorer
-    id="me-metric"
-    metric-id="retail_nsv"
-    dimensions="region"
-  ></nubi-metric-explorer>
-</div>
-
-<!-- ── Section 2: metric-explorer with read:query only token ─────────────── -->
-<div class="section" id="section-me-readonly">
-  <h2>metric-explorer — read:query only token (live backend)</h2>
-  <div class="data-rows" id="rows-me-readonly">rows: —</div>
-  <div class="error-msg" id="error-me-readonly"></div>
-  <nubi-metric-explorer
-    id="me-readonly"
-    metric-id="retail_nsv"
-    dimensions="region"
-  ></nubi-metric-explorer>
-</div>
-
-<!-- ── Section 3: query-editor in metric mode (author:metric) ─────────────── -->
+<!-- ── Section 1: query-editor in metric mode (author:metric) ─────────────── -->
 <div class="section" id="section-qe-metric">
   <h2>query-editor — author:metric mode (live backend)</h2>
   <div class="data-rows" id="rows-qe-metric">rows: —</div>
@@ -108,9 +80,8 @@
   // without the /api/v1 prefix (they append it themselves).
   const backendRoot = backendBase.replace(/\/api\/v1\/?$/, '')
 
-  // Two tokens: one with author:metric, one read-only
+  // author:metric token, used by the query-editor in metric mode
   const authorToken   = params.get('author_token')
-  const readonlyToken = params.get('readonly_token')
 
   document.getElementById('backend-display').textContent = backendRoot
 
@@ -123,18 +94,12 @@
   }
 
   // Wait for custom elements to define (they register on module import)
-  customElements.whenDefined('nubi-metric-explorer').then(() => {
-    customElements.whenDefined('nubi-query-editor').then(() => {
-      const meAuthor   = document.getElementById('me-metric')
-      const meReadonly = document.getElementById('me-readonly')
-      const qeMetric   = document.getElementById('qe-metric')
+  customElements.whenDefined('nubi-query-editor').then(() => {
+    const qeMetric = document.getElementById('qe-metric')
 
-      wireComponent(meAuthor,   authorToken)
-      wireComponent(meReadonly, readonlyToken)
-      wireComponent(qeMetric,   authorToken)
+    wireComponent(qeMetric, authorToken)
 
-      document.getElementById('status').textContent = 'ready'
-    })
+    document.getElementById('status').textContent = 'ready'
   })
 
   // ── Listen for data events from the components ──────────────────────────────
@@ -145,11 +110,7 @@
     const src    = e.target?.id || 'unknown'
     const count  = detail.rowCount ?? detail.rows?.length ?? '?'
 
-    if (src === 'me-metric') {
-      document.getElementById('rows-me-author').textContent = `rows: ${count}`
-    } else if (src === 'me-readonly') {
-      document.getElementById('rows-me-readonly').textContent = `rows: ${count}`
-    } else if (src === 'qe-metric') {
+    if (src === 'qe-metric') {
       document.getElementById('rows-qe-metric').textContent = `rows: ${count}`
     }
   })
@@ -159,11 +120,7 @@
     const src    = e.target?.id || 'unknown'
     const msg    = detail.message || 'unknown error'
 
-    if (src === 'me-metric') {
-      document.getElementById('error-me-author').textContent = `error: ${msg}`
-    } else if (src === 'me-readonly') {
-      document.getElementById('error-me-readonly').textContent = `error: ${msg}`
-    } else if (src === 'qe-metric') {
+    if (src === 'qe-metric') {
       document.getElementById('error-qe-metric').textContent = `error: ${msg}`
     }
   })

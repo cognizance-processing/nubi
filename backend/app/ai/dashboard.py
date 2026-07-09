@@ -562,7 +562,7 @@ def generate_dashboard_spec(
     question:
         Natural-language question describing the desired dashboard.
     catalog:
-        Output of ``build_catalog()`` — the live registry + lineage snapshot.
+        Output of ``build_catalog()`` — the live registry + query-graph snapshot.
     provider:
         An ``LLMProvider`` instance.  With ``NullProvider`` (the default when
         no API key is set) the output is a deterministic template spec.  With a
@@ -735,7 +735,7 @@ def generate_dashboard_html(
     question:
         Natural-language question describing the desired dashboard.
     catalog:
-        Output of ``build_catalog()`` — the live registry + lineage snapshot.
+        Output of ``build_catalog()`` — the live registry + query-graph snapshot.
     provider:
         An ``LLMProvider`` instance.
 
