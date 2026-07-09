@@ -40,7 +40,7 @@ from typing import Any
 import pyarrow as pa
 
 from app.errors import AppError
-from app.queries.registry import ensure_persisted_query, get_query_registry
+from app.queries.registry import get_query_registry, resolve_registered_query
 from app.repos.provider import Repo
 
 logger = logging.getLogger(__name__)
@@ -343,8 +343,11 @@ async def run_query_rows(
     Raises ``AppError`` with a descriptive code on any failure so the caller can
     decide whether to skip the widget or surface the error.
     """
-    registry = get_query_registry()
-    registered = registry.get(query_id) or await ensure_persisted_query(query_id)
+    # SECURITY (CRITICAL 1): resolve query_id through the org-scoped choke
+    # point — a bare ``registry.get()`` hit is a process-global dict keyed
+    # only by query_id, so it must be re-verified against *org_id* before use
+    # (see app.queries.registry.resolve_registered_query).
+    registered = await resolve_registered_query(query_id, org_id)
     if registered is None:
         raise AppError("query_not_registered", f"No registered query for id={query_id!r}.", 404)
 

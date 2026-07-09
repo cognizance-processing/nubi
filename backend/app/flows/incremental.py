@@ -58,6 +58,12 @@ from app.errors import AppError
 # Resolved lazily so the module imports cleanly regardless of cwd.
 _DEFAULT_LOCAL_SUBDIR = ("seed_data", "materialized")
 
+# Valid bare SQL identifier (mirrors app.metrics.compile._IDENT_RE). Used to
+# validate materialized.time_column / unique_key before they are interpolated
+# UNQUOTED-ESCAPED as ``"{col}"`` double-quoted identifiers into raw DuckDB SQL
+# (CRITICAL 2 SQLi fix — see _max_time / apply_incremental below).
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 
 # ---------------------------------------------------------------------------
 # Lookback parsing
@@ -172,19 +178,42 @@ def _is_remote(uri: str) -> bool:
     return bool(re.match(r"^(s3|s3a|gs|gcs|az|abfss?|http|https)://", uri, re.IGNORECASE))
 
 
+#: Safe path-segment character set. Applied per-segment (after splitting on
+#: path separators) to BOTH ``target`` and ``env``.
+#:
+#: SECURITY (CRITICAL 2 SQLi fix): the resolved URI these segments compose is
+#: later interpolated into single-quoted DuckDB SQL string literals —
+#: ``read_parquet('{effective}')`` / ``COPY (...) TO '{effective}'`` (see
+#: ``_target_exists`` / ``_write_parquet`` below). The pre-existing ``..``/``~``
+#: rejection only defended against path traversal; a segment containing a
+#: literal ``'`` (e.g. ``target="foo' UNION SELECT ... --"``, which contains no
+#: ``/`` or ``..`` and so passed the old checks untouched) could break out of
+#: the quoted string literal and inject arbitrary SQL. Every legitimate
+#: existing target/env value in this codebase (see tests) is
+#: letters/digits/``_``/``-``/``.`` only, so this allowlist is a pure
+#: tightening with no behavioural change for real usage.
+_SAFE_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
+
+
 def _sanitize_target_segment(target: str) -> str:
-    """Sanitize a user-supplied target path segment against directory traversal.
+    """Sanitize a user-supplied target path segment against directory traversal
+    and SQL-string-literal breakout.
 
     SECURITY: the ``target`` field in ``materialized`` config is author-supplied
     (first-party, org-scoped) but must still be constrained so a malicious tenant
     cannot escape the configured base directory via ``../`` sequences or absolute
-    paths.
+    paths, and cannot break out of the single-quoted SQL string literal the
+    resolved path is later interpolated into (``read_parquet('...')`` /
+    ``COPY ... TO '...'``).
 
     Rules enforced:
     - Leading slashes are stripped (no absolute-path override of the base).
     - ``..`` components anywhere in the path are rejected outright — they have no
       legitimate use in a relative data target name.
     - Empty segments (``//``) are collapsed.
+    - Every segment must match :data:`_SAFE_PATH_SEGMENT_RE` (letters, digits,
+      ``_``, ``-``, ``.`` only) — rejects quotes, semicolons, whitespace, and
+      any other SQL-string-literal-breakout character.
     - After cleaning, the result must be non-empty.
 
     Raises :exc:`AppError` (400) on any violation; returns the sanitised relative
@@ -208,6 +237,16 @@ def _sanitize_target_segment(target: str) -> str:
             400,
         )
 
+    unsafe = [p for p in parts if not _SAFE_PATH_SEGMENT_RE.fullmatch(p)]
+    if unsafe:
+        raise AppError(
+            "invalid_task_config",
+            f"materialized 'target' contains illegal character(s) in "
+            f"component(s) {unsafe!r}. Only letters, digits, '_', '-', and "
+            "'.' are allowed.",
+            400,
+        )
+
     sanitized = "/".join(parts)
     if not sanitized:
         raise AppError(
@@ -219,11 +258,14 @@ def _sanitize_target_segment(target: str) -> str:
 
 
 def _sanitize_env_segment(env: str) -> str:
-    """Sanitize the env string against path traversal.
+    """Sanitize the env string against path traversal and SQL-string-literal
+    breakout.
 
     The ``env`` value ("dev"/"prod"/custom) is operator/flow-controlled but
-    should never contain directory traversal sequences.  We apply the same
-    ``..`` rejection as ``_sanitize_target_segment``.
+    should never contain directory traversal sequences or characters that
+    could break out of the SQL string literal the resolved path lands in. We
+    apply the same ``..`` rejection and character allowlist as
+    ``_sanitize_target_segment``.
     """
     parts = [p for p in re.split(r"[/\\]", env) if p]
     bad = [p for p in parts if p in ("..", "~") or p.startswith("..")]
@@ -231,6 +273,14 @@ def _sanitize_env_segment(env: str) -> str:
         raise AppError(
             "invalid_task_config",
             f"env contains illegal path component(s) {bad!r}.",
+            400,
+        )
+    unsafe = [p for p in parts if not _SAFE_PATH_SEGMENT_RE.fullmatch(p)]
+    if unsafe:
+        raise AppError(
+            "invalid_task_config",
+            f"env contains illegal character(s) in component(s) {unsafe!r}. "
+            "Only letters, digits, '_', '-', and '.' are allowed.",
             400,
         )
     sanitized = "/".join(parts)
@@ -364,7 +414,21 @@ def _write_parquet(conn: Any, select_sql: str, target_uri: str) -> None:
 
 
 def _max_time(conn: Any, table: str, time_column: str) -> str | None:
-    """Return the max(time_column) over *table* as an ISO string (or None)."""
+    """Return the max(time_column) over *table* as an ISO string (or None).
+
+    SECURITY (CRITICAL 2 SQLi fix): validated as a bare SQL identifier BEFORE
+    building the SQL string (outside the broad ``except`` below) so a
+    malformed *time_column* raises ``AppError`` instead of being silently
+    interpolated into ``"{time_column}"`` (double-quoted-identifier breakout)
+    or swallowed as a quiet ``None`` return.
+    """
+    if not _IDENT_RE.fullmatch(str(time_column)):
+        raise AppError(
+            "invalid_task_config",
+            f"materialized 'time_column' {time_column!r} is not a valid SQL "
+            "identifier (must match [A-Za-z_][A-Za-z0-9_]*).",
+            400,
+        )
     try:
         row = conn.execute(
             f'SELECT max("{time_column}") FROM {table}'
@@ -458,7 +522,28 @@ def apply_incremental(
                 "incremental materialization requires 'time_column'.",
                 400,
             )
+        # SECURITY (CRITICAL 2 SQLi fix): time_column is interpolated UNQUOTED
+        # -escaped below as a bare ``"{time_column}"`` double-quoted identifier
+        # (e.g. ``CAST("{time_column}" AS TIMESTAMP)``) — a value containing a
+        # literal ``"`` could terminate the identifier early and inject SQL
+        # into the surrounding CREATE TEMP TABLE / WHERE clause. Author-supplied
+        # (flow spec), first-party, org-scoped, but never previously validated.
+        if not _IDENT_RE.fullmatch(time_column):
+            raise AppError(
+                "invalid_task_config",
+                f"materialized 'time_column' {time_column!r} is not a valid SQL "
+                "identifier (must match [A-Za-z_][A-Za-z0-9_]*).",
+                400,
+            )
         unique_key: list[str] = list((materialized or {}).get("unique_key") or [])
+        bad_keys = [k for k in unique_key if not _IDENT_RE.fullmatch(str(k))]
+        if bad_keys:
+            raise AppError(
+                "invalid_task_config",
+                f"materialized 'unique_key' contains invalid SQL identifier(s) "
+                f"{bad_keys!r} (must match [A-Za-z_][A-Za-z0-9_]*).",
+                400,
+            )
         lookback = parse_lookback((materialized or {}).get("lookback"))
 
         # Filter the new rows: time_column > (watermark - lookback).

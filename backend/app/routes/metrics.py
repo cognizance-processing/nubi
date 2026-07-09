@@ -60,6 +60,7 @@ from app.connectors.planner import resolve_named_params
 from app.errors import AppError
 from app.metrics.compile import compile_metric
 from app.metrics.compile import _DEFAULT_DIALECT as _COMPILED_METRIC_DIALECT
+from app.metrics.compile import _IDENT_RE as _BASE_TABLE_IDENT_RE
 from app.metrics.models import MetricDefinition, MetricError, MetricQuery
 from app.metrics.registry import (
     ensure_persisted_metric,
@@ -245,6 +246,21 @@ def _build_definition(data: dict[str, Any], *, metric_id: str) -> MetricDefiniti
             "A metric must declare only ONE source — not both base_table and base_sql.",
         )
 
+    # FIX (CRITICAL 2 SQLi): reject a base_table that isn't a bare SQL
+    # identifier at the write gate too — mirrors app.metrics.compile._govern's
+    # matching check. This path additionally protects
+    # _query_config_from_metric's ``f"SELECT * FROM {metric.base_table}"``
+    # (below), which persists the string directly into ``queries.config.sql``
+    # and NEVER goes through _govern/compile_metric at all, so _govern's check
+    # alone would not have covered it.
+    if has_table and not _BASE_TABLE_IDENT_RE.fullmatch(metric.base_table):
+        raise MetricError(
+            "bad_base_table",
+            f"base_table {metric.base_table!r} is not a valid SQL identifier "
+            "(must match [A-Za-z_][A-Za-z0-9_]*). Use base_sql for a custom "
+            "FROM source.",
+        )
+
     # A measure must reference SOMETHING: a non-count agg needs a real expr.
     m = metric.measure
     if not m.name:
@@ -336,9 +352,24 @@ def _query_config_from_metric(metric: MetricDefinition, slug: str) -> dict[str, 
     mirrors ``config.metric.*`` in the unification contract, keyed by *slug*.
     """
     td = metric.time_dimension
-    sql = metric.base_sql or (
-        f"SELECT * FROM {metric.base_table}" if metric.base_table else None
-    )
+    if metric.base_sql:
+        sql = metric.base_sql
+    elif metric.base_table:
+        # FIX (CRITICAL 2 SQLi): defense-in-depth — _build_definition already
+        # rejects a non-identifier base_table at every create/update entry
+        # point, but this is the actual interpolation site (and the one path,
+        # revert-from-version, that rebuilds a MetricDefinition without going
+        # back through _build_definition), so re-validate + identifier-quote
+        # here too rather than trust the caller transitively.
+        if not _BASE_TABLE_IDENT_RE.fullmatch(metric.base_table):
+            raise MetricError(
+                "bad_base_table",
+                f"base_table {metric.base_table!r} is not a valid SQL "
+                "identifier (must match [A-Za-z_][A-Za-z0-9_]*).",
+            )
+        sql = f'SELECT * FROM "{metric.base_table}"'
+    else:
+        sql = None
     return {
         "sql": sql,
         "datastore_id": metric.datastore_id,

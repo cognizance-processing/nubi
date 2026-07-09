@@ -1768,6 +1768,25 @@ def _govern(metric: MetricDefinition, mq: MetricQuery) -> str | None:
             "Metric must declare exactly one of base_table or base_sql.",
         )
 
+    # FIX (CRITICAL 2 SQLi): base_table must be a safe SQL identifier.
+    # _source_expr() feeds base_table into sqlglot.parse_one() UNRESTRICTED
+    # and uses the parsed AST verbatim as the FROM target — parse_one happily
+    # accepts a full UNION/SELECT statement, e.g.
+    # base_table="orders UNION ALL SELECT password, email, 1 FROM users --"
+    # compiles to a real ``FROM (... UNION ALL SELECT password ... FROM
+    # users)``, letting any first-party writer with metric-authoring access
+    # read arbitrary tables through a metric query. Unlike base_sql (an
+    # explicitly-trusted arbitrary SELECT), base_table is documented as "a
+    # physical table" and must never contain more than a bare identifier —
+    # authors who need a custom FROM source should use base_sql instead.
+    if metric.base_table is not None and not _IDENT_RE.fullmatch(metric.base_table):
+        raise MetricError(
+            "bad_base_table",
+            f"base_table {metric.base_table!r} is not a valid SQL identifier "
+            "(must match [A-Za-z_][A-Za-z0-9_]*). Use base_sql for a custom "
+            "FROM source.",
+        )
+
     # FIX issue 3: validate all dimension names and derived-measure names are
     # safe SQL identifiers.  These names are interpolated into f-strings in the
     # membership subquery, Other-bucket SELECT, prior_period subquery, etc.

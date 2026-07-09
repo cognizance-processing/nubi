@@ -510,6 +510,14 @@ async def load_persisted_queries() -> int:
     as a warning and never propagated, so it can be wired into startup without
     risking the app failing to boot when the DB/table is unavailable.
 
+    SECURITY (CRITICAL 1 fix): every row's ``org_id`` is now stamped onto the
+    registered entry as ``owner_org_id`` — previously this loader left
+    ``owner_org_id=None`` ("unowned") on EVERY persisted query it hydrated,
+    which meant the read-side ownership check in :func:`resolve_registered_query`
+    (and any other caller of ``registry.get()``) had nothing to enforce for the
+    overwhelming majority of real queries. Stamping the real DB ``org_id`` here
+    closes that gap without changing the loader's best-effort contract.
+
     Returns
     -------
     int
@@ -524,7 +532,7 @@ async def load_persisted_queries() -> int:
         # layer (keeps unit tests / import-time seeding side-effect free).
         from app.db import fetch
 
-        rows = await fetch("SELECT id, name, config FROM queries")
+        rows = await fetch("SELECT id, name, config, org_id FROM queries")
     except Exception as exc:  # noqa: BLE001 — best-effort; never crash startup.
         logger.warning("load_persisted_queries: could not read queries table: %s", exc)
         return 0
@@ -548,6 +556,7 @@ async def load_persisted_queries() -> int:
 
             datastore_id = cfg.get("datastore_id")
             _schema = _schema_from_config(cfg.get("output_schema"))
+            _owner_org_id = row["org_id"]
             registry.register(
                 id=str(row["id"]),
                 sql=str(sql),
@@ -557,6 +566,7 @@ async def load_persisted_queries() -> int:
                 output_schema=list(_schema) if _schema is not None else None,
                 strict_output_schema=bool(cfg.get("strict_output_schema", False)),
                 metric=cfg.get("metric") if isinstance(cfg.get("metric"), dict) else None,
+                owner_org_id=str(_owner_org_id) if _owner_org_id is not None else None,
             )
             loaded += 1
         except Exception as exc:  # noqa: BLE001 — skip one bad row, keep going.
@@ -570,7 +580,7 @@ async def load_persisted_queries() -> int:
     return loaded
 
 
-async def ensure_persisted_query(query_id: str):
+async def ensure_persisted_query(query_id: str, org_id: str | None):
     """Lazily load a single persisted query into the registry on a cache miss.
 
     The runtime registry is populated at startup, so queries seeded/registered
@@ -578,17 +588,37 @@ async def ensure_persisted_query(query_id: str):
     calls this on a ``registry.get()`` miss to load just that row from the DB,
     making freshly-seeded queries resolve without a restart.
 
-    Best-effort: returns the ``RegisteredQuery`` if found+loaded, else ``None``.
+    SECURITY (CRITICAL 1 fix): *org_id* is now REQUIRED (the caller's verified
+    org) and the DB read is scoped to it (``WHERE id = $1 AND org_id = $2``).
+    Previously this ran ``SELECT ... FROM queries WHERE id = $1`` with NO org
+    filter, so ANY caller who supplied another org's ``query_id`` could load —
+    and thereby run/read — that org's persisted query into the process-global
+    registry. ``org_id=None`` (org resolution unavailable/failed) now fails
+    CLOSED — no row is loaded — rather than silently falling back to an
+    unscoped read.
+
+    Best-effort: returns the ``RegisteredQuery`` if found+loaded+owned by
+    *org_id*, else ``None``.
     """
     import logging
 
     logger = logging.getLogger(__name__)
     registry = get_query_registry()
+    if org_id is None:
+        logger.warning(
+            "ensure_persisted_query(%s): no org_id available — refusing to "
+            "load (fail closed) rather than run an unscoped DB read.",
+            query_id,
+        )
+        return None
     try:
         from app.db import fetchrow
 
         row = await fetchrow(
-            "SELECT id, name, config FROM queries WHERE id = $1::uuid", query_id
+            "SELECT id, name, config, org_id FROM queries "
+            "WHERE id = $1::uuid AND org_id = $2::uuid",
+            query_id,
+            org_id,
         )
     except Exception as exc:  # noqa: BLE001 — best-effort; never crash the request.
         logger.warning("ensure_persisted_query(%s): DB read failed: %s", query_id, exc)
@@ -614,8 +644,66 @@ async def ensure_persisted_query(query_id: str):
             output_schema=list(_schema) if _schema is not None else None,
             strict_output_schema=bool(cfg.get("strict_output_schema", False)),
             metric=cfg.get("metric") if isinstance(cfg.get("metric"), dict) else None,
+            owner_org_id=str(row["org_id"]) if row["org_id"] is not None else org_id,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("ensure_persisted_query(%s): register failed: %s", query_id, exc)
         return None
-    return registry.get(query_id)
+    rq = registry.get(query_id)
+    # Defense-in-depth: the SELECT above is already org-scoped so this branch
+    # should be unreachable in practice, but never hand back an entry whose
+    # owner doesn't match the caller (e.g. a concurrent request briefly
+    # overwrote the same process-global registry slot for a different org
+    # between our register() call and this read).
+    if rq is not None and rq.owner_org_id is not None and rq.owner_org_id != org_id:
+        return None
+    return rq
+
+
+def _owned_by(rq: RegisteredQuery, org_id: str | None) -> bool:
+    """Strict ownership check: ``True`` iff *rq* is explicitly owned by *org_id*."""
+    return rq.owner_org_id is not None and rq.owner_org_id == org_id
+
+
+async def resolve_registered_query(
+    query_id: str, org_id: str | None
+) -> RegisteredQuery | None:
+    """Resolve *query_id* to a :class:`RegisteredQuery` visible to *org_id*.
+
+    SECURITY (CRITICAL 1): this is the single choke point every route/job
+    SHOULD use instead of the historical ``registry.get(id) or await
+    ensure_persisted_query(id)`` pattern. That pattern had two holes:
+
+    1. ``ensure_persisted_query`` ran an unscoped DB read (fixed above — now
+       requires *org_id* and filters ``WHERE org_id = $2``).
+    2. A ``registry.get(query_id)`` HIT was never re-checked against the
+       caller's org at all — the in-memory registry is a single process-wide
+       dict keyed only by ``query_id``, so once ANY org's request caused a
+       query to be loaded/registered, every OTHER org's request calling
+       ``registry.get(same_id)`` got it back with zero ownership check.
+
+    This function closes both: on a cache hit, an entry with an explicit
+    ``owner_org_id`` (stamped by ``ensure_persisted_query``,
+    ``load_persisted_queries``, and ``POST /query/registry`` — i.e. every
+    DB-persisted query, which is the ``queries`` row a real cross-org attacker
+    would be targeting) is only returned when it matches *org_id*. Built-in
+    ``system`` queries (e.g. ``demo_all``) remain globally visible, matching
+    every other org-scoping gate in this codebase.
+
+    An entry with ``owner_org_id is None`` — a purely in-memory, never-
+    persisted registration (AI/chat-tool authored queries, preagg rollups,
+    tests) — keeps its historical "visible to whoever knows the id" behaviour.
+    Those registrations were never DB-backed / org-attributed in the first
+    place, so there is no stored ``org_id`` to verify against; the id itself
+    (typically a slug or a content hash) is the only handle, exactly like the
+    built-in seed queries.
+    """
+    registry = get_query_registry()
+    rq = registry.get(query_id)
+    if rq is None:
+        rq = await ensure_persisted_query(query_id, org_id)
+    if rq is None:
+        return None
+    if rq.system or rq.owner_org_id is None:
+        return rq
+    return rq if _owned_by(rq, org_id) else None

@@ -73,7 +73,7 @@ def execute_job(job: dict[str, Any], now: datetime | None = None) -> dict[str, A
 
     try:
         if kind == "query":
-            row_count, message = _run_query_job(target)
+            row_count, message = _run_query_job(target, job)
         elif kind == "python":
             row_count, message = _run_python_job(target, job)
         elif kind == "report":
@@ -142,13 +142,16 @@ def _make_run(
     }
 
 
-def _run_query_job(target: str) -> tuple[int, str]:
+def _run_query_job(target: str, job: dict[str, Any]) -> tuple[int, str]:
     """Execute a registered query job.
 
     Parameters
     ----------
     target:
         The query_id of a registered query.
+    job:
+        The job dict — its ``org_id`` is used to org-scope the query_id
+        resolution (see SECURITY note below).
 
     Returns
     -------
@@ -158,18 +161,47 @@ def _run_query_job(target: str) -> tuple[int, str]:
     Raises
     ------
     AppError
-        If the query_id is not registered or DuckDB execution fails.
+        If the query_id is not registered/owned by this job's org, or DuckDB
+        execution fails.
+
+    SECURITY (HIGH — cross-tenant job execution): ``target`` (the query_id) is
+    resolved through ``app.queries.registry.resolve_registered_query``, the
+    SAME org-scoped choke point ``POST /query`` uses — NOT a bare
+    ``registry.get(target)``. The query registry is a single process-wide
+    dict keyed only by query_id; a bare ``.get()`` would let a job belonging
+    to org A execute (and leak the row count / errors of) a query_id that
+    actually belongs to org B, with no ownership check at all. Every REAL job
+    row carries a non-null ``org_id`` (``jobs.org_id NOT NULL`` in the
+    schema); ``org_id`` is only ever missing here for a hand-built job dict
+    (e.g. a unit test), in which case ``resolve_registered_query`` falls back
+    to its own documented org-scoping-unavailable behaviour (built-in/system
+    queries like ``demo_all`` stay resolvable; any explicitly org-owned query
+    is denied).
     """
-    from app.queries.registry import get_query_registry
+    import asyncio  # noqa: PLC0415
+    import concurrent.futures  # noqa: PLC0415
+
     from app.connectors import planner
     from app.connectors.duckdb_conn import DuckDBConnector
+    from app.queries.registry import resolve_registered_query
 
-    registry = get_query_registry()
-    rq = registry.get(target)
+    org_id: str | None = str(job.get("org_id")) if job.get("org_id") else None
+
+    async def _resolve() -> Any:
+        return await resolve_registered_query(target, org_id)
+
+    # Run in a dedicated thread so asyncio.run() always starts a fresh event
+    # loop — safe whether execute_job is called from inside a running loop
+    # (POST /jobs/{id}/run) or not (the sync scheduler tick). Mirrors
+    # execute_watch_sweep_sync / execute_drift_sweep_sync's bridge.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(asyncio.run, _resolve())
+        rq = future.result()
+
     if rq is None:
         raise AppError(
             "query_not_found",
-            f"No registered query with id {target!r}.",
+            f"No registered query with id {target!r} for this job's org.",
             404,
         )
 

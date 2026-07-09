@@ -41,10 +41,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger("nubi.jobs.drift_sweep")
+
+# Safe dataset-key character set: letters, digits, ``_``/``-``/``.``/``/`` (it
+# is a path-like key, e.g. "raw/orders" — see _fetch_live_columns). Applied
+# before dataset_key is interpolated into a single-quoted DuckDB string
+# literal (``DESCRIBE SELECT * FROM '{dataset_key}'``) — CRITICAL 2 SQLi fix.
+# dataset_key traces back to a caller-supplied registered-query id
+# (``POST /query/registry``'s ``body.id``, only ``.strip()``'d — no character
+# allowlist there), so it must be validated at THIS interpolation site too.
+_SAFE_DATASET_KEY_RE = re.compile(r"^[A-Za-z0-9_.\-/]+$")
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +242,20 @@ async def _fetch_live_columns(
                 return [{"name": str(c["name"]), "type": str(c["type"])} for c in _cols]
     except Exception:  # noqa: BLE001
         pass  # Catalog unavailable — try connector path.
+
+    # SECURITY (CRITICAL 2 SQLi fix): validate BEFORE the DuckDB introspection
+    # attempt below — dataset_key lands unescaped inside a single-quoted SQL
+    # string literal, so a key containing a literal ``'`` could break out and
+    # inject arbitrary SQL. Fail the same documented "cannot introspect" way
+    # (skip, return None) rather than raising into the sweep loop.
+    if not _SAFE_DATASET_KEY_RE.fullmatch(dataset_key):
+        logger.warning(
+            "drift_sweep: refusing to introspect dataset_key with unsafe "
+            "characters for org=%s: %r",
+            org_id,
+            dataset_key,
+        )
+        return None
 
     # DuckDB connector introspection (best-effort for file-backed datasets).
     try:

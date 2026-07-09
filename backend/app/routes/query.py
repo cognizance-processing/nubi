@@ -120,7 +120,12 @@ from app.connectors.planner import resolve_named_params
 from app.connectors.query_log import get_query_log
 from app.connectors.registry import get_connector_registry
 from app.queries import get_query_registry
-from app.queries.registry import QueryParam, RegisteredQuery, ensure_persisted_query
+from app.queries.registry import (
+    QueryParam,
+    RegisteredQuery,
+    ensure_persisted_query,
+    resolve_registered_query,
+)
 from app.vars.store import get_var_store
 from app.repos.provider import get_repo
 from app.routes import api_router
@@ -680,7 +685,14 @@ async def _resolve_request_plan(
         )
 
     # ── ALLOWLIST GATE (M3-SEC) ───────────────────────────────────────────────
-    registry = get_query_registry()
+    # SECURITY (CRITICAL 1): resolve the caller's own org BEFORE any query_id
+    # lookup so registry resolution can be org-scoped end-to-end — closes the
+    # cross-tenant query-registry hijack where ``registry.get(body.query_id)``
+    # (a process-global dict keyed only by id) or the old unscoped
+    # ``ensure_persisted_query`` DB read could return/load ANOTHER org's
+    # persisted query for a caller-supplied query_id. See
+    # ``app.queries.registry.resolve_registered_query``.
+    _allowlist_org_id, _ = await _resolve_caller_org(identity, get_repo())
 
     if identity.kind == "embed":
         if not body.query_id:
@@ -690,9 +702,7 @@ async def _resolve_request_plan(
                 "raw SQL is not permitted.",
                 403,
             )
-        registered = registry.get(body.query_id) or await ensure_persisted_query(
-            body.query_id
-        )
+        registered = await resolve_registered_query(body.query_id, _allowlist_org_id)
         if registered is None:
             raise _AppError(
                 "query_not_registered",
@@ -711,9 +721,7 @@ async def _resolve_request_plan(
         effective_sql = registered.sql
     else:
         if body.query_id:
-            registered = registry.get(body.query_id) or await ensure_persisted_query(
-                body.query_id
-            )
+            registered = await resolve_registered_query(body.query_id, _allowlist_org_id)
             if registered is None:
                 raise _AppError(
                     "query_not_registered",
@@ -2169,6 +2177,14 @@ async def register_query(
         return True
 
     query_id: str | None = explicit_id
+    # SECURITY (CRITICAL 1): stamped onto the in-memory registration below as
+    # ``owner_org_id`` so resolve_registered_query() can enforce ownership on
+    # every future ``registry.get()`` hit for this id — without this, a freshly
+    # saved query stayed "unowned" (globally readable via query_id) in the
+    # process-global registry until the next full reload. Stays None when
+    # persistence/org-resolution fails below (matches the historical
+    # best-effort, memory-only fallback — no behaviour regression).
+    org_id: str | None = None
     try:
         from app.routes._org import (  # noqa: PLC0415
             get_user_org as _get_user_org,
@@ -2243,6 +2259,7 @@ async def register_query(
         params=param_objs,
         datastore_id=datastore_id,
         metric=config.get("metric"),
+        owner_org_id=org_id,
     )
 
     return {

@@ -758,18 +758,64 @@ def _rollup_database_path(rollup_id: str) -> str:
     return os.path.join(backend, "seed_data", "rollups", f"{rollup_id}.duckdb")
 
 
+def _quote_ident(name: str) -> str:
+    """Quote a SQL/DuckDB identifier, escaping embedded double quotes.
+
+    SECURITY (CRITICAL 2 SQLi fix): rollup materialization SQL is built by
+    f-string-interpolating table/column names sourced from query-log mining
+    and governed-metric definitions (``metric.base_table`` / dimension /
+    measure column names) directly inside ``"..."``. A name containing a
+    literal ``"`` previously terminated the quoted identifier early and let
+    the rest of the name inject arbitrary SQL into the surrounding
+    CREATE/SELECT/GROUP BY statement (e.g. ``table = 'x" ; DROP TABLE t; --'``).
+    Doubling embedded quotes is the standard SQL defence for double-quoted
+    identifiers and keeps every legitimate name byte-identical.
+    """
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+#: The only re-aggregable (additive-over-rollup-grain) functions — mirrors
+#: ``_ADDITIVE_AGGS`` above, which already filters the metric-compile path to
+#: this set. ``_measure_select_sql`` is ALSO reachable directly from
+#: ``POST /preagg/build`` (``body.measures``, any first-party writer — see
+#: app/routes/preagg.py), so the same allowlist must be enforced here too:
+#: ``func`` is interpolated UNQUOTED as a function-call keyword (it cannot be
+#: identifier-quoted without changing call semantics), so it is the one piece
+#: of this f-string that MUST be validated against a fixed set rather than
+#: merely escaped.
+_VALID_ROLLUP_AGG_FUNCS = {"SUM", "COUNT", "MIN", "MAX"}
+
+
 def _measure_select_sql(measure: str) -> str:
     """Render a ``func(col)`` measure string into a SELECT expression with an
     alias, e.g. ``sum(amount)`` → ``SUM(amount) AS sum_amount``.
 
     ``count(*)`` → ``COUNT(*) AS count_all``.
+
+    Raises
+    ------
+    ValueError
+        If *measure* is not well-formed ``func(col)`` shape, or *func* is not
+        in :data:`_VALID_ROLLUP_AGG_FUNCS` (SQLi guard — see that constant's
+        docstring).
     """
-    func = measure[: measure.find("(")].upper()
-    col = measure[measure.find("(") + 1 : measure.rfind(")")]
+    paren = measure.find("(")
+    if paren < 0 or not measure.endswith(")"):
+        raise ValueError(
+            f"Malformed rollup measure {measure!r}; expected 'func(col)' shape."
+        )
+    func = measure[:paren].strip().upper()
+    if func not in _VALID_ROLLUP_AGG_FUNCS:
+        raise ValueError(
+            f"Unsupported rollup aggregate function {func!r} in measure "
+            f"{measure!r}; only {sorted(_VALID_ROLLUP_AGG_FUNCS)} are additive "
+            "and may be materialized into a rollup."
+        )
+    col = measure[paren + 1 : -1]
     if col == "*":
-        return f'{func}(*) AS "{func.lower()}_all"'
+        return f"{func}(*) AS {_quote_ident(func.lower() + '_all')}"
     alias = f"{func.lower()}_{col}"
-    return f'{func}("{col}") AS "{alias}"'
+    return f"{func}({_quote_ident(col)}) AS {_quote_ident(alias)}"
 
 
 def build_rollup_sql(
@@ -795,12 +841,12 @@ def build_rollup_sql(
         if c not in group_cols:
             group_cols.append(c)
 
-    select_parts = [f'"{c}"' for c in group_cols]
+    select_parts = [_quote_ident(c) for c in group_cols]
     select_parts += [_measure_select_sql(m) for m in measures]
     select_sql = ", ".join(select_parts)
-    group_sql = ", ".join(f'"{c}"' for c in group_cols) if group_cols else None
+    group_sql = ", ".join(_quote_ident(c) for c in group_cols) if group_cols else None
 
-    sql = f'SELECT {select_sql} FROM "{table}"'
+    sql = f"SELECT {select_sql} FROM {_quote_ident(table)}"
     if group_sql:
         sql += f" GROUP BY {group_sql}"
     return sql
@@ -968,8 +1014,10 @@ def build_rollup(
     harden_connection(out, disable_external_access=True)
     try:
         out.register("_rollup_src", result)
-        out.execute(f'DROP TABLE IF EXISTS "{rollup_table}"')
-        out.execute(f'CREATE TABLE "{rollup_table}" AS SELECT * FROM _rollup_src')
+        out.execute(f"DROP TABLE IF EXISTS {_quote_ident(rollup_table)}")
+        out.execute(
+            f"CREATE TABLE {_quote_ident(rollup_table)} AS SELECT * FROM _rollup_src"
+        )
         out.unregister("_rollup_src")
     finally:
         out.close()
@@ -994,7 +1042,7 @@ def build_rollup(
 
             get_query_registry().register(
                 id=rollup_id,
-                sql=f'SELECT * FROM "{rollup_table}"',
+                sql=f"SELECT * FROM {_quote_ident(rollup_table)}",
                 name=f"Rollup — {table}",
                 datastore_id=datastore_id,
             )

@@ -203,16 +203,21 @@ async def preagg_build(
         measures=sorted(measures),
     )
 
-    built = await asyncio.to_thread(
-        functools.partial(
-            build_rollup,
-            candidate,
-            rls_keys=list(body.rls_keys),
-            source_database=body.source_database,
-            datastore_id=body.datastore_id,
-            org_id=resolved_org_id,
+    try:
+        built = await asyncio.to_thread(
+            functools.partial(
+                build_rollup,
+                candidate,
+                rls_keys=list(body.rls_keys),
+                source_database=body.source_database,
+                datastore_id=body.datastore_id,
+                org_id=resolved_org_id,
+            )
         )
-    )
+    except ValueError as exc:
+        # e.g. an unsupported/malformed measure — see
+        # app.connectors.preagg._measure_select_sql's allowlist guard.
+        raise AppError("invalid_rollup_request", str(exc), 400) from exc
     return built.to_dict()
 
 
