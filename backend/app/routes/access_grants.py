@@ -73,30 +73,41 @@ class GrantCreateIn(BaseModel):
 
 @router.get("")
 async def list_grants(
-    subject_type: str = Query(..., description="user | role | embed_sub"),
-    subject_id: str = Query(..., description="subject identifier"),
+    subject_type: str | None = Query(None, description="user | role | embed_sub"),
+    subject_id: str | None = Query(None, description="subject identifier"),
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """List grants for ``(subject_type, subject_id)`` in the caller's org.
+    """List access grants in the caller's org.
 
-    Org-scoped: only grants in the caller's org are returned.  Readable by any
+    With no filter → every grant in the org (Settings management view). With
+    both ``subject_type`` + ``subject_id`` → just that subject's grants.
+    Org-scoped: only grants in the caller's org are returned. Readable by any
     org member (read is not gated to approvers).
 
     Returns
     -------
     200 {grants: [{id, subject_type, subject_id, dimension, value, expires_at, ...}]}
     """
-    if subject_type not in VALID_SUBJECT_TYPES:
-        raise AppError(
-            "invalid_subject_type",
-            f"subject_type must be one of {sorted(VALID_SUBJECT_TYPES)}.",
-            400,
-        )
     org_id = await get_user_org(str(user["id"]), repo)
-    grants = await get_grants_store().list_for_subject(
-        org_id, subject_type, subject_id
-    )
+    store = get_grants_store()
+    if subject_type or subject_id:
+        # Filtering by subject requires BOTH and a valid type.
+        if not (subject_type and subject_id):
+            raise AppError(
+                "invalid_filter",
+                "subject_type and subject_id must be provided together.",
+                400,
+            )
+        if subject_type not in VALID_SUBJECT_TYPES:
+            raise AppError(
+                "invalid_subject_type",
+                f"subject_type must be one of {sorted(VALID_SUBJECT_TYPES)}.",
+                400,
+            )
+        grants = await store.list_for_subject(org_id, subject_type, subject_id)
+    else:
+        grants = await store.list_for_org(org_id)
     return {"grants": grants}
 
 

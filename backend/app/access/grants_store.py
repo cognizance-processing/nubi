@@ -99,6 +99,24 @@ class GrantsStore:
         )
         return [_serialize(r) for r in rows]
 
+    async def list_for_org(self, org_id: str) -> list[dict[str, Any]]:
+        """List every grant in *org_id* (no subject filter).
+
+        Org-scoped: only rows belonging to *org_id* are ever returned. Used by
+        the Settings → Access grants management view.
+        """
+        rows = await db.fetch(
+            """
+            SELECT id, org_id, subject_type, subject_id, dimension, value,
+                   expires_at, created_at
+            FROM access_grants
+            WHERE org_id = $1::uuid
+            ORDER BY subject_type, subject_id, dimension, value
+            """,
+            org_id,
+        )
+        return [_serialize(r) for r in rows]
+
     async def effective_for_subject(
         self,
         org_id: str,
