@@ -200,19 +200,14 @@ SELECT. When it proves the rollup covers `__base`, the full layered query is
 rewritten to read from the rollup instead of the raw fact table. The outer
 derived/window layer runs unchanged on top.
 
-```
-Incoming metric query
-        │
-        ▼
-compile_metric → (WITH __base AS (...) SELECT ...)
-        │
-        ▼
-router: can __base be served by a registered rollup?
-  YES → rewrite FROM <fact_table> to FROM <rollup_table>
-  NO  → execute against raw fact table (always-safe fallback)
-        │
-        ▼
-execute → Arrow IPC → browser / cache
+```mermaid
+flowchart TD
+    A[Incoming metric query] --> B["compile_metric →<br/>WITH __base AS (...) SELECT ..."]
+    B --> C{"router: can __base be served<br/>by a registered rollup?"}
+    C -- YES --> D["rewrite FROM &lt;fact_table&gt;<br/>to FROM &lt;rollup_table&gt;"]
+    C -- NO --> E["execute against raw fact table<br/>(always-safe fallback)"]
+    D --> F["execute → Arrow IPC → browser / cache"]
+    E --> F
 ```
 
 ### Building a metric-driven rollup
@@ -385,50 +380,25 @@ that can kick off the next compute cycle when the upstream Flow completes.
 [Outbound webhooks](#outbound-webhooks) for how a host subscribes to Flow/watch
 events to drive its own write-back.)
 
+```mermaid
+flowchart TD
+    Flow["FLOW (compute + decide)<br/>• per-cell cpu/mem/timeout<br/>• stochastic cells + run seed<br/>• artifact channel<br/>• sweep / backfill"]
+    Source["Source table<br/>(warehouse / DuckDB or any connector)"]
+    Semantic["Semantic model — MetricDefinition:<br/>• base measures<br/>• derived / ratio<br/>• time intelligence<br/>• top-N<br/>• rls_keys"]
+    Rollup["Pre-agg rollup (optional)<br/>build_rollup_for_metric<br/>__base-aware router"]
+    Dashboard["Dashboard (display + filter)<br/>• DuckDB-WASM in browser<br/>• $0 / view marginal cost<br/>• variables, cross-filter<br/>• scheduled send (PDF/HTML)"]
+
+    Flow -- materialized to --> Source
+    Source -- "downstream trigger" --> Flow
+    Source -- base_table / base_sql --> Semantic
+    Semantic -- compile_metric --> Rollup
+    Rollup -- Arrow IPC --> Dashboard
+    Dashboard -- "watch_breach / flow_completed webhook" --> Flow
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                     CLOSE-THE-LOOP CYCLE                            │
-│                                                                     │
-│  ┌─────────────────┐   materialized to   ┌─────────────────────┐  │
-│  │                 │────────────────────►│   Source table       │  │
-│  │   FLOW          │                     │   (warehouse / DuckDB│  │
-│  │  (compute +     │◄───downstream────── │    or any connector) │  │
-│  │   decide)       │    trigger          └──────────┬───────────┘  │
-│  │                 │                                │               │
-│  │  - per-cell     │              base_table / base_sql             │
-│  │    cpu/mem/     │                                │               │
-│  │    timeout      │                                ▼               │
-│  │  - stochastic   │                   ┌────────────────────────┐  │
-│  │    cells +      │                   │   Semantic model        │  │
-│  │    run seed     │                   │   MetricDefinition:     │  │
-│  │  - artifact     │                   │   - base measures       │  │
-│  │    channel      │                   │   - derived / ratio     │  │
-│  │  - sweep /      │                   │   - time intelligence   │  │
-│  │    backfill     │                   │   - top-N               │  │
-│  └────────┬────────┘                   │   - rls_keys            │  │
-│           │                            └───────────┬─────────────┘  │
-│           │ event / webhook                        │ compile_metric  │
-│           │ trigger (host's                        ▼                │
-│           │ own write-back,       ┌──────────────────────────────┐   │
-│           │ if any)               │  Pre-agg rollup (optional)   │   │
-│           │                       │  build_rollup_for_metric      │   │
-│           │                       │  __base-aware router          │   │
-│           │                       └──────────────┬───────────────┘   │
-│           │                                       │ Arrow IPC         │
-│           │                                       ▼                   │
-│           │                       ┌──────────────────────────────┐   │
-│           │                       │  Dashboard                    │   │
-│           │                       │  (display + filter)           │   │
-│           │                       │  - DuckDB-WASM in browser     │   │
-│           │                       │  - $0 / view marginal cost    │   │
-│           │                       │  - variables, cross-filter    │   │
-│           │                       │  - scheduled send (PDF/HTML)  │   │
-│           │                       └──────────────┬───────────────┘   │
-│           │                                       │ watch_breach /     │
-│           └───────────────────────────────────────┘ flow_completed     │
-│                                                       webhook           │
-└─────────────────────────────────────────────────────────────────────┘
-```
+
+*(The "downstream trigger" and "webhook" edges back into Flow represent an
+event/webhook trigger — including a host's own write-back, if any — not a
+direct call.)*
 
 ### Walking the cycle
 

@@ -41,6 +41,7 @@
     "js-yaml": "^4.1.0",
     "jspdf": "^4.2.1",
     "lucide-react": "^0.564.0",
+    "mermaid": "^11.16.0",
     "papaparse": "^5.5.3",
     "prismjs": "^1.30.0",
     "react": "^19.2.0",
@@ -50,6 +51,8 @@
     "react-syntax-highlighter": "^16.1.0",
     "reactflow": "^11.11.4",
     "regl": "^2.1.0",
+    "rehype-raw": "^7.0.0",
+    "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {

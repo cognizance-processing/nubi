@@ -62,6 +62,11 @@ const mdFiles = import.meta.glob(
     '/docs/mcp.md',
     '/docs/embed-api.md',
     '/docs/compute-kernel-attribution-runner.md',
+    '/docs/notebooks.md',
+    '/docs/billing-model.md',
+    '/docs/architecture-and-economics.md',
+    '/docs/compliance.md',
+    '/docs/observability.md',
   ],
   { query: '?raw', import: 'default', eager: true }
 )
@@ -74,14 +79,14 @@ const LAYOUT = [
 
   { section: 'Using Nubi',          group: 'Get started',       slugs: ['quickstart', 'getting-started', 'ui-tour'] },
   { section: 'Using Nubi',          group: 'Work with data',    slugs: ['connectors', 'queries-and-params', 'metrics-reference', 'pre-aggregations', 'dashboards', 'data-health', 'lineage', 'governance', 'exports-and-jobs'] },
-  { section: 'Using Nubi',          group: 'Automate & build',  slugs: ['flows', 'transformation', 'materialization', 'semantic-and-data-apps', 'ai-and-mcp', 'mcp', 'embedding', 'embed-api'] },
+  { section: 'Using Nubi',          group: 'Automate & build',  slugs: ['flows', 'notebooks', 'transformation', 'materialization', 'semantic-and-data-apps', 'ai-and-mcp', 'mcp', 'embedding', 'embed-api'] },
   { section: 'Using Nubi',          group: 'Your account',      slugs: ['organization-settings', 'notifications-and-integrations'] },
   { section: 'Using Nubi',          group: 'Reference',         slugs: ['how-to', 'api-reference'] },
 
-  { section: 'Nubi Cloud',          group: 'Cloud & billing',   slugs: ['cloud', 'billing-and-usage'] },
+  { section: 'Nubi Cloud',          group: 'Cloud & billing',   slugs: ['cloud', 'billing-and-usage', 'billing-model'] },
 
   { section: 'Open-source project', group: 'Self-host',         slugs: ['self-host', 'open-core', 'architecture-open-core'] },
-  { section: 'Open-source project', group: 'Security & internals', slugs: ['connector-security', 'kernel-security', 'cache-key-spec', 'conformance', 'secrets'] },
+  { section: 'Open-source project', group: 'Security & internals', slugs: ['architecture-and-economics', 'compliance', 'connector-security', 'kernel-security', 'cache-key-spec', 'conformance', 'secrets', 'observability'] },
   { section: 'Open-source project', group: 'Build on Nubi',     slugs: ['sdk-and-cli', 'files-as-code', 'git-sync', 'bridges', 'compute-kernel-attribution-runner'] },
   { section: 'Open-source project', group: 'Contributing',      slugs: ['development', 'docs-and-screenshots'] },
 ]

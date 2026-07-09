@@ -1068,7 +1068,7 @@ export default function DocsPage() {
                 ) : doc ? (
                   <div className="max-w-[760px] docs-prose">
                     <DocBreadcrumb doc={doc} />
-                    <MarkdownRenderer content={doc.content} />
+                    <MarkdownRenderer content={doc.content} allowRawHtml />
                     <DocPager prev={prev} next={next} />
                     <DocFeedback />
                   </div>

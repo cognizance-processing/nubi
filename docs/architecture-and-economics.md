@@ -496,48 +496,21 @@ is a host-owned step: Nubi hands the host a signed, idempotent webhook
 (`watch_breach`, `flow_completed`, …) and the host drives its own write-back
 against its own connector.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     CLOSE-THE-LOOP CYCLE                        │
-│                                                                 │
-│  ┌───────────┐   writes to    ┌────────────────┐               │
-│  │           │──────table────►│  Source table  │               │
-│  │  FLOW     │                │  (warehouse /  │               │
-│  │ (compute  │◄──re-trigger───│   DuckDB)      │               │
-│  │  + decide)│  (downstream   └───────┬────────┘               │
-│  └─────┬─────┘   trigger)             │ base_table / base_sql  │
-│        │                              ▼                         │
-│   artifacts                 ┌──────────────────┐               │
-│   sweep/backfill            │  Semantic model  │               │
-│        │                    │  (MetricDef:     │               │
-│        │                    │   measure, dims, │               │
-│        │                    │   time_intel,    │               │
-│        │                    │   derived, RLS)  │               │
-│        │                    └────────┬─────────┘               │
-│        │                             │ compile_metric           │
-│        │                             ▼                          │
-│        │              ┌──────────────────────────┐             │
-│        │              │  Pre-agg rollup (optional)│             │
-│        │              │  build_rollup_for_metric  │             │
-│        │              │  router: __base CTE aware │             │
-│        │              └──────────────┬────────────┘             │
-│        │                             │ Arrow IPC                │
-│        │                             ▼                          │
-│        │              ┌──────────────────────────┐             │
-│        │              │  Dashboard                │             │
-│        │              │  (display + filter)       │             │
-│        │              │  - DuckDB-WASM in browser │             │
-│        │              │  - $0/view marginal cost  │             │
-│        │              └──────────────┬────────────┘             │
-│        │                             │ watch_breach /            │
-│        │                             │ flow_completed webhook    │
-│        │                             ▼                          │
-│        │              ┌──────────────────────────┐             │
-│        └─────────────►│  Host's own write-back    │             │
-│                        │  (host-owned connector,  │             │
-│                        │   Nubi hands it the event)│             │
-│                        └──────────────────────────┘             │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    Flow["FLOW (compute + decide)<br/>artifacts, sweep/backfill"]
+    Source["Source table<br/>(warehouse / DuckDB)"]
+    Semantic["Semantic model<br/>MetricDef: measure, dims,<br/>time_intel, derived, RLS"]
+    Rollup["Pre-agg rollup (optional)<br/>build_rollup_for_metric<br/>router: __base CTE aware"]
+    Dashboard["Dashboard (display + filter)<br/>DuckDB-WASM in browser<br/>$0/view marginal cost"]
+    WriteBack["Host's own write-back<br/>(host-owned connector,<br/>Nubi hands it the event)"]
+
+    Flow -- "writes to table" --> Source
+    Source -- "re-trigger (downstream trigger)" --> Flow
+    Source -- base_table / base_sql --> Semantic
+    Semantic -- compile_metric --> Rollup
+    Rollup -- Arrow IPC --> Dashboard
+    Dashboard -- "watch_breach / flow_completed webhook" --> WriteBack
 ```
 
 **The full cycle in one sentence**: a Flow computes a decision and materialises

@@ -50,31 +50,19 @@ Nubi Cloud runs on **Fly.io** as a single app (`nubi`) in the **`jnb`
 (Johannesburg)** region. One combined Docker image — the FastAPI backend with
 the built SPA embedded — runs as **two processes**:
 
-```
-                        ┌──────────────────────────────────────────────┐
-                        │  Fly app "nubi" (region: jnb)                │
-                        │  one combined image, two processes           │
-   https (force_https)  │                                              │
-  Browser / embeds ────▶│  ┌─────────────────────────────────────┐     │
-                        │  │ app — uvicorn (FastAPI)             │     │
-                        │  │  • /api/v1 + SSE                    │     │
-                        │  │  • serves the SPA (STATIC_DIR,      │     │
-                        │  │    same origin — no CORS hops)      │     │
-                        │  └──────────────┬──────────────────────┘     │
-                        │                 │                            │
-                        │  ┌──────────────┴──────────────────────┐     │
-                        │  │ worker — python worker.py           │     │
-                        │  │  • flows scheduler loop             │     │
-                        │  │  • worker pool draining task_runs   │     │
-                        │  └──────┬───────────────────┬──────────┘     │
-                        └─────────┼───────────────────┼────────────────┘
-                                  │                   │
-                          ┌───────┴────────┐  ┌───────┴────────────────┐
-                          │ Neon Postgres  │  │ Cloudflare R2 (S3 API) │
-                          │ (DATABASE_URL) │  │ materialized /         │
-                          │                │  │ incremental flow       │
-                          │                │  │ targets (parquet)      │
-                          └────────────────┘  └────────────────────────┘
+```mermaid
+flowchart TD
+    Browser["Browser / embeds"] -- "https (force_https)" --> App
+
+    subgraph Fly["Fly app 'nubi' (region: jnb) — one image, two processes"]
+        App["app — uvicorn (FastAPI)<br/>• /api/v1 + SSE<br/>• serves the SPA (STATIC_DIR,<br/>same origin — no CORS hops)"]
+        Worker["worker — python worker.py<br/>• flows scheduler loop<br/>• worker pool draining task_runs"]
+    end
+
+    App --> Postgres[("Neon Postgres<br/>DATABASE_URL")]
+    App --> Storage[("Tigris (S3 API)<br/>materialized / incremental<br/>flow targets (parquet)")]
+    Worker --> Postgres
+    Worker --> Storage
 ```
 
 - **`app` process** — uvicorn serving the API *and* the built frontend from
@@ -84,7 +72,7 @@ the built SPA embedded — runs as **two processes**:
   (scheduler tick + concurrent worker pool). Scheduled flows and queued
   `task_runs` are executed here, never in the request path.
 - **Postgres on Neon** — the only system of record. Machines hold no state.
-- **Object storage on Cloudflare R2** (S3-compatible) — materialized and
+- **Object storage on Tigris** (S3-compatible) — materialized and
   incremental flow targets are written as parquet under
   `FLOWS_MATERIALIZE_BASE_URI`, so they survive machine replacement.
 - **Migrations** — the forward-only runner (`database/migrate.py`) executes
@@ -106,20 +94,24 @@ For heavy analytical workloads, register the customer's own warehouse (e.g. BigQ
 
 ### Deploy runbook
 
-Nubi Cloud's production deployment — the Fly config, secrets, version pin, and
-the deploy pipeline — lives in a separate private ops repo, **nubi-cloud**, so
-this open-source project stays deployment-neutral. In that repo:
+Nubi Cloud's production deployment — the Fly config, secrets, and deploy
+pipeline — lives **in this repo**, under `deploy/`. There is no separate ops
+repo or version pin: a deploy builds the current working tree directly.
 
-- **Manual deploys** — `scripts/deploy.sh` checks out the pinned Nubi version
-  (`deploy/nubi.lock.json`) and runs `flyctl deploy` with `deploy/fly.toml`.
-- **Continuous deploys** — pushing to `main` (or bumping the pin with
-  `scripts/pin.sh`) triggers `.github/workflows/deploy.yml`, using the
-  `FLY_API_TOKEN` secret.
-- **Secrets** — managed with `.env` + `scripts/secrets.sh` (Fly secrets).
+- **`deploy/fly.toml`** — the canonical Fly config, driving both the `nubi`
+  (production, `main` branch) and `nubi-dev` (dev branch) apps with the same
+  `app` + `worker` process groups and release-migration step.
+- **`deploy/setup-fly.sh [main|dev]`** — one-time idempotent app creation.
+- **`deploy/secrets.sh [main|dev]`** — push `.env` / `.env.dev` to Fly secrets.
+- **`deploy/deploy.sh [main|dev]`** — build the EE image (`Dockerfile.ee`) from
+  the current tree and roll it out.
 
-Either path builds the EE image (`Dockerfile.ee`: Vite SPA build → Python deps →
-runtime) on Fly's remote builders and rolls out the `app`, `worker`, and `query`
-processes; the `--ee` migrations run automatically via the release command.
+`deploy/deploy.sh dev` builds and deploys `nubi-dev`; `deploy/deploy.sh`
+promotes the identical build to production (`nubi`). Either path builds the EE
+image (`Dockerfile.ee`: Vite SPA build → Python deps → runtime) on Fly's remote
+builders and rolls out the `app` and `worker` processes; the `--ee` migrations
+run automatically via the release command. See `deploy/README.md` for the full
+runbook.
 
 **Self-hosting Nubi yourself?** You supply your own deployment — the OSS
 `Dockerfile` builds the community image; bring your own orchestration (Docker

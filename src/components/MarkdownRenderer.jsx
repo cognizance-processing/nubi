@@ -1,11 +1,88 @@
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import rehypeRaw from 'rehype-raw'
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
+import mermaid from 'mermaid'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import { useMemo } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { resolveDocIllustration } from './illustrations/docMap.js'
 import { useTheme } from '../contexts/ThemeContext.jsx'
+
+/**
+ * Sanitize schema for raw HTML embedded in *docs* markdown (opt-in via
+ * `allowRawHtml`, see bottom of file). Docs use bare `<table><tr><td><img>`
+ * blocks for side-by-side light/dark screenshot comparisons — react-markdown
+ * doesn't parse raw HTML by default (it renders the tags as literal text), so
+ * we add rehype-raw to parse them into the tree and rehype-sanitize (on the
+ * default, allow-listed schema) to strip anything unexpected — no scripts,
+ * event handlers, or non-http(s) URLs get through even though doc content is
+ * repo-controlled. The default schema already allow-lists table/img/br/sub
+ * elements and the width/alt/etc attributes docs use.
+ */
+const docsHtmlSchema = defaultSchema
+
+/**
+ * Renders a ```mermaid fenced block to inline SVG. mermaid.render() runs
+ * client-side and is re-invoked whenever the source or the app theme changes
+ * (dark/light) so diagrams follow the site theme.
+ */
+function MermaidDiagram({ code }) {
+  const { theme } = useTheme()
+  const [svg, setSvg] = useState(null)
+  const [error, setError] = useState(null)
+  // useId() gives a stable, unique-per-instance id without mutating state
+  // during render; strip the colons React wraps it in so it's a plain id
+  // mermaid can hand to the DOM.
+  const reactId = useId()
+  const diagramId = `mermaid-diagram-${reactId.replace(/[^a-zA-Z0-9]/g, '')}`
+
+  useEffect(() => {
+    let cancelled = false
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme: theme === 'dark' ? 'dark' : 'default',
+      fontFamily: 'inherit',
+    })
+    mermaid
+      .render(diagramId, code)
+      .then(({ svg: rendered }) => {
+        if (!cancelled) {
+          setSvg(rendered)
+          setError(null)
+        }
+      })
+      .catch(err => {
+        if (!cancelled) setError(err?.message || String(err))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [code, theme, diagramId])
+
+  if (error) {
+    return (
+      <div className="my-5 rounded-xl border border-border bg-surface-2 p-4 text-sm text-muted">
+        Diagram failed to render: {error}
+      </div>
+    )
+  }
+  if (!svg) {
+    return (
+      <div className="my-5 h-32 animate-pulse rounded-xl border border-border bg-surface-2" />
+    )
+  }
+  // dangerouslySetInnerHTML here is the output of mermaid's own renderer
+  // (securityLevel: 'strict' sanitizes it), not raw user HTML.
+  return (
+    <div
+      className="my-5 overflow-x-auto rounded-xl border border-border bg-surface p-4 [&_svg]:mx-auto"
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
+  )
+}
 
 /**
  * Anchored heading helper — creates an id from text content
@@ -173,6 +250,11 @@ const components = {
 
     if (isBlock) {
       const lang = match ? match[1] : 'text'
+
+      if (lang === 'mermaid') {
+        return <MermaidDiagram code={raw} />
+      }
+
       return (
         <div className="my-5 rounded-xl overflow-hidden border border-border shadow-lg">
           <SyntaxHighlighter
@@ -261,6 +343,11 @@ const components = {
   em({ children }) {
     return <em className="italic text-muted">{children}</em>
   },
+
+  // ── sub — used as an image caption inside raw <table> screenshot blocks ───
+  sub({ children }) {
+    return <sub className="text-xs text-muted">{children}</sub>
+  },
 }
 
 /**
@@ -274,10 +361,25 @@ function urlTransform(url) {
   return defaultUrlTransform(url)
 }
 
-export default function MarkdownRenderer({ content }) {
+/**
+ * `allowRawHtml` opts a caller into parsing raw HTML tags in the markdown
+ * source (rehype-raw) — sanitised through rehype-sanitize's default
+ * allow-list either way. Docs content (repo-controlled markdown) sets this to
+ * render its `<table><tr><td><img>` side-by-side screenshot blocks; it stays
+ * off by default for markdown that comes from chat/AI output, flow notes, or
+ * dashboard text widgets, where raw-HTML parsing isn't needed and is one
+ * fewer thing to reason about for content that isn't repo-reviewed.
+ */
+export default function MarkdownRenderer({ content, allowRawHtml = false }) {
+  const rehypePlugins = allowRawHtml ? [rehypeRaw, [rehypeSanitize, docsHtmlSchema]] : []
   return (
     <article className="max-w-none">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={urlTransform} components={components}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={rehypePlugins}
+        urlTransform={urlTransform}
+        components={components}
+      >
         {content}
       </ReactMarkdown>
     </article>

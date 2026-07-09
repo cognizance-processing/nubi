@@ -505,16 +505,3 @@ const tables = await parseMultiTableIPC(await resp.arrayBuffer())
 The cache key is `(provider_id, frozen_params, rls_hash)` where
 `rls_hash = sha256(json(policies))[:16]`. Two tenants with identical params
 never share a cache entry (the RLS hash diverges). The cache TTL is 5 minutes.
-
----
-
-## Screenshot reference
-
-| Screenshot | Page | What to show | Target doc |
-|---|---|---|---|
-| ![Metric definition](screenshots/metrics-definition.png) | `/queries` (Code panel with metric config) | A query with `config.metric` block | This page §1.1 |
-| ![MetricQuery result](screenshots/metrics-query-result.png) | Network tab | Arrow IPC response for a metric query | This page §1.3 |
-| ![Rollup panel suggestions](screenshots/preagg-suggestions.png) | `/queries` (Rollups tab) | Suggested rollups panel with score and chips | This page §2.1 |
-| ![Rollup active](screenshots/preagg-active.png) | `/queries` (Rollups tab) | Active rollup card with HIT counter | This page §2.4 |
-| ![Flows sweep](screenshots/flows-sweep.png) | `/flows` (Runs tab) | Sweep results table (diff surface) | This page §3.3 |
-| ![DataProvider response](screenshots/dataprovider-response.png) | Network tab | Multi-table IPC response | This page §4.2 |

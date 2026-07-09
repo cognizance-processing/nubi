@@ -85,9 +85,11 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 
 ## Architecture Overview
 
-```
-Warehouse  →  Edge (content-hashed cache)  →  Browser (DuckDB-WASM)
-                                          ↘  Server Kernel (E2B / Modal)
+```mermaid
+flowchart LR
+    A[Warehouse] --> B["Edge (content-hashed cache)"]
+    B --> C["Browser (DuckDB-WASM)"]
+    B --> D["Server Kernel (E2B / Modal)"]
 ```
 
 The planner translates SQL through sqlglot into a `PhysicalPlan`, injects RLS predicates as AST-level predicates (never string-concatenated), checks the content-hashed cache, then streams Arrow IPC to the caller.

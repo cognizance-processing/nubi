@@ -1581,15 +1581,6 @@ table = reader.read_all()
 
 ---
 
-## Screenshot reference
-
-| Screenshot | What to show | Target doc |
-|---|---|---|
-| ![Swagger UI](screenshots/api-swagger.png) | `/docs` Swagger UI in development mode | This page |
-| ![Arrow response](screenshots/api-arrow-response.png) | Network tab showing `application/vnd.apache.arrow.stream` response | This page |
-
----
-
 ## Audit log
 
 Org-scoped action audit trail. Records metadata only — no row data, no PII,

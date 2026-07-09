@@ -293,8 +293,9 @@ Flows (`app/flows/`) are a lower-level task graph that underlies the Jobs system
 
 The canonical task chain for a scheduled visual report is:
 
-```
-snapshot_refresh  →  render_board_svg  →  render_board_pdf  →  notify_email
+```mermaid
+flowchart LR
+    A[snapshot_refresh] --> B[render_board_svg] --> C[render_board_pdf] --> D[notify_email]
 ```
 
 Each step reuses the same building blocks as the download endpoints:

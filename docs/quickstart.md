@@ -198,15 +198,3 @@ Browse all tables from **Connectors → View data** (the Data Browser).
 | Embed a dashboard in your app | [Embedding](/docs/embedding) |
 | Deploy to production | [Self-host](/docs/self-host) |
 | Full API reference | [API reference](/docs/api-reference) |
-
----
-
-## Screenshot reference
-
-| Screenshot | What to show |
-|---|---|
-| ![Seed output](screenshots/quickstart-seed.png) | Terminal showing `python seed.py --demo` success output |
-| ![Home screen after seed](screenshots/quickstart-home.png) | Home page right after sign-in — demo workspace ready, checklist |
-| ![Demo data connector](screenshots/quickstart-connector.png) | Connectors page with Demo data connector card |
-| ![First query result](screenshots/quickstart-query.png) | SQL editor with revenue query result and row count |
-| ![First dashboard](screenshots/quickstart-dashboard.png) | Finished KPI + line chart dashboard in preview |
