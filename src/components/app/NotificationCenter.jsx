@@ -370,8 +370,13 @@ export default function NotificationCenter({ open, onClose, onCount, embedded = 
 
     const tick = async () => {
       if (typeof document !== 'undefined' && document.hidden) return
-      const n = await fetchUnreadCount()
-      onCountRef.current?.(n)
+      try {
+        const n = await fetchUnreadCount()
+        onCountRef.current?.(n)
+      } catch {
+        // Transient (e.g. the poll racing auth on a hard reload) — ignore;
+        // the next tick recovers. Never let a badge poll throw unhandled.
+      }
     }
 
     const start = () => {
