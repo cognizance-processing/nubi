@@ -84,3 +84,13 @@ dist-embed/
 
 # Stray Fly config at the repo root (the real one is deploy/fly.toml, tracked)
 /fly.toml
+
+# Python virtualenvs, tool caches, and scratch dirs (never track; safe to delete)
+.venv/
+.venv-*/
+venv/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.wede/
+.DS_Store
