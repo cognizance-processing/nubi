@@ -21,10 +21,14 @@
 FROM node:20-alpine AS frontend
 WORKDIR /build
 
+# Give the Vite build enough V8 heap — the SPA + mermaid/rehype deps OOM the
+# default heap on the remote builder ("Ineffective mark-compacts near heap limit").
+ENV NODE_OPTIONS=--max-old-space-size=4096
+
 # Version stamp for the build. .git is dockerignored, so resolveVersion.mjs
-# can't derive it here — release tooling (nubi-cloud/scripts/deploy.sh) passes
-# the real "X.Y.Z" / "X.Y.Z-dev.<sha>" via --build-arg NUBI_VERSION. Empty ⇒
-# the embed build falls back to the bare package.json version.
+# can't derive it here — release tooling (deploy/deploy.sh) passes the real
+# "X.Y.Z" / "X.Y.Z-dev.<sha>" via --build-arg NUBI_VERSION. Empty ⇒ the embed
+# build falls back to the bare package.json version.
 ARG NUBI_VERSION=""
 ENV NUBI_VERSION=$NUBI_VERSION
 
