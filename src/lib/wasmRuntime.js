@@ -679,7 +679,14 @@ export async function initDemoParquetViews(manifest) {
   if (!manifest?.tables) return
   const db = await initDuckDB()
   const conn = await db.connect()
-  const origin = manifest.origin ?? BACKEND_URL
+  // The demo parquet is served from our OWN origin (manifest paths are absolute
+  // "/api/..."). Prefer the explicit BACKEND_URL (local dev, separate port), then
+  // the live page origin — NOT manifest.origin, which the backend computes from
+  // the request and returns as http:// when it sits behind a TLS-terminating
+  // proxy (Fly). On an https page that http:// URL is mixed-content blocked, so
+  // the parquet fetch fails and widgets fall back to sample data.
+  const pageOrigin = (typeof window !== 'undefined' && window.location?.origin) || ''
+  const origin = BACKEND_URL || pageOrigin || manifest.origin || ''
   try {
     for (const [table, path] of Object.entries(manifest.tables)) {
       if (_demoViewsRegistered.has(table)) continue
