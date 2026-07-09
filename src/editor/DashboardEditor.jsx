@@ -1571,6 +1571,68 @@ function TabsPanel({ spec, onSpecChange, activeTabId, onActivate, onAddTab }) {
 }
 
 // ---------------------------------------------------------------------------
+// Toolbar helpers — small presentational primitives shared by the top-bar
+// clusters below. Kept generic (no editor-state closures) so they can sit
+// outside the main component.
+// ---------------------------------------------------------------------------
+
+// Vertical divider between toolbar clusters.
+function ToolbarDivider() {
+  return <div className="hidden md:block w-px h-5 bg-border shrink-0" aria-hidden="true" />
+}
+
+/**
+ * ToolbarPopover — a labelled trigger button that reveals an arbitrary panel
+ * of content below it. Used to group related, lower-frequency controls (e.g.
+ * device + zoom) behind one bar slot instead of spreading them out inline.
+ */
+function ToolbarPopover({ icon: Icon, label, title, testId, active, children }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey) }
+  }, [open])
+
+  return (
+    <div className="relative shrink-0" ref={ref}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        title={title}
+        aria-label={title}
+        aria-expanded={open}
+        data-testid={testId}
+        className={[
+          'h-8 pl-2.5 pr-2 inline-flex items-center gap-1 rounded-lg border text-xs font-medium whitespace-nowrap',
+          'transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+          open || active
+            ? 'bg-primary text-primary-fg border-primary'
+            : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2',
+        ].join(' ')}
+      >
+        <Icon size={14} />
+        <span className="hidden lg:inline">{label}</span>
+        <ChevronDown size={12} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div
+          className="absolute right-0 top-full mt-1.5 z-50 bg-surface border border-border rounded-xl shadow-xl p-3 w-max"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // DashboardEditor — main export
 // ---------------------------------------------------------------------------
 
@@ -2453,16 +2515,35 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
           </div>
         )}
 
+        {!preview && <ToolbarDivider />}
+
         {/* Toolbar cluster (device switcher · zoom · panel toggles).
             md+ : shown inline in the top bar.
             <md : collapsed behind the hamburger → mobile slide-out menu. */}
         <div className="hidden md:flex items-center gap-1.5">
           {/* Device viewport switcher — shown in edit + preview so preview frames per-device. */}
           {deviceSwitcher}
-          {/* Canvas zoom controls + Reset (edit mode only). */}
-          {!preview && zoomControls()}
-          {/* Panel toggles — Add / Configure / Layout / Chat. */}
-          {!preview && panelToggles()}
+          {/* Canvas zoom controls + Reset (edit mode only) — grouped behind one
+              popover trigger instead of 4 inline buttons, so the bar reads as
+              "Zoom" rather than a wall of icons. */}
+          {!preview && (
+            <ToolbarPopover
+              icon={ZoomIn}
+              label="Zoom"
+              title="Canvas zoom & reset"
+              testId="editor-zoom-menu"
+              active={zoomMode !== 'fit'}
+            >
+              {zoomControls()}
+            </ToolbarPopover>
+          )}
+          {/* Panel toggles — Add / Configure / Layout / Tabs / Chat. */}
+          {!preview && (
+            <>
+              <ToolbarDivider />
+              <div className="flex items-center gap-0.5">{panelToggles()}</div>
+            </>
+          )}
         </div>
 
         {/* Hamburger (<md): opens the slide-out with the whole toolbar cluster. */}
@@ -2475,6 +2556,8 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         >
           <Menu size={16} />
         </button>
+
+        <ToolbarDivider />
 
         {/* View switcher — Canvas / Code */}
         <div
@@ -2529,6 +2612,8 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         <div className="hidden sm:block">
           <ExportShareMenu board={savedBoardId} spec={spec} />
         </div>
+
+        <ToolbarDivider />
 
         <button
           onClick={handleSave}

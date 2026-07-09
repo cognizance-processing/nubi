@@ -64,6 +64,7 @@ import {
   ArrowDown,
   Hash,
   ArrowLeftRight,
+  MoreHorizontal,
 } from 'lucide-react'
 
 import SqlEditor from '../../components/SqlEditor.jsx'
@@ -1128,6 +1129,73 @@ function WorkspaceToolbar({ slot, children }) {
   )
 }
 
+// Vertical divider between toolbar clusters — hidden on the narrowest widths
+// where every pixel of horizontal space is precious.
+function ToolbarDivider() {
+  return <div className="hidden sm:block w-px h-5 bg-border shrink-0" aria-hidden="true" />
+}
+
+// ---------------------------------------------------------------------------
+// ToolbarKebabMenu — collects secondary / rarely-used actions (Run all,
+// Translate, Schedule, Checkpoint, History) behind a single "More" button so
+// the primary bar stays scannable; Run + Save remain inline and prominent.
+// ---------------------------------------------------------------------------
+
+function ToolbarKebabMenu({ items }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey) }
+  }, [open])
+
+  const visible = items.filter(i => !i.hidden)
+  if (visible.length === 0) return null
+
+  return (
+    <div className="relative shrink-0" ref={ref}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        aria-label="More actions"
+        aria-expanded={open}
+        title="More actions"
+        data-testid="query-toolbar-more"
+        className={[
+          'w-8 h-8 flex items-center justify-center rounded-lg border transition-all duration-150',
+          'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+          open
+            ? 'bg-surface-2 border-primary text-primary'
+            : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2',
+        ].join(' ')}
+      >
+        <MoreHorizontal size={15} />
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full mt-1.5 z-50 w-56 bg-surface border border-border rounded-xl shadow-xl p-1">
+          {visible.map(item => (
+            <button
+              key={item.key}
+              onClick={() => { setOpen(false); item.onClick() }}
+              disabled={item.disabled}
+              title={item.title}
+              className="w-full flex items-center gap-2.5 px-2.5 py-2 text-xs font-medium text-fg rounded-lg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-left"
+            >
+              <item.icon size={14} className="text-muted shrink-0" />
+              <span className="flex-1 truncate">{item.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, toolbarExtra = null }) {
   const canWrite = useCanWrite()
   // AppShell topbar slot — the toolbar portals into the single top bar.
@@ -1637,6 +1705,8 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
           )}
         </div>
 
+        <ToolbarDivider />
+
         {/* View switcher — Notebook / Code (VS Code-style files view). Mirrors
             the flows view switcher; Code replaces the notebook body with the
             <slug>.sql + <slug>.meta.json file view. */}
@@ -1665,92 +1735,85 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
           })}
         </div>
 
-        {/* Add cells — always visible */}
+        {/* Add cells — always visible; labels collapse to icon-only below sm. */}
         <div className="flex items-center rounded-lg border border-border overflow-hidden shrink-0">
           <button
             onClick={addSqlCell}
-            className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+            className="h-8 px-2 sm:px-2.5 flex items-center gap-1.5 text-[11px] font-medium bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors"
             title="Add a SQL scratch cell"
           >
-            <Plus size={12} /> SQL
+            <Plus size={12} /> <span className="hidden sm:inline">SQL</span>
           </button>
           <button
             onClick={addPythonCell}
-            className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium border-l border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+            className="h-8 px-2 sm:px-2.5 flex items-center gap-1.5 text-[11px] font-medium border-l border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors"
             title="Add a Python scratch cell (on-demand kernel)"
           >
-            <Plus size={12} /> Python
+            <Plus size={12} /> <span className="hidden sm:inline">Python</span>
           </button>
         </div>
 
-        {/* Run all */}
-        {scratchCells.some(c => c.type === 'sql') && (
-          <button
-            onClick={handleRunAll}
-            disabled={runAllLoading}
-            className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors"
-            title="Run the primary query then every scratch SQL cell, top to bottom"
-          >
-            <Layers size={12} />
-            <span className="hidden sm:inline">{runAllLoading ? 'Running all…' : 'Run all'}</span>
-          </button>
-        )}
+        <ToolbarDivider />
 
-        {/* Translate SQL — opens TranspileDialog; shown when primary cell has SQL */}
-        {!isEmptyPrimary && (
-          <button
-            onClick={() => setTranspileOpen(true)}
-            className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-            title="Translate SQL to a different dialect"
-          >
-            <ArrowLeftRight size={12} />
-            <span className="hidden sm:inline">Translate</span>
-          </button>
-        )}
+        {/* Secondary actions — Run all / Translate / Schedule / Checkpoint /
+            History live behind one "More" button so Run + Save stay the only
+            prominent CTAs on the bar. */}
+        <ToolbarKebabMenu
+          items={[
+            {
+              key: 'run-all',
+              icon: Layers,
+              label: runAllLoading ? 'Running all…' : 'Run all',
+              onClick: handleRunAll,
+              disabled: runAllLoading,
+              hidden: !scratchCells.some(c => c.type === 'sql'),
+              title: 'Run the primary query then every scratch SQL cell, top to bottom',
+            },
+            {
+              key: 'translate',
+              icon: ArrowLeftRight,
+              label: 'Translate SQL',
+              onClick: () => setTranspileOpen(true),
+              hidden: isEmptyPrimary,
+              title: 'Translate SQL to a different dialect',
+            },
+            {
+              key: 'schedule',
+              icon: CalendarClock,
+              label: 'Schedule',
+              onClick: handleScheduleClick,
+              disabled: !isRegistered || viewing,
+              hidden: !canWrite,
+              title: isRegistered ? 'Run this query on a schedule' : 'Save the query first',
+            },
+            {
+              key: 'checkpoint',
+              icon: GitCommitHorizontal,
+              label: 'Checkpoint',
+              onClick: handleCheckpoint,
+              disabled: !isRegistered || saving || viewing,
+              hidden: !canWrite,
+              title: isRegistered ? 'Checkpoint — snapshot the current draft as a new version' : 'Save the query first',
+            },
+            {
+              key: 'history',
+              icon: History,
+              label: 'Version history',
+              onClick: () => setHistoryOpen(true),
+              disabled: !isRegistered,
+              title: isRegistered ? 'Version history' : 'Save the query first',
+            },
+          ]}
+        />
 
-        {/* Schedule — mutating (creates a scheduled flow); writers only */}
-        {canWrite && (
-          <button
-            onClick={handleScheduleClick}
-            disabled={!isRegistered || viewing}
-            className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            title={isRegistered ? 'Run this query on a schedule' : 'Save the query first'}
-          >
-            <CalendarClock size={12} />
-            <span className="hidden sm:inline">Schedule</span>
-          </button>
-        )}
-
-        {/* Checkpoint — snapshot the saved draft as a new version; writers only */}
-        {canWrite && (
-          <button
-            onClick={handleCheckpoint}
-            disabled={!isRegistered || saving || viewing}
-            className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            title={isRegistered ? 'Checkpoint — snapshot the current draft as a new version' : 'Save the query first'}
-          >
-            <GitCommitHorizontal size={12} />
-            <span className="hidden sm:inline">Checkpoint</span>
-          </button>
-        )}
-
-        {/* Version history — restore / promote checkpointed versions */}
-        <button
-          onClick={() => setHistoryOpen(true)}
-          disabled={!isRegistered}
-          className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          title={isRegistered ? 'Version history' : 'Save the query first'}
-        >
-          <History size={12} />
-          <span className="hidden sm:inline">History</span>
-        </button>
-
+        <ToolbarDivider />
 
         {/* Save — mutating (registerQuery); writers only */}
         {canWrite ? (
           <button
             onClick={handleSaveClick}
             disabled={saving || viewing}
+            data-testid="query-save-btn"
             className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors"
             title={isRegistered ? 'Update saved query (primary cell)' : 'Save query (primary cell)'}
           >
@@ -1768,7 +1831,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
             </span>
           </button>
         ) : (
-          <span className="h-8 px-2.5 flex items-center text-[11px] font-medium text-muted/70 select-none" title="Read-only access">
+          <span className="h-8 px-2.5 hidden sm:flex items-center text-[11px] font-medium text-muted/70 select-none" title="Read-only access">
             Read-only
           </span>
         )}
@@ -1777,7 +1840,8 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
         <button
           onClick={handleRun}
           disabled={running || viewing}
-          className="h-8 px-3 flex items-center gap-1.5 text-[11px] font-semibold rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity"
+          data-testid="query-run-btn"
+          className="h-8 px-3 flex items-center gap-1.5 text-[11px] font-semibold rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity shadow-sm"
           title="Run query (⌘/Ctrl+Enter)"
         >
           {running ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
@@ -1786,7 +1850,12 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
         </button>
 
         {/* Page-level extras (view toggle + side-panel buttons from QueriesPage) */}
-        {toolbarExtra}
+        {toolbarExtra && (
+          <>
+            <ToolbarDivider />
+            {toolbarExtra}
+          </>
+        )}
       </WorkspaceToolbar>
 
       {/* ── Code view — full-pane VS Code-style .sql + .meta.json files ── */}
