@@ -139,7 +139,7 @@ export const CONNECTOR_CATEGORIES = [
   { id: 'cloud', label: 'Cloud-managed SQL' },
   { id: 'warehouse', label: 'Cloud warehouses' },
   { id: 'engine', label: 'Query engines' },
-  { id: 'lake', label: 'Files & data lake' },
+  { id: 'lake', label: 'Files & object storage' },
   { id: 'api', label: 'APIs & custom' },
 ]
 
@@ -605,7 +605,7 @@ export const CONNECTOR_TYPES = [
     // the backend (POST /connectors body).
     id: 'duckdb_demo',
     label: 'Demo data (your copy)',
-    description: 'Start with a personal copy of the demo datasets (retail, SaaS, web, finance). Your own data to query and explore.',
+    description: 'Start with a personal, editable copy of the sample datasets — retail, SaaS, web, and finance — to query and explore as your own.',
     category: 'lake',
     // seed is passed through to the API body — not a real connector_type.
     apiType: 'duckdb',
@@ -614,7 +614,7 @@ export const CONNECTOR_TYPES = [
     color: '#17b3a3',
     // No config fields: the backend provisions the parquet automatically.
     fields: [],
-    summary: () => 'Demo datasets (your copy)',
+    summary: () => 'Retail, SaaS, web & finance sample datasets',
   },
 
   // ── APIs & custom ─────────────────────────────────────────────────────────

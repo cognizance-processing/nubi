@@ -205,7 +205,7 @@ function ProductTour() {
                   className="absolute inset-0 w-full h-full object-cover object-top dark:hidden"
                 />
                 <img
-                  src={t.img.replace('.png', '-dark.png')}
+                  src={t.img.replace(/\.webp$/, '-dark.webp')}
                   alt=""
                   aria-hidden="true"
                   width="2880"
@@ -1842,7 +1842,7 @@ export default function LandingPage() {
             </div>
 
             <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7 gap-3 sm:gap-4">
-              {CONNECTOR_TYPES.map((info) => (
+              {CONNECTOR_TYPES.filter((info) => info.id !== 'demo' && info.id !== 'duckdb_demo').map((info) => (
                 <div
                   key={info.id}
                   title={info.description}

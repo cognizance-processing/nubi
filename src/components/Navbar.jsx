@@ -24,7 +24,6 @@ const NAV_LINKS = [
   { label: 'Reporting', to: '/reporting' },
   { label: 'Compare',   to: '/compare' },
   { label: 'Pricing',   to: '/pricing' },
-  { label: 'Portal',    to: '/home', authOnly: true },
 ]
 
 // ── Theme toggle ──────────────────────────────────────────────────────────────

@@ -79,7 +79,7 @@ The **Add connector** picker groups types into six categories.
 | **Trino** | Distributed SQL engine; coordinator host + catalog + schema. |
 | **Presto** | Open-source distributed SQL; same shape as Trino. |
 
-### Lakehouse & files
+### Files & object storage
 
 | Type | Notes |
 |------|-------|
@@ -271,7 +271,7 @@ The **Demo data** connector is a built-in dataset available in the default proje
 
 The demo connector is marked **Built-in** and appears only in the default (demo) project; other projects you create start empty and require a real connector. It is read-only — there is no Edit button.
 
-If you remove it, you can re-add it from **Add connector** → *Demo data* in the Lakehouse & files category. It reappears at the top of the list.
+If you remove it, you can re-add it from **Add connector** → *Demo data* in the Files & object storage category. It reappears at the top of the list.
 
 ---
 
