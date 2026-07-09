@@ -401,15 +401,17 @@ async function captureProductTour(browser, ids, theme) {
     .catch(() => {})
   await shoot(page, `queries-editor${sfx}`, { settle: 2500 })
 
-  // Dashboard editor on Retail Sales Overview, then its Preview mode for a
-  // clean rendered view. (The standalone /d/:id route is captured via Preview
-  // because it renders chrome-free inside the editor.)
+  // Dashboard editor on Retail Sales Overview, then the published read-only
+  // view. `dashboard-view` is the standalone /d/:id route (what an embed/viewer
+  // sees) — captured directly rather than via the editor's Eye/preview toggle so
+  // it stays robust to editor top-bar changes.
   await goAndShoot(page, `/editor/${ids.board.id}`, `dashboard-editor${sfx}`, { settle: 4500 })
-  const previewBtn = page.getByRole('button', { name: 'Preview', exact: true }).first()
-  if (await previewBtn.count()) {
-    await previewBtn.click()
-    await shoot(page, `dashboard-view${sfx}`, { settle: 3000 })
-  }
+  await ensureApp(page, `/d/${ids.board.id}`)
+  // Widgets compute in-browser via DuckDB-WASM; wait for a chart/table to paint.
+  await page
+    .waitForSelector('canvas, svg path, table tbody tr', { timeout: 60_000 })
+    .catch(() => {})
+  await shoot(page, `dashboard-view${sfx}`, { settle: 3500 })
 
   // Flows — canvas (default view), then notebook and code views. Drafts live in
   // the dev environment until promoted, so pin env=dev for these captures.
