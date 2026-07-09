@@ -683,20 +683,27 @@ def create_app() -> FastAPI:
 
         index_html = os.path.join(static_dir, "index.html")
 
+        static_root = os.path.realpath(static_dir)
+
         @application.get("/{full_path:path}", include_in_schema=False)
         async def spa(full_path: str) -> FileResponse:
-            """Serve a static file if it exists, else the SPA index (client routing).
+            """Serve a real static file if it exists, else the SPA index (client
+            routing). API/health/doc routes are registered earlier and take
+            precedence.
 
-            API and health routes are registered earlier and take precedence; this
-            only catches everything else.
+            The static-file check comes FIRST so real assets under the built
+            frontend — including ``/docs/screenshots/*.png`` — are served. (A
+            blanket ``startswith("docs")`` guard used to 404 those.) Path
+            traversal is prevented by requiring the resolved path to stay inside
+            the static root.
             """
-            if full_path.startswith(
-                ("api/", "health", "docs", "redoc", "openapi", "embed/")
-            ):
+            if full_path:
+                candidate = os.path.realpath(os.path.join(static_dir, full_path))
+                if candidate.startswith(static_root + os.sep) and os.path.isfile(candidate):
+                    return FileResponse(candidate)
+            # Backend-owned prefixes never fall back to the SPA index.
+            if full_path.startswith(("api/", "health", "redoc", "openapi", "embed/")):
                 raise HTTPException(status_code=404, detail="Not found")
-            candidate = os.path.join(static_dir, full_path)
-            if full_path and os.path.isfile(candidate):
-                return FileResponse(candidate)
             return FileResponse(index_html)
 
     return application
