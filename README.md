@@ -65,9 +65,8 @@ The data plane uses **Arrow IPC at every boundary**, so data moves between wareh
 - **Governed semantic metrics** — a `MetricDefinition` encodes business logic once (measure, dimensions, time intelligence, RLS keys, derived formulas) and compiles to SQL on demand via `POST /metrics/{id}/query`. Agents and dashboards query a governed vocabulary, not raw SQL. Ships: derived/ratio measures (NULLIF-guarded formulas), full time-intelligence suite (prior-period, YoY, YTD/QTD/MTD, rolling windows, latest-snapshot), dynamic top-N with "Other" bucket, `percentile_cont`, `approx_count_distinct`.
 - **Smart engine + pre-agg rollups** — `build_rollup_for_metric` materializes a rollup shaped to match the metric compiler's `__base` CTE so the router can serve derived and windowed metric queries from the rollup instead of the raw fact table. Per-board query fusion and a shared `(model, predicate, rls_hash)` cache key collapse repeated widget loads to a single scan.
 - **Flows as a data-app engine** — per-cell `cpu_cores / mem_mb / timeout_s` resource requests; stochastic cells with run-level seeds for reproducibility; typed artifact channel (pickle/joblib/model blobs by handle); scenario sweep + backfill; event/webhook/downstream triggers + run-history + SLA monitoring. An SSRF-guarded `http_call` task kind lets a flow call out to a host endpoint; an `assert` task kind runs data-quality expectations (`row_count`/`not_null`/`unique`/`custom_sql`) and fails the run on violation — the flows equivalent of a SQLMesh audit. Powers the close-the-loop cycle: Flow computes → table → metric → dashboard → re-trigger. See [docs/flows.md](docs/flows.md).
-- **LLM-authorable dashboards + MCP** — a dashboard is a sanitized HTML/CSS document of declarative `<nubi-kpi>`, `<nubi-table>`, and `<nubi-chart>` custom elements. LLMs and MCP agents author layout and widget attributes; they never write WebGL or fetch code. Fifteen MCP tools expose the full authoring surface to any agent. See [docs/mcp.md](docs/mcp.md) for the full host integration contract (per-org server registry, agent dispatch, Nubi-as-MCP-server JSON-RPC).
-- **Inter-model lineage DAG, incl. column-level** — `GET /lineage/dag` builds a directed graph across all queries, metrics, and physical tables; `GET /lineage/dag/{node_id}?hops=N` walks N hops upstream/downstream. `resolve_column_lineage` traces a single column's provenance across model layers — alias-aware, cycle-safe, with a `SELECT *` fallback. Metric lineage (`GET /metrics/{id}/lineage`) resolves input columns and upstream tables; flow/notebook cell lineage traces column provenance across cells. An opt-in `auto_rebuild_downstream` flow flag fires dependent flows on upstream success (DAG traversal, cycle- and storm-safe). See [docs/lineage.md](docs/lineage.md).
-- **Data health scoring** — freshness records are pre-computed and read in O(1) (< 5 ms p99 SLO). `GET /health/score` computes weighted (freshness 50%, completeness 30%, availability 20%) health scores with per-dataset grade letters. `GET /health/estate` returns a source→raw→model→feature flow map annotated with health. New embed components `<nubi-lineage>` and `<nubi-health>` render these in any host app. See [docs/data-health.md](docs/data-health.md) and [docs/embed-api.md](docs/embed-api.md).
+- **LLM-authorable dashboards + MCP** — a dashboard is a sanitized HTML/CSS document of declarative `<nubi-kpi>`, `<nubi-table>`, and `<nubi-chart>` custom elements. LLMs and MCP agents author layout and widget attributes; they never write WebGL or fetch code. Fourteen MCP tools expose the full authoring surface to any agent. See [docs/mcp.md](docs/mcp.md) for the full host integration contract (per-org server registry, agent dispatch, Nubi-as-MCP-server JSON-RPC).
+- **Data health scoring** — freshness records are pre-computed and read in O(1) (< 5 ms p99 SLO). `GET /health/score` computes weighted (freshness 50%, completeness 30%, availability 20%) health scores with per-dataset grade letters. `GET /health/estate` returns a source→raw→model→feature flow map annotated with health. The `<nubi-health>` embed component renders this in any host app. See [docs/data-health.md](docs/data-health.md) and [docs/embed-api.md](docs/embed-api.md).
 - **RLS governance extensions** — policy claims support scalar (equality), list (IN), and range-dict (`gte/gt/lte/lt`) shapes. Hierarchical scope expansion resolves a parent value (e.g. `region = "Western Cape"`) to child values via the `access_hierarchy` table, **auto-applied in the live `/query` and `/metrics/{id}/query` paths** (fail-closed, capped by `NUBI_RLS_MAX_POLICY_VALUES`). `GET /auth/scope` returns a caller's resolved effective policies so an embedding host can authorize its own writes off Nubi's resolution; `/access-grants` optionally stores user→scope assignments. See [docs/governance.md](docs/governance.md).
 - **Versioning, audit & drift** — metrics and flows keep an immutable spec **version history with one-call revert** (`/metrics/{id}/versions` + `/revert/{v}`, `/flows/{id}/versions` + `/revert/{v}`). A consolidated, POPIA-safe **action audit-log** records every mutation (`GET /audit`). **Schema-drift detection** surfaces added/removed/type-changed columns per dataset as a read API + `SCHEMA_DRIFT` webhook event (`GET /health/drift`). Flow-run `params_snapshot` is readable for reproducibility.
 - **Bounded, honest agent loop** — the chat/agent loop has step caps, an aggregate per-turn token budget, per-turn timeout, and a dedicated chat rate-limit class (cost-DoS safe). Metric values are always deterministic SQL — the LLM is never in the value path, so numbers are never fabricated. See [docs/ai-and-mcp.md](docs/ai-and-mcp.md).
@@ -218,7 +217,7 @@ flowchart TD
     PLAN["Planner — sqlglot AST → PhysicalPlan<br/>injects row-level-security predicates"]
     CACHE["Content-hashed cache<br/>X-Nubi-Cache: HIT | MISS"]
     REG["Connector registry"]
-    SVC["/ai · /lineage · /jobs · REST CRUD"]
+    SVC["/ai · /jobs · REST CRUD"]
     KR["/compute/run · kernel router"]
     QUERY --> PLAN --> CACHE --> REG
   end
@@ -268,7 +267,7 @@ flowchart TD
 | Embed | Custom elements (`<nubi-dashboard>`, `<nubi-kpi>`, `<nubi-table>`, `<nubi-chart>`), DOMPurify |
 | SDK | `@nubi/sdk` — framework-agnostic ESM, wraps auth + query + resource CRUD + embed |
 | CLI | Python typer (`nubi login / init / pull / push / deploy / run / diff / apply / flows / secrets`) |
-| MCP | Python `mcp` SDK, stdio transport, 15 tools |
+| MCP | Python `mcp` SDK, stdio transport, 14 tools |
 | Self-host | Docker Compose (`docker-compose.yml`); Makefile: `make up/down/migrate/smoke` |
 
 ### Monorepo layout
@@ -281,17 +280,16 @@ nubi/
 │   │   ├── connectors/ sqlglot planner, Arrow executor, cache, pre-agg
 │   │   ├── compute/  KernelRunner ABC, LocalSubprocessRunner, E2BRunner, ModalRunner
 │   │   ├── ai/       LLMProvider, grounding, dashboard generation
-│   │   ├── lineage/  sqlglot AST extractor, LineageGraph
 │   │   ├── jobs/     cron + interval scheduler, executor, store
 │   │   ├── repos/    asyncpg (prod) + in-memory (test) repository layer
-│   │   └── routes/   auth, query, compute, embed, ai, lineage, jobs, resources
+│   │   └── routes/   auth, query, compute, embed, ai, jobs, resources
 │   └── tests/        300+ test modules + conformance suite (golden Arrow + cache keys) + security/ suite
 ├── database/         Forward-only SQL migration runner + 13 OSS migrations + 4 EE migrations
 ├── src/              React 19 frontend (Vite + Tailwind) — pages, components, viz
 ├── embed/            Web components: <nubi-dashboard>, <nubi-kpi>, <nubi-table>, <nubi-chart>
 ├── sdk/              @nubi/sdk — createNubiClient ESM package
 ├── cli/              nubi CLI (typer): login / init / pull / push / deploy / apply / run / diff / flows / secrets
-├── mcp/              MCP stdio server — 15 tools for agent authoring
+├── mcp/              MCP stdio server — 14 tools for agent authoring
 ├── docs/             cache-key-spec.md, conformance.md, kernel-security.md, assets/
 ├── Dockerfile          combined image: Vite SPA build + FastAPI (single origin)
 ├── docker-compose.yml   db (postgres:16) + app (SPA + API on :8000)
@@ -314,7 +312,7 @@ nubi/
 | M4-REMOTE — E2B/Modal sandbox | ✅ Done | E2BRunner (Firecracker microVM), ModalRunner adapter |
 | M5 — WebGL viz | ✅ Done | regl GPU scatter on Arrow buffers, `<nubi-chart>` auto-WebGL above 20k rows |
 | M6 — REST API + SDK + CLI | ✅ Done | asyncpg repo layer, CRUD for datastores/boards/widgets/queries, `@nubi/sdk`, typer CLI |
-| M7 — Lineage + AI + MCP | ✅ Done | sqlglot lineage extractor, deterministic grounding, LLMProvider, MCP server (15 tools) |
+| M7 — AI + MCP | ✅ Done | deterministic grounding, LLMProvider, MCP server (14 tools) |
 | M8 — LLM-authorable dashboards | ✅ Done | `<nubi-kpi>`, `<nubi-table>`, `<nubi-chart>` widget kit, DOMPurify renderer, `POST /ai/dashboard` |
 | M9 — Connector SDK + HTTP/JSON | ✅ Done | FunctionConnector, apply_rls_postfetch, HttpJsonConnector, NoSQL deliberately out of scope |
 | Connector breadth | ✅ Done | Registry ships 20+ types: `postgres`, `duckdb` (in-mem + file-backed), `duckdb_storage` (S3/R2/MinIO/GCS httpfs), `http_json`, `mysql`, `mariadb`, `jdbc`, `snowflake`, `bigquery`, `clickhouse`, `databricks`, `athena`, `trino`/`presto`, `sqlserver`/`azuresql`/`azuresynapse`, `oracle`, `redshift`, `cockroachdb`, `cloudsql`, `sftp`, `ftp` (most via optional lazy-imported drivers) |
@@ -328,7 +326,7 @@ nubi/
 | M10 — Docker self-host smoke test | 🔄 In progress | docker-compose.yml ships locally (db + combined app on :8000); live-infra CI smoke test is the remaining capstone |
 | M11 — Scheduled jobs | ✅ Done | cron + interval scheduler (deterministic `now`), `execute_job`, CRUD + run-now + run-history routes |
 | M12 — Capability-gated RLS | ✅ Done | connector resolution via `datastore.config.type`, 501 gate when `predicate_rls=False` + active policies |
-| Host-integration suite | ✅ Done | MCP (both directions incl. host custom tools), data health + score + estate + schema-drift, lineage DAG + metric lineage, transformation versioning/backfill/transpile, governance (range/list/hierarchical RLS, `/auth/scope`, access-grants, cardinality cap), unified audit-log, metric/flow spec version+revert, chat cost-DoS limits, `<nubi-lineage>`/`<nubi-health>` embed components, top-level Overview/Workqueue. Tracked in [`CAPABILITIES.md`](CAPABILITIES.md) |
+| Host-integration suite | ✅ Done | MCP (both directions incl. host custom tools), data health + score + estate + schema-drift, transformation versioning/backfill/transpile, governance (range/list/hierarchical RLS, `/auth/scope`, access-grants, cardinality cap), unified audit-log, metric/flow spec version+revert, chat cost-DoS limits, `<nubi-health>` embed component, top-level Overview/Workqueue. Tracked in [`CAPABILITIES.md`](CAPABILITIES.md) |
 
 **Tests:** a comprehensive backend suite — **7,700+ tests across 300+ modules** (verified via `pytest --collect-only`), including the mutation-verified `security/` suite **and a black-box live-API pentest suite** (auth/IDOR/scope/injection/RLS/SSRF/DoS/secret attacks over a seeded DB) and a conformance suite (golden Arrow output + byte-identical cache keys); plus live API E2E, MCP tests, CLI tests, **~970 dashboard + ~380 embed-component tests** (`node --test` / vitest, verified counts), and browser embed E2E (Playwright). All green on `main`.
 
@@ -421,7 +419,7 @@ The backend conformance suite (`backend/tests/conformance/`) asserts the planner
 |---|---|---|
 | `@nubi/sdk` | [`sdk/`](sdk/README.md) | Framework-agnostic ESM — `.auth`, `.query()`, `.resources.*`, `.embed.mount()` |
 | `nubi` CLI | [`cli/`](cli/README.md) | `login / init / pull / push / deploy / run / diff / apply / flows / secrets` — with `--dry-run` |
-| MCP server | [`mcp/`](mcp/README.md) | stdio MCP — 15 tools for agent dashboard authoring |
+| MCP server | [`mcp/`](mcp/README.md) | stdio MCP — 14 tools for agent dashboard authoring |
 | Embed bundle | [`embed/`](embed/README.md) | `<nubi-dashboard>` + widget kit custom elements |
 
 ---
@@ -441,8 +439,8 @@ Full documentation lives in [`docs/`](docs/index.md) — **start at the [documen
 
 **Governance, health & integration**
 - [Governance](docs/governance.md) — RLS shapes, hierarchical scope, `/auth/scope`, access-grants · [Data health](docs/data-health.md) — freshness/score/estate + drift
-- [Lineage](docs/lineage.md) — dependency DAG + column-level lineage + auto-rebuild · [Transformation](docs/transformation.md) — versioning/revert, backfill, transpile
-- [MCP integration](docs/mcp.md) — host server registry, agent dispatch, Nubi-as-MCP-server · [Embed API](docs/embed-api.md) — the 10-component contract
+- [Transformation](docs/transformation.md) — versioning/revert, backfill, transpile
+- [MCP integration](docs/mcp.md) — host server registry, agent dispatch, Nubi-as-MCP-server · [Embed API](docs/embed-api.md) — the 9-component contract
 
 **Platform & security**
 - [Architecture & Economics](docs/architecture-and-economics.md) — compute model, embedding modes, billing COGS mapping

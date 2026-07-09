@@ -73,17 +73,7 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 | **Schema-drift detection / event API** (column add/remove/type-change) | ✅ | `GET /health/drift`, `GET /health/drift/{key}`, `SCHEMA_DRIFT` webhook event | [data-health](docs/data-health.md) |
 | **Nightly schema-drift sweep** (guaranteed cadence, not just on-query) | ✅ | `kind: drift_sweep` scheduled job via `POST /jobs` | [data-health § Nightly drift sweep](docs/data-health.md#nightly-drift-sweep-guaranteed-cadence) |
 
-## D. Lineage
-
-| Capability | Status | Contract | Docs |
-|---|---|---|---|
-| Dependency DAG | ✅ | `GET /lineage/dag`, `/lineage/dag/{node}` | [lineage](docs/lineage.md) |
-| Metric lineage (input columns + upstream) | ✅ | `GET /metrics/{id}/lineage` | [lineage](docs/lineage.md) |
-| Flow/cell column lineage | ✅ | `GET /lineage/flow/{id}`, `/lineage/query/{id}` | [lineage](docs/lineage.md) |
-| **Cross-model column lineage (`resolve_column_lineage`)** | ✅ | `resolve_column_lineage(dag, node_id, column, max_hops)` — alias-aware, cycle-safe, SELECT * fallback | [lineage](docs/lineage.md#cross-model-column-lineage) |
-| **Lineage-driven auto-rebuild (`auto_rebuild_downstream`)** | ✅ | `runtime_config.auto_rebuild_downstream = true` on flow spec; fires downstream flows on upstream success | [lineage](docs/lineage.md#lineage-driven-auto-rebuild) |
-
-## E. Transformation, flows & environments
+## D. Transformation, flows & environments
 
 | Capability | Status | Contract | Docs |
 |---|---|---|---|
@@ -97,7 +87,7 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 | Run **params snapshot** for audit/reproducibility | ✅ | returned by `GET /flows/runs/{id}` & `/flows/{id}/runs` (`params_snapshot`, `code_version`, `seed`) | [transformation](docs/transformation.md) |
 | SQL transpilation (19 dialects) | ✅ | `POST /transpile` | [transformation](docs/transformation.md) |
 
-## F. Version control (git)
+## E. Version control (git)
 
 | Capability | Status | Contract | Docs |
 |---|---|---|---|
@@ -112,7 +102,7 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 > the **project-scoped** endpoints above, which make real authenticated network
 > calls (token delivered via `GIT_ASKPASS`, never in argv).
 
-## G. AI, chat & MCP
+## F. AI, chat & MCP
 
 | Capability | Status | Contract | Docs |
 |---|---|---|---|
@@ -128,16 +118,16 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 > (`tools/list` against the host server) and calls them namespaced as
 > `serverName.toolName`. You are not limited to Nubi's built-in tools.
 
-## H. Embedding (web-component kit)
+## G. Embedding (web-component kit)
 
 | Capability | Status | Contract | Docs |
 |---|---|---|---|
-| Framework-agnostic web components (9) | ✅ | `<nubi-dashboard/kpi/table/chart/query-editor/metric-explorer/lineage/health>` | [embed-api](docs/embed-api.md) |
+| Framework-agnostic web components (8) | ✅ | `<nubi-dashboard/kpi/table/chart/query-editor/metric-explorer/health>` | [embed-api](docs/embed-api.md) |
 | Per-viewer JWT (RS256/ES256), token-locked params | ✅ | `get-token` bridge | [embedding](docs/embedding.md) |
 | 25-token theme contract, cross-filter bus, scope gating | ✅ | `NubiContext` | [embed-api](docs/embed-api.md) |
 | **Per-org rate limiting + embed exemption** — token-bucket keyed by verified org; verified embed tokens exempt on metric/query read paths | ✅ | `middleware/ratelimit.py`; `NUBI_RATELIMIT_QUERY_RPM` (default 120) | [embedding](docs/embedding.md#rate-limiting-and-embed-exemption) |
 
-## I. Audit & governance reads
+## H. Audit & governance reads
 
 | Capability | Status | Contract | Docs |
 |---|---|---|---|
@@ -147,7 +137,7 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 | Spec version/revert for **boards** | ✅ | `/environments` `/versions/board/...` | [transformation](docs/transformation.md) |
 | Spec version/revert for **metrics** | ✅ | `GET /metrics/{id}/versions`, `GET /metrics/{id}/versions/{v}`, `POST /metrics/{id}/revert/{v}` (`author:metric`) | [metrics-reference](docs/metrics-reference.md#spec-version-history-revert) |
 
-## J. Explicitly out of scope (stays with the host)
+## I. Explicitly out of scope (stays with the host)
 
 | Area | Status | Why |
 |---|---|---|
@@ -170,7 +160,7 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 > Offering this runner does **not** cross the "no ML modelling" boundary: it
 > carries no domain semantics and never stores or interprets the model.
 
-## K. Capability accuracy notice (advertised vs. implemented)
+## J. Capability accuracy notice (advertised vs. implemented)
 
 The following EE tier features, network modes, and kernel providers appear in
 internal code as **forward-compat stubs** but are **not yet shipped**. They have
@@ -195,10 +185,10 @@ schema enum) as of 2026-06-26 to avoid misleading hosts.
 
 ---
 
-## L. Nubi Cloud billing (EE-only)
+## K. Nubi Cloud billing (EE-only)
 
 These capabilities live in the `ee/` tree and only activate under a paid
-license or on Nubi Cloud (see §J — billing itself is **out of scope for the
+license or on Nubi Cloud (see §I — billing itself is **out of scope for the
 open-core/embeddable substrate** other CE hosts embed against). Listed here so
 the same "shipped vs. roadmap" contract applies to the Cloud product, not just
 the embeddable core.

@@ -10,6 +10,24 @@ Conventions:
   `[Unreleased]` and updates the matching row in [CAPABILITIES.md](./CAPABILITIES.md).
 - On release, stamp `[Unreleased]` with a version + date.
 
+## [Unreleased]
+
+### Removed
+
+- **Data-lineage feature (dependency DAG + column-level SQL lineage).** Cut as
+  a second-tier governance feature to stay focused. Removed the
+  `backend/app/lineage/` package (`extract_lineage`, `LineageGraph`,
+  `DependencyDAG`, `resolve_metric_lineage`, `resolve_column_lineage`), all
+  `/lineage/*` routes, `GET /metrics/{id}/lineage`, the orphaned
+  lineage-driven flow auto-rebuild hook (`on_materialized_model_complete`,
+  never wired into the live completion path), the `list_lineage` MCP tool
+  (14 tools now, down from 15), the `<nubi-lineage>` embed widget, and the
+  `/lineage` docs + page. The AI grounding catalog and notebook
+  auto-dependency inference — which used the lineage SQL-parsing utility
+  internally — now use a relocated, neutrally-named
+  `app/queries/sql_table_columns.py` and `app/queries/query_graph.py`, so
+  those host features are unaffected.
+
 ## [0.6.2] - 2026-07-09
 
 ### Removed

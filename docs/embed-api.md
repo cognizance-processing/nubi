@@ -327,49 +327,6 @@ metric, dimensions, and time grain, then runs the governed metric query via
 
 ---
 
-### `<nubi-lineage>`
-
-Interactive dependency DAG visualisation. Fetches from `GET /api/v1/lineage/dag`
-(full graph) or `GET /api/v1/lineage/dag/{node-id}?hops=N` (neighbourhood view)
-and renders a columnar SVG layout (table → query → metric columns, nodes as
-rounded rectangles, edges as curved paths).
-
-| Attribute | Required | Meaning |
-|-----------|----------|---------|
-| `get-token` / `token` | — | Bearer JWT |
-| `backend` | No | API base URL. Default `http://localhost:8000`. |
-| `theme` | No | `"dark"` (default) / `"light"`. |
-| `node-id` | No | When set, fetches the neighbourhood of this node id instead of the full DAG. |
-| `hops` | No | Traversal depth when `node-id` is set (default `2`, max `20`). |
-| `no-sample-fallback` | No | Boolean. When present, shows an error state instead of sample data on failure. |
-
-**Events emitted:**
-- `nubi:select` — `{ node }` — user clicked a DAG node. `node` is the full node
-  object `{ id, type, name, tables, outputs, columns }`.
-- `nubi:widget-ready` — `{ nodes, edges, renderer: "lineage" }` — data loaded.
-- `nubi:widget-error` — `{ message }` — fetch failed.
-
-**Sample fallback:** when no backend is configured or the request fails, the
-widget renders a 4-node / 3-edge sample DAG (orders → revenue query → revenue
-metric) so demo pages always display content.
-
-**Example:**
-
-```html
-<!-- Full DAG -->
-<nubi-lineage get-token="getMyToken" backend="https://api.example.com"></nubi-lineage>
-
-<!-- Neighbourhood of a single node, 3 hops -->
-<nubi-lineage
-  get-token="getMyToken"
-  backend="https://api.example.com"
-  node-id="revenue_metric"
-  hops="3"
-></nubi-lineage>
-```
-
----
-
 ### `<nubi-health>`
 
 Data-health score + freshness dashboard widget. Fetches health scores from
@@ -431,9 +388,9 @@ document.querySelector('nubi-query-editor').addEventListener('nubi:run', e => {
 | `nubi:run` | `{ sql?, queryId?, metricId?, dimensions?, timeGrain?, params? }` | query-editor, metric-explorer |
 | `nubi:save` | `{ queryId?, sql?, name? }` | query-editor |
 | `nubi:dirty` | `{ dirty: boolean }` | query-editor |
-| `nubi:select` | `{ column?, value?, row?, node? }` | table, metric-explorer, lineage |
-| `nubi:widget-ready` | `{ rows?, renderer: string, nodes?, edges?, score?, grade?, datasets? }` | kpi, lineage, health |
-| `nubi:widget-error` | `{ message: string }` | kpi, lineage, health |
+| `nubi:select` | `{ column?, value?, row? }` | table, metric-explorer |
+| `nubi:widget-ready` | `{ rows?, renderer: string, score?, grade?, datasets? }` | kpi, health |
+| `nubi:widget-error` | `{ message: string }` | kpi, health |
 | `nubi:error` | `{ message: string, code?: string }` | query-editor, metric-explorer |
 
 ---

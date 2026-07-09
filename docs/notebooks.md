@@ -9,7 +9,7 @@ A notebook in Nubi is a sequence of SQL and Python cells that run in order and s
 > **"Fabric notebooks-in-a-DAG + SQLMesh SQL-first transforms — on your own warehouse."**
 
 - Like **Microsoft Fabric notebooks**: cells are DAG nodes; the same notebook artifact runs interactively (preview) or at scale (scheduled/durable). Unlike Fabric: no OneLake, no ADLS Gen2, no Spark coupling. Your warehouse is the data layer.
-- Like **SQLMesh**: SQL-first authoring, plan-before-apply gate, column-level lineage, cross-engine transpilation via sqlglot. Unlike SQLMesh: no project layout required, no dbt-style `ref()`, works against any BYO connector.
+- Like **SQLMesh**: SQL-first authoring, plan-before-apply gate, cross-engine transpilation via sqlglot. Unlike SQLMesh: no project layout required, no dbt-style `ref()`, works against any BYO connector.
 - Like **Hex**: DAG inferred from cell references; notebook and DAG are the same artifact. Unlike Hex: open-core, self-hostable, BYO warehouse only — no compute cost on preview.
 
 The cost wedge: **preview against 500-row samples costs nothing on the BYO warehouse.** Only durable runs hit the warehouse at full scale.
@@ -178,50 +178,6 @@ SQL cells support a `source_dialect` config key. When present, sqlglot transpile
 This allows authoring BigQuery SQL that runs against a Snowflake datastore without manual rewriting. Transpile runs before RLS injection (never after) so that predicate stripping cannot occur.
 
 **v1 honest limits**: `datastore_id` connector resolution in durable `_handle_query` requires `org_id` on `TaskContext` (added by the Keystone agent). The `_resolve_flow_connector` helper resolves the connector from the datastore registry and returns the target dialect. Preview runs use demo DuckDB when `datastore_id` is absent.
-
----
-
-## Column lineage and plan-before-apply
-
-### Column lineage
-
-`backend/app/flows/lineage.py` provides `build_cell_lineage_graph(spec)` which walks every `query` task in topological order and calls `extract_column_lineage()` (sqlglot-backed) to produce a `CellLineageGraph`:
-
-- `nodes` — per-cell summary (output columns, input edges).
-- `edges` — flat list of `CellColumnEdge` (from_cell, from_col, to_cell, to_col).
-- `column_flow` — inverted index: `"cell_key:output_col"` → list of downstream `"cell_key:input_col"` strings.
-
-Cross-cell tracing works because each SQL cell's source is registered as a virtual table under its key (`cell_revenue → SELECT ...`) in the sqlglot `sources` map, so downstream cells that reference `cell_revenue` get full column-level tracing through the upstream SQL.
-
-### Plan-before-apply
-
-`lineage_plan(spec, changed_cell_key)` returns a plan showing downstream impact before a durable materialize run:
-
-```json
-{
-  "valid": true,
-  "issues": [],
-  "lineage": { "nodes": {…}, "edges": […], "column_flow": {…} },
-  "downstream_impact": [
-    {
-      "cell_key": "final_blend",
-      "change_type": "breaking",
-      "affected_columns": ["revenue"]
-    }
-  ]
-}
-```
-
-`change_type` is `"breaking"` when the affected column is referenced in a WHERE, GROUP BY, JOIN, or HAVING clause of the downstream cell (the column change would silently alter filter behavior). `"non_breaking"` means it only appears in the SELECT list.
-
-### Lineage API endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /lineage/flow/{id}` | Column-level lineage graph for a stored flow (notebook). |
-| `POST /lineage/plan` | Ephemeral plan — accepts `{spec, changed_cell_key}`, returns impact report. No data written. |
-| `POST /lineage/cell` | Ad-hoc single-cell column lineage. Accepts `{sql, dialect, cell_key, upstream_cells: {key: sql}}`. Used by the notebook UI after each preview run. |
-| `GET /lineage/query/{id}` | Lineage for a registered query (extended with `column_edges` from the `query` task lineage). |
 
 ---
 
