@@ -55,10 +55,13 @@ import {
   getTypeInfo,
   getConnectorsByCategory,
   defaultsFor,
+  dialectFor,
 } from '../../data/connectors.js'
 import { provisionLakehouse, formatBytes } from '../../lib/lakehouse.js'
 import { DynamicForm } from './connectorForms.jsx'
 import { toast } from '../../components/ui/Toast.jsx'
+import ConnectorLogo from '../../components/app/ConnectorLogo.jsx'
+import DialectBadge from '../../components/app/DialectBadge.jsx'
 
 // ---------------------------------------------------------------------------
 // API helpers
@@ -73,30 +76,12 @@ const testConnector     = (id)     => api.post(`/connectors/${id}/test`)
 // ---------------------------------------------------------------------------
 // Type badge + icon
 // ---------------------------------------------------------------------------
-
-/** A connector's real brand logo on a faint brand-tinted tile. */
-function ConnectorLogo({ info, size = 24, className = '' }) {
-  const box = size + 18
-  return (
-    <span
-      className={`inline-flex items-center justify-center rounded-xl border shrink-0 ${className}`}
-      style={{
-        width: box,
-        height: box,
-        background: `${info.color}14`,
-        borderColor: `${info.color}33`,
-      }}
-    >
-      <img
-        src={info.logo}
-        alt={`${info.label} logo`}
-        className="object-contain"
-        style={{ width: size, height: size }}
-        loading="lazy"
-      />
-    </span>
-  )
-}
+//
+// ConnectorLogo (the brand-logo chip) now lives in
+// src/components/app/ConnectorLogo.jsx — shared with the connector-instance
+// combobox used in the Queries UI (QueryWorkspace / BlendBuilder) so every
+// place that shows a connector renders the exact same logo chip, with the
+// same graceful fallback to a generic DB icon when a logo is missing.
 
 function TypeBadge({ type }) {
   const info = getTypeInfo(type)
@@ -222,7 +207,10 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
                 Nubi lakehouse
               </span>
             ) : (
-              <TypeBadge type={cfg.connector_type} />
+              <>
+                <TypeBadge type={cfg.connector_type} />
+                <DialectBadge dialect={dialectFor(cfg.connector_type)} />
+              </>
             )}
             {isSystem && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-accent/10 text-accent border border-accent/20">
@@ -526,7 +514,10 @@ function TypePicker({ onSelect, onProvisionManaged, provisioning }) {
               >
                 <ConnectorLogo info={info} size={20} className="mt-0.5" />
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm font-semibold text-fg leading-tight">{info.label}</div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <div className="text-sm font-semibold text-fg leading-tight">{info.label}</div>
+                    <DialectBadge dialect={dialectFor(info.id)} />
+                  </div>
                   <div className="text-[11px] text-muted mt-0.5 line-clamp-2 leading-snug">
                     {info.description}
                   </div>
@@ -586,7 +577,10 @@ function ConnectorForm({ type, initialConfig, initialName, onBack, onSubmit, isE
       <div className="flex items-center gap-3 pb-4 border-b border-border">
         <ConnectorLogo info={info} size={20} />
         <div>
-          <div className="text-sm font-semibold text-fg">{info.label}</div>
+          <div className="flex items-center gap-1.5">
+            <div className="text-sm font-semibold text-fg">{info.label}</div>
+            <DialectBadge dialect={dialectFor(info.id)} />
+          </div>
           <div className="text-xs text-muted">{info.description}</div>
         </div>
         {!isEditing && (

@@ -50,6 +50,7 @@ import {
 import { get, post } from '../../lib/api.js'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
 import SqlEditor from '../../components/SqlEditor.jsx'
+import ConnectorCombobox from '../../components/app/ConnectorCombobox.jsx'
 
 // ---------------------------------------------------------------------------
 // Source limits
@@ -266,16 +267,16 @@ function SourceRow({
           <Database size={11} className="text-primary/70" />
           Connector
         </label>
-        <select
+        <ConnectorCombobox
+          datastores={datastores}
           value={source.datastore_id}
-          onChange={e => set({ datastore_id: e.target.value })}
-          className="h-8 px-2 text-xs bg-surface border border-border rounded-lg text-fg focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer flex-1"
-        >
-          <option value="">Select a connector…</option>
-          {datastores.map(d => (
-            <option key={d.id} value={d.id}>{d.name ?? d.id}</option>
-          ))}
-        </select>
+          onChange={v => set({ datastore_id: v })}
+          allowEmpty
+          emptyLabel="Select a connector…"
+          placeholder="Select a connector…"
+          className="flex-1"
+          triggerClassName="max-w-none w-full"
+        />
       </div>
     </div>
   )

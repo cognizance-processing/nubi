@@ -68,6 +68,7 @@ import {
 
 import SqlEditor from '../../components/SqlEditor.jsx'
 import MetricExposePanel from '../../components/app/MetricExposePanel.jsx'
+import ConnectorCombobox from '../../components/app/ConnectorCombobox.jsx'
 import { metricToDraft, draftToMetricBlock } from './metricBlock.logic.js'
 import QueryCodeView from './QueryCodeView.jsx'
 import DataTable from '../../components/DataTable.jsx'
@@ -666,20 +667,15 @@ function ConnectorPicker({ datastores, value, onChange }) {
         Connector
       </label>
       {hasDatastores ? (
-        <select
+        // Connectors come from GET /connectors. The built-in "Demo data"
+        // connector (id __demo__) is included by the backend ONLY in the
+        // org's demo/default project — it is not hardcoded here.
+        <ConnectorCombobox
           id="primary-connector"
+          datastores={datastores}
           value={value}
-          onChange={e => onChange(e.target.value)}
-          className="h-7 max-w-[180px] rounded-md border border-border bg-surface text-fg text-xs px-2 focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer transition-colors hover:bg-surface-2"
-          title="Run / bind this query against a connector."
-        >
-          {/* Connectors come from GET /connectors. The built-in "Demo data"
-              connector (id __demo__) is included by the backend ONLY in the
-              org's demo/default project — it is not hardcoded here. */}
-          {datastores.map(ds => (
-            <option key={ds.id} value={ds.id}>{ds.name ?? ds.id}</option>
-          ))}
-        </select>
+          onChange={onChange}
+        />
       ) : (
         <Link
           to="/connectors"

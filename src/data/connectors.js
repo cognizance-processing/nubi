@@ -24,6 +24,57 @@
 
 const logo = (file) => `/logos/connectors/${file}`
 
+// ── SQL dialect map (display-only frontend mirror) ──────────────────────────
+//
+// Mirrors backend/app/connectors/dialects.py CONNECTOR_DIALECT verbatim for
+// every real backend connector type, so the UI can show a "dialect" badge
+// next to each connector without a network round-trip. KEEP THESE TWO FILES
+// IN SYNC — if you add/change a connector's dialect in dialects.py, mirror it
+// here too. This map is presentation-only: it never affects what `type`
+// string is submitted to the API (that stays whatever the catalog `id` /
+// `apiType` below already resolves to).
+export const DEFAULT_DIALECT = 'postgres' // mirrors dialects.py DEFAULT_DIALECT
+
+export const CONNECTOR_DIALECT = {
+  // ── verbatim mirror of backend/app/connectors/dialects.py ──────────────
+  postgres: 'postgres',
+  redshift: 'postgres',
+  cockroachdb: 'postgres',
+  cloudsql: 'postgres',
+  duckdb: 'duckdb',
+  snowflake: 'snowflake',
+  bigquery: 'bigquery',
+  mysql: 'mysql',
+  mariadb: 'mysql',
+  sqlserver: 'tsql',
+  azuresql: 'tsql',
+  azuresynapse: 'tsql',
+  oracle: 'oracle',
+  clickhouse: 'clickhouse',
+  trino: 'trino',
+  presto: 'presto',
+  athena: 'trino',
+  databricks: 'databricks',
+  http_json: 'postgres',
+  jdbc: 'postgres',
+
+  // ── frontend-only catalog extensions (not backend ConnectorType literals)
+  //    — all resolve to the duckdb backend factory, so they share its dialect.
+  duckdb_storage: 'duckdb',
+  gcs: 'duckdb',
+  demo: 'duckdb',
+  duckdb_demo: 'duckdb',
+
+  // File-only ingestion sources aren't queryable — no SQL dialect applies.
+  sftp: null,
+  ftp: null,
+}
+
+/** SQL dialect for a connector-type id, for display (badges, etc). */
+export function dialectFor(typeId) {
+  return typeId in CONNECTOR_DIALECT ? CONNECTOR_DIALECT[typeId] : DEFAULT_DIALECT
+}
+
 // ── Field helpers ─────────────────────────────────────────────────────────
 
 const NETWORK_FIELD = {
