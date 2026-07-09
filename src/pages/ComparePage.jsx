@@ -18,7 +18,7 @@
  * so they read on both white surfaces (light) and dark-navy (dark).
  */
 
-import { useState } from 'react'
+import { useState, Fragment } from 'react'
 import { Link } from 'react-router-dom'
 import MarketingStyles from '../components/marketing/MarketingStyles.jsx'
 import useReveal from '../components/marketing/useReveal.js'
@@ -288,6 +288,67 @@ function Tooltip({ text, children }) {
   )
 }
 
+/**
+ * CellText — scannable-first table cell. Short strings render plainly;
+ * long ones clamp to 2 lines with a tap-to-expand "more" affordance
+ * (click-based, not hover-only, so it works on touch devices too).
+ * Keeps every word of the underlying data — nothing is summarised away,
+ * it's just collapsed by default so the matrix reads as short cells
+ * instead of a wall of prose.
+ */
+function CellText({ text, className = '' }) {
+  const [open, setOpen] = useState(false)
+  if (!text || text === '—') return <span className="text-muted/40">—</span>
+  const isLong = text.length > 68
+  if (!isLong) return <span className={className}>{text}</span>
+  return (
+    <div className={className}>
+      <p className={open ? '' : 'line-clamp-2'}>{text}</p>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        className="inline-flex items-center gap-0.5 mt-1 font-mono text-[9.5px] font-medium text-brand-teal/80 hover:text-brand-teal transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded"
+      >
+        {open ? <><ChevronUp size={9} /> less</> : <><ChevronDown size={9} /> more</>}
+      </button>
+    </div>
+  )
+}
+
+/**
+ * Self-host status out of a "Yes — detail" / "No — detail" string.
+ * Anything that doesn't cleanly start with Yes/No (e.g. Nubi's "connector
+ * self-host today, full self-host planned") is treated as partial —
+ * genuinely a third state, not a rounding error, so it gets its own icon.
+ */
+function selfHostStatus(text) {
+  const t = text || ''
+  if (/^Yes\b/i.test(t)) return { state: 'yes', short: 'Yes' }
+  if (/^No\b/i.test(t)) return { state: 'no', short: 'No' }
+  return { state: 'partial', short: 'Partial' }
+}
+
+/** Self-host chip — icon + short label instead of a prose sentence; full
+ *  detail available on hover/focus via the existing Tooltip pattern. */
+function SelfHostChip({ text }) {
+  const { state, short } = selfHostStatus(text)
+  const Icon = state === 'yes' ? CheckCircle2 : state === 'no' ? XCircle : AlertTriangle
+  return (
+    <Tooltip text={text}>
+      <span className={[
+        'inline-flex items-center gap-1 font-mono text-[10.5px] font-semibold px-2 py-0.5 rounded-full border whitespace-nowrap',
+        state === 'yes'
+          ? 'text-brand-teal border-brand-teal/30 bg-brand-teal/10'
+          : 'text-muted border-border bg-surface-2',
+      ].join(' ')}>
+        <Icon size={10} strokeWidth={2.5} />
+        {short}
+      </span>
+    </Tooltip>
+  )
+}
+
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  All-Competitors pricing table — 14 platforms, scrupulously fair           */
 /* ─────────────────────────────────────────────────────────────────────────── */
@@ -502,13 +563,11 @@ const ALL_COMPETITORS = [
 ]
 
 const ALL_COL_HEADERS = [
-  { label: 'Platform', width: 150 },
-  { label: 'Pricing Model', width: 160 },
-  { label: 'Entry Price', width: 170 },
-  { label: 'Seat / Viewer Model', width: 195 },
-  { label: 'Embedding', width: 200 },
-  { label: 'Self-Host', width: 140 },
-  { label: 'Where this tool is genuinely stronger', width: 195 },
+  { label: 'Platform', width: 170 },
+  { label: 'Pricing Model', width: 200 },
+  { label: 'Entry Price', width: 200 },
+  { label: 'Self-Host', width: 150 },
+  { label: 'Details', width: 90 },
 ]
 
 /** Category divider row inside the all-competitors table. */
@@ -528,10 +587,20 @@ function CategoryRow({ label }) {
 /**
  * AllCompetitorsTable — the scrupulously fair comparison.
  * Categories: General BI, Embedded Specialists.
- * Columns: Platform, Pricing Model, Entry Price, Seat / Viewer Model,
- *          Embedding, Self-Host, Where competitors are genuinely stronger.
+ * Default columns are short & scannable: Platform, Pricing Model, Entry
+ * Price, Self-Host (icon chip). Seat/viewer model, embedding, and the
+ * honest "where they're stronger" note live behind a per-row expand —
+ * all the same content, just not forced into view for all 14 rows at once.
  */
 function AllCompetitorsTable() {
+  const [expanded, setExpanded] = useState(() => new Set())
+  const toggle = (name) => setExpanded(prev => {
+    const next = new Set(prev)
+    if (next.has(name)) next.delete(name)
+    else next.add(name)
+    return next
+  })
+
   const generalBI = ALL_COMPETITORS.filter(c =>
     ['General BI','Notebooks + Apps','Headless Semantic Layer','Enterprise BI (LookML)',
      'Viz Industry Standard','Microsoft Ecosystem BI','Open-Source BI','Data Canvas / Narrative BI'].includes(c.category)
@@ -543,100 +612,136 @@ function AllCompetitorsTable() {
   )
 
   function renderRow(c) {
+    const isOpen = expanded.has(c.name)
     return (
-      <tr key={c.name} className={`cp-row cp-matrix-row border-b border-border last:border-0 transition-colors`}>
-        {/* Platform — Nubi row uses gradient, others use solid dim-cell */}
-        <td className={[
-          'sticky left-0 z-10 px-4 py-3.5 align-top border-b border-r border-border transition-colors',
-          c.isNubi ? 'cp-nubi-col' : 'cp-dim-cell',
-        ].join(' ')} style={{ minWidth: 150 }}>
-          <span className={`text-xs font-semibold ${c.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
-            {c.isNubi && '★ '}{c.name}
-          </span>
-          <p className="font-mono text-[10px] text-muted mt-0.5 leading-snug">{c.category}</p>
-        </td>
-        {/* Pricing model */}
-        <td className={['cp-row-cell px-4 py-3.5 text-xs align-top border-b border-r border-border leading-relaxed transition-colors',
-          c.isNubi ? 'cp-nubi-col font-medium text-fg' : 'bg-surface text-muted'].join(' ')}
-          style={{ minWidth: 160 }}>
-          {c.pricingModel}
-        </td>
-        {/* Entry price */}
-        <td className={['cp-row-cell px-4 py-3.5 text-xs align-top border-b border-r border-border leading-relaxed transition-colors',
-          c.isNubi ? 'cp-nubi-col font-medium text-fg' : 'bg-surface text-muted'].join(' ')}
-          style={{ minWidth: 170 }}>
-          {c.entryPrice}
-          {c.entryEst && <EstBadge />}
-        </td>
-        {/* Seat / viewer model */}
-        <td className={['cp-row-cell px-4 py-3.5 text-xs align-top border-b border-r border-border leading-relaxed transition-colors',
-          c.isNubi ? 'cp-nubi-col font-medium text-fg' : 'bg-surface text-muted'].join(' ')}
-          style={{ minWidth: 200 }}>
-          {c.seatModel}
-        </td>
-        {/* Embedding */}
-        <td className={['cp-row-cell px-4 py-3.5 text-xs align-top border-b border-r border-border leading-relaxed transition-colors',
-          c.isNubi ? 'cp-nubi-col font-medium text-fg' : 'bg-surface text-muted'].join(' ')}
-          style={{ minWidth: 200 }}>
-          {c.embedding}
-        </td>
-        {/* Self-Host */}
-        <td className={['cp-row-cell px-4 py-3.5 text-xs align-top border-b border-r border-border leading-relaxed transition-colors',
-          c.isNubi ? 'cp-nubi-col font-medium text-fg' : 'bg-surface text-muted'].join(' ')}
-          style={{ minWidth: 140 }}>
-          {c.selfHost}
-        </td>
-        {/* Where they're stronger (honest acknowledgement) */}
-        <td className={['cp-row-cell px-4 py-3.5 text-xs align-top border-b border-r border-border last:border-r-0 leading-relaxed transition-colors',
-          c.isNubi ? 'cp-nubi-col font-medium text-fg' : 'bg-surface text-muted'].join(' ')}
-          style={{ minWidth: 200 }}>
-          {c.isNubi
-            ? <span className="text-muted italic">{c.weaknesses}</span>
-            : c.strengths}
-        </td>
-      </tr>
+      <Fragment key={c.name}>
+        <tr className="cp-row cp-matrix-row border-b border-border last:border-0 transition-colors">
+          {/* Platform — Nubi row uses gradient, others use solid dim-cell */}
+          <td className={[
+            'sticky left-0 z-10 px-4 py-3.5 align-top border-b border-r border-border transition-colors',
+            c.isNubi ? 'cp-nubi-col' : 'cp-dim-cell',
+          ].join(' ')} style={{ minWidth: 170 }}>
+            <span className={`text-xs font-semibold ${c.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
+              {c.isNubi && '★ '}{c.name}
+            </span>
+            <p className="font-mono text-[10px] text-muted mt-0.5 leading-snug">{c.category}</p>
+          </td>
+          {/* Pricing model */}
+          <td className={['cp-row-cell px-4 py-3.5 text-xs align-top border-b border-r border-border leading-relaxed transition-colors',
+            c.isNubi ? 'cp-nubi-col font-medium text-fg' : 'bg-surface text-muted'].join(' ')}
+            style={{ minWidth: 200 }}>
+            {c.pricingModel}
+          </td>
+          {/* Entry price */}
+          <td className={['cp-row-cell px-4 py-3.5 text-xs align-top border-b border-r border-border leading-relaxed transition-colors',
+            c.isNubi ? 'cp-nubi-col font-medium text-fg' : 'bg-surface text-muted'].join(' ')}
+            style={{ minWidth: 200 }}>
+            {c.entryPrice}
+            {c.entryEst && <EstBadge />}
+          </td>
+          {/* Self-Host — icon chip, short label, full text on hover/focus */}
+          <td className={['px-4 py-3.5 align-top border-b border-r border-border transition-colors',
+            c.isNubi ? 'cp-nubi-col' : 'bg-surface'].join(' ')}
+            style={{ minWidth: 150 }}>
+            <SelfHostChip text={c.selfHost} />
+          </td>
+          {/* Details toggle — reveals seat model, embedding, honest strengths */}
+          <td className={['px-2 py-3.5 text-center align-top border-b border-border last:border-r-0 transition-colors',
+            c.isNubi ? 'cp-nubi-col' : 'bg-surface'].join(' ')}
+            style={{ minWidth: 90 }}>
+            <button
+              type="button"
+              onClick={() => toggle(c.name)}
+              aria-expanded={isOpen}
+              className="inline-flex items-center gap-1 font-mono text-[10px] font-medium text-brand-teal hover:text-brand-teal/80
+                px-2 py-1 rounded-full border border-brand-teal/30 bg-brand-teal/10 transition-colors
+                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {isOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+              {isOpen ? 'Less' : 'More'}
+            </button>
+          </td>
+        </tr>
+        {isOpen && (
+          <tr className="cp-matrix-row border-b border-border last:border-0">
+            <td colSpan={ALL_COL_HEADERS.length}
+              className={['cp-expand-enter px-5 py-5 border-b border-border', c.isNubi ? 'cp-nubi-col' : 'bg-surface-2'].join(' ')}>
+              <div className="grid sm:grid-cols-3 gap-5">
+                <div>
+                  <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-muted mb-1.5">
+                    Seat / viewer model
+                  </p>
+                  <p className="text-xs text-fg leading-relaxed">{c.seatModel}</p>
+                </div>
+                <div>
+                  <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-muted mb-1.5">
+                    Embedding
+                  </p>
+                  <p className="text-xs text-fg leading-relaxed">{c.embedding}</p>
+                </div>
+                <div>
+                  <p className={`font-mono text-[10px] font-semibold uppercase tracking-[0.16em] mb-1.5 ${c.isNubi ? 'text-muted' : 'text-brand-teal'}`}>
+                    {c.isNubi ? 'Honest limitations' : 'Where this tool is genuinely stronger'}
+                  </p>
+                  <p className={`text-xs leading-relaxed ${c.isNubi ? 'text-muted italic' : 'text-fg'}`}>
+                    {c.isNubi ? c.weaknesses : c.strengths}
+                  </p>
+                </div>
+              </div>
+            </td>
+          </tr>
+        )}
+      </Fragment>
     )
   }
 
   return (
-    <div className="cp-table-shell overflow-x-auto overscroll-x-contain rounded-2xl border border-border">
-      <table className="border-collapse" style={{ minWidth: 1100, width: '100%' }}>
-        <thead className="sticky top-0 z-20">
-          <tr>
-            {ALL_COL_HEADERS.map((col, i) => (
-              i === 0 ? (
-                <th key={col.label}
-                  className="sticky left-0 z-30 px-4 py-4 text-left bg-surface-2 border-b border-r border-border"
-                  style={{ minWidth: col.width, width: col.width }}>
-                  <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
-                    {col.label}
-                  </span>
-                </th>
-              ) : (
-                <th key={col.label}
-                  className="px-4 py-4 text-left bg-surface-2 border-b border-r border-border last:border-r-0"
-                  style={{ minWidth: col.width }}>
-                  <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
-                    {col.label}
-                  </span>
-                </th>
-              )
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {/* Nubi row first */}
-          {ALL_COMPETITORS.filter(c => c.isNubi).map(renderRow)}
+    <div>
+      <p className="flex items-center justify-between gap-2 flex-wrap font-mono text-[10px] uppercase tracking-[0.14em] text-muted mb-2">
+        <span>{ALL_COMPETITORS.length} platforms · tap a row for seat model, embedding &amp; honest strengths</span>
+        <span className="flex items-center gap-1 sm:hidden" aria-hidden="true">
+          scroll horizontally <ArrowRight size={11} strokeWidth={2.5} />
+        </span>
+      </p>
+      <div className="cp-table-shell overflow-x-auto overscroll-x-contain rounded-2xl border border-border">
+        <table className="border-collapse" style={{ minWidth: 820, width: '100%' }}>
+          <thead className="sticky top-0 z-20">
+            <tr>
+              {ALL_COL_HEADERS.map((col, i) => (
+                i === 0 ? (
+                  <th key={col.label}
+                    className="sticky left-0 z-30 px-4 py-4 text-left bg-surface-2 border-b border-r border-border"
+                    style={{ minWidth: col.width, width: col.width }}>
+                    <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
+                      {col.label}
+                    </span>
+                  </th>
+                ) : (
+                  <th key={col.label}
+                    className="px-4 py-4 text-left bg-surface-2 border-b border-r border-border last:border-r-0"
+                    style={{ minWidth: col.width }}>
+                    <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
+                      {col.label}
+                    </span>
+                  </th>
+                )
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {/* Nubi row first */}
+            {ALL_COMPETITORS.filter(c => c.isNubi).map(renderRow)}
 
-          {/* General BI section */}
-          <CategoryRow label="General BI tools" />
-          {generalBI.map(renderRow)}
+            {/* General BI section */}
+            <CategoryRow label="General BI tools" />
+            {generalBI.map(renderRow)}
 
-          {/* Embedded analytics section */}
-          <CategoryRow label="Embedded analytics specialists" />
-          {embedded.map(renderRow)}
-        </tbody>
-      </table>
+            {/* Embedded analytics section */}
+            <CategoryRow label="Embedded analytics specialists" />
+            {embedded.map(renderRow)}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
@@ -738,13 +843,13 @@ function PrimaryTable() {
                 {row.label}
               </td>
               <td className="cp-row-cell px-5 py-4 text-xs text-muted align-top bg-surface border-r border-border transition-colors leading-relaxed">
-                {row.hex}
+                <CellText text={row.hex} />
               </td>
               <td className="cp-row-cell px-5 py-4 text-xs text-muted align-top bg-surface border-r border-border transition-colors leading-relaxed">
-                {row.cube}
+                <CellText text={row.cube} />
               </td>
               <td className="cp-nubi-col px-5 py-4 text-xs text-fg font-medium align-top leading-relaxed">
-                {row.nubi}
+                <CellText text={row.nubi} />
               </td>
             </tr>
           ))}
@@ -767,7 +872,7 @@ function FullMatrix() {
       {/* The matrix is intentionally wider than any viewport (14 tools, sticky
           first column) — say so, so the scrollbar reads as designed. */}
       <p className="flex items-center justify-end gap-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-muted mb-2">
-        {cols.length} tools · scroll horizontally
+        {cols.length} tools · scroll horizontally · tap a cell for full detail
         <ArrowRight size={11} strokeWidth={2.5} aria-hidden="true" />
       </p>
       <div className="cp-table-shell overflow-x-auto overscroll-x-contain rounded-2xl border border-border">
@@ -833,13 +938,13 @@ function FullMatrix() {
                   <td key={col.key}
                     className="cp-nubi-col px-4 py-3.5 text-xs align-top border-b border-r border-border leading-relaxed font-medium text-fg"
                     style={{ minWidth: 200 }}>
-                    {value}
+                    <CellText text={value} />
                   </td>
                 ) : (
                   <td key={col.key}
                     className="cp-row-cell px-4 py-3.5 text-xs align-top bg-surface border-b border-r border-border last:border-r-0 leading-relaxed text-muted transition-colors"
                     style={{ minWidth: 160 }}>
-                    {value}
+                    <CellText text={value} />
                     {est && <EstBadge />}
                   </td>
                 )
@@ -1099,6 +1204,26 @@ function WhyBentoCard({ card, idx }) {
 export default function ComparePage() {
   const { data: introData } = INTRO
 
+  /** BI & Embedded Analytics vs Workflow Orchestration — two clearly
+   *  separated categories, tabbed instead of forced into one long scroll.
+   *  Panels stay in the DOM (visually hidden, not unmounted) so in-page
+   *  anchors like #matrix keep working regardless of the active tab. */
+  const [tab, setTab] = useState('bi')
+
+  /** Competitor card grid — show a first screenful, reveal the rest on demand. */
+  const [showAllCompetitors, setShowAllCompetitors] = useState(false)
+  const COMPETITOR_PREVIEW_COUNT = 8
+  const visibleCompetitors = showAllCompetitors
+    ? COMPETITORS
+    : COMPETITORS.slice(0, COMPETITOR_PREVIEW_COUNT)
+
+  function jumpToMatrix() {
+    setTab('bi')
+    requestAnimationFrame(() => {
+      document.getElementById('matrix')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }
+
   return (
     <>
       <MarketingStyles />
@@ -1199,12 +1324,13 @@ export default function ComparePage() {
                       Start free
                       <ArrowRight size={16} strokeWidth={2.5} />
                     </Link>
-                    <a
-                      href="#matrix"
+                    <button
+                      type="button"
+                      onClick={jumpToMatrix}
                       className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-base font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue dark:bg-white/[0.06] dark:border-white/15 dark:text-white dark:hover:bg-white/[0.12] dark:hover:border-white/25 min-h-[48px]"
                     >
                       Jump to the matrix
-                    </a>
+                    </button>
                   </div>
 
                   {/* trust strip — mono, data-tool flavour */}
@@ -1369,83 +1495,9 @@ export default function ComparePage() {
         </section>
 
         {/* ══════════════════════════════════════════════════════════
-            §3  PRIMARY TABLE — Nubi vs Hex vs Cube
-        ══════════════════════════════════════════════════════════ */}
-        <section className="py-16 sm:py-24 bg-bg">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-
-            <SectionHead
-              eyebrow="Primary positioning"
-              title={<>Nubi vs <span className="text-brand-gradient">Hex vs Cube.</span></>}
-            >
-              Hex and Cube bracket the space: <strong className="text-fg font-semibold">Hex is the best
-              collaborative notebook</strong>; <strong className="text-fg font-semibold">Cube is the
-              gold-standard headless semantic layer</strong>. Nubi is batteries-included BI built for embedding.
-            </SectionHead>
-
-            <Reveal>
-              <p className="flex items-center justify-end gap-1 font-mono text-[10px] uppercase tracking-[0.12em] text-muted mb-1.5 sm:hidden" aria-hidden="true">
-                scroll to compare
-                <ArrowRight size={10} strokeWidth={2.5} />
-              </p>
-              <PrimaryTable />
-            </Reveal>
-          </div>
-        </section>
-
-        {/* ══════════════════════════════════════════════════════════
-            §3b  ALL-COMPETITORS TABLE — 14 platforms, scrupulously fair
-            Covers all platforms from the June 2026 research:
-            Metabase, Hex, Cube, Looker, Sigma, Tableau, Power BI,
-            Superset/Preset, Count, Embeddable, Holistics, Luzmo,
-            Omni, GoodData (+ Nubi)
-        ══════════════════════════════════════════════════════════ */}
-        <section className="py-16 sm:py-24 bg-surface-2 border-y border-border">
-          <div className="max-w-[96rem] mx-auto px-4 sm:px-6 lg:px-8">
-
-            <SectionHead
-              wide
-              eyebrow="All 14 platforms compared"
-              title={<>The full picture — <span className="text-brand-gradient">no cherry-picking.</span></>}
-            >
-              Every platform covered in the June 2026 research. Pricing from{' '}
-              <strong className="text-fg font-semibold">public pages or third-party analysts</strong>{' '}
-              (estimated figures marked <EstBadge />). The last column honestly acknowledges{' '}
-              <strong className="text-fg font-semibold">where each competitor is genuinely stronger than Nubi</strong>.
-            </SectionHead>
-
-            {/* No per-seat callout */}
-            <Reveal className="flex justify-center mb-10">
-              <div className="cp-card inline-flex items-start sm:items-center gap-3 px-5 py-4 max-w-2xl text-left">
-                <span className="shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-xl text-white shadow-md"
-                  style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}>
-                  <Users size={16} strokeWidth={2} />
-                </span>
-                <span className="text-sm text-muted leading-relaxed">
-                  <strong className="font-semibold text-fg">Nubi&apos;s headline differentiator:</strong>{' '}
-                  unlimited users and viewers at every tier — no per-seat charge.
-                  You pay for compute, storage, AI calls, and embed sessions,{' '}
-                  <strong className="font-semibold text-fg">never for headcount</strong>.
-                </span>
-              </div>
-            </Reveal>
-
-            <Reveal>
-              <p className="flex items-center justify-end gap-1 font-mono text-[10px] uppercase tracking-[0.12em] text-muted mb-1.5 sm:hidden" aria-hidden="true">
-                scroll to compare
-                <ArrowRight size={10} strokeWidth={2.5} />
-              </p>
-              <AllCompetitorsTable />
-            </Reveal>
-
-            <p className="mt-4 font-mono text-[10.5px] text-muted text-right">
-              data as of June 2026 · prices change frequently — verify at each platform&apos;s pricing page before making a decision
-            </p>
-          </div>
-        </section>
-
-        {/* ══════════════════════════════════════════════════════════
-            §4  WHY NUBI — bento deck on an observatory panel
+            §3  WHY NUBI — bento deck on an observatory panel.
+            Moved ahead of the dense comparison tables so it reads as
+            the "why care" pitch before the "here's the evidence" detail.
         ══════════════════════════════════════════════════════════ */}
         <section className="relative bg-bg px-3 sm:px-5 py-8 sm:py-12">
           <div className="lp-hero-panel relative max-w-[1440px] mx-auto rounded-[1.5rem] sm:rounded-[2rem] overflow-hidden border border-border dark:border-white/[0.06]">
@@ -1494,6 +1546,153 @@ export default function ComparePage() {
         </section>
 
         {/* ══════════════════════════════════════════════════════════
+            §3b  CATEGORY SWITCH — BI/embedded tables and the workflow-
+            orchestration tables are two different product categories.
+            Tabbing them apart (instead of one long forced scroll)
+            is the main "less overwhelming" move on this page.
+            Panels below stay mounted (visually hidden) so in-page
+            anchors like #matrix keep working from either tab.
+        ══════════════════════════════════════════════════════════ */}
+        <section className="bg-bg pb-2 sm:pb-4">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <Reveal className="flex flex-col items-center gap-5">
+              <div
+                role="tablist"
+                aria-label="Comparison category"
+                className="inline-flex flex-wrap justify-center items-center gap-1 p-1 rounded-full bg-surface-2 border border-border"
+              >
+                {[
+                  { key: 'bi', label: 'BI & embedded analytics', icon: Layers, count: `${COMPETITORS.length} platforms` },
+                  { key: 'orchestration', label: 'Workflow orchestration', icon: GitFork, count: `${ORCHESTRATORS.length} tools` },
+                ].map(({ key, label, icon: Icon, count }) => (
+                  <button
+                    key={key}
+                    type="button"
+                    role="tab"
+                    aria-selected={tab === key}
+                    onClick={() => setTab(key)}
+                    className={[
+                      'inline-flex items-center gap-2 px-4 sm:px-5 py-2.5 rounded-full font-mono text-[11px] sm:text-xs font-semibold uppercase tracking-[0.08em] transition-all',
+                      tab === key
+                        ? 'bg-brand-gradient text-white shadow-md'
+                        : 'text-muted hover:text-fg',
+                    ].join(' ')}
+                  >
+                    <Icon size={13} strokeWidth={2.25} />
+                    {label}
+                    <span className={`hidden sm:inline font-normal normal-case tracking-normal ${tab === key ? 'text-white/75' : 'text-muted/70'}`}>
+                      · {count}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {/* In-tab jump nav — only meaningful for the BI tab, which has
+                  three stacked detail sections underneath it. */}
+              {tab === 'bi' && (
+                <div className="flex flex-wrap justify-center gap-2">
+                  {[
+                    { href: '#pricing-table', label: 'Pricing & platforms' },
+                    { href: '#matrix', label: 'Feature matrix' },
+                    { href: '#profiles', label: 'Competitor profiles' },
+                  ].map(l => (
+                    <a
+                      key={l.href}
+                      href={l.href}
+                      className="font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted hover:text-brand-teal border border-border hover:border-brand-teal/40 bg-surface rounded-full px-3 py-1.5 transition-colors"
+                    >
+                      {l.label}
+                    </a>
+                  ))}
+                </div>
+              )}
+            </Reveal>
+          </div>
+        </section>
+
+        {/* ══════════════════════════════════════════════════════════
+            BI & EMBEDDED ANALYTICS TAB
+        ══════════════════════════════════════════════════════════ */}
+        <div className={tab === 'bi' ? '' : 'hidden'}>
+
+        {/* ══════════════════════════════════════════════════════════
+            §3c  PRIMARY TABLE — Nubi vs Hex vs Cube
+        ══════════════════════════════════════════════════════════ */}
+        <section className="py-16 sm:py-24 bg-bg">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+
+            <SectionHead
+              eyebrow="Primary positioning"
+              title={<>Nubi vs <span className="text-brand-gradient">Hex vs Cube.</span></>}
+            >
+              Hex and Cube bracket the space: <strong className="text-fg font-semibold">Hex is the best
+              collaborative notebook</strong>; <strong className="text-fg font-semibold">Cube is the
+              gold-standard headless semantic layer</strong>. Nubi is batteries-included BI built for embedding.
+            </SectionHead>
+
+            <Reveal>
+              <p className="flex items-center justify-end gap-1 font-mono text-[10px] uppercase tracking-[0.12em] text-muted mb-1.5 sm:hidden" aria-hidden="true">
+                scroll to compare
+                <ArrowRight size={10} strokeWidth={2.5} />
+              </p>
+              <PrimaryTable />
+            </Reveal>
+          </div>
+        </section>
+
+        {/* ══════════════════════════════════════════════════════════
+            §3b  ALL-COMPETITORS TABLE — 14 platforms, scrupulously fair
+            Covers all platforms from the June 2026 research:
+            Metabase, Hex, Cube, Looker, Sigma, Tableau, Power BI,
+            Superset/Preset, Count, Embeddable, Holistics, Luzmo,
+            Omni, GoodData (+ Nubi)
+        ══════════════════════════════════════════════════════════ */}
+        <section id="pricing-table" className="py-16 sm:py-24 bg-surface-2 border-y border-border scroll-mt-20">
+          <div className="max-w-[96rem] mx-auto px-4 sm:px-6 lg:px-8">
+
+            <SectionHead
+              wide
+              eyebrow="All 14 platforms compared"
+              title={<>The full picture — <span className="text-brand-gradient">no cherry-picking.</span></>}
+            >
+              Every platform covered in the June 2026 research. Pricing from{' '}
+              <strong className="text-fg font-semibold">public pages or third-party analysts</strong>{' '}
+              (estimated figures marked <EstBadge />). Tap any row to see seat model, embedding,
+              and an honest note on{' '}
+              <strong className="text-fg font-semibold">where that competitor is genuinely stronger than Nubi</strong>.
+            </SectionHead>
+
+            {/* No per-seat callout */}
+            <Reveal className="flex justify-center mb-10">
+              <div className="cp-card inline-flex items-start sm:items-center gap-3 px-5 py-4 max-w-2xl text-left">
+                <span className="shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-xl text-white shadow-md"
+                  style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}>
+                  <Users size={16} strokeWidth={2} />
+                </span>
+                <span className="text-sm text-muted leading-relaxed">
+                  <strong className="font-semibold text-fg">Nubi&apos;s headline differentiator:</strong>{' '}
+                  unlimited users and viewers at every tier — no per-seat charge.
+                  You pay for compute, storage, AI calls, and embed sessions,{' '}
+                  <strong className="font-semibold text-fg">never for headcount</strong>.
+                </span>
+              </div>
+            </Reveal>
+
+            <Reveal>
+              <p className="flex items-center justify-end gap-1 font-mono text-[10px] uppercase tracking-[0.12em] text-muted mb-1.5 sm:hidden" aria-hidden="true">
+                scroll to compare
+                <ArrowRight size={10} strokeWidth={2.5} />
+              </p>
+              <AllCompetitorsTable />
+            </Reveal>
+
+            <p className="mt-4 font-mono text-[10.5px] text-muted text-right">
+              data as of June 2026 · prices change frequently — verify at each platform&apos;s pricing page before making a decision
+            </p>
+          </div>
+        </section>
+
+        {/* ══════════════════════════════════════════════════════════
             §5  FULL FEATURE MATRIX — from matrix.md frontmatter
         ══════════════════════════════════════════════════════════ */}
         <section id="matrix" className="py-16 sm:py-24 bg-bg scroll-mt-20">
@@ -1521,7 +1720,7 @@ export default function ComparePage() {
         {/* ══════════════════════════════════════════════════════════
             §6  COMPETITOR CARDS — from competitors/*.md
         ══════════════════════════════════════════════════════════ */}
-        <section className="py-16 sm:py-24 bg-surface-2 border-y border-border">
+        <section id="profiles" className="py-16 sm:py-24 bg-surface-2 border-y border-border scroll-mt-20">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
 
             <SectionHead
@@ -1533,12 +1732,36 @@ export default function ComparePage() {
             </SectionHead>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-5">
-              {COMPETITORS.map((c, i) => (
+              {visibleCompetitors.map((c, i) => (
                 <CompetitorCard key={c.name} competitor={c} delay={(i % 4) * 70} />
               ))}
             </div>
+
+            {COMPETITORS.length > COMPETITOR_PREVIEW_COUNT && (
+              <div className="flex justify-center mt-8">
+                <button
+                  type="button"
+                  onClick={() => setShowAllCompetitors(v => !v)}
+                  className="inline-flex items-center gap-1.5 font-mono text-xs font-semibold text-brand-teal hover:text-brand-teal/80
+                    px-4 py-2.5 rounded-full border border-brand-teal/30 bg-brand-teal/10 transition-colors
+                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {showAllCompetitors
+                    ? <>Show fewer <ChevronUp size={13} /></>
+                    : <>Show all {COMPETITORS.length} platforms <ChevronDown size={13} /></>}
+                </button>
+              </div>
+            )}
           </div>
         </section>
+
+        </div>
+        {/* ══ end BI & EMBEDDED ANALYTICS TAB ══ */}
+
+        {/* ══════════════════════════════════════════════════════════
+            WORKFLOW ORCHESTRATION TAB
+        ══════════════════════════════════════════════════════════ */}
+        <div className={tab === 'orchestration' ? '' : 'hidden'}>
 
         {/* ══════════════════════════════════════════════════════════
             §7  WORKFLOW ORCHESTRATION — Nubi Flows vs Prefect/Airflow/Dagster/n8n
@@ -1721,6 +1944,9 @@ export default function ComparePage() {
             </p>
           </div>
         </section>
+
+        </div>
+        {/* ══ end WORKFLOW ORCHESTRATION TAB ══ */}
 
         {/* ══════════════════════════════════════════════════════════
             §8  CLOSING CTA — observatory-panel bookend
