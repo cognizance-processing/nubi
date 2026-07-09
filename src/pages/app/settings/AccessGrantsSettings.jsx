@@ -166,6 +166,15 @@ function AddGrantForm({ onSaved, onCancel }) {
 // GrantRow — single grant with delete action
 // ---------------------------------------------------------------------------
 
+// Render a grant value that may arrive as a scalar, an array, or an object
+// (e.g. multi-value grants) without ever falling back to "[object Object]".
+function formatGrantValue(v) {
+  if (v == null) return '∅'
+  if (Array.isArray(v)) return v.map(formatGrantValue).join(', ')
+  if (typeof v === 'object') return v.value ?? v.label ?? v.name ?? v.id ?? JSON.stringify(v)
+  return String(v)
+}
+
 function GrantRow({ grant, canWrite, onDeleted }) {
   const [busy, setBusy] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -200,7 +209,7 @@ function GrantRow({ grant, canWrite, onDeleted }) {
               </span>
             </div>
             <p className="text-xs text-muted mt-1 font-mono truncate">
-              {grant.dimension} = <span className="text-fg font-semibold">{grant.value}</span>
+              {grant.dimension} = <span className="text-fg font-semibold">{formatGrantValue(grant.value)}</span>
             </p>
           </div>
         </div>
