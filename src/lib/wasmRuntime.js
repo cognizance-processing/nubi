@@ -42,6 +42,21 @@ import * as arrow from 'apache-arrow'
 import * as duckdb from '@duckdb/duckdb-wasm'
 import { getAccessToken } from './api.js'
 
+// Self-hosted DuckDB-WASM assets. Vite fingerprints these and serves them from
+// our OWN origin, so `new Worker(url)` is same-origin (browsers forbid workers
+// from a cross-origin URL) and nothing is fetched from a CDN — which also keeps
+// it working under the app's CSP and inside embedded (iframe) hosts.
+import duckdb_mvp_wasm from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url'
+import duckdb_mvp_worker from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url'
+import duckdb_eh_wasm from '@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url'
+import duckdb_eh_worker from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url'
+
+/** Same-origin, Vite-bundled DuckDB-WASM bundles (no jsDelivr CDN). */
+const MANUAL_BUNDLES = {
+  mvp: { mainModule: duckdb_mvp_wasm, mainWorker: duckdb_mvp_worker },
+  eh: { mainModule: duckdb_eh_wasm, mainWorker: duckdb_eh_worker },
+}
+
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? ''
 
 // ---------------------------------------------------------------------------
@@ -67,7 +82,8 @@ let _initPromise = null
 
 /**
  * Lazily initialise DuckDB-WASM once; subsequent calls return the same instance.
- * Uses the jsDelivr CDN bundle — no extra vite config, works without SharedArrayBuffer.
+ * Uses self-hosted (Vite-bundled) assets — no jsDelivr CDN, works without
+ * SharedArrayBuffer and under a strict CSP / inside embedded iframe hosts.
  *
  * @returns {Promise<import('@duckdb/duckdb-wasm').AsyncDuckDB>}
  */
@@ -76,11 +92,11 @@ export function initDuckDB() {
   if (_initPromise) return _initPromise
 
   _initPromise = (async () => {
-    const bundles = duckdb.getJsDelivrBundles()
-    const bundle = await duckdb.selectBundle(bundles)
+    const bundle = await duckdb.selectBundle(MANUAL_BUNDLES)
 
-    const workerUrl = bundle.mainWorker
-    const worker = new Worker(workerUrl, { type: 'module' })
+    // Same-origin worker URL → classic Worker (the browser blocks constructing a
+    // Worker from a cross-origin URL, which is why the CDN bundle failed).
+    const worker = new Worker(bundle.mainWorker)
     const logger = new duckdb.VoidLogger()
     const db = new duckdb.AsyncDuckDB(logger, worker)
 
