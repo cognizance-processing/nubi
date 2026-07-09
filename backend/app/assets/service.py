@@ -89,9 +89,32 @@ async def ingest_avatar_from_url(
 
     try:
         import httpx  # noqa: PLC0415
+        from urllib.parse import urlsplit, urlunsplit  # noqa: PLC0415
 
-        async with httpx.AsyncClient(follow_redirects=True, timeout=10) as http:
-            response = await http.get(src_url)
+        from app.connectors.ssrf import resolve_and_pin  # noqa: PLC0415
+
+        # SSRF guard: resolve the host ONCE, reject loopback/private/link-local/
+        # cloud-metadata targets, and connect to the pinned IP literal so the host
+        # cannot be DNS-rebound between the check and the socket connect. Redirects
+        # are disabled so a 3xx to an internal target cannot bypass the check.
+        pinned = resolve_and_pin(src_url)
+        _ip_literal = f"[{pinned.ip}]" if ":" in pinned.ip else pinned.ip
+        _p = urlsplit(pinned.url)
+        _pinned_url = urlunsplit(
+            (_p.scheme, f"{_ip_literal}:{pinned.port}", _p.path, _p.query, _p.fragment)
+        )
+        _scheme = _p.scheme.lower()
+        _default_port = 443 if _scheme == "https" else 80
+        _host_header = (
+            pinned.host if pinned.port == _default_port else f"{pinned.host}:{pinned.port}"
+        )
+
+        async with httpx.AsyncClient(follow_redirects=False, timeout=10) as http:
+            response = await http.get(
+                _pinned_url,
+                headers={"Host": _host_header},
+                extensions={"sni_hostname": pinned.host},
+            )
 
         if response.status_code != 200:
             logger.warning(
