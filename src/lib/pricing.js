@@ -77,6 +77,7 @@ export const FALLBACK_TIERS = [
       '2 scheduled flows',
       '3 built-in connectors (CSV, DuckDB, Postgres)',
       '10,000 row query cap per execution',
+      '100K AI tokens / month (chat, text-to-SQL)',
       'Nubi branding on all embeds',
       'Community support',
     ],
@@ -102,7 +103,7 @@ export const FALLBACK_TIERS = [
       '1,000 embedded sessions / month',
       '5 connectors',
       '10 dashboards · 3 scheduled flows',
-      '5 AI calls / month',
+      '1M AI tokens / month included',
       'Basic row-level security',
       'Nubi badge removable',
       'Usage wallet — pay-as-you-go overages',
@@ -130,7 +131,7 @@ export const FALLBACK_TIERS = [
       '5,000 embedded sessions / month',
       '15 connectors (incl. cloud)',
       '30 dashboards · 8 scheduled flows',
-      '15 AI calls / month · 10 agent / kernel runs',
+      '5M AI tokens / month included · 10 agent / kernel runs',
       'Basic row-level security',
       'Nubi badge removable',
       'Usage wallet — pay-as-you-go overages',
@@ -156,7 +157,8 @@ export const FALLBACK_TIERS = [
     features: [
       'Unlimited editors & viewers — no per-seat charge',
       '25,000 embedded sessions / month',
-      '50 AI calls / month · 50 agent / kernel runs',
+      '15M AI tokens / month included · 50 agent / kernel runs',
+      'Bring your own AI provider key (skip the wallet)',
       'All connectors',
       '100 dashboards · 20 scheduled flows',
       'Full RLS with JWT claims',
@@ -186,7 +188,8 @@ export const FALLBACK_TIERS = [
     features: [
       'Unlimited editors & viewers — no per-seat charge',
       'Unlimited embedded sessions',
-      '500 AI calls / month · 1,000 agent / kernel runs',
+      '100M AI tokens / month included · 1,000 agent / kernel runs',
+      'Bring your own AI provider key (skip the wallet)',
       'All connectors + custom connector SDK',
       'Unlimited dashboards & scheduled flows',
       'Full RLS + host-signed JWT pass-through',
@@ -457,9 +460,24 @@ export const FALLBACK_COMPETITORS_ORCHESTRATION = [
  * beyond the tier's included quota.
  *
  * What draws from the wallet:
- *   - AI calls (Anthropic token pass-through) → ai_call_zar_per_call
+ *   - AI tokens (real-time provider token pass-through, cost + markup) →
+ *     ai_token_markup_pct / ai_token_reference_usd_per_1m
  *   - Embedded sessions (CDN egress + edge compute) → session_zar_per_10k
  *   - Agent / kernel runs (on-demand remote-kernel escape hatch) → agent_run_zar_per_run
+ *
+ * AI billing model (matches backend app.ee.billing.token_billing):
+ *   Each tier includes a free monthly LLM TOKEN allowance (prompt + completion
+ *   tokens summed across every metered call — see AI_TOKEN_ALLOWANCE below).
+ *   Tokens beyond that allowance are billed in REAL TIME at the provider's
+ *   actual USD cost for that call × (1 + NUBI_TOKEN_MARKUP_PCT / 100) — a pure
+ *   cost pass-through, not a flat per-call rate. There is therefore no single
+ *   fixed ZAR/token rate: the real charge depends on which model you use
+ *   (Haiku-class models cost a fraction of Opus-class). This calculator uses
+ *   `ai_token_reference_usd_per_1m` (a Haiku-class blended reference — see
+ *   backend/app/ee/billing/tiers.py's COGS notes) purely to ballpark an
+ *   overage estimate; your actual bill is metered per call, per model.
+ *   Bringing your own provider key (Settings → AI providers) makes calls to
+ *   that vendor bypass the wallet entirely — you pay the vendor directly.
  *
  * What is ALWAYS FREE (zero wallet draw, zero server COGS):
  *   - Nubi has no hosted warehouse: every dashboard view runs DuckDB-WASM in
@@ -467,59 +485,104 @@ export const FALLBACK_COMPETITORS_ORCHESTRATION = [
  *   - Viewer seats at any tier: viewing a pre-computed dashboard is free.
  */
 export const WALLET_OVERAGE_RATES = {
-  ai_call_zar_per_call:     5,      // R5/AI call (Haiku grounding or Sonnet chat)
-  session_zar_per_10k:      50,     // R50/10,000 embedded sessions (CDN egress; public exports)
-  agent_run_zar_per_run:    2,      // R2/agent or kernel run (Pro+ E2B)
+  session_zar_per_10k:            50,    // R50/10,000 embedded sessions (CDN egress; public exports)
+  agent_run_zar_per_run:          2,     // R2/agent or kernel run (Team+ E2B)
+  ai_token_markup_pct:            7.5,   // NUBI_TOKEN_MARKUP_PCT — matches backend/app/config.py
+  ai_token_reference_usd_per_1m:  0.25,  // Haiku-class blended reference (illustrative only)
+}
+
+/**
+ * Free monthly AI-token allowance per tier — mirrors
+ * backend/app/ee/billing/tiers.py `TierLimits.max_ai_tokens_per_month`.
+ * This is the ACTIVE AI billing meter (prompt + completion tokens summed
+ * across every metered call); the legacy per-call `ai_calls` quota is retired.
+ */
+export const AI_TOKEN_ALLOWANCE = {
+  free: 100_000,
+  starter: 1_000_000,
+  team: 5_000_000,
+  pro: 15_000_000,
+  enterprise: 100_000_000,
+}
+
+/**
+ * Format a token count compactly, e.g. 1_000_000 → "1M", 100_000 → "100K".
+ * @param {number} n
+ * @returns {string}
+ */
+export function formatTokens(n) {
+  const v = Number(n) || 0
+  if (v >= 1_000_000) return (v / 1_000_000).toLocaleString('en-US', { maximumFractionDigits: 1 }) + 'M'
+  if (v >= 1_000) return (v / 1_000).toLocaleString('en-US', { maximumFractionDigits: 0 }) + 'K'
+  return v.toLocaleString('en-US')
 }
 
 const NUBI_TIERS_CALC = [
   {
     id: 'free', name: 'Free', usd_monthly: 0,
-    quotas: { connectors: 3, embedded_sessions: 0, agent_runs: 0, ai_calls: 0 },
+    quotas: { connectors: 3, embedded_sessions: 0, agent_runs: 0, ai_tokens: AI_TOKEN_ALLOWANCE.free },
     overages: null,
   },
   {
     id: 'starter', name: 'Starter', usd_monthly: 9,
-    quotas: { connectors: 5, embedded_sessions: 1000, agent_runs: 0, ai_calls: 5 },
+    quotas: { connectors: 5, embedded_sessions: 1000, agent_runs: 0, ai_tokens: AI_TOKEN_ALLOWANCE.starter },
     overages: {
-      ai_call_zar_per_call: WALLET_OVERAGE_RATES.ai_call_zar_per_call,
       session_zar_per_10k: WALLET_OVERAGE_RATES.session_zar_per_10k,
       agent_run_zar_per_run: null,
+      ai_token_overage: true,
     },
   },
   {
     id: 'team', name: 'Team', usd_monthly: 49,
-    quotas: { connectors: 15, embedded_sessions: 5000, agent_runs: 10, ai_calls: 15 },
+    quotas: { connectors: 15, embedded_sessions: 5000, agent_runs: 10, ai_tokens: AI_TOKEN_ALLOWANCE.team },
     overages: {
-      ai_call_zar_per_call: WALLET_OVERAGE_RATES.ai_call_zar_per_call,
       session_zar_per_10k: WALLET_OVERAGE_RATES.session_zar_per_10k,
       agent_run_zar_per_run: WALLET_OVERAGE_RATES.agent_run_zar_per_run,
+      ai_token_overage: true,
     },
   },
   {
     id: 'pro', name: 'Pro', usd_monthly: 149,
-    quotas: { connectors: Infinity, embedded_sessions: 25000, agent_runs: 50, ai_calls: 50 },
+    quotas: { connectors: Infinity, embedded_sessions: 25000, agent_runs: 50, ai_tokens: AI_TOKEN_ALLOWANCE.pro },
     overages: {
-      ai_call_zar_per_call: WALLET_OVERAGE_RATES.ai_call_zar_per_call,
       session_zar_per_10k: WALLET_OVERAGE_RATES.session_zar_per_10k,
       agent_run_zar_per_run: WALLET_OVERAGE_RATES.agent_run_zar_per_run,
+      ai_token_overage: true,
     },
   },
   {
     id: 'enterprise', name: 'Enterprise', usd_monthly: 1000,
-    quotas: { connectors: Infinity, embedded_sessions: Infinity, agent_runs: 1000, ai_calls: 500 },
+    quotas: { connectors: Infinity, embedded_sessions: Infinity, agent_runs: 1000, ai_tokens: AI_TOKEN_ALLOWANCE.enterprise },
     overages: {
-      ai_call_zar_per_call: WALLET_OVERAGE_RATES.ai_call_zar_per_call,
       session_zar_per_10k: 0,
       agent_run_zar_per_run: WALLET_OVERAGE_RATES.agent_run_zar_per_run,
+      ai_token_overage: true,
     },
   },
 ]
 
 /**
+ * Estimate the ZAR overage cost for `tokensOver` tokens beyond a tier's free
+ * allowance, using the Haiku-class reference rate + markup (illustrative —
+ * see WALLET_OVERAGE_RATES docstring). Mirrors the SHAPE of the backend's
+ * `compute_token_charge` (cost × (1 + markup/100) × fx_rate) but with a fixed
+ * reference USD/1M-token cost rather than a real per-call provider cost.
+ *
+ * @param {number} tokensOver
+ * @param {number} rate  USD→ZAR rate
+ * @returns {number}
+ */
+function estimateAiTokenOverageZar(tokensOver, rate) {
+  if (tokensOver <= 0) return 0
+  const usdCost = (tokensOver / 1_000_000) * WALLET_OVERAGE_RATES.ai_token_reference_usd_per_1m
+  const usdMarkedUp = usdCost * (1 + WALLET_OVERAGE_RATES.ai_token_markup_pct / 100)
+  return usdMarkedUp * rate
+}
+
+/**
  * Recommend a Nubi tier for the given usage and compute total ZAR cost.
  *
- * @param {{ embedded_sessions, ai_calls, agent_runs, connectors, flow_runs_per_month }} usage
+ * @param {{ embedded_sessions, ai_tokens, agent_runs, connectors, flow_runs_per_month }} usage
  * @param {number|null} fxRate
  * @param {{ minTierId?: string }} [opts]  minTierId floors the recommendation
  * @returns {{ tier, base_zar, overage_zar, total_zar, overages, is_exact_fit }}
@@ -539,7 +602,7 @@ export function recommendNubi(usage, fxRate, opts = {}) {
       (q.connectors === Infinity || q.connectors >= usage.connectors) &&
       (q.embedded_sessions === Infinity || q.embedded_sessions >= usage.embedded_sessions) &&
       (q.agent_runs === Infinity || q.agent_runs >= usage.agent_runs) &&
-      (q.ai_calls === Infinity || q.ai_calls >= (usage.ai_calls ?? 0))
+      (q.ai_tokens === Infinity || q.ai_tokens >= (usage.ai_tokens ?? 0))
 
     if (fits) {
       const base_zar = computeZar(tier.usd_monthly, rate)
@@ -570,11 +633,11 @@ export function recommendNubi(usage, fxRate, opts = {}) {
       overage_zar += cost
       overageItems.push({ label: `${runs} extra agent runs`, zar: cost })
     }
-    if (q.ai_calls !== Infinity && (usage.ai_calls ?? 0) > q.ai_calls && ov.ai_call_zar_per_call) {
-      const calls = usage.ai_calls - q.ai_calls
-      const cost = calls * ov.ai_call_zar_per_call
+    if (q.ai_tokens !== Infinity && (usage.ai_tokens ?? 0) > q.ai_tokens && ov.ai_token_overage) {
+      const tokensOver = usage.ai_tokens - q.ai_tokens
+      const cost = estimateAiTokenOverageZar(tokensOver, rate)
       overage_zar += cost
-      overageItems.push({ label: `${calls.toLocaleString()} extra AI calls`, zar: cost })
+      overageItems.push({ label: `${formatTokens(tokensOver)} extra AI tokens (est.)`, zar: cost })
     }
 
     const base_zar = computeZar(tier.usd_monthly, rate)

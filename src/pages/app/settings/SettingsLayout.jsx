@@ -12,6 +12,7 @@
  *     /settings/organization   → OrgSettings        (general)
  *     /settings/members        → MembersSettings
  *     /settings/integrations   → IntegrationsSettings
+ *     /settings/ai-providers   → AiProvidersSettings (model picker overview + BYO provider keys)
  *     /settings/bridges        → BridgesSettings    (VPC / on-prem agents + tokens)
  *     /settings/security       → SecuritySettings   (org-level: embed JWT trust)
  *     /settings/usage          → UsageSettings      (open-core usage metering)
@@ -40,6 +41,7 @@ import {
   Gauge,
   Cpu,
   Key,
+  Bot,
 } from 'lucide-react'
 import { useOrg } from '../../../contexts/OrgContext.jsx'
 import { useProject } from '../../../contexts/ProjectContext.jsx'
@@ -133,6 +135,7 @@ export default function SettingsLayout() {
         <SettingsNavItem to="/settings/organization" label="General"      Icon={Building2} />
         <SettingsNavItem to="/settings/members"      label="Members"      Icon={Users} />
         <SettingsNavItem to="/settings/integrations" label="Integrations" Icon={Plug} />
+        <SettingsNavItem to="/settings/ai-providers" label="AI providers" Icon={Bot} />
         <SettingsNavItem to="/settings/mcp"          label="MCP servers"  Icon={Cpu} />
         <SettingsNavItem to="/settings/bridges"      label="Bridges"      Icon={Network} />
         <SettingsNavItem to="/settings/security"     label="Security"     Icon={ShieldCheck} />

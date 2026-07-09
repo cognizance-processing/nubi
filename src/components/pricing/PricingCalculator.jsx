@@ -31,7 +31,7 @@ import {
   GitBranch, Server, BarChart3, Wallet,
 } from 'lucide-react'
 import {
-  formatZar, recommendNubi,
+  formatZar, formatTokens, recommendNubi,
   FALLBACK_COMPETITORS_BI, FALLBACK_COMPETITORS_ORCHESTRATION,
   WALLET_OVERAGE_RATES,
 } from '../../lib/pricing.js'
@@ -68,6 +68,49 @@ function UsageInput({ label, icon: Icon, value, onChange, min = 0, max, step = 1
         />
         <span className="w-20 text-right text-sm font-mono font-medium text-fg shrink-0">
           {value.toLocaleString()}{unit}
+        </span>
+      </div>
+    </label>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// TokenUsageInput — a log-scale slider for AI tokens/month (linear sliders
+// don't work across a 0 .. 200,000,000 range). Steps through a fixed set of
+// realistic milestones so every position lands on a "clean" number.
+// ---------------------------------------------------------------------------
+
+const AI_TOKEN_STEPS = [
+  0, 50_000, 100_000, 250_000, 500_000, 1_000_000, 2_000_000, 5_000_000,
+  10_000_000, 15_000_000, 25_000_000, 50_000_000, 100_000_000, 200_000_000,
+]
+
+function nearestStepIndex(value) {
+  let idx = AI_TOKEN_STEPS.findIndex((v) => v >= value)
+  if (idx === -1) idx = AI_TOKEN_STEPS.length - 1
+  return idx
+}
+
+function TokenUsageInput({ label, icon: Icon, value, onChange }) {
+  const idx = nearestStepIndex(value)
+  return (
+    <label className="flex flex-col gap-1.5">
+      <span className="flex items-center gap-1.5 text-xs font-medium text-muted uppercase tracking-wide">
+        {Icon && <Icon size={12} />}
+        {label}
+      </span>
+      <div className="flex items-center gap-2">
+        <input
+          type="range"
+          min={0}
+          max={AI_TOKEN_STEPS.length - 1}
+          step={1}
+          value={idx}
+          onChange={(e) => onChange(AI_TOKEN_STEPS[Number(e.target.value)])}
+          className="flex-1 h-1.5 rounded-full accent-accent cursor-pointer"
+        />
+        <span className="w-20 text-right text-sm font-mono font-medium text-fg shrink-0">
+          {formatTokens(value)}
         </span>
       </div>
     </label>
@@ -171,10 +214,16 @@ function NubiRecommendation({ recommendation, fxRate, seats }) {
             A <strong className="text-fg">monthly spend cap</strong> prevents runaway charges.
           </p>
           <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 pt-1 text-[11px]">
-            <span>AI calls: R {WALLET_OVERAGE_RATES.ai_call_zar_per_call}/call</span>
+            <span>AI tokens: cost + {WALLET_OVERAGE_RATES.ai_token_markup_pct}% (real-time, est.)</span>
             <span>Sessions: R {WALLET_OVERAGE_RATES.session_zar_per_10k}/10k</span>
             <span>Agent runs: R {WALLET_OVERAGE_RATES.agent_run_zar_per_run}/run</span>
           </div>
+          <p className="pt-1">
+            AI tokens are billed differently: each call is charged in real time at the
+            provider's actual token cost + {WALLET_OVERAGE_RATES.ai_token_markup_pct}% markup — never
+            a flat per-call fee. Bring your own provider key (Settings → AI providers)
+            and those calls skip the wallet entirely.
+          </p>
         </div>
       )}
 
@@ -462,7 +511,7 @@ function OrchComparisonSection({ competitors, orchUsage, onOrchUsage, fxRate, re
 
 const DEFAULT_USAGE = {
   embedded_sessions: 10000,
-  ai_calls: 50,
+  ai_tokens: 2_000_000,
   agent_runs: 20,
   connectors: 5,
   flow_runs_per_month: 2000,
@@ -528,12 +577,11 @@ export default function PricingCalculator({
             onChange={(v) => setField('embedded_sessions', v)}
             min={0} max={200000} step={1000}
           />
-          <UsageInput
-            label="AI / LLM calls / month"
+          <TokenUsageInput
+            label="AI tokens / month"
             icon={Sparkles}
-            value={usage.ai_calls}
-            onChange={(v) => setField('ai_calls', v)}
-            min={0} max={5000} step={10}
+            value={usage.ai_tokens}
+            onChange={(v) => setField('ai_tokens', v)}
           />
           <UsageInput
             label="Agent / kernel runs / month"

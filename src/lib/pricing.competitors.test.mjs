@@ -3,6 +3,8 @@
  *   - Nubi has no hosted warehouse: no storage / compute-unit billing meter
  *   - flow/pipeline runs are NOT a tier-gating meter (Nubi has no warehouse
  *     compute dimension for their cost to flow through)
+ *   - AI billing is TOKEN-based (real-time provider cost + markup, with a
+ *     free monthly token allowance per tier) — not the old flat per-call rate
  *   - competitor models are finite, non-negative, and free of the old
  *     embedded-sessions→viewers inflation
  *   - the reconciled per-competitor numbers (Hex $50, Lightdash $150/dev,
@@ -17,7 +19,9 @@ import assert from 'node:assert/strict'
 import {
   recommendNubi,
   computeZar,
+  formatTokens,
   WALLET_OVERAGE_RATES,
+  AI_TOKEN_ALLOWANCE,
   FALLBACK_COMPETITORS_BI,
   FALLBACK_COMPETITORS_ORCHESTRATION,
   FALLBACK_TIERS,
@@ -37,10 +41,28 @@ const ORCH_USAGE = {
 // No storage / compute-unit dimension — Nubi has no hosted warehouse
 // ---------------------------------------------------------------------------
 
-test('wallet overage rates have no storage or compute-unit dimension', () => {
+test('wallet overage rates have no storage, compute-unit, or flat per-call AI dimension', () => {
   assert.equal(WALLET_OVERAGE_RATES.storage_zar_per_gb, undefined)
   assert.equal(WALLET_OVERAGE_RATES.compute_zar_per_1000_cu, undefined)
-  assert.equal(WALLET_OVERAGE_RATES.ai_call_zar_per_call, 5)
+  // The old flat per-call rate is retired — AI is now real-time token pass-through.
+  assert.equal(WALLET_OVERAGE_RATES.ai_call_zar_per_call, undefined)
+  assert.equal(WALLET_OVERAGE_RATES.ai_token_markup_pct, 7.5, 'must mirror backend NUBI_TOKEN_MARKUP_PCT')
+  assert.ok(WALLET_OVERAGE_RATES.ai_token_reference_usd_per_1m > 0)
+})
+
+test('AI_TOKEN_ALLOWANCE mirrors backend tiers.py max_ai_tokens_per_month', () => {
+  assert.equal(AI_TOKEN_ALLOWANCE.free, 100_000)
+  assert.equal(AI_TOKEN_ALLOWANCE.starter, 1_000_000)
+  assert.equal(AI_TOKEN_ALLOWANCE.team, 5_000_000)
+  assert.equal(AI_TOKEN_ALLOWANCE.pro, 15_000_000)
+  assert.equal(AI_TOKEN_ALLOWANCE.enterprise, 100_000_000)
+})
+
+test('formatTokens renders compact K/M token counts', () => {
+  assert.equal(formatTokens(100_000), '100K')
+  assert.equal(formatTokens(1_000_000), '1M')
+  assert.equal(formatTokens(2_500_000), '2.5M')
+  assert.equal(formatTokens(0), '0')
 })
 
 test('recommendNubi prices agent-run overage at R2/run (no fitting tier)', () => {
@@ -56,21 +78,25 @@ test('recommendNubi prices agent-run overage at R2/run (no fitting tier)', () =>
   assert.equal(agentItem.zar, 200 * 2)
 })
 
-test('recommendNubi prices AI-call overage at R5/call (no fitting tier)', () => {
-  // AI calls are bounded even on Enterprise (500/mo), so an AI-call count above
-  // that forces the "no exact fit" overage path. 700 calls → 200 over × R5.
+test('recommendNubi prices AI-token overage at reference cost + markup (no fitting tier)', () => {
+  // AI tokens are bounded even on Enterprise (100,000,000/mo), so a token
+  // count above that forces the "no exact fit" overage path.
+  const tokensOver = 2_000_000
   const rec = recommendNubi(
-    { embedded_sessions: 0, agent_runs: 0, ai_calls: 700, connectors: 1 },
+    { embedded_sessions: 0, agent_runs: 0, ai_tokens: AI_TOKEN_ALLOWANCE.enterprise + tokensOver, connectors: 1 },
     16.26,
   )
-  const aiItem = rec.overages.find((o) => /ai call/i.test(o.label))
-  assert.ok(aiItem, 'expected an AI-call overage line')
-  assert.equal(aiItem.zar, 200 * 5)
+  const aiItem = rec.overages.find((o) => /ai token/i.test(o.label))
+  assert.ok(aiItem, 'expected an AI-token overage line')
+  const expectedUsd = (tokensOver / 1_000_000) * WALLET_OVERAGE_RATES.ai_token_reference_usd_per_1m
+  const expectedMarkedUp = expectedUsd * (1 + WALLET_OVERAGE_RATES.ai_token_markup_pct / 100)
+  const expectedZar = expectedMarkedUp * 16.26
+  assert.ok(Math.abs(aiItem.zar - expectedZar) < 1e-9, `${aiItem.zar} !== ${expectedZar}`)
 })
 
-test('recommendNubi treats missing ai_calls as 0 (back-compat with callers that omit it)', () => {
+test('recommendNubi treats missing ai_tokens as 0 (back-compat with callers that omit it)', () => {
   const rec = recommendNubi({ embedded_sessions: 0, agent_runs: 0, connectors: 1 }, null)
-  assert.equal(rec.tier.id, 'free', 'omitting ai_calls must not force a paid tier')
+  assert.equal(rec.tier.id, 'free', 'omitting ai_tokens must not force a paid tier')
 })
 
 // ---------------------------------------------------------------------------

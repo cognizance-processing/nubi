@@ -103,6 +103,7 @@ const MembersSettings = lazy(() => import('./pages/app/settings/MembersSettings.
 const ProjectSettings = lazy(() => import('./pages/app/settings/ProjectSettings.jsx'))
 const SecuritySettings = lazy(() => import('./pages/app/settings/SecuritySettings.jsx'))
 const IntegrationsSettings = lazy(() => import('./pages/app/settings/IntegrationsSettings.jsx'))
+const AiProvidersSettings = lazy(() => import('./pages/app/settings/AiProvidersSettings.jsx'))
 const BridgesSettings = lazy(() => import('./pages/app/settings/BridgesSettings.jsx'))
 const UsageSettings = lazy(() => import('./pages/app/settings/UsageSettings.jsx'))
 const McpSettings = lazy(() => import('./pages/app/settings/McpSettings.jsx'))
@@ -325,6 +326,7 @@ export default function App() {
             <Route path="organization" element={<OrgSettings />} />
             <Route path="members" element={<MembersSettings />} />
             <Route path="integrations" element={<IntegrationsSettings />} />
+            <Route path="ai-providers" element={<AiProvidersSettings />} />
             <Route path="bridges" element={<BridgesSettings />} />
             <Route path="usage" element={<UsageSettings />} />
             <Route path="project" element={<ProjectSettings />} />

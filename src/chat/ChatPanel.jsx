@@ -16,40 +16,31 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import {
-  X, Sparkles, Send, Square, ChevronDown, AlertCircle,
+  X, Sparkles, Send, Square, AlertCircle,
   Check, Loader2, Bot, Pin, ExternalLink,
 } from 'lucide-react'
 import MarkdownRenderer from '../components/MarkdownRenderer.jsx'
 import ToolCard from './ToolCard.jsx'
 import { toolLabel } from './toolMeta.js'
 import { streamChatMessage, pinAnswer } from './chatApi.js'
+import ModelPicker, { MODEL_DEFAULT_VALUE } from '../components/ai/ModelPicker.jsx'
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-// Model ids MUST match the backend allowlist (POST /api/v1/ai/chat → `model`).
-// An unknown id returns 400 model_not_allowed, surfaced in the chat error UI.
-const MODELS = [
-  { id: 'default',           label: 'Nubi Default'    },
-  { id: 'claude-opus-4-8',   label: 'Claude Opus 4.8' },
-  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-  { id: 'claude-haiku-4-5',  label: 'Claude Haiku 4.5' },
-  { id: 'gpt-4o',            label: 'GPT-4o'          },
-  { id: 'gpt-4o-mini',       label: 'GPT-4o mini'     },
-  { id: 'gemini-1.5-pro',    label: 'Gemini 1.5 Pro'  },
-  { id: 'gemini-1.5-flash',  label: 'Gemini 1.5 Flash' },
-]
-
 // Persist the model choice like other UI prefs (e.g. nubi-theme, nubi-sidebar-*).
+// The model list itself is fetched live from GET /ai/providers (ModelPicker) —
+// it self-corrects back to the default sentinel if a stored id is no longer
+// valid (e.g. the operator disabled that provider).
 const MODEL_STORAGE_KEY = 'nubi-chat-model'
 
 function loadStoredModel() {
   try {
     const stored = localStorage.getItem(MODEL_STORAGE_KEY)
-    if (stored && MODELS.some(m => m.id === stored)) return stored
+    if (stored) return stored
   } catch { /* localStorage unavailable (private mode / SSR) — ignore */ }
-  return MODELS[0].id
+  return MODEL_DEFAULT_VALUE
 }
 
 const SUGGESTIONS = [
@@ -357,7 +348,7 @@ export function ChatPanel({ onClose }) {
     try {
       await streamChatMessage({
         messages: history.map(m => ({ role: m.role === 'error' ? 'user' : m.role, content: m.content })),
-        model: selectedModel === 'default' ? undefined : selectedModel,
+        model: selectedModel === MODEL_DEFAULT_VALUE ? undefined : selectedModel,
         onEvent: handleEvent,
         signal: controller.signal,
       })
@@ -402,18 +393,7 @@ export function ChatPanel({ onClose }) {
           </div>
 
           <div className="flex items-center gap-1.5">
-            <div className="relative">
-              <select
-                value={selectedModel}
-                onChange={e => setModel(e.target.value)}
-                disabled={loading}
-                aria-label="Select AI model"
-                className="appearance-none pl-2.5 pr-6 py-1 text-[11px] font-sans font-medium text-muted bg-surface-2 border border-border rounded-lg hover:border-primary hover:text-fg disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer focus:outline-none focus:ring-2 focus:ring-ring transition-colors"
-              >
-                {MODELS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
-              </select>
-              <ChevronDown size={11} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
-            </div>
+            <ModelPicker value={selectedModel} onChange={setModel} disabled={loading} />
             <button
               onClick={onClose}
               aria-label="Close chat panel"

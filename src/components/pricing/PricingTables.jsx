@@ -71,7 +71,7 @@ const WALLET_STEPS = [
     color: 'text-accent',
     bg: 'bg-accent/10',
     title: 'Flat plan subscription',
-    body: 'Pay a fixed monthly or annual fee for your tier. Your included quota — embedded sessions, AI calls, agent runs — is consumed first at no extra charge.',
+    body: 'Pay a fixed monthly or annual fee for your tier. Your included quota — embedded sessions, AI tokens, agent runs — is consumed first at no extra charge.',
   },
   {
     icon: Wallet,
@@ -176,7 +176,7 @@ function WalletExplainerBody() {
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
           {[
             { label: 'Embedded sessions', note: 'per 10,000' },
-            { label: 'AI / LLM calls', note: 'per call' },
+            { label: 'AI tokens', note: 'real-time, cost + 7.5%' },
             { label: 'Agent / kernel runs', note: 'per run' },
           ].map(({ label, note }) => (
             <div key={label} className="rounded-lg border border-border bg-surface px-3 py-2">
@@ -195,9 +195,9 @@ function WalletExplainerBody() {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_OVERAGES = [
-  { metric: 'Embedded sessions',  rate: 'R 50 / 10,000 sessions',  note: 'Free on Enterprise; drawn from wallet' },
-  { metric: 'AI / LLM calls',     rate: 'R 5 / call',              note: 'Haiku grounding or Sonnet chat; drawn from wallet' },
-  { metric: 'Agent / kernel run', rate: 'R 2 / run',               note: 'Team+ remote kernel (E2B); drawn from wallet' },
+  { metric: 'Embedded sessions',  rate: 'R 50 / 10,000 sessions',        note: 'Free on Enterprise; drawn from wallet' },
+  { metric: 'AI tokens',          rate: 'Provider cost + 7.5% markup',   note: 'Real-time pass-through, billed per call — not a flat rate; BYO key skips the wallet' },
+  { metric: 'Agent / kernel run', rate: 'R 2 / run',                     note: 'Team+ remote kernel (E2B); drawn from wallet' },
 ]
 
 /**

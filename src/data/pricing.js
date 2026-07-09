@@ -22,7 +22,7 @@ export const BILLING_MODEL = {
   ],
   metered: [
     { label: 'Embedded sessions', desc: 'Embedded dashboard loads / mo — CDN egress + per-request edge compute cost.' },
-    { label: 'AI calls', desc: 'Text-to-SQL, MCP tools, and agent steps — maps to Anthropic API token pass-through.' },
+    { label: 'AI tokens', desc: 'Text-to-SQL, chat, and agent steps — real-time provider token pass-through (multi-model: Claude, GPT, Gemini) at cost + a small markup.' },
     { label: 'Agent / kernel runs', desc: 'On-demand server kernels (native wheels) — scale-to-zero, only when used.' },
   ],
 }
@@ -31,16 +31,26 @@ export const BILLING_MODEL = {
 // Prices are anchored in USD (ZAR is just the currency we bill in). Each tier
 // includes a monthly quota; usage beyond it draws from your prepaid wallet
 // first, then lands on your monthly invoice. No per-viewer / per-seat overage.
+//
+// AI tokens are billed differently from the other two dimensions: instead of
+// a flat per-unit rate, each metered call is charged in real time at the
+// LLM provider's actual USD token cost × (1 + 7.5% markup) — see
+// backend/app/ee/billing/token_billing.py. There is no single fixed
+// $/token rate (it depends on the model used); the reference figure below is
+// illustrative only (Haiku-class pricing). Bring your own provider key
+// (Settings → AI providers, paid tiers) and those calls skip the wallet
+// entirely — you pay the vendor directly.
 export const OVERAGE_RATES = [
-  { label: 'AI calls', rate: '$0.30', unit: '/ call', desc: 'Text-to-SQL, MCP tools, and agent steps.' },
+  { label: 'AI tokens', rate: 'cost + 7.5%', unit: '/ 1M tokens (est. ~$0.27)', desc: 'Text-to-SQL, chat, and agent steps — real-time pass-through of the provider\'s actual token cost, marked up 7.5%.' },
   { label: 'Embedded sessions', rate: '$3', unit: '/ 10,000', desc: 'Embedded dashboard loads past your quota.' },
   { label: 'Agent / kernel runs', rate: '$0.12', unit: '/ run', desc: 'On-demand server kernels (Team & Pro+).' },
 ]
 
 export const OVERAGE_NOTE =
   'Need more of one thing — say more AI tokens — without jumping a whole tier? ' +
-  'Top up your usage wallet and pay only for what you use, metered to the same ' +
-  'rate at every paid tier. Overdraw and it’s simply added to your next invoice. ' +
+  'Top up your usage wallet and pay only for what you use: AI tokens are billed ' +
+  'in real time at the provider\'s actual cost plus a small markup (7.5%), never a ' +
+  'flat per-call fee. Overdraw and it’s simply added to your next invoice. ' +
   'Prices are in USD; we bill in ZAR at the daily rate.'
 
 // ── Tiers (USD / month) ──────────────────────────────────────────────────────
@@ -64,6 +74,7 @@ export const TIERS = [
       '3 connectors',
       '5 dashboards · 2 scheduled flows',
       '10k query row cap per execution',
+      '100K AI tokens / mo (chat, text-to-SQL)',
       'Nubi branding on embeds',
       'Community support',
     ],
@@ -81,7 +92,7 @@ export const TIERS = [
       'Unlimited editors & viewers — no per-seat charge',
       '1,000 embedded sessions / mo',
       '5 connectors · 10 dashboards · 3 flows',
-      '5 AI calls / mo',
+      '1M AI tokens / mo included (wallet covers overage)',
       'Basic row-level security',
       'Google OAuth SSO',
     ],
@@ -99,7 +110,7 @@ export const TIERS = [
       'Everything in Starter, plus:',
       'Unlimited editors & viewers — no per-seat charge',
       '5,000 embedded sessions / mo',
-      '10 agent runs · 15 AI calls / mo',
+      '10 agent runs · 5M AI tokens / mo included',
       '15 connectors · 30 dashboards · 8 flows',
       'Full RLS with JWT claims · Google SSO',
       'Remove Nubi branding',
@@ -119,7 +130,8 @@ export const TIERS = [
       'Everything in Team, plus:',
       'Unlimited editors & viewers — no per-seat charge',
       '25,000 embedded sessions / mo',
-      '50 agent runs · 50 AI calls / mo',
+      '50 agent runs · 15M AI tokens / mo included',
+      'Bring your own AI provider key (skip the wallet)',
       'All connectors · 100 dashboards · 20 flows',
       'Full RLS with JWT claims · Google SSO',
       'SAML SSO — coming soon',
@@ -146,7 +158,8 @@ export const TIERS = [
       'Everything in Pro, plus:',
       'Unlimited editors & viewers — no per-seat charge',
       'Unlimited embedded sessions',
-      '1,000 agent runs · 500 AI calls / mo',
+      '1,000 agent runs · 100M AI tokens / mo included',
+      'Bring your own AI provider key (skip the wallet)',
       'Full RLS + HIPAA-alignable deployment',
       'SAML SSO + SCIM provisioning (coming soon) · multi-tenant workspaces',
       'Dedicated CSM · 99.95% uptime SLA · P1 < 30 min (contractual, at signing)',
