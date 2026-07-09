@@ -272,10 +272,12 @@ export async function runArrowQueryById(queryId, opts) {
       (await (async () => {
         // Don't block on the query map for non-demo queries — race with a short
         // timeout so slow networks don't delay live widgets.  If the map isn't
-        // resolved within 2 s we fall through to the server path.
+        // resolved in time we fall through to the server path.  Boards call
+        // prefetchDemoData() on mount so this race almost always hits a resolved
+        // cache; the timeout is the fallback for a genuinely cold/slow first load.
         try {
           const mapPromise = fetchDemoQueryMap()
-          const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), 2000))
+          const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), 5000))
           const map = await Promise.race([mapPromise, timeoutPromise])
           return map != null && Object.prototype.hasOwnProperty.call(map, queryId)
         } catch {
@@ -641,6 +643,21 @@ export function fetchDemoQueryMap() {
     }
   })()
   return _demoQueryMapPromise
+}
+
+/**
+ * Warm the demo query-map + parquet manifest caches ahead of first widget render.
+ *
+ * Widget queries detect "is this a demo query?" by racing fetchDemoQueryMap()
+ * against a short timeout (so live/non-demo dashboards aren't blocked on a slow
+ * network). On a cold remote load the map can lose that race, so the widget
+ * wrongly falls to the server path and shows sample data. Calling this once when
+ * a board mounts resolves the cached singletons early, so the race reliably wins.
+ * Fire-and-forget; all errors are swallowed inside the fetchers.
+ */
+export function prefetchDemoData() {
+  fetchDemoQueryMap()
+  fetchDemoManifest()
 }
 
 /** Set of DuckDB-WASM view names already registered for the demo parquet files. */

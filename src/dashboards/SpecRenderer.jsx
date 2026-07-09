@@ -47,7 +47,7 @@ import { VariableProvider, useSetVariable, useResolvedParams } from './VariableS
 import { CrossFilterProvider } from './CrossFilterContext.jsx'
 import { RefreshContext } from './RefreshContext.jsx'
 import { useAutoRefresh } from './useAutoRefresh.js'
-import { runArrowQueryById } from '../lib/wasmRuntime.js'
+import { runArrowQueryById, prefetchDemoData } from '../lib/wasmRuntime.js'
 import { backgroundToCss, styleToCss } from './widgetHtml.js'
 import { buildResponsiveLayouts, isHiddenAt } from './responsiveLayout.js'
 import { useProviderData } from './useProviderData.js'
@@ -714,6 +714,11 @@ function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, 
   const cols = spec.layout?.cols ?? 12
   const rowHeight = spec.layout?.row_height ?? 60
   const allWidgets = spec.widgets ?? []
+
+  // Warm the demo query-map + parquet manifest before widgets query, so the
+  // demo-detection race (in runArrowQueryById) reliably wins on a cold remote
+  // load instead of falling back to the server path and showing sample data.
+  useEffect(() => { prefetchDemoData() }, [])
 
   // ── Auto-refresh / polling ──────────────────────────────────────────────
   // spec.refresh.interval_ms (or spec.refresh_interval_ms) enables board-level
