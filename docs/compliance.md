@@ -100,7 +100,7 @@ Relevant because Nubi bills in ZAR and may process SA personal information.
 These are **not yet done** and are tracked as roadmap:
 1. **Formal SOC 2 Type II audit** — not started; controls above are the readiness basis.
 2. **Data Processing Agreement (DPA) template** + signed flow per customer.
-3. **Sub-processor list** (Cloudflare R2, Fly.io, Paystack for EE billing, the LLM
+3. **Sub-processor list** (Cloudflare R2, Fly.io, Paystack for Nubi Cloud billing, the LLM
    provider) with regions + a change-notification process.
 4. **Incident-response + breach-notification runbook** (POPIA §22 / GDPR Art. 33).
 5. **Data-retention & deletion policy** documented per data class (cache, rollups,
@@ -116,7 +116,7 @@ These are **not yet done** and are tracked as roadmap:
 |---|---|---|
 | Cloudflare R2 | Object storage (materialized flow targets, assets, cache) | Region to be pinned/documented |
 | Fly.io | Application + scale-to-zero compute | — |
-| Paystack | Billing (EE only; ZAR) | Open-core: billing lives in `ee/`, out of OSS core |
+| Paystack | Billing (Nubi Cloud only; ZAR) | Billing code lives in `ee/`, ships open in the repo, but only activates on Nubi Cloud |
 | LLM provider (configurable) | AI authoring / answers (only when an API key is set) | NullProvider default = no external calls |
 
 ---

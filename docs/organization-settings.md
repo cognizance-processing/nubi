@@ -14,13 +14,13 @@ Settings use a two-column layout: a sticky sidebar on the left, grouped by scope
 | **Organization** | Integrations | `/settings/integrations` | Connected email integration for outbound alerts |
 | **Organization** | Security | `/settings/security` | Embed JWT issuers (host-signed token trust) |
 | **Organization** | Usage | `/settings/usage` | Read-only usage metering for the org |
-| **Organization** | Billing *(Cloud/EE only)* | `/billing` | Plan, wallet, invoices — link-out, shown only when billing is enabled |
+| **Organization** | Billing *(Nubi Cloud only)* | `/billing` | Plan, wallet, invoices — link-out, shown only when billing is enabled |
 | **Project** | General | `/settings/project` | Project name, Git sync, deletion |
 
 Two notes on what lives where:
 
 - **Secrets** are managed under **Flows → Secrets**, not here.
-- **Billing** is a separate top-level page (`/billing`) and only appears on Nubi Cloud / EE builds — the sidebar shows it as a link-out when the billing feature is enabled. **Usage**, by contrast, is open-core and lives right here in Settings; the old standalone `/usage` page redirects to `/settings/usage`. See [Billing & Usage](/docs/billing-and-usage).
+- **Billing** is a separate top-level page (`/billing`) and only appears on Nubi Cloud — the sidebar shows it as a link-out when the billing feature is enabled. **Usage**, by contrast, is open-core and lives right here in Settings; the old standalone `/usage` page redirects to `/settings/usage`. See [Billing & Usage](/docs/billing-and-usage).
 
 ---
 
@@ -228,7 +228,7 @@ For the full embedding workflow — minting tokens, row-level security, and moun
 
 Usage metering is **open-core** — every Nubi deployment has this page. It shows one card per metric (queries run, compute units, bytes scanned, flow runs, AI usage, embedded sessions, storage), a period selector (**Today / 7 days / Month**), and a time-series chart for whichever metric card you select.
 
-This page is deliberately **billing-free**: it never charges, blocks, or implies a hard cap. Soft plan limits (the "used / limit / %" progress bars) only appear when an EE tier configures them; in core everything shows as *unlimited*. Plans, the wallet, and invoices live on the EE-only **Billing** page.
+This page is deliberately **billing-free**: it never charges, blocks, or implies a hard cap. Soft plan limits (the "used / limit / %" progress bars) only appear when a Nubi Cloud plan tier configures them; on self-host everything shows as *unlimited*. Plans, the wallet, and invoices live on the Nubi Cloud-only **Billing** page.
 
 The full metric-by-metric breakdown is in [Billing & Usage](/docs/billing-and-usage).
 
@@ -287,4 +287,4 @@ The last owner of an organization can never be demoted or removed — promote so
 - [Notifications & Integrations](/docs/notifications-and-integrations) — what the connected channels deliver
 - [Secrets](/docs/secrets) — encrypted credentials for flow tasks
 - [Git Sync](/docs/git-sync) — version dashboards and queries as code
-- [Billing & Usage](/docs/billing-and-usage) — usage metering (open-core) and billing (Cloud/EE)
+- [Billing & Usage](/docs/billing-and-usage) — usage metering (open-core) and billing (Nubi Cloud only)

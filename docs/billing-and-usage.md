@@ -5,7 +5,7 @@ This is the practical guide to paying for Nubi: the five plans, what we meter (a
 There are two surfaces, and the split matters:
 
 - **Usage** (`/settings/usage`, **Settings → Organization → Usage**) — read-only metering: what your org consumed this period. This is **open-core** and present in every Nubi deployment. The old standalone `/usage` page redirects here.
-- **Billing** (`/billing`) — plans, wallet, top-ups, invoices. This is **EE / Nubi Cloud only**; when billing is enabled, a **Billing** link-out appears in the Settings sidebar under Organization.
+- **Billing** (`/billing`) — plans, wallet, top-ups, invoices. This is **Nubi Cloud only**; when billing is enabled, a **Billing** link-out appears in the Settings sidebar under Organization.
 
 Both are org-scoped, so each organization has its own usage, plan, wallet, and invoices.
 
@@ -33,11 +33,11 @@ It shows one card per metric:
 
 Click a card to chart that metric over time below the grid.
 
-Each card shows **used / limit** with a progress bar (amber from 70%, red from 90%) — but only when a **soft limit** is configured by your EE plan tier. On a core deployment with no EE tier, every metric shows as **unlimited**, and that's accurate: the Usage page is *visibility only* and never enforces a cap or charges anything.
+Each card shows **used / limit** with a progress bar (amber from 70%, red from 90%) — but only when a **soft limit** is configured by your Nubi Cloud plan tier. On a self-hosted deployment with billing off, every metric shows as **unlimited**, and that's accurate: the Usage page is *visibility only* and never enforces a cap or charges anything.
 
 Under the hood, the numbers are aggregated server-side from the core `usage_events` table, which is populated off the hot path by a fire-and-forget metering sink — metering adds no latency to your queries. The page is backed by two open API endpoints: `GET /api/v1/usage?period=` (summary) and `GET /api/v1/usage/series?metric=&period=` (chart series).
 
-Everything below this point — plans, the wallet, invoices — is the **EE / Cloud billing** layer that turns these counters into money.
+Everything below this point — plans, the wallet, invoices — is the **Nubi Cloud billing** layer that turns these counters into money.
 
 ---
 

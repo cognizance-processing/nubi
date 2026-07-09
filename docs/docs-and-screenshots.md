@@ -38,8 +38,9 @@ for contributors but are not part of the product docs.
 - **Illustrations**: `![Alt](illustration:Name)` is special syntax resolved to
   an SVG component via `src/components/illustrations/docMap.js`. Leave these
   alone unless you are also adding the component.
-- **EE features** (billing, licensing — anything under `backend/app/ee/`)
-  must be marked as enterprise-only, GitLab CE/EE style.
+- **Cloud-only features** (billing, licensing — anything under `backend/app/ee/`)
+  must be clearly marked as Nubi Cloud-only. There is no self-hosted paid
+  tier, so never imply a self-hoster can "unlock" these with a license key.
 - Don't document planned features. Docs describe what is shipped; designs live
   in unregistered `*-design.md` files.
 

@@ -8,10 +8,12 @@ Cloud only adds the things that genuinely require a managed operator.
 
 ## What Cloud adds (and self-host doesn't have)
 
-Everything in this section is part of the Enterprise Edition (EE) tree and is
-**not** present in a pure open-source self-host. The OSS database schema never
-even creates these tables (the billing migrations live under
-`database/migrations/ee/` and are applied only when the cloud layer is active).
+Everything in this section is billing/subscription code — it ships in the
+`ee/` tree in every clone of the repo, but is only **switched on** on Nubi
+Cloud; a self-host deployment never activates it. The self-host database
+schema never even creates these tables (the billing migrations live under
+`database/migrations/ee/` and are applied only when the Cloud layer is
+active).
 
 - **Billing & subscriptions** — the five plans (Free, Starter, Team, Pro,
   Enterprise), collected via Paystack. See **[Billing, plans & usage wallet](/docs/billing-and-usage)**.
@@ -103,18 +105,20 @@ repo or version pin: a deploy builds the current working tree directly.
   `app` + `worker` process groups and release-migration step.
 - **`deploy/setup-fly.sh [main|dev]`** — one-time idempotent app creation.
 - **`deploy/secrets.sh [main|dev]`** — push `.env` / `.env.dev` to Fly secrets.
-- **`deploy/deploy.sh [main|dev]`** — build the EE image (`Dockerfile.ee`) from
-  the current tree and roll it out.
+- **`deploy/deploy.sh [main|dev]`** — build the Cloud image (`Dockerfile.ee`,
+  full tree + billing switched on) from the current tree and roll it out.
 
 `deploy/deploy.sh dev` builds and deploys `nubi-dev`; `deploy/deploy.sh`
-promotes the identical build to production (`nubi`). Either path builds the EE
-image (`Dockerfile.ee`: Vite SPA build → Python deps → runtime) on Fly's remote
-builders and rolls out the `app` and `worker` processes; the `--ee` migrations
-run automatically via the release command. See `deploy/README.md` for the full
-runbook.
+promotes the identical build to production (`nubi`). Either path builds the
+Cloud image (`Dockerfile.ee`: Vite SPA build → Python deps → runtime) on
+Fly's remote builders and rolls out the `app` and `worker` processes; the
+`--ee` migrations and Nubi's internal `NUBI_LICENSE_KEY` operations switch are
+applied automatically via the release command and Fly secrets — this is
+Nubi's own deploy pipeline, not something a self-hoster runs. See
+`deploy/README.md` for the full runbook.
 
-**Self-hosting Nubi yourself?** You supply your own deployment — the OSS
-`Dockerfile` builds the community image; bring your own orchestration (Docker
+**Self-hosting Nubi yourself?** You supply your own deployment — the same
+`Dockerfile` builds the free, full-featured self-host image; bring your own orchestration (Docker
 Compose, Fly, Kubernetes, …).
 
 ## Pricing

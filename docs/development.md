@@ -10,7 +10,7 @@ CLI, or docs. If you just want to *run* Nubi, see
 nubi/
 ├── backend/          FastAPI app (Python 3.11+)
 │   ├── app/          flows/, connectors/, routes/, auth/, secrets/,
-│   │                 bridges/, lakehouse/, storage/, ee/ (enterprise)
+│   │                 bridges/, lakehouse/, storage/, ee/ (Cloud billing code)
 │   ├── tests/        pytest suite (in-memory DB fakes — no live DB needed)
 │   ├── main.py       API entrypoint
 │   ├── worker.py     flows worker entrypoint (scheduler + task pool)
@@ -27,8 +27,10 @@ nubi/
 ```
 
 Open-core boundary: everything under `backend/app/ee/` (billing, licensing) is
-enterprise; the rest is Apache-2.0 core. Keep new cloud/billing code in `ee/`
-— see [Open core](/docs/open-core).
+Nubi Cloud billing code — it ships in the repo like everything else, but only
+activates when Nubi's own Cloud deployment sets `NUBI_LICENSE_KEY`. There is
+no separate self-hosted paid edition. Keep new cloud/billing code in `ee/` —
+see [Open core](/docs/open-core).
 
 ## Running the dev stack
 

@@ -357,7 +357,7 @@ Navigate to **Settings** (sidebar bottom or account menu) to open the unified se
 | | Integrations | `/settings/integrations` | Connect the org's outbound email integration for alerts. |
 | | Security | `/settings/security` | JWT issuers — register the public keys or JWKS endpoints your backend uses to sign embed tokens. |
 | | Usage | `/settings/usage` | Read-only usage metering for the org — queries, compute, bytes scanned, flow runs, AI usage and more. |
-| | Billing | `/billing` | Cloud/EE only. |
+| | Billing | `/billing` | Nubi Cloud only. |
 | **Project** | General | `/settings/project` | Project name and Git sync configuration. |
 
 `/settings` redirects to `/settings/profile`. The settings sidebar is sticky on large screens so you can scan all sections without scrolling.

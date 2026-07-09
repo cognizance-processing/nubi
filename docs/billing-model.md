@@ -217,6 +217,6 @@ Slack/Teams channel for support escalation.
 - FX conversion: `backend/app/ee/billing/fx.py`
 - Paystack client: `backend/app/ee/billing/paystack.py`
 - Billing event store: `backend/app/ee/billing/store.py`
-- EE billing routes: `backend/app/ee/billing/routes.py`
+- Billing routes: `backend/app/ee/billing/routes.py`
 - DB migration: `database/migrations/ee/0022_wallet.sql`
 - Internal scenario modelling: `billing-model/generate_scenarios.py` (gitignored)

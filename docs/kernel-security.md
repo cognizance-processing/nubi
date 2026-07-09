@@ -211,4 +211,4 @@ The test suite sets `ENV=test` automatically via `conftest.py`.
 - [Embedding & JWT trust boundary](/docs/embedding) — RS256/ES256 tokens, RLS policy injection
 - [Secrets](/docs/secrets) — `{{ secrets.NAME }}` in flows, `nubi secrets set/list`
 - [Flows](/docs/flows) — cell-based flow authoring including Python cells
-- [Architecture](/docs/architecture-open-core) — open-core split, EE tree, feature gates
+- [Architecture](/docs/architecture-open-core) — open-core split, the `ee/` billing tree, feature gates

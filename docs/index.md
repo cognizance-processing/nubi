@@ -52,7 +52,7 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 | | |
 |---|---|
 | [**Nubi Cloud**](/docs/cloud) | The managed, hosted way to run Nubi — what differs from self-host |
-| [**Billing & Usage**](/docs/billing-and-usage) | 5 tiers (Free / $9 / $49 / $149 / $1,000-floor), ZAR billing with USD anchoring, metered usage wallet, unlimited seats at every tier — billing itself is **EE-only** |
+| [**Billing & Usage**](/docs/billing-and-usage) | 5 tiers (Free / $9 / $49 / $149 / $1,000-floor), ZAR billing with USD anchoring, metered usage wallet, unlimited seats at every tier — billing itself is **Nubi Cloud-only** |
 | [**Billing Model**](/docs/billing-model) | The COGS-mapping principle behind what's metered (and deliberately what isn't); authoritative tier values |
 
 ### Open-source project
@@ -62,8 +62,8 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 | [**Capability Matrix**](/CAPABILITIES.md) | What's shipped vs. partial / roadmap / out-of-scope — the host-trackable capability contract (routes, components, status) |
 | [**Changelog**](/CHANGELOG.md) | Notable host-visible changes (Keep a Changelog format) |
 | [**Self-Host**](/docs/self-host) | Detailed deployment guide — Docker Compose, SSL, managed Postgres, production hardening |
-| [**Open Core**](/docs/open-core) | The CE/EE split — what's open source and what stays EE (billing, Paystack, cloud) |
-| [**Open-Core Architecture**](/docs/architecture-open-core) | Feature-gate API, Docker CE/EE images, how EE billing slots in |
+| [**Open Core**](/docs/open-core) | Self-host vs Nubi Cloud — the whole product is open source; only billing (Paystack, wallet, FX) is Cloud-only |
+| [**Open-Core Architecture**](/docs/architecture-open-core) | Feature-gate API, how the `ee/` billing code slots in and activates only on Nubi Cloud |
 | [**Architecture & Economics**](/docs/architecture-and-economics) | The compute-placement model, embedding modes, and how each maps to billing COGS |
 | [**Compliance**](/docs/compliance) | Posture document (not a certification) — implemented controls today, gaps disclosed, POPIA/GDPR-relevant custody controls |
 | [**Connector Security**](/docs/connector-security) | AES-256-GCM secret encryption, key rotation, network modes |

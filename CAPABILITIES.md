@@ -146,7 +146,7 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 | **Model / predictive explainability** — SHAP / per-prediction feature attribution, metric root-cause contribution decomposition | ⛔ | Data-science tooling, not embedded dashboard BI. Attribution over the **host's own** models (demand forecast, price elasticity, MDM match-scoring) — "why did the model predict X for this SKU/store" — stays host-side; Nubi does no ML modelling and does not compute contribution/decomposition breakdowns itself. |
 | Retail cockpit / domain-specific engines | ⛔ | Host application logic |
 | Host app infra (CI/CD, Docker, deploy) | ⛔ | Host's platform |
-| Billing / Paystack / metered wallet | ⛔ (CE) | EE-only; not in the open-core/embeddable substrate |
+| Billing / Paystack / metered wallet | ⛔ (core) | Nubi Cloud-only; not in the open-source/embeddable substrate |
 
 > **Explainability — fully out of scope.** Nubi does not compute *why a metric
 > number moved* (root-cause/contribution decomposition) or *why a model predicted
@@ -162,7 +162,7 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 
 ## J. Capability accuracy notice (advertised vs. implemented)
 
-The following EE tier features, network modes, and kernel providers appear in
+The following Nubi Cloud tier features, network modes, and kernel providers appear in
 internal code as **forward-compat stubs** but are **not yet shipped**. They have
 been removed from the advertised/public surface (tier API response, config docs,
 schema enum) as of 2026-06-26 to avoid misleading hosts.
@@ -179,19 +179,21 @@ schema enum) as of 2026-06-26 to avoid misleading hosts.
 
 **Network modes available today**: `direct` and `bridge` (async proxy via Nubi bridge agent).
 **Remote kernel provider available today**: `e2b` (E2B Firecracker microVMs).
-**EE feature flags available in tier API today**: `has_rls`, `has_sso_google`,
+**Feature flags available in tier API today**: `has_rls`, `has_sso_google`,
   `has_multi_tenant_workspaces`, `has_byoc`, `has_custom_domain`, `has_warehouse`,
   `has_priority_support`, SLA fields.
 
 ---
 
-## K. Nubi Cloud billing (EE-only)
+## K. Nubi Cloud billing (Cloud-only)
 
-These capabilities live in the `ee/` tree and only activate under a paid
-license or on Nubi Cloud (see §I — billing itself is **out of scope for the
-open-core/embeddable substrate** other CE hosts embed against). Listed here so
-the same "shipped vs. roadmap" contract applies to the Cloud product, not just
-the embeddable core.
+These capabilities live in the `ee/` tree — which ships open in every clone
+of this repo — but only **activate** on Nubi Cloud, where Nubi's own
+infrastructure sets the internal `NUBI_LICENSE_KEY` operations switch (see
+§I — billing itself is **out of scope for the open-source/embeddable
+substrate** other self-hosters embed against; there is no self-hosted paid
+tier or purchasable license). Listed here so the same "shipped vs. roadmap"
+contract applies to the Cloud product, not just the embeddable core.
 
 | Capability | Status | Contract | Docs |
 |---|---|---|---|
@@ -204,7 +206,7 @@ the embeddable core.
 | Monthly invoices — PDF render, email delivery, VAT (TAX INVOICE when issuer is VAT-registered) | ✅ | `GET /ee/billing/invoices`, `GET /ee/billing/invoices/{id}/pdf` | [billing-and-usage § Monthly invoices, PDFs & VAT](docs/billing-and-usage.md#monthly-invoices-pdfs-vat) |
 | Billing-cycle reconciliation (idempotent close, wallet-first draw-down, deterministic charge reference) | ✅ | `run_billing_cycle()`; `GET /ee/billing/invoices/current-cycle` (dry-run projection) | [billing-model](docs/billing-model.md) |
 | Quota enforcement (hard stop where no overage rate; wallet-billable overage otherwise) | ✅ | `app.ee.billing.quota.billing_quota_checker` registered into the core `enforce_quota` hook | [billing-model § Resource Limits by Tier](docs/billing-model.md#resource-limits-by-tier) |
-| License-tier resolution (`NUBI_LICENSE_KEY` → Free/Pro/Enterprise) | ✅ | `app.ee.licensing.license.get_license()` | [open-core § License key resolution](docs/open-core.md#license-key-resolution) |
+| Internal tier resolution for Cloud environments (`NUBI_LICENSE_KEY` → Free/Pro/Enterprise; set only by Nubi's own infra, not a customer-facing license) | ✅ | `app.ee.licensing.license.get_license()` | [open-core § NUBI_LICENSE_KEY resolution](docs/open-core.md#nubi_license_key-resolution) |
 
 ---
 

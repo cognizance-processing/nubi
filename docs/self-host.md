@@ -24,20 +24,24 @@ The browser talks only to the frontend on `:8080`; the frontend proxies API traf
 
 ---
 
-## Open-core boundaries
+## Self-host = the full product, free, billing off
 
-Nubi is open-core (GitLab CE/EE style). The community image excludes EE trees at build time via `.dockerignore`.
+Self-hosting Nubi with this Docker Compose stack gets you the **entire
+product** — there is no paid self-hosted tier, no "Enterprise Edition" to
+buy, and no license key required to unlock anything. The compose image
+builds the whole repository, including the `ee/` tree that contains the
+billing/subscription code Nubi Cloud runs.
 
-| Path | In community image | Contents |
-|---|---|---|
-| `backend/app/` (minus `ee/`) | Yes | Core API, flows, connectors, queries |
-| `backend/app/ee/` | **No** | Billing, paid-tier enforcement |
-| `src/` (minus `ee/`) | Yes | Core React SPA |
-| `src/ee/` | **No** | Commercial UI extensions |
-| `database/migrations/*.sql` | Yes | Core schema (always applied) |
-| `database/migrations/ee/*.sql` | **No** | Billing, FX, wallet, invoices (requires `--ee`) |
+| Path | Contents |
+|---|---|
+| `backend/app/` (minus `ee/`) | Core API, flows, connectors, queries |
+| `backend/app/ee/` | Billing, paid-tier enforcement — ships in the image, inactive by default |
+| `src/` (minus `ee/`) | Core React SPA |
+| `src/ee/` | Billing UI — ships in the image, inactive by default |
+| `database/migrations/*.sql` | Core schema (always applied) |
+| `database/migrations/ee/*.sql` | Billing, FX, wallet, invoices (only applied if you explicitly pass `--ee` — see below; a plain self-host never needs to) |
 
-When the EE tree is absent, `load_ee()` in `backend/app/ee/__init__.py` returns `False` silently. The feature-flag module (`backend/app/features.py`) defaults the commercial features `billing` and `paid_tiers` to disabled. The OSS build runs fully without them and is never usage-limited — quota enforcement is an EE concern.
+Because `NUBI_LICENSE_KEY` is unset by default, the feature-flag module (`backend/app/features.py`) defaults the billing features `billing` and `paid_tiers` to disabled — the app runs fully without them and is **never usage-limited**. `NUBI_LICENSE_KEY` is not a product you can buy: it's an internal operations switch that only Nubi's own Cloud infrastructure sets. There is nothing to purchase or activate to get the full feature set — you already have it.
 
 ---
 
@@ -192,7 +196,7 @@ If you do not need Python compute (SQL-only deployments), leave `KERNEL_REMOTE_P
 
 **Core migrations** (`database/migrations/*.sql`) are applied in lexical order and tracked in the `schema_migrations` ledger table. Each migration runs inside its own transaction; failure rolls back that migration and stops the runner cleanly.
 
-**EE migrations** (`database/migrations/ee/*.sql`) cover billing, FX rates, wallet, and invoices. They are skipped unless you pass `--ee` or set `NUBI_CLOUD=1` / `NUBI_EE=1`. OSS self-hosted deployments never need them.
+**Billing migrations** (`database/migrations/ee/*.sql`) cover billing, FX rates, wallet, and invoices — the schema Nubi Cloud uses. They are skipped unless you pass `--ee` or set `NUBI_CLOUD=1` / `NUBI_EE=1`. A self-hosted deployment never needs them.
 
 Concurrent runners (multi-replica deploys, CI overlapping a manual run) serialize on Postgres advisory lock `727274`, so only one runner applies pending migrations at a time.
 
@@ -212,7 +216,7 @@ make migrate-status
 # equivalent: docker compose exec backend python /app/database/migrate.py --status
 ```
 
-Include EE migration state:
+Include billing migration state:
 
 ```bash
 docker compose exec backend python /app/database/migrate.py --status --ee
@@ -353,20 +357,12 @@ If it exited before MinIO was healthy, `make up` will re-run the init container 
 
 ---
 
-## Community vs EE
+## Self-host vs Nubi Cloud
 
-The community image is built with `backend/app/ee/` and `src/ee/` excluded via `.dockerignore`. The feature-flag module (`backend/app/features.py`) defaults all commercial features (`billing`, `paid_tiers`) to disabled, and no quota checker is registered — so OSS self-host is never usage-limited.
+The self-host image is built from the same source tree as Nubi Cloud, `backend/app/ee/` and `src/ee/` included — nothing is stripped out and nothing is locked. The feature-flag module (`backend/app/features.py`) defaults all billing features (`billing`, `paid_tiers`) to disabled, and no quota checker is registered — so self-host is never usage-limited.
 
-If you hold an EE licence and have the EE source tree, remove the `ee/` exclusions from `.dockerignore` and rebuild:
+There is no license you can apply to a self-host deployment to turn billing on — billing only runs on Nubi Cloud, where Nubi's own infrastructure sets the internal `NUBI_LICENSE_KEY` operations switch and applies the billing schema. If you want the managed, billed product instead of operating your own infrastructure, use [Nubi Cloud](/docs/cloud).
 
-```bash
-docker compose build
-```
+`backend/app/ee/__init__.py → load_ee()` registers billing features at startup whenever `NUBI_LICENSE_KEY` is set; core code never imports from `app.ee` directly, so a self-host deployment behaves identically whether or not that variable exists.
 
-`backend/app/ee/__init__.py → load_ee()` registers commercial features at startup. Core code never imports from `app.ee` directly. Apply EE migrations with:
-
-```bash
-NUBI_EE=1 docker compose exec backend python /app/database/migrate.py
-```
-
-See [Architecture — Open Core](/docs/architecture-open-core) for a detailed treatment of the CE/EE split.
+See [Architecture — Open Source + Cloud](/docs/architecture-open-core) for a detailed treatment of the core/`ee` split.

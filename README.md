@@ -194,7 +194,7 @@ cd backend && DATABASE_URL=postgresql://user:pass@host/db python seed.py --demo
 | `NUBI_COLLECT_ROW_CAP` | Optional | Row cap for snapshot/report data collection. Default `50000`. `0` = unlimited. |
 | `JOBS_SCHEDULER_ENABLED` | Optional | `true` to activate the background job scheduler tick. Default `false`. |
 | `FLOWS_TICK_SECRET` | Optional | Shared secret for `POST /flows/tick` (external cron schedulers). Leave empty to disable. |
-| `FX_EMERGENCY_RATE` | EE only | Emergency fallback USD→ZAR rate when no live rate is available. Default `16.26`. |
+| `FX_EMERGENCY_RATE` | Nubi Cloud only | Emergency fallback USD→ZAR rate when no live rate is available. Default `16.26`. |
 </details>
 
 ---
@@ -284,7 +284,7 @@ nubi/
 │   │   ├── repos/    asyncpg (prod) + in-memory (test) repository layer
 │   │   └── routes/   auth, query, compute, embed, ai, jobs, resources
 │   └── tests/        300+ test modules + conformance suite (golden Arrow + cache keys) + security/ suite
-├── database/         Forward-only SQL migration runner + 13 OSS migrations + 4 EE migrations
+├── database/         Forward-only SQL migration runner + 13 core migrations + 4 billing migrations (Nubi Cloud only)
 ├── src/              React 19 frontend (Vite + Tailwind) — pages, components, viz
 ├── embed/            Web components: <nubi-dashboard>, <nubi-kpi>, <nubi-table>, <nubi-chart>
 ├── sdk/              @nubi/sdk — createNubiClient ESM package
