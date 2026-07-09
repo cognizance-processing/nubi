@@ -41,9 +41,19 @@ fi
 
 echo "deploy: building EE image v$NUBI_VERSION → app '$APP'" >&2
 
+# Remote builder by default (works in CI, no local Docker needed). But the SPA
+# build is memory-heavy (mermaid/rehype) and OOM-kills Fly's shared remote
+# builder, so allow a LOCAL build (NUBI_BUILD_LOCAL=1) which uses the local
+# Docker daemon — set it when the remote build gets SIGKILLed.
+BUILD_FLAG="--remote-only"
+if [ "${NUBI_BUILD_LOCAL:-}" = "1" ]; then
+  BUILD_FLAG="--local-only"
+  echo "deploy: building LOCALLY (NUBI_BUILD_LOCAL=1) — needs a running Docker daemon" >&2
+fi
+
 # Build context = the repo root. flyctl resolves a fly.toml `dockerfile` relative
 # to the CONFIG file's dir (deploy/), so pass Dockerfile.ee + its ignorefile
 # explicitly from the repo root where they actually live.
 ( cd "$ROOT" && exec flyctl deploy --config "$CFG" --app "$APP" \
     --dockerfile "$ROOT/Dockerfile.ee" --ignorefile "$ROOT/Dockerfile.ee.dockerignore" \
-    --build-arg "NUBI_VERSION=$NUBI_VERSION" --remote-only "$@" )
+    --build-arg "NUBI_VERSION=$NUBI_VERSION" "$BUILD_FLAG" "$@" )
