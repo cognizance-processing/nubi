@@ -13,9 +13,8 @@
  *   Data         /data
  *   Queries      /queries
  *   Dashboards   /dashboards
- *   Flows        /flows
+ *   Flows        /flows   (single automation home — schedules, runs & builder)
  *   Watches      /watches
- *   Automations  /automations
  *
  * Props:
  *   mobileOpen   {boolean}   — whether the mobile drawer is visible
@@ -30,7 +29,6 @@ import {
   LayoutDashboard,
   Workflow,
   BellRing,
-  CalendarClock,
   Table2,
   ChevronLeft,
   ChevronRight,
@@ -55,7 +53,6 @@ const NAV_ITEMS = [
   { label: 'Dashboards',  to: '/dashboards',  Icon: LayoutDashboard },
   { label: 'Flows',       to: '/flows',       Icon: Workflow },
   { label: 'Watches',     to: '/watches',     Icon: BellRing },
-  { label: 'Automations', to: '/automations', Icon: CalendarClock },
 ]
 
 // ---------------------------------------------------------------------------

@@ -95,7 +95,6 @@ const BlendBuilder = lazy(() => import('./pages/app/BlendBuilder.jsx'))
 const DashboardsPage = lazy(() => import('./pages/app/DashboardsPage.jsx'))
 const FlowsPage = lazy(() => import('./pages/app/FlowsPage.jsx'))
 const WatchesPage = lazy(() => import('./pages/app/WatchesPage.jsx'))
-const AutomationsPage = lazy(() => import('./pages/app/AutomationsPage.jsx'))
 const SettingsLayout = lazy(() => import('./pages/app/settings/SettingsLayout.jsx'))
 const ProfileSettings = lazy(() => import('./pages/app/settings/ProfileSettings.jsx'))
 const OrgSettings = lazy(() => import('./pages/app/settings/OrgSettings.jsx'))
@@ -311,7 +310,9 @@ export default function App() {
           <Route path="metrics" element={<Navigate to="/queries" replace />} />
           <Route path="metrics/:id" element={<Navigate to="/queries" replace />} />
           <Route path="watches" element={<WatchesPage />} />
-          <Route path="automations" element={<AutomationsPage />} />
+          {/* Automations folded into Flows — the /flows overview now owns
+              schedules & runs. Keep old links working. */}
+          <Route path="automations" element={<Navigate to="/flows" replace />} />
           {/* Usage moved into Settings — keep the old route as a redirect. */}
           <Route path="usage" element={<Navigate to="/settings/usage" replace />} />
           <Route path="editor" element={<EditorPage />} />
