@@ -7,9 +7,7 @@
  *  - ≥ 44px tap targets on every nav item
  *  - On mobile: rendered as an off-canvas drawer controlled by `mobileOpen` prop
  *
- * Nav items:
- *   Overview     /overview
- *   Workqueue    /workqueue
+ * Nav items (Home is the single workspace landing page — pinned first):
  *   Home         /home
  *   Connectors   /connectors
  *   Data         /data
@@ -39,10 +37,6 @@ import {
   Settings,
   Shield,
   BookOpen,
-  Compass,
-  LayoutGrid,
-  ListChecks,
-  GitBranch,
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
@@ -54,16 +48,12 @@ import Logo from '../Logo.jsx'
 // ---------------------------------------------------------------------------
 
 const NAV_ITEMS = [
-  { label: 'Overview',    to: '/overview',    Icon: LayoutGrid },
-  { label: 'Workqueue',   to: '/workqueue',   Icon: ListChecks },
   { label: 'Home',        to: '/home',        Icon: Home },
   { label: 'Connectors',  to: '/connectors',  Icon: Plug },
   { label: 'Data',        to: '/data',        Icon: Table2 },
   { label: 'Queries',     to: '/queries',     Icon: FileCode2 },
-  { label: 'Explore',     to: '/explore',     Icon: Compass },
   { label: 'Dashboards',  to: '/dashboards',  Icon: LayoutDashboard },
   { label: 'Flows',       to: '/flows',       Icon: Workflow },
-  { label: 'Lineage',     to: '/lineage',     Icon: GitBranch },
   { label: 'Watches',     to: '/watches',     Icon: BellRing },
   { label: 'Automations', to: '/automations', Icon: CalendarClock },
 ]

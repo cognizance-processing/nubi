@@ -1,5 +1,8 @@
 /**
- * HomePage — Authenticated home page.
+ * HomePage — Authenticated home page. The single workspace landing page:
+ * Overview and Workqueue have been folded in here so there's one place that
+ * answers "what's going on in my workspace" (see git history for the old
+ * standalone /overview and /workqueue pages this absorbed).
  *
  * Two states, chosen by setup progress + a per-org "skip" flag:
  *
@@ -14,6 +17,11 @@
  *   GENERAL HOME  (setup complete OR skipped)
  *     - Greeting + a slim "finish setup" banner if skipped-but-incomplete.
  *     - Stat row: live counts (dashboards / queries / connectors / flows) = usage.
+ *     - Needs attention: active alerts, failed/running flow runs, stale
+ *       datasets and schema drift — a green "All clear" card when there's
+ *       nothing outstanding (absorbed from the old Workqueue page).
+ *     - Data health: overall score/grade + per-dataset freshness dots
+ *       (absorbed from the old Overview page).
  *     - All-features quick-access grid.
  *     - Recent dashboards + recent flows.
  *
@@ -22,7 +30,14 @@
  *     /query/registry    registered queries
  *     /boards            dashboards
  *     /flows             flows + automations (automations are scheduled flows)
- * Errors / empty arrays degrade gracefully to a count of 0.
+ * Needs-attention / data-health endpoints:
+ *     /watches           active metric watches → Alerts
+ *     /flows/{id}/runs   recent runs per flow (capped) → failed/running runs
+ *     /health/score       overall data-health score + grade + reasons
+ *     /health/freshness   per-dataset freshness (RAG dots) → also feeds "stale"
+ *     /health/drift       datasets with detected schema drift
+ * Errors / empty arrays degrade gracefully to a count of 0 / empty list — no
+ * single 404 ever blocks the rest of the page.
  *
  * The "skip setup" choice persists in localStorage, keyed by the active org so a
  * dismissal in one workspace doesn't leak into another.
@@ -48,6 +63,11 @@ import {
   GitBranch,
   Plug,
   Plus,
+  ShieldCheck,
+  Bell,
+  XCircle,
+  Loader2,
+  Activity,
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import { useOrg } from '../../contexts/OrgContext.jsx'
@@ -78,12 +98,21 @@ async function fetchList(path) {
   try {
     const data = await api.get(path)
     if (Array.isArray(data)) return data
-    for (const key of ['items', 'data', 'boards', 'queries', 'connectors', 'flows', 'results']) {
+    for (const key of ['items', 'data', 'boards', 'queries', 'connectors', 'flows', 'results', 'datasets', 'watches']) {
       if (Array.isArray(data?.[key])) return data[key]
     }
     return []
   } catch {
     return []
+  }
+}
+
+/** Fetch a single JSON object, returning null on any error. */
+async function fetchJson(path) {
+  try {
+    return await api.get(path)
+  } catch {
+    return null
   }
 }
 
@@ -301,6 +330,66 @@ function StatCard({ icon, label, value, to, accent, delay }) {
   )
 }
 
+/** RAG (Red/Amber/Green) status dot for dataset freshness. */
+function RagDot({ status }) {
+  const map = {
+    fresh:   'bg-emerald-500',
+    amber:   'bg-amber-400',
+    stale:   'bg-red-500',
+    unknown: 'bg-border',
+  }
+  return <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${map[status] ?? 'bg-border'}`} aria-label={status} />
+}
+
+/** Grade badge for the health score (A/B/C/D/F). */
+function GradeBadge({ grade }) {
+  const map = {
+    A: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
+    B: 'bg-teal-500/10 text-teal-600 dark:text-teal-400',
+    C: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
+    D: 'bg-orange-500/10 text-orange-600 dark:text-orange-400',
+    F: 'bg-red-500/10 text-red-600 dark:text-red-400',
+  }
+  return (
+    <span className={`inline-flex items-center justify-center w-10 h-10 rounded-xl font-display font-bold text-lg ${map[grade] ?? 'bg-surface-2 text-muted'}`}>
+      {grade ?? '?'}
+    </span>
+  )
+}
+
+/** Single row inside the "Needs attention" list — alert / failed run / stale dataset / drift. */
+function IssueRow({ icon, variant = 'muted', title, subtitle, chip, href, delay }) {
+  const Icon = icon
+  const variants = {
+    red:   { bg: 'bg-red-500/10',   text: 'text-red-600 dark:text-red-400' },
+    amber: { bg: 'bg-amber-500/10', text: 'text-amber-600 dark:text-amber-400' },
+    blue:  { bg: 'bg-blue-500/10',  text: 'text-blue-600 dark:text-blue-400' },
+    muted: { bg: 'bg-surface-2',    text: 'text-muted' },
+  }
+  const v = variants[variant] ?? variants.muted
+  return (
+    <Link
+      to={href}
+      style={{ animationDelay: `${delay}ms` }}
+      className="hp-reveal group flex items-center gap-3 p-4 rounded-xl border border-border bg-surface
+        hover:border-primary/40 hover:shadow-md hover:shadow-primary/5 transition-all duration-200
+        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring min-h-[44px]"
+    >
+      <div className={`flex items-center justify-center w-9 h-9 rounded-lg shrink-0 ${v.bg}`}>
+        <Icon size={16} className={v.text} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="font-display font-medium text-sm text-fg truncate">{title}</p>
+        {subtitle && <p className="text-xs text-muted mt-0.5 truncate">{subtitle}</p>}
+      </div>
+      {chip && (
+        <span className={`text-xs font-medium px-2 py-0.5 rounded-full shrink-0 ${v.bg} ${v.text}`}>{chip}</span>
+      )}
+      <ChevronRight size={14} className="text-muted opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+    </Link>
+  )
+}
+
 function QuickTile({ item, onChat, delay }) {
   const Icon = item.icon
   const inner = (
@@ -394,6 +483,19 @@ export default function HomePage() {
   const [counts, setCounts] = useState({ connectors: 0, queries: 0, dashboards: 0, flows: 0 })
   const [boards, setBoards] = useState([])
   const [flows, setFlows] = useState([])
+
+  // Data health (score + freshness) — absorbed from the old Overview page.
+  const [healthLoading, setHealthLoading] = useState(true)
+  const [healthScore, setHealthScore] = useState(null)
+  const [freshness, setFreshness] = useState([])
+
+  // Needs attention (alerts + failed/running runs + drift) — absorbed from
+  // the old Workqueue page. "Stale data" is derived from `freshness` above
+  // rather than fetched twice.
+  const [attentionLoading, setAttentionLoading] = useState(true)
+  const [watches, setWatches] = useState([])
+  const [badRuns, setBadRuns] = useState([])
+  const [driftItems, setDriftItems] = useState([])
   // The per-org "skip setup" flag lives in localStorage. We read it via useMemo
   // (a side-effect-free read) keyed by the active org + a bump counter that
   // skip()/resume() increment — avoiding a synchronous setState-in-effect.
@@ -429,6 +531,62 @@ export default function HomePage() {
     return () => { cancelled = true }
   }, [activeOrg?.id])
 
+  // Data health — independent so a health 404 never blocks the stat row.
+  useEffect(() => {
+    let cancelled = false
+    async function loadHealth() {
+      setHealthLoading(true)
+      const [scoreData, freshnessRaw] = await Promise.all([
+        fetchJson('/health/score'),
+        fetchList('/health/freshness'),
+      ])
+      if (cancelled) return
+      setHealthScore(scoreData)
+      setFreshness(freshnessRaw)
+      setHealthLoading(false)
+    }
+    loadHealth()
+    return () => { cancelled = true }
+  }, [activeOrg?.id])
+
+  // Needs attention — active watches + recent failed/running flow runs + drift.
+  useEffect(() => {
+    let cancelled = false
+    async function loadAttention() {
+      setAttentionLoading(true)
+      const [watchList, flowsList, drift] = await Promise.all([
+        fetchList('/watches'),
+        fetchList('/flows'),
+        fetchList('/health/drift'),
+      ])
+      if (cancelled) return
+      // Surface all active (enabled) watches as potential alerts — the
+      // backend does not expose a separate "fired" flag on the list endpoint.
+      setWatches(watchList.filter((w) => w.config?.enabled !== false))
+      setDriftItems(drift)
+
+      // Recent runs for up to 10 flows in parallel (cap to avoid hammering).
+      const flowsToCheck = flowsList.slice(0, 10)
+      const runLists = await Promise.all(
+        flowsToCheck.map((f) =>
+          fetchList(`/flows/${f.id}/runs?limit=5`).then((runs) =>
+            runs.map((r) => ({ ...r, _flow_name: f.name || f.title || f.id })),
+          ),
+        ),
+      )
+      if (cancelled) return
+      const attention = runLists
+        .flat()
+        .filter((r) => r.state === 'failed' || r.state === 'running')
+        .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+        .slice(0, 20)
+      setBadRuns(attention)
+      setAttentionLoading(false)
+    }
+    loadAttention()
+    return () => { cancelled = true }
+  }, [activeOrg?.id])
+
   // Core onboarding completion.
   const stepDone = useMemo(
     () => [counts.connectors > 0, counts.queries > 0, counts.dashboards > 0],
@@ -440,6 +598,29 @@ export default function HomePage() {
 
   // Show the general home when setup is complete OR the user skipped it.
   const showGeneral = setupComplete || skipped
+
+  // Derive a single top-level health score.
+  // /health/score returns either {score, grade, reasons} (single dataset)
+  // or {datasets: [...]} (all datasets). Average across datasets when multi.
+  const topScore = useMemo(() => {
+    if (!healthScore) return null
+    if (healthScore.score != null) return healthScore
+    if (Array.isArray(healthScore.datasets) && healthScore.datasets.length > 0) {
+      const ds = healthScore.datasets
+      return {
+        score: Math.round(ds.reduce((s, d) => s + (d.score ?? 0), 0) / ds.length),
+        grade: ds[0]?.grade ?? null,
+        reasons: ds.flatMap((d) => d.reasons ?? []).slice(0, 4),
+      }
+    }
+    return null
+  }, [healthScore])
+
+  const staleDatasets = useMemo(() => freshness.filter((d) => d.status === 'stale'), [freshness])
+  const amberDatasets = useMemo(() => freshness.filter((d) => d.status === 'amber'), [freshness])
+  const totalIssues = watches.length + badRuns.length + staleDatasets.length + driftItems.length
+  const attentionReady = !attentionLoading && !healthLoading
+  const allClear = attentionReady && totalIssues === 0
 
   const skip = () => {
     try { localStorage.setItem(skipKey(activeOrg?.id), '1') } catch { /* ignore */ }
@@ -611,6 +792,217 @@ export default function HomePage() {
                   <StatCard icon={SearchCode} label="Queries" value={counts.queries} to="/queries" accent="from-brand-blue to-brand-teal" delay={60} />
                   <StatCard icon={Plug} label="Connectors" value={counts.connectors} to="/connectors" accent="from-brand-navy to-brand-blue" delay={120} />
                   <StatCard icon={Workflow} label="Flows" value={counts.flows} to="/flows" accent="from-brand-blue to-brand-cyan" delay={180} />
+                </div>
+              )}
+            </section>
+
+            {/* Needs attention — alerts, failed/running runs, stale data, drift */}
+            <section aria-labelledby="attention-heading">
+              <div className="flex items-center justify-between mb-4">
+                <h2 id="attention-heading" className="font-display font-semibold text-lg text-fg">Needs attention</h2>
+                {attentionReady && totalIssues > 0 && (
+                  <span className="text-xs text-muted tabular-nums">{totalIssues} item{totalIssues !== 1 ? 's' : ''}</span>
+                )}
+              </div>
+              {!attentionReady ? (
+                <div className="space-y-3">
+                  {[0, 1, 2].map((i) => <div key={i} className="hp-skeleton h-[60px] w-full rounded-xl" />)}
+                </div>
+              ) : allClear ? (
+                <div className="hp-reveal flex items-center gap-3 rounded-2xl border border-emerald-400/30 dark:border-emerald-500/30 bg-emerald-500/[0.04] px-5 py-4">
+                  <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-emerald-500/10 shrink-0">
+                    <CheckCircle2 size={18} className="text-emerald-500 dark:text-emerald-400" />
+                  </div>
+                  <div>
+                    <p className="font-display font-medium text-sm text-fg">All clear</p>
+                    <p className="text-xs text-muted">Nothing needs attention right now.</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {watches.slice(0, 3).map((w, i) => (
+                    <IssueRow
+                      key={`watch-${w.id}`}
+                      icon={Bell}
+                      variant="amber"
+                      title={w.name || w.id}
+                      subtitle={w.metric_id ? `Metric: ${w.metric_id}` : 'Active alert'}
+                      chip="alert"
+                      href="/watches"
+                      delay={i * 50}
+                    />
+                  ))}
+                  {badRuns.slice(0, 3).map((r, i) => {
+                    const isRunning = r.state === 'running'
+                    return (
+                      <IssueRow
+                        key={`run-${r.id}`}
+                        icon={isRunning ? Loader2 : XCircle}
+                        variant={isRunning ? 'blue' : 'red'}
+                        title={r._flow_name || r.flow_id}
+                        subtitle={r.error ? String(r.error).slice(0, 80) : isRunning ? 'Run in progress' : 'Run failed'}
+                        chip={r.state}
+                        href={`/flows/${r.flow_id}`}
+                        delay={(watches.length + i) * 50}
+                      />
+                    )
+                  })}
+                  {staleDatasets.slice(0, 3).map((d, i) => (
+                    <IssueRow
+                      key={`stale-${d.dataset_key}`}
+                      icon={Database}
+                      variant="red"
+                      title={d.dataset_key}
+                      subtitle={d.last_success_at ? `Last refreshed ${relativeTime(new Date(d.last_success_at))}` : 'Never refreshed'}
+                      chip="stale"
+                      href="/connectors"
+                      delay={(watches.length + badRuns.length + i) * 50}
+                    />
+                  ))}
+                  {driftItems.slice(0, 3).map((d, i) => (
+                    <IssueRow
+                      key={`drift-${d.dataset_key}`}
+                      icon={GitBranch}
+                      variant="amber"
+                      title={d.dataset_key}
+                      subtitle="Schema change detected since last run"
+                      chip="drift"
+                      href="/connectors"
+                      delay={(watches.length + badRuns.length + staleDatasets.length + i) * 50}
+                    />
+                  ))}
+                  {totalIssues > 12 && (
+                    <p className="text-xs text-muted text-center pt-1">+{totalIssues - 12} more</p>
+                  )}
+                </div>
+              )}
+            </section>
+
+            {/* Data health — score + per-dataset freshness */}
+            <section aria-labelledby="health-heading">
+              <h2 id="health-heading" className="font-display font-semibold text-lg text-fg mb-4">Data health</h2>
+              {healthLoading ? (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div className="rounded-2xl border border-border bg-surface p-5 space-y-4">
+                    <div className="hp-skeleton h-10 w-10 rounded-xl" />
+                    <div className="hp-skeleton h-6 w-16" />
+                    <div className="space-y-2">
+                      <div className="hp-skeleton h-3 w-full" />
+                      <div className="hp-skeleton h-3 w-3/4" />
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-border bg-surface p-5 space-y-3">
+                    {[0, 1, 2].map((i) => <div key={i} className="hp-skeleton h-8 w-full rounded-lg" />)}
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {/* Score card */}
+                  <div className="hp-reveal rounded-2xl border border-border bg-surface p-5 flex flex-col gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-primary/10">
+                        <ShieldCheck size={20} className="text-primary" />
+                      </div>
+                      <div>
+                        <p className="font-display font-semibold text-sm text-fg">Health score</p>
+                        <p className="text-xs text-muted">Freshness · completeness · availability</p>
+                      </div>
+                    </div>
+
+                    {topScore ? (
+                      <>
+                        <div className="flex items-end gap-3">
+                          <GradeBadge grade={topScore.grade} />
+                          <div>
+                            <span className="font-display font-bold text-3xl text-fg tabular-nums leading-none">
+                              {topScore.score != null ? topScore.score : '—'}
+                            </span>
+                            <span className="text-sm text-muted ml-1">/ 100</span>
+                          </div>
+                        </div>
+                        {topScore.score != null && (
+                          <div className="h-2 w-full bg-surface-2 rounded-full overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-gradient-to-r from-brand-blue to-brand-teal transition-all duration-700"
+                              style={{ width: `${topScore.score}%` }}
+                            />
+                          </div>
+                        )}
+                        {Array.isArray(topScore.reasons) && topScore.reasons.length > 0 && (
+                          <ul className="space-y-1">
+                            {topScore.reasons.slice(0, 3).map((r, i) => (
+                              <li key={i} className="text-xs text-muted flex items-start gap-1.5">
+                                <Activity size={11} className="mt-0.5 shrink-0" />
+                                {r}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center py-6 text-center gap-2">
+                        <Database size={22} className="text-muted" />
+                        <p className="text-sm text-muted">No health data yet — run a flow to generate scores.</p>
+                      </div>
+                    )}
+
+                    {(staleDatasets.length > 0 || amberDatasets.length > 0) && (
+                      <div className="flex items-center gap-4 pt-1 border-t border-border">
+                        {staleDatasets.length > 0 && (
+                          <span className="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400 font-medium">
+                            <RagDot status="stale" /> {staleDatasets.length} stale
+                          </span>
+                        )}
+                        {amberDatasets.length > 0 && (
+                          <span className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400 font-medium">
+                            <RagDot status="amber" /> {amberDatasets.length} amber
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Freshness list */}
+                  <div className="hp-reveal rounded-2xl border border-border bg-surface p-5" style={{ animationDelay: '80ms' }}>
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="text-xs font-medium text-muted uppercase tracking-wider">Dataset freshness</p>
+                      {freshness.length > 6 && (
+                        <span className="text-xs text-muted">+{freshness.length - 6} more</span>
+                      )}
+                    </div>
+                    {freshness.length > 0 ? (
+                      <ul>
+                        {freshness.slice(0, 6).map((d) => (
+                          <li key={d.dataset_key} className="flex items-center gap-3 py-2.5 border-b border-border last:border-0">
+                            <RagDot status={d.status} />
+                            <span className="flex-1 font-mono text-xs text-fg truncate">{d.dataset_key}</span>
+                            <span className={[
+                              'text-xs font-medium px-2 py-0.5 rounded-full shrink-0',
+                              d.status === 'fresh'
+                                ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                                : d.status === 'stale'
+                                ? 'bg-red-500/10 text-red-600 dark:text-red-400'
+                                : d.status === 'amber'
+                                ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                                : 'bg-surface-2 text-muted',
+                            ].join(' ')}>
+                              {d.status}
+                            </span>
+                            {d.last_success_at && (
+                              <span className="text-xs text-muted shrink-0 hidden sm:block">
+                                {relativeTime(new Date(d.last_success_at))}
+                              </span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center py-6 text-center gap-2">
+                        <Database size={20} className="text-muted" />
+                        <p className="text-sm text-muted">No datasets tracked yet.</p>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </section>

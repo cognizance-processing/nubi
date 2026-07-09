@@ -14,9 +14,9 @@
  *   AUTHENTICATED (AppShell — sidebar + topbar + chat panel)
  *   Wrapped in ProtectedRoute > UiProvider > OrgProvider
  *
- *   /overview           → OverviewPage
- *   /workqueue          → WorkqueuePage
- *   /home               → HomePage
+ *   /home               → HomePage (single workspace landing page — absorbed
+ *                         Overview + Workqueue; /overview and /workqueue
+ *                         redirect here)
  *   /connectors         → ConnectorsPage
  *   /queries            → QueriesPage
  *   /queries/:id        → QueriesPage
@@ -106,12 +106,8 @@ const BridgesSettings = lazy(() => import('./pages/app/settings/BridgesSettings.
 const UsageSettings = lazy(() => import('./pages/app/settings/UsageSettings.jsx'))
 const McpSettings = lazy(() => import('./pages/app/settings/McpSettings.jsx'))
 const AccessGrantsSettings = lazy(() => import('./pages/app/settings/AccessGrantsSettings.jsx'))
-const LineagePage = lazy(() => import('./pages/app/LineagePage.jsx'))
 const SecretsPage = lazy(() => import('./pages/app/SecretsPage.jsx'))
 const DataExplorerPage = lazy(() => import('./pages/app/DataExplorerPage.jsx'))
-const ExplorePage = lazy(() => import('./pages/app/ExplorePage.jsx'))
-const OverviewPage = lazy(() => import('./pages/app/OverviewPage.jsx'))
-const WorkqueuePage = lazy(() => import('./pages/app/WorkqueuePage.jsx'))
 
 // Admin portal (superadmin-only)
 const AdminLayout = lazy(() => import('./pages/admin/AdminLayout.jsx'))
@@ -292,9 +288,10 @@ export default function App() {
           {/* Redirect legacy /dashboard → /home */}
           <Route path="dashboard" element={<Navigate to="/home" replace />} />
 
+          {/* Overview and Workqueue were folded into Home — keep old links working. */}
+          <Route path="overview" element={<Navigate to="/home" replace />} />
+          <Route path="workqueue" element={<Navigate to="/home" replace />} />
           {/* Top-level workspace nav items */}
-          <Route path="overview" element={<OverviewPage />} />
-          <Route path="workqueue" element={<WorkqueuePage />} />
           <Route path="home" element={<HomePage />} />
           <Route path="invite/:token" element={<InviteAcceptPage />} />
           <Route path="connectors" element={<ConnectorsPage />} />
@@ -313,10 +310,6 @@ export default function App() {
           <Route path="metrics/:id" element={<Navigate to="/queries" replace />} />
           <Route path="watches" element={<WatchesPage />} />
           <Route path="automations" element={<AutomationsPage />} />
-          {/* Lineage DAG — full workspace data lineage view */}
-          <Route path="lineage" element={<LineagePage />} />
-          {/* Explore — dogfood of embed/ components in the first-party SPA */}
-          <Route path="explore" element={<ExplorePage />} />
           {/* Usage moved into Settings — keep the old route as a redirect. */}
           <Route path="usage" element={<Navigate to="/settings/usage" replace />} />
           <Route path="editor" element={<EditorPage />} />
