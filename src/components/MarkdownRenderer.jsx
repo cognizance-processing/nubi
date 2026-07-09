@@ -102,7 +102,7 @@ function headingId(children) {
 
 /**
  * Docs screenshots are captured in both themes by scripts/docs-screenshots.mjs:
- * `<name>.png` (light) and `<name>-dark.png` (dark). Markdown always references
+ * `<name>.webp` (light) and `<name>-dark.webp` (dark). Markdown always references
  * the base (light) name; in dark mode we rewrite the src to the `-dark`
  * sibling. Other images (logos, docs/assets refs, `illustration:` scheme) are
  * left untouched.
@@ -111,7 +111,7 @@ function headingId(children) {
 // JSX source, and a literal lookbehind for "-dark" crashes its candidate
 // parser (the "!-…" token reads as a malformed important-modifier).
 // Plain suffix check instead.
-const SCREENSHOT_SRC = /^\/docs\/screenshots\/([\w][\w.-]*)\.png$/
+const SCREENSHOT_SRC = /^\/docs\/screenshots\/([\w][\w.-]*)\.webp$/
 
 function ThemedDocImage({ src, alt }) {
   const { theme } = useTheme()
@@ -122,7 +122,7 @@ function ThemedDocImage({ src, alt }) {
     if (darkMissing || theme !== 'dark' || typeof src !== 'string') return src
     const m = SCREENSHOT_SRC.exec(src)
     if (!m || m[1].endsWith('-dark')) return src
-    return `/docs/screenshots/${m[1]}-dark.png`
+    return `/docs/screenshots/${m[1]}-dark.webp`
   }, [theme, src, darkMissing])
   return (
     <img src={resolved} alt={alt || ''} loading="lazy"

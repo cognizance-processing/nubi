@@ -5,8 +5,8 @@ Flows is Nubi's built-in workflow orchestrator. A flow is a set of **cells** —
 You work on a flow in **three views**: as a **notebook** (a top-to-bottom list of cells), as a **canvas** (a visual DAG), or as **code** (a file tree — `flow.py` plus one file per cell). They are three windows onto the same flow — flip between them at any time without losing anything.
 
 <table><tr>
-<td width="50%"><img src="screenshots/flows-light.png" alt="Flows canvas — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/flows-dark.png" alt="Flows canvas — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/flows-light.webp" alt="Flows canvas — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/flows-dark.webp" alt="Flows canvas — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 > Flow compute is metered. Cell previews and durable runs consume **compute units** drawn from your org's usage wallet. Designing in the notebook with small previews is cheap; large durable runs and materializations cost more. See [Billing and usage](/docs/billing-and-usage).
@@ -51,7 +51,7 @@ There is no "primary" view and no separate copy: editing in any view edits the s
 
 ### Notebook view
 
-![Notebook view — Note, SQL, and Python cells in order, each with its own Run button](/docs/screenshots/flows-notebook.png)
+![Notebook view — Note, SQL, and Python cells in order, each with its own Run button](/docs/screenshots/flows-notebook.webp)
 
 The notebook renders cells as an ordered, top-to-bottom list. This is the fastest way to author and iterate: each cell has a **Run** button that runs a fast interactive preview and shows the result inline. The top bar grows three extra buttons — **+ SQL**, **+ Python**, and **+ Note**.
 
@@ -67,7 +67,7 @@ Cells share data. A downstream cell can reference an upstream cell's result by i
 
 ### Canvas view
 
-![Canvas view — each cell is a node, arrows are dependencies, with minimap and zoom controls](screenshots/flows.png)
+![Canvas view — each cell is a node, arrows are dependencies, with minimap and zoom controls](screenshots/flows.webp)
 
 The canvas renders the flow as a visual graph. Each cell is a node; arrows show dependencies. It is the clearest way to see and shape the structure of a branching or fan-out pipeline.
 
@@ -87,7 +87,7 @@ Inferred edges are render-time only: they are re-derived from the SQL on every v
 
 ### Code / Files view
 
-![Code view — file explorer with flow.py and one file per cell, edited in Monaco](/docs/screenshots/flows-code.png)
+![Code view — file explorer with flow.py and one file per cell, edited in Monaco](/docs/screenshots/flows-code.webp)
 
 The code view is a VS Code-style projection of the flow as an editable file tree:
 
@@ -342,7 +342,7 @@ Existing saved flows **autosave** about 2 seconds after your last edit — a sub
 
 ## Scheduling a flow
 
-![The Automations page — every flow with its schedule, next/last run, and a Run now button](/docs/screenshots/automations.png)
+![The Automations page — every flow with its schedule, next/last run, and a Run now button](/docs/screenshots/automations.webp)
 
 A saved flow can run automatically on a schedule. The **Schedule** button appears in the top bar once the flow is saved (it is hidden for new drafts).
 

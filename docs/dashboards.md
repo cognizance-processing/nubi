@@ -11,8 +11,8 @@ Under the hood every dashboard is a single JSON document — a `DashboardSpec`. 
 ## The dashboards page
 
 <table><tr>
-<td width="50%"><img src="screenshots/dashboards-light.png" alt="Dashboards — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/dashboards-dark.png" alt="Dashboards — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/dashboards-light.webp" alt="Dashboards — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/dashboards-dark.webp" alt="Dashboards — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 Open **Dashboards** from the sidebar to see all boards in the active project.
@@ -31,8 +31,8 @@ If you have read-only access to the organisation, create/edit/delete actions are
 ## The editor at a glance
 
 <table><tr>
-<td width="50%"><img src="screenshots/editor-light.png" alt="Dashboard editor — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/editor-dark.png" alt="Dashboard editor — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/editor-light.webp" alt="Dashboard editor — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/editor-dark.webp" alt="Dashboard editor — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 The editor is a single full-height workspace. Its toolbar lives in the app's top bar:
@@ -273,8 +273,8 @@ A dashboard variable carries an optional `mode` of `'scan'` or `'slice'` (per `C
 Every saved board renders as a full page at `/d/:id` — no editor chrome, just the dashboard. This is the URL you share with viewers.
 
 <table><tr>
-<td width="50%"><img src="screenshots/dashboard-view-light.png" alt="Dashboard live view — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/dashboard-view-dark.png" alt="Dashboard live view — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/dashboard-view-light.webp" alt="Dashboard live view — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/dashboard-view-dark.webp" alt="Dashboard live view — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 - Members who can write see an **Edit in editor →** link above the board; viewers get a clean read-only render.

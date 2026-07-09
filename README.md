@@ -29,9 +29,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="public/docs/screenshots/queries-editor-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="public/docs/screenshots/queries-editor.png">
-    <img src="public/docs/screenshots/queries-editor.png" alt="Nubi query editor — SQL workspace with live results, query library, and one-click expose-as-metric" width="100%">
+    <source media="(prefers-color-scheme: dark)" srcset="public/docs/screenshots/queries-editor-dark.webp">
+    <source media="(prefers-color-scheme: light)" srcset="public/docs/screenshots/queries-editor.webp">
+    <img src="public/docs/screenshots/queries-editor.webp" alt="Nubi query editor — SQL workspace with live results, query library, and one-click expose-as-metric" width="100%">
   </picture>
 </p>
 
@@ -88,21 +88,21 @@ The hero above is the **query editor**. A few more surfaces — see the [**UI to
 <table>
   <tr>
     <td width="50%" valign="top">
-      <a href="docs/dashboards.md"><img src="public/docs/screenshots/dashboard-editor.png" alt="Dashboard editor"></a>
+      <a href="docs/dashboards.md"><img src="public/docs/screenshots/dashboard-editor.webp" alt="Dashboard editor"></a>
       <sub><b>Dashboard editor</b> — drag-and-drop widgets, 17 chart types, live cross-filtering</sub>
     </td>
     <td width="50%" valign="top">
-      <a href="docs/flows.md"><img src="public/docs/screenshots/flows-notebook.png" alt="Flows"></a>
+      <a href="docs/flows.md"><img src="public/docs/screenshots/flows-notebook.webp" alt="Flows"></a>
       <sub><b>Flows</b> — cell-based SQL/Python orchestration (notebook + canvas views)</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <a href="docs/connectors.md"><img src="public/docs/screenshots/data-browser.png" alt="Data browser"></a>
+      <a href="docs/connectors.md"><img src="public/docs/screenshots/data-browser.webp" alt="Data browser"></a>
       <sub><b>Data browser</b> — explore any connected source, edit grid-style</sub>
     </td>
     <td width="50%" valign="top">
-      <a href="docs/embedding.md"><img src="public/docs/screenshots/dashboard-view.png" alt="Published dashboard"></a>
+      <a href="docs/embedding.md"><img src="public/docs/screenshots/dashboard-view.webp" alt="Published dashboard"></a>
       <sub><b>Published dashboard</b> — embeddable, RLS-enforced, near-zero cost per view</sub>
     </td>
   </tr>

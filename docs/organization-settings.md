@@ -4,7 +4,7 @@ Everything that controls who can use your workspace, what they can do in it, and
 
 Settings use a two-column layout: a sticky sidebar on the left, grouped by scope, and the active section on the right.
 
-![Settings — grouped sidebar with Account, Organization, and Project scopes; the Organization → General section active](/docs/screenshots/settings-organization.png)
+![Settings — grouped sidebar with Account, Organization, and Project scopes; the Organization → General section active](/docs/screenshots/settings-organization.webp)
 
 | Group | Nav item | Route | What it controls |
 |---|---|---|---|
@@ -72,7 +72,7 @@ This cannot be undone.
 
 **Settings → Members** is a dedicated page for managing who's in the org. Owners and admins see two cards: the invite form at the top and the member list below. Members and viewers see the list but no edit controls ("View only — ask an owner or admin to manage members").
 
-![Settings — Members: invite form, pending invites, and the member list with role dropdowns](/docs/screenshots/settings-members.png)
+![Settings — Members: invite form, pending invites, and the member list with role dropdowns](/docs/screenshots/settings-members.webp)
 
 ### Roles
 
@@ -121,7 +121,7 @@ layer on top (see [Notifications & Integrations](/docs/notifications-and-integra
 for why). A connected integration powers outbound alerts (watches, flow runs,
 shares).
 
-![Settings — Integrations: connected channels with Test / Enable / Edit / Delete controls, and the connect-a-channel picker](/docs/screenshots/settings-integrations.png)
+![Settings — Integrations: connected channels with Test / Enable / Edit / Delete controls, and the connect-a-channel picker](/docs/screenshots/settings-integrations.webp)
 
 | Channel | How it sends | Fields |
 |---|---|---|
@@ -224,7 +224,7 @@ For the full embedding workflow — minting tokens, row-level security, and moun
 
 **Settings → Usage** is read-only visibility into what the active org has consumed this period. It used to be a standalone page; the old `/usage` route now redirects here.
 
-![Settings — Usage: per-metric cards with used / limit and a time-series chart for the selected metric](/docs/screenshots/settings-usage.png)
+![Settings — Usage: per-metric cards with used / limit and a time-series chart for the selected metric](/docs/screenshots/settings-usage.webp)
 
 Usage metering is **open-core** — every Nubi deployment has this page. It shows one card per metric (queries run, compute units, bytes scanned, flow runs, AI usage, embedded sessions, storage), a period selector (**Today / 7 days / Month**), and a time-series chart for whichever metric card you select.
 

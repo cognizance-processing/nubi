@@ -11,13 +11,16 @@
  *     (10 dashboards, 38 queries, demo connector).
  *
  * Output:
- *   - public/docs/screenshots/<name>.png — referenced from docs markdown as
- *     /docs/screenshots/<name>.png. Viewport 1440x900 @2x, light theme.
- *   - public/docs/screenshots/<name>-dark.png — the same capture in dark
+ *   - public/docs/screenshots/<name>.webp — referenced from docs markdown as
+ *     /docs/screenshots/<name>.webp. Viewport 1440x900 @2x, light theme.
+ *     Captured as PNG then encoded to WebP (~60-90% smaller → far faster docs
+ *     loads); the PNG is discarded.
+ *   - public/docs/screenshots/<name>-dark.webp — the same capture in dark
  *     theme. Docs markdown references the base name only; the in-app
  *     MarkdownRenderer swaps in the -dark variant when the app theme is dark.
  *   - docs/assets/hero-{light,dark}.png — the README hero (full-viewport
- *     dashboard view), one per color scheme.
+ *     dashboard view), one per color scheme. Kept as PNG: it is the social
+ *     og:image/twitter:image, and scrapers don't reliably support WebP.
  *   - public/docs/screenshots/manifest.json — version + commit + file list
  *     for the run, so stale screenshots are detectable.
  *
@@ -27,7 +30,7 @@
  * discovered by name via the API on every run, so reseeding does not break it.
  */
 import { chromium } from '@playwright/test'
-import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -217,7 +220,7 @@ async function setEnv(page, projectId, envKey) {
   needsReload = true
 }
 
-async function shoot(page, name, { settle = 1200, dir = OUT_DIR } = {}) {
+async function shoot(page, name, { settle = 1200, dir = OUT_DIR, format = 'webp' } = {}) {
   await sleep(settle)
   // Reset both window scroll and any internally scrolled pane (autofocus on
   // forms below the fold scrolls split-screen layouts).
@@ -228,9 +231,19 @@ async function shoot(page, name, { settle = 1200, dir = OUT_DIR } = {}) {
     }
   })
   await sleep(150)
-  await page.screenshot({ path: path.join(dir, `${name}.png`) })
+  if (format === 'webp') {
+    // Playwright only encodes PNG/JPEG, so capture PNG then transcode to WebP
+    // (much smaller for flat UI captures) and drop the PNG. Needs `cwebp` on PATH.
+    const tmpPng = path.join(dir, `${name}.png`)
+    const webp = path.join(dir, `${name}.webp`)
+    await page.screenshot({ path: tmpPng })
+    execSync(`cwebp -quiet -q 86 -sharp_yuv -m 6 ${JSON.stringify(tmpPng)} -o ${JSON.stringify(webp)}`)
+    unlinkSync(tmpPng)
+  } else {
+    await page.screenshot({ path: path.join(dir, `${name}.${format}`) })
+  }
   captured.push(name)
-  console.log(`✓ ${name}.png`)
+  console.log(`✓ ${name}.${format}`)
 }
 
 // Every full page load reboots the app, whose boot-time POST /auth/refresh
@@ -482,7 +495,7 @@ for (const theme of ['light', 'dark']) {
     await uiLogin(heroPage)
     await setProject(heroPage, ids.org.id, ids.demo.id)
   }
-  await shoot(heroPage, `hero-${theme}`, { settle: 4500, dir: ASSETS_DIR })
+  await shoot(heroPage, `hero-${theme}`, { settle: 4500, dir: ASSETS_DIR, format: 'png' })
   // Same image also serves the landing page hero + og:image (public/ is served).
   copyFileSync(
     path.join(ASSETS_DIR, `hero-${theme}.png`),
@@ -506,7 +519,8 @@ writeFileSync(
       version: pkg.version,
       commit,
       generatedAt: new Date().toISOString(),
-      files: [...captured].sort().map((n) => `${n}.png`),
+      // heroes are kept as PNG (og:image); every other capture is WebP.
+      files: [...captured].sort().map((n) => `${n}.${n.startsWith('hero-') ? 'png' : 'webp'}`),
     },
     null,
     2
@@ -526,12 +540,12 @@ const mdFiles = [
 const refs = new Set()
 for (const f of mdFiles) {
   const text = readFileSync(f, 'utf8')
-  for (const m of text.matchAll(/(?:\/docs\/screenshots\/|docs\/assets\/)([\w][\w.-]*\.png)/g)) {
+  for (const m of text.matchAll(/(?:\/docs\/screenshots\/|docs\/assets\/)([\w][\w.-]*\.(?:png|webp))/g)) {
     refs.add(m[1])
   }
 }
 refs.delete('logo.png') // static brand asset, not a product capture
-const missing = [...refs].filter((n) => !captured.includes(n.replace(/\.png$/, '')))
+const missing = [...refs].filter((n) => !captured.includes(n.replace(/\.(?:png|webp)$/, '')))
 // Docs reference base (light) names only; the in-app renderer derives the
 // `-dark` sibling, so every base capture must also have one. (hero-{light,dark}
 // are already a theme pair by name.)

@@ -17,7 +17,7 @@ Both are org-scoped, so each organization has its own usage, plan, wallet, and i
 
 **Settings → Organization → Usage** shows what your org has consumed for a selectable period — **Today** (hourly buckets), **7 days**, or **Month** (calendar-month-to-date, daily buckets). A refresh button re-fetches on demand.
 
-![Settings — Usage: metric cards with used / limit / % and a time-series chart for the selected metric](/docs/screenshots/settings-usage.png)
+![Settings — Usage: metric cards with used / limit / % and a time-series chart for the selected metric](/docs/screenshots/settings-usage.webp)
 
 It shows one card per metric:
 

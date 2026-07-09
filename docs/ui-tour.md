@@ -11,8 +11,8 @@ Welcome to Nubi. This page walks every part of the authenticated app so the shap
 Before you reach the app shell you pass through the public landing page and the sign-in flow.
 
 <table><tr>
-<td width="50%"><img src="screenshots/landing-light.png" alt="Landing — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/landing-dark.png" alt="Landing — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/landing-light.webp" alt="Landing — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/landing-dark.webp" alt="Landing — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 The landing page explains what Nubi is and links to pricing. Hit **Sign in** (top-right) or **Get started** to begin. See [Getting Started](/docs/getting-started) for the full sign-up walkthrough.
@@ -24,8 +24,8 @@ The landing page explains what Nubi is and links to pricing. Hit **Sign in** (to
 Every authenticated screen shares the same frame. Three regions are always visible; a fourth slides in on demand.
 
 <table><tr>
-<td width="50%"><img src="screenshots/home-light.png" alt="Home — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/home-dark.png" alt="Home — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/home-light.webp" alt="Home — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/home-dark.webp" alt="Home — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 | Region | What it's for |
@@ -123,8 +123,8 @@ Nubi ships both themes.
 Overview is the executive at-a-glance landing page for a workspace that is already set up.
 
 <table><tr>
-<td width="50%"><img src="screenshots/overview-light.png" alt="Overview — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/overview-dark.png" alt="Overview — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/overview-light.webp" alt="Overview — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/overview-dark.webp" alt="Overview — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 **Stat cards** — a row of four count cards: Connectors, Queries, Dashboards, Flows. Each card links to the corresponding section.
@@ -144,8 +144,8 @@ All fetches are independently wrapped in error boundaries so a single 404 or emp
 Workqueue is the "needs attention" inbox that surfaces actionable items in one place.
 
 <table><tr>
-<td width="50%"><img src="screenshots/workqueue-light.png" alt="Workqueue — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/workqueue-dark.png" alt="Workqueue — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/workqueue-light.webp" alt="Workqueue — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/workqueue-dark.webp" alt="Workqueue — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 Three sections, each independent (a failure in one section never hides the others):
@@ -165,8 +165,8 @@ Three sections, each independent (a failure in one section never hides the other
 Home has two modes, chosen automatically based on workspace state.
 
 <table><tr>
-<td width="50%"><img src="screenshots/home-light.png" alt="Home — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/home-dark.png" alt="Home — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/home-light.webp" alt="Home — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/home-dark.webp" alt="Home — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 **Setup mode** — shown to new workspaces (or until you click **Skip setup**). Three step-cards guide you through the minimum path to a live dashboard:
@@ -211,8 +211,8 @@ To switch or create an environment:
 ## Connectors (`/connectors`)
 
 <table><tr>
-<td width="50%"><img src="screenshots/connectors-light.png" alt="Connectors — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/connectors-dark.png" alt="Connectors — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/connectors-light.webp" alt="Connectors — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/connectors-dark.webp" alt="Connectors — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 Connectors is where you link Nubi to your data sources. One card per source — Postgres, BigQuery, Snowflake, HTTP/JSON APIs, and 20+ more. Each card shows the logo, name, type badge, and summary config. The four card actions are **View data** (opens the Data Browser), **Test** (verifies config), **Edit**, and **Delete**.
@@ -226,8 +226,8 @@ See [Connectors](/docs/connectors) for the full supported-types list, credential
 ## Data browser (`/data`)
 
 <table><tr>
-<td width="50%"><img src="screenshots/data-light.png" alt="Data browser — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/data-dark.png" alt="Data browser — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/data-light.webp" alt="Data browser — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/data-dark.webp" alt="Data browser — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 The Data browser lets you explore any connector's tables without writing SQL. Open it from the sidebar or click **View data** on a connector card.
@@ -242,8 +242,8 @@ This is also the fastest way to confirm a freshly added connector actually works
 ## Queries (`/queries`)
 
 <table><tr>
-<td width="50%"><img src="screenshots/queries-light.png" alt="Queries — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/queries-dark.png" alt="Queries — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/queries-light.webp" alt="Queries — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/queries-dark.webp" alt="Queries — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 The Queries workspace is Nubi's SQL IDE. Write SQL against any connector, add `{{named}}` parameters, run to see results, and save the query to the registry so dashboards and flows can reuse it.
@@ -263,8 +263,8 @@ The Queries workspace is Nubi's SQL IDE. Write SQL against any connector, add `{
 ## Dashboards (`/dashboards`)
 
 <table><tr>
-<td width="50%"><img src="screenshots/dashboards-light.png" alt="Dashboards — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/dashboards-dark.png" alt="Dashboards — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/dashboards-light.webp" alt="Dashboards — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/dashboards-dark.webp" alt="Dashboards — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 The Dashboards page lists every saved board in the active project as a responsive card grid. Each card shows the board name, widget count, and two primary actions — **Open** (view the live board) and **Edit** (open in the editor). The three-dot menu on each card adds Checkpoint, History, Promote, and Delete.
@@ -276,8 +276,8 @@ Click **New dashboard** (top-right) to open a blank editor. Or click **Ask AI to
 ## Dashboard editor (`/editor`)
 
 <table><tr>
-<td width="50%"><img src="screenshots/editor-light.png" alt="Dashboard editor — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/editor-dark.png" alt="Dashboard editor — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/editor-light.webp" alt="Dashboard editor — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/editor-dark.webp" alt="Dashboard editor — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 The editor is a single full-height workspace for building dashboards visually. Its toolbar lives in the top bar:
@@ -304,8 +304,8 @@ See [Dashboards](/docs/dashboards) for the complete widget reference and Dashboa
 ## Dashboard live view (`/d/:id`)
 
 <table><tr>
-<td width="50%"><img src="screenshots/dashboard-view-light.png" alt="Dashboard live view — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/dashboard-view-dark.png" alt="Dashboard live view — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/dashboard-view-light.webp" alt="Dashboard live view — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/dashboard-view-dark.webp" alt="Dashboard live view — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 Opening a dashboard from the Dashboards list navigates to `/d/<id>` — a clean full-viewport view with no editor chrome. This is the URL you share with stakeholders, or embed via `<iframe>` or `<nubi-dashboard>`.
@@ -322,8 +322,8 @@ Use your browser's back button or the close control to return to the app shell.
 ## Flows (`/flows`)
 
 <table><tr>
-<td width="50%"><img src="screenshots/flows-light.png" alt="Flows — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/flows-dark.png" alt="Flows — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/flows-light.webp" alt="Flows — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/flows-dark.webp" alt="Flows — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 Flows is Nubi's built-in workflow orchestrator. A flow is a set of **cells** — SQL queries, Python scripts, or Markdown notes — wired into a directed acyclic graph. You can view and edit a flow in three ways:
@@ -343,8 +343,8 @@ See [Flows](/docs/flows) for the full cell reference, dependency wiring, materia
 ## Settings (`/settings`)
 
 <table><tr>
-<td width="50%"><img src="screenshots/settings-light.png" alt="Settings — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/settings-dark.png" alt="Settings — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/settings-light.webp" alt="Settings — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/settings-dark.webp" alt="Settings — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 Navigate to **Settings** (sidebar bottom or account menu) to open the unified settings area. A grouped left sidebar keeps every setting in one place, organised by scope.
@@ -375,8 +375,8 @@ On desktop the panel shares the screen alongside your content (340 px wide). On 
 ## Pricing (`/pricing`)
 
 <table><tr>
-<td width="50%"><img src="screenshots/pricing-light.png" alt="Pricing — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/pricing-dark.png" alt="Pricing — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/pricing-light.webp" alt="Pricing — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/pricing-dark.webp" alt="Pricing — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 The pricing page is public — no sign-in required. It shows the five tiers (Free, Starter, Pro, Business, Enterprise), a feature comparison table, and a usage calculator. All plans include unlimited seats and viewers; Nubi does not charge per user. See [Billing & Usage](/docs/billing-and-usage) for full tier details.

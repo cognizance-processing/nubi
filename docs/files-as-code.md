@@ -159,7 +159,7 @@ edit locally is exactly what you see in the UI:
     code view calls this and syncs the compiled spec back to the canvas and
     notebook.
 
-  ![Flow code view — flow.py and per-cell files](/docs/screenshots/flows-code.png)
+  ![Flow code view — flow.py and per-cell files](/docs/screenshots/flows-code.webp)
 
 - **Queries** — the query workspace (`src/pages/app/QueryWorkspace.jsx`) has a
   matching "Code / Files view (.sql + .meta.json)" toggle

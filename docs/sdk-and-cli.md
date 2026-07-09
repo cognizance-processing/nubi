@@ -296,7 +296,7 @@ nubi flows run flows/my_flow.yaml --param region=us --param date=2024-01-01
 
 Flows are also editable as **Python**: the flow editor's Code view generates a `flow.py` from the spec (`POST /flows/codegen`) and compiles your edits back into a FlowSpec (`POST /flows/compile`, sandboxed subprocess). The committed on-disk format written by `nubi pull` stays `flows/<slug>__<id8>/flow.toml + cells/*` — `flow.py` is a generated projection. See [Files-as-Code](/docs/files-as-code) for the round-trip details.
 
-![Flow code view — flow.py and per-cell files](/docs/screenshots/flows-code.png)
+![Flow code view — flow.py and per-cell files](/docs/screenshots/flows-code.webp)
 
 ### `nubi dashboards ... / queries ... / connectors ...`
 

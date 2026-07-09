@@ -7,8 +7,8 @@ Open it from the sidebar (route `/queries`).
 > **New to Nubi?** [Getting Started](/docs/getting-started) has a beginner-friendly walkthrough of running and saving your first query. [UI Tour](/docs/ui-tour) describes the Queries surface in the context of the app shell.
 
 <table><tr>
-<td width="50%"><img src="screenshots/queries-light.png" alt="Queries — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/queries-dark.png" alt="Queries — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/queries-light.webp" alt="Queries — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/queries-dark.webp" alt="Queries — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 ---

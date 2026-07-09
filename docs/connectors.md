@@ -11,8 +11,8 @@ Connectors live on the **Connectors** page (`/connectors` in the app sidebar). C
 ## The Connectors page
 
 <table><tr>
-<td width="50%"><img src="screenshots/connectors-light.png" alt="Connectors — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/connectors-dark.png" alt="Connectors — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/connectors-light.webp" alt="Connectors — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/connectors-dark.webp" alt="Connectors — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 Open **Connectors** from the sidebar. The page shows:
@@ -173,8 +173,8 @@ The Demo data connector always tests green (it has no secret and runs in-process
 ## Browsing a connector's data
 
 <table><tr>
-<td width="50%"><img src="screenshots/data-light.png" alt="Data browser — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/data-dark.png" alt="Data browser — dark"><br><sub>Dark</sub></td>
+<td width="50%"><img src="screenshots/data-light.webp" alt="Data browser — light"><br><sub>Light</sub></td>
+<td width="50%"><img src="screenshots/data-dark.webp" alt="Data browser — dark"><br><sub>Dark</sub></td>
 </tr></table>
 
 Click **View data** on any connector card to open the **Data Browser** (`/connectors/:id/data`). This lets you explore the source without writing any SQL:

@@ -40,7 +40,7 @@ Set `NUBI_SECRETS_KEY` before starting the server. The key is read lazily — mi
 
 Secrets are managed in the UI at **Flows → Secrets** (`/flows/secrets`) — values are write-only there too:
 
-![The Secrets page under Flows — add encrypted credentials and reference them as {{ secrets.NAME }}](/docs/screenshots/secrets.png)
+![The Secrets page under Flows — add encrypted credentials and reference them as {{ secrets.NAME }}](/docs/screenshots/secrets.webp)
 
 Reference a secret inside a flow task `config` with the `{{ secrets.NAME }}` template expression:
 

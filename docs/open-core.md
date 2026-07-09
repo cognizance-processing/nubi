@@ -227,7 +227,7 @@ On a self-host deployment `useFeature("billing")` simply resolves to `false` (be
 
 ## Competitive overview
 
-![How Nubi compares — competitor comparison table](screenshots/compare.png)
+![How Nubi compares — competitor comparison table](screenshots/compare.webp)
 
 The [Compare page](/compare) gives a full breakdown of how Nubi differs from Hex, Cube, Metabase, Looker, Sigma, Tableau, Power BI, and Apache Superset.
 

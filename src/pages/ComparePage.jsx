@@ -1378,7 +1378,7 @@ export default function ComparePage() {
                       </span>
                     </div>
                     <img
-                      src="/docs/screenshots/dashboard-view.png"
+                      src="/docs/screenshots/dashboard-view.webp"
                       alt="A live Nubi dashboard — KPIs, trend lines, and breakdowns rendered by the in-browser kernel"
                       width="2880"
                       height="1800"
@@ -1386,7 +1386,7 @@ export default function ComparePage() {
                       className="block w-full h-auto dark:hidden"
                     />
                     <img
-                      src="/docs/screenshots/dashboard-view-dark.png"
+                      src="/docs/screenshots/dashboard-view-dark.webp"
                       alt=""
                       aria-hidden="true"
                       width="2880"
