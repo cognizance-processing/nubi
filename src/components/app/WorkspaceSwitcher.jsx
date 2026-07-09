@@ -147,7 +147,7 @@ function WorkspacePanel({ pos, onClose, onNewProject }) {
             onClick={handleNewOrg}
             title="New organization"
             aria-label="Create a new organization"
-            className="w-6 h-6 flex items-center justify-center rounded-md text-muted/70 hover:text-fg hover:bg-surface-2 transition-colors shrink-0"
+            className="w-6 h-6 flex items-center justify-center rounded-md text-muted/70 hover:text-fg hover:bg-surface-2 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Plus size={12} />
           </button>
@@ -165,6 +165,7 @@ function WorkspacePanel({ pos, onClose, onNewProject }) {
                     className={`
                       group flex items-center gap-2.5 w-full px-2 py-1.5 rounded-lg text-left
                       min-h-[36px] transition-colors
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring
                       ${active ? 'bg-surface-2' : 'hover:bg-surface-2'}
                     `}
                   >
@@ -197,6 +198,7 @@ function WorkspacePanel({ pos, onClose, onNewProject }) {
                 className={`
                   group flex items-center gap-2.5 w-full px-2 py-1.5 rounded-lg text-left
                   min-h-[36px] transition-colors
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring
                   ${active ? 'bg-primary/10' : 'hover:bg-surface-2'}
                 `}
               >
@@ -220,7 +222,7 @@ function WorkspacePanel({ pos, onClose, onNewProject }) {
       <div className="p-1.5">
         <button
           onClick={handleNewProject}
-          className="flex items-center gap-2.5 w-full px-2 py-1.5 rounded-lg text-left min-h-[36px] text-sm font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+          className="flex items-center gap-2.5 w-full px-2 py-1.5 rounded-lg text-left min-h-[36px] text-sm font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         >
           <span className="flex items-center justify-center w-6 h-6 rounded-md border border-dashed border-border text-muted shrink-0">
             <Plus size={13} />
@@ -312,7 +314,7 @@ function EnvPanel({ pos, onClose, onOpenGraph }) {
             onClick={() => { onClose(); onOpenGraph() }}
             title="Branch graph"
             aria-label="Open git branch graph"
-            className="w-6 h-6 flex items-center justify-center rounded-md text-muted/70 hover:text-fg hover:bg-surface-2 transition-colors shrink-0"
+            className="w-6 h-6 flex items-center justify-center rounded-md text-muted/70 hover:text-fg hover:bg-surface-2 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <GitBranch size={12} />
           </button>
@@ -333,6 +335,7 @@ function EnvPanel({ pos, onClose, onOpenGraph }) {
                 className={`
                   group flex items-center gap-2.5 w-full px-2 py-1.5 rounded-lg text-left
                   min-h-[36px] transition-colors
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring
                   ${active ? 'bg-primary/10' : 'hover:bg-surface-2'}
                 `}
               >
@@ -359,7 +362,7 @@ function EnvPanel({ pos, onClose, onOpenGraph }) {
                     onKeyDown={(e) => { if (e.key === 'Enter') handleRemove(env, e) }}
                     title="Remove environment"
                     aria-label={`Remove environment ${env.key}`}
-                    className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-muted/60 hover:text-red-500 transition-colors shrink-0"
+                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 w-5 h-5 flex items-center justify-center rounded text-muted/60 hover:text-red-500 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <X size={12} />
                   </span>
@@ -391,7 +394,7 @@ function EnvPanel({ pos, onClose, onOpenGraph }) {
                 />
                 <button
                   onClick={commitNew}
-                  className="h-7 px-2.5 rounded-md text-xs font-medium bg-primary text-primary-fg hover:opacity-90 transition-opacity shrink-0"
+                  className="h-7 px-2.5 rounded-md text-xs font-medium bg-primary text-primary-fg hover:opacity-90 transition-opacity shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
                 >
                   Add
                 </button>
@@ -414,7 +417,7 @@ function EnvPanel({ pos, onClose, onOpenGraph }) {
             <div className="p-1.5">
               <button
                 onClick={() => { setFromBranch(''); setAdding(true) }}
-                className="flex items-center gap-2.5 w-full px-2 py-1.5 rounded-lg text-left min-h-[36px] text-sm font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+                className="flex items-center gap-2.5 w-full px-2 py-1.5 rounded-lg text-left min-h-[36px] text-sm font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
               >
                 <span className="flex items-center justify-center w-5 h-5 shrink-0">
                   <Plus size={13} />
@@ -484,7 +487,8 @@ export default function WorkspaceSwitcher({ collapsed }) {
             title={`${activeOrg.name} · ${projectLabel}`}
             className={`
               relative flex items-center justify-center w-11 h-11 mx-auto rounded-xl border
-              transition-colors focus:outline-none focus:ring-2 focus:ring-ring
+              transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring
+              focus-visible:ring-offset-2 focus-visible:ring-offset-surface
               ${openPanel === 'workspace'
                 ? 'border-primary/40 bg-primary/10 text-primary'
                 : 'border-border bg-surface-2 hover:bg-surface text-primary'}
@@ -500,7 +504,8 @@ export default function WorkspaceSwitcher({ collapsed }) {
             title={`Environment: ${activeEnv}`}
             className={`
               flex items-center justify-center w-11 h-8 mx-auto rounded-lg border
-              transition-colors focus:outline-none focus:ring-2 focus:ring-ring
+              transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring
+              focus-visible:ring-offset-2 focus-visible:ring-offset-surface
               ${openPanel === 'env'
                 ? 'border-primary/40 bg-primary/5'
                 : 'border-border bg-surface-2 hover:bg-surface'}
@@ -531,14 +536,18 @@ export default function WorkspaceSwitcher({ collapsed }) {
         rounded-2xl border overflow-hidden transition-colors
         ${openPanel ? 'border-primary/40' : 'border-border'}
       `}>
-        {/* Org › Project — the primary control */}
+        {/* Org › Project — the primary control.
+            rounded-t-2xl matches the card's own rounded-2xl (minus the border
+            hairline) so the inset focus ring follows the card's true shape —
+            without it the ring falls back to the button's default square
+            corners even though the card around it reads as rounded. */}
         <button
           onClick={() => toggle('workspace')}
           aria-label="Switch workspace"
           aria-expanded={openPanel === 'workspace'}
           className={`
-            flex items-center gap-2.5 w-full px-2.5 py-2 text-left
-            transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-ring
+            flex items-center gap-2.5 w-full px-2.5 py-2 text-left rounded-t-2xl
+            transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring
             ${openPanel === 'workspace' ? 'bg-primary/5' : 'bg-surface-2 hover:bg-surface'}
           `}
         >
@@ -559,15 +568,17 @@ export default function WorkspaceSwitcher({ collapsed }) {
         {/* Divider between the two axes */}
         <div className="border-t border-border" />
 
-        {/* Environment — the secondary, runtime axis */}
+        {/* Environment — the secondary, runtime axis. rounded-b-2xl for the
+            same reason as the org button above — matches the card's radius
+            so the focus ring hugs the bottom corners instead of squaring off. */}
         <button
           onClick={() => toggle('env')}
           aria-label="Switch environment"
           aria-haspopup="listbox"
           aria-expanded={openPanel === 'env'}
           className={`
-            flex items-center gap-2.5 w-full px-2.5 py-1.5 text-left
-            transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-ring
+            flex items-center gap-2.5 w-full px-2.5 py-1.5 text-left rounded-b-2xl
+            transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring
             ${openPanel === 'env' ? 'bg-primary/5' : 'bg-surface hover:bg-surface-2'}
           `}
         >

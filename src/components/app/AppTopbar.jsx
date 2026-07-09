@@ -236,7 +236,7 @@ export default function AppTopbar({ onMobileMenuOpen, actions = [] }) {
     <header className="
       sticky top-0 z-30
       flex items-center gap-3
-      px-3 sm:px-4 h-13 shrink-0
+      px-3 sm:px-4 shrink-0
       bg-surface/90 backdrop-blur-md
       border-b border-border
       shadow-[0_1px_0_var(--border)]

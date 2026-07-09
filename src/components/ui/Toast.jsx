@@ -129,7 +129,7 @@ function ToastItem({ t, onDismiss }) {
           <button
             type="button"
             onClick={() => { t.action.onClick(); dismiss() }}
-            className="mt-1.5 text-xs font-semibold text-primary hover:underline focus-visible:outline-none"
+            className="mt-1.5 rounded text-xs font-semibold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {t.action.label}
           </button>
@@ -139,7 +139,7 @@ function ToastItem({ t, onDismiss }) {
         type="button"
         onClick={dismiss}
         aria-label="Dismiss notification"
-        className="shrink-0 p-1 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors -mt-0.5 -mr-0.5"
+        className="shrink-0 p-1 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors -mt-0.5 -mr-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <X size={14} />
       </button>

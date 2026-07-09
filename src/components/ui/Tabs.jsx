@@ -166,7 +166,7 @@ export function TabsContent({ value, className, children, ...rest }) {
       aria-labelledby={`${id}-tab-${value}`}
       hidden={!isActive}
       tabIndex={0}
-      className={cx('focus-visible:outline-none', className)}
+      className={cx('rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring', className)}
       {...rest}
     >
       {isActive ? children : null}
