@@ -78,7 +78,7 @@ export default function NewProjectDialog({ open, onClose }) {
       if (seedDemo) {
         setPhase('seeding')
         // Same endpoint onboarding uses — seeds dashboards, queries and the
-        // demo lakehouse connector into the (now active) new project.
+        // demo connector into the (now active) new project.
         await api.restoreSample()
       }
       onClose()
@@ -181,7 +181,7 @@ export default function NewProjectDialog({ open, onClose }) {
               <span>
                 <span className="block text-sm font-medium text-fg">Seed with demo data</span>
                 <span className="block mt-0.5 text-xs text-muted">
-                  Adds sample dashboards, queries and a demo lakehouse connector — removable anytime.
+                  Adds sample dashboards, queries and a demo connector — removable anytime.
                 </span>
               </span>
             </label>

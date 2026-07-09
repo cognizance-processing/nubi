@@ -28,8 +28,6 @@ import { Link } from 'react-router-dom'
 import {
   Plus,
   Plug,
-  Warehouse,
-  Sparkles,
   Pencil,
   Trash2,
   Zap,
@@ -44,7 +42,6 @@ import {
   Table2,
   Search,
   Lock,
-  HardDrive,
 } from 'lucide-react'
 import * as api from '../../lib/api.js'
 import Button from '../../components/ui/Button.jsx'
@@ -59,7 +56,6 @@ import {
   defaultsFor,
   dialectFor,
 } from '../../data/connectors.js'
-import { provisionLakehouse, formatBytes } from '../../lib/lakehouse.js'
 import { DynamicForm } from './connectorForms.jsx'
 import { toast } from '../../components/ui/Toast.jsx'
 import ConnectorLogo from '../../components/app/ConnectorLogo.jsx'
@@ -95,31 +91,6 @@ function TypeBadge({ type }) {
 }
 
 // ---------------------------------------------------------------------------
-// Managed-lakehouse helpers
-//
-// PRODUCT DIRECTIVE: the managed lakehouse is just a NORMAL connector. The
-// backend returns managed rows in the normal /connectors list, each carrying
-// `config.managed_lake === true` plus `usage_bytes` / `usage_gb`. They render
-// as ordinary cards in the list — visually distinct (a "Nubi lakehouse" badge,
-// a warehouse icon, storage usage on the card) but with the normal view /
-// delete flow. Adding one = provisioning; deleting the card = deprovisioning.
-// ---------------------------------------------------------------------------
-
-/** True for connector rows backed by the Nubi-managed lakehouse. */
-function isManagedLake(connector) {
-  return connector?.config?.managed_lake === true
-}
-
-/** Bytes stored by a managed-lake connector, or null if unknown. */
-function managedLakeBytes(connector) {
-  const cfg = connector?.config ?? {}
-  if (Number.isFinite(Number(connector?.usage_bytes))) return Number(connector.usage_bytes)
-  if (Number.isFinite(Number(cfg.usage_bytes))) return Number(cfg.usage_bytes)
-  if (Number.isFinite(Number(connector?.usage_gb))) return Number(connector.usage_gb) * 1024 ** 3
-  return null
-}
-
-// ---------------------------------------------------------------------------
 // Test result pill
 // ---------------------------------------------------------------------------
 
@@ -150,63 +121,32 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
   // System connectors (e.g. the built-in demo dataset) are not editable —
   // they have no configurable fields. They can still be removed and re-added.
   const isSystem = info.system === true
-  // Managed-lake rows render as normal cards but visually distinct: a "Nubi
-  // lakehouse" badge, a warehouse icon, a subtle accent, and storage usage on
-  // the card. They have no configurable fields, so editing is hidden.
-  const managed = isManagedLake(connector)
-  const usageBytes = managed ? managedLakeBytes(connector) : null
-  const summary = managed ? null : info.summary?.(cfg)
+  const summary = info.summary?.(cfg)
 
   return (
-    <div
-      className={`
-        group nubi-resource-card nubi-resource-card-body
-        ${managed ? 'bg-primary/[0.04] !border-primary/30 hover:!border-primary/50' : ''}
-      `}
-    >
-      {/* Brand accent rail — surfaces the connector's identity on hover.
-          Managed-lake cards keep a permanent primary accent. */}
+    <div className="group nubi-resource-card nubi-resource-card-body">
+      {/* Brand accent rail — surfaces the connector's identity on hover. */}
       <span
         aria-hidden="true"
-        className={`absolute inset-y-0 left-0 w-1 transition-opacity ${
-          managed ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-        }`}
-        style={{ background: managed ? undefined : info.color }}
+        className="absolute inset-y-0 left-0 w-1 opacity-0 group-hover:opacity-100 transition-opacity"
+        style={{ background: info.color }}
       />
-      {managed && (
-        <span aria-hidden="true" className="absolute inset-y-0 left-0 w-1 bg-brand-gradient" />
-      )}
 
       {/* Header: logo/icon + name + badges */}
       <div className="flex items-start gap-3 min-w-0">
-        {managed ? (
-          <span className="inline-flex items-center justify-center w-10 h-10 rounded-xl bg-brand-gradient shadow-sm shrink-0">
-            <Warehouse size={20} className="text-white" strokeWidth={2} />
-          </span>
-        ) : (
-          <ConnectorLogo info={info} size={22} />
-        )}
+        <ConnectorLogo info={info} size={22} />
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-1.5">
             <h3 className="font-semibold text-fg text-sm truncate max-w-full">{connector.name}</h3>
-            {managed ? (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-primary/15 text-primary border border-primary/20">
-                <Sparkles size={9} strokeWidth={2.4} />
-                Nubi lakehouse
-              </span>
-            ) : (
-              <>
-                <TypeBadge type={cfg.connector_type} />
-                <DialectBadge dialect={dialectFor(cfg.connector_type)} />
-              </>
-            )}
+            <TypeBadge type={cfg.connector_type} />
+            <DialectBadge dialect={dialectFor(cfg.connector_type)} />
             {isSystem && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-accent/10 text-accent border border-accent/20">
                 <Lock size={9} strokeWidth={2.4} />
                 Built-in
               </span>
             )}
-            {!managed && networkMode === 'bridge' ? (
+            {networkMode === 'bridge' ? (
               <Link
                 to="/settings/bridges"
                 onClick={(e) => e.stopPropagation()}
@@ -215,7 +155,7 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
               >
                 {networkMode}
               </Link>
-            ) : !managed && networkMode ? (
+            ) : networkMode ? (
               <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium bg-surface-2 text-muted border border-border/60">
                 {networkMode}
               </span>
@@ -227,19 +167,6 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
             <p className="text-xs text-muted truncate mt-0.5">
               {summary}
             </p>
-          )}
-
-          {/* Storage usage (managed-lake cards). Omitted if usage is unknown. */}
-          {managed && (
-            usageBytes != null ? (
-              <p className="inline-flex items-center gap-1.5 text-xs text-muted mt-0.5">
-                <HardDrive size={12} strokeWidth={2} className="shrink-0" />
-                <span className="tabular-nums text-fg font-medium">{formatBytes(usageBytes)}</span>
-                used
-              </p>
-            ) : (
-              <p className="text-xs text-muted mt-0.5">Managed storage Nubi runs for you.</p>
-            )
           )}
         </div>
       </div>
@@ -294,7 +221,7 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
 
         {canWrite && (
           <span className="ml-auto flex items-center gap-1.5">
-            {!isSystem && !managed && (
+            {!isSystem && (
               <button
                 onClick={() => onEdit(connector)}
                 title="Edit connector"
@@ -405,7 +332,7 @@ function ConnectorCardSkeleton() {
 // Type picker step
 // ---------------------------------------------------------------------------
 
-function TypePicker({ onSelect, onProvisionManaged, provisioning }) {
+function TypePicker({ onSelect }) {
   const [query, setQuery] = useState('')
 
   const groups = useMemo(() => {
@@ -428,59 +355,6 @@ function TypePicker({ onSelect, onProvisionManaged, provisioning }) {
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Storage choice — managed lakehouse (recommended) vs bring your own.
-          The managed option PROVISIONS a new managed-lake connector in place
-          (POST /lakehouse/provision); the new card then appears in the list.
-          The connector type list below is the bring-your-own / external path. */}
-      <div className="space-y-2.5">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-          Where should your data live?
-        </span>
-        <button
-          type="button"
-          onClick={onProvisionManaged}
-          disabled={provisioning}
-          className="
-            relative w-full flex items-start gap-3 p-4 rounded-xl text-left
-            border border-primary/40 bg-primary/5
-            hover:border-primary/60 hover:bg-primary/10 hover:shadow-sm
-            disabled:opacity-60 disabled:cursor-not-allowed
-            transition-all duration-150 group
-            focus:outline-none focus:ring-2 focus:ring-ring
-          "
-        >
-          <span className="flex items-center justify-center w-9 h-9 rounded-xl bg-brand-gradient shadow-sm shrink-0">
-            {provisioning
-              ? <Loader2 size={18} className="text-white animate-spin" />
-              : <Warehouse size={18} className="text-white" strokeWidth={2} />}
-          </span>
-          <div className="flex-1 min-w-0">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-sm font-semibold text-fg">
-                {provisioning ? 'Provisioning…' : 'Use Nubi managed lakehouse'}
-              </span>
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-primary/15 text-primary border border-primary/20">
-                <Sparkles size={9} strokeWidth={2.4} /> Recommended
-              </span>
-            </div>
-            <p className="text-[11px] text-muted mt-0.5 leading-snug">
-              No bucket to manage — isolated, secure storage Nubi runs for you,
-              billed by usage. Provisions instantly and appears in your list.
-            </p>
-          </div>
-          <ChevronRight
-            size={15}
-            className="text-primary/70 group-hover:text-primary group-hover:translate-x-0.5 transition-all shrink-0 mt-1"
-          />
-        </button>
-      </div>
-
-      <div className="flex items-center gap-2">
-        <span className="h-px flex-1 bg-border" />
-        <span className="text-[11px] font-medium text-muted">or bring your own bucket / source</span>
-        <span className="h-px flex-1 bg-border" />
-      </div>
-
       <p className="text-sm text-muted">
         Choose the type of data source you want to connect.
       </p>
@@ -742,7 +616,6 @@ function SlideOver({ open, onClose, title, children }) {
 
 function DeleteDialog({ connector, loading, error, onCancel, onConfirm }) {
   const isSystem = getTypeInfo(connector?.config?.connector_type).system === true
-  const managed = isManagedLake(connector)
 
   // ESC to close (matches SlideOver's idiom above)
   useEffect(() => {
@@ -772,20 +645,10 @@ function DeleteDialog({ connector, loading, error, onCancel, onConfirm }) {
             </div>
             <div>
               <h3 className="font-semibold text-fg text-sm">
-                {managed
-                  ? 'Delete managed lakehouse?'
-                  : isSystem
-                  ? 'Remove connector?'
-                  : 'Delete connector?'}
+                {isSystem ? 'Remove connector?' : 'Delete connector?'}
               </h3>
               <p className="text-xs text-muted mt-1 leading-relaxed">
-                {managed ? (
-                  <>
-                    Deleting <strong className="text-fg">{connector?.name}</strong> deprovisions the
-                    managed storage and <strong className="text-fg">all data in it</strong>. This cannot
-                    be undone.
-                  </>
-                ) : isSystem ? (
+                {isSystem ? (
                   <>
                     <strong className="text-fg">{connector?.name}</strong> will be removed from this
                     workspace. You can add it back anytime from “Add connector”.
@@ -856,10 +719,6 @@ export default function ConnectorsPage() {
   const [testingId, setTestingId]     = useState(null)
   const [testResults, setTestResults] = useState({}) // { [id]: result }
 
-  // Managed-lakehouse provisioning (the "Use Nubi managed lakehouse" choice in
-  // the Add-connector picker). Provisions a new managed-lake connector in place.
-  const [provisioningLake, setProvisioningLake] = useState(false)
-
   // ---------------------------------------------------------------------------
   // Slide-over open helpers
   // ---------------------------------------------------------------------------
@@ -913,24 +772,6 @@ export default function ConnectorsPage() {
     }
     setSelectedType(typeId)
     setSlideStep('form')
-  }
-
-  // Provision a managed lakehouse = add a normal managed-lake connector. The
-  // backend returns the new connector; we drop it into the list (dedupe by id)
-  // and close the panel. Multiple are allowed.
-  async function handleProvisionManaged() {
-    setProvisioningLake(true)
-    try {
-      await provisionLakehouse()
-      reloadConnectors()
-      toast.success('Managed lakehouse provisioned')
-      closeSlide()
-    } catch (err) {
-      // Surface via toast — the picker has no inline error slot of its own.
-      toast.error(err?.message ?? 'Provisioning failed. Please try again.')
-    } finally {
-      setProvisioningLake(false)
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1127,11 +968,7 @@ export default function ConnectorsPage() {
       {/* Slide-over */}
       <SlideOver open={slideOpen} onClose={closeSlide} title={slideTitle}>
         {slideStep === 'type' && !editTarget && (
-          <TypePicker
-            onSelect={handleTypePick}
-            onProvisionManaged={handleProvisionManaged}
-            provisioning={provisioningLake}
-          />
+          <TypePicker onSelect={handleTypePick} />
         )}
 
         {slideStep === 'form' && selectedType && (

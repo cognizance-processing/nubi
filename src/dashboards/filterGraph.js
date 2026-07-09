@@ -1,10 +1,10 @@
 /**
  * filterGraph.js — reactive cascading-filter dependency graph for dashboards.
  *
- * MANAGED_LAKEHOUSE.md §W4-G. Builds a static dependency graph from a dashboard
- * spec so that changing one variable (e.g. `country`) knows exactly which
- * downstream filter-option-queries (e.g. the `city` filter's options) and
- * widget-queries must refire — and in what order.
+ * Builds a static dependency graph from a dashboard spec so that changing one
+ * variable (e.g. `country`) knows exactly which downstream filter-option-queries
+ * (e.g. the `city` filter's options) and widget-queries must refire — and in
+ * what order.
  *
  * Decision: CYCLES ARE REJECTED at graph-build time (not auto-broken). A circular
  * filter dependency (A's options depend on B, B's options depend on A) has no

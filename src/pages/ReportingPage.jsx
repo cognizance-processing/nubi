@@ -587,7 +587,7 @@ const PIPELINE_STEPS = [
     color: 'linear-gradient(135deg, #1b2363, #2456a6)',
     tag: 'source',
     title: 'Your warehouse',
-    body: 'BigQuery, Snowflake, Postgres — or the built-in lakehouse over Parquet. A single Flows pipeline queries once and fans the result out to every output.',
+    body: 'BigQuery, Snowflake, Postgres, and more — Nubi pushes down to your warehouse. A single Flows pipeline queries once and fans the result out to every output.',
     chip: '25+ connectors',
   },
   {

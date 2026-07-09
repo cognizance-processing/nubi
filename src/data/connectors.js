@@ -139,7 +139,7 @@ export const CONNECTOR_CATEGORIES = [
   { id: 'cloud', label: 'Cloud-managed SQL' },
   { id: 'warehouse', label: 'Cloud warehouses' },
   { id: 'engine', label: 'Query engines' },
-  { id: 'lake', label: 'Lakehouse & files' },
+  { id: 'lake', label: 'Files & data lake' },
   { id: 'api', label: 'APIs & custom' },
 ]
 
@@ -306,7 +306,7 @@ export const CONNECTOR_TYPES = [
   {
     id: 'databricks',
     label: 'Databricks',
-    description: 'Lakehouse SQL warehouse on Databricks.',
+    description: 'Databricks SQL warehouse.',
     category: 'warehouse',
     logo: logo('databricks.svg'),
     color: '#FF3621',
@@ -417,7 +417,7 @@ export const CONNECTOR_TYPES = [
     summary: (cfg) => [cfg.host, cfg.catalog].filter(Boolean).join(' / '),
   },
 
-  // ── Lakehouse & files ─────────────────────────────────────────────────────
+  // ── Files & data lake ──────────────────────────────────────────────────────
   // The only user-facing DuckDB/file connector is OBJECT STORAGE. Nubi runs on
   // stateless Cloud-Run containers, so a user-supplied LOCAL file path or an
   // IN-MEMORY DuckDB is meaningless as a data source — those exist only for
@@ -599,8 +599,7 @@ export const CONNECTOR_TYPES = [
   },
   {
     // Demo-seeded DuckDB connector — a real, user-owned duckdb connector that
-    // starts with a copy of the demo parquet lakehouse (editable if managed
-    // lakehouse storage is configured; read-only otherwise).  The user owns it
+    // starts with a read-only copy of the demo parquet data.  The user owns it
     // fully: they can rename, delete, or query it independently of the shared
     // virtual "Demo data" connector.  Submits {type:"duckdb", seed:"demo"} to
     // the backend (POST /connectors body).
