@@ -54,6 +54,7 @@
 
 import { Suspense, createElement, lazy } from 'react'
 import { Navigate, Routes, Route, useLocation, useParams } from 'react-router-dom'
+import BrandLoader from './components/ui/BrandLoader.jsx'
 import { AuthProvider } from './contexts/AuthContext.jsx'
 import { UiProvider } from './contexts/UiContext.jsx'
 import { OrgProvider, useOrg } from './contexts/OrgContext.jsx'
@@ -226,7 +227,7 @@ function AppShellWithProviders() {
 // App
 // ---------------------------------------------------------------------------
 
-// Fallback shown while a lazy route chunk loads. Minimal + theme-aware so it
+// Fallback shown while a lazy route chunk loads. Branded + theme-aware so it
 // doesn't flash a jarring colour during the brief fetch.
 function RouteFallback() {
   return (
@@ -236,11 +237,11 @@ function RouteFallback() {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        color: 'var(--text-muted)',
       }}
       aria-busy="true"
-      aria-label="Loading"
-    />
+    >
+      <BrandLoader size="lg" />
+    </div>
   )
 }
 

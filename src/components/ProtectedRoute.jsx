@@ -9,6 +9,7 @@
 
 import { Navigate, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext.jsx'
+import BrandLoader from './ui/BrandLoader.jsx'
 
 export default function ProtectedRoute({ children }) {
   const { user, loading } = useAuth()
@@ -17,14 +18,7 @@ export default function ProtectedRoute({ children }) {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-bg">
-        <div className="flex flex-col items-center gap-3">
-          <div
-            className="h-8 w-8 rounded-full border-4 border-primary border-t-transparent animate-spin"
-            role="status"
-            aria-label="Loading"
-          />
-          <p className="text-sm text-muted font-sans">Loading…</p>
-        </div>
+        <BrandLoader size="lg" label="Loading…" />
       </div>
     )
   }

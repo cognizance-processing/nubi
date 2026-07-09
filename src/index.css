@@ -849,6 +849,48 @@
   .nubi-animate-slide-up, .nubi-animate-toast-in { animation: none; }
 }
 
+/* ── BrandLoader (src/components/ui/BrandLoader.jsx) ────────────────────────
+   Branded loading indicator: a slim brand-gradient ring spins around the
+   Nubi mark, which breathes gently in place. Used for full-page / route-level
+   loading states in place of a generic spinner. */
+
+.nubi-brand-loader-ring-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.nubi-brand-loader-ring {
+  animation: nubi-loader-spin 1.3s linear infinite;
+  filter: drop-shadow(0 0 6px rgba(23, 179, 163, 0.35));
+}
+.nubi-brand-loader-mark {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  object-fit: contain;
+  animation: nubi-loader-breathe 1.9s ease-in-out infinite;
+}
+@keyframes nubi-loader-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+@keyframes nubi-loader-breathe {
+  0%, 100% { opacity: 0.78; transform: scale(0.94); }
+  50%      { opacity: 1;    transform: scale(1.05); }
+}
+@keyframes nubi-loader-static-pulse {
+  0%, 100% { opacity: 0.5; }
+  50%      { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nubi-brand-loader-ring,
+  .nubi-brand-loader-mark {
+    animation: nubi-loader-static-pulse 2.2s ease-in-out infinite;
+    transform: none;
+  }
+}
+
 /* ── Navbar (src/components/Navbar.jsx) ────────────────────────────────────────
    Backdrop blur + smooth mobile drawer. */
 .nubi-navbar {
