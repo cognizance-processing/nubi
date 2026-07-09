@@ -374,6 +374,33 @@ def _reset_state():
         except Exception:
             pass
 
+        # ── Real asyncpg pool singleton ──────────────────────────────────────
+        # Unit tests use FakeDB; the real app.db._pool must stay None so
+        # pool-gated code (e.g. _require_org_access, which SKIPS the membership
+        # check when the pool is uninitialised) behaves consistently. If a test
+        # leaves the real pool set, later tests would start enforcing → spurious
+        # 403s. Reset it (best-effort; the object is a test artifact).
+        try:
+            import app.db as _db
+            _db._pool = None
+        except Exception:
+            pass
+
+        # ── EE license + feature-flag caches ─────────────────────────────────
+        # get_license() is @lru_cache; a test that resolves a license (e.g. the
+        # AI/token-billing tests set NUBI_LICENSE_KEY) would otherwise leak its
+        # cached tier into later tests and flip billing on/off (→ 403s).
+        try:
+            from app.ee.licensing.license import reset_license_cache
+            reset_license_cache()
+        except Exception:
+            pass
+        try:
+            from app.features import reset_for_tests
+            reset_for_tests()
+        except Exception:
+            pass
+
         # ── Content-addressed cache ───────────────────────────────────────────
         try:
             from app.connectors.cache import get_cache
