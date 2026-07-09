@@ -10,6 +10,37 @@ Conventions:
   `[Unreleased]` and updates the matching row in [CAPABILITIES.md](./CAPABILITIES.md).
 - On release, stamp `[Unreleased]` with a version + date.
 
+## [0.6.2] - 2026-07-09
+
+### Removed
+
+- **Dead notification config.** Removed the orphaned `SLACK_*`, `WHATSAPP_*`,
+  `CHAT_DEFAULT_ORG_ID`, and `CHAT_ORG_BINDINGS` settings (0 readers after the
+  0.6.0 notify→email-only cut). Email is Nubi's one outbound channel; the host
+  owns any chat-platform integrations.
+
+### Changed
+
+- Doc/comment consistency pass so alert-delivery descriptions across
+  `notify`, `chat`, `flows`, and `ai/watch` reflect the email-only reality.
+
+## [0.6.1] - 2026-07-09
+
+### Added
+
+- **AI calls in the pricing calculator.** The interactive calculator now models
+  all three metered dimensions — added an AI/LLM-calls slider with per-tier
+  included quotas (mirroring the backend tier catalogue) and R5/call overage.
+
+### Fixed
+
+- **Kernel-subprocess hang.** `run_sandboxed` drained pipes with an unbounded
+  `communicate()` after a timeout-kill; a grandchild that escaped the process
+  group could hold the pipe open and block indefinitely (once wedging the whole
+  test run for 51 min). The post-kill drain is now bounded (escalate → abandon),
+  and a global per-test `timeout` (`backend/pytest.ini`) guarantees no test can
+  ever hang CI again.
+
 ## [0.6.0] - 2026-07-09
 
 ### Removed

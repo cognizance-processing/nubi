@@ -290,7 +290,7 @@ class TaskSpec(BaseModel):
         "map",          # fan-out; config.body is a sub-DAG of TaskSpec dicts
         "branch",       # conditional routing; config.conditions list
         "map_collect",  # collector for map fan-in (internal / handler use)
-        "report_send",  # render a board and deliver to recipients (email/Slack)
+        "report_send",  # render a board and deliver to recipients (email)
         "http_call",    # POST/GET/… to a host endpoint (SSRF-guarded)
         "assert",       # data-quality audit; fails the run on violation
     ] = Field(description="Execution kind.")

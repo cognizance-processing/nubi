@@ -109,7 +109,7 @@ def format_flow_alert(event: dict[str, Any]) -> str:
     Returns
     -------
     str
-        Slack/WhatsApp-friendly Markdown text.
+        Chat-friendly Markdown text.
     """
     state = str(event.get("state") or "unknown").lower()
     name = event.get("name") or event.get("flow_name") or event.get("id") or "flow"
@@ -180,8 +180,7 @@ def resolve_alert_config(
     flow:
         The flow record (``{spec, config, ...}``) or ``None``.
     org_defaults:
-        Org-level alert config dict (e.g. ``{"on": ["failed"], "slack_channel":
-        "#alerts"}``) or ``None``.
+        Org-level alert config dict (e.g. ``{"on": ["failed"]}``) or ``None``.
 
     Returns
     -------

@@ -1124,8 +1124,7 @@ async def _fire_flow_alert(
                 error = flow_run.get("error")
 
         # ── Outbound webhook: flow_completed (additive, independent gate) ────
-        # Fires for the org's subscribed endpoints REGARDLESS of the Slack/
-        # WhatsApp ``should_alert`` config below — host webhooks have their own
+        # Fires for the org's subscribed endpoints REGARDLESS of the ``should_alert`` config below — host webhooks have their own
         # subscription. Best-effort; never raises.
         try:
             from app.webhooks.events import emit_flow_completed  # noqa: PLC0415
@@ -1204,7 +1203,7 @@ def _org_alert_defaults() -> dict[str, Any]:
     """Return org-level default alert config from app settings (or ``{}``).
 
     ``FLOW_ALERTS_DEFAULT_ON`` (comma-separated states, e.g. ``"failed,success"``)
-    enables alerting org-wide using the app's configured Slack/WhatsApp targets.
+    enables alerting org-wide using the app's configured email target(s).
     When unset, returns ``{}`` so only flows with their own ``alerts`` block
     notify.
     """

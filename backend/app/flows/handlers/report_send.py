@@ -33,11 +33,6 @@ Config shape
             "bob@example.com":   {"tenant_id": "globex"},
         },
 
-        # Notify channels (optional — used in addition to email)
-        "notify_channels": [
-            {"kind": "slack", "webhook_url": "https://hooks.slack.com/..."},
-        ],
-
         # Captured RLS policies (for scheduled tick — no JWT at tick time)
         "policies": {}
     }

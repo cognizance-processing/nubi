@@ -229,14 +229,6 @@ class Settings(BaseSettings):
     # Empty ⇒ cache stored as-is (default).
     NUBI_CACHE_ENCRYPTION_KEY: str = ""
 
-    # ── Chat webhook signing secrets ────────────────────────────────────────
-    # When set, real HMAC-SHA256 signature verification is enforced on the
-    # corresponding webhook endpoint.  Defaults to "" so that existing
-    # deployments continue to start without changes; empty-string means
-    # "not configured" (permissive in non-production, fail-closed in production).
-    SLACK_SIGNING_SECRET: str = ""      # HMAC-SHA256 key for X-Slack-Signature
-    WHATSAPP_APP_SECRET: str = ""       # HMAC-SHA256 key for X-Hub-Signature-256
-
     # ── Host-supplied MCP tools in streaming chat (Nubi as MCP CLIENT) ───────
     # POST /chat/stream may carry ``mcp_servers`` — MCP endpoints hosted by the
     # embedding application whose tools Nubi's agentic loop discovers and calls
@@ -254,36 +246,6 @@ class Settings(BaseSettings):
     #   and cloud-metadata addresses are ALWAYS blocked regardless of this flag.
     NUBI_CHAT_MCP_ENABLED: bool = True
     NUBI_MCP_ALLOW_PRIVATE_HOSTS: bool = False
-
-    # ── Chat-over-channel org binding ─────────────────────────────────────────
-    # Maps an inbound chat workspace/sender to a Nubi org so the agentic chat is
-    # org-scoped (and only the allowlisted chat tools run — never arbitrary SQL).
-    #
-    # CHAT_DEFAULT_ORG_ID — fallback org for any inbound message when no
-    #   workspace-specific binding matches.  Leave empty to require an explicit
-    #   binding (unbound messages then run unscoped/denied by the tools' RLS).
-    #
-    # CHAT_ORG_BINDINGS — JSON object mapping a workspace/sender key to an
-    #   org_id, e.g. '{"slack:T0123": "org-abc", "whatsapp:+27821234567":
-    #   "org-xyz"}'.  Keys are matched as "<platform>:<workspace-or-sender>".
-    CHAT_DEFAULT_ORG_ID: str = ""
-    CHAT_ORG_BINDINGS: str = ""  # JSON map "<platform>:<key>" -> org_id
-
-    # ── Slack integration (alerts + bot chat) ────────────────────────────────
-    # All optional.  Set at least one of SLACK_ALERT_WEBHOOK or SLACK_BOT_TOKEN
-    # to enable Slack alert delivery.  SLACK_BOT_TOKEN also enables chat.postMessage
-    # and file uploads (chart PNGs).
-    SLACK_BOT_TOKEN: str = ""           # xoxb-… Slack bot OAuth token
-    SLACK_ALERT_WEBHOOK: str = ""       # Incoming Webhook URL for alerts
-    SLACK_ALERT_CHANNEL: str = ""       # Default channel for chat.postMessage alerts
-
-    # ── WhatsApp integration (alerts + send) ─────────────────────────────────
-    # All optional.  WHATSAPP_SEND_TOKEN is the Graph API bearer token used for
-    # outbound message delivery (distinct from WHATSAPP_APP_SECRET which is the
-    # inbound webhook verification secret).
-    WHATSAPP_SEND_TOKEN: str = ""       # Graph API bearer token for outbound messages
-    WHATSAPP_PHONE_NUMBER_ID: str = ""  # Sender's WhatsApp Business phone number ID
-    WHATSAPP_ALERT_RECIPIENT: str = ""  # Default alert recipient (E.164 phone number)
 
     # ── Flow-run alerts (Prefect-style) ──────────────────────────────────────
     # Org-level default for which flow-run terminal states fire an outbound

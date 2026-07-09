@@ -71,7 +71,7 @@ def format_alert_text(event: dict[str, Any]) -> str:
     Returns
     -------
     str
-        A formatted alert message suitable for Slack / WhatsApp / email.
+        A formatted alert message suitable for email delivery.
     """
     kind = event.get("kind") or "run"
     status = event.get("status") or "unknown"

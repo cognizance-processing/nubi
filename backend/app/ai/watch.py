@@ -496,7 +496,7 @@ async def explain_breach(
 
     system = (
         "You explain why a monitored business metric breached its threshold. "
-        "Write ONE concise sentence for a Slack alert. Be specific and factual; "
+        "Write ONE concise sentence for an alert. Be specific and factual; "
         "do not invent numbers beyond those provided."
     )
     prompt = (
