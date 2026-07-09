@@ -35,6 +35,9 @@ __pycache__/
 .env
 .env.*
 backend/.env
+# ...but the deploy secrets-contract templates ARE tracked (real .env.dev stays out)
+!deploy/.env.example
+!deploy/.env.local.example
 
 # Secret/credential files
 backend/storage/secret-files/
@@ -79,5 +82,5 @@ backend/.coverage
 dist-embed/
 *.egg-info/
 
-# Stray Fly configs (deploy lives in the nubi-cloud repo)
-fly.toml
+# Stray Fly config at the repo root (the real one is deploy/fly.toml, tracked)
+/fly.toml

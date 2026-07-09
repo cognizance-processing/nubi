@@ -1,0 +1,105 @@
+# fly.toml — Nubi's PRODUCTION (hosted-SaaS) app on Fly.io.
+#
+# This is the canonical production config, and it lives in nubi-cloud (not in the
+# open `nubi` repo) because *deploying our hosted service* is a private, ops
+# concern — app name, region, machine sizing, and the release migration step are
+# ours specifically. The billing/EE code it runs is fully open and lives in the
+# `nubi` repo; this config just builds that code (the EE image) and rolls it out.
+#
+# BUILD CONTEXT: a checked-out, PINNED copy of the `nubi` repo (see
+# deploy/nubi.lock.json). scripts/deploy.sh checks out nubi @ the pinned ref and
+# runs `flyctl deploy --config <this file>` from inside that checkout, so the
+# `dockerfile`/`ignorefile` paths below resolve against the nubi source tree.
+#
+# ONE combined image (nubi's Dockerfile.ee: FastAPI + built SPA + app/ee/),
+# TWO processes:
+#   app    — uvicorn serving /api/v1 + the embedded SPA (same origin). Queries
+#            push down to the customer's warehouse or run in the browser kernel.
+#   worker — flows worker (scheduler loop + worker pool, backend/worker.py)
+#
+# State lives elsewhere: Postgres on Neon (DATABASE_URL secret), object storage
+# on Cloudflare R2 (S3-compatible; FLOWS_MATERIALIZE_BASE_URI + S3_* secrets).
+# Machines are stateless and disposable. Secrets: see ../.env.example +
+# scripts/secrets.sh. Deploy: scripts/deploy.sh (or .github/workflows/deploy.yml).
+
+# Deploy target is overridden per environment via `flyctl deploy --app`:
+#   main branch → app "nubi"       (production)
+#   dev  branch → app "nubi-dev"   (comprehensive-testing env, mirrors prod)
+# This ONE config serves both apps identically — the only per-env differences
+# are the app name (--app) and the injected secrets (separate DB, public URLs).
+app = "nubi"           # default target (main/prod); dev deploys pass --app nubi-dev
+primary_region = "jnb" # Johannesburg
+
+[build]
+  # Build the EE image from the pinned nubi checkout. load_ee() in
+  # backend/main.py finds app.ee at startup and mounts the EE routers (billing,
+  # licensing); the billing UI activates via src/ee's slot registry once the
+  # backend returns it in GET /features. Activation is gated by the
+  # NUBI_LICENSE_KEY secret (set via scripts/secrets.sh).
+  # NOTE: Dockerfile.ee + its ignorefile live in nubi's source tree (the pinned
+  # checkout), NOT here. scripts/deploy.sh passes them via --dockerfile /
+  # --ignorefile because flyctl resolves a fly.toml `dockerfile` relative to
+  # THIS file's dir (deploy/), where they don't exist. Deploy via that script.
+
+[deploy]
+  # Forward-only migration runner; runs in a one-off release machine before the
+  # new image is rolled out. Needs the DATABASE_URL secret. --ee also applies
+  # database/migrations/ee/ (billing/wallet/fx tables) AFTER core.
+  release_command = "python /app/database/migrate.py --ee"
+
+[processes]
+  # Working directory is /app/backend (see nubi's Dockerfile.ee). TWO processes:
+  # `app` serves the API + SPA (queries push down to the customer's warehouse or
+  # run in the browser kernel); `worker` runs the flows scheduler/worker pool.
+  app = "uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2"
+  worker = "python worker.py"
+
+[env]
+  ENV = "production"
+  STATIC_DIR = "/app/dist"
+  # Per-connection DuckDB memory cap for the in-process demo/seed engine: a
+  # too-big query fails with a clean error instead of OOM-killing the machine.
+  NUBI_DUCKDB_MEMORY_LIMIT = "512MB"
+  # Worker tuning (read by backend/worker.py in the worker process).
+  FLOWS_WORKER_CONCURRENCY = "4"
+  FLOWS_WORKER_INTERVAL_S = "5"
+  FLOWS_WORKER_LEASE_S = "300"
+
+[http_service]
+  processes = ["app"]
+  internal_port = 8000
+  force_https = true
+  # Fly's proxy stops idle app machines and wakes them on demand, but we keep
+  # at least one warm: embeds + SSE streams need fast first byte.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+[checks]
+  [checks.health]
+    processes = ["app"]
+    type = "http"
+    port = 8000
+    path = "/health"
+    method = "GET"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "30s"
+
+# The worker process has no [http_service]: it is never auto-stopped by the
+# proxy and runs always-on. Scale with `fly scale count worker=N`.
+
+[[vm]]
+  processes = ["app"]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+
+[[vm]]
+  processes = ["worker"]
+  size = "shared-cpu-1x"
+  memory = "1gb"
