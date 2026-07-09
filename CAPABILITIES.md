@@ -73,6 +73,16 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 | **Schema-drift detection / event API** (column add/remove/type-change) | ✅ | `GET /health/drift`, `GET /health/drift/{key}`, `SCHEMA_DRIFT` webhook event | [data-health](docs/data-health.md) |
 | **Nightly schema-drift sweep** (guaranteed cadence, not just on-query) | ✅ | `kind: drift_sweep` scheduled job via `POST /jobs` | [data-health § Nightly drift sweep](docs/data-health.md#nightly-drift-sweep-guaranteed-cadence) |
 
+## D. Lineage
+
+| Capability | Status | Contract | Docs |
+|---|---|---|---|
+| Dependency DAG | ✅ | `GET /lineage/dag`, `/lineage/dag/{node}` | [lineage](docs/lineage.md) |
+| Metric lineage (input columns + upstream) | ✅ | `GET /metrics/{id}/lineage` | [lineage](docs/lineage.md) |
+| Flow/cell column lineage | ✅ | `GET /lineage/flow/{id}`, `/lineage/query/{id}` | [lineage](docs/lineage.md) |
+| **Cross-model column lineage (`resolve_column_lineage`)** | ✅ | `resolve_column_lineage(dag, node_id, column, max_hops)` — alias-aware, cycle-safe, SELECT * fallback | [lineage](docs/lineage.md#cross-model-column-lineage) |
+| **Lineage-driven auto-rebuild (`auto_rebuild_downstream`)** | ✅ | `runtime_config.auto_rebuild_downstream = true` on flow spec; fires downstream flows on upstream success | [lineage](docs/lineage.md#lineage-driven-auto-rebuild) |
+
 ## E. Transformation, flows & environments
 
 | Capability | Status | Contract | Docs |
@@ -122,7 +132,7 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 
 | Capability | Status | Contract | Docs |
 |---|---|---|---|
-| Framework-agnostic web components (8) | ✅ | `<nubi-dashboard/kpi/kpi-react/table/chart/chat/query-editor/health>` | [embed-api](docs/embed-api.md) |
+| Framework-agnostic web components (9) | ✅ | `<nubi-dashboard/kpi/table/chart/query-editor/metric-explorer/lineage/health>` | [embed-api](docs/embed-api.md) |
 | Per-viewer JWT (RS256/ES256), token-locked params | ✅ | `get-token` bridge | [embedding](docs/embedding.md) |
 | 25-token theme contract, cross-filter bus, scope gating | ✅ | `NubiContext` | [embed-api](docs/embed-api.md) |
 | **Per-org rate limiting + embed exemption** — token-bucket keyed by verified org; verified embed tokens exempt on metric/query read paths | ✅ | `middleware/ratelimit.py`; `NUBI_RATELIMIT_QUERY_RPM` (default 120) | [embedding](docs/embedding.md#rate-limiting-and-embed-exemption) |

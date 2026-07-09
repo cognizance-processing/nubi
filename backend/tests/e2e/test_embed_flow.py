@@ -3,9 +3,9 @@
 PART A — API-level embed contract E2E (against the live backend + demo data).
 
 These tests prove the server-side contract that <nubi-dashboard>, <nubi-table>,
-and <nubi-query-editor> depend on when loaded with REAL (RS256) embed tokens —
-not the HS256 first-party stub that the base E2E suite uses for its
-"embed_token".
+<nubi-metric-explorer> and <nubi-query-editor> depend on when loaded with REAL
+(RS256) embed tokens — not the HS256 first-party stub that the base E2E suite
+uses for its "embed_token".
 
 Specifically covered:
   A1. embed token (read:query) + registered query_id → 200 with REAL rows
@@ -398,7 +398,8 @@ class TestEmbedTokenContract:
     def test_embed_metric_query_returns_real_rows(self, e2e_ctx):
         """RS256 embed token + author:metric → metric query → 200 with real data.
 
-        This is the path the query-editor uses in metric mode.
+        This is the path <nubi-metric-explorer> uses and the query-editor
+        metric mode.
         """
         metric_id = "retail_nsv"
         if metric_id not in e2e_ctx.metric_ids:

@@ -15,6 +15,7 @@
  *   nubi-chat            — streaming conversational chat (SSE, vanilla)
  *   nubi-kpi-react       — React KPI card
  *   nubi-query-editor    — SQL / metric authoring editor
+ *   nubi-metric-explorer — governed metric query builder
  *   nubi-dashboard       — read-only dashboard embed
  *
  * Version exports
@@ -48,13 +49,17 @@ import './widgets/index.js'
 // at module evaluation time, so the import is sufficient.
 import './widgets/nubi-kpi-react.js'
 
-// ── Authoring widgets (nubi-query-editor) ─────────────────────────────────────
+// ── Authoring widgets (nubi-query-editor, nubi-metric-explorer) ──────────────
 // authoring-index.js auto-registers on import.
 import './widgets/authoring-index.js'
 
 // ── Legacy dashboard (nubi-dashboard) ────────────────────────────────────────
 // nubi-dashboard.js calls customElements.define() at module level.
 import './nubi-dashboard.js'
+
+// ── Lineage DAG widget (nubi-lineage) ─────────────────────────────────────────
+// nubi-lineage.js calls customElements.define() at module level.
+import './widgets/nubi-lineage.js'
 
 // ── Health score + freshness widget (nubi-health) ────────────────────────────
 // nubi-health.js calls customElements.define() at module level.

@@ -214,7 +214,7 @@ export function el(tag, attrs = {}, children = []) {
 }
 
 // ---------------------------------------------------------------------------
-// Metric query helper (used by nubi-query-editor)
+// Metric query helper (shared by nubi-metric-explorer + nubi-query-editor)
 // ---------------------------------------------------------------------------
 
 /**
