@@ -4,25 +4,6 @@ This document is the **stable public contract** for the Nubi web-component embed
 kit. Hosts pin to a specific bundle version; breaking changes are gated behind a
 new major version number. The current version is **v1**.
 
-## Explore — the embedded components in action
-
-Before wiring up the embedding SDK in your own application, you can experience every Nubi web component live inside the app itself. Open **Explore** (`/explore`) in the sidebar — it embeds `<nubi-metric-explorer>` as a first-class app surface, so you can pick a governed metric, apply dimensions, choose a time grain, and see results as a chart and table without writing SQL or leaving the app.
-
-<table><tr>
-<td width="50%"><img src="screenshots/explore-light.png" alt="Explore — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/explore-dark.png" alt="Explore — dark"><br><sub>Dark</sub></td>
-</tr></table>
-
-Explore demonstrates:
-
-- **`<nubi-metric-explorer>`** — metric picker, dimension toggles, time grain selector, and the governed query run.
-- **`<nubi-chart>`** — the result rendered as a chart (bar/line/area auto-detected from the metric's grain).
-- **`<nubi-table>`** — the result as a paginated data table below the chart.
-
-When you embed these same components in your own app via the SDK, the experience your users see mirrors what you see in Explore. Use it to prototype dimension combinations and metric selections before committing them to a host page.
-
----
-
 ## Stability and deprecation
 
 - Fields and events marked here are stable for the lifetime of v1.
@@ -299,34 +280,6 @@ ResizeObserver.
 
 ---
 
-### `<nubi-metric-explorer>`
-
-Governed metric query builder. No raw SQL surface. Provides a UI to pick a
-metric, dimensions, and time grain, then runs the governed metric query via
-`POST /metrics/{id}/query`.
-
-| Attribute | Required | Meaning |
-|-----------|----------|---------|
-| `get-token` / `token` | — | Bearer JWT |
-| `backend` | No | API base URL. |
-| `metric-id` | No | Pre-select a metric by ID/slug. |
-| `dimensions` | No | Comma-separated default selected dimensions. |
-| `theme` | No | `"dark"` (default) / `"light"`. |
-
-**Capability gating:**
-
-| Scope | Effect |
-|-------|--------|
-| `author:metric` | Controls enabled; Run button visible. |
-| No `author:metric` | Controls shown but disabled; read-only indicator displayed. |
-
-**Events emitted:**
-- `nubi:run` — `{ metricId, dimensions, timeGrain }` — query executed.
-- `nubi:select` — `{ column, value, row }` — user selected a result row/cell.
-- `nubi:error` — `{ message, code }` — error occurred.
-
----
-
 ### `<nubi-health>`
 
 Data-health score + freshness dashboard widget. Fetches health scores from
@@ -385,13 +338,13 @@ document.querySelector('nubi-query-editor').addEventListener('nubi:run', e => {
 
 | Event | Payload (`e.detail`) | Emitting components |
 |-------|---------------------|---------------------|
-| `nubi:run` | `{ sql?, queryId?, metricId?, dimensions?, timeGrain?, params? }` | query-editor, metric-explorer |
+| `nubi:run` | `{ sql?, queryId?, metricId?, dimensions?, timeGrain?, params? }` | query-editor |
 | `nubi:save` | `{ queryId?, sql?, name? }` | query-editor |
 | `nubi:dirty` | `{ dirty: boolean }` | query-editor |
-| `nubi:select` | `{ column?, value?, row? }` | table, metric-explorer |
+| `nubi:select` | `{ column?, value?, row? }` | table |
 | `nubi:widget-ready` | `{ rows?, renderer: string, score?, grade?, datasets? }` | kpi, health |
 | `nubi:widget-error` | `{ message: string }` | kpi, health |
-| `nubi:error` | `{ message: string, code?: string }` | query-editor, metric-explorer |
+| `nubi:error` | `{ message: string, code?: string }` | query-editor |
 
 ---
 
@@ -440,8 +393,8 @@ nubi-kpi {
 
 ## Capability gating and server enforcement
 
-Scope-gated components (`nubi-query-editor`, `nubi-metric-explorer`) decode the
-JWT payload client-side to show or hide UI controls. This is **cosmetic only**.
+Scope-gated components (`nubi-query-editor`) decode the JWT payload
+client-side to show or hide UI controls. This is **cosmetic only**.
 The server is the real enforcement gate:
 
 - `author:sql` is required by the backend to accept and execute raw SQL.

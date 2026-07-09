@@ -13,10 +13,8 @@
  *  3. kpi-react: KPI value + SAMPLE badge render from fallback sample data.
  *  4. query-editor scope-gating: SQL / METRIC / READ-ONLY states driven by
  *     mock JWT tokens with the correct scopes.
- *  5. metric-explorer scope-gating: author:metric shows controls + Run;
- *     read-only token shows READ-ONLY indicator, no Run button.
- *  6. Events: nubi:run bubbles to document after interaction.
- *  7. Theme: light-theme attribute applies lighter background tokens.
+ *  5. Events: nubi:run bubbles to document after interaction.
+ *  6. Theme: light-theme attribute applies lighter background tokens.
  */
 
 import { test, expect } from '@playwright/test'
@@ -411,187 +409,10 @@ test.describe('query-editor demo – scope gating', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Metric-Explorer demo — scope gating
-// ---------------------------------------------------------------------------
-
-test.describe('metric-explorer demo – scope gating', () => {
-  const PAGE = '/embed/demo/metric-explorer.html'
-
-  async function waitForAllExplorers(page, count = 4) {
-    // Wait for scope-indicator to appear AND controls to be rendered
-    await page.waitForFunction(
-      (cnt) => {
-        const els = [...document.querySelectorAll('nubi-metric-explorer')]
-        if (els.length < cnt) return false
-        return els.every(e => {
-          if (!e.shadowRoot) return false
-          const ind = e.shadowRoot.querySelector('.scope-indicator')
-          if (!ind) return false
-          // Controls are populated when metric is loaded (either from API or defaults)
-          const controls = e.shadowRoot.querySelector('.nubi-me-controls')
-          return controls && controls.style.display !== 'none'
-        })
-      },
-      count,
-      { timeout: 15000 },
-    )
-    // Small extra wait to let control children fully render
-    await page.waitForTimeout(300)
-  }
-
-  async function getExplorerState(page, index) {
-    return page.evaluate((idx) => {
-      const els = [...document.querySelectorAll('nubi-metric-explorer')]
-      const el = els[idx]
-      if (!el?.shadowRoot) return null
-      const sr = el.shadowRoot
-
-      const indicator  = sr.querySelector('.scope-indicator')
-      const controls   = sr.querySelector('.nubi-me-controls')
-      const runBtn     = sr.querySelector('.btn-run-me')
-      const noScope    = sr.querySelector('.no-scope-banner')
-      const selects    = [...sr.querySelectorAll('.me-select')]
-      const checkboxes = [...sr.querySelectorAll('.dim-checkboxes input[type=checkbox]')]
-
-      return {
-        indicatorText:    indicator?.textContent?.trim() ?? null,
-        indicatorClass:   indicator?.className ?? '',
-        controlsVisible:  controls ? controls.style.display !== 'none' : false,
-        hasRunBtn:        !!runBtn,
-        hasNoScopeBanner: !!noScope,
-        selectsDisabled:  selects.map(s => s.disabled),
-        checkboxesDisabled: checkboxes.map(c => c.disabled),
-      }
-    }, index)
-  }
-
-  test('page loads with zero console errors', async ({ page }) => {
-    const getErrors = attachErrorCollector(page)
-    await page.goto(PAGE)
-    await waitForAllExplorers(page, 4)
-    const errors = getErrors()
-    expect(errors, `Unexpected errors:\n${errors.join('\n')}`).toHaveLength(0)
-  })
-
-  test('scenario 1 — author:metric shows METRIC indicator + enabled controls + Run button', async ({ page }) => {
-    await page.goto(PAGE)
-    await waitForAllExplorers(page, 4)
-
-    const state = await getExplorerState(page, 0)
-    expect(state).not.toBeNull()
-    expect(state.indicatorText).toBe('METRIC')
-    expect(state.indicatorClass).toContain('metric')
-    expect(state.controlsVisible).toBe(true)
-    expect(state.hasRunBtn).toBe(true)
-    expect(state.hasNoScopeBanner).toBe(false)
-    // Controls should NOT be disabled (author has full access)
-    expect(state.selectsDisabled.every(d => !d)).toBe(true)
-  })
-
-  test('scenario 1 — shows metric, dimension, and time-grain controls', async ({ page }) => {
-    await page.goto(PAGE)
-    await waitForAllExplorers(page, 4)
-
-    const hasControls = await page.evaluate(() => {
-      const el = document.querySelectorAll('nubi-metric-explorer')[0]
-      if (!el?.shadowRoot) return false
-      const sr = el.shadowRoot
-      const metricSel = sr.querySelector('[data-role="metric"]')
-      const dimBoxes  = sr.querySelector('[data-role="dimensions"]')
-      const grainSel  = sr.querySelector('[data-role="time-grain"]')
-      return !!(metricSel && dimBoxes && grainSel)
-    })
-    expect(hasControls).toBe(true)
-  })
-
-  test('scenario 3 — read-only token shows READ-ONLY indicator, no Run button, disabled controls', async ({ page }) => {
-    await page.goto(PAGE)
-    await waitForAllExplorers(page, 4)
-
-    const state = await getExplorerState(page, 2)
-    expect(state).not.toBeNull()
-    expect(state.indicatorText).toBe('READ-ONLY')
-    expect(state.indicatorClass).toContain('readonly')
-    expect(state.hasRunBtn).toBe(false)
-    expect(state.hasNoScopeBanner).toBe(true)
-    // All selects and checkboxes should be disabled in read-only mode
-    expect(state.selectsDisabled.every(d => d)).toBe(true)
-    expect(state.checkboxesDisabled.every(d => d)).toBe(true)
-  })
-
-  test('nubi:run event fires when Run button is clicked (scenario 1)', async ({ page }) => {
-    await page.goto(PAGE)
-    await waitForAllExplorers(page, 4)
-
-    await page.evaluate(() => {
-      window.__meRunDetail = null
-      window.__meErrorDetail = null
-      document.addEventListener('nubi:run', e => { window.__meRunDetail = e.detail })
-      document.addEventListener('nubi:error', e => { window.__meErrorDetail = e.detail })
-    })
-
-    const clicked = await page.evaluate(() => {
-      const el = document.querySelectorAll('nubi-metric-explorer')[0]
-      if (!el?.shadowRoot) return false
-      const btn = el.shadowRoot.querySelector('.btn-run-me')
-      if (!btn) return false
-      btn.click()
-      return true
-    })
-    expect(clicked).toBe(true)
-
-    // Wait for either nubi:run or nubi:error (backend not available in test env)
-    await page.waitForFunction(
-      () => window.__meRunDetail !== null || window.__meErrorDetail !== null,
-      { timeout: 8000 },
-    )
-
-    // Either the run event (success) or the error event fired — both prove the
-    // click handler ran correctly. If no error was thrown, we check nubi:run.
-    const runDetail = await page.evaluate(() => window.__meRunDetail)
-    const errDetail = await page.evaluate(() => window.__meErrorDetail)
-
-    // At least one must be non-null
-    expect(runDetail !== null || errDetail !== null).toBe(true)
-
-    // If the run fired (shouldn't without backend), verify shape
-    if (runDetail) {
-      expect(typeof runDetail.metricId).toBe('string')
-    }
-  })
-})
-
-// ---------------------------------------------------------------------------
 // Theme tests
 // ---------------------------------------------------------------------------
 
 test.describe('theme — light vs dark', () => {
-  test('metric-explorer with theme=light applies lighter background token', async ({ page }) => {
-    await page.goto('/embed/demo/metric-explorer.html')
-
-    // Wait for all 4 explorers including the light-theme one (index 3)
-    await page.waitForFunction(
-      () => {
-        const els = [...document.querySelectorAll('nubi-metric-explorer')]
-        if (els.length < 4) return false
-        const lightEl = els[3]
-        // applyTheme sets inline style — wait until it runs
-        return lightEl?.style.getPropertyValue('--nubi-bg').trim() === '#ffffff'
-      },
-      { timeout: 12000 },
-    )
-
-    // Dark instances (index 0) should have dark bg token
-    const darkBg  = await getThemeTokenByIndex(page, 'nubi-metric-explorer', 0, '--nubi-bg')
-    // Light instance (index 3) should have light bg token
-    const lightBg = await getThemeTokenByIndex(page, 'nubi-metric-explorer', 3, '--nubi-bg')
-
-    // Dark: #0f1117  Light: #ffffff
-    expect(darkBg).toBe('#0f1117')
-    expect(lightBg).toBe('#ffffff')
-    expect(darkBg).not.toBe(lightBg)
-  })
-
   test('query-editor with default dark theme has dark bg token', async ({ page }) => {
     await page.goto('/embed/demo/query-editor.html')
 
@@ -666,13 +487,6 @@ test.describe('light theme — all widgets in widgets.html', () => {
     expect(bg).toBe('#ffffff')
   })
 
-  test('nubi-metric-explorer with theme=light has light --nubi-bg token', async ({ page }) => {
-    await page.goto(PAGE)
-    await waitForLightBg(page, '#light-metric-explorer')
-    const bg = await getHostBg(page, '#light-metric-explorer')
-    expect(bg).toBe('#ffffff')
-  })
-
   test('dark nubi-kpi (no theme attr) has dark --nubi-bg token', async ({ page }) => {
     await page.goto(PAGE)
     // Wait for the first (dark) kpi to have the dark token set
@@ -729,7 +543,6 @@ test.describe('custom-element upgrade — all demo pages', () => {
   const demos = [
     { name: 'kpi-react',        path: '/embed/demo/kpi-react.html',        selector: 'nubi-kpi-react',        tag: 'nubi-kpi-react' },
     { name: 'query-editor',     path: '/embed/demo/query-editor.html',     selector: 'nubi-query-editor',     tag: 'nubi-query-editor' },
-    { name: 'metric-explorer',  path: '/embed/demo/metric-explorer.html',  selector: 'nubi-metric-explorer',  tag: 'nubi-metric-explorer' },
   ]
 
   for (const demo of demos) {

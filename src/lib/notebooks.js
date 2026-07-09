@@ -13,7 +13,7 @@
  * on any error.
  */
 
-import { post, get } from './api.js'
+import { post } from './api.js'
 
 const BASE = '/flows'
 
@@ -131,68 +131,6 @@ export function makeBlankCell(cellType = 'sql') {
     retry_backoff_s: 30,
     timeout_s: 60,
     cache_ttl_s: 0,
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Lineage API helpers
-// ---------------------------------------------------------------------------
-
-const LINEAGE_BASE = '/lineage'
-
-/**
- * Fetch column-level lineage for a stored flow (GET /lineage/flow/{id}).
- *
- * @param {string} flowId
- * @returns {Promise<{ flow_id: string, issues: string[], lineage: object|null }>}
- */
-export async function fetchFlowLineage(flowId) {
-  try {
-    return await get(`${LINEAGE_BASE}/flow/${flowId}`)
-  } catch (err) {
-    console.warn('[notebooks] fetchFlowLineage failed:', err.message)
-    return { flow_id: flowId, issues: [err.message ?? 'Lineage fetch failed'], lineage: null }
-  }
-}
-
-/**
- * Ephemeral column lineage for a single ad-hoc cell (POST /lineage/cell).
- *
- * @param {{
- *   sql: string,
- *   dialect?: string,
- *   cell_key?: string,
- *   upstream_cells?: Record<string, string>,
- * }} params
- * @returns {Promise<{ cell_key: string, edges: object[] }>}
- */
-export async function fetchCellLineage({ sql, dialect = 'duckdb', cell_key = '', upstream_cells = {} }) {
-  try {
-    return await post(`${LINEAGE_BASE}/cell`, { sql, dialect, cell_key, upstream_cells })
-  } catch (err) {
-    console.warn('[notebooks] fetchCellLineage failed:', err.message)
-    return { cell_key, edges: [] }
-  }
-}
-
-/**
- * Ephemeral plan-before-apply (POST /lineage/plan).
- * Returns impact report: which downstream cells would be affected.
- *
- * @param {{ spec: object, changed_cell_key: string }} params
- * @returns {Promise<{
- *   valid: boolean,
- *   issues: string[],
- *   lineage: object|null,
- *   downstream_impact: Array<{ cell_key: string, change_type: string, affected_columns: string[] }>,
- * }>}
- */
-export async function fetchLineagePlan({ spec, changed_cell_key }) {
-  try {
-    return await post(`${LINEAGE_BASE}/plan`, { spec, changed_cell_key })
-  } catch (err) {
-    console.warn('[notebooks] fetchLineagePlan failed:', err.message)
-    return { valid: false, issues: [err.message ?? 'Plan fetch failed'], lineage: null, downstream_impact: [] }
   }
 }
 

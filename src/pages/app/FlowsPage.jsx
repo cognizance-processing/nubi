@@ -693,9 +693,6 @@ export default function FlowsPage() {
   const [saveError, setSaveError] = useState(null)
   const [runError, setRunError] = useState(null)
   const [codeOpen, setCodeOpen] = useState(false)
-  // Notebook lineage panel visibility — toggled from the top bar, rendered by
-  // NotebookView (notebook view only).
-  const [lineageOpen, setLineageOpen] = useState(false)
   // Current builder view ('canvas' | 'notebook'), reported up from FlowBuilder
   // so the top-bar switcher reflects + drives it.
   const [flowView, setFlowView] = useState('canvas')
@@ -769,13 +766,12 @@ export default function FlowsPage() {
     setSavedSnapshotJson(JSON.stringify(flow.spec ?? EMPTY_SPEC))
     setAutosaveStatus(null)
     setSaveError(null)
-    setLineageOpen(false)
     setActiveTab('builder')
     setActiveRunId(null)
     if (flow.id && !flow._isNew) {
       navigate(`/flows/${flow.id}`, { replace: true })
     }
-  }, [navigate, setSaveError, setLineageOpen, setViewingVersion])
+  }, [navigate, setSaveError, setViewingVersion])
 
   // List-click selection — guards in-app swaps away from a dirty editor.
   // (The route-param effect below still calls selectFlow directly.)
@@ -832,11 +828,10 @@ export default function FlowsPage() {
     setSavedSnapshotJson(JSON.stringify(EMPTY_SPEC))
     setAutosaveStatus(null)
     setSaveError(null)
-    setLineageOpen(false)
     setActiveTab('builder')
     setActiveRunId(null)
     navigate('/flows', { replace: true })
-  }, [navigate, dirty, setSaveError, setLineageOpen, setViewingVersion])
+  }, [navigate, dirty, setSaveError, setViewingVersion])
 
   // ── After save callback ───────────────────────────────────────────────────
   const handleSaved = useCallback((savedFlow) => {
@@ -954,8 +949,7 @@ export default function FlowsPage() {
       setRunError('Save the flow first before running.')
       return
     }
-    // Notebook view: route through the plan-gated "Run all" (PlanGateDialog
-    // inside NotebookView) so the run plan is reviewed before triggering.
+    // Notebook view: delegate to NotebookView's own "Run all" handler.
     if (activeTab === 'builder' && flowView === 'notebook') {
       flowBuilderRef.current?.runAll()
       return
@@ -1057,7 +1051,7 @@ export default function FlowsPage() {
 
   // ── Toolbar portaled into the single app top bar (mirrors the dashboard
   //    editor): Builder/Runs switcher · view switcher · flow name · notebook
-  //    add-cell buttons · Validate/Save/Run/Lineage/Code · RHS panel toggles.
+  //    add-cell buttons · Validate/Save/Run/Code · RHS panel toggles.
   //    One bar, not a stacked second one — the notebook's old in-page toolbar
   //    was merged in here (its controls drive NotebookView via the ref). ─────
   const flowsToolbar = (
@@ -1210,16 +1204,6 @@ export default function FlowsPage() {
                 className="flex items-center gap-1.5 px-2.5 h-8 text-xs font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all">
                 {running ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
                 <span className="hidden lg:inline">Run</span>
-              </button>
-            )}
-            {flowView === 'notebook' && (
-              <button onClick={() => setLineageOpen(v => !v)} title={lineageOpen ? 'Hide lineage panel' : 'Show flow lineage'}
-                className={[
-                  'flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border transition-colors',
-                  lineageOpen ? 'border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400' : 'border-border bg-surface text-fg hover:bg-surface-2',
-                ].join(' ')}>
-                <GitBranch size={13} className={lineageOpen ? 'text-blue-500' : ''} />
-                <span className="hidden lg:inline">Lineage</span>
               </button>
             )}
             {/* Editing the flow as code now lives in the dedicated "Code" view
@@ -1386,8 +1370,6 @@ export default function FlowsPage() {
                     onSpecChange={viewingVersion ? () => {} : setActiveSpec}
                     onRun={handleRun}
                     env={runEnv}
-                    lineageOpen={lineageOpen}
-                    onLineageClose={() => setLineageOpen(false)}
                     onSelectedTaskChange={handleSelectedTaskChange}
                     onViewModeChange={setFlowView}
                     codeOpen={codeOpen}

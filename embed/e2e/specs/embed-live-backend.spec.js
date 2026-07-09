@@ -132,86 +132,11 @@ async function waitForShadowDom(page, selector, timeout = 10000) {
   )
 }
 
-/**
- * Click the Run button inside a nubi-metric-explorer's shadow root.
- * Returns true if the Run button was found and clicked.
- */
-async function clickRunButton(page, selector) {
-  return page.evaluate((sel) => {
-    const el = document.querySelector(sel)
-    if (!el?.shadowRoot) return false
-    const btn = el.shadowRoot.querySelector('.btn-run-me')
-    if (!btn) return false
-    btn.click()
-    return true
-  }, selector)
-}
-
-/**
- * Get the scope indicator text from a metric-explorer or query-editor.
- */
-async function getScopeIndicator(page, selector) {
-  return page.evaluate((sel) => {
-    const el = document.querySelector(sel)
-    if (!el?.shadowRoot) return null
-    const ind = el.shadowRoot.querySelector('.scope-indicator')
-    return ind ? ind.textContent.trim() : null
-  }, selector)
-}
-
-/**
- * Wait for the metric-explorer results table to appear (live data loaded).
- * Returns true when a .me-table is found in the shadow root.
- */
-async function waitForResultTable(page, selector, timeout = 20000) {
-  return page.waitForFunction(
-    (sel) => {
-      const el = document.querySelector(sel)
-      if (!el?.shadowRoot) return false
-      // Either a result table OR a footer row count > 0
-      const table  = el.shadowRoot.querySelector('.me-table')
-      const footer = el.shadowRoot.querySelector('.nubi-me-footer')
-      if (table) return true
-      // Also accept the footer text "N rows" as confirmation
-      if (footer && /\d+ rows/.test(footer.textContent)) return true
-      return false
-    },
-    selector,
-    { timeout },
-  )
-}
-
-/**
- * Get number of data rows rendered inside the metric-explorer results table.
- */
-async function getResultRowCount(page, selector) {
-  return page.evaluate((sel) => {
-    const el = document.querySelector(sel)
-    if (!el?.shadowRoot) return 0
-    const table = el.shadowRoot.querySelector('.me-table')
-    if (!table) return 0
-    // Count tbody rows (header row is in thead)
-    const tbody = table.querySelector('tbody')
-    return tbody ? tbody.querySelectorAll('tr').length : 0
-  }, selector)
-}
-
-/**
- * Check if the metric-explorer is showing an error state (me-error class).
- */
-async function hasErrorState(page, selector) {
-  return page.evaluate((sel) => {
-    const el = document.querySelector(sel)
-    if (!el?.shadowRoot) return false
-    return !!el.shadowRoot.querySelector('.me-error')
-  }, selector)
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-test.describe('live embed backend — metric-explorer fetches REAL data', () => {
+test.describe('live embed backend — query-editor fetches REAL data', () => {
   test.beforeEach((_fixtures, testInfo) => {
     if (!RUN_LIVE) {
       testInfo.skip(true,
@@ -236,107 +161,11 @@ test.describe('live embed backend — metric-explorer fetches REAL data', () => 
 
     await waitForFixtureReady(page)
 
-    // Shadow DOMs must initialise
-    await waitForShadowDom(page, '#me-metric')
+    // Shadow DOM must initialise
     await waitForShadowDom(page, '#qe-metric')
 
     const errors = getErrors()
     expect(errors, `Unexpected errors:\n${errors.join('\n')}`).toHaveLength(0)
-  })
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // B2: metric-explorer (author:metric) shows METRIC scope indicator
-  // ─────────────────────────────────────────────────────────────────────────
-
-  test('author:metric token → scope indicator shows METRIC', async ({ page }) => {
-    const url = buildFixtureUrl(AUTHOR_TOKEN, READONLY_TOKEN || AUTHOR_TOKEN)
-    await page.goto(url)
-    await waitForFixtureReady(page)
-    await waitForShadowDom(page, '#me-metric')
-
-    // Wait for scope indicator to settle
-    await page.waitForFunction(
-      () => {
-        const el = document.querySelector('#me-metric')
-        if (!el?.shadowRoot) return false
-        const ind = el.shadowRoot.querySelector('.scope-indicator')
-        return ind && ind.textContent.trim().length > 0
-      },
-      { timeout: 10000 },
-    )
-
-    const indicator = await getScopeIndicator(page, '#me-metric')
-    expect(indicator).toBe('METRIC')
-  })
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // B3: read:query only token → scope indicator shows READ-ONLY
-  // ─────────────────────────────────────────────────────────────────────────
-
-  test('read:query only token → scope indicator shows READ-ONLY', async ({ page }) => {
-    if (!READONLY_TOKEN) {
-      test.skip()
-      return
-    }
-    const url = buildFixtureUrl(AUTHOR_TOKEN, READONLY_TOKEN)
-    await page.goto(url)
-    await waitForFixtureReady(page)
-    await waitForShadowDom(page, '#me-readonly')
-
-    await page.waitForFunction(
-      () => {
-        const el = document.querySelector('#me-readonly')
-        if (!el?.shadowRoot) return false
-        const ind = el.shadowRoot.querySelector('.scope-indicator')
-        return ind && ind.textContent.trim().length > 0
-      },
-      { timeout: 10000 },
-    )
-
-    const indicator = await getScopeIndicator(page, '#me-readonly')
-    expect(indicator).toBe('READ-ONLY')
-  })
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // B4: metric-explorer run → fetches REAL rows from live backend
-  // ─────────────────────────────────────────────────────────────────────────
-
-  test('metric-explorer (author:metric) runs metric query → real data rows rendered', async ({ page }) => {
-    const getErrors = attachErrorCollector(page)
-    const url = buildFixtureUrl(AUTHOR_TOKEN, READONLY_TOKEN || AUTHOR_TOKEN)
-    await page.goto(url)
-    await waitForFixtureReady(page)
-    await waitForShadowDom(page, '#me-metric')
-
-    // Wait for scope indicator to settle (scope resolved = ready to run)
-    await page.waitForFunction(
-      () => {
-        const el = document.querySelector('#me-metric')
-        if (!el?.shadowRoot) return false
-        const ind = el.shadowRoot.querySelector('.scope-indicator')
-        return ind && ind.textContent.trim() === 'METRIC'
-      },
-      { timeout: 10000 },
-    )
-
-    // Click the Run button
-    const clicked = await clickRunButton(page, '#me-metric')
-    expect(clicked, 'Run button not found in metric-explorer shadow DOM').toBe(true)
-
-    // Wait for the result table to appear (live data from backend)
-    await waitForResultTable(page, '#me-metric', 25000)
-
-    // Verify: not an error state
-    const hasErr = await hasErrorState(page, '#me-metric')
-    expect(hasErr, 'metric-explorer is showing an error state after run').toBe(false)
-
-    // Verify: rows > 0 (real data)
-    const rowCount = await getResultRowCount(page, '#me-metric')
-    expect(rowCount, 'Expected real rows in result table but got 0').toBeGreaterThan(0)
-
-    // Console must be clean
-    const errors = getErrors()
-    expect(errors, `Unexpected errors after run:\n${errors.join('\n')}`).toHaveLength(0)
   })
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -374,7 +203,7 @@ test.describe('live embed backend — metric-explorer fetches REAL data', () => 
   // ─────────────────────────────────────────────────────────────────────────
   // B6: CORS / connectivity sanity check
   //
-  // The metric-explorer makes a preflight (OPTIONS) + POST request to the
+  // The query-editor makes a preflight (OPTIONS) + POST request to the
   // backend.  If CORS is not configured, the fetch will fail with a network
   // error.  We verify connectivity by checking the backend's /health endpoint
   // directly from the browser context.
@@ -556,8 +385,7 @@ test.describe('live-embed fixture — bundle smoke (no backend needed)', () => {
     await page.waitForFunction(
       () =>
         typeof customElements !== 'undefined' &&
-        customElements.get('nubi-metric-explorer') !== undefined &&
-        customElements.get('nubi-query-editor')    !== undefined,
+        customElements.get('nubi-query-editor') !== undefined,
       { timeout: 12000 },
     )
 

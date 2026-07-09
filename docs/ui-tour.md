@@ -75,7 +75,6 @@ Below the selectors is the main nav. The active item shows a tinted background a
 | **Connectors** | `/connectors` | Add and manage data sources (Postgres, BigQuery, HTTP/JSON, and more). |
 | **Data** | `/data` | Browse and explore your connectors' data: pick a connector, search its tables, then flip between Data (rows) and Schema (columns) tabs. |
 | **Queries** | `/queries` | Author SQL in a Monaco editor, run queries, and save registered queries. |
-| **Explore** | `/explore` | Metric explorer: select a metric, apply dimension filters, choose a time grain, and view results as a chart and table — no SQL required. |
 | **Dashboards** | `/dashboards` | View, search, and open live dashboards. |
 | **Flows** | `/flows` | Build multi-step pipelines — cells arranged as a canvas or notebook. |
 | **Watches** | `/watches` | Proactive metric alerts: a watch monitors a governed metric against a threshold or change-over-time rule, and on breach sends an AI explanation to a notify channel. |
@@ -261,26 +260,6 @@ The Queries workspace is Nubi's SQL IDE. Write SQL against any connector, add `{
 
 ---
 
-## Explore (`/explore`)
-
-<table><tr>
-<td width="50%"><img src="screenshots/explore-light.png" alt="Explore — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/explore-dark.png" alt="Explore — dark"><br><sub>Dark</sub></td>
-</tr></table>
-
-Explore is a no-SQL metric explorer powered by Nubi's governed metric layer. It surfaces the same `<nubi-metric-explorer>` web component that you can embed in your own app — so Explore also serves as an in-app dogfood of the embedding SDK.
-
-**What you can do:**
-
-1. **Pick a metric** — select from the governed metrics defined in your project (declared via the "Expose as metric" panel in the Queries workspace).
-2. **Choose dimensions** — toggle one or more grouping dimensions to break the metric down (e.g. by region, product, plan type).
-3. **Set a time grain** — day, week, month, quarter, or year, with an optional time comparison (e.g. period-over-period).
-4. **Run** — Nubi executes the governed metric query (via `POST /metrics/{id}/query`) and shows the result as both a chart and a data table.
-
-No raw SQL surfaces: Explore is the governed, analyst-safe way to slice a metric without writing code. The result updates live as you change dimensions or grain. See [AI, Chat & MCP](/docs/ai-and-mcp) and [Embed API](/docs/embed-api) for embedding the metric explorer in your own application.
-
----
-
 ## Dashboards (`/dashboards`)
 
 <table><tr>
@@ -412,8 +391,7 @@ The pricing page is public — no sign-in required. It shows the five tiers (Fre
 4. Open **Dashboards** and create a new dashboard (`/editor`), pulling in your registered query.
 5. Open **Flows** to chain steps into a pipeline, then **Automations** to run it on a schedule.
 6. Open **Watches** to get alerted — with an AI explanation — when a metric crosses a threshold.
-7. Open **Explore** to slice and dice governed metrics without writing SQL.
-8. Open the **AI chat panel** whenever you'd rather describe what you want than build it by hand.
+7. Open the **AI chat panel** whenever you'd rather describe what you want than build it by hand.
 
 That's the whole shell. The rest of these docs are deeper dives into each area:
 

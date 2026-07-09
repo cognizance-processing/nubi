@@ -11,16 +11,12 @@
  *   - "Run cell" calls previewCell (POST /flows/preview) and shows rows inline;
  *     the backend re-executes upstream cells in the dependency chain so
  *     cross-cell references resolve server-side
- *   - "Run All" (durable) opens PlanGateDialog, then calls runFlow
- *     (POST /flows/{id}/run); the dialog stays open until the run actually
- *     starts and shows the error inline if triggering fails
+ *   - "Run All" (durable) calls runFlow (POST /flows/{id}/run) directly
  *
  * This view has NO toolbar of its own — the single app top bar (portaled by
- * FlowsPage) owns the flow name input, add-cell buttons, save status, Save,
- * Lineage toggle and Run. Those top-bar controls drive this component via:
- *   - the imperative ref handle ({ runAll, addCell }) forwarded through
- *     FlowBuilder, and
- *   - the controlled `lineageOpen` / `onLineageClose` props.
+ * FlowsPage) owns the flow name input, add-cell buttons, save status, Save
+ * and Run. Those top-bar controls drive this component via the imperative
+ * ref handle ({ runAll, addCell }) forwarded through FlowBuilder.
  *
  * Saving is owned by FlowsPage (shared with the canvas view + autosave);
  * SaveStatusBadge is exported for the FlowsPage top bar.
@@ -31,11 +27,9 @@
  *   onSpecChange   {Function}     — called with updated spec on every edit
  *   onRun          {Function}     — called with { flowRun, runId } after triggering
  *   env            {string}       — run environment passed to runFlow (top-bar EnvSelector)
- *   lineageOpen    {boolean}      — show the full-flow lineage panel (top-bar toggle)
- *   onLineageClose {Function}     — called when the lineage panel asks to close
  */
 
-import { useState, useCallback, useRef, useMemo, forwardRef, useImperativeHandle } from 'react'
+import { useState, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react'
 import {
   Loader2,
   AlertCircle,
@@ -51,8 +45,6 @@ import { previewCell, makeBlankCell } from '../lib/notebooks.js'
 import SqlCell from './cells/SqlCell.jsx'
 import PythonCell from './cells/PythonCell.jsx'
 import NoteCell from './cells/NoteCell.jsx'
-import LineagePanel from './LineagePanel.jsx'
-import PlanGateDialog from './PlanGateDialog.jsx'
 
 // ---------------------------------------------------------------------------
 // AddCellBar — small inline add-cell row
@@ -138,16 +130,8 @@ export function SaveStatusBadge({ dirty, saving, autosaveStatus, className = '' 
 // NotebookView
 // ---------------------------------------------------------------------------
 
-const NotebookView = forwardRef(function NotebookView({ flow, spec, onSpecChange, onRun, env = 'prod', lineageOpen = false, onLineageClose }, ref) {
+const NotebookView = forwardRef(function NotebookView({ flow, spec, onSpecChange, onRun, env = 'prod' }, ref) {
   const [runError, setRunError] = useState(null)
-
-  // Plan gate dialog state — open before durable Run All
-  const [planGateOpen, setPlanGateOpen] = useState(false)
-  // Track the most recently changed cell key so the plan can highlight it.
-  // The ref captures changes during render-free callbacks; we snapshot it into
-  // state when the plan gate opens so render never reads the ref directly.
-  const lastChangedCellRef = useRef(null)
-  const [planChangedCellKey, setPlanChangedCellKey] = useState('')
 
   const specTasks = spec?.tasks
   const tasks = useMemo(() => specTasks ?? [], [specTasks])
@@ -159,8 +143,6 @@ const NotebookView = forwardRef(function NotebookView({ flow, spec, onSpecChange
   }, [spec, onSpecChange])
 
   const handleCellChange = useCallback((idx, updatedCell) => {
-    // Track the last changed cell so the plan gate can highlight impact
-    lastChangedCellRef.current = updatedCell?.key ?? null
     setTasks(tasks.map((t, i) => i === idx ? updatedCell : t))
   }, [tasks, setTasks])
 
@@ -198,40 +180,26 @@ const NotebookView = forwardRef(function NotebookView({ flow, spec, onSpecChange
     return previewCell(spec, cell.key)
   }, [spec])
 
-  // ── Run all (durable) — open plan gate first ──────────────────────────────
+  // ── Run all (durable) — runs directly, no plan-gate dialog ────────────────
 
-  const handleRunAll = useCallback(() => {
+  const handleRunAll = useCallback(async () => {
     if (!flow?.id) {
       setRunError('Save the notebook first before running.')
       return
     }
-    // Snapshot the most recently changed cell key so the dialog can highlight
-    // impact without reading the ref during render.
-    setPlanChangedCellKey(lastChangedCellRef.current ?? '')
-    // Open the plan gate dialog; the actual run happens in handlePlanConfirm
-    setPlanGateOpen(true)
-  }, [flow])
-
-  // Triggers the durable run. Returns true on success / false on failure so
-  // PlanGateDialog can keep itself open (with an inline error + retry) when
-  // the run fails; we only close the dialog once the run actually started.
-  const handlePlanConfirm = useCallback(async () => {
-    if (!flow?.id) return false
     setRunError(null)
     const result = await runFlow(flow.id, {}, env || undefined)
     if (!result) {
       setRunError('Run failed — check the console for details.')
-      return false
+      return
     }
-    setPlanGateOpen(false)
     onRun?.({ flowRun: result, runId: result.id })
-    return true
   }, [flow, onRun, env])
 
   // ── Imperative handle — drives this view from the app top bar (FlowsPage
   //    portals the toolbar there; calls arrive via FlowBuilder's ref). ───────
   useImperativeHandle(ref, () => ({
-    /** Plan-gated durable "Run all" (opens PlanGateDialog). */
+    /** Durable "Run all" — triggers runFlow directly. */
     runAll: handleRunAll,
     /** Append a blank cell of the given type ('sql' | 'python' | 'markdown'). */
     addCell: (cellType) => handleAddCell(cellType, null),
@@ -250,27 +218,6 @@ const NotebookView = forwardRef(function NotebookView({ flow, spec, onSpecChange
           <button onClick={() => setRunError(null)} className="ml-auto opacity-60 hover:opacity-100 shrink-0"><X size={12} /></button>
         </div>
       )}
-
-      {/* ── Flow lineage panel (toggled from the app top bar) ─────────────── */}
-      {lineageOpen && (
-        <div className="shrink-0 px-3 sm:px-6 pt-3 pb-0">
-          <LineagePanel
-            mode="flow"
-            flowId={flow?.id ?? null}
-            spec={spec}
-            onClose={() => onLineageClose?.()}
-          />
-        </div>
-      )}
-
-      {/* ── Plan gate dialog ──────────────────────────────────────────────── */}
-      <PlanGateDialog
-        open={planGateOpen}
-        spec={spec}
-        changedCellKey={planChangedCellKey}
-        onConfirm={handlePlanConfirm}
-        onCancel={() => setPlanGateOpen(false)}
-      />
 
       {/* ── Cell list ──────────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-4 space-y-0">

@@ -10,11 +10,11 @@
  *   - Fully responsive: mobile bottom-sheet for palette + inspector
  *
  * The flow name + Validate/Save/Run/Code actions, the Builder/Runs switcher
- * and the notebook controls (add-cell / Lineage / plan-gated Run all) live in
- * the app top bar — FlowsPage portals them there (mirrors the dashboard
- * editor). This component only owns the canvas, the notebook body, and the
- * code panel (whose visibility is controlled by the `codeOpen` prop). Saving
- * (manual + autosave) is owned by FlowsPage.
+ * and the notebook controls (add-cell / Run all) live in the app top bar —
+ * FlowsPage portals them there (mirrors the dashboard editor). This
+ * component only owns the canvas, the notebook body, and the code panel
+ * (whose visibility is controlled by the `codeOpen` prop). Saving (manual +
+ * autosave) is owned by FlowsPage.
  *
  * Props:
  *   flow           {object|null}  — existing flow row (null for new)
@@ -22,8 +22,6 @@
  *   onSpecChange   {Function}     — called with updated spec on every edit
  *   onRun          {Function}     — passed through to NotebookView
  *   env            {string}       — run environment; passed to NotebookView
- *   lineageOpen    {boolean}      — notebook lineage panel visibility (top-bar toggle)
- *   onLineageClose {Function}     — passed to NotebookView's lineage panel
  *   codeOpen       {boolean}      — whether the Python code panel is shown
  *   onCodeClose    {Function}     — called to dismiss the code panel
  */
@@ -215,7 +213,7 @@ function MobileInspectorSheet({ open, onClose, task, onChange }) {
 // FlowBuilder
 // ---------------------------------------------------------------------------
 
-const FlowBuilder = forwardRef(function FlowBuilder({ flow, spec, onSpecChange, onRun, env = 'prod', lineageOpen = false, onLineageClose, onSelectedTaskChange, codeOpen = false, onCodeClose, onViewModeChange }, ref) {
+const FlowBuilder = forwardRef(function FlowBuilder({ flow, spec, onSpecChange, onRun, env = 'prod', onSelectedTaskChange, codeOpen = false, onCodeClose, onViewModeChange }, ref) {
   // ── View mode: 'canvas' | 'notebook' ─────────────────────────────────────
   // Initialise from spec.view if present; fall back to 'canvas'.
   const [viewMode, setViewMode] = useState(() => spec?.view === 'notebook' ? 'notebook' : 'canvas')
@@ -492,8 +490,6 @@ const FlowBuilder = forwardRef(function FlowBuilder({ flow, spec, onSpecChange, 
             onSpecChange={onSpecChange}
             onRun={onRun}
             env={env}
-            lineageOpen={lineageOpen}
-            onLineageClose={onLineageClose}
           />
         </div>
       </div>
