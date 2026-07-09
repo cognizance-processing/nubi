@@ -31,13 +31,31 @@ import MarketingStyles from '../components/marketing/MarketingStyles.jsx'
 import useReveal from '../components/marketing/useReveal.js'
 import CalcShell from '../components/marketing/CalcShell.jsx'
 import { SliderField } from '../components/marketing/SliderField.jsx'
+import { useCurrency } from '../contexts/CurrencyContext.jsx'
+import { CURRENCIES, convertFromUsd } from '../lib/currency.js'
+import CurrencySelector from '../components/CurrencySelector.jsx'
 
-const fmtUSD = (n) => {
-  if (!n) return '$0'
-  if (n >= 1e6) return `$${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M`
-  if (n >= 1e3) return `$${Math.round(n / 1e3)}k`
-  return `$${Math.round(n)}`
+/**
+ * Compact money in the visitor's selected DISPLAY currency (mirrors the old
+ * fmtUSD's k/M scaling so calculator bars stay short). These are USD-anchored
+ * comparison figures (competitor list prices), so we convert with the display
+ * FX rate — NOT the billed-in-ZAR formula. USD renders identically to before.
+ */
+const compactMoney = (usd, currency, rates) => {
+  const amount = convertFromUsd(usd, currency, rates)
+  const sym = CURRENCIES[currency]?.symbol ?? ''
+  if (!amount) return `${sym}0`
+  if (amount >= 1e6) return `${sym}${(amount / 1e6).toFixed(amount >= 1e7 ? 0 : 1)}M`
+  if (amount >= 1e3) return `${sym}${Math.round(amount / 1e3)}k`
+  return `${sym}${Math.round(amount)}`
 }
+
+/** Parse the USD anchor out of a tier price string ("$1,000" → 1000); NaN if non-numeric. */
+const parseUsd = (price) => {
+  const n = Number(String(price ?? '').replace(/[^0-9.]/g, ''))
+  return Number.isFinite(n) && String(price).match(/\d/) ? n : NaN
+}
+
 const fmtNum = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`)
 
 const METER_ICONS = [Users, Zap, Database, Bot, Server]
@@ -79,9 +97,23 @@ const TIER_ACCENTS = {
 function TierCard({ tier, idx }) {
   const hi = tier.highlight
   const hasSla = !!tier.sla
-  const zarLabel = tier.price_zar_label
+  const { isBilling, format, billedZar } = useCurrency()
   const accent = TIER_ACCENTS[tier.id] || '#17b3a3'
   const cadence = tier.cadence === 'per month' ? '/ mo' : tier.cadence
+
+  // Price is USD-anchored: show it in the selected display currency. When ZAR is
+  // selected, show the authoritative billed amount directly (don't double-convert).
+  const usd = parseUsd(tier.price)
+  const hasUsd = Number.isFinite(usd)
+  const bigPrice = !hasUsd ? tier.price : isBilling ? billedZar(usd) : format(usd)
+  // The billed-in-ZAR note: prefer the live server ZAR (daily FX, set by
+  // mergeLiveTiers) so we never re-apply a display rate to it; fall back to the
+  // client billed-ZAR estimate before live data arrives. Hidden when ZAR is the
+  // display currency (the big price is already ZAR).
+  const serverZar = /R/.test(tier.price_zar_label ?? '') ? tier.price_zar_label : null
+  const zarNote = !isBilling && hasUsd && usd > 0
+    ? `≈ ${serverZar ?? `${billedZar(usd)} / mo`}`
+    : null
 
   const inner = (
     <div className={`relative flex flex-col h-full p-5 sm:p-6 ${hi ? 'rounded-[1.15rem] bg-surface' : ''}`}>
@@ -93,12 +125,12 @@ function TierCard({ tier, idx }) {
       </div>
       <div className="flex items-baseline gap-2">
         <span className="font-display text-[2.4rem] leading-none font-bold tracking-tight text-fg tabular-nums">
-          {tier.price}
+          {bigPrice}
         </span>
         <span className="font-mono text-[11px] text-muted">{cadence}</span>
       </div>
-      {zarLabel && (
-        <p className="mt-1.5 font-mono text-[11px] text-primary tabular-nums">≈ {zarLabel}</p>
+      {zarNote && (
+        <p className="mt-1.5 font-mono text-[11px] text-primary tabular-nums">{zarNote}</p>
       )}
       <p className="mt-2.5 text-[13px] text-muted leading-relaxed min-h-[52px]">{tier.tagline}</p>
 
@@ -449,6 +481,7 @@ function ViewerTaxPanel() {
 
 /* Competitor-vs-Nubi result bar row */
 function ResultBar({ r, max, nameColsClass }) {
+  const { currency, rates } = useCurrency()
   return (
     <div className={`grid ${nameColsClass} items-center gap-3`}>
       <div className="min-w-0">
@@ -465,7 +498,7 @@ function ResultBar({ r, max, nameColsClass }) {
         />
       </div>
       <div className={`font-mono text-[13px] font-bold tabular-nums text-right w-16 ${r.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
-        {fmtUSD(r.cost)}
+        {compactMoney(r.cost, currency, rates)}
       </div>
     </div>
   )
@@ -476,6 +509,7 @@ function ResultBar({ r, max, nameColsClass }) {
 /* ─────────────────────────────────────────────────────────────────────────── */
 
 function CostCalculator() {
+  const { currency, rates } = useCurrency()
   const [sv, setSv] = useState(50)      // slider 0–100 → viewers (log scale)
   const [editors, setEditors] = useState(5)
   const viewers = Math.round(10 * Math.pow(2500, sv / 100)) // 10 → 25,000
@@ -509,9 +543,9 @@ function CostCalculator() {
       <div className="flex flex-wrap items-center justify-center gap-2 px-5 sm:px-6 py-4 text-center bg-brand-teal/[0.06] border-b border-border">
         <TrendingDown size={18} className="text-brand-teal shrink-0" />
         <span className="text-sm sm:text-base text-fg">
-          Nubi costs <strong className="font-mono font-bold text-brand-teal">{fmtUSD(nubi?.cost ?? 0)}/yr</strong>
+          Nubi costs <strong className="font-mono font-bold text-brand-teal">{compactMoney(nubi?.cost ?? 0, currency, rates)}/yr</strong>
           {savings > 0 && (
-            <> — that’s <strong className="font-mono font-bold text-brand-teal">{fmtUSD(savings)}/yr less</strong>
+            <> — that’s <strong className="font-mono font-bold text-brand-teal">{compactMoney(savings, currency, rates)}/yr less</strong>
               {multiple && multiple >= 2 && <> ({Math.round(multiple)}× cheaper)</>} than the next option.</>
           )}
         </span>
@@ -624,6 +658,7 @@ function OverageShowcase() {
 /* ─────────────────────────────────────────────────────────────────────────── */
 
 function OrchCalculator() {
+  const { currency, rates } = useCurrency()
   const [envs, setEnvs] = useState(2)
   const [gb, setGb] = useState(1000)
 
@@ -655,10 +690,10 @@ function OrchCalculator() {
       <div className="flex flex-wrap items-center justify-center gap-2 px-5 sm:px-6 py-4 text-center bg-brand-teal/[0.06] border-b border-border">
         <GitFork size={18} className="text-brand-teal shrink-0" />
         <span className="text-sm sm:text-base text-fg">
-          Flows costs <strong className="font-mono font-bold text-brand-teal">{nubi?.cost ? `${fmtUSD(nubi.cost)}/yr` : '$0'}</strong>{' '}
+          Flows costs <strong className="font-mono font-bold text-brand-teal">{nubi?.cost ? `${compactMoney(nubi.cost, currency, rates)}/yr` : compactMoney(0, currency, rates)}</strong>{' '}
           metered on data processed — no per-environment bill.
           {savings > 0 && (
-            <> That&rsquo;s <strong className="font-mono font-bold text-brand-teal">{fmtUSD(savings)}/yr</strong> less than the cheapest standalone orchestrator.</>
+            <> That&rsquo;s <strong className="font-mono font-bold text-brand-teal">{compactMoney(savings, currency, rates)}/yr</strong> less than the cheapest standalone orchestrator.</>
           )}
         </span>
       </div>
@@ -907,6 +942,12 @@ export default function PricingPage() {
                 editors and viewers</strong>. You move up for throughput, embed volume, AI, and
                 governance. Never for people.
               </p>
+              <div className="mt-6 flex items-center justify-center gap-2.5">
+                <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-muted">
+                  Show prices in
+                </span>
+                <CurrencySelector />
+              </div>
             </Reveal>
             {/* One equal-width row from xl up (popular tier pops above the line);
                 2-up on tablets, stacked on mobile. */}
