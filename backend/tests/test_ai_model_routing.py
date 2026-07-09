@@ -314,7 +314,7 @@ class TestChatRouteThreadsModel:
         # Swap in a FakeProvider (non-Null) so the model IS gated. A bad model
         # must surface as a 400 model_not_allowed through the AppError handler.
         ac, user_id = ai_client
-        monkeypatch.setattr("app.routes.ai.get_provider", lambda: FakeProvider())
+        monkeypatch.setattr("app.ai.provider.get_provider", lambda: FakeProvider())
         resp = await ac.post(
             "/api/v1/ai/chat",
             json={
@@ -331,7 +331,7 @@ class TestChatRouteThreadsModel:
         self, ai_client, monkeypatch
     ):
         ac, user_id = ai_client
-        monkeypatch.setattr("app.routes.ai.get_provider", lambda: FakeProvider())
+        monkeypatch.setattr("app.ai.provider.get_provider", lambda: FakeProvider())
         resp = await ac.post(
             "/api/v1/ai/chat",
             json={
@@ -363,7 +363,7 @@ class TestAskRouteThreadsModel:
         self, ai_client, monkeypatch
     ):
         ac, user_id = ai_client
-        monkeypatch.setattr("app.routes.ai.get_provider", lambda: FakeProvider())
+        monkeypatch.setattr("app.ai.provider.get_provider", lambda: FakeProvider())
         resp = await ac.post(
             "/api/v1/ai/ask",
             json={"question": "show me orders", "model": "nope-not-allowed"},

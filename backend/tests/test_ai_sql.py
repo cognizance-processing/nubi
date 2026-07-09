@@ -437,7 +437,7 @@ class TestSqlEndpoint:
             def complete(self, prompt: str, system: str | None = None) -> str:
                 return "SELECT * FROM demo WHERE tenant_id = '{{tenant}}'"
 
-        with patch("app.routes.ai.get_provider", return_value=_PlaceholderProvider()):
+        with patch("app.ai.provider.get_provider", return_value=_PlaceholderProvider()):
             resp = await ac.post(
                 "/api/v1/ai/sql",
                 json={"question": "filter by tenant", "save_as": save_id},
@@ -460,7 +460,7 @@ class TestSqlEndpoint:
         """A provider returning non-SQL junk must yield valid=False with issues."""
         ac, user_id = sql_client
 
-        with patch("app.routes.ai.get_provider", return_value=_JunkProvider()):
+        with patch("app.ai.provider.get_provider", return_value=_JunkProvider()):
             resp = await ac.post(
                 "/api/v1/ai/sql",
                 json={"question": "show me orders"},
@@ -477,7 +477,7 @@ class TestSqlEndpoint:
         """Even junk SQL is returned so the caller can inspect / log it."""
         ac, user_id = sql_client
 
-        with patch("app.routes.ai.get_provider", return_value=_JunkProvider()):
+        with patch("app.ai.provider.get_provider", return_value=_JunkProvider()):
             resp = await ac.post(
                 "/api/v1/ai/sql",
                 json={"question": "show me orders"},
@@ -493,7 +493,7 @@ class TestSqlEndpoint:
         """A provider returning a valid SELECT → valid=True."""
         ac, user_id = sql_client
 
-        with patch("app.routes.ai.get_provider", return_value=_ValidSQLProvider()):
+        with patch("app.ai.provider.get_provider", return_value=_ValidSQLProvider()):
             resp = await ac.post(
                 "/api/v1/ai/sql",
                 json={"question": "show me orders"},

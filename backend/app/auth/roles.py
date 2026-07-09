@@ -26,10 +26,10 @@ from typing import Any
 
 from fastapi import Depends, Request
 
+from app import db
 from app.auth.deps import current_user
 from app.auth.jwt import decode_access_token
 from app.auth.scopes import parse_scopes
-from app.db import fetchrow
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
 from app.routes._org import get_user_org, resolve_org_id
@@ -40,11 +40,26 @@ async def get_org_role(user_id: str, org_id: str, repo: Repo) -> str | None:
 
     Mirrors the membership-resolution split used elsewhere: read from the
     InMemoryRepo's seeded members for tests, else query ``org_members``.
+
+    Calls ``db.fetchrow`` via the ``app.db`` module (not a bound
+    ``from app.db import fetchrow``) so this always resolves the CURRENT
+    ``app.db.fetchrow`` — including whatever a test's
+    ``unittest.mock.patch("app.db.fetchrow", ...)`` has it pointed at for the
+    duration of that patch. A value-import here would capture whatever
+    ``app.db.fetchrow`` happened to be at the moment this module was first
+    imported, and keep that reference forever (module imports are cached
+    process-wide) — if this module's first import happens to occur inside
+    another test's patched context (e.g. via ``main`` -> ``app.routes.ai`` ->
+    ``app.auth.roles`` while a DB-mocking fixture is active), every later
+    caller in the process — including ones far outside that fixture — would
+    keep querying the stale, since-reverted mock instead of the real
+    ``fetchrow``, silently changing behaviour (e.g. RuntimeError no longer
+    raised when the DB pool isn't initialised).
     """
     if hasattr(repo, "_org_members"):  # InMemoryRepo test double
         entry = repo._org_members.get(f"{org_id}:{user_id}")  # type: ignore[attr-defined]
         return entry["role"] if entry else None
-    row = await fetchrow(
+    row = await db.fetchrow(
         "SELECT role FROM org_members WHERE user_id = $1::uuid AND org_id = $2::uuid",
         user_id,
         org_id,
