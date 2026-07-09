@@ -115,14 +115,18 @@ const SCREENSHOT_SRC = /^\/docs\/screenshots\/([\w][\w.-]*)\.png$/
 
 function ThemedDocImage({ src, alt }) {
   const { theme } = useTheme()
+  // If a `-dark` variant 404s, fall back to the light image rather than showing
+  // a broken image (not every screenshot has a dark capture, e.g. compare.png).
+  const [darkMissing, setDarkMissing] = useState(false)
   const resolved = useMemo(() => {
-    if (theme !== 'dark' || typeof src !== 'string') return src
+    if (darkMissing || theme !== 'dark' || typeof src !== 'string') return src
     const m = SCREENSHOT_SRC.exec(src)
     if (!m || m[1].endsWith('-dark')) return src
     return `/docs/screenshots/${m[1]}-dark.png`
-  }, [theme, src])
+  }, [theme, src, darkMissing])
   return (
     <img src={resolved} alt={alt || ''} loading="lazy"
+      onError={() => { if (resolved !== src) setDarkMissing(true) }}
       className="my-6 rounded-xl border border-border max-w-full h-auto" />
   )
 }
