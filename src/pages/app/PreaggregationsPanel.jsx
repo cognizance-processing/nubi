@@ -44,6 +44,7 @@ import {
 
 import { fetchPreaggSuggestions, fetchPreaggs, buildPreagg } from '../../lib/preagg.js'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
+import Badge from '../../components/ui/Badge.jsx'
 
 // ---------------------------------------------------------------------------
 // Formatting helpers
@@ -116,7 +117,7 @@ function SuggestionCard({ suggestion, canWrite, onBuild, buildState }) {
   const errored = buildState?.status === 'err'
 
   return (
-    <div className="rounded-2xl border border-border bg-surface p-4 shadow-sm transition-shadow hover:shadow-md">
+    <div className="rounded-2xl border border-border bg-surface p-4 shadow-sm transition-shadow duration-150 hover:shadow-md">
       <div className="flex items-start gap-3">
         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400">
           <Sparkles size={16} />
@@ -128,9 +129,9 @@ function SuggestionCard({ suggestion, canWrite, onBuild, buildState }) {
               <Database size={13} className="text-muted" />
               {table}
             </span>
-            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold rounded-full bg-primary/10 text-primary border border-primary/20">
+            <Badge variant="primary" size="sm">
               <Gauge size={9} /> score {formatCompact(score)}
-            </span>
+            </Badge>
           </div>
 
           {/* Cost / frequency stats */}
@@ -161,7 +162,7 @@ function SuggestionCard({ suggestion, canWrite, onBuild, buildState }) {
             <button
               onClick={() => onBuild(suggestion)}
               disabled={building || built}
-              className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity"
+              className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               title="Materialize and register this rollup"
             >
               {building ? (
@@ -207,15 +208,12 @@ function BuiltRollupCard({ rollup }) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm font-semibold text-fg font-display truncate">{table ?? rollup_id}</span>
-            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+            <Badge variant="success" size="sm">
               <CheckCircle2 size={9} /> active
-            </span>
-            <span
-              className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold rounded-full bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20"
-              title="Queries routed to this rollup"
-            >
+            </Badge>
+            <Badge variant="info" size="sm" title="Queries routed to this rollup">
               <Zap size={9} /> {Number(hits ?? 0).toLocaleString()} hit{hits !== 1 ? 's' : ''}
-            </span>
+            </Badge>
           </div>
 
           <p className="mt-1 text-[11px] text-muted flex items-center gap-1 min-w-0">
@@ -260,6 +258,33 @@ function SectionHeader({ icon: Icon, title, count, hint }) {
         <span className="text-[11px] font-mono text-muted">{count}</span>
       )}
       {hint && <span className="text-[11px] text-muted/70">· {hint}</span>}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// RollupCardSkeleton — shimmer placeholder matching the suggestion/rollup
+// card layout, shown while the initial fetch is in flight.
+// ---------------------------------------------------------------------------
+
+function RollupCardSkeleton() {
+  return (
+    <div className="rounded-2xl border border-border bg-surface p-4" aria-hidden="true">
+      <div className="flex items-start gap-3">
+        <div className="nubi-shimmer h-9 w-9 shrink-0 rounded-xl" />
+        <div className="min-w-0 flex-1 space-y-2">
+          <div className="flex items-center gap-2">
+            <div className="nubi-shimmer h-4 w-28 rounded" />
+            <div className="nubi-shimmer h-4 w-16 rounded-full" />
+          </div>
+          <div className="nubi-shimmer h-3 w-40 rounded" />
+          <div className="flex gap-1.5 mt-2">
+            <div className="nubi-shimmer h-4 w-14 rounded" />
+            <div className="nubi-shimmer h-4 w-14 rounded" />
+            <div className="nubi-shimmer h-4 w-10 rounded" />
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
@@ -337,7 +362,7 @@ export default function PreaggregationsPanel() {
         {/* ── Header ───────────────────────────────────────────────────── */}
         <div className="flex items-start gap-3">
           <div
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl shadow-nubi-md"
             style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
           >
             <Boxes size={22} className="text-white" />
@@ -351,7 +376,7 @@ export default function PreaggregationsPanel() {
           <button
             onClick={load}
             disabled={loading}
-            className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors shrink-0"
+            className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors duration-100 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             title="Refresh suggestions and built rollups"
             aria-label="Refresh suggestions and built rollups"
           >
@@ -377,7 +402,7 @@ export default function PreaggregationsPanel() {
                 href="/docs/pre-aggregations"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-0.5 ml-1 text-primary hover:underline"
+                className="inline-flex items-center gap-0.5 ml-1 text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
               >
                 Learn more <ExternalLink size={10} />
               </a>
@@ -395,9 +420,20 @@ export default function PreaggregationsPanel() {
 
         {/* ── Loading ──────────────────────────────────────────────────── */}
         {loading && (
-          <div className="mt-8 flex items-center justify-center gap-2 text-sm text-muted">
-            <Loader2 size={16} className="animate-spin" />
-            Loading pre-aggregations…
+          <div className="mt-6 space-y-8" aria-live="polite" aria-label="Loading pre-aggregations">
+            <section>
+              <div className="nubi-shimmer h-4 w-36 rounded mb-3" />
+              <div className="flex flex-col gap-3">
+                <RollupCardSkeleton />
+                <RollupCardSkeleton />
+              </div>
+            </section>
+            <section>
+              <div className="nubi-shimmer h-4 w-32 rounded mb-3" />
+              <div className="flex flex-col gap-3">
+                <RollupCardSkeleton />
+              </div>
+            </section>
           </div>
         )}
 

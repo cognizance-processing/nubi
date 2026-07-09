@@ -73,6 +73,8 @@ import { useAuth } from '../../contexts/AuthContext.jsx'
 import { useOrg } from '../../contexts/OrgContext.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
 import * as api from '../../lib/api.js'
+import Badge from '../../components/ui/Badge.jsx'
+import EmptyState from '../../components/ui/EmptyState.jsx'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -228,7 +230,7 @@ function StepCard({ step, done, current, delay }) {
       to={step.href}
       style={{ animationDelay: `${delay}ms` }}
       className={[
-        'hp-reveal group relative flex flex-col gap-4 rounded-2xl p-6 border transition-all duration-200',
+        'hp-reveal group relative flex flex-col gap-4 rounded-2xl p-6 border transition-all duration-200 hover:-translate-y-0.5',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         done
           ? 'bg-surface border-emerald-400/30 dark:border-emerald-500/30 hover:border-emerald-400/60 hover:shadow-md'
@@ -285,7 +287,7 @@ function NextFeatureCard({ feature, delay }) {
       to={feature.href}
       style={{ animationDelay: `${delay}ms` }}
       className="hp-reveal group flex items-center gap-3 p-4 rounded-xl border border-border bg-surface/60
-        hover:bg-surface hover:border-primary/40 hover:shadow-md hover:shadow-primary/5 transition-all duration-200
+        hover:bg-surface hover:border-primary/40 hover:shadow-md hover:shadow-primary/5 hover:-translate-y-0.5 transition-all duration-200
         focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring min-h-[44px]"
     >
       <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-surface-2 shrink-0 group-hover:bg-primary/10 transition-colors">
@@ -311,7 +313,7 @@ function StatCard({ icon, label, value, to, accent, delay }) {
       to={to}
       style={{ animationDelay: `${delay}ms` }}
       className="hp-reveal group relative overflow-hidden flex flex-col gap-3 p-5 rounded-2xl border border-border
-        bg-surface hover:border-primary/40 hover:shadow-md hover:shadow-primary/5 transition-all duration-200
+        bg-surface hover:border-primary/40 hover:shadow-md hover:shadow-primary/5 hover:-translate-y-0.5 transition-all duration-200
         focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       {/* faint corner glow */}
@@ -329,6 +331,9 @@ function StatCard({ icon, label, value, to, accent, delay }) {
     </Link>
   )
 }
+
+/** Maps a dataset freshness status to a Badge variant. */
+const FRESHNESS_BADGE = { fresh: 'success', stale: 'danger', amber: 'warning' }
 
 /** RAG (Red/Amber/Green) status dot for dataset freshness. */
 function RagDot({ status }) {
@@ -361,10 +366,10 @@ function GradeBadge({ grade }) {
 function IssueRow({ icon, variant = 'muted', title, subtitle, chip, href, delay }) {
   const Icon = icon
   const variants = {
-    red:   { bg: 'bg-red-500/10',   text: 'text-red-600 dark:text-red-400' },
-    amber: { bg: 'bg-amber-500/10', text: 'text-amber-600 dark:text-amber-400' },
-    blue:  { bg: 'bg-blue-500/10',  text: 'text-blue-600 dark:text-blue-400' },
-    muted: { bg: 'bg-surface-2',    text: 'text-muted' },
+    red:   { bg: 'bg-red-500/10',   text: 'text-red-600 dark:text-red-400',  badge: 'danger' },
+    amber: { bg: 'bg-amber-500/10', text: 'text-amber-600 dark:text-amber-400', badge: 'warning' },
+    blue:  { bg: 'bg-blue-500/10',  text: 'text-blue-600 dark:text-blue-400', badge: 'info' },
+    muted: { bg: 'bg-surface-2',    text: 'text-muted',                      badge: 'default' },
   }
   const v = variants[variant] ?? variants.muted
   return (
@@ -372,7 +377,7 @@ function IssueRow({ icon, variant = 'muted', title, subtitle, chip, href, delay 
       to={href}
       style={{ animationDelay: `${delay}ms` }}
       className="hp-reveal group flex items-center gap-3 p-4 rounded-xl border border-border bg-surface
-        hover:border-primary/40 hover:shadow-md hover:shadow-primary/5 transition-all duration-200
+        hover:border-primary/40 hover:shadow-md hover:shadow-primary/5 hover:-translate-y-0.5 transition-all duration-200
         focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring min-h-[44px]"
     >
       <div className={`flex items-center justify-center w-9 h-9 rounded-lg shrink-0 ${v.bg}`}>
@@ -382,9 +387,7 @@ function IssueRow({ icon, variant = 'muted', title, subtitle, chip, href, delay 
         <p className="font-display font-medium text-sm text-fg truncate">{title}</p>
         {subtitle && <p className="text-xs text-muted mt-0.5 truncate">{subtitle}</p>}
       </div>
-      {chip && (
-        <span className={`text-xs font-medium px-2 py-0.5 rounded-full shrink-0 ${v.bg} ${v.text}`}>{chip}</span>
-      )}
+      {chip && <Badge variant={v.badge} size="sm" className="shrink-0">{chip}</Badge>}
       <ChevronRight size={14} className="text-muted opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
     </Link>
   )
@@ -396,7 +399,7 @@ function QuickTile({ item, onChat, delay }) {
     <div
       style={{ animationDelay: `${delay}ms` }}
       className="hp-reveal group flex items-center gap-3 p-3.5 rounded-xl border border-border bg-surface
-        hover:border-primary/40 hover:shadow-md hover:shadow-primary/5 transition-all duration-200
+        hover:border-primary/40 hover:shadow-md hover:shadow-primary/5 hover:-translate-y-0.5 transition-all duration-200
         min-h-[44px] w-full text-left"
     >
       <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-surface-2 shrink-0 group-hover:bg-primary/10 transition-colors">
@@ -422,7 +425,7 @@ function BoardCard({ board, delay }) {
       onClick={() => navigate(`/d/${board.id}`)}
       style={{ animationDelay: `${delay}ms` }}
       className="hp-reveal group text-left flex items-center gap-3 p-4 rounded-xl border border-border bg-surface
-        hover:border-primary/40 hover:shadow-md hover:shadow-primary/5 transition-all duration-200
+        hover:border-primary/40 hover:shadow-md hover:shadow-primary/5 hover:-translate-y-0.5 transition-all duration-200
         focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring min-h-[44px]"
     >
       <div className="flex items-center justify-center w-9 h-9 rounded-lg shrink-0 bg-brand-gradient">
@@ -450,7 +453,7 @@ function FlowCard({ flow, delay }) {
       onClick={() => navigate(`/flows/${flow.id}`)}
       style={{ animationDelay: `${delay}ms` }}
       className="hp-reveal group text-left flex items-center gap-3 p-4 rounded-xl border border-border bg-surface
-        hover:border-primary/40 hover:shadow-md hover:shadow-primary/5 transition-all duration-200
+        hover:border-primary/40 hover:shadow-md hover:shadow-primary/5 hover:-translate-y-0.5 transition-all duration-200
         focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring min-h-[44px]"
     >
       <div className="flex items-center justify-center w-9 h-9 rounded-lg shrink-0 bg-surface-2 group-hover:bg-primary/10 transition-colors">
@@ -637,13 +640,8 @@ export default function HomePage() {
 
   return (
     <div className="min-h-full bg-bg relative">
-      {/* Scoped animations + skeleton shimmer */}
+      {/* Scoped entrance animation — skeleton shimmer reuses the shared .nubi-shimmer class */}
       <style>{`
-        @keyframes hp-shimmer { 0% { background-position:-400px 0 } 100% { background-position:400px 0 } }
-        .hp-skeleton {
-          background: linear-gradient(90deg, var(--surface-2,#eef2f7) 25%, var(--border,#e2e8f0) 50%, var(--surface-2,#eef2f7) 75%);
-          background-size: 800px 100%; animation: hp-shimmer 1.4s ease-in-out infinite; border-radius:.5rem;
-        }
         @keyframes hp-reveal { from { opacity:0; transform: translateY(10px) } to { opacity:1; transform:none } }
         .hp-reveal { opacity:0; animation: hp-reveal .5s cubic-bezier(.16,1,.3,1) forwards; }
         @media (prefers-reduced-motion: reduce) { .hp-reveal { animation: none; opacity:1 } }
@@ -719,13 +717,13 @@ export default function HomePage() {
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   {[0, 1, 2].map((i) => (
                     <div key={i} className="rounded-2xl border border-border bg-surface p-6 space-y-4">
-                      <div className="hp-skeleton h-4 w-24" />
-                      <div className="hp-skeleton h-10 w-10 rounded-xl" />
+                      <div className="nubi-shimmer h-4 w-24" />
+                      <div className="nubi-shimmer h-10 w-10 rounded-xl" />
                       <div className="space-y-2">
-                        <div className="hp-skeleton h-4 w-3/4" />
-                        <div className="hp-skeleton h-3 w-full" />
+                        <div className="nubi-shimmer h-4 w-3/4" />
+                        <div className="nubi-shimmer h-3 w-full" />
                       </div>
-                      <div className="hp-skeleton h-4 w-20" />
+                      <div className="nubi-shimmer h-4 w-20" />
                     </div>
                   ))}
                 </div>
@@ -777,17 +775,17 @@ export default function HomePage() {
             {/* Stat row — live usage */}
             <section aria-label="Workspace overview">
               {loading ? (
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                   {[0, 1, 2, 3].map((i) => (
                     <div key={i} className="rounded-2xl border border-border bg-surface p-5 space-y-3">
-                      <div className="hp-skeleton h-10 w-10 rounded-xl" />
-                      <div className="hp-skeleton h-8 w-12" />
-                      <div className="hp-skeleton h-3 w-20" />
+                      <div className="nubi-shimmer h-10 w-10 rounded-xl" />
+                      <div className="nubi-shimmer h-8 w-12" />
+                      <div className="nubi-shimmer h-3 w-20" />
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                   <StatCard icon={LayoutDashboard} label="Dashboards" value={counts.dashboards} to="/dashboards" accent="from-brand-teal to-brand-cyan" delay={0} />
                   <StatCard icon={SearchCode} label="Queries" value={counts.queries} to="/queries" accent="from-brand-blue to-brand-teal" delay={60} />
                   <StatCard icon={Plug} label="Connectors" value={counts.connectors} to="/connectors" accent="from-brand-navy to-brand-blue" delay={120} />
@@ -806,7 +804,7 @@ export default function HomePage() {
               </div>
               {!attentionReady ? (
                 <div className="space-y-3">
-                  {[0, 1, 2].map((i) => <div key={i} className="hp-skeleton h-[60px] w-full rounded-xl" />)}
+                  {[0, 1, 2].map((i) => <div key={i} className="nubi-shimmer h-[60px] w-full rounded-xl" />)}
                 </div>
               ) : allClear ? (
                 <div className="hp-reveal flex items-center gap-3 rounded-2xl border border-emerald-400/30 dark:border-emerald-500/30 bg-emerald-500/[0.04] px-5 py-4">
@@ -884,15 +882,15 @@ export default function HomePage() {
               {healthLoading ? (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   <div className="rounded-2xl border border-border bg-surface p-5 space-y-4">
-                    <div className="hp-skeleton h-10 w-10 rounded-xl" />
-                    <div className="hp-skeleton h-6 w-16" />
+                    <div className="nubi-shimmer h-10 w-10 rounded-xl" />
+                    <div className="nubi-shimmer h-6 w-16" />
                     <div className="space-y-2">
-                      <div className="hp-skeleton h-3 w-full" />
-                      <div className="hp-skeleton h-3 w-3/4" />
+                      <div className="nubi-shimmer h-3 w-full" />
+                      <div className="nubi-shimmer h-3 w-3/4" />
                     </div>
                   </div>
                   <div className="rounded-2xl border border-border bg-surface p-5 space-y-3">
-                    {[0, 1, 2].map((i) => <div key={i} className="hp-skeleton h-8 w-full rounded-lg" />)}
+                    {[0, 1, 2].map((i) => <div key={i} className="nubi-shimmer h-8 w-full rounded-lg" />)}
                   </div>
                 </div>
               ) : (
@@ -940,10 +938,12 @@ export default function HomePage() {
                         )}
                       </>
                     ) : (
-                      <div className="flex flex-col items-center justify-center py-6 text-center gap-2">
-                        <Database size={22} className="text-muted" />
-                        <p className="text-sm text-muted">No health data yet — run a flow to generate scores.</p>
-                      </div>
+                      <EmptyState
+                        compact
+                        icon={<Database size={20} />}
+                        title="No health data yet"
+                        description="Run a flow to generate freshness and completeness scores."
+                      />
                     )}
 
                     {(staleDatasets.length > 0 || amberDatasets.length > 0) && (
@@ -976,18 +976,13 @@ export default function HomePage() {
                           <li key={d.dataset_key} className="flex items-center gap-3 py-2.5 border-b border-border last:border-0">
                             <RagDot status={d.status} />
                             <span className="flex-1 font-mono text-xs text-fg truncate">{d.dataset_key}</span>
-                            <span className={[
-                              'text-xs font-medium px-2 py-0.5 rounded-full shrink-0',
-                              d.status === 'fresh'
-                                ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-                                : d.status === 'stale'
-                                ? 'bg-red-500/10 text-red-600 dark:text-red-400'
-                                : d.status === 'amber'
-                                ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
-                                : 'bg-surface-2 text-muted',
-                            ].join(' ')}>
+                            <Badge
+                              variant={FRESHNESS_BADGE[d.status] ?? 'default'}
+                              size="sm"
+                              className="shrink-0"
+                            >
                               {d.status}
-                            </span>
+                            </Badge>
                             {d.last_success_at && (
                               <span className="text-xs text-muted shrink-0 hidden sm:block">
                                 {relativeTime(new Date(d.last_success_at))}
@@ -997,10 +992,7 @@ export default function HomePage() {
                         ))}
                       </ul>
                     ) : (
-                      <div className="flex flex-col items-center justify-center py-6 text-center gap-2">
-                        <Database size={20} className="text-muted" />
-                        <p className="text-sm text-muted">No datasets tracked yet.</p>
-                      </div>
+                      <EmptyState compact icon={<Database size={20} />} title="No datasets tracked yet" />
                     )}
                   </div>
                 </div>
@@ -1034,7 +1026,7 @@ export default function HomePage() {
                   </div>
                   {loading ? (
                     <div className="space-y-3">
-                      {[0, 1].map((i) => <div key={i} className="hp-skeleton h-[68px] w-full rounded-xl" />)}
+                      {[0, 1].map((i) => <div key={i} className="nubi-shimmer h-[68px] w-full rounded-xl" />)}
                     </div>
                   ) : boards.length > 0 ? (
                     <div className="space-y-3">
@@ -1056,7 +1048,7 @@ export default function HomePage() {
                   </div>
                   {loading ? (
                     <div className="space-y-3">
-                      {[0, 1].map((i) => <div key={i} className="hp-skeleton h-[68px] w-full rounded-xl" />)}
+                      {[0, 1].map((i) => <div key={i} className="nubi-shimmer h-[68px] w-full rounded-xl" />)}
                     </div>
                   ) : flows.length > 0 ? (
                     <div className="space-y-3">
@@ -1095,19 +1087,22 @@ export default function HomePage() {
 function EmptyRow({ icon, label, cta, onClick }) {
   const Icon = icon
   return (
-    <div className="flex flex-col items-center justify-center text-center gap-3 py-8 px-6 rounded-xl border border-dashed border-border bg-surface-2/40">
-      <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-surface-2">
-        <Icon size={18} className="text-muted" />
-      </div>
-      <p className="text-sm text-muted">{label}</p>
-      <button
-        onClick={onClick}
-        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium font-display
-          bg-surface border border-border text-fg hover:border-primary/50 hover:text-primary transition-colors
-          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        <Plus size={14} />{cta}
-      </button>
+    <div className="rounded-xl border border-dashed border-border bg-surface-2/40">
+      <EmptyState
+        compact
+        icon={<Icon size={18} />}
+        title={label}
+        action={
+          <button
+            onClick={onClick}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium font-display
+              bg-surface border border-border text-fg hover:border-primary/50 hover:text-primary transition-colors
+              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Plus size={14} />{cta}
+          </button>
+        }
+      />
     </div>
   )
 }

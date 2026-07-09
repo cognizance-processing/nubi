@@ -54,6 +54,7 @@ import {
 import { listIntegrations } from '../../lib/integrationsApi.js'
 import { toast } from '../../components/ui/Toast.jsx'
 import Skeleton from '../../components/ui/Skeleton.jsx'
+import Badge from '../../components/ui/Badge.jsx'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -111,23 +112,19 @@ function isEnabled(watch) {
 
 function StatePill({ state }) {
   const map = {
-    breached: { cls: 'bg-danger-bg text-danger border-danger/20', label: 'Breached', Icon: AlertCircle },
-    ok:       { cls: 'bg-success-bg text-success border-success/20', label: 'OK', Icon: CheckCircle2 },
-    error:    { cls: 'bg-warning-bg text-warning border-warning/20', label: 'Error', Icon: AlertTriangle },
+    breached: { variant: 'danger', label: 'Breached', Icon: AlertCircle },
+    ok:       { variant: 'success', label: 'OK', Icon: CheckCircle2 },
+    error:    { variant: 'warning', label: 'Error', Icon: AlertTriangle },
   }
   const m = map[state]
   if (!m) {
-    return (
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded border border-border text-muted">
-        Not evaluated
-      </span>
-    )
+    return <Badge size="sm">Not evaluated</Badge>
   }
   const { Icon } = m
   return (
-    <span className={['inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded border', m.cls].join(' ')}>
+    <Badge variant={m.variant} size="sm">
       <Icon size={11} /> {m.label}
-    </span>
+    </Badge>
   )
 }
 
@@ -171,17 +168,16 @@ function WatchRow({ watch, metricName, canWrite, onEdit, onDeleted }) {
   const lastState = result?.state ?? watch.last_state ?? watch.config?.last_state ?? null
 
   return (
-    <div className="rounded-xl border border-border bg-surface p-4">
-      <div className="flex items-start justify-between gap-3">
+    <div className="rounded-xl border border-border bg-surface p-4 transition-all duration-150 hover:border-border/80 hover:shadow-nubi-sm">
+      <div className="flex items-start gap-3">
+        <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+          <Bell size={16} className="text-primary" strokeWidth={2} />
+        </div>
+
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <Bell size={14} className="text-muted shrink-0" strokeWidth={2.2} />
             <p className="text-sm font-semibold text-fg truncate">{watch.name}</p>
-            {!isEnabled(watch) && (
-              <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-surface-2 text-muted border border-border">
-                Disabled
-              </span>
-            )}
+            {!isEnabled(watch) && <Badge size="sm">Disabled</Badge>}
             <StatePill state={lastState} />
           </div>
           <p className="text-xs text-muted mt-1.5 truncate">
@@ -202,7 +198,7 @@ function WatchRow({ watch, metricName, canWrite, onEdit, onDeleted }) {
             onClick={handleEvaluate}
             disabled={evaluating}
             title="Evaluate now"
-            className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs font-medium border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
+            className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs font-medium border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {evaluating ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} strokeWidth={2.2} />}
             {evaluating ? 'Evaluating…' : 'Evaluate'}
@@ -213,7 +209,7 @@ function WatchRow({ watch, metricName, canWrite, onEdit, onDeleted }) {
               onClick={() => onEdit?.(watch)}
               title="Edit"
               aria-label={`Edit "${watch.name}"`}
-              className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
+              className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <Pencil size={13} />
             </button>
@@ -225,7 +221,7 @@ function WatchRow({ watch, metricName, canWrite, onEdit, onDeleted }) {
                 onClick={handleDelete}
                 disabled={deleting}
                 aria-label={`Confirm delete "${watch.name}"`}
-                className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-50 transition-colors"
+                className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-danger text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity"
               >
                 {deleting ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
                 Confirm
@@ -244,7 +240,7 @@ function WatchRow({ watch, metricName, canWrite, onEdit, onDeleted }) {
               onClick={() => setConfirmDelete(true)}
               title="Delete"
               aria-label={`Delete "${watch.name}"`}
-              className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border text-muted hover:text-danger hover:border-danger/30 hover:bg-danger-bg transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
+              className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border text-muted hover:text-danger hover:border-danger/30 hover:bg-danger-bg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <Trash2 size={13} />
             </button>
@@ -381,6 +377,32 @@ const FIELD_CLS =
   'w-full h-9 px-2.5 text-sm rounded-lg border border-border bg-surface text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60'
 const LABEL_CLS = 'block text-xs font-medium text-fg/80 mb-1'
 
+/** Small pill toggle switch — mirrors the Enabled toggle used on AutomationsPage. */
+function ModalToggle({ checked, onChange, label }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange?.(!checked)}
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      title={label}
+      className={[
+        'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
+        'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+        checked ? 'bg-primary' : 'bg-surface-2 border border-border',
+      ].join(' ')}
+    >
+      <span
+        className={[
+          'inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform',
+          checked ? 'translate-x-[18px]' : 'translate-x-0.5',
+        ].join(' ')}
+      />
+    </button>
+  )
+}
+
 function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) {
   const [draft, setDraft] = useState(blankDraft)
   const [saving, setSaving] = useState(false)
@@ -432,26 +454,28 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
 
   return (
     <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
       <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="watch-modal-title"
         tabIndex={-1}
-        className="relative w-full sm:max-w-lg max-h-[92dvh] flex flex-col bg-surface border border-border rounded-t-2xl sm:rounded-2xl shadow-2xl overflow-hidden outline-none"
+        className="relative w-full sm:max-w-lg max-h-[92dvh] flex flex-col bg-surface border border-border rounded-t-2xl sm:rounded-2xl shadow-nubi-xl overflow-hidden outline-none"
       >
         {/* Header */}
         <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-border">
-          <div className="flex items-center gap-2">
-            <Bell size={15} className="text-primary" strokeWidth={2.2} />
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+              <Bell size={15} className="text-primary" strokeWidth={2.2} />
+            </div>
             <h2 id="watch-modal-title" className="text-sm font-semibold text-fg">
               {draft.id ? 'Edit watch' : 'New watch'}
             </h2>
           </div>
           <button
             onClick={onClose}
-            className="h-8 w-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+            className="h-8 w-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label="Close"
           >
             <X size={16} />
@@ -649,16 +673,17 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
           </div>
 
           {/* Enabled toggle */}
-          <label className="flex items-center gap-2 text-sm text-fg cursor-pointer select-none">
-            <input
-              type="checkbox"
+          <div className="flex items-center justify-between py-1">
+            <div>
+              <p className="text-sm font-medium text-fg">Enabled</p>
+              <p className="text-xs text-muted">Included in scheduled sweeps</p>
+            </div>
+            <ModalToggle
               checked={draft.enabled}
-              onChange={e => set({ enabled: e.target.checked })}
-              className="accent-primary w-4 h-4"
+              onChange={(v) => set({ enabled: v })}
+              label={`${draft.enabled ? 'Disable' : 'Enable'} this watch`}
             />
-            Enabled
-            <span className="text-xs text-muted">— included in scheduled sweeps</span>
-          </label>
+          </div>
 
           {error && (
             <div className="flex items-start gap-2 text-xs text-danger">
@@ -672,14 +697,14 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
         <div className="shrink-0 flex items-center justify-end gap-2 px-4 py-3 border-t border-border">
           <button
             onClick={onClose}
-            className="h-9 px-3 text-sm rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+            className="h-9 px-4 text-sm font-medium rounded-xl border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
             disabled={saving}
-            className="inline-flex items-center gap-1.5 h-9 px-4 text-sm font-semibold rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-50 transition-opacity"
+            className="inline-flex items-center gap-1.5 h-9 px-4 text-sm font-semibold rounded-xl bg-primary text-primary-fg hover:opacity-90 disabled:opacity-50 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           >
             {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
             {draft.id ? 'Save changes' : 'Create watch'}
@@ -783,7 +808,7 @@ export default function WatchesPage() {
 
       {/* Content */}
       <div className="flex-1 px-4 sm:px-6 py-4 max-w-4xl w-full mx-auto">
-        <p className="text-xs text-muted mb-4 max-w-2xl leading-relaxed">
+        <p className="text-sm text-muted mb-5 max-w-2xl leading-relaxed">
           A watch monitors a metric and fires when a threshold or change rule is
           breached — it composes an explanation and notifies your channel. Use
           <span className="font-medium text-fg/80"> Evaluate</span> to test a watch right now.
@@ -797,7 +822,9 @@ export default function WatchesPage() {
 
         {!loading && error && (
           <div className="flex flex-col items-center justify-center py-12 gap-3 rounded-xl border border-dashed border-danger/30">
-            <AlertTriangle size={20} className="text-danger" />
+            <div className="w-11 h-11 rounded-xl bg-danger-bg flex items-center justify-center">
+              <AlertTriangle size={20} className="text-danger" />
+            </div>
             <p className="text-sm text-danger">{error}</p>
             <button onClick={load} className="text-xs text-muted hover:text-fg underline">Retry</button>
           </div>
@@ -805,8 +832,13 @@ export default function WatchesPage() {
 
         {!loading && !error && watches.length === 0 && (
           <div className="flex flex-col items-center justify-center py-14 px-6 text-center rounded-xl border border-dashed border-border">
-            <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-brand-gradient shadow-lg mb-5">
-              <Bell size={28} className="text-white" />
+            <div className="relative mb-5">
+              <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-brand-gradient shadow-nubi-lg">
+                <Bell size={28} className="text-white" />
+              </div>
+              <div className="absolute -top-1 -right-1 flex items-center justify-center w-6 h-6 rounded-full bg-accent text-white shadow-nubi-md">
+                <Plus size={12} />
+              </div>
             </div>
             <h3 className="font-display font-semibold text-xl text-fg mb-2">No watches yet</h3>
             <p className="text-sm text-muted max-w-sm leading-relaxed mb-6">
@@ -816,9 +848,9 @@ export default function WatchesPage() {
             {canWrite && (
               <button
                 onClick={handleNew}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity shadow-sm"
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring shadow-nubi-sm"
               >
-                <Plus size={15} /> New watch
+                <Plus size={15} /> Create your first watch
               </button>
             )}
           </div>

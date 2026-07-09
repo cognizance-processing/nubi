@@ -6,11 +6,12 @@
 
 import { useParams } from 'react-router-dom'
 import { Link } from 'react-router-dom'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Building2, Calendar, Users, FolderKanban } from 'lucide-react'
 import { getAdminOrg } from '../../lib/admin.js'
 import {
   AdminCard,
   AdminTable,
+  Avatar,
   RoleChip,
   LoadingState,
   ErrorState,
@@ -48,18 +49,24 @@ export default function AdminOrgDetailPage() {
 
       {/* ── Org info ────────────────────────────────────────────────────── */}
       <AdminCard>
-        <div className="px-5 py-4 flex flex-wrap items-center gap-x-8 gap-y-2">
-          <div>
-            <h2 className="font-display font-semibold text-lg text-fg">{org.name}</h2>
-            <p className="text-xs text-muted mt-0.5">{org.slug || org.id}</p>
+        <div className="px-5 py-4 flex flex-wrap items-center gap-x-8 gap-y-3">
+          <div className="flex items-center gap-3">
+            <Avatar icon={Building2} iconSize={18} className="w-10 h-10 rounded-xl text-sm" />
+            <div>
+              <h2 className="font-display font-semibold text-lg text-fg leading-tight">{org.name}</h2>
+              <p className="text-xs text-muted mt-0.5">{org.slug || org.id}</p>
+            </div>
           </div>
-          <div className="text-sm text-muted">
+          <div className="flex items-center gap-1.5 text-sm text-muted">
+            <Calendar size={14} className="shrink-0" />
             Created <span className="text-fg tabular-nums">{fmtDate(org.created_at)}</span>
           </div>
-          <div className="text-sm text-muted">
+          <div className="flex items-center gap-1.5 text-sm text-muted">
+            <Users size={14} className="shrink-0" />
             <span className="text-fg tabular-nums">{members.length}</span> members
           </div>
-          <div className="text-sm text-muted">
+          <div className="flex items-center gap-1.5 text-sm text-muted">
+            <FolderKanban size={14} className="shrink-0" />
             <span className="text-fg tabular-nums">{projects.length}</span> projects
           </div>
         </div>
@@ -76,7 +83,12 @@ export default function AdminOrgDetailPage() {
           <AdminTable headers={['Email', 'Name', 'Role']}>
             {members.map((m) => (
               <tr key={m.user_id} className="hover:bg-surface-2/50 transition-colors">
-                <td className="px-4 py-3 max-w-[240px] truncate text-fg font-medium" title={m.email}>{m.email}</td>
+                <td className="px-4 py-3 max-w-[240px]">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Avatar label={m.name || m.email} />
+                    <span className="truncate text-fg font-medium" title={m.email}>{m.email}</span>
+                  </div>
+                </td>
                 <td className="px-4 py-3 max-w-[180px] truncate text-muted" title={m.name || undefined}>{m.name || '—'}</td>
                 <td className="px-4 py-3 whitespace-nowrap"><RoleChip>{m.role}</RoleChip></td>
               </tr>

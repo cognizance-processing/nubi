@@ -6,7 +6,7 @@
  * pages. Purely presentational — no data fetching.
  */
 
-import { Loader2, AlertTriangle, Search, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Loader2, AlertTriangle, CheckCircle2, Search, ChevronLeft, ChevronRight } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
 // Cards
@@ -31,15 +31,32 @@ export function StatCard({ icon, label, value, testId }) {
   return (
     <div
       data-testid={testId}
-      className="flex flex-col gap-2.5 p-4 rounded-2xl border border-border bg-surface"
+      className="flex flex-col gap-2.5 p-4 rounded-2xl border border-border bg-surface transition-colors hover:border-primary/30"
     >
       <div className="flex items-center gap-2 text-muted">
-        {Icon && <Icon size={14} />}
-        <span className="text-xs font-medium uppercase tracking-wider">{label}</span>
+        {Icon && (
+          <span className="flex items-center justify-center w-6 h-6 rounded-lg bg-surface-2 shrink-0">
+            <Icon size={13} />
+          </span>
+        )}
+        <span className="text-xs font-medium uppercase tracking-wider truncate">{label}</span>
       </div>
       <div className="font-display font-semibold text-2xl text-fg tabular-nums leading-none">
         {value ?? '—'}
       </div>
+    </div>
+  )
+}
+
+/** Skeleton placeholder for a StatCard, sized to match — avoids layout jump. */
+export function StatCardSkeleton() {
+  return (
+    <div className="flex flex-col gap-3 p-4 rounded-2xl border border-border bg-surface animate-pulse" aria-hidden="true">
+      <div className="flex items-center gap-2">
+        <div className="w-6 h-6 rounded-lg bg-surface-2" />
+        <div className="h-2.5 w-14 rounded-full bg-surface-2" />
+      </div>
+      <div className="h-6 w-12 rounded-full bg-surface-2" />
     </div>
   )
 }
@@ -186,6 +203,18 @@ export function Pagination({ offset, limit, total, onPage }) {
 // Misc bits
 // ---------------------------------------------------------------------------
 
+export function Avatar({ label, icon, iconSize = 13, className = '' }) {
+  const Icon = icon
+  return (
+    <div
+      className={`flex items-center justify-center w-7 h-7 rounded-full bg-surface-2 border border-border text-[11px] font-semibold text-muted shrink-0 ${className}`}
+      aria-hidden="true"
+    >
+      {Icon ? <Icon size={iconSize} /> : (label || '?').trim().charAt(0).toUpperCase()}
+    </div>
+  )
+}
+
 export function RoleChip({ children }) {
   return (
     <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-surface-2 text-muted">
@@ -199,6 +228,105 @@ export function SuperadminBadge() {
     <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-primary/10 text-primary">
       superadmin
     </span>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Form bits — mirrors the settings pages' SettingsUI.jsx conventions
+// (Field/FieldRow/Toggle/PrimaryButton/SavedBadge/ErrorText) so admin forms
+// (billing overrides) read as the same system as the rest of the app.
+// ---------------------------------------------------------------------------
+
+export const inputCls =
+  'rounded-lg bg-bg border border-border text-sm text-fg px-2.5 py-1.5 ' +
+  'focus:outline-none focus:ring-2 focus:ring-ring/50 focus:border-primary placeholder:text-muted transition-[border-color,box-shadow] duration-100'
+
+/**
+ * FieldRow — label + description on the left, control on the right on wide
+ * screens; stacks to one column on mobile. Meant for a set of siblings
+ * inside an <AdminCard>.
+ */
+export function FieldRow({ label, htmlFor, description, hint, children }) {
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,13rem)_1fr] gap-x-6 gap-y-2 py-4 first:pt-0 last:pb-0">
+      <div className="min-w-0">
+        {label && (
+          <label className="block text-sm font-medium text-fg" htmlFor={htmlFor}>
+            {label}
+          </label>
+        )}
+        {description && <p className="text-xs text-muted mt-1 leading-relaxed">{description}</p>}
+      </div>
+      <div className="min-w-0 space-y-1.5">
+        {children}
+        {hint && <p className="text-xs text-muted leading-relaxed">{hint}</p>}
+      </div>
+    </div>
+  )
+}
+
+/** Toggle — native checkbox styled as an accessible switch (.nubi-switch). */
+export function Toggle({ checked, onChange, disabled, id, label, description }) {
+  return (
+    <label className="flex items-start gap-3 cursor-pointer select-none" htmlFor={id}>
+      <button
+        id={id}
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        disabled={disabled}
+        onClick={() => !disabled && onChange?.(!checked)}
+        className="nubi-switch mt-0.5 shrink-0"
+      >
+        <span className="nubi-switch-thumb" />
+      </button>
+      {(label || description) && (
+        <span>
+          {label && <span className="block text-sm font-medium text-fg">{label}</span>}
+          {description && <span className="block text-xs text-muted mt-0.5 leading-relaxed">{description}</span>}
+        </span>
+      )}
+    </label>
+  )
+}
+
+/** Primary save button — brand-gradient, matches PrimaryButton in SettingsUI.jsx. */
+export function SaveButton({ busy = false, children, className = '', ...props }) {
+  return (
+    <button
+      type="button"
+      {...props}
+      className={[
+        'inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium text-white',
+        'transition-opacity duration-150 disabled:opacity-50 disabled:cursor-not-allowed',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        className,
+      ].join(' ')}
+      style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}
+    >
+      {busy && <Loader2 size={14} className="animate-spin" />}
+      {children}
+    </button>
+  )
+}
+
+export function SavedBadge({ show, label = 'Saved' }) {
+  if (!show) return null
+  return (
+    <span className="inline-flex items-center gap-1.5 text-sm text-success">
+      <CheckCircle2 size={14} aria-hidden="true" />
+      {label}
+    </span>
+  )
+}
+
+export function ErrorText({ children }) {
+  if (!children) return null
+  return (
+    <p className="inline-flex items-center gap-1.5 text-sm text-danger" role="alert">
+      <AlertTriangle size={14} aria-hidden="true" className="shrink-0" />
+      {children}
+    </p>
   )
 }
 

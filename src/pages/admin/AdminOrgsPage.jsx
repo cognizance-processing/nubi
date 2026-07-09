@@ -7,11 +7,13 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Building2 } from 'lucide-react'
 import { getAdminOrgs } from '../../lib/admin.js'
 import {
   AdminCard,
   AdminTable,
   AdminTableSkeleton,
+  Avatar,
   SearchInput,
   Pagination,
   ErrorState,
@@ -89,7 +91,12 @@ export default function AdminOrgsPage() {
                 tabIndex={0}
                 className="cursor-pointer hover:bg-surface-2/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset transition-colors"
               >
-                <td className="px-4 py-3 max-w-[220px] truncate text-fg font-medium" title={o.name}>{o.name}</td>
+                <td className="px-4 py-3 max-w-[220px]">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Avatar icon={Building2} />
+                    <span className="truncate text-fg font-medium" title={o.name}>{o.name}</span>
+                  </div>
+                </td>
                 <td className="px-4 py-3 max-w-[160px] truncate text-muted" title={o.slug || undefined}>{o.slug || '—'}</td>
                 <td className="px-4 py-3 whitespace-nowrap text-muted tabular-nums">{o.member_count}</td>
                 <td className="px-4 py-3 whitespace-nowrap text-muted tabular-nums">{o.project_count}</td>

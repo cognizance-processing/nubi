@@ -76,6 +76,9 @@ import { checkpoint, restoreVersion } from '../../lib/versions.js'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import { toast } from '../../components/ui/Toast.jsx'
 import Skeleton from '../../components/ui/Skeleton.jsx'
+import Badge from '../../components/ui/Badge.jsx'
+import EmptyState from '../../components/ui/EmptyState.jsx'
+import { SearchBar } from '../../components/app/PageShell.jsx'
 import {
   listFlows,
   getFlow,
@@ -117,19 +120,40 @@ function newFlowDraft() {
   }
 }
 
+/** Compact "Xh ago" / "just now" relative-time label for rail/list metadata. */
+function fmtRelative(iso) {
+  if (!iso) return null
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return null
+  const diffMs = Date.now() - d.getTime()
+  const mins = Math.round(diffMs / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.round(diffMs / 3600000)
+  if (hours < 48) return `${hours}h ago`
+  const days = Math.round(diffMs / 86400000)
+  return `${days}d ago`
+}
+
 // ---------------------------------------------------------------------------
 // Run state badge
 // ---------------------------------------------------------------------------
 
-function RunStateDot({ state }) {
-  const map = {
-    pending:   'bg-muted/50',
-    running:   'bg-warning animate-pulse',
-    success:   'bg-success',
-    failed:    'bg-danger',
-    cancelled: 'bg-muted/50',
-  }
-  return <span className={['w-2 h-2 rounded-full shrink-0', map[state] ?? 'bg-muted/50'].join(' ')} />
+const RUN_STATE_VARIANT = {
+  pending:   'default',
+  running:   'warning',
+  success:   'success',
+  failed:    'danger',
+  cancelled: 'default',
+}
+
+function RunStateBadge({ state, size = 'sm' }) {
+  return (
+    <Badge variant={RUN_STATE_VARIANT[state] ?? 'default'} size={size} dot
+      className={state === 'running' ? 'animate-pulse' : ''}>
+      {state ?? 'pending'}
+    </Badge>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -153,11 +177,18 @@ function FlowListItem({ flow, isActive, onClick, onDelete, canWrite, strictEnv }
     }
   }, [flow, onDelete])
 
+  const scheduleSummary = !flow._isNew ? describeSchedule(flow.schedule) : null
+  const lastRunRel = !flow._isNew ? fmtRelative(flow.last_run_at) : null
+  const isEnabled = Boolean(flow.enabled)
+  const notInEnv = !flow._isNew && strictEnv && Array.isArray(flow.pinned_envs)
+    && !flow.pinned_envs.includes(strictEnv)
+
   return (
     <button
       onClick={() => onClick(flow)}
       className={[
         'w-full text-left px-3 py-3 rounded-lg transition-all group relative min-h-[44px]',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         isActive
           ? 'bg-primary/10 border border-primary/20 text-fg'
           : 'hover:bg-surface-2 border border-transparent text-fg/80 hover:text-fg',
@@ -173,21 +204,45 @@ function FlowListItem({ flow, isActive, onClick, onDelete, canWrite, strictEnv }
           {flow.id && (
             <p className="text-[10px] font-mono text-muted truncate mt-0.5">{flow.id.slice(0, 8)}…</p>
           )}
-          {flow._isNew && (
-            <span className="inline-flex items-center px-1 py-0.5 text-[9px] font-medium rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 mt-1">
-              draft
-            </span>
+
+          {/* Metadata row: schedule + last run, aligned as small labelled chips */}
+          {(scheduleSummary || lastRunRel) && (
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 mt-1 text-[10px] text-muted">
+              {scheduleSummary && (
+                <span className="inline-flex items-center gap-1" title={`Schedule: ${scheduleSummary}`}>
+                  <CalendarClock size={9} className="shrink-0" />
+                  <span className="truncate">{scheduleSummary}</span>
+                </span>
+              )}
+              {lastRunRel && (
+                <span className="inline-flex items-center gap-1" title="Last run">
+                  <History size={9} className="shrink-0" />
+                  {lastRunRel}
+                </span>
+              )}
+            </div>
           )}
-          {/* Strict-env visibility: the active env is protected and this flow
-              has no pinned version there (pinned_envs from the list API). */}
-          {!flow._isNew && strictEnv && Array.isArray(flow.pinned_envs)
-            && !flow.pinned_envs.includes(strictEnv) && (
-            <span
-              title={`No version is pinned to ${strictEnv} — promote one to make it visible there.`}
-              className="inline-flex items-center px-1 py-0.5 text-[9px] font-medium rounded bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20 mt-1"
-            >
-              not in {strictEnv}
-            </span>
+
+          {(flow._isNew || (flow.schedule && !flow._isNew) || notInEnv) && (
+            <div className="flex flex-wrap items-center gap-1 mt-1.5">
+              {flow._isNew && <Badge variant="warning" size="sm">draft</Badge>}
+              {flow.schedule && !flow._isNew && (
+                <Badge variant={isEnabled ? 'success' : 'default'} size="sm" dot>
+                  {isEnabled ? 'enabled' : 'disabled'}
+                </Badge>
+              )}
+              {/* Strict-env visibility: the active env is protected and this flow
+                  has no pinned version there (pinned_envs from the list API). */}
+              {notInEnv && (
+                <Badge
+                  variant="danger"
+                  size="sm"
+                  title={`No version is pinned to ${strictEnv} — promote one to make it visible there.`}
+                >
+                  not in {strictEnv}
+                </Badge>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -213,10 +268,20 @@ function FlowListItem({ flow, isActive, onClick, onDelete, canWrite, strictEnv }
 // ---------------------------------------------------------------------------
 
 function FlowList({ flows, activeId, loading, onSelect, onNew, onRefresh, onDelete, onItemClick, showHeader = true, canWrite = true, strictEnv = null }) {
+  const [query, setQuery] = useState('')
+
   const handleSelect = useCallback((flow) => {
     onSelect(flow)
     onItemClick?.()
   }, [onSelect, onItemClick])
+
+  const handleNew = useCallback(() => { onNew(); onItemClick?.() }, [onNew, onItemClick])
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return flows
+    return flows.filter(f => (f.name ?? '').toLowerCase().includes(q))
+  }, [flows, query])
 
   return (
     <>
@@ -240,12 +305,19 @@ function FlowList({ flows, activeId, loading, onSelect, onNew, onRefresh, onDele
       {canWrite && (
         <div className="shrink-0 px-2 py-2">
           <button
-            onClick={() => { onNew(); onItemClick?.() }}
-            className="w-full h-11 flex items-center justify-center gap-1.5 text-sm font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:border-border hover:bg-surface-2 transition-colors"
+            onClick={handleNew}
+            className="w-full h-11 flex items-center justify-center gap-1.5 text-sm font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:border-border hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Plus size={14} />
             New flow
           </button>
+        </div>
+      )}
+
+      {/* Search — only worth showing once there's something to filter */}
+      {flows.length > 0 && (
+        <div className="shrink-0 px-2 pb-2">
+          <SearchBar value={query} onChange={setQuery} placeholder="Search flows…" />
         </div>
       )}
 
@@ -265,12 +337,26 @@ function FlowList({ flows, activeId, loading, onSelect, onNew, onRefresh, onDele
           </div>
         )}
         {!loading && flows.length === 0 && (
-          <div className="text-[11px] text-muted text-center py-6">
-            <GitBranch size={20} className="mx-auto mb-2 opacity-30" />
-            No flows yet
-          </div>
+          <EmptyState
+            compact
+            icon={<GitBranch size={20} />}
+            title="No flows yet"
+            description="Build a DAG-based workflow to transform, schedule and orchestrate data."
+            action={canWrite ? (
+              <button
+                onClick={handleNew}
+                className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Plus size={13} />
+                Create your first flow
+              </button>
+            ) : undefined}
+          />
         )}
-        {flows.map(f => (
+        {!loading && flows.length > 0 && filtered.length === 0 && (
+          <p className="text-[11px] text-muted text-center py-6">No flows match “{query}”.</p>
+        )}
+        {filtered.map(f => (
           <FlowListItem
             key={f.id ?? f._localId ?? f.name}
             flow={f}
@@ -389,7 +475,7 @@ function RunsTab({ flow, currentRunId, onSelectRun }) {
           disabled={loading}
           title="Refresh runs"
           aria-label="Refresh runs"
-          className="h-7 w-7 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors"
+          className="h-7 w-7 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
         </button>
@@ -410,10 +496,12 @@ function RunsTab({ flow, currentRunId, onSelectRun }) {
           </div>
         )}
         {!loading && runs.length === 0 && (
-          <div className="text-xs text-muted text-center py-8 rounded-lg border border-dashed border-border">
-            <Play size={20} className="mx-auto mb-2 opacity-30" />
-            No runs yet. Use the Builder tab to run this flow.
-          </div>
+          <EmptyState
+            compact
+            icon={<Play size={20} />}
+            title="No runs yet"
+            description="Use the Builder tab to run this flow."
+          />
         )}
         {runs.map(run => {
           const isCurrent = run.id === currentRunId
@@ -423,23 +511,22 @@ function RunsTab({ flow, currentRunId, onSelectRun }) {
               onClick={() => onSelectRun(run.id)}
               className={[
                 'w-full text-left px-3 py-3 rounded-lg border transition-colors min-h-[44px]',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                 isCurrent
                   ? 'bg-primary/10 border-primary/20 text-fg'
                   : 'bg-surface border-border hover:bg-surface-2 text-fg/80 hover:text-fg',
               ].join(' ')}
             >
-              <div className="flex items-center gap-2">
-                <RunStateDot state={run.state} />
+              <div className="flex items-center gap-2.5">
+                <RunStateBadge state={run.state} />
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-mono truncate">{run.id.slice(0, 12)}…</p>
-                  <p className="text-[10px] text-muted mt-0.5">
-                    {run.trigger} · {run.state}
+                  <p className="text-[10px] text-muted mt-0.5 truncate">
+                    {run.trigger}
                     {run.created_at && ` · ${new Date(run.created_at).toLocaleString()}`}
                   </p>
                 </div>
-                {isCurrent && (
-                  <span className="text-[10px] text-primary font-medium">live</span>
-                )}
+                {isCurrent && <Badge variant="primary" size="sm" dot className="shrink-0">live</Badge>}
               </div>
             </button>
           )
@@ -1059,20 +1146,23 @@ export default function FlowsPage() {
       {/* Mobile: flows list */}
       <button
         onClick={() => setMobileSheetOpen(true)}
-        className="md:hidden flex items-center justify-center w-8 h-8 rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors shrink-0"
+        className="md:hidden flex items-center justify-center w-8 h-8 rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         aria-label="Open flows list" title="Flows list"
       >
         <List size={16} />
       </button>
 
       {/* Builder / Runs switcher */}
-      <div className="flex h-8 rounded-lg border border-border overflow-hidden shrink-0">
+      <div role="tablist" aria-label="Flow view" className="flex h-8 rounded-lg border border-border overflow-hidden shrink-0">
         {[{ id: 'builder', label: 'Builder' }, { id: 'runs', label: 'Runs' }].map((tab, i) => (
           <button
             key={tab.id}
+            role="tab"
+            aria-selected={activeTab === tab.id}
             onClick={() => setActiveTab(tab.id)}
             className={[
               'flex items-center gap-1.5 px-3 text-xs font-medium transition-colors',
+              'focus-visible:outline-none focus-visible:relative focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-ring',
               i > 0 ? 'border-l border-border' : '',
               activeTab === tab.id ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
             ].join(' ')}
@@ -1101,6 +1191,7 @@ export default function FlowsPage() {
               aria-pressed={flowView === v.id}
               className={[
                 'flex items-center justify-center w-8 transition-colors',
+                'focus-visible:outline-none focus-visible:relative focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-ring',
                 i > 0 ? 'border-l border-border' : '',
                 flowView === v.id ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
               ].join(' ')}
@@ -1134,7 +1225,7 @@ export default function FlowsPage() {
           <button
             onClick={() => flowBuilderRef.current?.addCell('sql')}
             title="Add SQL cell"
-            className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors shrink-0"
+            className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Database size={12} className="text-blue-500" />
             <span className="hidden sm:inline">+ SQL</span>
@@ -1142,7 +1233,7 @@ export default function FlowsPage() {
           <button
             onClick={() => flowBuilderRef.current?.addCell('python')}
             title="Add Python cell"
-            className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors shrink-0"
+            className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Code2 size={12} className="text-violet-500" />
             <span className="hidden sm:inline">+ Python</span>
@@ -1150,7 +1241,7 @@ export default function FlowsPage() {
           <button
             onClick={() => flowBuilderRef.current?.addCell('markdown')}
             title="Add Note (markdown) cell"
-            className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors shrink-0"
+            className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <FileText size={12} className="text-slate-400" />
             <span className="hidden sm:inline">+ Note</span>
@@ -1168,27 +1259,27 @@ export default function FlowsPage() {
             {/* Unsaved / autosave status — sits next to the Save button */}
             <SaveStatusBadge dirty={dirty} saving={saving} autosaveStatus={autosaveStatus} className="hidden sm:flex px-1" />
             <button onClick={triggerValidate} disabled={validating} title="Validate flow"
-              className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors">
+              className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
               {validating ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />}
               <span className="hidden lg:inline">Validate</span>
             </button>
             {canWrite && (
               <button onClick={triggerSave} disabled={saving} title="Save flow"
-                className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors">
+                className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                 {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
                 <span className="hidden lg:inline">Save</span>
               </button>
             )}
             {canWrite && canRun && (
               <button onClick={triggerCheckpoint} title="Checkpoint — snapshot the current draft as a new version"
-                className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors">
+                className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                 <GitCommitHorizontal size={13} />
                 <span className="hidden lg:inline">Checkpoint</span>
               </button>
             )}
             {canRun && (
               <button onClick={() => setHistoryOpen(true)} title="Version history"
-                className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors">
+                className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                 <History size={13} />
                 <span className="hidden lg:inline">History</span>
               </button>
@@ -1201,7 +1292,7 @@ export default function FlowsPage() {
             )}
             {canWrite && (
               <button onClick={triggerRun} disabled={running || !canRun} title={!canRun ? 'Save the flow first' : 'Run flow'}
-                className="flex items-center gap-1.5 px-2.5 h-8 text-xs font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all">
+                className="flex items-center gap-1.5 px-2.5 h-8 text-xs font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                 {running ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
                 <span className="hidden lg:inline">Run</span>
               </button>
@@ -1228,6 +1319,7 @@ export default function FlowsPage() {
               <button key={p.id} onClick={() => togglePanel(p.id)} title={p.title} aria-label={p.title} aria-pressed={active}
                 className={[
                   'w-8 h-8 flex items-center justify-center rounded-lg border transition-colors',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   active ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2',
                 ].join(' ')}>
                 <p.Icon size={15} />

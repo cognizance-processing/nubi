@@ -21,6 +21,24 @@ import { fmtDateTime } from './format.js'
 
 const LIMIT = 50
 
+// Colour the action verb (last dotted segment, e.g. "org.create" → "create")
+// so the log is scannable at a glance without changing the raw value shown.
+const ACTION_COLOR = {
+  create: 'text-success',
+  invite: 'text-success',
+  update: 'text-primary',
+  edit: 'text-primary',
+  delete: 'text-danger',
+  remove: 'text-danger',
+  revoke: 'text-danger',
+}
+
+function ActionLabel({ action }) {
+  const verb = (action || '').split('.').pop()
+  const color = ACTION_COLOR[verb] || 'text-fg'
+  return <span className={`font-mono text-xs ${color}`}>{action}</span>
+}
+
 export default function AdminAuditPage() {
   const [offset, setOffset] = useState(0)
   const [data, setData] = useState(null)
@@ -73,7 +91,7 @@ export default function AdminAuditPage() {
                   {fmtDateTime(ev.created_at)}
                 </td>
                 <td className="px-4 py-3 whitespace-nowrap">
-                  <span className="font-mono text-xs text-fg">{ev.action}</span>
+                  <ActionLabel action={ev.action} />
                 </td>
                 <td className="px-4 py-3 max-w-[180px] truncate text-muted text-sm" title={ev.actor_email || undefined}>{ev.actor_email || '—'}</td>
                 <td className="px-4 py-3 whitespace-nowrap text-muted text-xs">{ev.resource_type || '—'}</td>

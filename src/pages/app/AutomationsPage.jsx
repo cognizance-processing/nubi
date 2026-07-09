@@ -53,6 +53,8 @@ import { useProject } from '../../contexts/ProjectContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
 import { toast } from '../../components/ui/Toast.jsx'
 import Skeleton from '../../components/ui/Skeleton.jsx'
+import Badge from '../../components/ui/Badge.jsx'
+import { ErrorState } from '../../components/app/PageShell.jsx'
 
 // ---------------------------------------------------------------------------
 // API helpers
@@ -155,59 +157,59 @@ function flowType(flow) {
 // Small reusable UI atoms
 // ---------------------------------------------------------------------------
 
-const STATE_STYLES = {
-  pending:   'bg-surface-2 text-muted',
-  running:   'bg-warning-bg text-warning',
-  success:   'bg-success-bg text-success',
-  failed:    'bg-danger-bg text-danger',
-  error:     'bg-danger-bg text-danger',
-  cancelled: 'bg-surface-2 text-muted',
+const STATE_VARIANT = {
+  pending:   'default',
+  running:   'warning',
+  success:   'success',
+  failed:    'danger',
+  error:     'danger',
+  cancelled: 'default',
 }
 
 function StatePill({ state }) {
   const s = (state ?? 'pending').toLowerCase()
-  const style = STATE_STYLES[s] ?? 'bg-surface-2 text-muted'
+  const variant = STATE_VARIANT[s] ?? 'default'
   const isRunning = s === 'running'
   const isFail = s === 'failed' || s === 'error'
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold capitalize ${style}`}>
+    <Badge variant={variant} size="sm" className="capitalize">
       {isRunning && <Loader2 size={9} className="animate-spin" />}
       {isFail && <AlertTriangle size={9} />}
       {!isRunning && !isFail && s === 'success' && <Check size={9} strokeWidth={3} />}
       {state ?? 'pending'}
-    </span>
+    </Badge>
   )
 }
 
 function KindBadge({ kind }) {
   const cfg = {
-    query:  { icon: FileCode2,  label: 'Query',  cls: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300' },
-    python: { icon: Terminal,   label: 'Python', cls: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300' },
-    report: { icon: BarChart2,  label: 'Report', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' },
-  }[kind] ?? { icon: Zap, label: kind, cls: 'bg-surface-2 text-muted' }
+    query:  { icon: FileCode2,  label: 'Query',  variant: 'info' },
+    python: { icon: Terminal,   label: 'Python', variant: 'accent' },
+    report: { icon: BarChart2,  label: 'Report', variant: 'primary' },
+  }[kind] ?? { icon: Zap, label: kind, variant: 'default' }
   const Icon = cfg.icon
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold capitalize ${cfg.cls}`}>
+    <Badge variant={cfg.variant} size="sm" className="capitalize">
       <Icon size={10} strokeWidth={2.2} />
       {cfg.label}
-    </span>
+    </Badge>
   )
 }
 
 function FlowTypeBadge({ type }) {
   if (type === 'scheduled_query') {
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300">
+      <Badge variant="info" size="sm">
         <FileCode2 size={10} strokeWidth={2} />
         Scheduled query
-      </span>
+      </Badge>
     )
   }
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
+    <Badge variant="accent" size="sm">
       <Workflow size={10} strokeWidth={2} />
       Workflow
-    </span>
+    </Badge>
   )
 }
 
@@ -235,17 +237,47 @@ function Toggle({ on, busy, onToggle, label }) {
   )
 }
 
-function SectionLabel({ children, icon: Icon, className = 'mb-2' }) {
+function SectionHeading({ icon: Icon, title, subtitle, count, children }) {
   return (
-    <div className={`flex items-center gap-2 ${className}`}>
-      {Icon && <Icon size={13} className="text-muted" />}
-      <h2 className="text-xs font-semibold text-muted uppercase tracking-wider">{children}</h2>
+    <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+      <div className="flex items-start gap-2.5">
+        <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-surface-2 text-muted shrink-0 mt-0.5">
+          <Icon size={15} />
+        </div>
+        <div>
+          <div className="flex items-center gap-2">
+            <h2 className="font-display font-semibold text-base text-fg">{title}</h2>
+            {count != null && count > 0 && (
+              <Badge variant="default" size="sm">{count}</Badge>
+            )}
+          </div>
+          {subtitle && <p className="text-xs text-muted mt-0.5 leading-relaxed">{subtitle}</p>}
+        </div>
+      </div>
+      {children && <div className="shrink-0">{children}</div>}
     </div>
   )
 }
 
-function SkeletonCard() {
-  return <Skeleton className="h-20 rounded-xl" />
+// Row-shaped shimmer placeholder — mirrors the FlowRow / JobCard layout so the
+// loading state doesn't jump when real data arrives.
+function RowSkeleton() {
+  return (
+    <div className="bg-surface rounded-xl border border-border p-4 flex flex-col sm:flex-row sm:items-center gap-3" aria-hidden="true">
+      <div className="flex-1 min-w-0 space-y-2">
+        <div className="flex items-center gap-2">
+          <Skeleton className="h-4 w-40" />
+          <Skeleton className="h-4 w-20 rounded-full" />
+        </div>
+        <Skeleton className="h-3 w-56" />
+      </div>
+      <div className="flex items-center gap-1.5 shrink-0">
+        <Skeleton className="h-8 w-24 rounded-lg" />
+        <Skeleton className="h-8 w-8 rounded-lg" />
+        <Skeleton className="h-8 w-8 rounded-lg" />
+      </div>
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -739,18 +771,14 @@ function FlowRow({ flow, onChanged, canWrite }) {
   const lastRel = fmtRelative(flow.last_run_at)
 
   return (
-    <div className="bg-surface rounded-xl border border-border overflow-hidden hover:border-border/80 transition-colors">
+    <div className="bg-surface rounded-xl border border-border overflow-hidden transition-all duration-150 hover:border-primary/30 hover:shadow-nubi-sm">
       <div className="flex flex-col sm:flex-row sm:items-center gap-3 p-4">
         {/* Name + badges */}
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-2 mb-1">
             <h3 className="font-semibold text-sm text-fg truncate">{flow.name}</h3>
             <FlowTypeBadge type={type} />
-            {!enabled && (
-              <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium bg-surface-2 text-muted">
-                Disabled
-              </span>
-            )}
+            {!enabled && <Badge variant="default" size="sm">Disabled</Badge>}
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted">
             <span className="inline-flex items-center gap-1">
@@ -865,17 +893,13 @@ function JobCard({ job, onDeleted, onViewRuns, canWrite }) {
   const nextRel = fmtRelative(job.next_run_at)
 
   return (
-    <div className="bg-surface rounded-xl border border-border hover:border-border/80 transition-colors overflow-hidden">
+    <div className="bg-surface rounded-xl border border-border overflow-hidden transition-all duration-150 hover:border-primary/30 hover:shadow-nubi-sm">
       <div className="flex flex-col sm:flex-row sm:items-center gap-3 p-4">
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-2 mb-1">
             <h3 className="font-semibold text-sm text-fg truncate">{job.name}</h3>
             {job.kind && <KindBadge kind={job.kind} />}
-            {job.enabled === false && (
-              <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium bg-surface-2 text-muted">
-                Disabled
-              </span>
-            )}
+            {job.enabled === false && <Badge variant="default" size="sm">Disabled</Badge>}
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted">
             <span className="inline-flex items-center gap-1">
@@ -1111,38 +1135,36 @@ export default function AutomationsPage() {
       )}
 
       {/* ── Content ─────────────────────────────────────────────────────────── */}
-      <div className="flex-1 px-4 sm:px-6 py-4 max-w-4xl w-full mx-auto">
+      <div className="flex-1 px-4 sm:px-6 lg:px-8 py-6 sm:py-7 lg:py-8 max-w-4xl w-full mx-auto space-y-8 sm:space-y-10">
 
         {/* ── Flows section ───────────────────────────────────────────────── */}
-        <section className="mb-6">
-          <SectionLabel icon={Workflow}>Workflows &amp; Scheduled queries</SectionLabel>
+        <section>
+          <SectionHeading
+            icon={Workflow}
+            title="Flows"
+            subtitle="Multi-step workflows and scheduled queries, run and monitored from the Flows builder."
+            count={flows.length}
+          />
 
           {flowsLoading && (
             <div className="space-y-3">
-              {[1, 2].map(i => <SkeletonCard key={i} />)}
+              {[1, 2].map(i => <RowSkeleton key={i} />)}
             </div>
           )}
 
           {!flowsLoading && flowsError && (
-            <div className="flex flex-col items-center justify-center py-12 gap-3 rounded-xl border border-dashed border-danger/30">
-              <div className="w-11 h-11 rounded-xl bg-danger-bg flex items-center justify-center">
-                <AlertTriangle size={20} className="text-danger" />
-              </div>
-              <p className="text-sm font-medium text-fg">Failed to load workflows</p>
-              <p className="text-xs text-muted">{flowsError}</p>
-              <button
-                onClick={fetchFlows}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-border text-sm text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-              >
-                <RefreshCw size={14} /> Retry
-              </button>
-            </div>
+            <ErrorState
+              icon={<Workflow size={20} />}
+              title="Failed to load workflows"
+              message={flowsError}
+              onRetry={fetchFlows}
+            />
           )}
 
           {!flowsLoading && !flowsError && flows.length === 0 && (
             <div className="flex flex-col items-center justify-center py-10 px-6 text-center rounded-xl border border-dashed border-border">
-              <div className="flex items-center justify-center w-12 h-12 rounded-2xl bg-indigo-100 dark:bg-indigo-900/30 mb-3">
-                <Workflow size={22} className="text-indigo-600 dark:text-indigo-400" />
+              <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-surface-2 mb-3">
+                <Workflow size={20} className="text-muted" />
               </div>
               <p className="text-sm font-medium text-fg mb-1">No workflows yet</p>
               <p className="text-xs text-muted mb-4 max-w-xs leading-relaxed">
@@ -1150,7 +1172,7 @@ export default function AutomationsPage() {
               </p>
               <button
                 onClick={() => navigate('/flows')}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity shadow-sm"
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <Plus size={15} /> Build a workflow
               </button>
@@ -1168,27 +1190,26 @@ export default function AutomationsPage() {
 
         {/* ── Jobs section ────────────────────────────────────────────────── */}
         <section>
-          <div className="flex items-center justify-between mb-2">
-            <SectionLabel icon={CalendarClock} className="">Scheduled jobs</SectionLabel>
-            {jobs.length > 0 && (
-              <span className="text-xs text-muted bg-surface-2 px-2 py-0.5 rounded-full">
-                {jobs.length}
-              </span>
-            )}
-          </div>
+          <SectionHeading
+            icon={CalendarClock}
+            title="Jobs"
+            subtitle="Create, schedule, and run individual queries, scripts, or reports."
+            count={jobs.length}
+          />
 
           {jobsLoading && (
             <div className="space-y-3">
-              {[1, 2].map(i => <SkeletonCard key={i} />)}
+              {[1, 2].map(i => <RowSkeleton key={i} />)}
             </div>
           )}
 
           {!jobsLoading && jobsError && (
-            <div className="flex flex-col items-center justify-center py-10 gap-3 rounded-xl border border-dashed border-danger/30">
-              <AlertTriangle size={18} className="text-danger" />
-              <p className="text-sm text-danger">{jobsError}</p>
-              <button onClick={fetchJobs} className="text-xs text-muted hover:text-fg underline">Retry</button>
-            </div>
+            <ErrorState
+              icon={<CalendarClock size={20} />}
+              title="Failed to load jobs"
+              message={jobsError}
+              onRetry={fetchJobs}
+            />
           )}
 
           {!jobsLoading && !jobsError && jobs.length === 0 && totalCount === 0 && (
@@ -1205,14 +1226,14 @@ export default function AutomationsPage() {
                 {canWrite && (
                   <button
                     onClick={() => setShowJobModal(true)}
-                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity shadow-sm"
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <Plus size={15} strokeWidth={2.5} /> New automation
                   </button>
                 )}
                 <button
                   onClick={() => navigate('/flows')}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl border border-border text-sm font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl border border-border text-sm font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <Workflow size={15} /> Build a workflow
                 </button>
@@ -1222,16 +1243,16 @@ export default function AutomationsPage() {
 
           {!jobsLoading && !jobsError && jobs.length === 0 && totalCount > 0 && (
             // Small empty state when flows exist but no jobs
-            <div className="flex flex-col items-center justify-center py-8 px-6 text-center rounded-xl border border-dashed border-border">
-              <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-surface-2 mb-2.5">
-                <CalendarClock size={18} className="text-muted" />
+            <div className="flex flex-col items-center justify-center py-10 px-6 text-center rounded-xl border border-dashed border-border">
+              <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-surface-2 mb-3">
+                <CalendarClock size={20} className="text-muted" />
               </div>
               <p className="text-sm font-medium text-fg mb-1">No scheduled jobs</p>
-              <p className="text-xs text-muted mb-3">Create one to schedule a query, Python script, or report.</p>
+              <p className="text-xs text-muted mb-4 max-w-xs leading-relaxed">Create one to schedule a query, Python script, or report.</p>
               {canWrite && (
                 <button
                   onClick={() => setShowJobModal(true)}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-border text-sm font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <Plus size={14} /> New automation
                 </button>

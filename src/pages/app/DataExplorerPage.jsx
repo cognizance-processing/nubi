@@ -43,6 +43,8 @@ import EditableDataGrid from '../../components/app/EditableDataGrid.jsx'
 import { normalizeColumnMeta } from '../../components/app/editableGridUtils.js'
 import * as api from '../../lib/api.js'
 import DatasetProfileView from './DatasetProfileView.jsx'
+import EmptyState from '../../components/ui/EmptyState.jsx'
+import Badge from '../../components/ui/Badge.jsx'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -70,13 +72,14 @@ function TableItem({ name, active, onClick }) {
     <button
       onClick={onClick}
       className={[
-        'w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-mono text-left transition-colors',
+        'w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[13px] font-mono text-left transition-colors duration-100',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         active
           ? 'bg-primary/10 text-primary'
-          : 'text-fg hover:bg-surface-2 text-muted hover:text-fg',
+          : 'text-muted hover:bg-surface-2 hover:text-fg',
       ].join(' ')}
     >
-      <Table2 size={13} className={active ? 'text-primary' : 'text-muted'} />
+      <Table2 size={13} className={active ? 'text-primary shrink-0' : 'text-muted/70 shrink-0'} />
       <span className="truncate">{name}</span>
     </button>
   )
@@ -85,6 +88,21 @@ function TableItem({ name, active, onClick }) {
 // ---------------------------------------------------------------------------
 // Connector picker (mobile dropdown or desktop label)
 // ---------------------------------------------------------------------------
+
+function ConnectorAvatar({ name, active }) {
+  const letter = (name ?? '?').trim().charAt(0).toUpperCase() || '?'
+  return (
+    <span
+      className={[
+        'flex items-center justify-center w-6 h-6 rounded-lg text-[11px] font-display font-semibold shrink-0',
+        active ? 'bg-primary text-primary-fg' : 'bg-surface-2 text-muted border border-border',
+      ].join(' ')}
+      aria-hidden="true"
+    >
+      {letter}
+    </span>
+  )
+}
 
 function ConnectorDropdown({ connectors, selectedId, onSelect }) {
   const [open, setOpen] = useState(false)
@@ -105,26 +123,40 @@ function ConnectorDropdown({ connectors, selectedId, onSelect }) {
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-2 px-3 py-2 rounded-xl border border-border bg-surface-2 hover:bg-surface text-sm font-medium text-fg transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
+        className="w-full flex items-center gap-2 px-2.5 py-2 rounded-xl border border-border bg-surface-2 hover:bg-surface text-sm font-medium text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        aria-haspopup="listbox"
+        aria-expanded={open}
       >
-        <Database size={14} className="text-muted shrink-0" />
+        <ConnectorAvatar name={selected?.name} active />
         <span className="flex-1 truncate text-left">{selected?.name ?? 'Select connector'}</span>
-        <ChevronDown size={13} className={`text-muted shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+        <ChevronDown size={13} className={`text-muted shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
-        <div className="absolute left-0 right-0 top-full mt-1 z-50 rounded-xl border border-border bg-surface shadow-xl shadow-black/10 p-1">
+        <div
+          className="absolute left-0 right-0 top-full mt-1.5 z-50 rounded-xl border border-border bg-surface shadow-nubi-xl p-1 max-h-72 overflow-y-auto nubi-animate-scale-in"
+          role="listbox"
+        >
           {connectors.map((c) => (
             <button
               key={c.id ?? 'demo'}
+              role="option"
+              aria-selected={c.id === selectedId}
               onClick={() => { onSelect(c.id); setOpen(false) }}
               className={[
-                'w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-sm text-left transition-colors',
+                'w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm text-left transition-colors duration-100',
                 c.id === selectedId ? 'text-primary bg-primary/5' : 'text-fg hover:bg-surface-2',
               ].join(' ')}
             >
-              <Database size={13} className={c.id === selectedId ? 'text-primary' : 'text-muted'} />
-              <span className="flex-1 truncate">{c.name}</span>
-              {c.id === selectedId && <ChevronRight size={12} className="text-primary" />}
+              <ConnectorAvatar name={c.name} active={c.id === selectedId} />
+              <span className="flex-1 min-w-0">
+                <span className="block truncate">{c.name}</span>
+                {c.config?.connector_type && (
+                  <span className="block truncate text-[10px] font-mono text-muted/70 leading-tight">
+                    {c.config.connector_type}
+                  </span>
+                )}
+              </span>
+              {c.id === selectedId && <ChevronRight size={12} className="text-primary shrink-0" />}
             </button>
           ))}
         </div>
@@ -321,22 +353,24 @@ export default function DataExplorerPage() {
       <div className="md:hidden shrink-0 flex items-center border-b border-border bg-surface px-3 py-2 gap-2 absolute top-0 left-0 right-0 z-30">
         <button
           onClick={() => setRailOpen((v) => !v)}
-          className="flex items-center gap-2 text-sm font-medium text-fg border border-border rounded-lg px-2.5 py-1.5 bg-surface-2 hover:bg-surface transition-colors"
+          className="flex items-center gap-2 text-sm font-medium text-fg border border-border rounded-lg px-2.5 py-1.5 bg-surface-2 hover:bg-surface transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-expanded={railOpen}
+          aria-label="Toggle connector and table list"
         >
-          <SlidersHorizontal size={14} className="text-muted" />
+          <SlidersHorizontal size={14} className="text-muted shrink-0" />
           {selectedTable ? (
-            <span className="font-mono">{selectedTable}</span>
+            <span className="font-mono truncate max-w-[50vw]">{selectedTable}</span>
           ) : (
             <span className="text-muted">Select table</span>
           )}
-          <ChevronDown size={12} className={`text-muted transition-transform ${railOpen ? 'rotate-180' : ''}`} />
+          <ChevronDown size={12} className={`text-muted shrink-0 transition-transform duration-150 ${railOpen ? 'rotate-180' : ''}`} />
         </button>
       </div>
 
       {/* ── Mobile rail overlay ──────────────────────────────────────────── */}
       {railOpen && (
         <div
-          className="md:hidden fixed inset-0 z-40 bg-black/40 backdrop-blur-sm"
+          className="md:hidden fixed inset-0 z-40 bg-black/40 backdrop-blur-sm nubi-animate-fade-in"
           onClick={() => setRailOpen(false)}
         />
       )}
@@ -370,10 +404,11 @@ export default function DataExplorerPage() {
             <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
             <input
               type="text"
-              className="w-full h-7 pl-6 pr-2 text-xs bg-surface-2 border border-border rounded-lg text-fg placeholder:text-muted/50 focus:outline-none focus:ring-1 focus:ring-ring"
+              className="w-full h-7 pl-6 pr-2 text-xs bg-surface-2 border border-border rounded-lg text-fg placeholder:text-muted/50 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent"
               placeholder="Search tables…"
               value={tableSearch}
               onChange={(e) => setTableSearch(e.target.value)}
+              aria-label="Search tables"
             />
           </div>
         </div>
@@ -381,25 +416,27 @@ export default function DataExplorerPage() {
         {/* Table list */}
         <div className="flex-1 overflow-y-auto py-2 px-2">
           {tablesLoading ? (
-            <div className="space-y-1 px-1">
+            <div className="space-y-1 px-1" aria-hidden="true">
               {Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="h-7 rounded-lg bg-border/40 animate-pulse" />
+                <div key={i} className="h-7 rounded-lg nubi-shimmer" />
               ))}
             </div>
           ) : tablesError ? (
-            <div className="flex flex-col items-center gap-2 p-4 text-center">
-              <AlertCircle size={16} className="text-danger" />
-              <p className="text-xs text-danger">{tablesError}</p>
+            <div className="flex flex-col items-center gap-2.5 p-4 text-center">
+              <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-danger-bg">
+                <AlertCircle size={15} className="text-danger" />
+              </div>
+              <p className="text-xs text-danger leading-relaxed">{tablesError}</p>
               <button
                 onClick={() => setTablesReloadKey((k) => k + 1)}
-                className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline focus:outline-none"
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
               >
                 <RefreshCw size={11} />
                 Retry
               </button>
             </div>
           ) : filteredTables.length === 0 ? (
-            <p className="text-xs text-muted px-3 py-4 text-center">
+            <p className="text-xs text-muted px-3 py-4 text-center leading-relaxed">
               {tableSearch ? 'No tables match your search.' : 'No tables found.'}
             </p>
           ) : (
@@ -417,11 +454,11 @@ export default function DataExplorerPage() {
         </div>
 
         {/* Rail footer: connector type badge */}
-        <div className="px-4 py-2.5 border-t border-border">
-          <span className="inline-flex items-center gap-1 text-[10px] font-mono text-muted/60">
-            <Database size={9} />
+        <div className="px-3 py-2.5 border-t border-border">
+          <Badge variant="default" size="sm" className="font-mono">
+            <Database size={9} aria-hidden="true" />
             {connectorType}
-          </span>
+          </Badge>
         </div>
       </aside>
 
@@ -429,31 +466,25 @@ export default function DataExplorerPage() {
       <main className="flex flex-col flex-1 min-w-0 overflow-hidden md:pt-0 pt-[44px]">
         {!selectedTable ? (
           /* Empty state — no table selected */
-          <div className="flex flex-col items-center justify-center h-full gap-4 p-8 text-center">
-            <div className="w-14 h-14 rounded-2xl bg-surface-2 border border-border flex items-center justify-center">
-              <Database size={24} className="text-muted/60" />
-            </div>
-            <div>
-              <p className="text-base font-semibold text-fg mb-1">
-                Browse your connector data
-              </p>
-              <p className="text-sm text-muted max-w-xs">
-                Pick a connector and select a table from the left rail to view and edit its data.
-              </p>
-            </div>
-            {tables.length > 0 && (
-              <div className="flex flex-wrap gap-2 justify-center max-w-sm">
-                {tables.slice(0, 6).map((t) => (
-                  <button
-                    key={t.name}
-                    onClick={() => handleSelectTable(t.name)}
-                    className="px-3 py-1.5 text-xs font-mono rounded-lg border border-border bg-surface-2 hover:border-primary/40 hover:text-primary transition-colors text-muted"
-                  >
-                    {t.name}
-                  </button>
-                ))}
-              </div>
-            )}
+          <div className="flex flex-col items-center justify-center h-full p-8">
+            <EmptyState
+              icon={<Database size={24} />}
+              title="Browse your connector data"
+              description="Pick a connector and select a table from the left rail to view and edit its data."
+              action={tables.length > 0 && (
+                <div className="flex flex-wrap gap-2 justify-center max-w-sm">
+                  {tables.slice(0, 6).map((t) => (
+                    <button
+                      key={t.name}
+                      onClick={() => handleSelectTable(t.name)}
+                      className="px-3 py-1.5 text-xs font-mono rounded-lg border border-border bg-surface-2 hover:border-primary/40 hover:text-primary transition-colors text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {t.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            />
           </div>
         ) : (
           <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
@@ -462,7 +493,7 @@ export default function DataExplorerPage() {
               <button
                 onClick={() => setMainTab('data')}
                 className={[
-                  'flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium border-b-2 transition-colors',
+                  'flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium border-b-2 transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
                   mainTab === 'data'
                     ? 'border-primary text-primary'
                     : 'border-transparent text-muted hover:text-fg',
@@ -474,7 +505,7 @@ export default function DataExplorerPage() {
               <button
                 onClick={() => setMainTab('profile')}
                 className={[
-                  'flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium border-b-2 transition-colors',
+                  'flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium border-b-2 transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
                   mainTab === 'profile'
                     ? 'border-primary text-primary'
                     : 'border-transparent text-muted hover:text-fg',

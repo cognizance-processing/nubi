@@ -48,6 +48,8 @@ import {
 } from 'lucide-react'
 import * as api from '../../lib/api.js'
 import Button from '../../components/ui/Button.jsx'
+import Badge from '../../components/ui/Badge.jsx'
+import { CardGrid, ErrorState } from '../../components/app/PageShell.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
@@ -125,21 +127,13 @@ function TestResultPill({ result }) {
   if (!result) return null
   const ok = result.ok === true
   return (
-    <span
-      className={`
-        inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium
-        ${ok
-          ? 'bg-success-bg text-success'
-          : 'bg-danger-bg text-danger'
-        }
-      `}
-    >
+    <Badge variant={ok ? 'success' : 'danger'} className="gap-1.5">
       {ok
         ? <CheckCircle size={12} strokeWidth={2.2} />
         : <XCircle size={12} strokeWidth={2.2} />
       }
-      {ok ? result.checked : result.checked}
-    </span>
+      {result.checked}
+    </Badge>
   )
 }
 
@@ -166,14 +160,8 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
   return (
     <div
       className={`
-        group relative overflow-hidden
-        rounded-xl border p-4
-        hover:shadow-lg hover:shadow-black/[0.03]
-        transition-all duration-200
-        flex flex-col gap-3
-        ${managed
-          ? 'bg-primary/[0.04] border-primary/30 hover:border-primary/50'
-          : 'bg-surface border-border hover:border-border/70'}
+        group nubi-resource-card nubi-resource-card-body
+        ${managed ? 'bg-primary/[0.04] !border-primary/30 hover:!border-primary/50' : ''}
       `}
     >
       {/* Brand accent rail — surfaces the connector's identity on hover.
@@ -349,13 +337,17 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
 function EmptyState({ onAdd, canWrite }) {
   return (
     <div className="flex flex-col items-center justify-center py-20 px-6 text-center">
-      <div className="
-        flex items-center justify-center w-16 h-16 rounded-2xl mb-5
-        bg-brand-gradient shadow-lg
-      ">
-        <Plug size={28} className="text-white" />
+      <div className="relative mb-5">
+        <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-brand-gradient shadow-nubi-lg">
+          <Plug size={28} className="text-white" />
+        </div>
+        {canWrite && (
+          <div className="absolute -top-1 -right-1 flex items-center justify-center w-6 h-6 rounded-full bg-accent text-white shadow-nubi-md">
+            <Plus size={12} />
+          </div>
+        )}
       </div>
-      <h2 className="font-display font-semibold text-xl text-fg mb-2">
+      <h2 className="font-display font-semibold text-xl text-fg mb-1.5">
         No connectors yet
       </h2>
       <p className="text-muted text-sm max-w-xs leading-relaxed mb-6">
@@ -370,8 +362,8 @@ function EmptyState({ onAdd, canWrite }) {
             bg-primary text-primary-fg
             rounded-xl text-sm font-semibold
             hover:opacity-90 transition-opacity
-            focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2
-            shadow-md
+            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2
+            shadow-nubi-md
           "
         >
           <Plus size={16} strokeWidth={2.5} />
@@ -380,6 +372,31 @@ function EmptyState({ onAdd, canWrite }) {
       ) : (
         <p className="text-xs text-muted">Read-only — ask an admin to add a connector.</p>
       )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// List loading skeleton — shimmer placeholder matching ConnectorCard's shape
+// (no thumbnail, so it doesn't reuse PageShell's <CardSkeleton> as-is).
+// ---------------------------------------------------------------------------
+
+function ConnectorCardSkeleton() {
+  return (
+    <div className="nubi-resource-card nubi-resource-card-body" aria-hidden="true">
+      <div className="flex items-start gap-3">
+        <div className="nubi-shimmer w-[22px] h-[22px] rounded-lg shrink-0" />
+        <div className="flex-1 min-w-0 space-y-2 pt-0.5">
+          <div className="nubi-shimmer h-3.5 w-2/3 rounded" />
+          <div className="nubi-shimmer h-3 w-1/3 rounded" />
+        </div>
+      </div>
+      <div className="mt-auto pt-3 border-t border-border/60 flex items-center gap-1.5">
+        <div className="nubi-shimmer h-8 w-24 rounded-lg" />
+        <div className="nubi-shimmer h-8 w-16 rounded-lg" />
+        <div className="nubi-shimmer h-8 w-8 rounded-lg ml-auto" />
+        <div className="nubi-shimmer h-8 w-8 rounded-lg" />
+      </div>
     </div>
   )
 }
@@ -607,7 +624,7 @@ function ConnectorForm({ type, initialConfig, initialName, onBack, onSubmit, isE
           value={name}
           onChange={e => setName(e.target.value)}
           className="
-            w-full rounded-lg border border-border bg-surface
+            w-full rounded-xl border border-border bg-bg
             px-3 py-2 text-sm text-fg placeholder:text-muted
             focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent
             transition-colors
@@ -666,10 +683,12 @@ function SlideOver({ open, onClose, title, children }) {
 
   return (
     <>
-      {/* Backdrop */}
+      {/* Backdrop — same rgba(0,0,0,0.5) + blur(2px) chrome as Modal.jsx's
+          .nubi-backdrop, kept as utilities here since this panel stays
+          mounted (opacity-animated) rather than portal-mounted on open. */}
       <div
         className={`
-          fixed inset-0 z-40 bg-black/40 backdrop-blur-sm
+          fixed inset-0 z-overlay bg-black/50 backdrop-blur-sm
           transition-opacity duration-200
           ${open ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}
         `}
@@ -684,9 +703,9 @@ function SlideOver({ open, onClose, title, children }) {
         aria-modal="true"
         aria-label={title}
         className={`
-          fixed inset-y-0 right-0 z-50
+          fixed inset-y-0 right-0 z-modal
           w-full sm:max-w-[480px]
-          bg-surface border-l border-border shadow-2xl
+          bg-surface border-l border-border shadow-nubi-xl
           flex flex-col
           transition-transform duration-300 ease-in-out
           ${open ? 'translate-x-0' : 'translate-x-full'}
@@ -701,7 +720,7 @@ function SlideOver({ open, onClose, title, children }) {
             className="
               flex items-center justify-center w-8 h-8 rounded-lg
               text-muted hover:text-fg hover:bg-surface-2
-              transition-colors focus:outline-none focus:ring-2 focus:ring-ring
+              transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring
             "
           >
             <X size={16} strokeWidth={2} />
@@ -738,11 +757,11 @@ function DeleteDialog({ connector, loading, error, onCancel, onConfirm }) {
     <>
       {/* Backdrop */}
       <div
-        className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+        className="fixed inset-0 z-modal bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
         onClick={loading ? undefined : onCancel}
       >
         <div
-          className="bg-surface rounded-2xl border border-border shadow-2xl p-6 w-full max-w-sm"
+          className="bg-surface rounded-2xl border border-border shadow-nubi-xl p-6 w-full max-w-sm nubi-animate-scale-in"
           onClick={e => e.stopPropagation()}
           role="alertdialog"
           aria-modal="true"
@@ -1055,39 +1074,19 @@ export default function ConnectorsPage() {
       <div className="flex-1 px-4 sm:px-6 py-4">
         {/* Loading skeleton */}
         {listLoading && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-            {[1, 2, 3].map(i => (
-              <div
-                key={i}
-                className="bg-surface rounded-xl border border-border h-28 animate-pulse"
-              />
-            ))}
-          </div>
+          <CardGrid>
+            {[1, 2, 3].map(i => <ConnectorCardSkeleton key={i} />)}
+          </CardGrid>
         )}
 
         {/* Error state */}
         {!listLoading && listError && (
-          <div className="flex flex-col items-center justify-center py-16 gap-4">
-            <div className="w-12 h-12 rounded-xl bg-danger-bg flex items-center justify-center">
-              <AlertTriangle size={22} className="text-danger" strokeWidth={2} />
-            </div>
-            <div className="text-center">
-              <p className="text-sm font-medium text-fg">Failed to load connectors</p>
-              <p className="text-xs text-muted mt-1">{listError?.message ?? String(listError)}</p>
-            </div>
-            <button
-              onClick={reloadConnectors}
-              className="
-                inline-flex items-center gap-2 px-4 py-2 rounded-xl
-                border border-border text-sm text-muted
-                hover:text-fg hover:bg-surface-2 transition-colors
-                focus:outline-none focus:ring-2 focus:ring-ring
-              "
-            >
-              <RefreshCw size={14} strokeWidth={2} />
-              Retry
-            </button>
-          </div>
+          <ErrorState
+            icon={<AlertTriangle size={22} />}
+            title="Failed to load connectors"
+            message={listError?.message ?? String(listError)}
+            onRetry={reloadConnectors}
+          />
         )}
 
         {/* Empty state */}
@@ -1107,20 +1106,20 @@ export default function ConnectorsPage() {
                 Credentials encrypted at rest
               </span>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-            {connectors.map(connector => (
-              <ConnectorCard
-                key={connector.id}
-                connector={connector}
-                testResult={testResults}
-                testingId={testingId}
-                onEdit={openEdit}
-                onDelete={setDeleteTarget}
-                onTest={handleTest}
-                canWrite={canWrite}
-              />
-            ))}
-            </div>
+            <CardGrid>
+              {connectors.map(connector => (
+                <ConnectorCard
+                  key={connector.id}
+                  connector={connector}
+                  testResult={testResults}
+                  testingId={testingId}
+                  onEdit={openEdit}
+                  onDelete={setDeleteTarget}
+                  onTest={handleTest}
+                  canWrite={canWrite}
+                />
+              ))}
+            </CardGrid>
           </div>
         )}
       </div>

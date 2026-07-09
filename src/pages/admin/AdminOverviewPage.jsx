@@ -19,9 +19,9 @@ import { getAdminOverview, getAdminGeoSummary } from '../../lib/admin.js'
 import {
   AdminCard,
   StatCard,
+  StatCardSkeleton,
   SparkBars,
   BarList,
-  LoadingState,
   ErrorState,
   EmptyState,
 } from './AdminUI.jsx'
@@ -48,7 +48,23 @@ export default function AdminOverviewPage() {
   const overview = pageData?.overview ?? null
   const geo = pageData?.geo ?? null
 
-  if (loading) return <LoadingState />
+  if (loading) {
+    return (
+      <div className="space-y-6" data-testid="admin-overview" aria-busy="true">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3">
+          {STATS.map((s) => <StatCardSkeleton key={s.key} />)}
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <AdminCard title="Signups" description="New users per day, last 30 days">
+            <div className="animate-pulse h-24 mx-5 my-4 rounded-lg bg-surface-2" />
+          </AdminCard>
+          <AdminCard title="Logins" description="Logins per day, last 30 days">
+            <div className="animate-pulse h-24 mx-5 my-4 rounded-lg bg-surface-2" />
+          </AdminCard>
+        </div>
+      </div>
+    )
+  }
   if (!overview) {
     return (
       <ErrorState

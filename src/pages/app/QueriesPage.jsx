@@ -32,7 +32,6 @@ import { Link } from 'react-router-dom'
 import {
   FileCode2,
   Plus,
-  Search,
   RefreshCw,
   CheckCircle2,
   CheckSquare,
@@ -40,7 +39,6 @@ import {
   ChevronRight,
   Tag,
   ListChecks,
-  Loader2,
   AlertCircle,
   Database,
   List,
@@ -54,6 +52,9 @@ import {
 
 import { del, get, listRegisteredQueries, registerQuery } from '../../lib/api.js'
 import Button from '../../components/ui/Button.jsx'
+import Badge from '../../components/ui/Badge.jsx'
+import EmptyState from '../../components/ui/EmptyState.jsx'
+import { SearchBar, ListRowSkeleton } from '../../components/app/PageShell.jsx'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import DangerConfirmDialog from '../../components/app/DangerConfirmDialog.jsx'
 import { useEnv } from '../../contexts/EnvContext.jsx'
@@ -98,13 +99,14 @@ function QueryListItem({ query, isActive, onClick, onHistory, strictEnv, manageM
         data-query-id={query.id ?? undefined}
         aria-pressed={manageMode ? checked : undefined}
         className={[
-          'w-full text-left px-3 py-2.5 rounded-lg transition-all',
+          'w-full text-left px-3 py-2.5 rounded-lg border transition-colors duration-100',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           isSaved && onHistory && !manageMode ? 'pr-9' : '',
           manageMode && checked
-            ? 'bg-danger-bg border border-danger/30 text-fg'
+            ? 'bg-danger-bg border-danger/30 text-fg'
             : isActive && !manageMode
-            ? 'bg-primary/10 border border-primary/20 text-fg'
-            : 'hover:bg-surface-2 border border-transparent text-fg/80 hover:text-fg',
+            ? 'bg-primary/10 border-primary/20 text-fg'
+            : 'hover:bg-surface-2 border-transparent text-fg/80 hover:text-fg',
         ].join(' ')}
       >
         <div className="flex items-start gap-2 min-w-0">
@@ -134,38 +136,34 @@ function QueryListItem({ query, isActive, onClick, onHistory, strictEnv, manageM
                 {query.id}
               </p>
             )}
-            {hasParams && (
-              <div className="flex flex-wrap gap-1 mt-1">
-                {query.params.slice(0, 3).map(p => (
-                  <span
-                    key={p.name}
-                    className="inline-flex items-center gap-0.5 px-1 py-0 rounded text-[9px] font-mono bg-surface-2 text-muted border border-border/60"
+            {(hasParams || query.isNew || (!query.isNew && strictEnv && Array.isArray(query.pinned_envs) && !query.pinned_envs.includes(strictEnv))) && (
+              <div className="flex flex-wrap items-center gap-1 mt-1.5">
+                {query.isNew && (
+                  <Badge variant="warning" size="sm">Draft</Badge>
+                )}
+                {/* Strict-env visibility: the active env is protected and this
+                    query has no pinned version there (pinned_envs joined from
+                    the persisted GET /queries rows). */}
+                {!query.isNew && strictEnv && Array.isArray(query.pinned_envs)
+                  && !query.pinned_envs.includes(strictEnv) && (
+                  <Badge
+                    variant="danger"
+                    size="sm"
+                    title={`No version is pinned to ${strictEnv} — promote one to make it visible there.`}
                   >
-                    <Tag size={7} />
+                    not in {strictEnv}
+                  </Badge>
+                )}
+                {hasParams && query.params.slice(0, 3).map(p => (
+                  <Badge key={p.name} variant="default" size="sm" className="font-mono">
+                    <Tag size={8} />
                     {p.name}
-                  </span>
+                  </Badge>
                 ))}
-                {query.params.length > 3 && (
+                {hasParams && query.params.length > 3 && (
                   <span className="text-[9px] text-muted">+{query.params.length - 3}</span>
                 )}
               </div>
-            )}
-            {query.isNew && (
-              <span className="inline-flex items-center px-1 py-0.5 text-[9px] font-medium rounded bg-warning-bg text-warning mt-1">
-                draft
-              </span>
-            )}
-            {/* Strict-env visibility: the active env is protected and this
-                query has no pinned version there (pinned_envs joined from
-                the persisted GET /queries rows). */}
-            {!query.isNew && strictEnv && Array.isArray(query.pinned_envs)
-              && !query.pinned_envs.includes(strictEnv) && (
-              <span
-                title={`No version is pinned to ${strictEnv} — promote one to make it visible there.`}
-                className="inline-flex items-center px-1 py-0.5 text-[9px] font-medium rounded bg-danger-bg text-danger border border-danger/20 mt-1"
-              >
-                not in {strictEnv}
-              </span>
             )}
           </div>
         </div>
@@ -177,7 +175,7 @@ function QueryListItem({ query, isActive, onClick, onHistory, strictEnv, manageM
           onClick={(e) => { e.stopPropagation(); onHistory(query) }}
           title="Version history"
           aria-label={`Version history for ${query.name ?? query.id}`}
-          className="absolute right-1.5 top-2 w-6 h-6 flex items-center justify-center rounded-md text-muted/60 hover:text-fg hover:bg-surface-2 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+          className="absolute right-1.5 top-2 w-6 h-6 flex items-center justify-center rounded-md text-muted/60 hover:text-fg hover:bg-surface-2 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <History size={12} />
         </button>
@@ -220,14 +218,14 @@ function QueriesPanel({
         <div className="shrink-0 px-2 py-2 space-y-1.5">
           <button
             onClick={onNewQuery}
-            className="w-full h-8 flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:border-border hover:bg-surface-2 transition-colors"
+            className="w-full h-8 flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:border-border hover:bg-surface-2 transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Plus size={13} />
             New query
           </button>
           <Link
             to="/queries/blend"
-            className="w-full h-8 flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:border-border hover:bg-surface-2 transition-colors"
+            className="w-full h-8 flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:border-border hover:bg-surface-2 transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Combine size={13} className="text-primary/70" />
             Blend sources
@@ -243,25 +241,19 @@ function QueriesPanel({
 
       {/* Search + registry refresh */}
       <div className="shrink-0 px-2 pb-2 flex items-center gap-1.5">
-        <div className="relative flex-1">
-          <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
-          <input
-            type="text"
-            aria-label="Search queries"
-            value={searchQuery}
-            onChange={e => onSearchChange(e.target.value)}
-            placeholder="Search queries…"
-            className="w-full h-7 pl-7 pr-2.5 text-[11px] bg-surface border border-border rounded-lg text-fg placeholder:text-muted/50 focus:outline-none focus:ring-1 focus:ring-ring"
-          />
-        </div>
+        <SearchBar
+          value={searchQuery}
+          onChange={onSearchChange}
+          placeholder="Search queries…"
+        />
         <button
           onClick={onRefresh}
           disabled={loading}
           aria-label="Refresh query registry"
-          className="h-7 w-7 shrink-0 flex items-center justify-center rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors"
+          className="h-9 w-9 shrink-0 flex items-center justify-center rounded-xl border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           title="Refresh query registry"
         >
-          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+          <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
         </button>
         {/* Manage (multi-select) toggle — writers only */}
         {canWrite && onToggleManage && (
@@ -272,13 +264,13 @@ function QueriesPanel({
             aria-label={manageMode ? 'Exit manage mode' : 'Manage queries (multi-select)'}
             title={manageMode ? 'Exit manage mode' : 'Manage queries (multi-select)'}
             className={[
-              'h-7 w-7 shrink-0 flex items-center justify-center rounded-lg border transition-colors',
+              'h-9 w-9 shrink-0 flex items-center justify-center rounded-xl border transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               manageMode
                 ? 'bg-primary text-primary-fg border-primary'
                 : 'border-border bg-surface text-muted hover:text-fg hover:bg-surface-2',
             ].join(' ')}
           >
-            <ListChecks size={12} />
+            <ListChecks size={13} />
           </button>
         )}
       </div>
@@ -336,7 +328,7 @@ function QueriesPanel({
               onClick={() => onDeleteAll?.(registeredFiltered)}
               disabled={registeredFiltered.length === 0}
               title={searchQuery ? 'Delete all queries matching the search' : 'Delete all registered queries'}
-              className="flex-1 h-7 flex items-center justify-center gap-1 rounded-lg border border-danger/30 text-danger text-[11px] font-medium hover:bg-danger-bg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="flex-1 h-7 flex items-center justify-center gap-1 rounded-lg border border-danger/30 text-danger text-[11px] font-medium hover:bg-danger-bg disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <Trash2 size={11} />
               Delete all{searchQuery ? ' matching' : ''}
@@ -348,23 +340,35 @@ function QueriesPanel({
       {/* Query list */}
       <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-0.5">
         {loading && allItems.length === 0 && (
-          <div className="flex items-center gap-2 text-[11px] text-muted py-4 justify-center">
-            <Loader2 size={12} className="animate-spin" />
-            Loading…
+          <div className="space-y-0.5 py-1" aria-hidden="true">
+            <ListRowSkeleton />
+            <ListRowSkeleton />
+            <ListRowSkeleton />
           </div>
         )}
 
         {!loading && allItems.length === 0 && (
-          <div className="text-[11px] text-muted text-center py-6">
-            <Database size={20} className="mx-auto mb-2 opacity-30" />
-            No registered queries
-          </div>
+          <EmptyState
+            compact
+            icon={<Database size={20} />}
+            title="No registered queries"
+            description={canWrite ? 'Create a new query to get started.' : 'Nothing has been registered here yet.'}
+            action={canWrite ? (
+              <button
+                onClick={onNewQuery}
+                className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Plus size={13} />
+                New query
+              </button>
+            ) : undefined}
+          />
         )}
 
         {/* Draft queries */}
         {draftFiltered.length > 0 && (
           <div>
-            <p className="text-[9px] font-semibold text-muted/60 uppercase tracking-wider px-1 py-1.5">Drafts</p>
+            <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-wider px-1 py-1.5">Drafts</p>
             {draftFiltered.map(q => (
               <QueryListItem
                 key={q._localId ?? q.id}
@@ -379,7 +383,7 @@ function QueriesPanel({
         {/* Registered queries */}
         {registeredFiltered.length > 0 && (
           <div>
-            <p className="text-[9px] font-semibold text-muted/60 uppercase tracking-wider px-1 py-1.5 mt-1">
+            <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-wider px-1 py-1.5 mt-1">
               Registry
             </p>
             {registeredFiltered.map(q => (
@@ -431,22 +435,31 @@ function MobileQueryDropdown({ queries, localQueries, activeQuery, onSelect, onN
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-2 px-3 h-9 text-sm font-medium text-fg bg-surface border border-border rounded-lg hover:bg-surface-2 transition-colors"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        className="flex items-center gap-2 px-3 h-9 text-sm font-medium text-fg bg-surface border border-border rounded-lg hover:bg-surface-2 transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring max-w-full"
       >
-        <List size={14} />
+        <List size={14} className="shrink-0" />
         <span className="truncate max-w-[160px]">
           {activeQuery?.name ?? activeQuery?.id ?? 'Select query'}
         </span>
-        <ChevronDown size={13} className="text-muted shrink-0" />
+        <ChevronDown
+          size={13}
+          className="text-muted shrink-0 transition-transform"
+          style={{ transform: open ? 'rotate(180deg)' : 'none' }}
+        />
       </button>
 
       {open && (
-        <div className="absolute top-full mt-1 left-0 z-50 w-64 bg-surface border border-border rounded-xl shadow-xl overflow-hidden">
+        <div
+          role="listbox"
+          className="absolute top-full mt-1.5 left-0 z-50 w-64 max-w-[calc(100vw-2rem)] bg-surface border border-border rounded-xl shadow-nubi-xl overflow-hidden nubi-animate-scale-in"
+        >
           {canWrite && (
             <div className="p-1.5 border-b border-border">
               <button
                 onClick={() => { onNewQuery(); setOpen(false) }}
-                className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-fg hover:bg-surface-2 rounded-lg transition-colors"
+                className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-fg hover:bg-surface-2 rounded-lg transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <Plus size={12} />
                 New query
@@ -454,7 +467,7 @@ function MobileQueryDropdown({ queries, localQueries, activeQuery, onSelect, onN
               <Link
                 to="/queries/blend"
                 onClick={() => setOpen(false)}
-                className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-fg hover:bg-surface-2 rounded-lg transition-colors"
+                className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-fg hover:bg-surface-2 rounded-lg transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <Combine size={12} className="text-primary/70" />
                 Blend sources
@@ -463,22 +476,30 @@ function MobileQueryDropdown({ queries, localQueries, activeQuery, onSelect, onN
           )}
           <div className="max-h-64 overflow-y-auto p-1.5 space-y-0.5">
             {loading && (
-              <div className="text-[11px] text-muted text-center py-3">Loading…</div>
+              <div className="flex items-center justify-center gap-2 text-[11px] text-muted py-3">
+                <RefreshCw size={11} className="animate-spin" />
+                Loading…
+              </div>
+            )}
+            {!loading && allItems.length === 0 && (
+              <div className="text-[11px] text-muted text-center py-3">No queries yet</div>
             )}
             {allItems.map(q => (
               <button
                 key={q._localId ?? q.id}
+                role="option"
+                aria-selected={(activeQuery?._localId ?? activeQuery?.id) === (q._localId ?? q.id)}
                 onClick={() => { onSelect(q); setOpen(false) }}
                 className={[
-                  'w-full text-left px-3 py-2 text-xs rounded-lg transition-colors',
+                  'w-full text-left px-3 py-2 text-xs rounded-lg transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   (activeQuery?._localId ?? activeQuery?.id) === (q._localId ?? q.id)
                     ? 'bg-primary/10 text-fg'
                     : 'text-fg/80 hover:bg-surface-2 hover:text-fg',
                 ].join(' ')}
               >
-                <span className="font-medium">{q.name ?? q.id}</span>
+                <span className="font-medium truncate block">{q.name ?? q.id}</span>
                 {q.isNew && (
-                  <span className="ml-1.5 text-[10px] text-warning">draft</span>
+                  <Badge variant="warning" size="sm" className="mt-1">Draft</Badge>
                 )}
               </button>
             ))}
@@ -800,7 +821,7 @@ export default function QueriesPage() {
           onClick={() => setView('editor')}
           aria-pressed={view === 'editor'}
           className={[
-            'h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium transition-colors',
+            'h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
             view === 'editor' ? 'bg-primary/10 text-primary' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
           ].join(' ')}
         >
@@ -811,7 +832,7 @@ export default function QueriesPage() {
           aria-pressed={view === 'preagg'}
           title="Auto rollups mined from the query log"
           className={[
-            'h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium border-l border-border transition-colors',
+            'h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium border-l border-border transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
             view === 'preagg' ? 'bg-primary/10 text-primary' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
           ].join(' ')}
         >
@@ -830,7 +851,7 @@ export default function QueriesPage() {
         aria-pressed={queriesPanelVisible}
         onClick={toggleQueriesPanel}
         className={[
-          'w-9 h-8 flex items-center justify-center rounded-lg border border-border transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-ring/60',
+          'w-9 h-8 flex items-center justify-center rounded-lg border border-border transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           queriesPanelVisible
             ? 'bg-primary text-primary-fg border-primary'
             : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
@@ -863,21 +884,23 @@ export default function QueriesPage() {
           )}
           <div className="flex-1" />
           {/* Mobile view toggle */}
-          <div className="flex items-center rounded-lg border border-border overflow-hidden">
+          <div className="flex items-center rounded-lg border border-border overflow-hidden shrink-0">
             <button
               onClick={() => setView('editor')}
+              aria-pressed={view === 'editor'}
               className={[
-                'h-8 px-2.5 flex items-center gap-1 text-[11px] font-medium transition-colors',
-                view === 'editor' ? 'bg-primary/10 text-primary' : 'bg-surface text-muted hover:text-fg',
+                'h-8 px-2.5 flex items-center gap-1 text-[11px] font-medium transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+                view === 'editor' ? 'bg-primary/10 text-primary' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
               ].join(' ')}
             >
               <FileCode2 size={12} /> Editor
             </button>
             <button
               onClick={() => setView('preagg')}
+              aria-pressed={view === 'preagg'}
               className={[
-                'h-8 px-2.5 flex items-center gap-1 text-[11px] font-medium border-l border-border transition-colors',
-                view === 'preagg' ? 'bg-primary/10 text-primary' : 'bg-surface text-muted hover:text-fg',
+                'h-8 px-2.5 flex items-center gap-1 text-[11px] font-medium border-l border-border transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+                view === 'preagg' ? 'bg-primary/10 text-primary' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
               ].join(' ')}
             >
               <Boxes size={12} /> Rollups
@@ -931,7 +954,7 @@ export default function QueriesPage() {
           /* Empty state */
           <div className="flex-1 flex flex-col items-center justify-center gap-4 text-center px-6">
             <div
-              className="flex items-center justify-center w-14 h-14 rounded-2xl"
+              className="flex items-center justify-center w-14 h-14 rounded-2xl shadow-nubi-md"
               style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
             >
               <FileCode2 size={24} className="text-white" />
@@ -945,7 +968,7 @@ export default function QueriesPage() {
             {canWrite && (
               <button
                 onClick={handleNewQuery}
-                className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 transition-opacity"
+                className="inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <Plus size={15} />
                 New query
@@ -966,7 +989,7 @@ export default function QueriesPage() {
             border-l border-border bg-surface flex-col overflow-hidden
             hidden md:flex
             lg:static lg:w-72 lg:shrink-0
-            md:fixed md:top-[var(--shell-header-h,56px)] md:bottom-0 md:right-0 md:z-30 md:w-80 md:shadow-2xl
+            md:fixed md:top-[var(--shell-header-h,56px)] md:bottom-0 md:right-0 md:z-30 md:w-80 md:shadow-nubi-xl
             lg:shadow-none
           `}
         >
@@ -978,7 +1001,7 @@ export default function QueriesPage() {
               onClick={() => setQueriesPanelOpen(false)}
               title="Collapse panel"
               aria-label="Collapse side panel"
-              className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
+              className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <PanelRightClose size={16} />
             </button>

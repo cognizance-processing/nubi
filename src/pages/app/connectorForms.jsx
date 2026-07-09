@@ -29,8 +29,11 @@ function Label({ htmlFor, children, optional }) {
   )
 }
 
+// Matches the `nubi-input` primitive's chrome (bg-bg well, rounded-xl, ring
+// focus) — the same convention used by SettingsUI.jsx's `inputCls` — so
+// connector fields read like every other form field in the app.
 const inputCls = `
-  w-full rounded-lg border border-border bg-surface
+  w-full rounded-xl border border-border bg-bg
   px-3 py-2 text-sm text-fg placeholder:text-muted
   focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent
   transition-colors

@@ -52,10 +52,12 @@ function AdminChrome() {
               end={tab.end}
               className={({ isActive }) =>
                 [
-                  'px-3.5 py-2.5 -mb-px text-sm font-medium font-display border-b-2 whitespace-nowrap transition-colors rounded-t-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  'px-3.5 py-2.5 -mb-px text-sm font-medium font-display border-b-2 whitespace-nowrap',
+                  'transition-colors duration-150 rounded-t-md',
+                  'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
                   isActive
                     ? 'border-primary text-primary'
-                    : 'border-transparent text-muted hover:text-fg',
+                    : 'border-transparent text-muted hover:text-fg hover:bg-surface-2/60',
                 ].join(' ')
               }
             >

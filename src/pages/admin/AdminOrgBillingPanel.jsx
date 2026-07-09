@@ -13,9 +13,9 @@
  */
 
 import { useEffect, useMemo, useState } from 'react'
-import { Loader2, CheckCircle2, AlertTriangle } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 import { getAdminOrgBilling, updateAdminOrgBilling } from '../../lib/admin.js'
-import { AdminCard } from './AdminUI.jsx'
+import { AdminCard, FieldRow, Toggle, SaveButton, SavedBadge, ErrorText, inputCls } from './AdminUI.jsx'
 import { useAsyncLoad } from '../../hooks/useAsyncLoad.js'
 
 // Overridable limit fields — MUST match app.ee.billing.quota.OVERRIDE_KEYS.
@@ -49,10 +49,6 @@ function initFields(overrides) {
   }
   return state
 }
-
-const inputCls =
-  'rounded-lg bg-bg border border-border text-sm text-fg px-2.5 py-1.5 ' +
-  'focus:outline-none focus:border-primary placeholder:text-muted'
 
 export default function AdminOrgBillingPanel({ orgId }) {
   const { data, loading, reload } = useAsyncLoad(() => getAdminOrgBilling(orgId), [orgId])
@@ -146,9 +142,9 @@ export default function AdminOrgBillingPanel({ orgId }) {
 
   return (
     <AdminCard title="Billing & limits">
-      <div className="px-5 py-4 space-y-5">
+      <div className="px-5 py-4 space-y-1 divide-y divide-border">
         {/* ── Summary row ─────────────────────────────────────────────── */}
-        <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm">
+        <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm pb-4">
           <div className="text-muted">
             Subscription <span className="text-fg">{subLabel}</span>
           </div>
@@ -158,28 +154,24 @@ export default function AdminOrgBillingPanel({ orgId }) {
         </div>
 
         {/* ── Disable billing ─────────────────────────────────────────── */}
-        <label className="flex items-start gap-3 cursor-pointer">
-          <input
-            type="checkbox"
+        <FieldRow label="Self-serve billing">
+          <Toggle
+            id="billing-disabled"
             checked={billingDisabled}
-            onChange={(e) => setBillingDisabled(e.target.checked)}
-            className="mt-0.5 h-4 w-4 rounded border-border text-primary focus:ring-ring"
+            onChange={setBillingDisabled}
+            label={billingDisabled ? 'Disabled' : 'Enabled'}
+            description="For manually-managed / enterprise accounts. Disabling blocks Paystack checkout and
+              turns off overage billing — the limits below are then enforced as hard caps (set a
+              field to “Unlimited” to remove a cap)."
           />
-          <span>
-            <span className="text-sm font-medium text-fg">Disable self-serve billing</span>
-            <span className="block text-xs text-muted mt-0.5">
-              For manually-managed / enterprise accounts. Blocks Paystack checkout and turns
-              off overage billing — the limits below are then enforced as hard caps (set a
-              field to “Unlimited” to remove a cap).
-            </span>
-          </span>
-        </label>
+        </FieldRow>
 
         {/* ── Tier override ───────────────────────────────────────────── */}
-        <div className="flex flex-wrap items-center gap-3">
-          <label className="text-sm font-medium text-fg" htmlFor="tier-override">
-            Base tier override
-          </label>
+        <FieldRow
+          label="Base tier override"
+          htmlFor="tier-override"
+          description="Limits derive from this tier before per-field overrides apply."
+        >
           <select
             id="tier-override"
             value={tierOverride}
@@ -191,69 +183,68 @@ export default function AdminOrgBillingPanel({ orgId }) {
               <option key={t} value={t}>{t}</option>
             ))}
           </select>
-          <span className="text-xs text-muted">
-            Limits derive from this tier before per-field overrides apply.
-          </span>
-        </div>
+        </FieldRow>
 
         {/* ── Per-field limit overrides ───────────────────────────────── */}
-        <div className="rounded-xl border border-border overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border bg-surface-2/40">
-                <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase tracking-wider">Limit</th>
-                <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase tracking-wider">Mode</th>
-                <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase tracking-wider">Value</th>
-                <th className="px-3 py-2 text-right text-xs font-medium text-muted uppercase tracking-wider">Effective</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border">
-              {LIMIT_FIELDS.map(({ key, label, float }) => {
-                const fs = fields[key] || { mode: 'default', value: '' }
-                return (
-                  <tr key={key}>
-                    <td className="px-3 py-2 text-fg">{label}</td>
-                    <td className="px-3 py-2">
-                      <select
-                        value={fs.mode}
-                        onChange={(e) => setFieldMode(key, e.target.value)}
-                        aria-label={`${label} override mode`}
-                        className={inputCls}
-                      >
-                        <option value="default">Default ({fmtLimit(defaults[key])})</option>
-                        <option value="unlimited">Unlimited</option>
-                        <option value="custom">Custom…</option>
-                      </select>
-                    </td>
-                    <td className="px-3 py-2">
-                      {fs.mode === 'custom' ? (
-                        <input
-                          type="number"
-                          min="0"
-                          step={float ? '0.1' : '1'}
-                          value={fs.value}
-                          onChange={(e) => setFieldValue(key, e.target.value)}
-                          placeholder={fmtLimit(defaults[key])}
-                          aria-label={`${label} custom value`}
-                          className={`${inputCls} w-32 tabular-nums`}
-                        />
-                      ) : (
-                        <span className="text-muted">—</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums text-muted">
-                      {fmtLimit(effective[key])}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+        <div className="py-4">
+          <p className="text-sm font-medium text-fg mb-2">Resource limits</p>
+          <div className="rounded-xl border border-border overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-surface-2/40">
+                  <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase tracking-wider">Limit</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase tracking-wider">Mode</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-muted uppercase tracking-wider">Value</th>
+                  <th className="px-3 py-2 text-right text-xs font-medium text-muted uppercase tracking-wider">Effective</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {LIMIT_FIELDS.map(({ key, label, float }) => {
+                  const fs = fields[key] || { mode: 'default', value: '' }
+                  return (
+                    <tr key={key} className="hover:bg-surface-2/40 transition-colors">
+                      <td className="px-3 py-2 text-fg">{label}</td>
+                      <td className="px-3 py-2">
+                        <select
+                          value={fs.mode}
+                          onChange={(e) => setFieldMode(key, e.target.value)}
+                          aria-label={`${label} override mode`}
+                          className={inputCls}
+                        >
+                          <option value="default">Default ({fmtLimit(defaults[key])})</option>
+                          <option value="unlimited">Unlimited</option>
+                          <option value="custom">Custom…</option>
+                        </select>
+                      </td>
+                      <td className="px-3 py-2">
+                        {fs.mode === 'custom' ? (
+                          <input
+                            type="number"
+                            min="0"
+                            step={float ? '0.1' : '1'}
+                            value={fs.value}
+                            onChange={(e) => setFieldValue(key, e.target.value)}
+                            placeholder={fmtLimit(defaults[key])}
+                            aria-label={`${label} custom value`}
+                            className={`${inputCls} w-32 tabular-nums`}
+                          />
+                        ) : (
+                          <span className="text-muted">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-muted">
+                        {fmtLimit(effective[key])}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
 
         {/* ── Note ────────────────────────────────────────────────────── */}
-        <div className="space-y-1">
-          <label className="text-sm font-medium text-fg" htmlFor="billing-note">Note</label>
+        <FieldRow label="Note" htmlFor="billing-note">
           <input
             id="billing-note"
             type="text"
@@ -262,30 +253,15 @@ export default function AdminOrgBillingPanel({ orgId }) {
             placeholder="e.g. contract ref — no PII"
             className={`${inputCls} w-full`}
           />
-        </div>
+        </FieldRow>
 
         {/* ── Save row ────────────────────────────────────────────────── */}
-        <div className="flex items-center gap-3">
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium
-              bg-primary text-white hover:bg-primary/90 focus:outline-none focus-visible:ring-2
-              focus-visible:ring-ring transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {saving && <Loader2 size={14} className="animate-spin" />}
+        <div className="flex items-center gap-3 pt-4">
+          <SaveButton onClick={handleSave} disabled={saving} busy={saving}>
             Save billing settings
-          </button>
-          {saved && (
-            <span className="inline-flex items-center gap-1.5 text-sm text-success">
-              <CheckCircle2 size={14} /> Saved
-            </span>
-          )}
-          {error && (
-            <span className="inline-flex items-center gap-1.5 text-sm text-danger">
-              <AlertTriangle size={14} /> {error}
-            </span>
-          )}
+          </SaveButton>
+          <SavedBadge show={saved} />
+          <ErrorText>{error}</ErrorText>
         </div>
       </div>
     </AdminCard>

@@ -11,6 +11,7 @@ import {
   AdminCard,
   AdminTable,
   AdminTableSkeleton,
+  Avatar,
   SearchInput,
   Pagination,
   RoleChip,
@@ -80,8 +81,9 @@ export default function AdminUsersPage() {
           <AdminTable headers={['Email', 'Name', 'Created', 'Last login', 'Last location', 'Orgs']}>
             {users.map((u) => (
               <tr key={u.id} className="hover:bg-surface-2/50 transition-colors">
-                <td className="px-4 py-3 max-w-[220px]">
-                  <div className="flex items-center gap-2 min-w-0">
+                <td className="px-4 py-3 max-w-[240px]">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Avatar label={u.name || u.email} />
                     <span className="text-fg font-medium truncate" title={u.email}>{u.email}</span>
                     {u.is_superadmin && <SuperadminBadge />}
                   </div>

@@ -35,6 +35,7 @@ import { listSecrets, createSecret, deleteSecret } from '../../lib/secrets.js'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
 import { toast } from '../../components/ui/Toast.jsx'
 import Button from '../../components/ui/Button.jsx'
+import Skeleton from '../../components/ui/Skeleton.jsx'
 
 // ---------------------------------------------------------------------------
 // Delete confirm dialog
@@ -56,7 +57,7 @@ function DeleteDialog({ name, loading, error, onCancel, onConfirm }) {
       onClick={loading ? undefined : onCancel}
     >
       <div
-        className="bg-surface rounded-2xl border border-border shadow-2xl p-6 w-full max-w-sm"
+        className="bg-surface rounded-2xl border border-border shadow-nubi-xl p-6 w-full max-w-sm"
         onClick={e => e.stopPropagation()}
         role="alertdialog"
         aria-modal="true"
@@ -160,7 +161,7 @@ function AddSecretPanel({ open, onClose, onCreated }) {
         className={[
           'fixed inset-y-0 right-0 z-50',
           'w-full sm:max-w-[420px]',
-          'bg-surface border-l border-border shadow-2xl',
+          'bg-surface border-l border-border shadow-nubi-xl',
           'flex flex-col transition-transform duration-300 ease-in-out',
           open ? 'translate-x-0' : 'translate-x-full',
         ].join(' ')}
@@ -265,13 +266,28 @@ function AddSecretPanel({ open, onClose, onCreated }) {
 // Secret row
 // ---------------------------------------------------------------------------
 
+/** Shimmer placeholder matching SecretRow's layout — used while the list loads. */
+function SecretRowSkeleton() {
+  return (
+    <div className="flex items-center gap-4 bg-surface rounded-xl border border-border px-4 py-3" aria-hidden="true">
+      <Skeleton.Avatar size={36} />
+      <div className="flex-1 min-w-0 space-y-2">
+        <Skeleton className="h-3.5 w-1/3" />
+        <Skeleton className="h-3 w-1/4" />
+      </div>
+      <Skeleton className="h-3 w-16 rounded hidden sm:block shrink-0" />
+      <Skeleton className="w-8 h-8 rounded-lg shrink-0" />
+    </div>
+  )
+}
+
 function SecretRow({ secret, onDelete, canWrite }) {
   const created = secret.created_at
     ? new Date(secret.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
     : null
 
   return (
-    <div className="flex items-center gap-4 bg-surface rounded-xl border border-border px-4 py-3 hover:shadow-sm hover:border-border/80 transition-all duration-150">
+    <div className="flex items-center gap-4 bg-surface rounded-xl border border-border px-4 py-3 hover:shadow-nubi-sm hover:border-border/80 transition-all duration-150">
       {/* Icon */}
       <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
         <KeyRound size={16} className="text-primary" strokeWidth={2} />
@@ -312,7 +328,7 @@ function SecretRow({ secret, onDelete, canWrite }) {
 function EmptyState({ onAdd, canWrite }) {
   return (
     <div className="flex flex-col items-center justify-center py-20 px-6 text-center">
-      <div className="flex items-center justify-center w-16 h-16 rounded-2xl mb-5 bg-primary/10 shadow-sm">
+      <div className="flex items-center justify-center w-16 h-16 rounded-2xl mb-5 bg-primary/10 shadow-nubi-sm">
         <KeyRound size={28} className="text-primary" strokeWidth={1.5} />
       </div>
       <h2 className="font-display font-semibold text-xl text-fg mb-2">No secrets yet</h2>
@@ -430,10 +446,8 @@ export default function SecretsPage() {
 
         {/* Loading skeleton */}
         {listLoading && (
-          <div className="space-y-3 max-w-2xl">
-            {[1, 2, 3].map(i => (
-              <div key={i} className="bg-surface rounded-xl border border-border h-16 animate-pulse" />
-            ))}
+          <div className="space-y-2 max-w-2xl" aria-label="Loading secrets">
+            {[1, 2, 3].map(i => <SecretRowSkeleton key={i} />)}
           </div>
         )}
 
