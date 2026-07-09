@@ -10,8 +10,6 @@ Related docs:
 - [Embedding](embedding.md) — JWT issuers, RLS, embed component
 - [Exports & scheduled reports](exports-and-jobs.md) — export endpoints and
   report flow tasks
-- [Embedding & reporting roadmap](roadmap-embedding-reporting.md) — shipped
-  features and design decisions
 
 ---
 
@@ -170,7 +168,7 @@ zero COGS lines. It is explicitly listed in `tiers.py` under "NOT metered".
 
 ## Reports and exports pipeline
 
-The pipeline is: **one snapshot → SVG (echarts SSR) → {PDF, PPTX} → Flows
+The pipeline is: **one snapshot → SVG (echarts SSR) → PDF → Flows
 delivery**.
 
 ### SVG rendering (T2)
@@ -199,28 +197,18 @@ Backends tried in order:
 Header/footer text and optional title slide are drawn in pure PDF operations
 (no rasterization). Page sizes: A4, Letter, 16:9.
 
-### PPTX export (T4)
-
-`app/embedding/render_pptx.py` — `render_board_pptx` /
-`render_board_pptx_from_data`
-
-Uses `python-pptx` to insert each widget SVG as a native picture shape on a
-blank slide layout. A PNG raster fallback (via cairosvg) is embedded for
-compatibility with older clients. The T5 export config drives title slide,
-caption, per-widget include/exclude, and `page_break_before` behaviour.
-
 ### Scheduled report sends
 
 `app/flows/handlers/report_send.py` — `handle(config, ctx, claims)`
 
 Registered as a Flows task kind `report_send`. A daily/cron flow config
-specifies `board_id`, `format` (csv/pdf/pptx), `recipients`, `subject`, and an
+specifies `board_id`, `format` (csv/pdf), `recipients`, `subject`, and an
 optional `locked_params` map for per-recipient RLS. The captured `policies` dict
 in the task config carries the RLS view (no live JWT at tick time).
 
 For each tick:
 1. The board is resolved org-scoped.
-2. The report is rendered via `_render_pdf` / `_render_pptx` / `render_report`.
+2. The report is rendered via `_render_pdf` / `render_report`.
 3. The rendered bytes are sent to all recipients via the configured email sender.
 4. If the org has a connected email integration (`app.notify.integrations`),
    the same event is also dispatched through it, best-effort.
@@ -248,7 +236,6 @@ actions map to existing COGS dimensions defined in
 |---|---|---|
 | Snapshot create/refresh | `app/embedding/snapshot.py` | `storage_zar_per_gb_month` (sidecar `.duckdb` written to R2) + `scan_zar_per_tib` (collect_board_data widget queries) |
 | PDF export render | `app/embedding/render_pdf.py` | `compute_zar_per_1000_cu` (echarts SSR + cairosvg/svglib container CPU) |
-| PPTX export render | `app/embedding/render_pptx.py` | `compute_zar_per_1000_cu` (echarts SSR + python-pptx container CPU) |
 | Scheduled report send | `app/flows/handlers/report_send.py` | `compute_zar_per_1000_cu` (render run + Flows delivery) |
 | Public/CDN static export | `app/embedding/public_export.py` | `storage_zar_per_gb_month` (R2 HTML + sidecar) + `embedded_session_zar_per_10k` (CDN egress) |
 
@@ -527,22 +514,17 @@ compute is metered only for the steps that have a real COGS line.
 
 ## What is shipped
 
-### Embedding, snapshots, and reporting (Wave 1 + Wave 2)
+### Embedding, snapshots, and reporting
 
-The following items from `docs/roadmap-embedding-reporting.md` are now shipped:
-
-- **Unified Dashboard / Report / Presentation editor** — `src/editor/EditorShell.jsx`
-  wraps the existing dashboard grid with a top-level surface switch. The schema
-  split (`board.surfaces.{grid,report,slides}`) is live in `app/dashboards/spec.py`.
-  `src/editor/DocCanvas.jsx` (paginated A4/Letter report canvas) and
-  `src/editor/SlideCanvas.jsx` (16:9 slides + present mode) are full
-  implementations wired into `EditorPage`. The `/editor` route uses `EditorShell`.
-- **T2 echarts-SSR SVG render** — `app/dashboards/svg_render.py` + the
+- **Dashboard authoring** — Nubi ships a single authoring surface, the
+  dashboard grid (`src/editor/DashboardEditor.jsx`, wrapped by
+  `src/editor/EditorShell.jsx`). The earlier report/presentation surfaces were
+  removed — the dashboard is the one source of truth for every output.
+- **echarts-SSR SVG render** — `app/dashboards/svg_render.py` + the
   `scripts/render/echarts-ssr.mjs` Node subprocess compose per-widget SVGs into
   full-page layouts for the export pipeline.
-- The `render_pdf.py` and `render_pptx.py` renderers are fully wired via the T2
-  SVG path and exercised by `report_send.py` and the download export endpoints
-  (`GET /boards/{id}/export.pdf`, `GET /boards/{id}/export.pptx`).
+- **PDF export** — `render_pdf.py` is wired via the SVG path and exercised by
+  `report_send.py` and the download endpoint `GET /boards/{id}/export.pdf`.
 
 ### Semantic layer + smart engine + close-the-loop (Waves 1–4)
 
@@ -556,5 +538,5 @@ Shipped across four waves committed to `main`:
 | Wave 4 | `813ce8b` | Scenario sweep / backfill, event / webhook / downstream triggers + run-history + SLA |
 
 Do not rely on this document as a feature-completeness guarantee for all
-roadmap items; refer to `docs/roadmap-embedding-reporting.md`, `docs/semantic-and-data-apps.md`, and the test
+roadmap items; refer to `docs/semantic-and-data-apps.md` and the test
 suite for the current status.

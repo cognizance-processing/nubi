@@ -5,7 +5,7 @@ each export action maps to a COGS line and why viewers are always free.
 
 Nubi has three ways to get data out:
 
-1. **Download exports** — CSV, JSON, high-fidelity PDF, and PowerPoint via the Export & Share toolbar.
+1. **Download exports** — CSV, JSON, and high-fidelity PDF via the Export & Share toolbar.
 2. **Scheduled reports** — Flows tasks that render a board on a cron schedule and deliver it by email (or other notify channel).
 3. **Unsafe public exports** — frozen static HTML + DuckDB sidecar published to a CDN (opt-in, loud, auth-gated).
 
@@ -20,8 +20,7 @@ The server-side paths are:
 |----------|---------|-------|
 | `GET /api/v1/boards/{id}/export.csv` | `text/csv` | Multi-widget CSV; `?query_id=<id>` for a single widget. |
 | `GET /api/v1/boards/{id}/export.json` | `application/json` | Same data as CSV but JSON; handy for client-side SheetJS. |
-| `GET /api/v1/boards/{id}/export.pdf` | `application/pdf` | High-fidelity **vector** PDF via the T2→T3 pipeline (see below). |
-| `GET /api/v1/boards/{id}/export.pptx` | `application/vnd.openxmlformats-officedocument.presentationml.presentation` | Native-SVG PowerPoint via the T2→T4 pipeline (see below). |
+| `GET /api/v1/boards/{id}/export.pdf` | `application/pdf` | High-fidelity **vector** PDF via the SVG→PDF pipeline (see below). |
 | `POST /api/v1/boards/{id}/share` | `application/json` | Embed descriptor + RLS model + mint instructions for a host-signed embed JWT. |
 
 The **Share** endpoint gives you everything you need to embed the board — the embed URL, a copy-paste `<nubi-dashboard>` snippet, and the exact JWT claim shape the host must RS256/ES256-sign. Nubi never mints embed tokens itself. See [Embedding](/docs/embedding) for the full embed and RLS model.
@@ -51,23 +50,7 @@ GET /api/v1/boards/{id}/export.pdf
 GET /api/v1/boards/{id}/export.pdf?page_size=Letter
 ```
 
-### High-fidelity PPTX export (`export.pptx`)
-
-The PPTX pipeline:
-
-1. Same T5 export config and T2 SVG render as above.
-2. **T4 PPTX render** — builds a `.pptx` file with one slide per widget using `python-pptx`. Each slide embeds the SVG natively (PowerPoint 2016+ vector rendering) plus a PNG raster fallback (via `cairosvg`) for older clients. Per-widget captions, a title slide, header/footer text boxes, and explicit slide ordering all come from the T5 export config.
-
-Required Python packages (lazy-imported; absent → 503):
-- `python-pptx` — PPTX construction.
-- `cairosvg` — PNG raster fallback inside each slide.
-
-```
-GET /api/v1/boards/{id}/export.pptx
-GET /api/v1/boards/{id}/export.pptx?page_size=16:9
-```
-
-Both PDF and PPTX export use the **editor view** (no RLS filtering) — the same policy as `export.csv`. For per-viewer filtered exports, drive the export through a scheduled report flow with the appropriate `policies` claim.
+PDF export uses the **editor view** (no RLS filtering) — the same policy as `export.csv`. For per-viewer filtered exports, drive the export through a scheduled report flow with the appropriate `policies` claim.
 
 ---
 
