@@ -18,8 +18,8 @@ Config shape
         "org_id":    "<uuid>",   # optional — falls back to ctx.org_id / claims
 
         # Render
-        "format":   "csv" | "pdf" | "pptx",  # default: "csv"
-        "params":   {},                         # base named params
+        "format":   "csv" | "pdf",  # default: "csv"
+        "params":   {},                # base named params
 
         # Delivery
         "recipients": ["alice@example.com", ...],  # required (non-empty)
@@ -161,10 +161,10 @@ def handle(
         )
 
     fmt: str = (config.get("format") or "csv").lower().strip()
-    if fmt not in ("csv", "pdf", "pptx"):
+    if fmt not in ("csv", "pdf"):
         raise AppError(
             "invalid_task_config",
-            f"report_send: unsupported format {fmt!r}. Expected 'csv', 'pdf', or 'pptx'.",
+            f"report_send: unsupported format {fmt!r}. Expected 'csv' or 'pdf'.",
             400,
         )
 
@@ -244,7 +244,7 @@ def handle(
             if cache_key not in _rendered_cache:
                 per_params = inject_locked_params(base_params, per_locked)
                 # Build per-recipient render_claims with locked params merged
-                # into the base claims so the PPTX collector honours them.
+                # into the base claims so the renderer honours them.
                 per_claims = dict(render_claims)
                 try:
                     _rendered_cache[cache_key] = _render(
@@ -331,14 +331,14 @@ def _render(
     Supported formats (in resolution order):
     1. ``'pdf'``  — T3 :func:`app.embedding.render_pdf.render_board_pdf` when
        available; falls back to :func:`app.jobs.report.render_report` (stdlib PDF).
-    2. ``'pptx'`` — T4 :func:`app.embedding.render_pptx.render_board_pptx_from_data`
-       with real widget data collected via :func:`_collect_widget_data_sync`.
-    3. ``'csv'``  — :func:`app.jobs.report.render_report` (stdlib CSV path).
+    2. ``'csv'``  — :func:`app.jobs.report.render_report` (stdlib CSV path).
+
+    *org_id* / *render_claims* are accepted for a stable dispatch signature
+    (RLS-aware renderers can use them) even though the current pdf/csv paths
+    don't need them.
     """
     if fmt == "pdf":
         return _render_pdf(board, params)
-    if fmt == "pptx":
-        return _render_pptx(board, params, org_id=org_id, render_claims=render_claims or {})
     # csv — stdlib path (always available)
     from app.jobs.report import render_report  # noqa: PLC0415
     return render_report(board, params, format="csv")
@@ -355,105 +355,3 @@ def _render_pdf(board: dict[str, Any], params: dict[str, Any]) -> bytes:
     # stdlib path is always available and produces a valid %PDF-1.4 document.
     from app.jobs.report import render_report  # noqa: PLC0415
     return render_report(board, params, format="pdf")  # type: ignore[return-value]
-
-
-def _collect_widget_data_sync(
-    board: dict[str, Any],
-    org_id: str,
-    render_claims: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Collect per-widget data for *board* synchronously.
-
-    Runs :func:`~app.dashboards.collect.collect_board_data` (async) in a
-    temporary event loop or thread, matching the pattern used by
-    :func:`~app.jobs.report.resolve_board_sync`.
-
-    Parameters
-    ----------
-    board:
-        Pre-fetched board dict (org-scoped).
-    org_id:
-        The owning org id (for datastore resolution).
-    render_claims:
-        Claims dict whose ``"policies"`` key carries the captured RLS context.
-
-    Returns
-    -------
-    list[dict]
-        One entry per data widget: ``{widget_id, query_id, columns, rows}``.
-        Empty on any error so callers always receive a list.
-    """
-    import asyncio  # noqa: PLC0415
-
-    from app.dashboards.collect import collect_board_data  # noqa: PLC0415
-    from app.repos.provider import get_repo  # noqa: PLC0415
-
-    board_id: str = board.get("id") or ""
-
-    async def _fetch() -> list[dict[str, Any]]:
-        repo = get_repo()
-        return await collect_board_data(
-            board_id,
-            org_id,
-            claims=render_claims,
-            repo=repo,
-            board=board,  # pass pre-fetched board to skip redundant repo lookup
-        )
-
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures  # noqa: PLC0415
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(asyncio.run, _fetch())
-                return future.result()
-        else:
-            return loop.run_until_complete(_fetch())
-    except RuntimeError:
-        return asyncio.run(_fetch())
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("report_send: widget data collection failed: %s", exc)
-        return []
-
-
-def _render_pptx(
-    board: dict[str, Any],
-    params: dict[str, Any],
-    *,
-    org_id: str = "",
-    render_claims: dict[str, Any] | None = None,
-) -> bytes:
-    """Try T4 render_board_pptx_from_data with real widget data; fall back to CSV.
-
-    T4 path (python-pptx) is attempted when ``app.embedding.render_pptx``
-    is importable AND the board carries a structured spec.  Widget data is
-    collected via :func:`_collect_widget_data_sync` so slides contain real
-    data, honoring the recipient's locked RLS policies via *render_claims*.
-
-    Any failure (missing deps, no spec, collection error) falls through to
-    CSV — the always-available format.
-    """
-    # T4 path — attempt best-effort.
-    try:
-        from app.embedding.render_pptx import render_board_pptx_from_data  # noqa: PLC0415
-        from app.dashboards.spec import validate_spec  # noqa: PLC0415
-
-        config: dict[str, Any] = board.get("config") or {}
-        spec_dict = config.get("spec")
-        if spec_dict is None:
-            raise ValueError("board has no spec")
-        spec, errors = validate_spec(spec_dict)
-        if spec is None:
-            raise ValueError(f"board spec is invalid: {errors}")
-
-        # Collect real widget data (honouring RLS via render_claims).
-        widget_data = _collect_widget_data_sync(
-            board, org_id, render_claims or {}
-        )
-
-        return render_board_pptx_from_data(spec, widget_data=widget_data)
-    except Exception:  # noqa: BLE001
-        # T4 unavailable or board has no spec — fall back to CSV.
-        from app.jobs.report import render_report  # noqa: PLC0415
-        return render_report(board, params, format="csv")  # type: ignore[return-value]
-

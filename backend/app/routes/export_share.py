@@ -25,17 +25,6 @@ GET  /boards/{id}/export.pdf
     Returns ``application/pdf``.  Requires cairosvg or svglib+reportlab; returns
     503 with a clear install message when neither is available.
 
-GET  /boards/{id}/export.pptx
-    Render the board to a PowerPoint file via the T2 → T4 pipeline:
-      1. Collect the board's widget data.
-      2. Render per-widget SVGs.
-      3. Build a .pptx with one slide per widget, embedding SVG natively +
-         PNG fallback via python-pptx.
-    Respects the T5 export config (page_size, title_slide, header/footer,
-    captions, include/exclude, order).
-    Returns ``application/vnd.openxmlformats-officedocument.presentationml.presentation``.
-    Requires python-pptx (+ cairosvg for PNG rasterization); returns 503 when absent.
-
 POST /boards/{id}/share
     Return everything the host needs to embed the board: the embed URL, a
     copy-paste ``<nubi-dashboard>`` snippet, the RLS / auth model summary, and
@@ -70,7 +59,6 @@ Router wiring (for main.py owner)
     GET  /api/v1/boards/{id}/export.csv
     GET  /api/v1/boards/{id}/export.json
     GET  /api/v1/boards/{id}/export.pdf
-    GET  /api/v1/boards/{id}/export.pptx
     POST /api/v1/boards/{id}/share
 """
 
@@ -295,76 +283,6 @@ async def export_board_pdf(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{safe_name}.pdf"'},
-    )
-
-
-# ---------------------------------------------------------------------------
-# GET /boards/{id}/export.pptx
-# ---------------------------------------------------------------------------
-
-
-@router.get("/{board_id}/export.pptx")
-async def export_board_pptx(
-    board_id: str,
-    request: Request,
-    page_size: str | None = None,
-    user: dict[str, Any] = Depends(current_user),
-    repo: Repo = Depends(get_repo),
-) -> Response:
-    """Render the board to a PowerPoint (.pptx) file.
-
-    Uses the T2 (echarts-SSR) → T4 (python-pptx) pipeline.  One slide per
-    widget.  An optional title slide, header/footer, and captions are driven
-    by the T5 export config embedded in the board spec's ``export`` block;
-    ``?page_size=`` overrides the slide canvas size.
-
-    Returns
-    -------
-    Response
-        ``application/vnd.openxmlformats-officedocument.presentationml.presentation``
-        with ``Content-Disposition: attachment``.
-
-    Raises
-    ------
-    AppError("board_not_found", 404)
-        When the board does not exist in this org.
-    AppError("pptx_not_installed", 503)
-        When python-pptx is not installed.
-    AppError("cairosvg_not_installed", 503)
-        When cairosvg is not installed (needed for PNG fallback inside the PPTX).
-    AppError("node_not_found", 503)
-        When Node.js is not available for SVG rendering.
-    """
-    from app.dashboards.spec import validate_spec  # noqa: PLC0415
-    from app.embedding.render_pptx import render_board_pptx_from_data  # noqa: PLC0415
-
-    board = await _load_board(board_id, str(user["id"]), repo, request)
-    spec_dict = spec_from_board(board)
-    validated_spec, _ = validate_spec(spec_dict)
-    if validated_spec is None:
-        validated_spec, _ = validate_spec({"widgets": []})
-
-    from app.routes._org import resolve_org_id as _resolve  # noqa: PLC0415
-    org_id = await _resolve(str(user["id"]), repo, request)
-    widget_data = await collect_board_data(
-        board_id, org_id, claims={"policies": {}}, repo=repo
-    )
-
-    # Off-loaded to a thread — render_board_pptx_from_data calls render_widgets_svg
-    # which blocks on subprocess.run; must not run on the event loop thread.
-    pptx_bytes = await asyncio.to_thread(
-        render_board_pptx_from_data,
-        validated_spec,
-        widget_data,
-        page_size=page_size,
-    )
-
-    safe_name = "".join(c for c in str(board_id) if c.isalnum() or c in "-_") or "board"
-    mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-    return Response(
-        content=pptx_bytes,
-        media_type=mime,
-        headers={"Content-Disposition": f'attachment; filename="{safe_name}.pptx"'},
     )
 
 

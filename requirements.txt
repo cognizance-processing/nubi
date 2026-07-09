@@ -97,14 +97,6 @@ pywebpush>=1.14.0
 # svglib>=1.5          # fallback:  pip install svglib reportlab
 # reportlab>=4.0       # required by svglib fallback
 
-# T4 PPTX export (lazy-imported in app/embedding/render_pptx.py).
-# python-pptx builds the .pptx file; cairosvg rasterizes per-widget SVGs to
-# PNG for old-client fallback. Both are optional at runtime — the PPTX export
-# route raises AppError("pptx_not_installed" / "cairosvg_not_installed", 503)
-# when they are absent, so the app runs fine without them.
-# python-pptx>=1.0
-# cairosvg>=2.7
-
 # Test dependencies
 pytest>=8.0
 pytest-asyncio>=1.0

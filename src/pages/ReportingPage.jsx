@@ -7,7 +7,7 @@
  *  1. Hero          — headline + subhead + CTAs
  *  2. ViewerFlat    — "Pay per refresh, not per viewer" — flat-cost visual
  *  3. EmbedModes    — live + connector override; frozen snapshot; public/CDN
- *  4. ExportPipeline — "One dashboard → live · PDF · deck" via Flows
+ *  4. ExportPipeline — "One dashboard → live · PDF" via Flows
  *  5. FrozenAlive   — public dashboards interactive in-browser (DuckDB-WASM)
  *  6. ClosingCta    — links to /pricing and /compare
  *
@@ -25,7 +25,6 @@ import {
   Users,
   Globe,
   FileText,
-  Presentation,
   RefreshCw,
   Lock,
   Check,
@@ -174,7 +173,7 @@ function HeroSection() {
                 A dashboard with 10 or 10,000,000 viewers{' '}
                 <strong className="text-fg font-semibold">costs the same</strong>. The DuckDB-WASM
                 kernel runs inside the browser — viewers are free on every plan. Embed it live,
-                export to PDF or deck, auto-refresh via{' '}
+                export to PDF, auto-refresh via{' '}
                 <strong className="text-fg font-semibold">Flows</strong>. Same board, every output.
               </p>
 
@@ -199,7 +198,7 @@ function HeroSection() {
                   '≈ $0 / dashboard view',
                   'unlimited viewers every plan',
                   'frozen snapshots stay interactive',
-                  'one board → live · pdf · deck',
+                  'one board → live · pdf',
                 ].map(f => (
                   <span key={f} className="flex items-center gap-1.5">
                     <Check size={11} strokeWidth={2.5} className="text-teal-400" />
@@ -578,7 +577,7 @@ function EmbedModesSection() {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
-/*  §4  Export pipeline — one dashboard → live · PDF · deck                   */
+/*  §4  Export pipeline — one dashboard → live · PDF                          */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
 const PIPELINE_STEPS = [
@@ -620,12 +619,6 @@ const OUTPUTS = [
     accent: '#0ea5e9',
     label: 'PDF report',
     desc: 'Vector — ECharts SSR → cairosvg.',
-  },
-  {
-    icon: Presentation,
-    accent: '#8b5cf6',
-    label: 'PPTX deck',
-    desc: 'Native SVG in PowerPoint slides.',
   },
   {
     icon: RefreshCw,
@@ -712,7 +705,7 @@ function ExportPipelineSection() {
           </h2>
           <p className="text-sm sm:text-base lg:text-lg leading-relaxed text-muted">
             The same dashboard canvas is the source of truth for your live embed,
-            your PDF board pack, your PPTX deck, and your scheduled email report.
+            your PDF board pack, and your scheduled email report.
             Flows auto-refreshes and delivers each output — no duplicate pipelines.
           </p>
         </div>
@@ -744,7 +737,7 @@ function ExportPipelineSection() {
           </div>
 
           {/* Bottom: output cards */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             {OUTPUTS.map((o, i) => (
               <OutputCard key={o.label} o={o} i={i} />
             ))}
@@ -973,7 +966,7 @@ function ClosingCtaSection() {
           </h2>
           <p className="text-sm sm:text-base lg:text-lg leading-relaxed mb-8 sm:mb-10 text-muted dark:text-slate-300/90 max-w-xl mx-auto">
             Connect your warehouse, <B>embed a live dashboard in minutes</B>. Freeze it,
-            export it to PDF, turn it into a deck. <B>No credit card required.</B>
+            export it to PDF. <B>No credit card required.</B>
           </p>
 
           <div className="flex flex-col sm:flex-row gap-3 justify-center mb-9">

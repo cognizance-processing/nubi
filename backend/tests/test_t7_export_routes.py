@@ -1,9 +1,9 @@
-"""Tests for T7 export routes — GET /boards/{id}/export.pdf + export.pptx.
+"""Tests for T7 export routes — GET /boards/{id}/export.pdf.
 
 Strategy
 --------
 - Use InMemoryRepo + FakeDB (no live DB) with a seeded board.
-- The T2 (Node.js echarts-SSR) and T3/T4 render backends are mocked out so
+- The T2 (Node.js echarts-SSR) and T3 render backends are mocked out so
   the tests are offline and CI-friendly.
 - When optional render libs ARE present: the real renderer is exercised
   via the mock-SVG path; content-type + non-empty body are asserted.
@@ -13,17 +13,11 @@ Strategy
 Tests
 -----
 1. export.pdf — 200 + application/pdf when backends available.
-2. export.pptx — 200 + correct PPTX content-type when backends available.
-3. export.pdf — non-empty body (valid %PDF header) when backends available.
-4. export.pptx — non-empty body (PK zip magic) when backends available.
-5. export.pdf — 503 JSON error when PDF backend is absent (simulated).
-6. export.pptx — 503 JSON error when pptx backend is absent (simulated).
-7. export.pdf — 404 for unknown board_id.
-8. export.pptx — 404 for unknown board_id.
-9. export.pdf — ?page_size=Letter is accepted (no crash).
-10. export.pptx — ?page_size=16:9 is accepted (no crash).
-11. export.pdf — render_board_svg is invoked via asyncio.to_thread (non-blocking).
-12. export.pptx — render_board_pptx_from_data is invoked via asyncio.to_thread (non-blocking).
+2. export.pdf — non-empty body (valid %PDF header) when backends available.
+3. export.pdf — 503 JSON error when PDF backend is absent (simulated).
+4. export.pdf — 404 for unknown board_id.
+5. export.pdf — ?page_size=Letter is accepted (no crash).
+6. export.pdf — render_board_svg is invoked via asyncio.to_thread (non-blocking).
 """
 
 from __future__ import annotations
@@ -67,11 +61,6 @@ _PDF_BACKEND_AVAILABLE = (
     importlib.util.find_spec("svglib") is not None
     and importlib.util.find_spec("reportlab") is not None
 ) or _cairosvg_ok()
-
-_PPTX_BACKEND_AVAILABLE = (
-    importlib.util.find_spec("pptx") is not None
-    and _cairosvg_ok()
-)
 
 # ---------------------------------------------------------------------------
 # Minimal SVG that the mocked T2 returns
@@ -298,133 +287,6 @@ class TestExportPdf:
 
 
 # ---------------------------------------------------------------------------
-# PPTX endpoint tests
-# ---------------------------------------------------------------------------
-
-
-class TestExportPptx:
-    """GET /api/v1/boards/{id}/export.pptx"""
-
-    @pytest.mark.asyncio
-    @pytest.mark.skipif(
-        not _PPTX_BACKEND_AVAILABLE,
-        reason="python-pptx + cairosvg not installed",
-    )
-    async def test_pptx_200_content_type(self, export_setup):
-        """200 response with the correct PPTX MIME type."""
-        client, user_id, org_id, board_id, repo = export_setup
-
-        with patch(
-            "app.embedding.render_pptx.render_board_pptx_from_data",
-            return_value=b"PK\x03\x04stub-pptx-bytes",
-        ), patch(
-            "app.dashboards.collect.collect_board_data",
-            return_value=[],
-        ):
-            resp = await client.get(
-                f"/api/v1/boards/{board_id}/export.pptx",
-                headers=_auth_headers(user_id),
-            )
-
-        assert resp.status_code == 200, resp.text
-        expected_mime = (
-            "application/vnd.openxmlformats-officedocument"
-            ".presentationml.presentation"
-        )
-        assert expected_mime in resp.headers["content-type"]
-
-    @pytest.mark.asyncio
-    @pytest.mark.skipif(
-        not _PPTX_BACKEND_AVAILABLE,
-        reason="python-pptx + cairosvg not installed",
-    )
-    async def test_pptx_body_nonempty(self, export_setup):
-        """Response body is non-empty."""
-        client, user_id, org_id, board_id, repo = export_setup
-
-        with patch(
-            "app.embedding.render_pptx.render_board_pptx_from_data",
-            return_value=b"PK\x03\x04stub-pptx-bytes",
-        ), patch(
-            "app.dashboards.collect.collect_board_data",
-            return_value=[],
-        ):
-            resp = await client.get(
-                f"/api/v1/boards/{board_id}/export.pptx",
-                headers=_auth_headers(user_id),
-            )
-
-        assert resp.status_code == 200
-        assert len(resp.content) > 0
-
-    @pytest.mark.asyncio
-    @pytest.mark.skipif(
-        not _PPTX_BACKEND_AVAILABLE,
-        reason="python-pptx + cairosvg not installed",
-    )
-    async def test_pptx_page_size_widescreen(self, export_setup):
-        """?page_size=16:9 is accepted — no crash."""
-        client, user_id, org_id, board_id, repo = export_setup
-
-        with patch(
-            "app.embedding.render_pptx.render_board_pptx_from_data",
-            return_value=b"PK\x03\x04stub-pptx-bytes",
-        ), patch(
-            "app.dashboards.collect.collect_board_data",
-            return_value=[],
-        ):
-            resp = await client.get(
-                f"/api/v1/boards/{board_id}/export.pptx?page_size=16:9",
-                headers=_auth_headers(user_id),
-            )
-
-        assert resp.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_pptx_404_unknown_board(self, export_setup):
-        """Unknown board_id returns 404."""
-        client, user_id, org_id, board_id, repo = export_setup
-        missing_id = str(uuid.uuid4())
-
-        resp = await client.get(
-            f"/api/v1/boards/{missing_id}/export.pptx",
-            headers=_auth_headers(user_id),
-        )
-        assert resp.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_pptx_503_when_backend_absent(self, export_setup):
-        """503 with JSON error body when python-pptx is absent."""
-        client, user_id, org_id, board_id, repo = export_setup
-
-        from app.errors import AppError  # noqa: PLC0415
-
-        def _raise_missing(*args: Any, **kwargs: Any) -> bytes:
-            raise AppError(
-                "pptx_not_installed",
-                "python-pptx is required for PPTX export but is not installed.",
-                503,
-            )
-
-        with patch(
-            "app.dashboards.collect.collect_board_data",
-            return_value=[],
-        ), patch(
-            "app.embedding.render_pptx.render_board_pptx_from_data",
-            side_effect=_raise_missing,
-        ):
-            resp = await client.get(
-                f"/api/v1/boards/{board_id}/export.pptx",
-                headers=_auth_headers(user_id),
-            )
-
-        assert resp.status_code == 503
-        body = resp.json()
-        assert "error" in body
-        assert body["error"]["code"] == "pptx_not_installed"
-
-
-# ---------------------------------------------------------------------------
 # Non-blocking (asyncio.to_thread) contract tests
 # ---------------------------------------------------------------------------
 
@@ -432,11 +294,10 @@ class TestExportPptx:
 class TestExportNonBlocking:
     """Verify that the heavy render calls are dispatched via asyncio.to_thread.
 
-    The route handlers must NOT call render_board_svg or
-    render_board_pptx_from_data directly on the event-loop thread.  We assert
-    this by patching asyncio.to_thread and confirming it is called with the
-    expected sync callable — the route should never reach the real function
-    except through the thread executor.
+    The route handlers must NOT call render_board_svg directly on the
+    event-loop thread.  We assert this by patching asyncio.to_thread and
+    confirming it is called with the expected sync callable — the route
+    should never reach the real function except through the thread executor.
     """
 
     @pytest.mark.asyncio
@@ -476,36 +337,4 @@ class TestExportNonBlocking:
         assert len(to_thread_calls) >= 1, (
             "asyncio.to_thread was never called in export_board_pdf; "
             "render_board_svg would block the event loop"
-        )
-
-    @pytest.mark.asyncio
-    async def test_pptx_render_uses_to_thread(self, export_setup):
-        """export.pptx dispatches render_board_pptx_from_data via asyncio.to_thread."""
-        client, user_id, org_id, board_id, repo = export_setup
-
-        to_thread_calls: list[Any] = []
-
-        async def _fake_to_thread(func, *args, **kwargs):  # type: ignore[override]
-            to_thread_calls.append(func)
-            return func(*args, **kwargs)
-
-        with patch(
-            "app.routes.export_share.asyncio.to_thread",
-            side_effect=_fake_to_thread,
-        ), patch(
-            "app.dashboards.collect.collect_board_data",
-            return_value=[],
-        ), patch(
-            "app.embedding.render_pptx.render_board_pptx_from_data",
-            return_value=b"PK\x03\x04stub",
-        ):
-            resp = await client.get(
-                f"/api/v1/boards/{board_id}/export.pptx",
-                headers=_auth_headers(user_id),
-            )
-
-        assert resp.status_code == 200, resp.text
-        assert len(to_thread_calls) >= 1, (
-            "asyncio.to_thread was never called in export_board_pptx; "
-            "render_board_pptx_from_data would block the event loop"
         )

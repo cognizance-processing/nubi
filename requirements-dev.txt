@@ -6,13 +6,13 @@
 # Install locally to run the full export test suite:
 #
 #   pip install -r requirements-dev.txt
-#   # For cairosvg (PPTX tests) you also need the system cairo library:
+#   # For cairosvg (PDF tests) you also need the system cairo library:
 #   #   Linux:  apt-get install libcairo2
 #   #   macOS:  brew install cairo
 #
 # The CI workflow installs libcairo2 via apt and then installs this file so
-# that test_render_pdf.py, test_t4_render_pptx.py, and their skip guards
-# never trigger (tests run rather than skip).
+# that test_render_pdf.py and its skip guards never trigger (tests run rather
+# than skip).
 
 # PDF export backend (svglib is the pure-Python fallback for test_render_pdf.py)
 svglib>=1.5
@@ -21,10 +21,7 @@ reportlab>=4.0
 # PDF page-count assertions in test_render_pdf.py
 pypdf>=3.0
 
-# PPTX export (test_t4_render_pptx.py)
-python-pptx>=1.0
-
-# cairosvg — preferred PDF backend + PPTX per-widget rasteriser.
+# cairosvg — preferred PDF backend.
 # Requires the system libcairo library (installed separately in CI).
 # Listed here so `pip install -r requirements-dev.txt` pulls it in once
 # the system library is present.  Pure-Python tests use svglib instead.

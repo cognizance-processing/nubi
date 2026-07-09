@@ -248,7 +248,7 @@ class TaskSpec(BaseModel):
         - ``preagg_refresh`` → ``org_id`` (required).
         - ``report_send`` → ``board_id`` (required) AND ``recipients``
           (required — non-empty list of email addresses).  Optional:
-          ``org_id``, ``format`` (csv/pdf/pptx, default csv), ``params``,
+          ``org_id``, ``format`` (csv/pdf, default csv), ``params``,
           ``subject``, ``body``, ``apply_user_permissions``, ``locked_params``,
           ``notify_channels``, ``policies``.
         - ``http_call``   → ``url`` (required — SSRF-guarded outbound URL).

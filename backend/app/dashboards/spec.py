@@ -21,11 +21,12 @@ SurfaceGridEntry
 SurfaceGrid
     The grid surface layout: widgetId -> SurfaceGridEntry.
 Surfaces
-    Container for per-surface layout: {grid, report, slides}.
+    Container for per-surface layout: {grid}. Nubi ships one dashboard
+    authoring surface (the grid) — no report/presentation surfaces.
 WidgetExportHints
-    Per-widget export/report hints (T5).
+    Per-widget export/PDF hints (T5).
 BoardExportConfig
-    Per-board export/report config (T5).
+    Per-board export/PDF config (T5).
 
 validate_spec(data) -> (DashboardSpec | None, list[str])
     Parse a raw dict into a DashboardSpec, collecting all validation issues.
@@ -33,7 +34,7 @@ validate_spec(data) -> (DashboardSpec | None, list[str])
 get_surface_layout(spec, surface) -> dict[str, SurfaceGridEntry]
     Backward-compatible accessor: returns spec.surfaces.grid when present, else
     derives the grid layout from the legacy inline widget.pos fields. Surface
-    must be 'grid' (only surface defined so far).
+    must be 'grid' (only surface defined).
 
 migrate_spec_to_surfaces(spec) -> DashboardSpec
     1:1 migration: populate spec.surfaces.grid from the current inline widget.pos
@@ -145,153 +146,14 @@ class SurfaceGridEntry(BaseModel):
 SurfaceGrid = dict[str, SurfaceGridEntry]
 
 
-class ReportPageItem(BaseModel):
-    """A single widget reference inside a report page.
-
-    Attributes
-    ----------
-    widget_id:
-        The id of the widget from ``spec.widgets`` to include.
-    width:
-        Layout hint for the report renderer. One of the named fractions
-        (``'full'``, ``'half'``, ``'third'``) or a numeric percentage
-        (0–100). Defaults to ``'full'``.
-    """
-
-    widget_id: str = Field(min_length=1, description="Widget id (must exist in spec.widgets).")
-    width: str | float = Field(
-        default="full",
-        description=(
-            "Width hint: 'full' | 'half' | 'third' | numeric percent (0–100). "
-            "Controls column span in the report renderer."
-        ),
-    )
-
-
-class ReportPage(BaseModel):
-    """A single page inside the report surface.
-
-    Attributes
-    ----------
-    id:
-        Stable, unique page id within the report surface.
-    items:
-        Ordered list of widget references on this page, each with a width hint.
-    page_break:
-        When ``True`` the report renderer inserts an explicit page break
-        *before* this page. Defaults to ``False``.
-    """
-
-    id: str = Field(min_length=1, description="Stable page id within the report surface.")
-    items: list[ReportPageItem] = Field(
-        default_factory=list,
-        description="Ordered widget references on this page.",
-    )
-    page_break: bool = Field(
-        default=False,
-        description="Insert a page break before this page (default False).",
-    )
-
-
-class ReportSurface(BaseModel):
-    """Report (paginated document) surface layout.
-
-    Lives at ``spec.surfaces.report``. ``None`` means no report layout has
-    been configured for this board; callers must treat ``None`` as «not
-    configured / use defaults».
-
-    Attributes
-    ----------
-    pages:
-        Ordered list of report pages. Empty list → no pages defined.
-    """
-
-    pages: list[ReportPage] = Field(
-        default_factory=list,
-        description="Ordered list of report pages (empty = no report layout).",
-    )
-
-
-class SlideItem(BaseModel):
-    """A widget box on a slide in a fixed-aspect coordinate space.
-
-    The coordinate space is 0–100 units on both axes (normalized to the slide
-    dimensions), with the origin at the top-left.
-
-    Attributes
-    ----------
-    widget_id:
-        The id of the widget from ``spec.widgets`` to display.
-    x, y:
-        Top-left position in the 0–100 coordinate space.
-    w, h:
-        Width / height in the 0–100 coordinate space.
-    """
-
-    widget_id: str = Field(min_length=1, description="Widget id (must exist in spec.widgets).")
-    x: float = Field(ge=0, le=100, default=0, description="Left edge (0–100 units).")
-    y: float = Field(ge=0, le=100, default=0, description="Top edge (0–100 units).")
-    w: float = Field(ge=0, le=100, default=50, description="Width (0–100 units).")
-    h: float = Field(ge=0, le=100, default=50, description="Height (0–100 units).")
-
-
-class Slide(BaseModel):
-    """A single slide inside the slides (presentation) surface.
-
-    Attributes
-    ----------
-    id:
-        Stable, unique slide id within the slides surface.
-    notes:
-        Optional speaker notes rendered below the slide (Markdown supported).
-        ``None`` means no notes.
-    items:
-        Widget boxes on this slide, each with a position in the 0–100
-        normalized coordinate space.
-    """
-
-    id: str = Field(min_length=1, description="Stable slide id within the slides surface.")
-    notes: str | None = Field(
-        default=None,
-        description="Speaker notes (Markdown). None = no notes.",
-    )
-    items: list[SlideItem] = Field(
-        default_factory=list,
-        description="Widget boxes on this slide (0–100 normalized coordinate space).",
-    )
-
-
-class SlidesSurface(BaseModel):
-    """Slides (presentation) surface layout.
-
-    Lives at ``spec.surfaces.slides``. ``None`` means no slides layout has
-    been configured for this board.
-
-    The coordinate space for widget placement is 0–100 units on both axes
-    (aspect-ratio–independent). The renderer maps these to screen pixels
-    based on the ``aspect`` ratio.
-
-    Attributes
-    ----------
-    aspect:
-        Aspect ratio of the slide canvas. ``'16:9'`` (default) for widescreen;
-        ``'4:3'`` for traditional slides.
-    slides:
-        Ordered list of slides. Empty list → no slides defined.
-    """
-
-    aspect: Literal["16:9", "4:3"] = Field(
-        default="16:9",
-        description="Slide canvas aspect ratio ('16:9' default or '4:3').",
-    )
-    slides: list[Slide] = Field(
-        default_factory=list,
-        description="Ordered list of slides (empty = no slides layout).",
-    )
-
-
 class Surfaces(BaseModel):
     """Container for per-surface layout data.
+
+    Nubi ships one dashboard-authoring surface: the grid. The report
+    (paginated document) and slides/presentation surfaces that used to live
+    here have been removed — they were off-wedge authoring products. Scheduled
+    email PDF delivery of a dashboard (``report_send``) is unaffected — it
+    renders the grid surface, not a separate document.
 
     Attributes
     ----------
@@ -301,34 +163,11 @@ class Surfaces(BaseModel):
         a spec has been migrated. Un-migrated specs (widget.pos still inline)
         keep working via the backward-compatible accessor
         :func:`get_surface_layout`.
-    report:
-        Report (paginated document) surface layout. ``None`` until a report
-        layout has been configured for this board (backward-compatible default).
-    slides:
-        Slides (presentation) surface layout. ``None`` until a slides layout
-        has been configured for this board (backward-compatible default).
     """
 
     grid: SurfaceGrid = Field(
         default_factory=dict,
         description="widgetId → SurfaceGridEntry for the grid surface.",
-    )
-    report: ReportSurface | None = Field(
-        default=None,
-        description=(
-            "Report surface layout (T8). None = no report configured. "
-            "When present: pages[] each contain items[] (widgetId + width hint) "
-            "and a page_break flag."
-        ),
-    )
-    slides: SlidesSurface | None = Field(
-        default=None,
-        description=(
-            "Slides surface layout (T8). None = no slides configured. "
-            "When present: aspect ratio + slides[] each with items[] "
-            "(widgetId + {x,y,w,h} in a 0–100 normalized coordinate space) "
-            "and optional speaker notes."
-        ),
     )
 
 
@@ -338,7 +177,7 @@ class Surfaces(BaseModel):
 
 
 class WidgetExportHints(BaseModel):
-    """Per-widget hints for the export/report renderer.
+    """Per-widget hints for the PDF export renderer.
 
     All fields are optional with sensible defaults so existing boards need no
     change — absent hints are identical to the defaults listed here.
@@ -346,13 +185,13 @@ class WidgetExportHints(BaseModel):
     Attributes
     ----------
     include_in_report:
-        Whether this widget appears in the generated PDF/PPTX report.
+        Whether this widget appears in the generated PDF report.
         Defaults to ``True``. Set ``False`` to silently skip the widget.
     order:
-        Override render order in the report / slide deck.  ``None`` (default)
+        Override render order in the report.  ``None`` (default)
         means the widget appears in the same order as ``spec.widgets``.
     page_break_before:
-        Insert a page / slide break immediately before this widget.
+        Insert a page break immediately before this widget.
         Defaults to ``False``.
     caption:
         Optional caption string rendered below the widget in the report.
@@ -367,7 +206,7 @@ class WidgetExportHints(BaseModel):
 
     include_in_report: bool = Field(
         default=True,
-        description="Include this widget in PDF/PPTX export (default True).",
+        description="Include this widget in the PDF export (default True).",
     )
     order: int | None = Field(
         default=None,
@@ -375,7 +214,7 @@ class WidgetExportHints(BaseModel):
     )
     page_break_before: bool = Field(
         default=False,
-        description="Insert a page/slide break before this widget.",
+        description="Insert a page break before this widget.",
     )
     caption: str | None = Field(
         default=None,
@@ -392,7 +231,7 @@ class WidgetExportHints(BaseModel):
 
 
 class TitleSlideConfig(BaseModel):
-    """Config for the auto-generated title slide in a PPTX/PDF report.
+    """Config for the auto-generated title page in a PDF report.
 
     ``None`` at the board level means no title slide is inserted.
 
@@ -422,22 +261,20 @@ class BoardExportConfig(BaseModel):
     Attributes
     ----------
     title_slide:
-        Config for the auto-generated title slide inserted at the start of a
-        PPTX or paginated PDF export.  ``None`` (default) means no title slide.
+        Config for the auto-generated title page inserted at the start of a
+        paginated PDF export.  ``None`` (default) means no title page.
     header:
         Optional page-header string (e.g. board name, date).  Rendered at the
-        top of every page in PDF; in PPTX this populates the slide header
-        placeholder when present.  ``None`` (default) means no header.
+        top of every page.  ``None`` (default) means no header.
     footer:
         Optional page-footer string (e.g. "Confidential — Nubi Analytics").
-        Rendered at the bottom of every page in PDF; in PPTX this populates
-        the slide footer placeholder.  ``None`` (default) means no footer.
+        Rendered at the bottom of every page.  ``None`` (default) means no
+        footer.
     page_size:
-        Paper/canvas size for the exported document.
+        Paper/canvas size for the exported PDF.
         ``'A4'`` (default) — ISO A4 portrait (210 × 297 mm).
         ``'Letter'`` — US Letter portrait (8.5 × 11 in).
-        ``'16:9'`` — Widescreen slide canvas (33.87 × 19.05 cm), natural for
-        PPTX; PDF uses the same canvas aspect ratio.
+        ``'16:9'`` — Widescreen canvas (33.87 × 19.05 cm) for a landscape PDF.
     widget_hints:
         Per-widget export hints keyed by widget id.  Absent widget ids inherit
         the ``WidgetExportHints`` defaults.
@@ -445,7 +282,7 @@ class BoardExportConfig(BaseModel):
 
     title_slide: TitleSlideConfig | None = Field(
         default=None,
-        description="Title-slide config (None = no title slide).",
+        description="Title-page config (None = no title page).",
     )
     header: str | None = Field(
         default=None,
@@ -457,7 +294,7 @@ class BoardExportConfig(BaseModel):
     )
     page_size: Literal["A4", "Letter", "16:9"] = Field(
         default="A4",
-        description="Paper/canvas size for the exported document.",
+        description="Paper/canvas size for the exported PDF.",
     )
     widget_hints: dict[str, WidgetExportHints] = Field(
         default_factory=dict,
@@ -1018,31 +855,21 @@ def get_surface_layout(spec: "DashboardSpec", surface: str) -> SurfaceGrid:
     spec:
         A parsed (or freshly constructed) :class:`DashboardSpec`.
     surface:
-        The surface to retrieve. ``'grid'`` returns the grid layout map;
-        ``'report'`` returns the :class:`ReportSurface` (or ``None``);
-        ``'slides'`` returns the :class:`SlidesSurface` (or ``None``).
-        Any other value raises :class:`ValueError`.
+        The surface to retrieve. Only ``'grid'`` is defined; any other value
+        raises :class:`ValueError`.
 
     Returns
     -------
-    SurfaceGrid | ReportSurface | None | SlidesSurface | None
-        For ``'grid'``: ``{widgetId: SurfaceGridEntry}`` mapping.
-        For ``'report'``: :class:`ReportSurface` or ``None``.
-        For ``'slides'``: :class:`SlidesSurface` or ``None``.
+    SurfaceGrid
+        ``{widgetId: SurfaceGridEntry}`` mapping.
 
     Raises
     ------
     ValueError
-        When *surface* is not one of ``'grid'``, ``'report'``, ``'slides'``.
+        When *surface* is not ``'grid'``.
     """
-    if surface == "report":
-        return spec.surfaces.report
-    if surface == "slides":
-        return spec.surfaces.slides
     if surface != "grid":
-        raise ValueError(
-            f"Unknown surface {surface!r}. Known surfaces: 'grid', 'report', 'slides'."
-        )
+        raise ValueError(f"Unknown surface {surface!r}. Known surfaces: 'grid'.")
 
     # ── New-format: surfaces.grid is authoritative ─────────────────────────
     if spec.surfaces.grid:
@@ -1095,11 +922,7 @@ def migrate_spec_to_surfaces(spec: "DashboardSpec") -> "DashboardSpec":
             p = widget.pos
             grid[widget.id] = SurfaceGridEntry(x=p.x, y=p.y, w=p.w, h=p.h)
 
-    new_surfaces = Surfaces(
-        grid=grid,
-        report=spec.surfaces.report,
-        slides=spec.surfaces.slides,
-    )
+    new_surfaces = Surfaces(grid=grid)
     data = spec.model_dump()
     data["surfaces"] = new_surfaces.model_dump()
     return DashboardSpec.model_validate(data)

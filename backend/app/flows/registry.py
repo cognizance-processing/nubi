@@ -82,7 +82,7 @@ Pre-registered kinds
     has no user JWT) and is exposed to ALL artifact holders.
 
 ``'report_send'``
-    Resolve a board, render it (CSV / PDF / PPTX) and deliver the result to
+    Resolve a board, render it (CSV / PDF) and deliver the result to
     the configured recipients via email (+ optional Slack/Teams channels).
     Supports per-recipient RLS via ``locked_params`` and is schedulable
     (daily/cron) like ``snapshot_refresh`` — the captured RLS view comes

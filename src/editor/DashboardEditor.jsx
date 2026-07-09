@@ -1686,14 +1686,14 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
 
   const setSpec = commitSpec
 
-  // Expose commitSpec to the shell (EditorShell) so the report/slides canvases
-  // can write through DashboardEditor's history without owning spec state (T10).
+  // Expose commitSpec to callers (e.g. EditorShell) that need to write through
+  // DashboardEditor's history without owning spec state.
   useEffect(() => {
     onSetSpec?.(commitSpec)
   }, [onSetSpec, commitSpec])
 
-  // Notify shell (EditorShell) whenever the spec changes so the report/slides
-  // surfaces can observe the live spec without owning it (additive, T8).
+  // Notify callers (e.g. EditorShell) whenever the spec changes so they can
+  // observe the live spec without owning it.
   useEffect(() => {
     onSpecChange?.(spec)
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -1696,7 +1696,7 @@ export default function LandingPage() {
                   </h3>
                   <p className="text-sm leading-relaxed text-muted max-w-xl">
                     The DuckDB-WASM kernel runs inside each visitor&rsquo;s tab — extra viewers
-                    cost ≈ $0. Embed live, freeze to a CDN snapshot, export to PDF or deck.
+                    cost ≈ $0. Embed live, freeze to a CDN snapshot, export to PDF.
                     One dashboard drives every output via Flows.
                   </p>
                 </div>

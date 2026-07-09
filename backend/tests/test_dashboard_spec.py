@@ -1302,8 +1302,6 @@ class TestT1GetSurfaceLayout:
                 "w2": {"x": 1, "y": 1, "w": 8, "h": 2},
                 "w3": {"x": 1, "y": 3, "w": 12, "h": 3},
             },
-            "report": None,
-            "slides": None,
         }
         migrated_spec = DashboardSpec.model_validate(data)
         layout = get_surface_layout(migrated_spec, "grid")
@@ -1320,20 +1318,6 @@ class TestT1GetSurfaceLayout:
         import pytest
         with pytest.raises(ValueError, match="Unknown surface"):
             get_surface_layout(spec, "foobar")
-
-    def test_report_surface_returns_none_when_unconfigured(self):
-        """get_surface_layout('report') returns None when report surface is not configured."""
-        spec, _ = validate_spec(_good_spec_dict())
-        assert spec is not None
-        result = get_surface_layout(spec, "report")
-        assert result is None
-
-    def test_slides_surface_returns_none_when_unconfigured(self):
-        """get_surface_layout('slides') returns None when slides surface is not configured."""
-        spec, _ = validate_spec(_good_spec_dict())
-        assert spec is not None
-        result = get_surface_layout(spec, "slides")
-        assert result is None
 
     def test_empty_board_returns_empty_layout(self):
         spec = DashboardSpec(title="Empty", widgets=[])

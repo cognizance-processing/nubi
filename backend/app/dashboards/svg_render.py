@@ -363,7 +363,7 @@ def compose_page_svg(
         List of ``{id, layout: {x,y,w,h}, svg, webgl, error?}`` dicts.
         ``layout`` uses 1-based x/y (same units as ``SurfaceGridEntry``).
     surface:
-        Surface name (``'grid'`` or ``'slides'``).
+        Surface name (``'grid'`` — the only surface Nubi renders).
     cols:
         Grid column count (from ``spec.layout.cols``).
     page_width_px, row_height_px, margin_px, gap_px:
@@ -408,7 +408,7 @@ def render_board_svg(
     """Render a board to a composed page SVG string.
 
     This is the main entry point called by the backend (flows tasks, report
-    delivery, PDF/PPTX pipeline).  It:
+    delivery, PDF pipeline).  It:
 
     1. Resolves the grid layout via :func:`~app.dashboards.spec.get_surface_layout`
        (backward-compatible — handles both new ``surfaces.grid`` and legacy
@@ -426,8 +426,7 @@ def render_board_svg(
         :func:`~app.dashboards.collect.collect_board_data` (list of
         ``{widget_id, query_id, columns?, rows?, error?}`` dicts).
     surface:
-        Layout surface to render (``'grid'`` only for now; ``'report'`` and
-        ``'slides'`` are reserved).
+        Layout surface to render. Only ``'grid'`` is defined.
     page_width_px:
         Output page width in pixels (default 1200).
     row_height_px:
@@ -451,7 +450,7 @@ def render_board_svg(
     AppError("renderer_error", 503)
         When the Node subprocess exits non-zero.
     ValueError
-        When *surface* is not ``'grid'`` (reserved surfaces not yet implemented).
+        When *surface* is not ``'grid'``.
     """
     cols = int((spec.layout or {}).get("cols", 12))
 

@@ -28,42 +28,11 @@
  *
  *   spec.surfaces = {
  *     grid: { [widgetId]: { x, y, w, h } },  // 1-based, same units as widget.pos
- *     report: null | ReportSurface,
- *     slides: null | SlidesSurface,
  *   }
  *
  * `getSurfaceLayout(spec, 'grid')` is the backward-compatible accessor:
  *   1. If spec.surfaces.grid is non-empty → return it.
  *   2. Else derive from legacy widget.pos (un-migrated boards keep working).
- *
- * T8 — Report surface schema
- * --------------------------
- *   spec.surfaces.report = {
- *     pages: [
- *       {
- *         id: string,          // stable page id
- *         items: [             // ordered widgets on this page
- *           { widgetId: string, width: 'full'|'half'|'third'|number }
- *         ],
- *         page_break: boolean  // insert explicit page break before (default false)
- *       }
- *     ]
- *   }
- *
- * T8 — Slides surface schema
- * --------------------------
- *   spec.surfaces.slides = {
- *     aspect: '16:9'|'4:3',   // coordinate space aspect ratio (default '16:9')
- *     slides: [
- *       {
- *         id: string,          // stable slide id
- *         notes: string|null,  // speaker notes
- *         items: [             // widget boxes on a 0–100 unit coordinate space
- *           { widgetId: string, x: number, y: number, w: number, h: number }
- *         ]
- *       }
- *     ]
- *   }
  *
  * The build* / apply* helpers below all read the grid pos via
  * `effectiveWidgetPos(widget, spec)` which respects the surfaces.grid when present,
@@ -92,15 +61,9 @@ export const BREAKPOINT_TO_DEVICE = { lg: 'desktop', md: 'tablet', sm: 'mobile' 
  * @returns {Object.<string, {x:number,y:number,w:number,h:number}>}
  */
 export function getSurfaceLayout(spec, surface) {
-  if (surface === 'report') {
-    return getReportSurface(spec)
-  }
-  if (surface === 'slides') {
-    return getSlidesSurface(spec)
-  }
   if (surface !== 'grid') {
     throw new Error(
-      `Unknown surface '${surface}'. Known surfaces: 'grid', 'report', 'slides'.`
+      `Unknown surface '${surface}'. Known surfaces: 'grid'.`
     )
   }
 
@@ -408,199 +371,4 @@ export function clearBreakpointOverrides(spec, breakpoint) {
   delete nextResponsive[breakpoint]
   const cleaned = Object.keys(nextResponsive).length ? nextResponsive : undefined
   return { ...spec, responsive: cleaned }
-}
-
-// ---------------------------------------------------------------------------
-// T8 — Report surface schema + accessors + writers
-// ---------------------------------------------------------------------------
-
-/**
- * Empty/default report surface.
- * @returns {{ pages: Array }}
- */
-export function emptyReportSurface() {
-  return { pages: [] }
-}
-
-/**
- * Return the report surface from a spec, defaulting to empty.
- * @param {object} spec
- * @returns {{ pages: Array }}
- */
-export function getReportSurface(spec) {
-  const r = spec?.surfaces?.report
-  if (r && typeof r === 'object' && Array.isArray(r.pages)) return r
-  return emptyReportSurface()
-}
-
-/**
- * Write a new report surface into the spec. Returns a new spec (immutable).
- * @param {object} spec
- * @param {{ pages: Array }} reportSurface
- * @returns {object}
- */
-export function setReportSurface(spec, reportSurface) {
-  return {
-    ...spec,
-    surfaces: { ...(spec?.surfaces ?? {}), report: reportSurface },
-  }
-}
-
-/**
- * Add a page to the report surface. Returns a new spec.
- * @param {object} spec
- * @param {{ id?: string, items?: Array, page_break?: boolean }} page
- * @returns {object}
- */
-export function addReportPage(spec, page = {}) {
-  const surface = getReportSurface(spec)
-  const id = page.id ?? `page_${Date.now()}`
-  const newPage = { id, items: page.items ?? [], page_break: page.page_break ?? false }
-  return setReportSurface(spec, { ...surface, pages: [...surface.pages, newPage] })
-}
-
-/**
- * Remove a page from the report surface by id. Returns a new spec.
- * @param {object} spec
- * @param {string} pageId
- * @returns {object}
- */
-export function removeReportPage(spec, pageId) {
-  const surface = getReportSurface(spec)
-  return setReportSurface(spec, { ...surface, pages: surface.pages.filter(p => p.id !== pageId) })
-}
-
-/**
- * Reorder pages in the report surface. Returns a new spec.
- * @param {object} spec
- * @param {string[]} orderedIds – full ordered list of page ids.
- * @returns {object}
- */
-export function reorderReportPages(spec, orderedIds) {
-  const surface = getReportSurface(spec)
-  const pageMap = Object.fromEntries(surface.pages.map(p => [p.id, p]))
-  const reordered = orderedIds.map(id => pageMap[id]).filter(Boolean)
-  return setReportSurface(spec, { ...surface, pages: reordered })
-}
-
-/**
- * Update a single report page (patch). Returns a new spec.
- * @param {object} spec
- * @param {string} pageId
- * @param {object} patch
- * @returns {object}
- */
-export function updateReportPage(spec, pageId, patch) {
-  const surface = getReportSurface(spec)
-  const pages = surface.pages.map(p => p.id === pageId ? { ...p, ...patch } : p)
-  return setReportSurface(spec, { ...surface, pages })
-}
-
-// ---------------------------------------------------------------------------
-// T8 — Slides surface schema + accessors + writers
-// ---------------------------------------------------------------------------
-
-/** Default aspect ratio for the slides surface coordinate space. */
-export const SLIDES_DEFAULT_ASPECT = '16:9'
-
-/**
- * Empty/default slides surface.
- * @returns {{ aspect: string, slides: Array }}
- */
-export function emptySlidesSurface() {
-  return { aspect: SLIDES_DEFAULT_ASPECT, slides: [] }
-}
-
-/**
- * Return the slides surface from a spec, defaulting to empty.
- * @param {object} spec
- * @returns {{ aspect: string, slides: Array }}
- */
-export function getSlidesSurface(spec) {
-  const s = spec?.surfaces?.slides
-  if (s && typeof s === 'object' && Array.isArray(s.slides)) return s
-  return emptySlidesSurface()
-}
-
-/**
- * Write a new slides surface into the spec. Returns a new spec (immutable).
- * @param {object} spec
- * @param {{ aspect: string, slides: Array }} slidesSurface
- * @returns {object}
- */
-export function setSlidesSurface(spec, slidesSurface) {
-  return {
-    ...spec,
-    surfaces: { ...(spec?.surfaces ?? {}), slides: slidesSurface },
-  }
-}
-
-/**
- * Add a slide to the slides surface. Returns a new spec.
- * @param {object} spec
- * @param {{ id?: string, notes?: string|null, items?: Array }} slide
- * @returns {object}
- */
-export function addSlide(spec, slide = {}) {
-  const surface = getSlidesSurface(spec)
-  const id = slide.id ?? `slide_${Date.now()}`
-  const newSlide = { id, notes: slide.notes ?? null, items: slide.items ?? [] }
-  return setSlidesSurface(spec, { ...surface, slides: [...surface.slides, newSlide] })
-}
-
-/**
- * Remove a slide by id. Returns a new spec.
- * @param {object} spec
- * @param {string} slideId
- * @returns {object}
- */
-export function removeSlide(spec, slideId) {
-  const surface = getSlidesSurface(spec)
-  return setSlidesSurface(spec, { ...surface, slides: surface.slides.filter(s => s.id !== slideId) })
-}
-
-/**
- * Reorder slides. Returns a new spec.
- * @param {object} spec
- * @param {string[]} orderedIds – full ordered list of slide ids.
- * @returns {object}
- */
-export function reorderSlides(spec, orderedIds) {
-  const surface = getSlidesSurface(spec)
-  const slideMap = Object.fromEntries(surface.slides.map(s => [s.id, s]))
-  const reordered = orderedIds.map(id => slideMap[id]).filter(Boolean)
-  return setSlidesSurface(spec, { ...surface, slides: reordered })
-}
-
-/**
- * Update a single slide (patch). Returns a new spec.
- * @param {object} spec
- * @param {string} slideId
- * @param {object} patch
- * @returns {object}
- */
-export function updateSlide(spec, slideId, patch) {
-  const surface = getSlidesSurface(spec)
-  const slides = surface.slides.map(s => s.id === slideId ? { ...s, ...patch } : s)
-  return setSlidesSurface(spec, { ...surface, slides })
-}
-
-/**
- * Update a widget item's position inside a specific slide. Returns a new spec.
- * @param {object} spec
- * @param {string} slideId
- * @param {string} widgetId
- * @param {{ x: number, y: number, w: number, h: number }} pos
- * @returns {object}
- */
-export function updateSlideWidgetPos(spec, slideId, widgetId, pos) {
-  const surface = getSlidesSurface(spec)
-  const slides = surface.slides.map(s => {
-    if (s.id !== slideId) return s
-    const items = s.items.map(item =>
-      item.widgetId === widgetId ? { ...item, ...pos } : item
-    )
-    return { ...s, items }
-  })
-  return setSlidesSurface(spec, { ...surface, slides })
 }
