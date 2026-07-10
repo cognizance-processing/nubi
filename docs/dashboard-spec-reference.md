@@ -49,9 +49,12 @@ before publishing.
 | `type` | enum | **yes** | — | `kpi`, `table`, `chart`, `filter`, `text` (canonical). Extended: `metric`, `pivot`, `section`, `html` (frontend-only renderers). |
 | `tab_id` | string or null | no | `null` | Tab this widget belongs to. `null` ⇒ first tab when `tabs` is non-empty. Must reference a declared tab id (hard error otherwise). Ignored for drawer widgets. |
 | `query_id` | string | for `kpi`/`table`/`chart` | `""` | Registered query id backing this widget. Empty for `text`; optional for `filter` (which may use `options_query_id`). |
-| `chart_type` | enum or null | **yes for `chart`** | `null` | `line`, `bar`, `hbar`, `scatter`, `area`, `pie`, `donut`, `heatmap`, `gauge`. |
-| `encoding` | object (str→str) | charts need `x`,`y` | `{}` | Column encoding. Charts: `x`, `y` (required), optional `color`. KPI: `value` (value column alias). |
-| `props` | object | no | `{}` | Extra props, e.g. `label`, `format`, `limit`, `columns`, `value_col`. |
+| `chart_type` | enum or null | **yes for `chart`** | `null` | Canonical (validated) enum: `line`, `bar`, `hbar`, `scatter`, `area`, `pie`, `donut`, `heatmap`, `gauge`. The visual editor + frontend/embed renderer also accept an **extended** set that round-trips through the stored JSON: `bubble`, `sankey`, `funnel`, `waterfall`, `treemap`, `radar`, `boxplot`, `candlestick`, `fan` (these render but are not yet in the strict `validate` enum — see note below). |
+| `encoding` | object (str→str) | charts need `x`,`y` | `{}` | Column encoding. Cartesian charts: `x`, `y` (required), optional `color`, `y2` (secondary axis). Type-specific keys: `value`, `size` (bubble), `source`/`target` (sankey), `open`/`close`/`low`/`high` (candlestick), `lower`/`upper` (fan). KPI: `value`. |
+| `config` | object | no | `{}` | Chart display/axis customization (frontend, deep-merged into the ECharts option): `title`, `legend`, `stack`, `orientation`, `dataLabels`, `smooth`, `palette`, `xAxis`/`yAxis`/`y2Axis` (`{label, min, max, log, format}`), `referenceLines`. |
+| `props` | object | no | `{}` | Extra props, e.g. `label`, `format`, `limit`, `columns`, `height`. |
+| `placement` | enum | no | `grid` | `grid` (positioned by `pos`), `header` (horizontal filter bar above the grid, ordered by `order`), or `drawer` (slide-over drawer). Legacy `drawer: true` resolves to an effective placement of `drawer`. |
+| `metric` | object or null | no | `null` | Optional governed-metric binding (alternative to `query_id`; takes precedence when set). |
 | `pos` | `WidgetPos` | **yes** | — | Grid position/size. |
 | `drawer` | bool | no | `false` | Render inside a slide-out drawer instead of the grid. |
 | `drawer_group` | string or null | no | `null` | `"filters"` (shared filters drawer) or `"dg_<id>"` (a drilldown drawer). |
@@ -109,6 +112,15 @@ validators in `validate_spec`.
   (`drawer: true`) stay global and ignore `tab_id`.
 - **Chart requirement.** `chart` widgets MUST set `chart_type` and an `encoding`
   with at least `x` and `y` (hard errors if missing).
+- **Extended chart types.** `validate` currently recognises only the nine
+  canonical `chart_type` values (`line`, `bar`, `hbar`, `scatter`, `area`,
+  `pie`, `donut`, `heatmap`, `gauge`). The visual editor and the frontend/embed
+  renderer support an extended set (`bubble`, `sankey`, `funnel`, `waterfall`,
+  `treemap`, `radar`, `boxplot`, `candlestick`, `fan`) that renders correctly and
+  round-trips through the stored spec, but a hand-authored spec using one may
+  surface a `chart_type` warning until the validated enum catches up. Note that
+  `hbar` is in the canonical enum but the editor renders horizontal bars via
+  `chart_type: bar` + `config.orientation: horizontal` instead.
 - **Text requirement.** `text` widgets MUST set `content`.
 - **Uniqueness.** Widget ids and tab ids must be unique within the spec.
 
