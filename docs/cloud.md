@@ -97,25 +97,25 @@ For heavy analytical workloads, register the customer's own warehouse (e.g. BigQ
 ### Deploy runbook
 
 Nubi Cloud's production deployment — the Fly config, secrets, and deploy
-pipeline — lives **in this repo**, under `deploy/`. There is no separate ops
+pipeline — lives **in this repo**, at the repo root. There is no separate ops
 repo or version pin: a deploy builds the current working tree directly.
 
-- **`deploy/fly.toml`** — the canonical Fly config, driving both the `nubi`
+- **`fly.toml`** — the canonical Fly config, driving both the `nubi`
   (production, `main` branch) and `nubi-dev` (dev branch) apps with the same
   `app` + `worker` process groups and release-migration step.
-- **`deploy/setup-fly.sh [main|dev]`** — one-time idempotent app creation.
-- **`deploy/secrets.sh [main|dev]`** — push `.env` / `.env.dev` to Fly secrets.
-- **`deploy/deploy.sh [main|dev]`** — build the Cloud image (`Dockerfile.ee`,
+- **`setup-fly.sh [main|dev]`** — one-time idempotent app creation.
+- **`secrets.sh [main|dev]`** — push `.env` / `.env.dev` to Fly secrets.
+- **`./deploy.sh [main|dev]`** — build the Cloud image (`Dockerfile.ee`,
   full tree + billing switched on) from the current tree and roll it out.
 
-`deploy/deploy.sh dev` builds and deploys `nubi-dev`; `deploy/deploy.sh`
+`./deploy.sh dev` builds and deploys `nubi-dev`; `./deploy.sh`
 promotes the identical build to production (`nubi`). Either path builds the
 Cloud image (`Dockerfile.ee`: Vite SPA build → Python deps → runtime) on
 Fly's remote builders and rolls out the `app` and `worker` processes; the
 `--ee` migrations and Nubi's internal `NUBI_LICENSE_KEY` operations switch are
 applied automatically via the release command and Fly secrets — this is
 Nubi's own deploy pipeline, not something a self-hoster runs. See
-`deploy/README.md` for the full runbook.
+`DEPLOY.md` for the full runbook.
 
 **Self-hosting Nubi yourself?** You supply your own deployment — the same
 `Dockerfile` builds the free, full-featured self-host image; bring your own orchestration (Docker

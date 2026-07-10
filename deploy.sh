@@ -2,7 +2,7 @@
 #
 # deploy.sh — build the EE image from THIS repo and roll it out to a Fly app.
 #
-# The deploy config lives in the nubi repo itself (deploy/), so there is no
+# The deploy config lives at the repo root, so there is no
 # separate ops repo, no version pin, and no checkout indirection — the build
 # context is just the current working tree (Dockerfile.ee + backend + SPA).
 #
@@ -11,14 +11,14 @@
 #   dev  | staging → app "nubi-dev"   (testing env, mirrors prod)
 #
 # Extra args after the environment are forwarded to `flyctl deploy`.
-#   deploy/deploy.sh              # deploy prod (nubi)
-#   deploy/deploy.sh dev          # deploy the dev env (nubi-dev)
-#   deploy/deploy.sh dev --now    # extra flyctl args pass through
+#   ./deploy.sh              # deploy prod (nubi)
+#   ./deploy.sh dev          # deploy the dev env (nubi-dev)
+#   ./deploy.sh dev --now    # extra flyctl args pass through
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$HERE/.." && pwd)"
-CFG="$HERE/fly.toml"
+# deploy.sh, fly.toml, and Dockerfile.ee all live at the repo root now.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CFG="$ROOT/fly.toml"
 
 command -v flyctl >/dev/null 2>&1 || { echo "deploy: flyctl not found on PATH" >&2; exit 1; }
 
@@ -52,7 +52,7 @@ if [ "${NUBI_BUILD_LOCAL:-}" = "1" ]; then
 fi
 
 # Build context = the repo root. flyctl resolves a fly.toml `dockerfile` relative
-# to the CONFIG file's dir (deploy/), so pass Dockerfile.ee + its ignorefile
+# to the config file dir (the repo root), so we pass Dockerfile.ee + its ignorefile
 # explicitly from the repo root where they actually live.
 ( cd "$ROOT" && exec flyctl deploy --config "$CFG" --app "$APP" \
     --dockerfile "$ROOT/Dockerfile.ee" --ignorefile "$ROOT/Dockerfile.ee.dockerignore" \

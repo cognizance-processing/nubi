@@ -6,15 +6,15 @@
 # `flyctl secrets set`, which triggers exactly one rollout. Real values live
 # ONLY in these local files (gitignored) and in Fly — never committed. The dev
 # and prod files should mirror each other except the per-env values (DATABASE_URL,
-# CORS/public URLs). See ../.env.example.
+# CORS/public URLs). See .env.example.
 #
 # Environments:
-#   main | prod  → app "nubi",     file ../.env       [default]
-#   dev  | staging → app "nubi-dev", file ../.env.dev
+#   main | prod  → app "nubi",     file .env       [default]
+#   dev  | staging → app "nubi-dev", file .env.dev
 #
 # Usage:
-#   scripts/secrets.sh            # push prod secrets (../.env → nubi)
-#   scripts/secrets.sh dev        # push dev secrets  (../.env.dev → nubi-dev)
+#   ./secrets.sh            # push prod secrets (.env → nubi)
+#   ./secrets.sh dev        # push dev secrets  (.env.dev → nubi-dev)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

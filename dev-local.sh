@@ -4,9 +4,9 @@
 # Postgres & MinIO), from your local nubi working tree, configured via .env.local.
 #
 #   cp .env.local.example .env.local   # fill in NUBI_LICENSE_KEY, JWT_SECRET, …
-#   scripts/dev-local.sh               # build + up (Ctrl-C to stop)
-#   scripts/dev-local.sh down -v       # tear down and wipe volumes
-#   scripts/dev-local.sh logs -f       # any other arg → passed to docker compose
+#   ./dev-local.sh               # build + up (Ctrl-C to stop)
+#   ./dev-local.sh down -v       # tear down and wipe volumes
+#   ./dev-local.sh logs -f       # any other arg → passed to docker compose
 #
 # App:  http://localhost:8000        MinIO console: http://localhost:9001
 set -euo pipefail

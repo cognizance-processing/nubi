@@ -35,9 +35,10 @@ __pycache__/
 .env
 .env.*
 backend/.env
-# ...but the deploy secrets-contract templates ARE tracked (real .env.dev stays out)
-!deploy/.env.example
-!deploy/.env.local.example
+# ...but the secrets-contract templates ARE tracked (real .env.dev stays out)
+!.env.example
+!.env.deploy.example
+!.env.local.example
 
 # Secret/credential files
 backend/storage/secret-files/
@@ -82,8 +83,6 @@ backend/.coverage
 dist-embed/
 *.egg-info/
 
-# Stray Fly config at the repo root (the real one is deploy/fly.toml, tracked)
-/fly.toml
 
 # Python virtualenvs, tool caches, and scratch dirs (never track; safe to delete)
 .venv/
