@@ -97,6 +97,7 @@ import FlowRunView from '../../flows/FlowRunView.jsx'
 import { AddTaskPanel } from '../../flows/AddTaskPanel.jsx'
 import NodeInspector from '../../flows/NodeInspector.jsx'
 import VariablesPanel from '../../flows/VariablesPanel.jsx'
+import SecretsPanel from '../../flows/SecretsPanel.jsx'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1156,7 +1157,7 @@ export default function FlowsPage() {
   // Inspector via the top toggle buttons. The Add + Inspector panels drive the
   // FlowBuilder via an imperative ref; selection is reported back up.
   const flowBuilderRef = useRef(null)
-  const [rightPanel, setRightPanel] = useState('flows')      // 'flows' | 'variables' | 'add' | 'inspector'
+  const [rightPanel, setRightPanel] = useState('flows')      // 'flows' | 'variables' | 'secrets' | 'add' | 'inspector'
   const [rightCollapsed, setRightCollapsed] = useState(() => {
     try { return localStorage.getItem('nubi:flows:railCollapsed') === '1' } catch { return false }
   })
@@ -1537,7 +1538,9 @@ export default function FlowsPage() {
   const builderBar = activeTab === 'builder' && hasFlow
   // The persistent right rail is always the flow list on the landing; only the
   // builder/runs workspace exposes the Add / Inspector / Variables panels.
-  const effectivePanel = showLanding ? 'flows' : rightPanel
+  // On the landing the rail defaults to the flow list, but 'secrets' is allowed
+  // to override so the top-bar Secrets button can open it there too.
+  const effectivePanel = showLanding && rightPanel !== 'secrets' ? 'flows' : rightPanel
 
   const canRun = !!activeFlow?.id && !activeFlow?._isNew
 
@@ -1682,9 +1685,15 @@ export default function FlowsPage() {
               <RefreshCw size={14} className={loadingFlows ? 'animate-spin' : ''} />
             </button>
             <button
-              onClick={() => navigate('/flows/secrets')}
+              onClick={() => togglePanel('secrets')}
               title="Secrets"
-              className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-pressed={rightPanel === 'secrets' && !rightCollapsed}
+              className={[
+                'flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                rightPanel === 'secrets' && !rightCollapsed
+                  ? 'bg-primary text-primary-fg border-primary'
+                  : 'border-border bg-surface text-fg hover:bg-surface-2',
+              ].join(' ')}
             >
               <KeyRound size={13} />
               <span className="hidden sm:inline">Secrets</span>
@@ -1775,9 +1784,10 @@ export default function FlowsPage() {
           {[
             { id: 'flows',     Icon: List,              title: 'Flows' },
             { id: 'variables', Icon: Variable,          title: 'Variables' },
+            { id: 'secrets',   Icon: KeyRound,          title: 'Secrets' },
             { id: 'add',       Icon: Plus,              title: 'Add task' },
             { id: 'inspector', Icon: SlidersHorizontal, title: 'Inspector' },
-          ].filter(p => !(builderBar && (flowView === 'notebook' || flowView === 'code') && p.id !== 'flows' && p.id !== 'variables')).map(p => {
+          ].filter(p => !(builderBar && (flowView === 'notebook' || flowView === 'code') && p.id !== 'flows' && p.id !== 'variables' && p.id !== 'secrets')).map(p => {
             const active = rightPanel === p.id && !rightCollapsed
             return (
               <button key={p.id} onClick={() => togglePanel(p.id)} title={p.title} aria-label={p.title} aria-pressed={active}
@@ -1931,7 +1941,7 @@ export default function FlowsPage() {
           <aside className="hidden md:flex shrink-0 w-64 lg:w-72 flex-col border-l border-border bg-surface">
             <div className="shrink-0 flex items-center justify-between px-3 h-9 border-b border-border">
               <span className="text-[11px] font-semibold uppercase tracking-wider text-muted truncate">
-                {effectivePanel === 'flows' ? 'Flows' : effectivePanel === 'variables' ? 'Variables' : effectivePanel === 'add' ? 'Add task' : (
+                {effectivePanel === 'flows' ? 'Flows' : effectivePanel === 'variables' ? 'Variables' : effectivePanel === 'secrets' ? 'Secrets' : effectivePanel === 'add' ? 'Add task' : (
                   <>
                     Inspector
                     {selectedTask?.key && (
@@ -1981,6 +1991,11 @@ export default function FlowsPage() {
               {effectivePanel === 'variables' && (
                 <div className="p-3">
                   <VariablesPanel readOnly={!canWrite} />
+                </div>
+              )}
+              {effectivePanel === 'secrets' && (
+                <div className="p-3">
+                  <SecretsPanel readOnly={!canWrite} />
                 </div>
               )}
               {effectivePanel === 'add' && (

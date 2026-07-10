@@ -32,7 +32,6 @@
  *   /settings/bridges   → BridgesSettings   (Organization › Bridges — VPC agents)
  *   /settings/usage     → UsageSettings     (Organization › Usage — metering)
  *   /settings/project   → ProjectSettings   (Project › General)
- *   /secrets            → SecretsPage
  *   /billing            → EE-only; rendered only when billing feature is enabled
  *                         and the EE module is loaded. Absent in OSS builds.
  *
@@ -107,7 +106,6 @@ const BridgesSettings = lazy(() => import('./pages/app/settings/BridgesSettings.
 const UsageSettings = lazy(() => import('./pages/app/settings/UsageSettings.jsx'))
 const McpSettings = lazy(() => import('./pages/app/settings/McpSettings.jsx'))
 const AccessGrantsSettings = lazy(() => import('./pages/app/settings/AccessGrantsSettings.jsx'))
-const SecretsPage = lazy(() => import('./pages/app/SecretsPage.jsx'))
 const DataExplorerPage = lazy(() => import('./pages/app/DataExplorerPage.jsx'))
 
 // Admin portal (superadmin-only)
@@ -335,9 +333,6 @@ export default function App() {
             <Route path="mcp" element={<McpSettings />} />
             <Route path="access-grants" element={<AccessGrantsSettings />} />
           </Route>
-          {/* Secrets are flow-scoped — homed under the Flows section, not top-level nav. */}
-          <Route path="flows/secrets" element={<SecretsPage />} />
-
           {/* Admin portal — superadmin only (non-admins see a 404-style view) */}
           <Route path="admin" element={<AdminLayout />}>
             <Route index element={<AdminOverviewPage />} />

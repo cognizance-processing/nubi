@@ -6,8 +6,9 @@
  *   - SQL cells:    {{ secrets.NAME }}
  *   - Python cells: secrets["NAME"]
  *
- * Names are fetched lazily on first open via the same client SecretsPage
- * uses (GET /secrets). Empty state links to /flows/secrets.
+ * Names are fetched lazily on first open via the same client the Flows
+ * Secrets panel uses (GET /secrets). Empty state links to the Flows page,
+ * where the Secrets rail panel lives.
  *
  * Props:
  *   onInsert {Function(name)} — called with the secret NAME when picked.
@@ -56,8 +57,8 @@ export default function SecretsMenu({ onInsert }) {
           {!loading && names !== null && names.length === 0 && (
             <p className="px-3 py-2 text-xs text-muted">
               No secrets yet —{' '}
-              <Link to="/flows/secrets" className="text-primary hover:underline">
-                add one in Flows → Secrets
+              <Link to="/flows" className="text-primary hover:underline">
+                add one via the Secrets panel in Flows
               </Link>
               .
             </p>
