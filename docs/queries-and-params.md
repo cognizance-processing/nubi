@@ -6,10 +6,29 @@ Open it from the sidebar (route `/queries`).
 
 > **New to Nubi?** [Getting Started](/docs/getting-started) has a beginner-friendly walkthrough of running and saving your first query. [UI Tour](/docs/ui-tour) describes the Queries surface in the context of the app shell.
 
-<table><tr>
-<td width="50%"><img src="screenshots/queries-light.webp" alt="Queries — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/queries-dark.webp" alt="Queries — dark"><br><sub>Dark</sub></td>
-</tr></table>
+![The Queries workspace: connector picker, SQL editor, and the results grid below](/docs/screenshots/queries-editor.webp)
+
+---
+
+## Write & run your first query
+
+The fastest path from a blank editor to a result:
+
+1. **Open Queries** from the sidebar (`/queries`). A blank draft is ready in the primary cell.
+2. **Pick a connector.** Use the **Connector** picker on the primary cell's header. Leave it on **Demo data (built-in)** to try things out, or choose one of [your connectors](/docs/connectors). Nubi auto-detects the SQL dialect from the connector.
+3. **Type your SQL.** You get syntax highlighting, autocomplete for the connector's tables and columns, and live parse-error squiggles. Not sure where to start? Click **Templates** for a ready-made query, or use **AI assist** to describe what you want in plain English.
+
+   ```sql
+   SELECT category, COUNT(*) AS n, SUM(value) AS total
+   FROM demo
+   GROUP BY category
+   ORDER BY n DESC
+   ```
+
+4. **Run it.** Click **Run** or press **Cmd/Ctrl + Enter**. Results stream into the grid below with the **row count**, **elapsed time**, and a **cache badge** when served from cache.
+5. **Save it** (optional; writers only). Click **Save**, give it a name, and it joins the **Registry** — now dashboards, flows, and schedules can reference it. See [Saving a query](#saving-a-query).
+
+That's the loop. The rest of this guide goes deep on each piece: [typed parameters](#parameters), scratch-cell exploration, and the [advanced](#advanced) blends, metrics, and scheduling.
 
 ---
 
@@ -103,6 +122,8 @@ ORDER BY date DESC
 
 As soon as the editor sees `{{region}}` and `{{year}}`, a **Parameters** panel appears above the SQL with one row per parameter.
 
+![The Parameters panel above the SQL editor, with a typed input for each declared parameter](/docs/screenshots/NEW-query-parameters-panel.webp)
+
 ### Parameter types
 
 Each parameter has a **type** that controls the input field and how the value is coerced before the query runs. The type dropdown in the Parameters panel offers:
@@ -169,6 +190,16 @@ WHERE category IN ({{categories | inclause}})
 ```
 
 The `inclause` filter expands a multiselect value into `($1, $2, $3, …)` bound parameters. The values are still bound positionally — never concatenated.
+
+### Parameters and dashboard variables
+
+A saved query's parameters are its public interface. When a widget binds to the query on a [dashboard](/docs/dashboards), each declared parameter surfaces as a **dashboard variable** that viewers can drive from filter widgets:
+
+- A **Filter** widget (select, multiselect, date range, or text) targets a variable by name; every widget whose query uses `{{ that_name }}` re-queries when it changes.
+- A `select` / `multiselect` parameter can carry an `options_query_id` pointing at another saved query, so the filter widget populates its choices from live data.
+- A dashboard **date-range** filter drives a pair of `date` parameters (for example `{{start_date}}` / `{{end_date}}`).
+
+The same names flow into flow-cell overrides and per-recipient locked values in scheduled reports. Because binding is by parameter **name**, keep names stable and descriptive.
 
 ---
 
@@ -268,6 +299,8 @@ Once a query is saved, two toolbar buttons version it:
 
 Below the primary cell, the collapsible **Expose as metric** panel can declare the saved query as a governed metric: a stable **slug**, the owning aggregation, the **dimensions** it can group by, and time **grains**. Enable it to make the query consumable as a metric by dashboards, watches, and AI; leave it off and nothing extra is saved with the query.
 
+For example, expose a `SELECT amount, region, status, created_at FROM orders` query as a metric with slug `revenue`, measure `SUM(amount)`, dimensions `region` and `status`, and month/quarter/year grains. Dashboards, watches, and AI can then answer "revenue by region last month" from the *governed* definition instead of re-writing SQL — and can only group by the dimensions you allowed. See the [Metrics reference](/docs/metrics-reference) for the full metric shape, governance rules, and how to query a metric.
+
 ---
 
 ## Scheduling a query
@@ -292,6 +325,46 @@ A saved query is referenced everywhere by its **id**:
 - **Scheduled reports & exports** — recipients receive the query's output as CSV or PDF, with per-recipient locked parameter values. See [Exports & Scheduled Reports](/docs/exports-and-jobs).
 
 Because the id is stable, editing and re-saving a query updates every dashboard and flow that uses it automatically.
+
+---
+
+## Advanced
+
+Once you're comfortable running and saving queries, these patterns unlock the rest of Nubi:
+
+- **[Multi-source blends](#blending-multiple-sources)** — join two to four different connectors into one persisted dataset.
+- **[Cross-cell joins](#cross-cell-data-flow)** — chain a warehouse query into local, browser-side transforms.
+- **[Expose a query as a metric](#expose-as-metric)** — promote a saved query to a governed, reusable metric.
+- **[Scheduling](#scheduling-a-query)** — run a query automatically on an interval or cron.
+- **[AI-assisted SQL](#generate-sql-with-ai)** — draft SQL from a plain-English description.
+
+### Joining two sources in one query
+
+You don't always need a full blend. Because every cell's result is registered in the browser's DuckDB-WASM engine, you can pull from one connector in the primary cell, from another in a scratch cell, and join them locally in a third — no server round-trip for the join:
+
+```sql
+-- Primary cell (cell_1): revenue from the Postgres connector
+SELECT region, SUM(amount) AS revenue
+FROM orders
+GROUP BY region
+```
+
+```sql
+-- cell_2: targets from a different connector (e.g. a sheet via HTTP/JSON)
+SELECT region, target
+FROM region_targets
+```
+
+```sql
+-- cell_3: join them in the browser — reads cell_1 and cell_2 locally
+SELECT r.region, r.revenue, t.target,
+       r.revenue - t.target AS vs_target
+FROM cell_1 r
+JOIN cell_2 t USING (region)
+ORDER BY vs_target DESC
+```
+
+Point each of the first two cells at its own connector, run them, then run the third. For a *persisted*, scheduled join that dashboards can bind to by id, use [Blend sources](#blending-multiple-sources) instead — it materializes the combined result on a schedule.
 
 ---
 

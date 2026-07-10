@@ -8,14 +8,30 @@ Connectors live on the **Connectors** page (`/connectors` in the app sidebar). C
 
 ---
 
+## Connect your first data source
+
+This is the five-minute path from an empty workspace to live data. You need **writer** or **admin** permission — viewers can browse connectors but not add them.
+
+![The Connectors page with the Add connector button](/docs/screenshots/connectors.webp)
+
+1. **Open Connectors.** Click **Connectors** in the left sidebar (`/connectors`). In a fresh project you'll see an empty state inviting you to *Add your first connector*.
+2. **Click _Add connector_** (top right). A slide-over panel opens from the right with the connector type picker.
+3. **Pick a type.** Types are grouped into six categories — relational databases, cloud-managed SQL, cloud warehouses, query engines, files & object storage, and APIs. Use the **search box** to filter by name (type `post` to find PostgreSQL) and click a tile to continue. Not ready to wire up a real source? Pick **Demo data** and skip straight to step 6.
+
+   ![The Add connector type picker, grouped by category with a search box](/docs/screenshots/NEW-connector-type-picker.webp)
+
+4. **Name it and fill in the details.** Give the connector a clear name like `prod-postgres` or `analytics-bigquery` — this is what you'll pick in the query editor. The form below is generated from the type you chose, so only the relevant fields appear, with sensible ports and SSL defaults pre-filled. Required fields are marked; optional ones say *(optional)*.
+5. **Enter credentials.** Secret fields — passwords, tokens, keys — are clearly marked. They're encrypted at rest with **AES-256-GCM** and are never shown again after you save. See [Entering credentials](#entering-credentials-secrets).
+6. **Click _Add connector_.** A toast confirms *Connector added* and the new card appears in the list.
+7. **Test, then explore.** Click **Test** on the card to confirm the record and its secret resolve, then **View data** to open the [Data Browser](#browsing-a-connectors-data) and list real tables — the fastest way to prove the connection works end to end.
+
+> **Gotcha — Test vs View data.** **Test** is a *structural* check (record found + secret decrypts); it does **not** open a socket to your database. To confirm the source is actually reachable, use **View data**, which lists tables over a live connection.
+
+---
+
 ## The Connectors page
 
-<table><tr>
-<td width="50%"><img src="screenshots/connectors-light.webp" alt="Connectors — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/connectors-dark.webp" alt="Connectors — dark"><br><sub>Dark</sub></td>
-</tr></table>
-
-Open **Connectors** from the sidebar. The page shows:
+Open **Connectors** from the sidebar (shown above). The page shows:
 
 - A header with a **Refresh** button and an **Add connector** button (visible to writers and admins only).
 - A list of connector cards — one per data source you have added.
@@ -38,60 +54,76 @@ If you have no connectors yet, an empty state invites you to *Add your first con
 
 ---
 
-## Supported connector types
+## Connector types — a guide by category
 
-The **Add connector** picker groups types into six categories.
+The **Add connector** picker groups every type into six categories. Here's what each family is for, what it needs, and the gotchas to watch. The full field list for any type is generated in the form itself; the tables below are your quick orientation.
 
 ### Relational databases
 
-| Type | Notes |
-|------|-------|
-| **PostgreSQL** | Host / port / database / user / password + SSL mode. |
-| **MySQL** | Standard host / port / database / user / password. |
-| **MariaDB** | MySQL-compatible; same fields. |
-| **Microsoft SQL Server** | T-SQL; adds an *Encrypt connection* toggle. |
-| **Oracle Database** | Host / port + **Service name / SID** instead of a database name. |
-| **CockroachDB** | Postgres wire-compatible; SSL mode included. |
+Classic OLTP databases you reach by host and port. Have the **host, port, database, user, password** and network reachability ready. If the database sits in a private VPC, set **Network mode → bridge** (see [Private networks & bridges](#private-networks-bridges)).
+
+| Type | What it needs / gotchas |
+|------|-------------------------|
+| **PostgreSQL** | Host / port (5432) / database / user / password + **SSL mode** (`prefer` by default; use `require` or `verify-full` for managed Postgres). |
+| **MySQL** | Host / port (3306) / database / user (`root`) / password. |
+| **MariaDB** | MySQL-compatible; identical fields. |
+| **Microsoft SQL Server** | T-SQL; adds an **Encrypt connection** toggle (`true` by default). |
+| **Oracle Database** | Uses a **Service name / SID** (e.g. `ORCLPDB1`) instead of a database name; default port 1521. |
+| **CockroachDB** | Postgres wire-compatible; default port 26257; SSL mode included. |
 
 ### Cloud-managed SQL
 
-| Type | Notes |
-|------|-------|
-| **Google Cloud SQL** | Managed Postgres on GCP (Postgres wire). |
-| **Azure SQL Database** | Managed SQL Server; *Server* is the `*.database.windows.net` host. |
+Managed database services that speak a familiar wire protocol.
+
+| Type | What it needs / gotchas |
+|------|-------------------------|
+| **Google Cloud SQL** | Managed Postgres (Postgres wire). Point it at the instance's public IP or a bridge; SSL mode included. |
+| **Azure SQL Database** | Managed SQL Server. **Server** is the full `*.database.windows.net` host; default port 1433. |
 
 ### Cloud warehouses
 
-| Type | Notes |
-|------|-------|
-| **Google BigQuery** | GCP Project ID + a service-account JSON key (or Application Default Credentials). |
-| **Snowflake** | Account, user, password; optional warehouse / database / schema / role. |
-| **Amazon Redshift** | Postgres wire; default port 5439; SSL mode included. |
-| **Databricks** | Server hostname, HTTP path, access token; optional catalog / schema. |
-| **ClickHouse** | Host / port / database / user / password + TLS toggle. Default port 8443. |
-| **Azure Synapse** | T-SQL analytics pool. |
+Columnar analytics warehouses — the sweet spot for BI. Most authenticate with a token or key rather than a plain password, and query cost matters, so filters get pushed down.
+
+| Type | What it needs / gotchas |
+|------|-------------------------|
+| **Google BigQuery** | GCP **Project ID** + a **service-account JSON** key (upload or paste). Leave the key blank to use Application Default Credentials when Nubi runs on GCP. Nubi can dry-run BigQuery for an exact bytes-scanned estimate. |
+| **Snowflake** | **Account** (e.g. `xy12345.us-east-1`), user, password; optional **warehouse / database / schema / role** — set the warehouse or queries can't run. |
+| **Amazon Redshift** | Postgres wire; default port **5439**; SSL mode included. |
+| **Databricks** | **Server hostname** + **HTTP path** (from the SQL warehouse's connection details) + an **access token**; optional catalog / schema. |
+| **ClickHouse** | Host / port (**8443** for TLS) / database / user / password + a **TLS (secure)** toggle. |
+| **Azure Synapse** | T-SQL dedicated pool; **Server** is `*.sql.azuresynapse.net`, **Database** is the pool name. |
 
 ### Query engines
 
-| Type | Notes |
-|------|-------|
-| **Amazon Athena** | Serverless SQL over S3; needs a region and an S3 staging directory. |
-| **Trino** | Distributed SQL engine; coordinator host + catalog + schema. |
-| **Presto** | Open-source distributed SQL; same shape as Trino. |
+Federated SQL engines that sit in front of a lake or many catalogs.
+
+| Type | What it needs / gotchas |
+|------|-------------------------|
+| **Amazon Athena** | Serverless SQL over S3. Needs an **AWS region** and an **S3 staging directory** (`s3://…/athena-results/`) for query output. Leave both AWS key fields blank to use the host's IAM role / default credential chain. |
+| **Trino** | **Coordinator host** + **catalog** (e.g. `hive`) + schema + user; default port 443 with the `https` scheme. |
+| **Presto** | Same shape as Trino; default port 8080 with the `http` scheme. |
 
 ### Files & object storage
 
-| Type | Notes |
-|------|-------|
-| **Object storage (Parquet / DuckDB)** | Query a Parquet or DuckDB file by `s3://`, `gs://`, or `https://` URL — AWS S3, GCS, or MinIO. Submitted as type `duckdb_storage`, the object-storage-aware DuckDB connector. |
-| **Demo data** | Built-in sample dataset (no setup); see below. |
+Query files in a bucket directly — no database server. Nubi pushes the scan down to your own storage rather than copying the data in.
+
+| Type | What it needs / gotchas |
+|------|-------------------------|
+| **Object storage (Parquet / DuckDB)** | A single **File URL** — `s3://…`, `gs://…`, or `https://…` — pointing at a Parquet or DuckDB file, plus optional endpoint / region / access keys for private buckets. Set **Endpoint** to a MinIO host to use MinIO instead of AWS S3. Submitted as the `duckdb_storage` connector. |
+| **Google Cloud Storage (GCS)** | A `gs://` file URL with **HMAC key/secret** *or* **Workload Identity / ADC**. See [Native GCS connector](#native-google-cloud-storage-gcs-connector). |
+| **SFTP** / **FTP / FTPS** | *File-ingestion* sources, not queryable directly — they pull files (over SSH or FTPS) that a flow's `file_ingest` task lands into a queryable target. Prefer **FTPS** over plain FTP; SFTP accepts a password or a private key. |
+| **Demo data** | Built-in sample dataset — one click, no setup. See [Demo data connector](#demo-data-connector). |
+
+> **Files, not "lakehouse."** Object-storage connectors read Parquet/DuckDB files in place. Local file paths and in-memory DuckDB are not offered — Nubi runs on stateless containers, so a source has to live in a bucket (or a real database) your deployment can reach.
 
 ### APIs & custom
 
-| Type | Notes |
-|------|-------|
-| **HTTP / JSON API** | Any REST API returning JSON. Base URL + optional bearer token + extra headers. |
-| **JDBC (custom driver)** | Any JDBC source with a driver JAR (JDBC URL + driver class + JAR path). |
+For sources without a native SQL connector.
+
+| Type | What it needs / gotchas |
+|------|-------------------------|
+| **HTTP / JSON API** | Any REST API returning JSON. **Base URL** + optional **Bearer token** (put tokens here, not in *Extra headers*, which is for non-secret headers only). |
+| **JDBC (custom driver)** | Any JDBC source: **JDBC URL** + **driver class** + a **driver JAR path** available to your deployment. |
 
 > Some warehouse drivers (BigQuery, Snowflake, JDBC, etc.) are loaded on first use. If a driver is not installed in your deployment, the connector saves fine but raises a `driver_unavailable` error the first time it is queried. Ask your administrator to add the missing driver.
 
@@ -99,7 +131,7 @@ The **Add connector** picker groups types into six categories.
 
 ## Adding a connector
 
-You need writer or admin permission in the org.
+This is the detailed reference for the create form; for the quick path see [Connect your first data source](#connect-your-first-data-source). You need writer or admin permission in the org.
 
 1. On the **Connectors** page, click **Add connector**. A slide-over panel opens from the right with the connector type picker.
 2. **Pick a type.** The picker shows all types grouped by category. Use the **search box** to filter by name or description (e.g. type `post` to find PostgreSQL). Click a type tile to continue.
@@ -172,10 +204,7 @@ The Demo data connector always tests green (it has no secret and runs in-process
 
 ## Browsing a connector's data
 
-<table><tr>
-<td width="50%"><img src="screenshots/data-light.webp" alt="Data browser — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/data-dark.webp" alt="Data browser — dark"><br><sub>Dark</sub></td>
-</tr></table>
+![The Data Browser: searchable table list on the left, column types and a 50-row preview on the right](/docs/screenshots/data-browser.webp)
 
 Click **View data** on any connector card to open the **Data Browser** (`/connectors/:id/data`). This lets you explore the source without writing any SQL:
 
@@ -422,13 +451,15 @@ Two built-in connectors implement it:
 
 ---
 
-## Security summary
+## Security model
 
-- Credentials are encrypted at rest with **AES-256-GCM** and are never returned by the API after save.
-- Non-secret config and secret credentials are stored separately; secret keys are rejected if submitted as plain config.
-- **Test** verifies your config and secret are resolvable without opening a network socket.
-- RLS predicates are injected as AST predicates by the query planner — never string-concatenated — and are enforced server-side; the browser never filters rows.
-- Post-fetch RLS in `FunctionConnector` fails closed: a missing policy column returns 403 rather than unfiltered data.
+Three properties hold for every connector, regardless of source type:
+
+- **Credentials never leave the connector.** Secrets are encrypted at rest with **AES-256-GCM**, stored separately from non-secret config, and are never returned by the API after save (secret keys are even rejected if submitted as plain config). **Test** verifies your config and secret are resolvable without opening a network socket.
+- **Private networking, no public ingress.** Databases inside a VPC are reached through a **bridge agent** you run inside your network, so Nubi never needs public ingress to your infrastructure. See [Private networks & bridges](#private-networks-bridges).
+- **A capability floor, enforced server-side.** RLS predicates are injected as AST predicates by the query planner — never string-concatenated — and enforced on the server; the browser never filters rows. Every connector also declares seven [capability flags](#capability-flags), and wherever a source can't push a filter, projection, or limit down, Nubi applies post-fetch guards before rows leave the connector. The RLS guard is **fail-closed**: a missing policy column returns 403 rather than unfiltered data.
+
+For the deeper model — key rotation and network modes in detail — see [Connector Security](/docs/connector-security).
 
 ---
 
