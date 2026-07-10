@@ -33,6 +33,12 @@ const mdFiles = import.meta.glob(
     '/docs/notifications-and-integrations.md',
     '/docs/how-to.md',
     '/docs/api-reference.md',
+    '/docs/api-auth.md',
+    '/docs/api-resources.md',
+    '/docs/api-analytics.md',
+    '/docs/api-ai.md',
+    '/docs/api-flows.md',
+    '/docs/api-billing.md',
     // Nubi Cloud
     '/docs/cloud.md',
     '/docs/billing-and-usage.md',
@@ -72,23 +78,37 @@ const mdFiles = import.meta.glob(
 )
 
 // ── Section / group layout (order matters) ────────────────────────────────────
-// Each group lists doc slugs in display order. The first group ('Home') has no
-// section header.
+// Each group lists display `items`. An item is either a bare slug string, or a
+// `{ slug, children: [...slugs] }` object for a parent page with one level of
+// nested sub-pages (rendered indented under the parent in the sidebar). The
+// first group ('Home') has no section header.
 const LAYOUT = [
-  { section: null,                  group: 'Home',              slugs: ['home'] },
+  { section: null,                  group: 'Home',              items: ['home'] },
 
-  { section: 'Using Nubi',          group: 'Get started',       slugs: ['quickstart', 'getting-started', 'ui-tour'] },
-  { section: 'Using Nubi',          group: 'Work with data',    slugs: ['connectors', 'queries-and-params', 'metrics-reference', 'pre-aggregations', 'dashboards', 'data-health', 'governance', 'exports-and-jobs'] },
-  { section: 'Using Nubi',          group: 'Automate & build',  slugs: ['flows', 'notebooks', 'transformation', 'materialization', 'semantic-and-data-apps', 'ai-and-mcp', 'mcp', 'embedding', 'embed-api'] },
-  { section: 'Using Nubi',          group: 'Your account',      slugs: ['organization-settings', 'notifications-and-integrations'] },
-  { section: 'Using Nubi',          group: 'Reference',         slugs: ['how-to', 'api-reference'] },
+  { section: 'Using Nubi',          group: 'Get started',       items: ['quickstart', 'getting-started', 'ui-tour'] },
+  { section: 'Using Nubi',          group: 'Work with data',    items: [
+    'connectors',
+    { slug: 'queries-and-params', children: ['pre-aggregations', 'metrics-reference'] },
+    'dashboards', 'data-health', 'governance', 'exports-and-jobs',
+  ] },
+  { section: 'Using Nubi',          group: 'Automate & build',  items: [
+    { slug: 'flows', children: ['notebooks'] },
+    'transformation', 'materialization', 'semantic-and-data-apps',
+    { slug: 'ai-and-mcp', children: ['mcp'] },
+    { slug: 'embedding', children: ['embed-api'] },
+  ] },
+  { section: 'Using Nubi',          group: 'Your account',      items: ['organization-settings', 'notifications-and-integrations'] },
+  { section: 'Using Nubi',          group: 'Reference',         items: [
+    'how-to',
+    { slug: 'api-reference', children: ['api-auth', 'api-resources', 'api-analytics', 'api-ai', 'api-flows', 'api-billing'] },
+  ] },
 
-  { section: 'Nubi Cloud',          group: 'Cloud & billing',   slugs: ['cloud', 'billing-and-usage', 'billing-model'] },
+  { section: 'Nubi Cloud',          group: 'Cloud & billing',   items: ['cloud', 'billing-and-usage', 'billing-model'] },
 
-  { section: 'Open-source project', group: 'Self-host',         slugs: ['self-host', 'open-core', 'architecture-open-core'] },
-  { section: 'Open-source project', group: 'Security & internals', slugs: ['architecture-and-economics', 'compliance', 'connector-security', 'kernel-security', 'cache-key-spec', 'conformance', 'secrets', 'observability'] },
-  { section: 'Open-source project', group: 'Build on Nubi',     slugs: ['developer-guide', 'sdk-and-cli', 'files-as-code', 'git-sync', 'bridges', 'compute-kernel-attribution-runner'] },
-  { section: 'Open-source project', group: 'Contributing',      slugs: ['development', 'docs-and-screenshots'] },
+  { section: 'Open-source project', group: 'Self-host',         items: ['self-host', 'open-core', 'architecture-open-core'] },
+  { section: 'Open-source project', group: 'Security & internals', items: ['architecture-and-economics', 'compliance', 'connector-security', 'kernel-security', 'cache-key-spec', 'conformance', 'secrets', 'observability'] },
+  { section: 'Open-source project', group: 'Build on Nubi',     items: ['developer-guide', 'sdk-and-cli', 'files-as-code', 'git-sync', 'bridges', 'compute-kernel-attribution-runner'] },
+  { section: 'Open-source project', group: 'Contributing',      items: ['development', 'docs-and-screenshots'] },
 ]
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -113,19 +133,43 @@ for (const [path, content] of Object.entries(mdFiles)) {
 }
 
 // ── Assemble docs + groups from the layout ────────────────────────────────────
+// DOCS is the flattened list in display order (parent immediately followed by
+// its children) — used for search, prev/next, and slug resolution. DOC_GROUPS
+// carries the nested tree (each parent doc may have a `children` array) for the
+// sidebar renderer.
 const DOCS = []
 const seen = new Set()
 
-export const DOC_GROUPS = LAYOUT.map(({ section, group, slugs }) => {
+/** Build a single doc object (and record it in the flat DOCS list). */
+function buildDoc(slug, group, section) {
+  const entry = bySlug[slug]
+  if (!entry || seen.has(slug)) return null
+  seen.add(slug)
+  const title = slug === 'home' ? 'Nubi Docs' : extractTitle(entry.content, slug)
+  const doc = { slug, title, group, section, content: entry.content, path: entry.path }
+  DOCS.push(doc)
+  return doc
+}
+
+export const DOC_GROUPS = LAYOUT.map(({ section, group, items }) => {
   const docs = []
-  for (const slug of slugs) {
-    const entry = bySlug[slug]
-    if (!entry || seen.has(slug)) continue
-    seen.add(slug)
-    const title = slug === 'home' ? 'Nubi Docs' : extractTitle(entry.content, slug)
-    const doc = { slug, title, group, section, content: entry.content, path: entry.path }
+  for (const item of items) {
+    const slug = typeof item === 'string' ? item : item.slug
+    const childSlugs = typeof item === 'string' ? [] : (item.children ?? [])
+    const doc = buildDoc(slug, group, section)
+    if (!doc) continue
+    // Children are appended to DOCS right after their parent (display order) and
+    // attached to the parent for nested sidebar rendering.
+    const children = []
+    for (const childSlug of childSlugs) {
+      const child = buildDoc(childSlug, group, section)
+      if (child) {
+        child.parentSlug = slug
+        children.push(child)
+      }
+    }
+    if (children.length) doc.children = children
     docs.push(doc)
-    DOCS.push(doc)
   }
   return { name: group, section, docs }
 }).filter(g => g.docs.length > 0)

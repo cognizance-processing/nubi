@@ -67,7 +67,7 @@ require a Bearer token.
 - **Auth model:** three token kinds — a first-party JWT from `POST /auth/login`
   or Google OAuth, a long-lived `nubi_ak_…` API key (for CLI/CI), and a
   host-signed RS256/ES256 **embed JWT**. See
-  [Authentication](/docs/api-reference#authentication).
+  [Authentication](/docs/api-auth#authentication).
 
 ```bash
 # Get a token, then call the API
@@ -157,7 +157,7 @@ executor, node kinds, secrets resolution, and storage backends are core
 billing registers) are added through the same registry from `ee/` — see the
 [startup sequence](/docs/architecture-open-core#startup-sequence). The DAG
 model, task fields, and run semantics are in [Flows](/docs/flows) and the
-[Flows API](/docs/api-reference#flows).
+[Flows API](/docs/api-flows#flows).
 
 ### Add a Cloud-only feature
 

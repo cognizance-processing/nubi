@@ -4,10 +4,7 @@ Flows is Nubi's built-in workflow orchestrator. A flow is a set of **cells** —
 
 You work on a flow in **three views**: as a **notebook** (a top-to-bottom list of cells), as a **canvas** (a visual DAG), or as **code** (a file tree — `flow.py` plus one file per cell). They are three windows onto the same flow — flip between them at any time without losing anything.
 
-<table><tr>
-<td width="50%"><img src="screenshots/flows-light.webp" alt="Flows canvas — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/flows-dark.webp" alt="Flows canvas — dark"><br><sub>Dark</sub></td>
-</tr></table>
+![Flows workspace showing a flow as a visual DAG canvas with cell nodes and dependency arrows](/docs/screenshots/flows.webp)
 
 > Flow compute is metered. Cell previews and durable runs consume **compute units** drawn from your org's usage wallet. Designing in the notebook with small previews is cheap; large durable runs and materializations cost more. See [Billing and usage](/docs/billing-and-usage).
 >
@@ -67,7 +64,7 @@ Cells share data. A downstream cell can reference an upstream cell's result by i
 
 ### Canvas view
 
-![Canvas view — each cell is a node, arrows are dependencies, with minimap and zoom controls](screenshots/flows.webp)
+![Canvas view — each cell is a node, arrows are dependencies, with minimap and zoom controls](/docs/screenshots/flows.webp)
 
 The canvas renders the flow as a visual graph. Each cell is a node; arrows show dependencies. It is the clearest way to see and shape the structure of a branching or fan-out pipeline.
 

@@ -166,7 +166,7 @@ Unauthenticated → 401. Non-approver → 403.
 **Fire-and-forget writes:** `record_audit()` never raises and never blocks the
 mutation path it wraps. A DB write failure is logged at WARNING level only.
 
-See [api-reference.md#audit-log](api-reference.md#audit-log) for the full
+See [api-reference.md#audit-log](/docs/api-reference#audit-log) for the full
 endpoint specification and response shape.
 
 ### Guaranteed mutation coverage — the audit backstop middleware

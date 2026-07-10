@@ -23,7 +23,7 @@ definition of "revenue".
 ### 1.1 Define a metric (author side)
 
 Register a metric via the API or the MCP `create_metric` tool. The body is a
-`MetricDefinition` (see [API reference](/docs/api-reference#post-metrics)).
+`MetricDefinition` (see [API reference](/docs/api-analytics#post-metrics)).
 
 **Example — revenue metric on the `orders` table:**
 
@@ -485,7 +485,7 @@ Content-Type: application/json
 { "params": { "region": "EMEA" } }
 ```
 
-Returns a multi-table Arrow IPC frame (see [API reference](/docs/api-reference#dataprovider-boards)).
+Returns a multi-table Arrow IPC frame (see [API reference](/docs/api-analytics#dataprovider-boards)).
 
 **Parse in JavaScript:**
 ```js

@@ -2,10 +2,7 @@
 
 Welcome to Nubi. This guide takes you from a fresh account to a live dashboard: sign up, connect a data source, run your first query, and build your first board. It also covers the Free plan limits and where to go next.
 
-<table><tr>
-<td width="50%"><img src="screenshots/landing-light.webp" alt="Landing — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/landing-dark.webp" alt="Landing — dark"><br><sub>Dark</sub></td>
-</tr></table>
+![Nubi landing page introducing the product with a link to pricing](/docs/screenshots/landing.webp)
 
 If you want to poke around first, every new workspace includes a built-in **Demo data** connector — no configuration needed.
 
@@ -65,10 +62,7 @@ Switching the active project re-scopes everything: the connector list, query lib
 
 The left sidebar is your primary navigation.
 
-<table><tr>
-<td width="50%"><img src="screenshots/home-light.webp" alt="Home — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/home-dark.webp" alt="Home — dark"><br><sub>Dark</sub></td>
-</tr></table>
+![Nubi Home screen with the left sidebar navigation and onboarding checklist](/docs/screenshots/home.webp)
 
 | Nav item | What it's for |
 |---|---|
@@ -98,10 +92,7 @@ The rest of this guide follows exactly those steps.
 
 ## 4. Connect your first data source
 
-<table><tr>
-<td width="50%"><img src="screenshots/connectors-light.webp" alt="Connectors — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/connectors-dark.webp" alt="Connectors — dark"><br><sub>Dark</sub></td>
-</tr></table>
+![Connectors page listing data sources with the Add connector button](/docs/screenshots/connectors.webp)
 
 Open **Connectors** from the sidebar, then click **Add connector** (top right). A slide-over panel opens.
 
@@ -130,10 +121,7 @@ After saving a new connector, click **View data** to confirm it's working — if
 
 ## 5. Run your first query
 
-<table><tr>
-<td width="50%"><img src="screenshots/queries-light.webp" alt="Queries — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/queries-dark.webp" alt="Queries — dark"><br><sub>Dark</sub></td>
-</tr></table>
+![Queries workspace with the SQL editor, results grid, and query library panel](/docs/screenshots/queries.webp)
 
 Open **Queries** from the sidebar. The workspace has two parts:
 
@@ -188,10 +176,7 @@ Below the primary query you can add extra **SQL** or **Python** cells for explor
 
 ## 6. Build your first dashboard
 
-<table><tr>
-<td width="50%"><img src="screenshots/dashboards-light.webp" alt="Dashboards — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/dashboards-dark.webp" alt="Dashboards — dark"><br><sub>Dark</sub></td>
-</tr></table>
+![Dashboards page showing saved boards as a card grid with New dashboard](/docs/screenshots/dashboards.webp)
 
 Open **Dashboards** from the sidebar, then click **New dashboard**. The **dashboard editor** opens on an empty board.
 
@@ -214,10 +199,7 @@ New widgets default to a demo query so you see something immediately.
 
 ### Configure a widget
 
-<table><tr>
-<td width="50%"><img src="screenshots/editor-light.webp" alt="Dashboard editor — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/editor-dark.webp" alt="Dashboard editor — dark"><br><sub>Dark</sub></td>
-</tr></table>
+![Dashboard editor with a widget selected and its configuration panel open](/docs/screenshots/editor.webp)
 
 Click a widget to select it, then open the **Configure** panel (gear icon):
 
@@ -241,10 +223,7 @@ Click a widget to select it, then open the **Configure** panel (gear icon):
 1. Click **Save** (reads **Create** the first time, then **Save**).
 2. The board is now listed under **Dashboards**. Click **Open** on its card to view it live at `/d/<id>`.
 
-<table><tr>
-<td width="50%"><img src="screenshots/dashboard-view-light.webp" alt="Dashboard live view — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/dashboard-view-dark.webp" alt="Dashboard live view — dark"><br><sub>Dark</sub></td>
-</tr></table>
+![Live dashboard view at /d/id, the shareable read-only board for stakeholders](/docs/screenshots/dashboard-view.webp)
 
 The live view at `/d/<id>` is the URL you share with stakeholders. URL-bound dashboard variables sync to the query string so filtered views are shareable and refresh-safe.
 
@@ -270,10 +249,7 @@ The **Free** plan never expires and is genuinely usable for real projects. All p
 
 When you outgrow these limits — more connectors, larger result sets, scheduled AI, or embedding dashboards in another app — move to a paid plan.
 
-<table><tr>
-<td width="50%"><img src="screenshots/pricing-light.webp" alt="Pricing — light"><br><sub>Light</sub></td>
-<td width="50%"><img src="screenshots/pricing-dark.webp" alt="Pricing — dark"><br><sub>Dark</sub></td>
-</tr></table>
+![Pricing page comparing the Free, Starter, Pro, Business, and Enterprise tiers](/docs/screenshots/pricing.webp)
 
 See the [pricing page](/pricing) for the full tier comparison, or [Billing & usage](/docs/billing-and-usage) for Nubi Cloud billing details.
 

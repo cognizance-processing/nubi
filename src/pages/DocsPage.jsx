@@ -468,40 +468,104 @@ function SearchModal({ onClose }) {
 }
 
 // ── NavItem ───────────────────────────────────────────────────────────────────
+// Mirrors the app shell's AppSidebar item treatment: primary-tinted active
+// state, an animated left rail on top-level items, inset focus ring, ≥32px tap
+// target. `depth === 1` renders a nested sub-page (dot marker + guide indent).
 
-function NavItem({ doc, isActive, onClick }) {
+function NavItem({ doc, isActive, onClick, depth = 0, hasChildren = false, expanded = false, onToggle }) {
   const Icon = docIcon(doc.slug)
+  const isChild = depth > 0
   return (
-    <Link
-      to={`/docs/${doc.slug}`}
-      onClick={onClick}
-      className={`
-        group relative flex items-center gap-2.5 px-3 py-[7px] rounded-lg text-[13px] leading-snug
-        transition-all duration-100 select-none outline-none
-        focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1
-        ${isActive
-          ? 'bg-surface-2 text-fg font-medium'
-          : 'text-muted hover:bg-surface-2/70 hover:text-fg'
-        }
-      `}
-    >
-      {isActive && (
-        <span
-          className="docs-active-bar absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-[20px] rounded-r-full"
-          style={{ background: 'linear-gradient(180deg, #2456a6, #17b3a3)' }}
-        />
+    <div className="relative flex items-center">
+      <Link
+        to={`/docs/${doc.slug}`}
+        onClick={onClick}
+        aria-current={isActive ? 'page' : undefined}
+        className={[
+          'group relative flex-1 min-w-0 flex items-center gap-2.5 rounded-lg leading-none',
+          'text-[0.8125rem] select-none outline-none transition-[color,background-color] duration-120',
+          'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+          isChild ? 'min-h-[1.875rem] pl-2.5 pr-2 py-1.5' : 'min-h-[2rem] px-3 py-[7px]',
+          isActive
+            ? 'bg-primary/10 text-primary font-semibold dark:bg-primary/15'
+            : 'text-muted hover:text-fg hover:bg-surface-2/70',
+        ].join(' ')}
+      >
+        {isActive && !isChild && (
+          <span
+            aria-hidden="true"
+            className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-[1.125rem] rounded-full bg-primary"
+          />
+        )}
+        {isChild ? (
+          <span
+            aria-hidden="true"
+            className={`shrink-0 w-1.5 h-1.5 rounded-full transition-colors ${
+              isActive ? 'bg-primary' : 'bg-border group-hover:bg-muted'
+            }`}
+          />
+        ) : (
+          <Icon
+            size={15}
+            strokeWidth={isActive ? 2.25 : 1.85}
+            className={`shrink-0 transition-colors duration-120 ${
+              isActive ? 'text-primary' : 'text-muted/60 group-hover:text-fg'
+            }`}
+          />
+        )}
+        <span className="truncate">{doc.title}</span>
+      </Link>
+      {hasChildren && (
+        <button
+          onClick={onToggle}
+          aria-label={expanded ? `Collapse ${doc.title}` : `Expand ${doc.title}`}
+          aria-expanded={expanded}
+          className="shrink-0 flex items-center justify-center w-6 h-6 mr-0.5 rounded-md text-muted/40 hover:text-fg hover:bg-surface-2/70 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        >
+          <ChevronDown size={13} className={`transition-transform duration-200 ${expanded ? '' : '-rotate-90'}`} />
+        </button>
       )}
-      <Icon
-        size={13}
-        className={`shrink-0 transition-colors duration-100 ${
-          isActive ? 'text-accent' : 'text-muted/50 group-hover:text-muted'
-        }`}
+    </div>
+  )
+}
+
+// ── NavTreeItem — a top-level item plus its (optional) nested sub-pages ────────
+
+function NavTreeItem({ doc, activeSlug, onNavClick }) {
+  const children = doc.children ?? []
+  const hasChildren = children.length > 0
+  const childActive = hasChildren && children.some(c => c.slug === activeSlug)
+  const [expanded, setExpanded] = useState(doc.slug === activeSlug || childActive)
+
+  // Keep a branch open whenever the active page lives inside it.
+  useEffect(() => {
+    if (doc.slug === activeSlug || childActive) setExpanded(true)
+  }, [activeSlug, childActive, doc.slug])
+
+  return (
+    <div>
+      <NavItem
+        doc={doc}
+        isActive={doc.slug === activeSlug}
+        onClick={onNavClick}
+        hasChildren={hasChildren}
+        expanded={expanded}
+        onToggle={() => setExpanded(v => !v)}
       />
-      <span className="truncate">{doc.title}</span>
-      {isActive && (
-        <span className="ml-auto shrink-0 w-1.5 h-1.5 rounded-full bg-accent/60" />
+      {hasChildren && expanded && (
+        <div className="mt-0.5 mb-1 ml-[1.4rem] pl-2 border-l border-border/60 space-y-0.5">
+          {children.map(child => (
+            <NavItem
+              key={child.slug}
+              doc={child}
+              depth={1}
+              isActive={child.slug === activeSlug}
+              onClick={onNavClick}
+            />
+          ))}
+        </div>
       )}
-    </Link>
+    </div>
   )
 }
 
@@ -514,10 +578,13 @@ function SidebarContent({ activeSlug, onNavClick, onOpenSearch }) {
     return initial
   })
 
-  // Auto-expand group that contains active doc
+  // Auto-expand group that contains the active doc (top-level or nested child)
   useEffect(() => {
     DOC_GROUPS.forEach(g => {
-      if (g.docs.some(d => d.slug === activeSlug)) {
+      const inGroup = g.docs.some(
+        d => d.slug === activeSlug || (d.children ?? []).some(c => c.slug === activeSlug)
+      )
+      if (inGroup) {
         setOpenGroups(prev => ({ ...prev, [g.name]: true }))
       }
     })
@@ -591,9 +658,9 @@ function SidebarContent({ activeSlug, onNavClick, onOpenSearch }) {
                 )}
                 <button
                   onClick={() => toggleGroup(group.name)}
-                  className="w-full flex items-center gap-2 px-2 py-1.5 mb-0.5 rounded-md hover:bg-surface-2/60 transition-colors group/grp"
+                  className="w-full flex items-center gap-2 px-2 py-1.5 mb-0.5 rounded-md hover:bg-surface-2/60 transition-colors group/grp focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                 >
-                  <GroupIcon size={11} className={`${meta.color} shrink-0`} />
+                  <GroupIcon size={12} className="text-muted/50 group-hover/grp:text-muted shrink-0 transition-colors" />
                   <span className="flex-1 text-left text-[10.5px] font-bold text-muted/70 uppercase tracking-[0.1em] font-display">
                     {group.name}
                   </span>
@@ -606,11 +673,11 @@ function SidebarContent({ activeSlug, onNavClick, onOpenSearch }) {
                 {isOpen && (
                   <div className="space-y-0.5 pl-0.5">
                     {group.docs.map(doc => (
-                      <NavItem
+                      <NavTreeItem
                         key={doc.slug}
                         doc={doc}
-                        isActive={doc.slug === activeSlug}
-                        onClick={onNavClick}
+                        activeSlug={activeSlug}
+                        onNavClick={onNavClick}
                       />
                     ))}
                   </div>
