@@ -77,7 +77,6 @@ The response:
 a signed token, because only your backend holds the private key that authors the
 per-viewer `policies` claim.
 
-![The Share dialog surfaces the snippet and the exact claims your backend must sign](/docs/screenshots/NEW-share-dialog.webp)
 
 ### 3. Drop the tag into your host page
 
@@ -108,7 +107,6 @@ in-flight fetches when attributes change.
 
 ### 4. It renders
 
-![A Nubi dashboard rendered inside a host application page](/docs/screenshots/NEW-embedded-dashboard.webp)
 
 If anything fails — the backend is unreachable, no token is wired up, auth is
 rejected — the element still renders a small built-in **sample table** with a

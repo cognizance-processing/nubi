@@ -169,7 +169,6 @@ Every widget also has an **Appearance** section (card background, border, radius
 
 **Config:** pick the **Chart type** from the icon grid, map the columns it needs (the encoding fields change per type), then open **Display** and **Axes** to tune the look. Full detail below.
 
-![The chart-type picker grid in the Configure panel](/docs/screenshots/NEW-chart-type-picker.webp)
 
 ### Filter
 
@@ -262,7 +261,6 @@ A categorical **color** column splits data into per-series groups. Scatter/bubbl
 
 **Dashboard variables** are the shared state that makes a board interactive. Filter widgets (and chart drilldowns) *write* variables; data widgets *read* them through parameter bindings and re-query when they change. Variables are **global to the board** — shared across every tab.
 
-![The Layout panel's Variables editor with a region and a date-range variable](/docs/screenshots/NEW-dashboard-variables.webp)
 
 ### 1. Declare a variable
 
@@ -308,7 +306,6 @@ Every filter (and text) widget has a **Placement** control, so filters do not ha
 - **Above grid (bar)** — a compact control in a horizontal **filter bar** above the grid (below the tab bar), ordered left to right. This is the classic "filter strip across the top" layout.
 - **In drawer** — lives in a slide-over **Filters** drawer, keeping the board clean until a viewer opens it. Drawer filters are global across tabs.
 
-![A dashboard with a filter bar of controls above the grid](/docs/screenshots/NEW-filter-bar.webp)
 
 ### Use cases
 
