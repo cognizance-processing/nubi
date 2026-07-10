@@ -127,7 +127,10 @@ function copyHeadingLink(id) {
 // JSX source, and a literal lookbehind for "-dark" crashes its candidate
 // parser (the "!-…" token reads as a malformed important-modifier).
 // Plain suffix check instead.
-const SCREENSHOT_SRC = /^\/docs\/screenshots\/([\w][\w.-]*)\.webp$/
+// Matches BOTH absolute (`/docs/screenshots/foo.webp`) and relative
+// (`screenshots/foo.webp`, as some docs write for GitHub rendering) forms, so
+// every product screenshot theme-swaps in-app to the single matching variant.
+const SCREENSHOT_SRC = /^(?:\/docs\/)?screenshots\/([\w][\w.-]*)\.webp$/
 
 function ThemedDocImage({ src, alt }) {
   const { theme } = useTheme()
