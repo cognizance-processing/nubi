@@ -17,7 +17,7 @@
 
 import { useState, useEffect, useRef, useCallback, useId } from 'react'
 import { ChevronDown, Check, Lock, Sparkles } from 'lucide-react'
-import { fetchAiProviders } from '../../lib/aiApi.js'
+import { fetchAiProviders, formatModelPrice } from '../../lib/aiApi.js'
 import ProviderIcon from './ProviderIcon.jsx'
 
 const DEFAULT_VALUE = 'default'
@@ -158,6 +158,7 @@ export default function ModelPicker({ value, onChange, disabled = false, classNa
               {p.models.map((m) => {
                 const selected = value === m.id
                 const isDisabled = !p.configured
+                const price = formatModelPrice(m)
                 return (
                   <button
                     key={m.id}
@@ -169,19 +170,28 @@ export default function ModelPicker({ value, onChange, disabled = false, classNa
                     title={isDisabled ? `${p.display_name} isn't configured on this deployment` : undefined}
                     onClick={() => pick(m.id, isDisabled)}
                     className={[
-                      'w-full flex items-center gap-2.5 pl-9 pr-3 py-1.5 text-left transition-colors',
+                      'w-full flex items-start gap-2.5 pl-9 pr-3 py-1.5 text-left transition-colors',
                       isDisabled ? 'opacity-45 cursor-not-allowed' : 'hover:bg-surface-2 cursor-pointer',
                     ].join(' ')}
                   >
-                    <span className="min-w-0 flex-1 text-[12px] text-fg truncate">
-                      {m.display_name}
-                    </span>
-                    {m.default && (
-                      <span className="text-[9.5px] font-semibold text-muted uppercase tracking-wide shrink-0">
-                        default
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-1.5">
+                        <span className="min-w-0 flex-1 text-[12px] text-fg truncate">
+                          {m.display_name}
+                        </span>
+                        {m.default && (
+                          <span className="text-[9.5px] font-semibold text-muted uppercase tracking-wide shrink-0">
+                            default
+                          </span>
+                        )}
                       </span>
-                    )}
-                    {selected && <Check size={12} className="text-primary shrink-0" />}
+                      {price && (
+                        <span className="block text-[10px] text-muted tabular-nums truncate">
+                          {price}
+                        </span>
+                      )}
+                    </span>
+                    {selected && <Check size={12} className="text-primary shrink-0 mt-0.5" />}
                   </button>
                 )
               })}

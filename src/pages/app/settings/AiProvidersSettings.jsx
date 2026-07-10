@@ -36,7 +36,7 @@ import { Link } from 'react-router-dom'
 
 import { useOrg } from '../../../contexts/OrgContext.jsx'
 import { useFeature } from '../../../lib/features.js'
-import { fetchAiProviders, setAiKey, clearAiKey } from '../../../lib/aiApi.js'
+import { fetchAiProviders, setAiKey, clearAiKey, formatModelPrice } from '../../../lib/aiApi.js'
 import ProviderIcon from '../../../components/ai/ProviderIcon.jsx'
 import {
   SettingsPageHeader,
@@ -72,17 +72,26 @@ function ModelsRow({ provider }) {
         )}
       </div>
       <div className="flex flex-wrap gap-1.5">
-        {provider.models.map((m) => (
-          <span
-            key={m.id}
-            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-surface-2 border border-border text-xs text-fg"
-          >
-            {m.display_name}
-            {m.default && (
-              <span className="text-[9.5px] font-semibold text-muted uppercase tracking-wide">default</span>
-            )}
-          </span>
-        ))}
+        {provider.models.map((m) => {
+          const price = formatModelPrice(m)
+          return (
+            <span
+              key={m.id}
+              title={price ?? undefined}
+              className="inline-flex flex-col gap-0.5 px-2 py-1 rounded-lg bg-surface-2 border border-border text-xs text-fg"
+            >
+              <span className="inline-flex items-center gap-1">
+                {m.display_name}
+                {m.default && (
+                  <span className="text-[9.5px] font-semibold text-muted uppercase tracking-wide">default</span>
+                )}
+              </span>
+              {price && (
+                <span className="text-[10px] text-muted tabular-nums">{price}</span>
+              )}
+            </span>
+          )
+        })}
       </div>
       {!provider.configured && (
         <p className="text-[11px] text-muted mt-2.5">

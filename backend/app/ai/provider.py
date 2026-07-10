@@ -24,6 +24,7 @@ called during tests (tests use NullProvider exclusively).
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -59,8 +60,8 @@ ALLOWED_MODELS: dict[str, list[str]] = {
         "gpt-4o-mini",          # smaller / cheaper
     ],
     "gemini": [
-        "gemini-1.5-flash",     # default
-        "gemini-1.5-pro",       # higher quality
+        "gemini-2.5-flash",     # default — current flagship flash
+        "gemini-2.5-pro",       # higher quality
     ],
 }
 
@@ -891,6 +892,148 @@ def get_provider() -> LLMProvider:
 
 
 # ---------------------------------------------------------------------------
+# LiteLLM model catalog + pricing sync
+# ---------------------------------------------------------------------------
+#
+# LiteLLM ships a static, per-version pricing table (``litellm.model_cost``) that
+# maps a model id → ``{litellm_provider, mode, input_cost_per_token,
+# output_cost_per_token, max_input_tokens, max_output_tokens, ...}``.  This is the
+# SAME table ``litellm.completion_cost`` prices real calls with (see
+# ``LiteLLMProvider._record`` / ``app.ee.billing.token_billing``), so surfacing it
+# in ``GET /ai/providers`` keeps the picker's advertised prices consistent with
+# what a call is actually billed at — without hardcoding any rates here.
+#
+# We do NOT advertise all ~3k models LiteLLM knows about: the picker lists the
+# CURATED flagship ids in :data:`ALLOWED_MODELS` (the same allowlist
+# ``complete(model=...)`` enforces), and we attach each one's pricing looked up
+# from ``litellm.model_cost``.  A curated id with no pricing row (e.g. a brand-new
+# model LiteLLM hasn't shipped rates for) is still listed, with ``null`` prices,
+# rather than dropped — the allowlist, not the pricing table, decides visibility.
+
+#: Chat/completion modes we keep.  Everything else in ``litellm.model_cost``
+#: (embedding, image_generation, audio_*, moderation, rerank, tts, …) is a
+#: non-chat model and is excluded from the catalog.
+_CHAT_MODES: frozenset[str] = frozenset({"chat", "completion"})
+
+
+def _model_cost_table() -> dict:
+    """Return ``litellm.model_cost`` (static per litellm version), or ``{}``.
+
+    Imported lazily and defensively so the module stays importable — and the
+    catalog degrades to null pricing — when ``litellm`` is absent or its table
+    shape is unexpected.
+    """
+    try:
+        import litellm  # noqa: PLC0415
+
+        return dict(litellm.model_cost or {})
+    except Exception:  # noqa: BLE001 — pricing is best-effort, never fatal
+        return {}
+
+
+def _per_1m(cost_per_token) -> float | None:
+    """Convert a LiteLLM per-token rate to a per-1M-tokens price for display.
+
+    Returns ``None`` when the source rate is missing/unparseable.  Rounded to 4
+    decimals — enough to render sub-cent-per-1M models (e.g. Gemini Flash-Lite)
+    without noise.
+    """
+    if cost_per_token is None:
+        return None
+    try:
+        return round(float(cost_per_token) * 1_000_000, 4)
+    except (TypeError, ValueError):
+        return None
+
+
+def _lookup_model_cost(provider_name: str, bare_model: str, table: dict) -> dict | None:
+    """Find the ``litellm.model_cost`` row for a curated *bare_model*.
+
+    LiteLLM keys chat models inconsistently: Anthropic/OpenAI ids are bare
+    (``"claude-opus-4-8"``, ``"gpt-4o"``) while Gemini ids carry the routing
+    prefix (``"gemini/gemini-2.5-flash"``).  We therefore try both the bare id
+    and the LiteLLM ``"provider/model"`` string (see :func:`to_litellm_model`),
+    preferring a row whose ``mode`` is a chat/completion mode.
+    """
+    candidates = [bare_model]
+    try:
+        mapped = to_litellm_model(provider_name, bare_model)
+        if mapped not in candidates:
+            candidates.append(mapped)
+    except Exception:  # noqa: BLE001 — defensive; bare id already tried
+        pass
+
+    # Prefer an exact chat/completion row; fall back to any row for the id.
+    fallback: dict | None = None
+    for key in candidates:
+        info = table.get(key)
+        if not info:
+            continue
+        if info.get("mode") in _CHAT_MODES:
+            return info
+        if fallback is None:
+            fallback = info
+    return fallback
+
+
+def _priced_model(
+    provider_name: str, bare_model: str, is_default: bool, table: dict
+) -> dict:
+    """Build one catalog model entry ``{id, display_name, default, pricing…}``.
+
+    Pricing/context fields come straight from ``litellm.model_cost``; they are
+    ``None`` when the model has no row (kept, not dropped — see module docs).
+    """
+    info = _lookup_model_cost(provider_name, bare_model, table) or {}
+    max_in = info.get("max_input_tokens") or info.get("max_tokens")
+    return {
+        "id": bare_model,
+        "display_name": bare_model,
+        "default": is_default,
+        "input_cost_per_1m": _per_1m(info.get("input_cost_per_token")),
+        "output_cost_per_1m": _per_1m(info.get("output_cost_per_token")),
+        "max_input_tokens": max_in,
+        "max_output_tokens": info.get("max_output_tokens"),
+    }
+
+
+@functools.lru_cache(maxsize=None)
+def _model_catalog_cached(providers: tuple[str, ...]) -> dict[str, list[dict]]:
+    """Cached ``provider_id -> [priced model dict, …]`` for *providers*.
+
+    Keyed by the enabled-providers tuple.  ``litellm.model_cost`` is static per
+    litellm version, so the catalog is computed once per distinct allowlist and
+    reused for the life of the process.
+    """
+    table = _model_cost_table()
+    out: dict[str, list[dict]] = {}
+    for provider_name in providers:
+        bare_models = ALLOWED_MODELS.get(provider_name)
+        if not bare_models:
+            continue
+        out[provider_name] = [
+            _priced_model(provider_name, m, i == 0, table)
+            for i, m in enumerate(bare_models)
+        ]
+    return out
+
+
+def build_model_catalog(enabled_providers: list[str] | None = None) -> dict[str, list[dict]]:
+    """Return the priced, curated chat-model catalog for *enabled_providers*.
+
+    Maps each enabled Nubi provider id → its curated flagship chat models
+    (from :data:`ALLOWED_MODELS`) with pricing + context-window fields synced
+    from ``litellm.model_cost``.  Providers not in :data:`ALLOWED_MODELS` are
+    skipped.  ``None`` defaults to every known provider.
+
+    Result is cached (see :func:`_model_catalog_cached`); callers must treat the
+    returned dict/lists as read-only.
+    """
+    ids = enabled_providers if enabled_providers is not None else list(ALLOWED_MODELS)
+    return _model_catalog_cached(tuple(ids))
+
+
+# ---------------------------------------------------------------------------
 # Provider / model metadata (GET /ai/providers)
 # ---------------------------------------------------------------------------
 
@@ -917,10 +1060,18 @@ def list_provider_metadata(enabled_providers: list[str] | None = None) -> list[d
                 "configured": true,   # operator vendor key present
                 "models": [
                     {"id": "claude-opus-4-8", "display_name": "claude-opus-4-8",
-                     "default": true},
+                     "default": true,
+                     "input_cost_per_1m": 5.0, "output_cost_per_1m": 25.0,
+                     "max_input_tokens": 1000000, "max_output_tokens": 128000},
                     ...
                 ],
             }
+
+        Each model carries pricing + context-window fields synced from
+        ``litellm.model_cost`` (see :func:`build_model_catalog`):
+        ``input_cost_per_1m`` / ``output_cost_per_1m`` (USD per 1M tokens) and
+        ``max_input_tokens`` / ``max_output_tokens``.  Any of these is ``null``
+        when LiteLLM has no pricing row for the model.
 
         ``configured`` reflects whether the OPERATOR has a vendor key set for
         this provider (i.e. the deployment can serve metered calls for it) —
@@ -932,6 +1083,7 @@ def list_provider_metadata(enabled_providers: list[str] | None = None) -> list[d
         "gemini": "Google (Gemini)",
     }
     ids = enabled_providers if enabled_providers is not None else list(ALLOWED_MODELS)
+    catalog = build_model_catalog(ids)
 
     def _configured(provider_name: str) -> bool:
         env_key = _VENDOR_KEY_ENV.get(provider_name)
@@ -949,22 +1101,17 @@ def list_provider_metadata(enabled_providers: list[str] | None = None) -> list[d
 
     out: list[dict] = []
     for provider_name in ids:
-        bare_models = ALLOWED_MODELS.get(provider_name)
-        if not bare_models:
+        models = catalog.get(provider_name)
+        if not models:
             continue
         out.append(
             {
                 "id": provider_name,
                 "display_name": display_names.get(provider_name, provider_name),
                 "configured": _configured(provider_name),
-                "models": [
-                    {
-                        "id": m,
-                        "display_name": m,
-                        "default": i == 0,
-                    }
-                    for i, m in enumerate(bare_models)
-                ],
+                # Copy each cached model dict so response mutation can't corrupt
+                # the process-wide catalog cache.
+                "models": [dict(m) for m in models],
             }
         )
     return out

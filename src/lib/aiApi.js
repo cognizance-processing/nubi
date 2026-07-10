@@ -27,8 +27,18 @@ const BASE = (import.meta.env.DEV || !_backendUrl) ? '/api/v1' : _backendUrl + '
  * @typedef {{
  *   id: string,
  *   display_name: string,
+ *   default: boolean,
+ *   input_cost_per_1m: number | null,   // USD per 1M input tokens (from litellm.model_cost)
+ *   output_cost_per_1m: number | null,  // USD per 1M output tokens
+ *   max_input_tokens: number | null,
+ *   max_output_tokens: number | null,
+ * }} AiModel
+ *
+ * @typedef {{
+ *   id: string,
+ *   display_name: string,
  *   configured: boolean,
- *   models: Array<{ id: string, display_name: string, default: boolean }>,
+ *   models: AiModel[],
  * }} AiProvider
  *
  * @typedef {{
@@ -63,6 +73,22 @@ export async function fetchAiProviders() {
     console.warn('[aiApi] fetchAiProviders failed; returning empty list:', err.message)
     return EMPTY_RESPONSE
   }
+}
+
+/**
+ * Format one model's per-1M-token pricing (synced from litellm.model_cost) as a
+ * compact muted label, e.g. `"$3.00 in · $15.00 out / 1M tokens"`. Returns
+ * `null` when the model has no pricing (so callers can skip the line entirely).
+ *
+ * @param {{ input_cost_per_1m?: number|null, output_cost_per_1m?: number|null }} model
+ * @returns {string | null}
+ */
+export function formatModelPrice(model) {
+  const inCost = model?.input_cost_per_1m
+  const outCost = model?.output_cost_per_1m
+  if (inCost == null && outCost == null) return null
+  const fmt = (v) => (v == null ? '—' : `$${Number(v).toFixed(2)}`)
+  return `${fmt(inCost)} in · ${fmt(outCost)} out / 1M tokens`
 }
 
 /**
