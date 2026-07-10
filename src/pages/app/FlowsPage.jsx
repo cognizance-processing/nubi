@@ -999,37 +999,28 @@ function FlowScheduleRow({ flow, canWrite, onOpen, onPatched }) {
 }
 
 // ---------------------------------------------------------------------------
-// FlowsOverview — the /flows landing: a "Schedules & runs" board of all flows
+// FlowsLanding — the /flows landing: flows-first. A welcoming header, a
+// prominent "Create a flow" action, and every flow as a card the user can
+// open to build. Scheduling is folded INTO each card (schedule + last-run
+// status + enable toggle + Run now via FlowScheduleRow) rather than being a
+// separate front page.
 // ---------------------------------------------------------------------------
 
-function FlowsOverview({ flows, loading, canWrite, onOpen, onNew, onPatched }) {
+function FlowsLanding({ flows, loading, canWrite, onOpen, onNew, onPatched }) {
   const scheduledCount = flows.filter(f => f.schedule && f.enabled).length
   const pausedCount = flows.filter(f => f.schedule && !f.enabled).length
 
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="px-4 sm:px-6 lg:px-8 py-6 sm:py-8 max-w-3xl w-full mx-auto">
-        {/* Header */}
-        <header className="mb-5">
+        {/* Header — flows-first, not schedules-first */}
+        <header className="mb-6">
           <p className="text-[11px] font-mono uppercase tracking-[0.14em] text-muted mb-1.5">Automation</p>
-          <h1 className="font-display font-semibold text-xl sm:text-2xl text-fg">Schedules &amp; runs</h1>
+          <h1 className="font-display font-semibold text-xl sm:text-2xl text-fg">Flows</h1>
           <p className="text-sm text-muted mt-1.5 max-w-lg leading-relaxed">
-            Every flow in this project, with its schedule and how the last run went. Toggle a schedule on or off, kick off a run, or open one to edit it.
+            Build a pipeline once — chain SQL, Python and exports — then run it on demand or put it on a schedule. Open a flow to build it, or start a new one.
           </p>
         </header>
-
-        {/* Summary strip */}
-        {!loading && flows.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 mb-4">
-            <Badge variant="default" size="sm">{flows.length} flow{flows.length === 1 ? '' : 's'}</Badge>
-            {scheduledCount > 0 && (
-              <Badge variant="success" size="sm" dot>{scheduledCount} scheduled</Badge>
-            )}
-            {pausedCount > 0 && (
-              <Badge variant="warning" size="sm" dot>{pausedCount} paused</Badge>
-            )}
-          </div>
-        )}
 
         {/* Loading */}
         {loading && flows.length === 0 && (
@@ -1046,18 +1037,18 @@ function FlowsOverview({ flows, loading, canWrite, onOpen, onNew, onPatched }) {
           </div>
         )}
 
-        {/* Empty */}
+        {/* Empty — strong "create your first flow" centrepiece */}
         {!loading && flows.length === 0 && (
           <div className="flex flex-col items-center justify-center text-center py-16 px-6 rounded-2xl border border-dashed border-border">
             <div
-              className="flex items-center justify-center w-14 h-14 rounded-2xl mb-4"
+              className="flex items-center justify-center w-14 h-14 rounded-2xl mb-4 shadow-sm"
               style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
             >
               <GitBranch size={26} className="text-white" />
             </div>
-            <h2 className="font-display font-semibold text-lg text-fg mb-1">Build your first flow</h2>
+            <h2 className="font-display font-semibold text-lg text-fg mb-1">Create your first flow</h2>
             <p className="text-sm text-muted max-w-sm leading-relaxed mb-5">
-              A flow chains SQL, Python and exports into one pipeline you can run on demand or put on a schedule — reports, syncs and multi-step jobs all live here.
+              A flow chains SQL, Python and exports into one pipeline — reports, syncs and multi-step jobs. Run it whenever you like, or hand it a schedule and let it run itself.
             </p>
             {canWrite && (
               <button
@@ -1072,19 +1063,55 @@ function FlowsOverview({ flows, loading, canWrite, onOpen, onNew, onPatched }) {
           </div>
         )}
 
-        {/* Rows */}
+        {/* Populated — prominent create action, then the flows themselves */}
         {!loading && flows.length > 0 && (
-          <div className="space-y-2.5">
-            {flows.map(flow => (
-              <FlowScheduleRow
-                key={flow.id}
-                flow={flow}
-                canWrite={canWrite}
-                onOpen={onOpen}
-                onPatched={onPatched}
-              />
-            ))}
-          </div>
+          <>
+            {canWrite && (
+              <button
+                type="button"
+                onClick={onNew}
+                className="group w-full flex items-center gap-4 text-left rounded-2xl border border-primary/30 bg-primary/[0.04] p-4 sm:p-5 hover:border-primary/50 hover:bg-primary/[0.07] hover:shadow-nubi-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <div
+                  className="flex items-center justify-center w-11 h-11 rounded-xl shrink-0 shadow-sm"
+                  style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
+                >
+                  <Plus size={22} className="text-white" strokeWidth={2.4} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-display font-semibold text-sm text-fg">Create a flow</p>
+                  <p className="text-xs text-muted mt-0.5">Start from a blank canvas and wire queries, transforms and exports into a pipeline.</p>
+                </div>
+                <ChevronRight size={18} className="text-muted shrink-0 group-hover:text-primary group-hover:translate-x-0.5 transition-all" />
+              </button>
+            )}
+
+            {/* Section label + at-a-glance schedule summary (integrated, not the headline) */}
+            <div className="flex flex-wrap items-center justify-between gap-2 mt-6 mb-3">
+              <p className="text-[11px] font-mono uppercase tracking-[0.14em] text-muted">Your flows</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="default" size="sm">{flows.length} flow{flows.length === 1 ? '' : 's'}</Badge>
+                {scheduledCount > 0 && (
+                  <Badge variant="success" size="sm" dot>{scheduledCount} scheduled</Badge>
+                )}
+                {pausedCount > 0 && (
+                  <Badge variant="warning" size="sm" dot>{pausedCount} paused</Badge>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-2.5">
+              {flows.map(flow => (
+                <FlowScheduleRow
+                  key={flow.id}
+                  flow={flow}
+                  canWrite={canWrite}
+                  onOpen={onOpen}
+                  onPatched={onPatched}
+                />
+              ))}
+            </div>
+          </>
         )}
       </div>
     </div>
@@ -1110,12 +1137,13 @@ export default function FlowsPage() {
   const [activeFlow, setActiveFlow] = useState(null)
   const [activeSpec, setActiveSpec] = useState(EMPTY_SPEC)
 
-  // ── Main-pane view: 'schedules' (cross-flow board) | 'builder' | 'runs' ────
-  // 'schedules' is the cross-flow "Schedules & runs" board, reachable at any
-  // time from the top-bar switcher (and the default when nothing is open).
-  // 'builder'/'runs' target the active flow. Deep-linking to /flows/:id opens
-  // straight into the builder.
-  const [activeTab, setActiveTab] = useState(routeId ? 'builder' : 'schedules')
+  // ── Main-pane view: 'flows' (flows-first landing) | 'builder' | 'runs' ─────
+  // 'flows' is the landing — the list of flows + a prominent create action,
+  // with scheduling folded into each flow card. It's the default when nothing
+  // is open and is reachable any time from the top-bar switcher. 'builder' and
+  // 'runs' target the active flow. Deep-linking to /flows/:id opens straight
+  // into the builder.
+  const [activeTab, setActiveTab] = useState(routeId ? 'builder' : 'flows')
 
   // ── Active run (for live view) ────────────────────────────────────────────
   const [activeRunId, setActiveRunId] = useState(null)
@@ -1501,15 +1529,15 @@ export default function FlowsPage() {
   }, [projectEnvs, runEnv])
 
   // ── Which main-pane view is showing ───────────────────────────────────────
-  // The cross-flow "Schedules & runs" board renders whenever it's selected OR
-  // there's no flow open yet (e.g. a deep-link that's still loading). The
-  // Builder / Runs top-bar segments only apply once a flow is open.
+  // The flows-first landing renders whenever it's selected OR there's no flow
+  // open yet (e.g. a deep-link that's still loading). The Builder / Runs
+  // top-bar segments only apply once a flow is open.
   const hasFlow = !!activeFlow
-  const showOverview = activeTab === 'schedules' || !hasFlow
+  const showLanding = activeTab === 'flows' || !hasFlow
   const builderBar = activeTab === 'builder' && hasFlow
-  // The persistent right rail is always the flow list in the board view; only
-  // the builder/runs workspace exposes the Add / Inspector / Variables panels.
-  const effectivePanel = showOverview ? 'flows' : rightPanel
+  // The persistent right rail is always the flow list on the landing; only the
+  // builder/runs workspace exposes the Add / Inspector / Variables panels.
+  const effectivePanel = showLanding ? 'flows' : rightPanel
 
   const canRun = !!activeFlow?.id && !activeFlow?._isNew
 
@@ -1529,16 +1557,17 @@ export default function FlowsPage() {
         <List size={16} />
       </button>
 
-      {/* Main-pane switcher: Schedules & runs | Builder | Runs.
-          'Schedules & runs' is always available; Builder/Runs light up once a
-          flow is open. */}
+      {/* Main-pane switcher: Flows | Builder | Runs.
+          'Flows' is the landing (list + create, scheduling folded into each
+          flow) and is always available; Builder/Runs light up once a flow is
+          open. Scheduling is reachable per-flow — never a headline mode here. */}
       <div role="tablist" aria-label="Flows view" className="flex h-8 rounded-lg border border-border overflow-hidden shrink-0">
         {[
-          { id: 'schedules', label: 'Schedules & runs', short: 'Schedules', Icon: CalendarClock, enabled: true },
-          { id: 'builder',   label: 'Builder',          short: 'Builder',   Icon: Share2,        enabled: hasFlow },
-          { id: 'runs',      label: 'Runs',             short: 'Runs',      Icon: History,       enabled: hasFlow },
+          { id: 'flows',   label: 'Flows',   Icon: GitBranch, enabled: true },
+          { id: 'builder', label: 'Builder', Icon: Share2,    enabled: hasFlow },
+          { id: 'runs',    label: 'Runs',    Icon: History,   enabled: hasFlow },
         ].map((tab, i) => {
-          const selected = tab.id === 'schedules' ? showOverview : (!showOverview && activeTab === tab.id)
+          const selected = tab.id === 'flows' ? showLanding : (!showLanding && activeTab === tab.id)
           return (
             <button
               key={tab.id}
@@ -1556,9 +1585,7 @@ export default function FlowsPage() {
               ].join(' ')}
             >
               <tab.Icon size={13} className="shrink-0" />
-              <span className={tab.id === 'schedules' && !showOverview ? 'hidden xl:inline' : ''}>
-                {tab.id === 'schedules' ? tab.label : tab.short}
-              </span>
+              <span>{tab.label}</span>
               {tab.id === 'runs' && activeRunId && (
                 <span className="inline-flex w-1.5 h-1.5 rounded-full bg-warning animate-pulse" />
               )}
@@ -1642,8 +1669,8 @@ export default function FlowsPage() {
       )}
 
       <div className="flex items-center gap-1 ml-auto shrink-0">
-        {/* Schedules & runs view: refresh · secrets · new flow · rail toggle */}
-        {showOverview && (
+        {/* Flows landing: refresh · secrets · new flow · rail toggle */}
+        {showLanding && (
           <>
             <button
               onClick={loadFlows}
@@ -1743,7 +1770,7 @@ export default function FlowsPage() {
         {/* RHS panel toggles (desktop) — shown once a flow is open. Click the
             active panel to fully collapse. Add task / Inspector are canvas tools;
             in the notebook/code view only Flows + Variables are offered. */}
-        {!showOverview && (
+        {!showLanding && (
         <div className="hidden md:flex items-center gap-0.5 pl-1.5 ml-0.5 border-l border-border">
           {[
             { id: 'flows',     Icon: List,              title: 'Flows' },
@@ -1783,9 +1810,9 @@ export default function FlowsPage() {
           {/* One unified toolbar in the app top bar, whichever view is showing. */}
           {topbarSlot && createPortal(flowsToolbar, topbarSlot)}
 
-          {showOverview ? (
-            /* ── Schedules & runs board (cross-flow) ─────────────────────── */
-            <FlowsOverview
+          {showLanding ? (
+            /* ── Flows-first landing (list + create; scheduling per-flow) ─── */
+            <FlowsLanding
               flows={savedFlows}
               loading={loadingFlows}
               canWrite={canWrite}
