@@ -50,6 +50,43 @@ const compactMoney = (usd, currency, rates) => {
   return `${sym}${Math.round(amount)}`
 }
 
+/**
+ * Format an already-converted amount as a compact money token, mirroring
+ * compactMoney's k/M scaling. Sub-unit rates (e.g. a converted $0.12) keep the
+ * precision they need; whole figures show no cents.
+ */
+const fmtMoneyCompact = (amount, sym) => {
+  const a = Math.abs(amount)
+  if (a === 0) return `${sym}0`
+  if (a >= 1e6) return `${sym}${(amount / 1e6).toFixed(a >= 1e7 ? 0 : 1)}M`
+  if (a >= 1e3) return `${sym}${Math.round(amount / 1e3)}k`
+  if (a >= 1) return `${sym}${Math.round(amount)}`
+  return `${sym}${Math.round(amount * 100) / 100}`
+}
+
+/**
+ * Rewrite every USD amount inside a display string into the selected display
+ * currency, preserving all surrounding text — ranges ("$90k–$210k"), "≈", "+
+ * platform", and per-unit suffixes ("/viewer/yr", "/mo"). Matches "$1,000",
+ * "$200k", "$8.4k", "$0.12", and each "$" in a range. Non-money numbers (viewer
+ * counts, "500", years, "2–3×", percentages) carry no "$" and are untouched.
+ *
+ * USD returns byte-identical (early return), so nothing shifts for the default
+ * currency. Other currencies use k/M compaction consistent with compactMoney.
+ */
+const convertMoneyString = (str, currency, rates) => {
+  if (typeof str !== 'string' || currency === 'USD' || !str.includes('$')) return str
+  const sym = CURRENCIES[currency]?.symbol ?? ''
+  return str.replace(/\$(\d[\d,]*(?:\.\d+)?)([kKmM])?/g, (match, num, suffix) => {
+    let usd = Number(String(num).replace(/,/g, ''))
+    if (!Number.isFinite(usd)) return match
+    const s = suffix?.toLowerCase()
+    if (s === 'k') usd *= 1e3
+    else if (s === 'm') usd *= 1e6
+    return fmtMoneyCompact(convertFromUsd(usd, currency, rates), sym)
+  })
+}
+
 /** Parse the USD anchor out of a tier price string ("$1,000" → 1000); NaN if non-numeric. */
 const parseUsd = (price) => {
   const n = Number(String(price ?? '').replace(/[^0-9.]/g, ''))
@@ -317,6 +354,8 @@ const VTAX_MAX_ANNUAL = 260000 // Looker's high end — the chart's full scale
 
 function ViewerTaxPanel() {
   const [ref, seen] = useReveal()
+  const { currency, rates } = useCurrency()
+  const money = (s) => convertMoneyString(s, currency, rates)
 
   const priced = BI_COMPARISON
     .filter(p => !p.isNubi && p.annual_hi != null)
@@ -365,7 +404,7 @@ function ViewerTaxPanel() {
               </span>
             </div>
             <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.16em] text-slate-400 whitespace-nowrap">
-              ≈ $0 compute
+              ≈ {money('$0')} compute
             </p>
           </div>
         </div>
@@ -377,7 +416,7 @@ function ViewerTaxPanel() {
           annual cost · ~500 dashboard viewers
         </span>
         <span className="font-mono text-[10px] text-slate-400">
-          bars drawn to scale · max ≈ $260k/yr
+          bars drawn to scale · max ≈ {money('$260k')}/yr
         </span>
       </div>
 
@@ -395,7 +434,7 @@ function ViewerTaxPanel() {
                 {p.name}{p.estimate ? <sup className="text-slate-400">†</sup> : null}
               </a>
               <span className="font-mono text-[12px] font-bold text-slate-200 tabular-nums whitespace-nowrap">
-                {p.cost500}
+                {money(p.cost500)}
               </span>
             </div>
             <div className="relative h-5 rounded-md bg-white/[0.05] group-hover:bg-white/[0.08] overflow-hidden transition-colors">
@@ -412,7 +451,7 @@ function ViewerTaxPanel() {
               />
             </div>
             <p className="mt-1.5 font-mono text-[10px] text-slate-400/90 truncate">
-              {p.model} · {p.computeExtra}
+              {money(p.model)} · {money(p.computeExtra)}
             </p>
           </div>
         ))}
@@ -428,7 +467,7 @@ function ViewerTaxPanel() {
               >
                 {p.name}{p.estimate ? <sup className="text-slate-400">†</sup> : null}
               </a>
-              <span className="font-mono text-[12px] font-bold text-slate-300 whitespace-nowrap">{p.cost500}</span>
+              <span className="font-mono text-[12px] font-bold text-slate-300 whitespace-nowrap">{money(p.cost500)}</span>
             </div>
             <div className="relative h-5 rounded-md bg-white/[0.05] overflow-hidden">
               <div
@@ -445,7 +484,7 @@ function ViewerTaxPanel() {
               </span>
             </div>
             <p className="mt-1.5 font-mono text-[10px] text-slate-400/90 truncate">
-              {p.model} · {p.computeExtra}
+              {money(p.model)} · {money(p.computeExtra)}
             </p>
           </div>
         ))}
@@ -458,7 +497,7 @@ function ViewerTaxPanel() {
               {nubi.name}
             </span>
             <span className="font-display text-xl sm:text-2xl font-bold tabular-nums" style={gradientText}>
-              {nubi.cost500}
+              {money(nubi.cost500)}
             </span>
           </div>
           <div className="relative h-5 rounded-md bg-white/[0.05] overflow-hidden">
@@ -471,7 +510,7 @@ function ViewerTaxPanel() {
             </span>
           </div>
           <p className="mt-1.5 font-mono text-[10px] text-teal-300/80 truncate">
-            {nubi.model} · {nubi.computeExtra}
+            {money(nubi.model)} · {money(nubi.computeExtra)}
           </p>
         </div>
       </div>
@@ -573,6 +612,8 @@ const OVERAGE_ICONS = [Database, Zap, Bot, Server, Gauge]
 const OVERAGE_ACCENTS = ['#4d8de0', '#f59e0b', '#8b5cf6', '#ec4899', '#17b3a3']
 
 function OverageShowcase() {
+  const { currency, rates } = useCurrency()
+  const money = (s) => convertMoneyString(s, currency, rates)
   return (
     <div className="flex flex-col gap-4 sm:gap-5">
       {/* Wallet intro — gradient banner card */}
@@ -619,8 +660,8 @@ function OverageShowcase() {
                   </span>
                 </div>
                 <div className="flex items-baseline gap-1.5">
-                  <span className="font-mono text-2xl font-bold text-fg tabular-nums">{o.rate}</span>
-                  <span className="font-mono text-[11px] text-muted">{o.unit}</span>
+                  <span className="font-mono text-2xl font-bold text-fg tabular-nums">{money(o.rate)}</span>
+                  <span className="font-mono text-[11px] text-muted">{money(o.unit)}</span>
                 </div>
                 <p className="text-[13px] font-semibold text-fg mt-1">{o.label}</p>
                 <p className="text-xs text-muted leading-snug mt-1">{o.desc}</p>
@@ -749,6 +790,8 @@ function mergeLiveTiers(liveTiers, staticTiers) {
 }
 
 export default function PricingPage() {
+  const { currency, rates } = useCurrency()
+  const money = (s) => convertMoneyString(s, currency, rates)
   // Fetch live pricing data; fall back to static TIERS on error
   const [liveTiers, setLiveTiers] = useState(null)
   useEffect(() => {
@@ -772,9 +815,9 @@ export default function PricingPage() {
         {p.isNubi && <Star size={13} className="text-brand-teal" strokeWidth={2.5} />}
         {p.name}
       </span>,
-      p.floor,
-      p.infra,
-      p.meter,
+      money(p.floor),
+      money(p.infra),
+      money(p.meter),
     ],
   }))
 
@@ -866,7 +909,7 @@ export default function PricingPage() {
 
               <p className="mt-5 sm:mt-7 text-base sm:text-lg leading-relaxed text-muted dark:text-slate-300/90 max-w-2xl mx-auto">
                 Dashboards compute in <strong className="text-fg font-semibold">your users’ browsers</strong>,
-                so an extra viewer costs us <strong className="text-fg font-semibold">≈ $0</strong> — and we{' '}
+                so an extra viewer costs us <strong className="text-fg font-semibold">≈ {money('$0')}</strong> — and we{' '}
                 <strong className="text-fg font-semibold">never charge you for one</strong>. Pay for editors,
                 AI, and throughput. Not for people looking at charts.
               </p>
@@ -914,7 +957,7 @@ export default function PricingPage() {
                   ].map(s => (
                     <div key={s.l} className="px-4 sm:px-8 py-2 lg:py-0 text-center">
                       <div className="lp-hero-gradient-text font-display text-3xl sm:text-4xl lg:text-[2.6rem] font-bold tracking-tight">
-                        {s.v}
+                        {money(s.v)}
                       </div>
                       <div className="mt-1.5 font-mono text-[10px] sm:text-[11px] leading-snug text-muted">
                         {s.l}
