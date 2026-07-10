@@ -4,6 +4,8 @@
 
 Two tools for building on Nubi programmatically: **`@nubi/sdk`** is a framework-agnostic JavaScript library for querying data, managing resources, and mounting embedded dashboards. **`nubi`** is a Python CLI for dashboards-as-code, flow management, and secrets.
 
+> New here? The [Developer Guide](/docs/developer-guide) is the hub for building on Nubi; the [API Reference](/docs/api-reference) documents every REST endpoint these tools call.
+
 ---
 
 ## JavaScript SDK — `@nubi/sdk`
@@ -316,6 +318,17 @@ Per-kind convenience wrappers over pull/push. Each takes `--dir/-d` (default: cw
 |---|---|
 | `nubi git connect --provider github\|gitlab --repo-url <url> --token <pat> [--branch] [--base-path] [dir]` | Bind the project to a remote (`POST /git/connect`). The PAT is stored server-side; `nubi.yaml` records only the non-secret `provider`/`repo_url`. |
 | `nubi git graph [dir]` | Print the env-branch commit graph (`GET /projects/{id}/git/graph`). |
+
+### `nubi bridge ...`
+
+For connecting private, network-isolated data sources (VPC / on-prem) to Nubi
+through an outbound-only tunnel. See [Bridges](/docs/bridges) for the full model.
+
+| Command | What it does |
+|---|---|
+| `nubi bridge configure` | Write the local bridge config (endpoint + credentials). |
+| `nubi bridge status` | Show the bridge connection status. |
+| `nubi bridge start` | Start the bridge agent (outbound tunnel to Nubi). |
 
 <a id="secret-model"></a>
 

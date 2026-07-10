@@ -40,6 +40,7 @@ const mdFiles = import.meta.glob(
     '/docs/self-host.md',
     '/docs/open-core.md',
     '/docs/architecture-open-core.md',
+    '/docs/developer-guide.md',
     '/docs/connector-security.md',
     '/docs/kernel-security.md',
     '/docs/cache-key-spec.md',
@@ -86,7 +87,7 @@ const LAYOUT = [
 
   { section: 'Open-source project', group: 'Self-host',         slugs: ['self-host', 'open-core', 'architecture-open-core'] },
   { section: 'Open-source project', group: 'Security & internals', slugs: ['architecture-and-economics', 'compliance', 'connector-security', 'kernel-security', 'cache-key-spec', 'conformance', 'secrets', 'observability'] },
-  { section: 'Open-source project', group: 'Build on Nubi',     slugs: ['sdk-and-cli', 'files-as-code', 'git-sync', 'bridges', 'compute-kernel-attribution-runner'] },
+  { section: 'Open-source project', group: 'Build on Nubi',     slugs: ['developer-guide', 'sdk-and-cli', 'files-as-code', 'git-sync', 'bridges', 'compute-kernel-attribution-runner'] },
   { section: 'Open-source project', group: 'Contributing',      slugs: ['development', 'docs-and-screenshots'] },
 ]
 

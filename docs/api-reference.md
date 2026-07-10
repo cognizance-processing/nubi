@@ -1,8 +1,25 @@
 # API Reference
 
-Complete reference for the Nubi HTTP API. All endpoints are under the
-`/api/v1` prefix unless noted otherwise. The interactive Swagger UI is
-available at `/docs` in development mode (`ENV=development`).
+Complete reference for the Nubi HTTP API. New to building on Nubi? Start with
+the [Developer Guide](/docs/developer-guide) for the big picture, then come
+back here for endpoint detail.
+
+---
+
+## Conventions
+
+| Convention | Value |
+|---|---|
+| **Base URL** | `/api/v1` — every endpoint below is relative to this prefix. |
+| **Auth header** | `Authorization: Bearer <token>` on every request. |
+| **Content type** | Requests and responses are JSON, except query/metric endpoints, which stream `application/vnd.apache.arrow.stream`. |
+| **Org scoping** | All resources are scoped to the caller's org. Cross-org access returns **404** (never 403) so no resource's existence leaks across tenants. |
+| **Error shape** | `{ "error": "<code>", "message": "<text>" }`. See [Error codes reference](#error-codes-reference). |
+| **Swagger UI** | Interactive docs at `/docs` in development (`ENV=development`); disabled in production. |
+
+**Pagination.** Most list endpoints return the full org-scoped collection.
+Endpoints that paginate (e.g. [`GET /audit`](#audit-log)) take `limit` +
+`offset` query params and return `{ items, total, limit, offset }`.
 
 ---
 
@@ -14,17 +31,71 @@ All endpoints require a Bearer token in the `Authorization` header:
 Authorization: Bearer <token>
 ```
 
-Two token kinds are supported:
+Three token kinds are accepted:
 
-| Kind | Issued by | Use case |
-|---|---|---|
-| **First-party access token** | `POST /auth/login` or Google OAuth | Interactive users, CLI, MCP server, AI agents |
-| **Embed JWT** | Your backend (RS256/ES256, registered issuer) | Embedded dashboards, per-viewer RLS |
+| Kind | Prefix / format | Issued by | Use case |
+|---|---|---|---|
+| **First-party access token** | short-lived JWT (HS256) | `POST /auth/login` or Google OAuth | Interactive users, CLI, MCP server, AI agents |
+| **API key** | `nubi_ak_…` (long-lived) | `POST /auth/api-keys` | CLI in CI, automation — works anywhere a Bearer token does |
+| **Embed JWT** | RS256/ES256 | Your backend (registered issuer) | Embedded dashboards, per-viewer RLS |
 
 Embed tokens are read-only and can only reference registered queries by
 `query_id` — raw SQL is blocked on the embed path.
 
-Error responses use the envelope `{ "error": "<code>", "message": "<text>" }`.
+### `POST /auth/login`
+
+Authenticate with email + password. Uses a constant-time, enumeration-safe
+comparison. Also sets an HTTP-only refresh cookie.
+
+**Body:** `{ "email", "password" }`
+**Response `200`:** `{ "user": { id, email, name, ... }, "access_token": "<jwt>" }`
+**Errors:** `401 invalid_credentials` — unknown user or wrong password (same error for both).
+
+### `POST /auth/register`
+
+Create a new user account. **Response `201`.**
+
+### `POST /auth/refresh`
+
+Exchange the refresh cookie for a fresh `access_token`.
+
+### `POST /auth/logout`
+
+Revoke the refresh session. **Response `204`.**
+
+### `GET /auth/me`
+
+Return the currently authenticated user. **Response `200`:** `{ "user": { ... } }`.
+
+### `GET /auth/config`
+
+Public auth configuration (e.g. whether Google OAuth is enabled). Used by the
+login UI.
+
+### Google OAuth
+
+`GET /auth/google/start` redirects to Google; `GET /auth/google/callback`
+completes the exchange and issues a first-party token.
+
+### API keys
+
+Long-lived `nubi_ak_…` keys — the right way to authenticate the CLI in CI.
+
+#### `POST /auth/api-keys`
+
+Mint a key scoped to the caller's default org. The raw key is returned **once**
+in `key` and is never retrievable again (only a hash + last four are stored).
+
+**Body:** `{ "name": "GitHub Actions" }`
+**Response `201`:** `{ "key": "nubi_ak_…", "api_key": { "id", "name", "last_four", "created_at", ... } }`
+
+#### `GET /auth/api-keys`
+
+List the caller's keys. **Response `200`:** `{ "api_keys": [{ id, name, last_four, created_at, last_used_at, revoked_at }] }`. Key material is never returned.
+
+#### `DELETE /auth/api-keys/{key_id}`
+
+Revoke a key. Cross-user/cross-org keys return **404** (never 403). **Response `204`.**
 
 ---
 
@@ -86,6 +157,238 @@ A grant id belonging to another org (or absent) returns **404** (not 403).
 > See [governance.md](./governance.md) for the cardinality cap
 > (`NUBI_RLS_MAX_POLICY_VALUES`, default 5000) that fails closed on oversized
 > policies.
+
+---
+
+## Projects
+
+A project groups a workspace's connectors, queries, dashboards, and flows and
+is the unit of files-as-code export/import. All routes are org-scoped.
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/projects` | Member | List projects for the caller's org. |
+| `POST` | `/projects` | Writer | Create a project. **`201`.** |
+| `GET` | `/projects/{id}` | Member | Fetch one project. |
+| `PATCH` | `/projects/{id}` | Writer | Partial update (name, settings). |
+| `PUT` | `/projects/{id}` | Writer | Replace project fields. |
+| `DELETE` | `/projects/{id}` | Writer | Delete a project. **`204`.** |
+| `GET` | `/projects/{id}/deletion-impact` | Member | Preview what a delete would cascade. |
+| `GET` | `/projects/{id}/export` | Member | Export the whole project as a files-as-code bundle. |
+| `POST` | `/projects/{id}/import` | Writer | Bulk-upsert a project bundle; returns a per-resource result. |
+
+`GET /projects/{id}/export` and `POST /projects/{id}/import` are the one
+round-trip the CLI's [`nubi pull` / `nubi push`](/docs/sdk-and-cli) use when a
+project is bound. The bundle format is specified in
+[Files-as-Code](/docs/files-as-code).
+
+---
+
+## Connectors
+
+Manage data source connections. Secrets (`password`, `token`, `api_key`, …) are
+AES-256-GCM encrypted at rest and **never** returned by any read — connector
+credentials do not round-trip. See [Connector security](/docs/connector-security).
+
+### `POST /connectors`
+
+Create a connector. **Auth:** Writer. **`201`.**
+
+**Body (`CreateConnectorIn`):**
+```json
+{
+  "name": "prod-postgres",
+  "type": "postgres",
+  "config": { "host": "db.example.com", "port": 5432, "database": "app", "user": "readonly", "sslmode": "require" },
+  "secret": { "password": "s3cr3t" },
+  "seed": "blank"
+}
+```
+
+- `config` holds **non-secret** connection params (extra fields allowed, e.g. a
+  `base_url` for HTTP sources, `network_mode`, `bridge_id`). Putting a secret
+  key in `config` is rejected.
+- `secret` holds sensitive fields only: `password`, `service_account_json`,
+  `token`, `api_key`, `access_token`, `aws_secret_access_key`, `private_key`.
+- `seed`: `"demo"` seeds a read-only copy of the demo parquet dataset;
+  `"blank"` (default) creates an empty connector.
+
+### `GET /connectors`
+
+List connectors for the org. Secret fields come back blank.
+
+### `GET /connectors/{id}`
+
+Fetch one connector (no secrets).
+
+### `PUT /connectors/{id}`
+
+Update `name`, `config`, and/or `secret` (all optional). **Auth:** Writer.
+
+### `DELETE /connectors/{id}`
+
+Delete a connector. **Auth:** Writer. **`204`.**
+
+### `POST /connectors/{id}/test`
+
+Validate config + secret resolvability against the live source. Backs
+`nubi connectors test`.
+
+---
+
+## Queries
+
+Ad-hoc SQL and the server-side query registry. Query results stream Apache
+Arrow IPC — see [Notes on Arrow IPC responses](#notes-on-arrow-ipc-responses).
+
+### `POST /query`
+
+Execute a query and stream the result as an Arrow IPC stream.
+
+**Auth:** Any valid token. First-party callers may send raw `sql` (requires the
+`author:sql` scope); **embed tokens must send `query_id`** — raw SQL is rejected
+on the embed path.
+
+**Body (`QueryIn`):**
+```json
+{
+  "sql": "SELECT region, SUM(amount) AS revenue FROM orders WHERE region = $1 GROUP BY region",
+  "query_id": null,
+  "params": ["EMEA"],
+  "named_params": null,
+  "datastore_id": null
+}
+```
+
+| Field | Description |
+|---|---|
+| `sql` | SELECT statement. Non-SELECT is rejected. Ignored for embed tokens and when `query_id` is set. |
+| `query_id` | Id of a registered query. Required for embed tokens. |
+| `params` | Positional params bound to `$1`, `$2`, … (index 0 → `$1`). |
+| `named_params` | Named param values, resolved against a registered query's declared params. Token/RLS claim names are locked and win over `named_params`. |
+| `datastore_id` | Optional connector to route to; otherwise the built-in DuckDB demo dataset. |
+
+**Response `200`:** `Content-Type: application/vnd.apache.arrow.stream`. Header
+`X-Nubi-Cache: HIT | MISS`. RLS policies come exclusively from the verified
+token — any `policies` in the request body is ignored.
+
+### `POST /query/estimate`
+
+Run the identical auth/scope/allowlist/RLS resolution as `/query` but call the
+connector's `estimate()` instead of executing — returns a cost/row estimate
+without scanning data.
+
+### `GET /query/registry`
+
+List registered queries (ids, declared params, output schemas).
+
+### `POST /query/registry`
+
+Register a query in the server-side registry. **`201`.** Registered queries are
+what embed tokens and `client.query('<id>')` reference by id.
+
+> The generic CRUD in [Resources](#resources-generic-crud) also manages queries as a
+> resource kind (with `.sql` + metadata) — use that for board-authoring
+> workflows and the registry endpoints for the execution registry.
+
+---
+
+## Resources (generic CRUD)
+
+A uniform CRUD surface over four resource kinds: **`datastores`**, **`boards`**,
+**`queries`**, **`widgets`**. This is what `@nubi/sdk`'s
+`client.resources.*` wraps.
+
+**Auth:** First-party Bearer token. Writes require the Writer role. Unknown
+resource names return **404**.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/{resource}` | List all resources of that kind for the org. |
+| `POST` | `/{resource}` | Create. **`201`.** Writer. |
+| `GET` | `/{resource}/{id}` | Fetch one. Supports `?env=<key>` to resolve an environment override (adds `resolved_version`). |
+| `PUT` | `/{resource}/{id}` | Update fields. Writer. |
+| `DELETE` | `/{resource}/{id}` | Delete. **`204`.** Writer. |
+
+All rows share the shape `{ id, org_id, project_id, created_by, name, config, created_at, updated_at }`. A `queries` row whose `config` carries a `metric` block is validated as a governed [metric](#metrics-semantic-layer) on write.
+
+---
+
+## Boards & dashboards
+
+Boards store a `DashboardSpec` in `config.spec` (CRUD via [Resources](#resources-generic-crud)
+with `resource = boards`). Additional board-specific endpoints:
+
+### `POST /dashboards/validate`
+
+Validate a `DashboardSpec` and return structured, repair-oriented issues
+(chart encodings, filter/text requirements, var refs, tab refs, query-id
+registry lookups). Useful for grounding an AI author before saving.
+
+**Body:** `{ "spec": { ... } }`
+**Response `200`:** `{ "valid": true, "issues": [] }`
+
+### `POST /boards/{board_id}/providers/{provider_id}/data`
+
+Resolve a `DataProvider` declared in a board's spec and return its named
+result-sets as a multi-table Arrow IPC frame. See
+[DataProvider boards](#dataprovider-boards) below for the framing and cache-key
+details.
+
+---
+
+## Export & share
+
+Board export and the embed-share descriptor. **Auth:** first-party Bearer token.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/boards/{board_id}/export.json` | Export a board's spec + data as JSON. |
+| `GET` | `/boards/{board_id}/export.csv` | Export the board's data as CSV. |
+| `GET` | `/boards/{board_id}/export.pdf` | Render the board to PDF. |
+| `POST` | `/boards/{board_id}/share` | Return the embed descriptor: embed URL, a ready-to-paste `<nubi-dashboard>` snippet, the exact claim shape the host must RS256/ES256-sign, and the RLS policy summary. |
+
+`POST /boards/{board_id}/share` never mints a token — **Nubi does not sign embed
+JWTs**; the host signs them with its own key. See [Embedding](/docs/embedding).
+
+---
+
+## Embedding
+
+Embedded-dashboard support. The trust boundary and RLS model are in
+[Embedding](/docs/embedding); token verification is covered under
+[Scope & access grants](#scope--access-grants).
+
+### `GET /embed/config/{dashboard_id}`
+
+Read-only descriptor the host page fetches at runtime to render an embedded
+board (spec, provider ids, embed conventions). Auth is the host-signed embed
+JWT.
+
+### `POST /embed/embed-token`
+
+**Development only.** Mints a backend-verified HS256 embed token for local
+testing. **Disabled by default** — returns `503` unless
+`EMBED_DEV_TOKEN_ENABLED=true`. Never enable in production; real embed tokens
+are signed by the host's own key.
+
+**Response `200`:** `{ "token": "<jwt>", "expires_in": <seconds> }`
+
+---
+
+## Scheduled jobs
+
+Scheduled exports and recurring jobs (distinct from [Flows](#flows), which are
+DAGs). **Auth:** Writer for writes.
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/jobs` | Create a job. **`201`.** |
+| `GET` | `/jobs` | List jobs for the org. |
+| `GET` | `/jobs/{id}` | Fetch one job. |
+| `DELETE` | `/jobs/{id}` | Delete a job. **`204`.** |
+| `POST` | `/jobs/{id}/run` | Trigger a run now. |
+| `GET` | `/jobs/{id}/runs` | List a job's runs. |
 
 ---
 
@@ -1441,6 +1744,54 @@ Delete a variable.
 **Errors:**
 - `403 insufficient_role` — caller is a viewer.
 - `404 not_found` — variable not found in the caller's org+scope.
+
+---
+
+## Usage & billing
+
+Two layers. **Usage metering is open core** — the `usage_events` table and its
+read views ship in every self-host build (billing off). **Billing routes are
+Nubi Cloud only** — they live in the `ee/` tree ([open core](/docs/open-core))
+and are mounted only when Nubi's Cloud deployment sets `NUBI_LICENSE_KEY`. A
+self-host build never usage-limits and never exposes the `/ee/billing/*` routes.
+
+### Usage (open core)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/usage` | Current usage totals for the caller's org, read from `usage_events`. |
+| `GET` | `/usage/series` | Time-series of metered usage. |
+
+### Billing (Nubi Cloud only)
+
+Prices are in ZAR; payments via Paystack. See [Billing model](/docs/billing-model).
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/pricing` | Public | Tier + price catalogue (no auth). |
+| `GET` | `/ee/billing/tier` | Member | The org's current tier and quotas. |
+| `POST` | `/ee/billing/checkout` | Member | Start a Paystack checkout for a tier/top-up. |
+| `POST` | `/ee/billing/webhook` | Paystack HMAC | Paystack event sink (payment confirmations). |
+| `GET` | `/ee/billing/events` | Member | Billing event history. |
+| `GET` | `/ee/billing/invoices` | Member | List invoices. |
+| `GET` | `/ee/billing/invoices/current-cycle` | Member | The in-progress cycle's running charges. |
+| `GET` | `/ee/billing/invoices/{invoice_id}/pdf` | Member | Download an invoice PDF. |
+| `GET` | `/ee/billing/wallet` | Member | Prepaid ZAR wallet balance. |
+| `POST` | `/ee/billing/wallet/topup` | Member | Top up the wallet. |
+| `PUT` | `/ee/billing/wallet/autotopup` | Member | Configure auto-top-up thresholds. |
+| `GET` | `/ee/billing/admin/orgs/{org_id}` | Superadmin | Per-org billing state (support). |
+| `PUT` | `/ee/billing/admin/orgs/{org_id}` | Superadmin | Override a org's tier/quota (disable billing, set overrides). |
+
+### AI provider keys (Nubi Cloud)
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/ai/keys` | Store a bring-your-own-model provider key (encrypted at rest). |
+| `DELETE` | `/ai/keys` | Remove the stored provider key. |
+
+Metered operations raise `402 quota_exceeded` when a Cloud quota is exhausted.
+Metered dimensions: `compute_units`, `ai_calls`, `embedded_sessions`,
+`agent_runs`, `storage_gb`.
 
 ---
 
