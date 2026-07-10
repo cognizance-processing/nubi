@@ -69,6 +69,7 @@ import {
   FileCode2,
   Clock,
   ChevronRight,
+  MoreHorizontal,
 } from 'lucide-react'
 
 import { useUi } from '../../contexts/UiContext.jsx'
@@ -814,6 +815,110 @@ function AutoRebuildToggle({ flow, spec, onSaved }) {
       {saving ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} className={isOn ? 'text-blue-500' : ''} />}
       <span className="hidden lg:inline">Auto-rebuild</span>
     </button>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// MoreActionsMenu — overflow "⋯" popover holding secondary builder actions
+// ---------------------------------------------------------------------------
+
+/**
+ * Overflow menu that collects the secondary builder toolbar actions (Validate,
+ * Checkpoint, Version history, Auto-rebuild) so the top bar fits at narrow
+ * widths. Mirrors ``ScheduleControl``'s popover pattern: a small icon button
+ * opening an ``absolute right-0`` dropdown behind a ``fixed inset-0``
+ * click-catcher, closing on Escape / outside-click / selection.
+ *
+ * Every guard is applied by the caller-passed booleans so this stays identical
+ * to the standalone buttons it replaces.
+ */
+function MoreActionsMenu({
+  canWrite,
+  canRun,
+  activeFlow,
+  activeSpec,
+  validating,
+  triggerValidate,
+  triggerCheckpoint,
+  setHistoryOpen,
+  onSaved,
+}) {
+  const [open, setOpen] = useState(false)
+
+  // Close on Escape while open.
+  useEffect(() => {
+    if (!open) return
+    const onKey = e => { if (e.key === 'Escape') setOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+
+  const showCheckpoint = canWrite && canRun
+  const showHistory = canRun
+  const showAutoRebuild = canWrite && activeFlow?.id && !activeFlow?._isNew
+
+  const itemClass =
+    'flex w-full items-center gap-2 px-2.5 h-8 text-xs font-medium rounded-lg text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring text-left'
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        onClick={() => setOpen(v => !v)}
+        title="More actions"
+        aria-label="More actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="flex items-center justify-center w-8 h-8 rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <MoreHorizontal size={15} />
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div
+            role="menu"
+            aria-label="More actions"
+            className="absolute right-0 top-9 z-50 w-56 rounded-xl border border-border bg-surface shadow-lg p-1.5 text-fg"
+          >
+            <button
+              role="menuitem"
+              onClick={() => { setOpen(false); triggerValidate() }}
+              disabled={validating}
+              className={itemClass}
+            >
+              {validating ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />}
+              Validate
+            </button>
+            {showCheckpoint && (
+              <button
+                role="menuitem"
+                onClick={() => { setOpen(false); triggerCheckpoint() }}
+                className={itemClass}
+              >
+                <GitCommitHorizontal size={13} />
+                Checkpoint
+              </button>
+            )}
+            {showHistory && (
+              <button
+                role="menuitem"
+                onClick={() => { setOpen(false); setHistoryOpen(true) }}
+                className={itemClass}
+              >
+                <History size={13} />
+                Version history
+              </button>
+            )}
+            {showAutoRebuild && (
+              <div className="mt-1 pt-1 border-t border-border">
+                <AutoRebuildToggle flow={activeFlow} spec={activeSpec} onSaved={onSaved} />
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
   )
 }
 
@@ -1731,11 +1836,6 @@ export default function FlowsPage() {
                 (runEnv) — no second selector is rendered here. */}
             {/* Unsaved / autosave status — sits next to the Save button */}
             <SaveStatusBadge dirty={dirty} saving={saving} autosaveStatus={autosaveStatus} className="hidden sm:flex px-1" />
-            <button onClick={triggerValidate} disabled={validating} title="Validate flow"
-              className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              {validating ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />}
-              <span className="hidden lg:inline">Validate</span>
-            </button>
             {canWrite && (
               <button onClick={triggerSave} disabled={saving} title="Save flow"
                 className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
@@ -1743,25 +1843,22 @@ export default function FlowsPage() {
                 <span className="hidden lg:inline">Save</span>
               </button>
             )}
-            {canWrite && canRun && (
-              <button onClick={triggerCheckpoint} title="Checkpoint — snapshot the current draft as a new version"
-                className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                <GitCommitHorizontal size={13} />
-                <span className="hidden lg:inline">Checkpoint</span>
-              </button>
-            )}
-            {canRun && (
-              <button onClick={() => setHistoryOpen(true)} title="Version history"
-                className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                <History size={13} />
-                <span className="hidden lg:inline">History</span>
-              </button>
-            )}
+            {/* Secondary actions (Validate · Checkpoint · Version history ·
+                Auto-rebuild) live in an overflow menu so the bar fits at
+                narrow widths — each keeps its original guard. */}
+            <MoreActionsMenu
+              canWrite={canWrite}
+              canRun={canRun}
+              activeFlow={activeFlow}
+              activeSpec={activeSpec}
+              validating={validating}
+              triggerValidate={triggerValidate}
+              triggerCheckpoint={triggerCheckpoint}
+              setHistoryOpen={setHistoryOpen}
+              onSaved={handleSaved}
+            />
             {canWrite && activeFlow?.id && !activeFlow?._isNew && (
               <ScheduleControl flow={activeFlow} onSaved={handleSaved} />
-            )}
-            {canWrite && activeFlow?.id && !activeFlow?._isNew && (
-              <AutoRebuildToggle flow={activeFlow} spec={activeSpec} onSaved={handleSaved} />
             )}
             {canWrite && (
               <button onClick={triggerRun} disabled={running || !canRun} title={!canRun ? 'Save the flow first' : 'Run flow'}
