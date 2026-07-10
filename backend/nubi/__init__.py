@@ -22,7 +22,7 @@ from nubi.flows import (  # noqa: F401
     task,
 )
 
-__version__ = "0.8.1"
+__version__ = "0.8.2"
 __all__ = [
     "flow",
     "task",
