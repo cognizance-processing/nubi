@@ -227,6 +227,31 @@ function RunStateBadge({ state, size = 'sm' }) {
 }
 
 // ---------------------------------------------------------------------------
+// Flow status — the single dot/label shown on rail rows + overview cards.
+// Priority: draft → last-run failed → scheduled → paused → manual.
+// ---------------------------------------------------------------------------
+
+function flowStatusMeta(flow) {
+  if (flow?._isNew) return { dot: 'bg-amber-400', ring: 'ring-amber-400/30', label: 'Unsaved draft' }
+  if (flow?.last_run_state === 'failed') return { dot: 'bg-red-500', ring: 'ring-red-500/30', label: 'Last run failed' }
+  if (flow?.schedule && flow?.enabled) return { dot: 'bg-emerald-500', ring: 'ring-emerald-500/30', label: 'Scheduled' }
+  if (flow?.schedule && !flow?.enabled) return { dot: 'bg-amber-400', ring: 'ring-amber-400/30', label: 'Schedule paused' }
+  return { dot: 'bg-muted/40', ring: 'ring-border', label: 'Runs manually' }
+}
+
+/** Small status dot for rail rows — colour keyed by flowStatusMeta. */
+function FlowStatusDot({ flow, className = '' }) {
+  const s = flowStatusMeta(flow)
+  return (
+    <span
+      title={s.label}
+      aria-label={s.label}
+      className={['inline-block h-2 w-2 rounded-full shrink-0 ring-2', s.dot, s.ring, className].join(' ')}
+    />
+  )
+}
+
+// ---------------------------------------------------------------------------
 // FlowListItem — entry in the left rail
 // ---------------------------------------------------------------------------
 
@@ -249,7 +274,6 @@ function FlowListItem({ flow, isActive, onClick, onDelete, canWrite, strictEnv }
 
   const scheduleSummary = !flow._isNew ? describeSchedule(flow.schedule) : null
   const lastRunRel = !flow._isNew ? fmtRelative(flow.last_run_at) : null
-  const isEnabled = Boolean(flow.enabled)
   const notInEnv = !flow._isNew && strictEnv && Array.isArray(flow.pinned_envs)
     && !flow.pinned_envs.includes(strictEnv)
 
@@ -257,23 +281,17 @@ function FlowListItem({ flow, isActive, onClick, onDelete, canWrite, strictEnv }
     <button
       onClick={() => onClick(flow)}
       className={[
-        'w-full text-left px-3 py-3 rounded-lg transition-all group relative min-h-[44px]',
+        'w-full text-left px-2.5 py-2.5 rounded-lg transition-all group relative min-h-[44px]',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         isActive
           ? 'bg-primary/10 border border-primary/20 text-fg'
           : 'hover:bg-surface-2 border border-transparent text-fg/80 hover:text-fg',
       ].join(' ')}
     >
-      <div className="flex items-start gap-2 min-w-0 pr-6">
-        <GitBranch
-          size={13}
-          className={['shrink-0 mt-0.5', isActive ? 'text-primary' : 'text-muted group-hover:text-fg/60'].join(' ')}
-        />
+      <div className="flex items-start gap-2.5 min-w-0 pr-6">
+        <FlowStatusDot flow={flow} className="mt-[5px]" />
         <div className="min-w-0 flex-1">
-          <p className="text-xs font-semibold truncate leading-tight">{flow.name}</p>
-          {flow.id && (
-            <p className="text-[10px] font-mono text-muted truncate mt-0.5">{flow.id.slice(0, 8)}…</p>
-          )}
+          <p className="text-[13px] font-semibold truncate leading-tight">{flow.name}</p>
 
           {/* Metadata row: schedule + last run, aligned as small labelled chips */}
           {(scheduleSummary || lastRunRel) && (
@@ -293,14 +311,9 @@ function FlowListItem({ flow, isActive, onClick, onDelete, canWrite, strictEnv }
             </div>
           )}
 
-          {(flow._isNew || (flow.schedule && !flow._isNew) || notInEnv) && (
+          {(flow._isNew || notInEnv) && (
             <div className="flex flex-wrap items-center gap-1 mt-1.5">
-              {flow._isNew && <Badge variant="warning" size="sm">draft</Badge>}
-              {flow.schedule && !flow._isNew && (
-                <Badge variant={isEnabled ? 'success' : 'default'} size="sm" dot>
-                  {isEnabled ? 'enabled' : 'disabled'}
-                </Badge>
-              )}
+              {flow._isNew && <Badge variant="warning" size="sm">Unsaved</Badge>}
               {/* Strict-env visibility: the active env is protected and this flow
                   has no pinned version there (pinned_envs from the list API). */}
               {notInEnv && (
@@ -411,7 +424,7 @@ function FlowList({ flows, activeId, loading, onSelect, onNew, onRefresh, onDele
             compact
             icon={<GitBranch size={20} />}
             title="No flows yet"
-            description="Build a DAG-based workflow to transform, schedule and orchestrate data."
+            description="Build a pipeline once, then run it on demand or on a schedule."
             action={canWrite ? (
               <button
                 onClick={handleNew}
@@ -539,7 +552,7 @@ function RunsTab({ flow, currentRunId, onSelectRun }) {
     <div className="flex flex-col h-full">
       {/* Sub-toolbar */}
       <div className="shrink-0 flex items-center justify-between px-4 py-2 border-b border-border bg-surface-2/20">
-        <p className="text-xs font-semibold text-muted">Run history</p>
+        <p className="text-xs font-semibold text-muted uppercase tracking-wider">Run history</p>
         <button
           onClick={load}
           disabled={loading}
@@ -570,7 +583,7 @@ function RunsTab({ flow, currentRunId, onSelectRun }) {
             compact
             icon={<Play size={20} />}
             title="No runs yet"
-            description="Use the Builder tab to run this flow."
+            description="Run this flow from the Builder and its history shows up here."
           />
         )}
         {runs.map(run => {
@@ -900,22 +913,22 @@ function FlowScheduleRow({ flow, canWrite, onOpen, onPatched }) {
           className="group flex-1 min-w-0 text-left rounded-lg -m-1 p-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <div className="flex flex-wrap items-center gap-2 mb-0.5">
-            <GitBranch size={14} className="shrink-0 text-muted group-hover:text-primary transition-colors" />
+            <FlowStatusDot flow={flow} className="mt-px" />
             <h3 className="font-semibold text-sm text-fg truncate group-hover:text-primary transition-colors">
               {flow.name}
             </h3>
             {scheduled && (
               <Badge variant={enabled ? 'success' : 'default'} size="sm" dot>
-                {enabled ? 'scheduled' : 'paused'}
+                {enabled ? 'Scheduled' : 'Paused'}
               </Badge>
             )}
           </div>
 
           {description && (
-            <p className="text-xs text-muted truncate mb-1.5 ml-[22px]">{description}</p>
+            <p className="text-xs text-muted truncate mb-1.5 ml-[18px]">{description}</p>
           )}
 
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted ml-[22px]">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted ml-[18px]">
             <span className="inline-flex items-center gap-1" title={flow.schedule || 'No schedule — runs manually'}>
               <Clock size={11} className="shrink-0" />
               {humanSchedule(flow.schedule)}
@@ -947,7 +960,7 @@ function FlowScheduleRow({ flow, canWrite, onOpen, onPatched }) {
         </button>
 
         {/* Actions — not nested in the row button */}
-        <div className="flex items-center gap-2 shrink-0 self-start sm:self-center ml-[22px] sm:ml-0">
+        <div className="flex items-center gap-2 shrink-0 self-start sm:self-center ml-[18px] sm:ml-0">
           {scheduled && (
             <MiniToggle
               on={enabled}
@@ -989,58 +1002,32 @@ function FlowScheduleRow({ flow, canWrite, onOpen, onPatched }) {
 // FlowsOverview — the /flows landing: a "Schedules & runs" board of all flows
 // ---------------------------------------------------------------------------
 
-function FlowsOverview({ flows, loading, canWrite, onOpen, onNew, onRefresh, onPatched, onSecrets }) {
+function FlowsOverview({ flows, loading, canWrite, onOpen, onNew, onPatched }) {
   const scheduledCount = flows.filter(f => f.schedule && f.enabled).length
+  const pausedCount = flows.filter(f => f.schedule && !f.enabled).length
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="px-4 sm:px-6 lg:px-8 py-6 sm:py-8 max-w-4xl w-full mx-auto">
+      <div className="px-4 sm:px-6 lg:px-8 py-6 sm:py-8 max-w-3xl w-full mx-auto">
         {/* Header */}
-        <div className="flex flex-wrap items-end justify-between gap-3 mb-5">
-          <div>
-            <p className="text-[11px] font-mono uppercase tracking-wider text-muted mb-1">Automation</p>
-            <h1 className="font-display font-semibold text-xl sm:text-2xl text-fg">Schedules &amp; runs</h1>
-            <p className="text-sm text-muted mt-1 max-w-lg leading-relaxed">
-              Every flow, its schedule and latest run. Open one to build it, or run it on demand.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onSecrets}
-              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-border text-sm font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <KeyRound size={14} />
-              <span className="hidden sm:inline">Secrets</span>
-            </button>
-            {canWrite && (
-              <button
-                type="button"
-                onClick={onNew}
-                className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Plus size={15} strokeWidth={2.4} />
-                New flow
-              </button>
-            )}
-          </div>
-        </div>
+        <header className="mb-5">
+          <p className="text-[11px] font-mono uppercase tracking-[0.14em] text-muted mb-1.5">Automation</p>
+          <h1 className="font-display font-semibold text-xl sm:text-2xl text-fg">Schedules &amp; runs</h1>
+          <p className="text-sm text-muted mt-1.5 max-w-lg leading-relaxed">
+            Every flow in this project, with its schedule and how the last run went. Toggle a schedule on or off, kick off a run, or open one to edit it.
+          </p>
+        </header>
 
         {/* Summary strip */}
         {!loading && flows.length > 0 && (
-          <div className="flex items-center gap-2 mb-4 text-xs text-muted">
+          <div className="flex flex-wrap items-center gap-2 mb-4">
             <Badge variant="default" size="sm">{flows.length} flow{flows.length === 1 ? '' : 's'}</Badge>
             {scheduledCount > 0 && (
               <Badge variant="success" size="sm" dot>{scheduledCount} scheduled</Badge>
             )}
-            <button
-              type="button"
-              onClick={onRefresh}
-              className="ml-auto inline-flex items-center gap-1.5 h-7 px-2 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
-              Refresh
-            </button>
+            {pausedCount > 0 && (
+              <Badge variant="warning" size="sm" dot>{pausedCount} paused</Badge>
+            )}
           </div>
         )}
 
@@ -1068,10 +1055,9 @@ function FlowsOverview({ flows, loading, canWrite, onOpen, onNew, onRefresh, onP
             >
               <GitBranch size={26} className="text-white" />
             </div>
-            <h2 className="font-display font-semibold text-lg text-fg mb-1">No flows yet</h2>
+            <h2 className="font-display font-semibold text-lg text-fg mb-1">Build your first flow</h2>
             <p className="text-sm text-muted max-w-sm leading-relaxed mb-5">
-              Flows are DAG-based workflows you can build, schedule and monitor —
-              scheduled reports, syncs and multi-step pipelines all live here.
+              A flow chains SQL, Python and exports into one pipeline you can run on demand or put on a schedule — reports, syncs and multi-step jobs all live here.
             </p>
             {canWrite && (
               <button
@@ -1088,7 +1074,7 @@ function FlowsOverview({ flows, loading, canWrite, onOpen, onNew, onRefresh, onP
 
         {/* Rows */}
         {!loading && flows.length > 0 && (
-          <div className="space-y-3">
+          <div className="space-y-2.5">
             {flows.map(flow => (
               <FlowScheduleRow
                 key={flow.id}
@@ -1124,8 +1110,12 @@ export default function FlowsPage() {
   const [activeFlow, setActiveFlow] = useState(null)
   const [activeSpec, setActiveSpec] = useState(EMPTY_SPEC)
 
-  // ── Tab: 'builder' | 'runs' ───────────────────────────────────────────────
-  const [activeTab, setActiveTab] = useState('builder')
+  // ── Main-pane view: 'schedules' (cross-flow board) | 'builder' | 'runs' ────
+  // 'schedules' is the cross-flow "Schedules & runs" board, reachable at any
+  // time from the top-bar switcher (and the default when nothing is open).
+  // 'builder'/'runs' target the active flow. Deep-linking to /flows/:id opens
+  // straight into the builder.
+  const [activeTab, setActiveTab] = useState(routeId ? 'builder' : 'schedules')
 
   // ── Active run (for live view) ────────────────────────────────────────────
   const [activeRunId, setActiveRunId] = useState(null)
@@ -1510,8 +1500,16 @@ export default function FlowsPage() {
     return row?.protected ? runEnv : null
   }, [projectEnvs, runEnv])
 
-  // ── Empty state ───────────────────────────────────────────────────────────
-  const showEmpty = !activeFlow
+  // ── Which main-pane view is showing ───────────────────────────────────────
+  // The cross-flow "Schedules & runs" board renders whenever it's selected OR
+  // there's no flow open yet (e.g. a deep-link that's still loading). The
+  // Builder / Runs top-bar segments only apply once a flow is open.
+  const hasFlow = !!activeFlow
+  const showOverview = activeTab === 'schedules' || !hasFlow
+  const builderBar = activeTab === 'builder' && hasFlow
+  // The persistent right rail is always the flow list in the board view; only
+  // the builder/runs workspace exposes the Add / Inspector / Variables panels.
+  const effectivePanel = showOverview ? 'flows' : rightPanel
 
   const canRun = !!activeFlow?.id && !activeFlow?._isNew
 
@@ -1522,40 +1520,55 @@ export default function FlowsPage() {
   //    was merged in here (its controls drive NotebookView via the ref). ─────
   const flowsToolbar = (
     <div className="flex items-center gap-1.5 w-full min-w-0 overflow-x-auto">
-      {/* Mobile: flows list */}
+      {/* Mobile: open the flow list */}
       <button
         onClick={() => setMobileSheetOpen(true)}
         className="md:hidden flex items-center justify-center w-8 h-8 rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        aria-label="Open flows list" title="Flows list"
+        aria-label="Open flow list" title="Flow list"
       >
         <List size={16} />
       </button>
 
-      {/* Builder / Runs switcher */}
-      <div role="tablist" aria-label="Flow view" className="flex h-8 rounded-lg border border-border overflow-hidden shrink-0">
-        {[{ id: 'builder', label: 'Builder' }, { id: 'runs', label: 'Runs' }].map((tab, i) => (
-          <button
-            key={tab.id}
-            role="tab"
-            aria-selected={activeTab === tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={[
-              'flex items-center gap-1.5 px-3 text-xs font-medium transition-colors',
-              'focus-visible:outline-none focus-visible:relative focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-ring',
-              i > 0 ? 'border-l border-border' : '',
-              activeTab === tab.id ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
-            ].join(' ')}
-          >
-            {tab.label}
-            {tab.id === 'runs' && activeRunId && (
-              <span className="inline-flex w-1.5 h-1.5 rounded-full bg-warning animate-pulse" />
-            )}
-          </button>
-        ))}
+      {/* Main-pane switcher: Schedules & runs | Builder | Runs.
+          'Schedules & runs' is always available; Builder/Runs light up once a
+          flow is open. */}
+      <div role="tablist" aria-label="Flows view" className="flex h-8 rounded-lg border border-border overflow-hidden shrink-0">
+        {[
+          { id: 'schedules', label: 'Schedules & runs', short: 'Schedules', Icon: CalendarClock, enabled: true },
+          { id: 'builder',   label: 'Builder',          short: 'Builder',   Icon: Share2,        enabled: hasFlow },
+          { id: 'runs',      label: 'Runs',             short: 'Runs',      Icon: History,       enabled: hasFlow },
+        ].map((tab, i) => {
+          const selected = tab.id === 'schedules' ? showOverview : (!showOverview && activeTab === tab.id)
+          return (
+            <button
+              key={tab.id}
+              role="tab"
+              aria-selected={selected}
+              disabled={!tab.enabled}
+              onClick={() => tab.enabled && setActiveTab(tab.id)}
+              title={tab.enabled ? tab.label : 'Open a flow first'}
+              className={[
+                'flex items-center gap-1.5 px-2.5 sm:px-3 text-xs font-medium transition-colors whitespace-nowrap',
+                'focus-visible:outline-none focus-visible:relative focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-ring',
+                'disabled:opacity-40 disabled:cursor-not-allowed',
+                i > 0 ? 'border-l border-border' : '',
+                selected ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
+              ].join(' ')}
+            >
+              <tab.Icon size={13} className="shrink-0" />
+              <span className={tab.id === 'schedules' && !showOverview ? 'hidden xl:inline' : ''}>
+                {tab.id === 'schedules' ? tab.label : tab.short}
+              </span>
+              {tab.id === 'runs' && activeRunId && (
+                <span className="inline-flex w-1.5 h-1.5 rounded-full bg-warning animate-pulse" />
+              )}
+            </button>
+          )
+        })}
       </div>
 
       {/* Canvas / Notebook view switcher (icons) — builder tab only */}
-      {activeTab === 'builder' && (
+      {builderBar && (
         <div className="flex h-8 rounded-lg border border-border overflow-hidden shrink-0">
           {[
             { id: 'canvas', Icon: Share2, title: 'Canvas / DAG view' },
@@ -1582,7 +1595,7 @@ export default function FlowsPage() {
       )}
 
       {/* Flow / notebook name (was the notebook toolbar's name input) */}
-      {activeTab === 'builder' && (
+      {builderBar && (
         <input
           type="text"
           value={activeSpec?.name ?? ''}
@@ -1599,7 +1612,7 @@ export default function FlowsPage() {
       )}
 
       {/* Notebook-only: add-cell buttons (was the notebook toolbar) */}
-      {activeTab === 'builder' && flowView === 'notebook' && (
+      {builderBar && flowView === 'notebook' && (
         <div className="flex items-center gap-1 shrink-0">
           <button
             onClick={() => flowBuilderRef.current?.addCell('sql')}
@@ -1629,8 +1642,53 @@ export default function FlowsPage() {
       )}
 
       <div className="flex items-center gap-1 ml-auto shrink-0">
+        {/* Schedules & runs view: refresh · secrets · new flow · rail toggle */}
+        {showOverview && (
+          <>
+            <button
+              onClick={loadFlows}
+              disabled={loadingFlows}
+              title="Refresh flows"
+              aria-label="Refresh flows"
+              className="flex items-center justify-center w-8 h-8 rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <RefreshCw size={14} className={loadingFlows ? 'animate-spin' : ''} />
+            </button>
+            <button
+              onClick={() => navigate('/flows/secrets')}
+              title="Secrets"
+              className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <KeyRound size={13} />
+              <span className="hidden sm:inline">Secrets</span>
+            </button>
+            {canWrite && (
+              <button
+                onClick={handleNew}
+                title="New flow"
+                className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-primary text-primary-fg text-xs font-medium hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Plus size={13} strokeWidth={2.5} />
+                <span className="hidden sm:inline">New flow</span>
+              </button>
+            )}
+            <button
+              onClick={() => setCollapsed(!rightCollapsed)}
+              title={rightCollapsed ? 'Show flow list' : 'Hide flow list'}
+              aria-label={rightCollapsed ? 'Show flow list' : 'Hide flow list'}
+              aria-pressed={!rightCollapsed}
+              className={[
+                'hidden md:flex w-8 h-8 items-center justify-center rounded-lg border transition-colors ml-0.5',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                !rightCollapsed ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2',
+              ].join(' ')}
+            >
+              <List size={15} />
+            </button>
+          </>
+        )}
         {/* Builder-only actions */}
-        {activeTab === 'builder' && (
+        {builderBar && (
           <>
             {/* Environment is selected globally in the sidebar (SidebarEnvSelector,
                 shared via EnvContext). Runs target the EnvContext-selected env
@@ -1682,17 +1740,17 @@ export default function FlowsPage() {
           </>
         )}
 
-        {/* RHS panel toggles (desktop). Click the active panel to fully collapse.
-            Add task / Inspector are canvas tools — in the notebook view only the
-            Flows panel toggle is shown (cells are added via the +SQL/+Python/+Note
-            buttons and configured inline). */}
+        {/* RHS panel toggles (desktop) — shown once a flow is open. Click the
+            active panel to fully collapse. Add task / Inspector are canvas tools;
+            in the notebook/code view only Flows + Variables are offered. */}
+        {!showOverview && (
         <div className="hidden md:flex items-center gap-0.5 pl-1.5 ml-0.5 border-l border-border">
           {[
             { id: 'flows',     Icon: List,              title: 'Flows' },
             { id: 'variables', Icon: Variable,          title: 'Variables' },
             { id: 'add',       Icon: Plus,              title: 'Add task' },
             { id: 'inspector', Icon: SlidersHorizontal, title: 'Inspector' },
-          ].filter(p => !(activeTab === 'builder' && (flowView === 'notebook' || flowView === 'code') && p.id !== 'flows' && p.id !== 'variables')).map(p => {
+          ].filter(p => !(builderBar && (flowView === 'notebook' || flowView === 'code') && p.id !== 'flows' && p.id !== 'variables')).map(p => {
             const active = rightPanel === p.id && !rightCollapsed
             return (
               <button key={p.id} onClick={() => togglePanel(p.id)} title={p.title} aria-label={p.title} aria-pressed={active}
@@ -1706,35 +1764,8 @@ export default function FlowsPage() {
             )
           })}
         </div>
+        )}
       </div>
-    </div>
-  )
-
-  // ── Overview toolbar — shown on the /flows landing (no flow selected). ─────
-  const overviewToolbar = (
-    <div className="flex items-center gap-2 w-full min-w-0">
-      <GitBranch size={15} className="text-muted shrink-0 hidden sm:block" strokeWidth={2.2} />
-      <span className="text-sm font-semibold font-display text-fg truncate">Flows</span>
-      <div className="flex-1" />
-      <button
-        onClick={loadFlows}
-        disabled={loadingFlows}
-        title="Refresh"
-        aria-label="Refresh flows"
-        className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0 border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        <RefreshCw size={14} className={loadingFlows ? 'animate-spin' : ''} strokeWidth={2} />
-      </button>
-      {canWrite && (
-        <button
-          onClick={handleNew}
-          title="New flow"
-          className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg shrink-0 bg-primary text-primary-fg text-xs font-medium hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <Plus size={13} strokeWidth={2.5} />
-          <span className="hidden sm:inline">New flow</span>
-        </button>
-      )}
     </div>
   )
 
@@ -1749,27 +1780,22 @@ export default function FlowsPage() {
         {/* ── Main area ──────────────────────────────────────────────────── */}
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
 
-          {showEmpty ? (
-            /* ── Schedules & runs overview — the /flows landing ──────────── */
-            <>
-              {topbarSlot && createPortal(overviewToolbar, topbarSlot)}
-              <FlowsOverview
-                flows={savedFlows}
-                loading={loadingFlows}
-                canWrite={canWrite}
-                onOpen={handleSelectFlow}
-                onNew={handleNew}
-                onRefresh={loadFlows}
-                onPatched={handleFlowPatched}
-                onSecrets={() => navigate('/flows/secrets')}
-              />
-            </>
-          ) : (
-            /* ── Flow workspace ──────────────────────────────────────────── */
-            <>
-              {/* Toolbar lives in the single app top bar (portaled into AppTopbar). */}
-              {topbarSlot && createPortal(flowsToolbar, topbarSlot)}
+          {/* One unified toolbar in the app top bar, whichever view is showing. */}
+          {topbarSlot && createPortal(flowsToolbar, topbarSlot)}
 
+          {showOverview ? (
+            /* ── Schedules & runs board (cross-flow) ─────────────────────── */
+            <FlowsOverview
+              flows={savedFlows}
+              loading={loadingFlows}
+              canWrite={canWrite}
+              onOpen={handleSelectFlow}
+              onNew={handleNew}
+              onPatched={handleFlowPatched}
+            />
+          ) : (
+            /* ── Flow workspace (Builder / Runs) ─────────────────────────── */
+            <>
               {/* Action banners (validate / save / run) */}
               {validationIssues && (
                 <div className={[
@@ -1869,15 +1895,16 @@ export default function FlowsPage() {
           )}
         </div>
 
-        {/* ── Shared RHS sidebar (desktop) — Flows · Add · Inspector ──────
-            One collapsible right-hand panel, switched by the top toggle buttons,
-            mirroring the dashboard editor's shared sidebar. Fully collapses —
-            no leftover rail; re-open via the top-bar panel toggles. */}
-        {!rightCollapsed && !showEmpty && (
+        {/* ── Persistent RHS rail (desktop) — the flow list is the primary
+            navigation, always here for quick switching (like the Queries /
+            Dashboards rails). In the builder/runs workspace the same rail also
+            hosts the Add task / Inspector / Variables panels via the top-bar
+            toggles. Collapsible; re-open from the top bar. */}
+        {!rightCollapsed && (
           <aside className="hidden md:flex shrink-0 w-64 lg:w-72 flex-col border-l border-border bg-surface">
             <div className="shrink-0 flex items-center justify-between px-3 h-9 border-b border-border">
               <span className="text-[11px] font-semibold uppercase tracking-wider text-muted truncate">
-                {rightPanel === 'flows' ? 'Flows' : rightPanel === 'variables' ? 'Variables' : rightPanel === 'add' ? 'Add task' : (
+                {effectivePanel === 'flows' ? 'Flows' : effectivePanel === 'variables' ? 'Variables' : effectivePanel === 'add' ? 'Add task' : (
                   <>
                     Inspector
                     {selectedTask?.key && (
@@ -1889,7 +1916,7 @@ export default function FlowsPage() {
                 )}
               </span>
               <div className="flex items-center gap-0.5">
-                {rightPanel === 'flows' && (
+                {effectivePanel === 'flows' && (
                   <button
                     onClick={loadFlows}
                     disabled={loadingFlows}
@@ -1910,7 +1937,7 @@ export default function FlowsPage() {
               </div>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
-              {rightPanel === 'flows' && (
+              {effectivePanel === 'flows' && (
                 <FlowList
                   flows={allFlows}
                   activeId={activeId}
@@ -1924,18 +1951,18 @@ export default function FlowsPage() {
                   strictEnv={strictEnv}
                 />
               )}
-              {rightPanel === 'variables' && (
+              {effectivePanel === 'variables' && (
                 <div className="p-3">
                   <VariablesPanel readOnly={!canWrite} />
                 </div>
               )}
-              {rightPanel === 'add' && (
+              {effectivePanel === 'add' && (
                 <AddTaskPanel
                   disabled={!canWrite || !activeFlow || activeTab !== 'builder'}
                   onAdd={(kind, config, cellType) => flowBuilderRef.current?.addNode(kind, config, cellType)}
                 />
               )}
-              {rightPanel === 'inspector' && (
+              {effectivePanel === 'inspector' && (
                 selectedTask ? (
                   <NodeInspector
                     task={selectedTask}
