@@ -21,7 +21,7 @@ Nubi is an LLM-native BI platform. The moving parts:
 | **Backend** | FastAPI (Python 3.11+) — REST API under `/api/v1`, auth, RLS, query planner, content-hash cache | `backend/app/` |
 | **Flows worker** | Durable DAG engine — scheduler + task pool for scheduled/triggered runs | `backend/app/flows/`, `backend/worker.py` |
 | **Connectors** | 20+ data sources (Postgres, DuckDB, MySQL, Snowflake, BigQuery, Redshift, ClickHouse, Databricks, Athena, Trino, …) | `backend/app/connectors/` |
-| **Lakehouse** | DuckDB compute over bucket-prefix-isolated object storage | `backend/app/lakehouse/`, `backend/app/storage/` |
+| **Storage kernel** | DuckDB compute over bucket-prefix-isolated object storage (Parquet/DuckDB in S3/GCS/R2) | `backend/app/lakehouse/`, `backend/app/storage/` |
 | **Semantic layer** | Governed metrics — one definition, time intelligence, RLS keys | `backend/app/routes/metrics.py` |
 | **AI / MCP** | Grounded text-to-SQL, agentic chat loop, Nubi-as-MCP-server | `backend/app/ai/`, `backend/app/chat/`, `backend/app/routes/mcp.py` |
 | **SDK** | `@nubi/sdk` — framework-agnostic JavaScript client + embed mount | `sdk/` |
