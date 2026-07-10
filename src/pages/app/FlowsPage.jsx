@@ -194,6 +194,13 @@ function humanSchedule(schedule) {
     if (dom === '*' && mon === '*' && numeric(dow) && numeric(min) && numeric(hour)) {
       return `${DOW[Number(dow) % 7]} at ${hour.padStart(2, '0')}:${min.padStart(2, '0')}`
     }
+    // Monthly — a specific day-of-month (e.g. "0 8 1 * *" → "Monthly on the 1st at 08:00")
+    if (mon === '*' && dow === '*' && numeric(dom) && numeric(min) && numeric(hour)) {
+      const n = Number(dom)
+      const v = n % 100
+      const suffix = (['th', 'st', 'nd', 'rd'][(v - 20) % 10] || ['th', 'st', 'nd', 'rd'][v] || 'th')
+      return `Monthly on the ${n}${suffix} at ${hour.padStart(2, '0')}:${min.padStart(2, '0')}`
+    }
   }
   return trimmed
 }
