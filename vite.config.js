@@ -1,5 +1,11 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
+import { readFileSync } from 'node:fs'
+
+// Real app version from package.json, exposed to the SPA as import.meta.env.APP_VERSION.
+const APP_VERSION = JSON.parse(
+  readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
+).version
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
@@ -32,6 +38,7 @@ export default defineConfig(({ mode }) => {
     // process.env.DRAGGABLE_DEBUG don't throw ReferenceError in the browser.
     define: {
       'process.env': {},
+      'import.meta.env.APP_VERSION': JSON.stringify(APP_VERSION),
     },
     // Also inject into esbuild dep pre-bundling (Vite's define doesn't cover that path).
     optimizeDeps: {

@@ -202,7 +202,7 @@ function SidebarContent({ collapsed, showToggle = true }) {
       {!collapsed && (
         <div className="px-4 pb-1.5">
           <p className="text-[10px] text-muted/45 font-mono tracking-wide select-none">
-            nubi · beta
+            nubi · v{import.meta.env.APP_VERSION}
           </p>
         </div>
       )}
