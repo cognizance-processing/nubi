@@ -4,6 +4,10 @@ This document is the **stable public contract** for the Nubi web-component embed
 kit. Hosts pin to a specific bundle version; breaking changes are gated behind a
 new major version number. The current version is **v1**.
 
+> New to embedding? Start with the step-by-step [Embedding guide](/docs/embedding)
+> — how to publish a board, sign an embed JWT, and drop the tag into your page.
+> This reference is the precise field/endpoint/error contract those steps rely on.
+
 ## Stability and deprecation
 
 - Fields and events marked here are stable for the lifetime of v1.
@@ -118,14 +122,21 @@ boards only).
 ### `<nubi-dashboard>`
 
 Read-only dashboard embed. Loads a published dashboard by ID and renders its
-widgets with live cross-filtering.
+widgets with live cross-filtering. Source: `embed/nubi-dashboard.js`; built to
+`dist-embed/nubi-dashboard.js` (UMD) and `dist-embed/nubi-dashboard.es.js` (ESM).
+This element ships in its **own** bundle, separate from the `nubi-embed.js`
+widget kit documented above.
 
 | Attribute | Required | Meaning |
 |-----------|----------|---------|
 | `get-token` / `token` | See above | Bearer JWT |
 | `backend` | No | API base URL. Default `http://localhost:8000`. |
-| `query` | Yes | Published dashboard ID or query slug to embed. |
+| `dashboard-id` | One of | A saved board id. Fetches `GET /api/v1/embed/config/{id}` and renders each widget. |
+| `query` | One of | A registered `query_id` (embed tokens) or a SQL string (first-party). **Takes precedence over `dashboard-id`** when both are set. |
 | `theme` | No | `"dark"` (default) or `"light"`. |
+
+Emits `nubi:ready` `{ rowCount }`, `nubi:query-run`
+`{ rowCount, cacheStatus, elapsedMs, sample }`, and `nubi:error` `{ message }`.
 
 ---
 
@@ -434,6 +445,66 @@ const unsub = ctx.onFilter(({ column, value }) => {
 ```
 
 The bus is an in-page `EventTarget`; it does not make any network requests.
+
+---
+
+## Server endpoints (embed surface)
+
+All paths are mounted under `/api/v1`. "First-party" = a Nubi HS256 access token
+(a logged-in session); "embed" = a host-signed RS256/ES256 JWT.
+
+| Method & path | Auth | Purpose |
+|---------------|------|---------|
+| `POST /boards/{id}/share` | First-party | Return the embed descriptor: `embed_url`, `config_endpoint`, ready-to-paste `snippet`, the `mint` block (exact claims your backend must sign; `mint.token` is always `null`), and the `rls` summary. |
+| `GET /embed/config/{dashboard_id}` | First-party **or** embed | Read-only board descriptor (`dashboard_id`, `title`, `widgets`, optional `spec`/`html`/`theme`). Each embed fetch starts one metered embedded session. |
+| `POST /query`, `POST /query/*` | First-party **or** embed | Execute a query and stream Arrow IPC. Embed tokens **must** pass a registered `query_id`; raw `sql` is ignored/rejected. |
+| `POST /embed/embed-token` | First-party | **Dev only.** Mint an HS256 first-party token. Gated by `EMBED_DEV_TOKEN_ENABLED=true`; refused (503) otherwise and in production. Returns `{ token, expires_in }`. |
+| `POST /security/jwt-issuers` | First-party | Register a JWT issuer (public key). Also `GET` (list), `GET/PUT/DELETE /security/jwt-issuers/{issuer_id}`. |
+| `POST /boards/{id}/snapshot` | First-party | Create a frozen DuckDB snapshot; `?snapshot_id=<id>` refreshes it. `GET /boards/{id}/snapshot` lists them. |
+| `GET /embed/frozen/{dashboard_id}` | First-party **or** embed | Frozen-view descriptor + sidecar reference (`?snapshot_id=` optional). Metered like a live embedded session. |
+| `POST /boards/{id}/export/public` | First-party | **UNSAFE.** Produce a no-auth public static export. Off by default — needs `ALLOW_UNSAFE_PUBLIC_EXPORTS` **and** per-org `public_exports_enabled`. |
+| `GET /boards/{id}/export.csv` `.json` `.pdf` | First-party | Server-side data / vector-PDF export of a board (editor view, no RLS). |
+
+## Embed JWT claims (field reference)
+
+The claims Nubi verifies for a host-signed embed token (`backend/app/auth/verify.py`).
+See the [Embedding guide](/docs/embedding#the-embed-jwt-claim-contract) for signing
+examples.
+
+| Claim | Required | Type | Notes |
+|-------|----------|------|-------|
+| `iss` | Yes | string | Must match a registered issuer exactly. |
+| `sub` | Yes | string | Viewer / session id. |
+| `aud` | Yes | string | Must match the issuer's configured audience. |
+| `exp` | Yes | number | Unix seconds. Keep ≤ `iat + 900` (15 min). Missing → rejected. |
+| `org` | Yes (embed) | string | Org for data + RLS scoping. Non-UUID values resolve against the org `external_key`. |
+| `scope` | Yes | string[] or space-delimited string | Must grant `read:*`, `read:query`, or `read:dashboard:*`. |
+| `policies` | For RLS | object | Per-viewer RLS predicates, e.g. `{"tenant_id":"acme"}`. Read from the verified token only. |
+| `embed_origin` | Recommended | string | Pins the token to one browser `Origin`. |
+| `roles` | Optional | string[] | Carried onto the verified identity. |
+| `project` | Optional | string | Carried onto the verified identity. |
+| `datastore` | Optional | string | Whole-dashboard connector override (embed tokens only). |
+| `iat` | Optional | number | Issued-at. |
+| `locked_params` | Optional | object | Consumed by the `/d/{id}` SPA viewer to lock variable values (see the guide's [Variables & parameters](/docs/embedding#variables--parameters)). |
+
+Accepted algorithms: `RS256`, `RS384`, `RS512`, `ES256`, `ES384`, `ES512`.
+`HS256` and `alg: none` are rejected on the embed path.
+
+## Error codes
+
+Errors return the shape `{ "code": "<code>", "message": "..." }` with the HTTP
+status below.
+
+| Code | HTTP | When |
+|------|------|------|
+| `invalid_token` | 401 | Malformed/expired token, bad signature, unknown or disabled `iss`, missing required claim (`exp`/`aud`/`iss`/`sub`), or `alg: none`/HS256 on the embed path. |
+| `origin_mismatch` | 403 | The token carries `embed_origin` and the request `Origin` header is missing or does not match. |
+| `insufficient_scope` | 403 | The token lacks a qualifying read scope (or a query's `required_scope`). |
+| `query_not_registered` | 403 | An embed request omitted `query_id`, or the id does not resolve to a registered query in the caller's org. |
+| `dashboard_not_found` | 404 | No board with that id exists in the resolved org (also returned to embed identities when a protected default environment has no pinned version — no draft leak). |
+| `snapshot_not_found` | 404 | No snapshot (or no snapshot with the given `snapshot_id`) exists for the board. |
+| `public_exports_disabled` | 403 | UNSAFE public export refused — the deployment switch or the per-org toggle is off. |
+| `board_not_found` | 404 | Export/snapshot board lookup missed in the org. |
 
 ---
 
