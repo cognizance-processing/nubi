@@ -193,9 +193,9 @@ const NEXT_FEATURES = [
   },
   {
     icon: CalendarClock,
-    title: 'Schedule automations',
-    description: 'Run flows on a cron schedule, hands-free.',
-    href: '/automations',
+    title: 'Schedule & monitor',
+    description: 'Put flows on a cron schedule and watch their runs — all in Flows.',
+    href: '/flows',
   },
   {
     icon: GitBranch,
@@ -211,8 +211,7 @@ const QUICK_ACCESS = [
   { icon: Table2,          label: 'Data',        description: 'Browse & explore',    to: '/data' },
   { icon: SearchCode,      label: 'Queries',     description: 'Author & run SQL',    to: '/queries' },
   { icon: LayoutDashboard, label: 'Dashboards',  description: 'Live boards',         to: '/dashboards' },
-  { icon: Workflow,        label: 'Flows',       description: 'Pipelines',           to: '/flows' },
-  { icon: CalendarClock,   label: 'Automations', description: 'Scheduled runs',      to: '/automations' },
+  { icon: Workflow,        label: 'Flows',       description: 'Pipelines & schedules', to: '/flows' },
   { icon: GitBranch,       label: 'Version control', description: 'Git sync',        to: '/settings/project' },
   { icon: Bot,             label: 'AI assistant', description: 'Ask about your data', chat: true },
 ]

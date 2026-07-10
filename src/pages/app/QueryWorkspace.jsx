@@ -388,7 +388,7 @@ function ScheduleDialog({ query, params, onConfirm, onCancel, scheduling, status
           <div className="flex flex-col gap-3">
             <div className="flex items-center gap-2 text-sm text-success">
               <CheckCircle2 size={16} />
-              Scheduled — manage it in Automations.
+              Scheduled — manage it in Flows.
             </div>
             {createdFlow?.name && (
               <p className="text-[11px] text-muted">
@@ -397,11 +397,11 @@ function ScheduleDialog({ query, params, onConfirm, onCancel, scheduling, status
             )}
             <div className="flex items-center gap-2 justify-end">
               <Link
-                to="/automations"
+                to="/flows"
                 className="h-8 px-3 text-xs font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 transition-opacity flex items-center gap-1.5"
               >
                 <ExternalLink size={11} />
-                Open Automations
+                Open Flows
               </Link>
               <button
                 type="button"

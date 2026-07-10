@@ -470,15 +470,15 @@ export default function BlendBuilder() {
             <div className="rounded-lg bg-surface-2/60 border border-border p-3 text-[12px] text-muted leading-relaxed">
               <p className="font-medium text-fg mb-1">Next steps</p>
               Bind a dashboard widget to this query, or manage the refresh schedule in{' '}
-              <Link to="/automations" className="text-primary hover:underline">Automations</Link>.
+              <Link to="/flows" className="text-primary hover:underline">Flows</Link>.
             </div>
 
             <div className="flex items-center gap-2 justify-end pt-1">
               <Link
-                to="/automations"
+                to="/flows"
                 className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-medium border border-border rounded-lg bg-surface hover:bg-surface-2 text-fg transition-colors"
               >
-                <ExternalLink size={13} /> Open Automations
+                <ExternalLink size={13} /> Open Flows
               </Link>
               <button
                 type="button"
