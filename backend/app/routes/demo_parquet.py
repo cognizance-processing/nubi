@@ -238,9 +238,13 @@ async def demo_query_map(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/demo-parquet/{dataset}/{table_name}")
+# GET + HEAD: DuckDB-WASM's httpfs issues a HEAD to learn the file size before
+# ranged GETs. FastAPI @router.get does NOT auto-add HEAD, so a plain GET route
+# 405s the HEAD probe and read_parquet() fails in the browser. api_route with
+# both methods fixes it (FileResponse handles HEAD correctly — headers, no body).
+@router.api_route("/demo-parquet/{dataset}/{table_name}", methods=["GET", "HEAD"])
 async def serve_demo_parquet(dataset: str, table_name: str) -> FileResponse:
-    """Serve a demo parquet file to the browser.
+    """Serve a demo parquet file to the browser (GET/HEAD).
 
     No auth required — demo data is public/read-only.
 
