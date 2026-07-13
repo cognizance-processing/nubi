@@ -299,9 +299,13 @@ function resolvePalette(config, theme) {
   return theme.palette
 }
 
-function legendConfig(config, theme) {
+function legendConfig(config, theme, { singleSeries = false, hasTitle = false } = {}) {
   const l = config.legend
   if (l === false) return undefined
+  // A legend distinguishing exactly one (ungrouped) series just repeats the
+  // axis name — noise, not signal. Hide it unless the user explicitly asked
+  // for one (config.legend set to a position/object rather than left auto).
+  if (l === undefined && singleSeries) return undefined
   const pos = (isDeepObject(l) && l.position) || 'top'
   const base = { type: 'scroll', textStyle: { color: theme.fgMuted, fontSize: 11 } }
   switch (pos) {
@@ -309,7 +313,7 @@ function legendConfig(config, theme) {
     case 'left': base.left = 4; base.top = 'middle'; base.orient = 'vertical'; break
     case 'right': base.right = 4; base.top = 'middle'; base.orient = 'vertical'; break
     case 'top':
-    default: base.top = 4; base.left = 'center'
+    default: base.top = hasTitle ? 34 : 4; base.left = 'center'
   }
   if (isDeepObject(l)) {
     const rest = { ...l }
@@ -364,9 +368,27 @@ function buildAxis(kind, spec, theme, locale, defaults = {}) {
   return axis
 }
 
+/**
+ * nameGap for a value axis whose name is auto-derived from the column name:
+ * wide tick labels (e.g. "6,000,000") need more clearance than the flat 44px
+ * default, or the rotated axis name overlaps the outermost tick label.
+ */
+function estimateValueAxisNameGap(values, axis) {
+  if (!Array.isArray(values) || !values.length) return 44
+  const nums = values.map(Number).filter(Number.isFinite)
+  if (!nums.length) return 44
+  const maxAbs = Math.max(...nums.map(Math.abs))
+  const fmt = axis.axisLabel?.formatter
+  const sample = fmt ? String(fmt(maxAbs)) : maxAbs.toLocaleString()
+  return Math.max(44, Math.round(sample.length * 5.5) + 8)
+}
+
 function gridConfig(config, hasLegend, legendPos) {
-  const top = (config.title || config.subtitle) ? 56
-    : (hasLegend && (!legendPos || legendPos === 'top') ? 40 : 16)
+  const hasTitle = !!(config.title || config.subtitle)
+  const legendOnTop = hasLegend && (!legendPos || legendPos === 'top')
+  const top = hasTitle
+    ? (legendOnTop ? 76 : 56)
+    : (legendOnTop ? 40 : 16)
   const bottom = hasLegend && legendPos === 'bottom' ? 44 : 36
   const left = hasLegend && legendPos === 'left' ? 90 : 52
   const right = hasLegend && legendPos === 'right' ? 110 : 24
@@ -484,7 +506,10 @@ function buildBar(table, e, config, theme, locale) {
   if (!config.xAxis?.label && e.x) { catAxis.name = e.x; catAxis.nameLocation = 'middle'; catAxis.nameGap = 28 }
   if (n > 12 && !horizontal) catAxis.axisLabel = { ...catAxis.axisLabel, rotate: config.xAxis?.rotate ?? 30 }
   const valAxis = buildAxis('value', config.yAxis, theme, locale)
-  if (!config.yAxis?.label && e.y) { valAxis.name = e.y; valAxis.nameLocation = 'middle'; valAxis.nameGap = 44 }
+  if (!config.yAxis?.label && e.y) {
+    valAxis.name = e.y; valAxis.nameLocation = 'middle'
+    valAxis.nameGap = estimateValueAxisNameGap(vals, valAxis)
+  }
 
   const colorRaw = e.color ? table.col(e.color) : null
   let series
@@ -511,8 +536,9 @@ function buildBar(table, e, config, theme, locale) {
     }]
   }
 
+  const singleSeries = !(colorRaw && !isNumericArray(colorRaw))
   return {
-    ...baseFrame(config, theme, locale, { trigger: 'axis' }),
+    ...baseFrame(config, theme, locale, { trigger: 'axis', singleSeries }),
     xAxis: horizontal ? valAxis : catAxis,
     yAxis: horizontal ? catAxis : valAxis,
     series,
@@ -547,16 +573,21 @@ function buildLine(table, e, config, theme, locale, { area = false } = {}) {
   if (!xIsNumeric && n > 20) xAxis.axisLabel = { ...xAxis.axisLabel, rotate: config.xAxis?.rotate ?? 30 }
 
   const hasY2 = !!e.y2
+  const yVals = toNumbers(yRaw)
   const yAxis = buildAxis('value', config.yAxis, theme, locale)
-  if (!config.yAxis?.label && e.y) { yAxis.name = e.y; yAxis.nameLocation = 'middle'; yAxis.nameGap = 44 }
+  if (!config.yAxis?.label && e.y) {
+    yAxis.name = e.y; yAxis.nameLocation = 'middle'
+    yAxis.nameGap = estimateValueAxisNameGap(yVals, yAxis)
+  }
   const yAxes = [yAxis]
   if (hasY2) {
     const y2 = buildAxis('value', config.y2Axis, theme, locale)
-    if (!config.y2Axis?.label) { y2.name = e.y2; y2.nameLocation = 'middle'; y2.nameGap = 44 }
+    if (!config.y2Axis?.label) {
+      y2.name = e.y2; y2.nameLocation = 'middle'
+      y2.nameGap = estimateValueAxisNameGap(toNumbers(table.col(e.y2) || []), y2)
+    }
     yAxes.push(y2)
   }
-
-  const yVals = toNumbers(yRaw)
   const sampling = n > 5000 ? 'lttb' : undefined
   const colorRaw = e.color ? table.col(e.color) : null
   let series
@@ -590,8 +621,9 @@ function buildLine(table, e, config, theme, locale, { area = false } = {}) {
     }
   }
 
+  const singleSeries = !(colorRaw && !isNumericArray(colorRaw)) && !hasY2
   return {
-    ...baseFrame(config, theme, locale, { trigger: 'axis', dataZoom: n > 100 }),
+    ...baseFrame(config, theme, locale, { trigger: 'axis', dataZoom: n > 100, singleSeries }),
     xAxis,
     yAxis: hasY2 ? yAxes : yAxis,
     series,
@@ -611,7 +643,10 @@ function buildScatter(table, e, config, theme, locale, { bubble = false } = {}) 
   const xAxis = buildAxis('value', config.xAxis, theme, locale, { scale: true })
   if (!config.xAxis?.label && e.x) { xAxis.name = e.x; xAxis.nameLocation = 'middle'; xAxis.nameGap = 28 }
   const yAxis = buildAxis('value', config.yAxis, theme, locale, { scale: true })
-  if (!config.yAxis?.label && e.y) { yAxis.name = e.y; yAxis.nameLocation = 'middle'; yAxis.nameGap = 44 }
+  if (!config.yAxis?.label && e.y) {
+    yAxis.name = e.y; yAxis.nameLocation = 'middle'
+    yAxis.nameGap = estimateValueAxisNameGap(yVals, yAxis)
+  }
 
   const sizeRaw = bubble && e.size ? toNumbers(table.col(e.size) || []) : null
   let sizeScale = null
@@ -753,7 +788,11 @@ function buildWaterfall(table, e, config, theme, locale) {
   }
   const xAxis = buildAxis('category', config.xAxis, theme, locale, { data: names })
   const yAxis = buildAxis('value', config.yAxis, theme, locale)
-  if (!config.yAxis?.label && e.y) { yAxis.name = e.y; yAxis.nameLocation = 'middle'; yAxis.nameGap = 44 }
+  if (!config.yAxis?.label && e.y) {
+    yAxis.name = e.y; yAxis.nameLocation = 'middle'
+    const rendered = base.map((b, i) => b + (typeof up[i] === 'number' ? up[i] : 0))
+    yAxis.nameGap = estimateValueAxisNameGap([...base, ...rendered], yAxis)
+  }
 
   return {
     ...baseFrame(config, theme, locale, { trigger: 'axis' }),
@@ -892,7 +931,10 @@ function buildBoxplot(table, e, config, theme, locale) {
 
   const xAxis = buildAxis('category', config.xAxis, theme, locale, { data: names, boundaryGap: true })
   const yAxis = buildAxis('value', config.yAxis, theme, locale)
-  if (!config.yAxis?.label && e.y) { yAxis.name = e.y; yAxis.nameLocation = 'middle'; yAxis.nameGap = 44 }
+  if (!config.yAxis?.label && e.y) {
+    yAxis.name = e.y; yAxis.nameLocation = 'middle'
+    yAxis.nameGap = estimateValueAxisNameGap(vals, yAxis)
+  }
 
   return {
     ...baseFrame(config, theme, locale, { trigger: 'item' }),
@@ -984,7 +1026,10 @@ function buildFan(table, e, config, theme, locale) {
     : buildAxis('category', config.xAxis, theme, locale, { data: cats, boundaryGap: false })
   if (!config.xAxis?.label && e.x) { xAxis.name = e.x; xAxis.nameLocation = 'middle'; xAxis.nameGap = 28 }
   const yAxis = buildAxis('value', config.yAxis, theme, locale, { scale: true })
-  if (!config.yAxis?.label && e.y) { yAxis.name = e.y; yAxis.nameLocation = 'middle'; yAxis.nameGap = 44 }
+  if (!config.yAxis?.label && e.y) {
+    yAxis.name = e.y; yAxis.nameLocation = 'middle'
+    yAxis.nameGap = estimateValueAxisNameGap([...mid, ...(lower || []), ...(upper || [])], yAxis)
+  }
 
   const accent = theme.palette[0]
   const series = []
@@ -1022,9 +1067,10 @@ function buildFan(table, e, config, theme, locale) {
 // Shared frame (color/background/title/legend/grid/tooltip/animation)
 // ---------------------------------------------------------------------------
 
-function baseFrame(config, theme, locale, { trigger = 'axis', dataZoom = false, noGrid = false } = {}) {
+function baseFrame(config, theme, locale, { trigger = 'axis', dataZoom = false, noGrid = false, singleSeries = false } = {}) {
   const palette = resolvePalette(config, theme)
-  const legend = legendConfig(config, theme)
+  const hasTitle = !!(config.title || config.subtitle)
+  const legend = legendConfig(config, theme, { singleSeries, hasTitle })
   const hasLegend = legend !== undefined
   const legendPos = (isDeepObject(config.legend) && config.legend.position) || 'top'
   const frame = {

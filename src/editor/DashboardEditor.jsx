@@ -77,7 +77,7 @@ const CHART_ICONS = {
   area: AreaChart, pie: PieChart, donut: PieChart, heatmap: Grid3x3, gauge: Gauge,
 }
 import { GridCanvas } from '../dashboards/grid/index.js'
-import { get, post, put } from '../lib/api.js'
+import { get, post, put, listRegisteredQueries } from '../lib/api.js'
 import ChartWidget from '../dashboards/widgets/ChartWidget.jsx'
 import KpiWidget from '../dashboards/widgets/KpiWidget.jsx'
 import TableWidget from '../dashboards/widgets/TableWidget.jsx'
@@ -316,7 +316,7 @@ const WIDGET_SIZES = {
   metric:  { w: 3, h: 3 },
   table:   { w: 6, h: 5 },
   pivot:   { w: 6, h: 5 },
-  chart:   { w: 6, h: 5 },
+  chart:   { w: 6, h: 6 },
   filter:  { w: 3, h: 2 },
   text:    { w: 6, h: 3 },
   section: { w: 12, h: 1 },
@@ -903,7 +903,16 @@ function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec, activeBr
   }
 
   const isDataWidget = ['kpi', 'metric', 'table', 'pivot', 'chart'].includes(widget.type)
-  const setQueryId = qid => onChange({ ...widget, query_id: qid })
+  const setQueryId = qid => {
+    const next = { ...widget, query_id: qid }
+    // One-time convenience: pre-fill an empty chart title from the query's
+    // display name. Once the user has their own title, leave it alone.
+    if (widget.type === 'chart' && !widget.config?.title) {
+      const match = extraQueryIds.find(q => q.id === qid)
+      if (match?.name) next.config = { ...(widget.config ?? {}), title: match.name }
+    }
+    onChange(next)
+  }
 
   return (
     <div className="p-3 space-y-4 overflow-y-auto h-full">
@@ -1735,6 +1744,17 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   // Filters-drawer authoring panel (opened by EditorPage's nubi:open-filters event).
   const [filtersOpen, setFiltersOpen] = useState(false)
 
+  // Registered queries (author:sql queries the user has saved/registered),
+  // for QueryPicker to list alongside DEMO_QUERY_IDS. Loaded once on mount.
+  const [queryIds, setQueryIds] = useState([])
+  useEffect(() => {
+    let cancelled = false
+    listRegisteredQueries().then(list => {
+      if (!cancelled) setQueryIds(list.map(q => ({ id: q.id, name: q.name })))
+    })
+    return () => { cancelled = true }
+  }, [])
+
   const { width: canvasWidth, containerRef: canvasRef } = useElementWidth(900)
   // The scrollable canvas viewport (pan surface + pinch-zoom target).
   const mainRef = useRef(null)
@@ -2276,6 +2296,36 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
     }
   }
 
+  // Save affordance shown while the Configure or Dashboard (layout) panel is
+  // open, so committing a widget's setup or the grid/layout settings has an
+  // obvious, in-context action rather than relying on the user to notice the
+  // top-bar button. Same handleSave — dashboards persist as one spec, there's
+  // no separate per-widget or per-panel save endpoint.
+  const renderSaveFooter = () => (
+    <div className="shrink-0 border-t border-border px-3 py-2.5 bg-surface-2/30 flex items-center justify-between gap-2">
+      <span className="text-[11px] text-muted">
+        {dirty ? 'Unsaved changes' : 'All changes saved'}
+      </span>
+      <button
+        onClick={handleSave}
+        disabled={saving}
+        data-testid="config-panel-save-btn"
+        className={[
+          'px-3 h-8 inline-flex items-center gap-1.5 text-xs font-medium rounded-lg transition-all duration-150',
+          'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 whitespace-nowrap',
+          saving
+            ? 'bg-primary/70 text-primary-fg cursor-not-allowed'
+            : 'bg-primary text-primary-fg hover:opacity-90 active:scale-[0.97]',
+        ].join(' ')}
+      >
+        {saving
+          ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
+          : <><Save size={13} /> {savedBoardId ? 'Save' : 'Create'}</>
+        }
+      </button>
+    </div>
+  )
+
   const handleAIApply = useCallback((aiSpec, mode) => {
     if (!aiSpec) return
     if (mode === 'replace') {
@@ -2318,7 +2368,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         widget={selectedWidget}
         onChange={updateWidget}
         onRemove={() => selectedWidget && removeWidget(selectedWidget.id)}
-        extraQueryIds={[]}
+        extraQueryIds={queryIds}
         spec={spec}
         activeBreakpoint={activeBreakpoint}
         onLayoutCommit={(item) => commitLayout([item])}
@@ -2648,7 +2698,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         widget={selectedWidget}
         onChange={updateWidget}
         onRemove={() => { if (selectedWidget) { removeWidget(selectedWidget.id); setMobileSheet(null) } }}
-        extraQueryIds={[]}
+        extraQueryIds={queryIds}
         spec={spec}
         activeBreakpoint={activeBreakpoint}
         onLayoutCommit={(item) => commitLayout([item])}
@@ -3014,6 +3064,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
               <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
                 {renderRightPanelBody()}
               </div>
+              {((rightPanel === 'config' && selectedWidget) || rightPanel === 'board') && renderSaveFooter()}
             </aside>
           )}
           </div>
@@ -3096,6 +3147,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
             <div className="flex-1 min-h-0 overflow-y-auto">
               {renderSheetBody()}
             </div>
+            {((mobileSheet === 'config' && selectedWidget) || mobileSheet === 'board') && renderSaveFooter()}
           </div>
         </div>
       )}
