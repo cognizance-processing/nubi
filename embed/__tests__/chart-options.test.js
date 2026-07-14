@@ -51,6 +51,7 @@ describe('buildChartOption — every chart type returns a valid option', () => {
     boxplot: { type: 'boxplot', rows: CAT_ROWS, enc: { x: 'region', y: 'sales' }, series: 'boxplot' },
     gauge: { type: 'gauge', rows: [{ v: 72 }], enc: { y: 'v' }, series: 'gauge' },
     waterfall: { type: 'waterfall', rows: [{ s: 'a', d: 5 }, { s: 'b', d: -2 }, { s: 'c', d: 3 }], enc: { x: 's', y: 'd' }, series: 'bar' },
+    combo: { type: 'combo', rows: CAT_ROWS, enc: { x: 'month', bars: ['sales'] }, series: 'bar' },
   }
 
   for (const [name, c] of Object.entries(cases)) {
@@ -111,10 +112,47 @@ describe('buildChartOption — every chart type returns a valid option', () => {
     expect(names).toContain('mid')
   })
 
-  test('SUPPORTED_TYPES lists all 17 families', () => {
-    expect(SUPPORTED_TYPES).toHaveLength(17)
+  test('SUPPORTED_TYPES lists all 18 families', () => {
+    expect(SUPPORTED_TYPES).toHaveLength(18)
     expect(SUPPORTED_TYPES).toContain('fan')
     expect(SUPPORTED_TYPES).toContain('sankey')
+    expect(SUPPORTED_TYPES).toContain('combo')
+  })
+
+  test('combo mixes bar + line series on dual y-axes', () => {
+    const rows = [
+      { branch: 'North', planned: 100, completed: 80, strike: 45.2 },
+      { branch: 'South', planned: 120, completed: 90, strike: 52.1 },
+    ]
+    const opt = buildChartOption({
+      type: 'combo', table: rows,
+      encoding: { x: 'branch', bars: ['planned', 'completed'], lines: ['strike'] },
+    })
+    const types = opt.series.map((s) => s.type)
+    expect(types).toEqual(['bar', 'bar', 'line'])
+    expect(opt.series[2].yAxisIndex).toBe(1)
+    expect(opt.yAxis).toHaveLength(2)
+  })
+
+  test('donut centerLabel renders a centered graphic text', () => {
+    const rows = [{ seg: 'Planned', v: 60 }, { seg: 'OOC', v: 40 }]
+    const opt = buildChartOption({
+      type: 'donut', table: rows, encoding: { x: 'seg', y: 'v' },
+      config: { centerLabel: { text: '97.4%' } },
+    })
+    expect(opt.graphic).toBeTruthy()
+    expect(opt.graphic[0].style.text).toBe('97.4%')
+  })
+
+  test('donut centerLabel defaults to the FIRST segment share, not the largest', () => {
+    // Regression: a value/remainder ring (e.g. "Strike Rate": 7.75 / "Remainder": 92.25)
+    // must show the meaningful first slice, not whichever slice is numerically bigger.
+    const rows = [{ seg: 'Strike Rate', v: 7.75 }, { seg: 'Remainder', v: 92.25 }]
+    const opt = buildChartOption({
+      type: 'donut', table: rows, encoding: { x: 'seg', y: 'v' },
+      config: { centerLabel: true },
+    })
+    expect(opt.graphic[0].style.text).toBe('7.8%')
   })
 })
 

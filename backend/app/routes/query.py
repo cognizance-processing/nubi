@@ -1521,7 +1521,16 @@ async def query(
     _t0 = _time.perf_counter()
     try:
         try:
-            arrow_table = connector.execute(physical_plan)
+            # Run off the event loop (M22-B): connector.execute() is a
+            # synchronous, blocking call for most drivers (PyMySQL,
+            # connectorx, psycopg2, ...). In network_mode='bridge' the same
+            # event loop also has to run the bridge's async TCP proxy/reader
+            # loop to service THIS connection — a blocking call here starves
+            # that plumbing and the connection can never complete (deadlock:
+            # "timed out waiting for connection"). asyncio.to_thread keeps the
+            # loop free for direct-mode queries too; same pattern already used
+            # for planning above (_resolve_request_plan → asyncio.to_thread).
+            arrow_table = await asyncio.to_thread(connector.execute, physical_plan)
         except _AppError:
             raise
         except Exception as _exec_exc:  # noqa: BLE001 — classify engine errors
@@ -1833,7 +1842,10 @@ async def query_estimate(
 
     # ── Estimate (no execute / no cache / no meter / no pool forward) ─────────
     try:
-        estimate = connector.estimate(physical_plan)
+        # Same event-loop-starvation hazard as /query's execute() call above —
+        # estimate() opens a connection too, and in network_mode='bridge' that
+        # connection needs this same loop free to run the tunnel proxy.
+        estimate = await asyncio.to_thread(connector.estimate, physical_plan)
     finally:
         try:
             _net_cleanup()

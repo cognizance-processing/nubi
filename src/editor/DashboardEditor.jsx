@@ -716,6 +716,19 @@ function WidgetAppearanceSection({ widget, onChange }) {
           <SectionLabel>Card background</SectionLabel>
           <BackgroundEditor value={typeof style.background === 'object' ? style.background : undefined} onChange={setBg} />
         </div>
+        <div className="space-y-1">
+          <SectionLabel>Text color</SectionLabel>
+          <div className="flex items-center gap-2">
+            <input type="color" className="h-8 w-10 shrink-0 rounded-lg border border-border bg-surface cursor-pointer"
+              value={typeof style.color === 'string' && style.color ? style.color : '#000000'}
+              onChange={e => setStyle({ color: e.target.value })} />
+            <input type="text" className={`${inputCls} flex-1`} placeholder="inherit (theme default)"
+              value={style.color ?? ''} onChange={e => setStyle({ color: e.target.value })} />
+          </div>
+          <p className="text-[10px] text-muted/70">
+            Applies to the whole card (KPI number, chart title, table text, etc.) unless a widget's own styling overrides it.
+          </p>
+        </div>
         <div className="grid grid-cols-2 gap-2">
           <div>
             <FieldLabel>Border</FieldLabel>
@@ -2463,7 +2476,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   const PANEL_SEGMENTS = [
     { id: 'add',    Icon: Plus,         mobileSheet: 'palette', label: 'Add widget', title: 'Add widget',                ariaLabel: 'Add widget panel' },
     { id: 'config', Icon: Settings2,    mobileSheet: 'config',  label: 'Configure',  title: 'Configure selected widget', ariaLabel: 'Configure panel' },
-    { id: 'board',  Icon: LayoutGrid,   mobileSheet: 'board',   label: 'Layout',     title: 'Layout, grid & variables',  ariaLabel: 'Layout panel' },
+    { id: 'board',  Icon: LayoutGrid,   mobileSheet: 'board',   label: 'Dashboard',  title: 'Dashboard background, grid & variables', ariaLabel: 'Dashboard panel' },
     { id: 'tabs',   Icon: Heading,      mobileSheet: 'tabs',    label: 'Tabs',       title: 'Tab bar & per-tab style',   ariaLabel: 'Tabs panel' },
     { id: 'chat',   Icon: MessageSquare,mobileSheet: 'chat',    label: 'Chat',       title: 'AI Chat',                   ariaLabel: 'Chat panel' },
   ]
@@ -2712,7 +2725,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
     palette: '+ Add Widget',
     config: selectedWidget ? `Configure · ${selectedWidget.type}` : 'Configure',
     chat: 'Chat',
-    board: 'Layout',
+    board: 'Dashboard',
     tabs: 'Tabs',
   }
 

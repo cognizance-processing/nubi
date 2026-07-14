@@ -10,7 +10,7 @@ export const DEMO_QUERY_IDS = ['demo_all', 'demo_active', 'demo_points_10k', 'de
 // Order determines display order in the chart-type picker grid.
 export const CHART_TYPES = [
   // Core cartesian
-  'bar', 'line', 'area', 'scatter', 'bubble',
+  'bar', 'line', 'area', 'scatter', 'bubble', 'combo',
   // Circular
   'pie', 'donut',
   // Flow / hierarchy / distribution

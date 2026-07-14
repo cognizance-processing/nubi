@@ -23,6 +23,9 @@
  * - props.label       {string}  Card label (defaults to a prettified value col).
  * - props.format      {string}  Headline number format (number|integer|percent|currency).
  * - props.deltaFormat {string}  Delta display: 'percent' (default) or 'absolute'.
+ * - props.progress    {object}  Optional segmented progress bar: { segments, target }.
+ *                              Fraction filled = value / target (share the same scale,
+ *                              e.g. target: 100 for a 0-100 percent value).
  *
  * Behaviour
  * ---------
@@ -260,6 +263,22 @@ export default function KpiWidget({ widget, providerTable = null }) {
   // When a signal matched, tint the number; keep default color otherwise.
   const valueColor = signal.matched ? signal.color : undefined
 
+  // Optional segmented "pip" progress bar: props.progress = { segments, target }.
+  // Fraction filled = value / target, clamped to [0, segments]. `target`
+  // should share the headline value's scale (e.g. target: 100 for a 0-100
+  // percent value, target: 1 for a 0-1 fraction).
+  const progress = useMemo(() => {
+    const p = wProps.progress
+    if (!p || value == null) return null
+    const num = Number(value)
+    if (Number.isNaN(num)) return null
+    const segments = p.segments || 10
+    const target = p.target ?? 100
+    const ratio = target > 0 ? Math.max(0, Math.min(1, num / target)) : 0
+    return { segments, filled: Math.round(ratio * segments) }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, JSON.stringify(wProps.progress)])
+
   return (
     <div className="flex flex-col justify-center h-full px-5 py-4 gap-1">
       {loading ? (
@@ -299,6 +318,21 @@ export default function KpiWidget({ widget, providerTable = null }) {
             )}
           </div>
           <p className="mt-1 text-sm font-medium text-muted leading-snug">{label}</p>
+          {progress && (
+            <div className="flex gap-1 mt-2" aria-hidden="true">
+              {Array.from({ length: progress.segments }).map((_, i) => (
+                <span
+                  key={i}
+                  className="h-1.5 flex-1 rounded-sm"
+                  style={{
+                    backgroundColor: i < progress.filled
+                      ? (valueColor ?? '#6366f1')
+                      : 'rgba(148,163,184,0.25)',
+                  }}
+                />
+              ))}
+            </div>
+          )}
           {spark && (
             <div className="mt-2 -mx-1">
               <EChart option={spark} height={36} />

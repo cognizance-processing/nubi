@@ -3,7 +3,7 @@
  *
  * Verifies the refactored editor panel + chat UX:
  *
- * (a) Desktop /editor — topbar shows Add/Configure/Layout/Chat ICON buttons;
+ * (a) Desktop /editor — topbar shows Add/Configure/Dashboard/Chat ICON buttons;
  *     clicking Chat opens chat in the RHS sidebar; global MessageSquare chat
  *     button is NOT present; only ONE right sidebar visible.
  *
@@ -31,7 +31,7 @@ async function openEditor(page) {
 test.describe('Desktop /editor — panel icon toggles + single chat', () => {
   test.use({ viewport: { width: 1280, height: 800 } })
 
-  test('shows Add/Configure/Layout/Chat icon buttons in the topbar', async ({ page }) => {
+  test('shows Add/Configure/Dashboard/Chat icon buttons in the topbar', async ({ page }) => {
     await openEditor(page)
 
     const toggles = page.getByTestId('editor-panel-toggles')
@@ -95,7 +95,7 @@ test.describe('Desktop /editor — panel icon toggles + single chat', () => {
     await expect(page.locator('aside').last()).toBeVisible({ timeout: 5_000 })
   })
 
-  test('clicking Layout panel shows Dashboard settings', async ({ page }) => {
+  test('clicking Dashboard panel toggle shows Dashboard settings', async ({ page }) => {
     await openEditor(page)
     await page.getByTestId('panel-toggle-board').click()
     await expect(page.getByText('Dashboard').first()).toBeVisible({ timeout: 5_000 })

@@ -497,6 +497,15 @@ def _reset_state():
         except Exception:
             pass
 
+        # ── Bridge store (M22-A) ───────────────────────────────────────────────
+        # Fresh in-memory store so bridges never leak across tests and the
+        # default Pg store (which the fake DB can't serve) is never hit.
+        try:
+            from app.bridges.store import InMemoryBridgeStore, set_bridge_store_for_tests
+            set_bridge_store_for_tests(InMemoryBridgeStore())
+        except Exception:
+            pass
+
         # ── Datasets catalog ──────────────────────────────────────────────────
         try:
             from app.datasets import set_catalog

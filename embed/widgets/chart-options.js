@@ -14,8 +14,10 @@
  *   type      — chart type string (see SUPPORTED_TYPES)
  *   table     — a TableView (or rows[] / Arrow Table / columnar object)
  *   encoding  — { x, y, y2, color, size, value, label, source, target,
- *                 low, high, open, close, lower, upper }
- *               (column-name mapping; meaning varies per chart type)
+ *                 low, high, open, close, lower, upper, bars, lines }
+ *               (column-name mapping; meaning varies per chart type.
+ *               `bars`/`lines` are arrays of column names, used only by
+ *               chart_type 'combo' — see buildCombo.)
  *   config    — declarative customization object (deep-merged LAST, so it wins)
  *   theme     — { palette: string[], fg, fgMuted, primary, border, grid, axis }
  *               resolved theme tokens used as ECharts defaults
@@ -45,6 +47,11 @@
  *   y2Axis:    AxisSpec,                  // secondary / dual y-axis
  *   referenceLines: ReferenceLine[],      // markLine entries (e.g. targets)
  *   annotations:    Annotation[],         // markPoint entries
+ *   centerLabel:    boolean | { text?, format?, fontSize?, color?, index? },  // pie/donut
+ *                   only: a big centered number/label (e.g. "97.4%"). text
+ *                   defaults to the `index`-th segment's share (default 0 —
+ *                   the first/meaningful slice of a value+remainder ring),
+ *                   formatted via `format` (FormatSpec) or a plain "N.N%".
  *   locale:    string,                    // BCP-47 locale for number formatting
  *   echarts:   object,                    // raw echarts option, deep-merged last
  *   ...any other top-level echarts option keys (deep-merged, config wins)
@@ -68,7 +75,7 @@
 export const SUPPORTED_TYPES = [
   'bar', 'line', 'area', 'scatter', 'bubble', 'pie', 'donut',
   'sankey', 'funnel', 'waterfall', 'heatmap', 'radar', 'treemap',
-  'boxplot', 'gauge', 'candlestick', 'fan',
+  'boxplot', 'gauge', 'candlestick', 'fan', 'combo',
 ]
 
 // Default palette (used when no theme palette supplied).
@@ -630,6 +637,60 @@ function buildLine(table, e, config, theme, locale, { area = false } = {}) {
   }
 }
 
+// Bar+line combo: one or more bar series on the primary y-axis, one or more
+// line series on a secondary y-axis, sharing one category x-axis. Unlike
+// buildBar/buildLine (which take a single `y` column, optionally grouped by
+// `color`), combo takes explicit column-name ARRAYS so heterogeneous series
+// (e.g. 3 volume bars + 2 rate% lines) can share one chart.
+//   encoding: { x: 'branch', bars: ['planned_calls', 'completed_calls'],
+//               lines: ['strike_rate', 'adherence'] }
+//   config:   { yAxis: {...}, y2Axis: {...} }  // bars use yAxis, lines use y2Axis
+function buildCombo(table, e, config, theme, locale) {
+  const catRaw = table.col(e.x)
+  if (!catRaw) return emptyOption(theme)
+  const cats = toStrings(catRaw)
+  const n = cats.length
+  const barCols = Array.isArray(e.bars) ? e.bars : (e.bars ? [e.bars] : [])
+  const lineCols = Array.isArray(e.lines) ? e.lines : (e.lines ? [e.lines] : [])
+  if (!barCols.length && !lineCols.length) return emptyOption(theme)
+
+  const catAxis = buildAxis('category', config.xAxis, theme, locale, { data: cats, boundaryGap: true })
+  if (!config.xAxis?.label && e.x) { catAxis.name = e.x; catAxis.nameLocation = 'middle'; catAxis.nameGap = 28 }
+  // Combo categories are often named entities (branch/region) rather than short
+  // codes, so rotate on label length too, not just count — n>12 alone (buildBar's
+  // rule) still overlaps a handful of long names.
+  const maxLabelLen = cats.reduce((m, c) => Math.max(m, c.length), 0)
+  if (n > 12 || maxLabelLen > 10) catAxis.axisLabel = { ...catAxis.axisLabel, rotate: config.xAxis?.rotate ?? 30 }
+
+  const yAxis = buildAxis('value', config.yAxis, theme, locale)
+  if (!config.yAxis?.label && barCols[0]) { yAxis.name = barCols[0]; yAxis.nameLocation = 'middle'; yAxis.nameGap = 44 }
+  const y2Axis = buildAxis('value', config.y2Axis, theme, locale)
+  if (!config.y2Axis?.label && lineCols[0]) { y2Axis.name = lineCols[0]; y2Axis.nameLocation = 'middle'; y2Axis.nameGap = 44 }
+
+  const palette = resolvePalette(config, theme)
+  const barSeries = barCols.map((col, i) => ({
+    type: 'bar', name: col, yAxisIndex: 0,
+    data: toNumbers(table.col(col) || []),
+    barMaxWidth: 32,
+    itemStyle: { color: palette[i % palette.length], borderRadius: [2, 2, 0, 0] },
+  }))
+  const lineSeries = lineCols.map((col, i) => ({
+    type: 'line', name: col, yAxisIndex: 1,
+    data: toNumbers(table.col(col) || []),
+    smooth: config.smooth !== false,
+    showSymbol: n <= 60,
+    itemStyle: { color: palette[(barCols.length + i) % palette.length] },
+    lineStyle: { color: palette[(barCols.length + i) % palette.length], width: 2 },
+  }))
+
+  return {
+    ...baseFrame(config, theme, locale, { trigger: 'axis', singleSeries: false }),
+    xAxis: catAxis,
+    yAxis: lineCols.length ? [yAxis, y2Axis] : yAxis,
+    series: [...barSeries, ...lineSeries],
+  }
+}
+
 function buildScatter(table, e, config, theme, locale, { bubble = false } = {}) {
   const xRaw = table.col(e.x)
   const yRaw = table.col(e.y)
@@ -700,7 +761,7 @@ function buildPie(table, e, config, theme, locale, { donut = false } = {}) {
     : legendConfig(isDeepObject(config.legend) ? config : { legend: { position: 'bottom' } }, theme)
 
   const frame = baseFrame(config, theme, locale, { trigger: 'item', noGrid: true })
-  return {
+  const option = {
     ...frame,
     legend: legendCfg,
     series: [{
@@ -716,6 +777,31 @@ function buildPie(table, e, config, theme, locale, { donut = false } = {}) {
       itemStyle: { borderColor: theme.border, borderWidth: 1 },
     }],
   }
+
+  // A big centered number (e.g. "97.4%") — typically used on a donut standing
+  // in for a KPI ring. Defaults to the FIRST segment's share of the total
+  // (the "value" slice of a value/remainder ring — callers order rows with
+  // the meaningful slice first, same convention as buildGauge's single value).
+  if (config.centerLabel) {
+    const cl = config.centerLabel === true ? {} : config.centerLabel
+    let text = cl.text
+    if (text == null) {
+      const total = vals.reduce((sum, v) => sum + (Number(v) || 0), 0)
+      const idx = Number.isInteger(cl.index) ? cl.index : 0
+      const share = total > 0 ? (vals[idx] / total) * 100 : 0
+      const clFmt = cl.format ? makeFormatter(cl.format, locale) : null
+      text = clFmt ? clFmt(share) : `${share.toFixed(1)}%`
+    }
+    option.graphic = [{
+      type: 'text', left: 'center', top: '42%', z: 10,
+      style: {
+        text, fontSize: cl.fontSize || 22, fontWeight: 600,
+        fill: cl.color || theme.fg, align: 'center',
+      },
+    }]
+  }
+
+  return option
 }
 
 function buildSankey(table, e, config, theme, locale) {
@@ -1117,6 +1203,7 @@ const INTERPRETED_KEYS = new Set([
   'title', 'subtitle', 'legend', 'tooltip', 'palette', 'stack', 'orientation',
   'smooth', 'areaOpacity', 'dataLabels', 'animation', 'grid', 'xAxis', 'yAxis',
   'y2Axis', 'referenceLines', 'annotations', 'locale', 'echarts', 'max', 'min',
+  'centerLabel',
 ])
 
 function stripInterpretedKeys(config) {
@@ -1168,11 +1255,12 @@ export function buildChartOption({ type, table, encoding, config, theme } = {}) 
     case 'gauge': option = buildGauge(view, e, cfg, th, locale); break
     case 'candlestick': option = buildCandlestick(view, e, cfg, th, locale); break
     case 'fan': option = buildFan(view, e, cfg, th, locale); break
+    case 'combo': option = buildCombo(view, e, cfg, th, locale); break
     default: option = buildScatter(view, e, cfg, th, locale, { bubble: false })
   }
 
   // Reference lines / annotations / data labels for cartesian charts.
-  const cartesian = ['bar', 'line', 'area', 'scatter', 'bubble', 'fan', 'candlestick', 'boxplot', 'waterfall'].includes(t)
+  const cartesian = ['bar', 'line', 'area', 'scatter', 'bubble', 'fan', 'candlestick', 'boxplot', 'waterfall', 'combo'].includes(t)
   if (cartesian) decorateCartesian(option, cfg, th, locale)
 
   // Final deep-merge: any uninterpreted config keys + an explicit `echarts`

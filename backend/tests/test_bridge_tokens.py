@@ -265,6 +265,9 @@ class _FakeWebSocket:
             self.close_code = code
         self._release.set()
 
+    async def send_bytes(self, data: bytes) -> None:
+        """No-op: these tests exercise auth/revalidation, not the tunnel data path."""
+
     async def receive_bytes(self) -> bytes:
         await self._release.wait()
         from fastapi import WebSocketDisconnect

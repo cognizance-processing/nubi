@@ -577,11 +577,17 @@ class Widget(BaseModel):
     chart_type:
         Chart variant — required when ``type == 'chart'``.  One of
         ``'line'``, ``'bar'``, ``'hbar'``, ``'scatter'``, ``'area'``,
-        ``'pie'``, ``'donut'``, ``'heatmap'``, ``'gauge'`` — the full set the
-        frontend chart renderer (``src/viz/chartOption.js``) supports.
+        ``'pie'``, ``'donut'``, ``'heatmap'``, ``'gauge'``, ``'combo'`` — the
+        full set the frontend chart renderer (``src/viz/chartOption.js``)
+        supports.
     encoding:
         Column encoding map.  For charts: ``x``, ``y`` (required), optionally
-        ``color``.  For KPI: ``value`` (alias for the value column).
+        ``color``.  For KPI: ``value`` (alias for the value column).  For
+        ``chart_type == 'combo'``: ``bars`` / ``lines`` are each a LIST of
+        column names (one series per entry) instead of a single string —
+        ``x``/``y`` are still required by validation, so combo widgets should
+        set ``y`` to one of the ``bars`` columns as well (harmless, unused by
+        the combo renderer, satisfies the generic chart-widget check).
     props:
         Arbitrary extra widget props (e.g. ``label``, ``limit``, ``format``).
     pos:
@@ -644,10 +650,16 @@ class Widget(BaseModel):
         ),
     )
     chart_type: (
-        Literal["line", "bar", "hbar", "scatter", "area", "pie", "donut", "heatmap", "gauge"]
+        Literal[
+            "line", "bar", "hbar", "scatter", "area", "pie", "donut", "heatmap", "gauge", "combo",
+        ]
         | None
     ) = None
-    encoding: dict[str, str] = Field(default_factory=dict)
+    # Most encodings map a channel to a single column name (str). chart_type
+    # 'combo' is the one exception: its 'bars'/'lines' channels each take a
+    # LIST of column names (one series per column) — see buildCombo in
+    # embed/widgets/chart-options.js.
+    encoding: dict[str, str | list[str]] = Field(default_factory=dict)
     props: dict[str, Any] = Field(default_factory=dict)
     pos: WidgetPos | None = Field(
         default=None,
@@ -1409,7 +1421,7 @@ def _chart_tag(widget: Widget) -> str:
     """
     chart_type = widget.chart_type or "scatter"
     # Normalize to the subset supported by nubi-chart.js (scatter|line|bar).
-    # Richer types degrade gracefully: area→line; pie/donut/heatmap/gauge→bar;
+    # Richer types degrade gracefully: area→line; pie/donut/heatmap/gauge/combo→bar;
     # hbar→bar (orientation is lost in the embed renderer).
     _type_map = {
         "area": "line",
@@ -1418,6 +1430,7 @@ def _chart_tag(widget: Widget) -> str:
         "hbar": "bar",
         "heatmap": "bar",
         "gauge": "bar",
+        "combo": "bar",
     }
     embed_type = _type_map.get(chart_type, chart_type)
 

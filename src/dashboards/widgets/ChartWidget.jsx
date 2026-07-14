@@ -221,7 +221,19 @@ export default function ChartWidget({ widget, providerTable = null }) {
     if (!table) return null
     const encoding = resolveEncoding(widget)
     const config = resolveConfig(widget)
-    const theme = resolveSpaTheme(isDark, Array.isArray(config.palette) ? config.palette : null)
+    let theme = resolveSpaTheme(isDark, Array.isArray(config.palette) ? config.palette : null)
+    // A widget-level text color (Appearance → Text color) is a plain CSS
+    // `color` on the card wrapper — that reaches ordinary DOM text (KPI
+    // numbers, table cells) via inheritance, but ECharts renders axis labels,
+    // legends, titles, and centerLabel by painting theme.fg/fgMuted onto a
+    // canvas, entirely outside the CSS box. Feed the same override in here so
+    // "Text color" means the same thing for every widget type.
+    const textColorOverride = typeof widget.style?.color === 'string' && widget.style.color
+      ? widget.style.color
+      : null
+    if (textColorOverride) {
+      theme = { ...theme, fg: textColorOverride, fgMuted: textColorOverride }
+    }
 
     const opt = buildChartOption({
       type: chart_type,
@@ -232,7 +244,7 @@ export default function ChartWidget({ widget, providerTable = null }) {
     })
     return opt
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [table, chart_type, JSON.stringify(widget.encoding), JSON.stringify(widget.config), JSON.stringify(widget.props), isDark])
+  }, [table, chart_type, JSON.stringify(widget.encoding), JSON.stringify(widget.config), JSON.stringify(widget.props), widget.style?.color, isDark])
 
   if (loading) {
     return (

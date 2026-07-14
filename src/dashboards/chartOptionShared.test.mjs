@@ -81,16 +81,16 @@ const HEATMAP_ROWS = [
 // ---------------------------------------------------------------------------
 
 describe('SUPPORTED_TYPES', () => {
-  test('exports an array of 17 types', () => {
+  test('exports an array of 18 types', () => {
     assert.ok(Array.isArray(SUPPORTED_TYPES))
-    assert.equal(SUPPORTED_TYPES.length, 17)
+    assert.equal(SUPPORTED_TYPES.length, 18)
   })
 
   test('includes all expected types', () => {
     const required = [
       'bar', 'line', 'area', 'scatter', 'bubble', 'pie', 'donut',
       'sankey', 'funnel', 'waterfall', 'heatmap', 'radar', 'treemap',
-      'boxplot', 'gauge', 'candlestick', 'fan',
+      'boxplot', 'gauge', 'candlestick', 'fan', 'combo',
     ]
     for (const t of required) {
       assert.ok(SUPPORTED_TYPES.includes(t), `SUPPORTED_TYPES must include '${t}'`)

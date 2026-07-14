@@ -22,11 +22,11 @@ bridges that belong to their org.
 
 Storage
 -------
-Bridges are stored in an in-module in-memory store (``_BridgeStore``) for the
-current milestone.  When the migration lands and the ``bridges`` table is live,
-this store should be replaced with a thin wrapper over the DB.  The store
-interface (``create``, ``list``, ``get``, ``delete``, ``heartbeat``) is
-deliberately simple so the swap is mechanical.
+Bridges are stored in the real ``bridges`` Postgres table via
+``app.bridges.store`` (``PgBridgeStore`` in production, ``InMemoryBridgeStore``
+in tests — see that module for the provider pattern). ``get_bridge_store()`` /
+``reset_bridge_store()`` are re-exported here for backward compatibility with
+existing imports/tests.
 
 The router self-registers on the shared ``api_router`` at import time (bottom of
 this file), so ``main.py`` only needs::
@@ -38,118 +38,31 @@ from __future__ import annotations
 
 import asyncio
 import secrets
-import uuid
-from copy import deepcopy
-from datetime import datetime, timezone
 from typing import Any
 
 #: How often the live tunnel re-validates its bridge token so a mid-session
 #: revoke / lapsed rotation grace drops the tunnel promptly (§7).
 _BRIDGE_TOKEN_REVALIDATE_SECONDS = 30.0
 
-from fastapi import APIRouter, Depends, Response, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Response, WebSocket
 from pydantic import BaseModel
 
 from app.auth.bridge_tokens import get_bridge_token_store
 from app.auth.deps import current_user
 from app.auth.roles import get_org_role, require_writer_default
 from app.bridges.broker import get_broker
+from app.bridges.store import (  # noqa: F401 — re-exported for existing imports
+    BridgeStore,
+    InMemoryBridgeStore,
+    PgBridgeStore,
+    get_bridge_store,
+    reset_bridge_store,
+    set_bridge_store_for_tests,
+)
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
 from app.routes._org import get_user_org as _get_user_org
-
-# ---------------------------------------------------------------------------
-# In-module bridge store (replaces the DB until the migration ships)
-# ---------------------------------------------------------------------------
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-class _BridgeStore:
-    """Dict-backed in-process store for bridge rows.
-
-    Thread-safety: single async-event-loop assumption (same as asyncpg helpers).
-    """
-
-    def __init__(self) -> None:
-        # {bridge_id: bridge_dict}
-        self._rows: dict[str, dict[str, Any]] = {}
-
-    def reset(self) -> None:
-        """Clear all stored bridges.  Called by tests between runs."""
-        self._rows.clear()
-
-    async def create(
-        self,
-        org_id: str,
-        created_by: str,
-        name: str,
-        config: dict[str, Any],
-    ) -> dict[str, Any]:
-        bridge_id = str(uuid.uuid4())
-        now = _now_iso()
-        row: dict[str, Any] = {
-            "id": bridge_id,
-            "org_id": str(org_id),
-            "created_by": str(created_by),
-            "name": name,
-            "status": "offline",
-            "last_seen_at": None,
-            "config": deepcopy(config),
-            "created_at": now,
-            "updated_at": now,
-        }
-        self._rows[bridge_id] = row
-        return deepcopy(row)
-
-    async def list(self, org_id: str) -> list[dict[str, Any]]:
-        rows = [
-            deepcopy(r)
-            for r in self._rows.values()
-            if str(r["org_id"]) == str(org_id)
-        ]
-        rows.sort(key=lambda r: r["created_at"])
-        return rows
-
-    async def get(self, org_id: str, bridge_id: str) -> dict[str, Any] | None:
-        row = self._rows.get(str(bridge_id))
-        if row is None or str(row["org_id"]) != str(org_id):
-            return None
-        return deepcopy(row)
-
-    async def delete(self, org_id: str, bridge_id: str) -> bool:
-        row = self._rows.get(str(bridge_id))
-        if row is None or str(row["org_id"]) != str(org_id):
-            return False
-        del self._rows[str(bridge_id)]
-        return True
-
-    async def heartbeat(self, org_id: str, bridge_id: str) -> dict[str, Any] | None:
-        row = self._rows.get(str(bridge_id))
-        if row is None or str(row["org_id"]) != str(org_id):
-            return None
-        row["status"] = "online"
-        row["last_seen_at"] = _now_iso()
-        row["updated_at"] = _now_iso()
-        return deepcopy(row)
-
-
-# Module-level singleton (reset by tests via reset_bridge_store()).
-_bridge_store = _BridgeStore()
-
-
-def get_bridge_store() -> _BridgeStore:
-    """Return the active bridge store singleton."""
-    return _bridge_store
-
-
-def reset_bridge_store() -> None:
-    """Reset the bridge store — test helper, mirrors connector registry pattern."""
-    _bridge_store.reset()
-
 
 # ---------------------------------------------------------------------------
 # Internal helper used by query.py to pre-fetch a bridge row
@@ -158,7 +71,7 @@ def reset_bridge_store() -> None:
 
 async def _get_bridge(org_id: str, bridge_id: str, _repo: Repo | None = None) -> dict[str, Any] | None:
     """Return the bridge row for *bridge_id* scoped to *org_id*, or None."""
-    return await _bridge_store.get(org_id, str(bridge_id))
+    return await get_bridge_store().get(org_id, str(bridge_id))
 
 
 # ---------------------------------------------------------------------------
@@ -427,10 +340,7 @@ async def revoke_bridge_token(
     # Drop the live tunnel so the now-untrusted agent cannot keep tunnelling.
     await get_broker().drop(bridge_id)
     # Reflect the offline transition on the bridge row.
-    row = _bridge_store._rows.get(bridge_id)
-    if row is not None:
-        row["status"] = "offline"
-        row["updated_at"] = _now_iso()
+    await get_bridge_store().set_status(bridge_id, "offline")
     return Response(status_code=204)
 
 
@@ -480,7 +390,7 @@ async def bridge_connect(
     # The agent only knows its bridge_id and token. The token authenticates the
     # CONTROL CHANNEL ONLY (§7): it lets the agent open the tunnel and claim its
     # bridge's tasks — by itself it reads no secrets and no storage.
-    row: dict[str, Any] | None = _bridge_store._rows.get(bridge_id)
+    row: dict[str, Any] | None = await get_bridge_store().get_by_id(bridge_id)
     if row is None:
         await websocket.close(code=4404)
         return
@@ -516,12 +426,10 @@ async def bridge_connect(
     await websocket.accept()
 
     # Mark the bridge online.
-    row["status"] = "online"
-    row["last_seen_at"] = _now_iso()
-    row["updated_at"] = _now_iso()
+    await get_bridge_store().set_status(bridge_id, "online", touch_last_seen=True)
 
     broker = get_broker()
-    await broker.register(bridge_id, websocket)
+    conn = await broker.register(bridge_id, websocket)
 
     # Server-side re-validation: the token is checked on connect, but a token can
     # be revoked (or its rotation grace window can lapse) mid-tunnel. The explicit
@@ -548,8 +456,7 @@ async def bridge_connect(
             )
             if not ok:
                 await broker.drop(bridge_id)
-                row["status"] = "offline"
-                row["updated_at"] = _now_iso()
+                await get_bridge_store().set_status(bridge_id, "offline")
                 try:
                     await websocket.close(code=4401)
                 except Exception:  # noqa: BLE001
@@ -558,16 +465,14 @@ async def bridge_connect(
 
     revalidator = asyncio.ensure_future(_revalidate_loop())
     try:
-        # Keep the connection alive by waiting for messages.
-        # The broker's reader loop runs in the background; here we just wait
-        # for the client to disconnect.
-        while True:
-            try:
-                await websocket.receive_bytes()
-            except WebSocketDisconnect:
-                break
-            except Exception:
-                break
+        # The broker's reader loop (started by register()) owns the only
+        # recv() on this WebSocket — it demultiplexes DATA/READY/ERROR/CLOSE
+        # frames for the tunnel. This handler must NOT also call
+        # receive_bytes() here: two concurrent readers on one WebSocket race
+        # and the connection dies uncleanly (previously: every agent
+        # disconnected immediately after connecting). Wait for the reader loop
+        # to exit instead, which happens on agent disconnect or socket error.
+        await conn.wait_closed()
     finally:
         revalidator.cancel()
         try:
