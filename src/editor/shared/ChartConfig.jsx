@@ -20,7 +20,7 @@
 
 import { Plus, Trash2, Database, SlidersHorizontal, BarChart3, Layers } from 'lucide-react'
 import {
-  inputCls, selectCls, FieldLabel, Section, ToggleRow, ColumnSelect,
+  inputCls, selectCls, FieldLabel, Section, ToggleRow, ColumnSelect, ColorSwatch,
 } from './inspectorPrimitives.jsx'
 import { useColumnIntrospection } from './useInspectorData.js'
 import { CHART_TYPES, SERIES_TYPES } from './constants.js'
@@ -50,6 +50,7 @@ const CHART_ICONS = {
   gauge:       Gauge,
   candlestick: CandlestickChart,
   fan:         Wind,
+  combo:       Layers,
 }
 
 // Human-readable labels for chart types
@@ -71,6 +72,7 @@ const CHART_LABELS = {
   gauge:       'Gauge',
   candlestick: 'Candle',
   fan:         'Fan',
+  combo:       'Combo',
 }
 
 // Per-type encoding field definitions
@@ -95,14 +97,16 @@ const TYPE_ENCODING = {
   fan:         [{ key: 'x', label: 'X (time) column' }, { key: 'y', label: 'Forecast (midline) column' }, { key: 'lower', label: 'Lower bound column', optional: true }, { key: 'upper', label: 'Upper bound column', optional: true }],
 }
 
-// Chart types that use an x/y cartesian axis system (show axis config)
-const CARTESIAN_TYPES = new Set(['bar', 'line', 'area', 'scatter', 'bubble', 'waterfall', 'boxplot', 'candlestick', 'fan'])
-// Chart types that support stacking
-const STACKABLE_TYPES = new Set(['bar', 'line', 'area'])
+// Chart types that use an x/y cartesian axis system (show axis config +
+// reference lines). Combo is cartesian too — buildCombo() honours axes and
+// decorateCartesian() applies its reference lines.
+const CARTESIAN_TYPES = new Set(['bar', 'line', 'area', 'scatter', 'bubble', 'waterfall', 'boxplot', 'candlestick', 'fan', 'combo'])
+// Chart types that support stacking (combo stacks its bar series; lines stay lines)
+const STACKABLE_TYPES = new Set(['bar', 'line', 'area', 'combo'])
 // Chart types that support orientation (horizontal)
 const ORIENTABLE_TYPES = new Set(['bar', 'funnel'])
-// Chart types that support dual y-axis
-const DUAL_AXIS_TYPES = new Set(['line', 'area'])
+// Chart types that support dual y-axis (combo is inherently dual: bars left, lines right)
+const DUAL_AXIS_TYPES = new Set(['line', 'area', 'combo'])
 
 const VALUE_FORMAT_OPTIONS = [
   { value: '', label: '— auto —' },
@@ -114,6 +118,59 @@ const VALUE_FORMAT_OPTIONS = [
 ]
 
 const LEGEND_POSITIONS = ['top', 'bottom', 'left', 'right']
+
+/**
+ * SeriesList — an ordered list of column pickers for combo bar/line series.
+ * Writes an array of column names (the shape buildCombo reads from
+ * encoding.bars / encoding.lines). Columns already chosen are still selectable
+ * again (a column can legitimately appear once); duplicates are harmless.
+ */
+function SeriesList({ label, hint, series, columns, onChange }) {
+  const update = (i, val) => {
+    if (!val) { onChange(series.filter((_, idx) => idx !== i)); return }
+    onChange(series.map((c, idx) => (idx === i ? val : c)))
+  }
+  const remove = (i) => onChange(series.filter((_, idx) => idx !== i))
+  const move = (i, dir) => {
+    const j = i + dir
+    if (j < 0 || j >= series.length) return
+    const next = series.slice()
+    ;[next[i], next[j]] = [next[j], next[i]]
+    onChange(next)
+  }
+  const available = columns.filter(c => !series.includes(c))
+  return (
+    <div className="space-y-1">
+      <FieldLabel>{label}</FieldLabel>
+      {series.length === 0 && (
+        <p className="text-[10px] text-muted/70">{hint}. None yet — add one below.</p>
+      )}
+      {series.map((col, i) => (
+        <div key={`${col}-${i}`} className="flex items-center gap-1">
+          <div className="flex flex-col">
+            <button type="button" onClick={() => move(i, -1)} disabled={i === 0}
+              className="h-3 leading-none text-muted/60 hover:text-primary disabled:opacity-30" title="Move up">▲</button>
+            <button type="button" onClick={() => move(i, 1)} disabled={i === series.length - 1}
+              className="h-3 leading-none text-muted/60 hover:text-primary disabled:opacity-30" title="Move down">▼</button>
+          </div>
+          <select className={`${selectCls} flex-1`} value={col} onChange={e => update(i, e.target.value)}>
+            {columns.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <button type="button" onClick={() => remove(i)}
+            className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-red-500 hover:bg-red-500/10 transition-colors" title="Remove">
+            <Trash2 size={12} />
+          </button>
+        </div>
+      ))}
+      {available.length > 0 && (
+        <select className={selectCls} value="" onChange={e => { if (e.target.value) onChange([...series, e.target.value]) }}>
+          <option value="">+ Add {label.toLowerCase().replace(/ series$/, '')} series…</option>
+          {available.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+      )}
+    </div>
+  )
+}
 
 export function ChartConfig({ widget, onChange }) {
   const { columns, introspecting } = useColumnIntrospection(widget.query_id)
@@ -131,6 +188,14 @@ export function ChartConfig({ widget, onChange }) {
   }
 
   const encodingFields = TYPE_ENCODING[baseType] ?? TYPE_ENCODING.bar
+
+  const isCombo = baseType === 'combo'
+  const isDonutLike = baseType === 'donut' || baseType === 'pie'
+  // Combo series lists (encoding.bars / encoding.lines are column-name arrays,
+  // exactly as buildCombo() reads them).
+  const barSeries = Array.isArray(enc.bars) ? enc.bars : []
+  const lineSeries = Array.isArray(enc.lines) ? enc.lines : []
+  const setSeries = (key, arr) => setEncoding(key, arr.length ? arr : undefined)
 
   const isCartesian = CARTESIAN_TYPES.has(baseType)
   const isStackable = STACKABLE_TYPES.has(baseType)
@@ -176,16 +241,36 @@ export function ChartConfig({ widget, onChange }) {
         {introspecting && (
           <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>
         )}
-        {encodingFields.map(({ key, label, optional }) => (
-          <ColumnSelect
-            key={key}
-            label={label}
-            value={enc[key] ?? ''}
-            onChange={v => setEncoding(key, v)}
-            columns={columns}
-            optional={!!optional}
-          />
-        ))}
+        {isCombo ? (
+          <>
+            <ColumnSelect label="X (category)" value={enc.x ?? ''} onChange={v => setEncoding('x', v)} columns={columns} />
+            <SeriesList
+              label="Bar series"
+              hint="Plotted as bars on the left axis"
+              series={barSeries}
+              columns={columns}
+              onChange={arr => setSeries('bars', arr)}
+            />
+            <SeriesList
+              label="Line series"
+              hint="Plotted as lines on the right axis"
+              series={lineSeries}
+              columns={columns}
+              onChange={arr => setSeries('lines', arr)}
+            />
+          </>
+        ) : (
+          encodingFields.map(({ key, label, optional }) => (
+            <ColumnSelect
+              key={key}
+              label={label}
+              value={enc[key] ?? ''}
+              onChange={v => setEncoding(key, v)}
+              columns={columns}
+              optional={!!optional}
+            />
+          ))
+        )}
       </Section>
 
       {/* ── Display customization ── */}
@@ -261,8 +346,18 @@ export function ChartConfig({ widget, onChange }) {
           onChange={v => setConfig('dataLabels', v || false)}
         />
 
-        {/* Smooth lines */}
-        {(baseType === 'line' || baseType === 'area' || baseType === 'fan') && (
+        {/* Center label (donut / pie) */}
+        {isDonutLike && (
+          <ToggleRow
+            label="Center label"
+            hint="Show the first slice's share in the ring's hole"
+            checked={!!cfg.centerLabel}
+            onChange={v => setConfig('centerLabel', v || undefined)}
+          />
+        )}
+
+        {/* Smooth lines (line/area/fan and combo line series) */}
+        {(baseType === 'line' || baseType === 'area' || baseType === 'fan' || baseType === 'combo') && (
           <ToggleRow
             label="Smooth curves"
             checked={cfg.smooth !== false}
@@ -469,12 +564,10 @@ export function ChartConfig({ widget, onChange }) {
                   <option value="dashed">Dashed</option>
                   <option value="solid">Solid</option>
                 </select>
-                <input
-                  type="color"
+                <ColorSwatch
                   title="Line color"
-                  className="w-8 h-8 rounded border border-border cursor-pointer"
-                  value={r.color || '#6366f1'}
-                  onChange={e => updateRefLine(i, { color: e.target.value })}
+                  value={r.color}
+                  onChange={v => updateRefLine(i, { color: v })}
                 />
               </div>
             </div>

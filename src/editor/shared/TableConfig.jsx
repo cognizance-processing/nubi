@@ -24,7 +24,7 @@
  */
 
 import { Table2, Hash, Palette } from 'lucide-react'
-import { inputCls, selectCls, FieldLabel, Section } from './inspectorPrimitives.jsx'
+import { inputCls, selectCls, FieldLabel, Section, ColorSwatch } from './inspectorPrimitives.jsx'
 import { useColumnIntrospection } from './useInspectorData.js'
 import { FORMAT_OPS, COLUMN_FORMAT_TYPES } from './constants.js'
 
@@ -140,14 +140,14 @@ export function ConditionalRulesEditor({ columns, rules, onChange }) {
               ))}
             </div>
             <label className="flex items-center gap-1 text-[10px] text-muted cursor-pointer">bg
-              <input type="color" className="h-6 w-6 rounded border border-border bg-surface cursor-pointer"
-                value={r.style?.backgroundColor ?? '#dcfce7'}
-                onChange={e => setStyle(idx, { backgroundColor: e.target.value })} />
+              <ColorSwatch size="sm" title="Row background"
+                value={r.style?.backgroundColor} fallback="#dcfce7"
+                onChange={v => setStyle(idx, { backgroundColor: v })} />
             </label>
             <label className="flex items-center gap-1 text-[10px] text-muted cursor-pointer">text
-              <input type="color" className="h-6 w-6 rounded border border-border bg-surface cursor-pointer"
-                value={r.style?.color ?? '#166534'}
-                onChange={e => setStyle(idx, { color: e.target.value })} />
+              <ColorSwatch size="sm" title="Row text colour"
+                value={r.style?.color} fallback="#166534"
+                onChange={v => setStyle(idx, { color: v })} />
             </label>
             <button onClick={() => setStyle(idx, { fontWeight: r.style?.fontWeight === 'bold' ? undefined : 'bold' })}
               className={`w-7 h-7 text-[11px] rounded-lg border font-bold transition-colors ${r.style?.fontWeight === 'bold' ? 'border-primary text-primary bg-primary/5' : 'border-border text-muted hover:text-fg'}`}>

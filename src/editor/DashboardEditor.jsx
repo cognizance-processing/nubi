@@ -46,8 +46,9 @@ import {
   BarChartHorizontal, Table2, Hash, Filter as FilterIcon, Type, Heading,
   Monitor, Tablet, Smartphone, ChevronDown, Settings, LayoutGrid, MessageSquare,
   ZoomIn, ZoomOut, Maximize2, Menu, ChevronUp, Sigma, FileCode2, LayoutDashboard,
-  Undo2, Redo2, Eye, Pencil, Save, Loader2, CheckCircle2,
+  Undo2, Redo2, Eye, Pencil, Save, Loader2, CheckCircle2, BookmarkPlus, Library,
 } from 'lucide-react'
+import { saveWidgetToLibrary, deleteLibraryWidget, fromLibraryRow } from '../lib/widgetLibrary.js'
 import Button from '../components/ui/Button.jsx'
 import Spinner from '../components/ui/Spinner.jsx'
 import { toast } from '../components/ui/Toast.jsx'
@@ -93,6 +94,7 @@ import DashboardCodeView from './DashboardCodeView.jsx'
 import { VariableProvider } from '../dashboards/VariableStore.jsx'
 import SpecRenderer from '../dashboards/SpecRenderer.jsx'
 import { backgroundToCss, styleToCss } from '../dashboards/widgetHtml.js'
+import { WIDGET_STYLE_PRESETS, DASHBOARD_STYLE_PRESETS } from '../dashboards/stylePresets.js'
 import TabBar from '../dashboards/TabBar.jsx'
 import {
   DEVICE_TO_BREAKPOINT,
@@ -104,6 +106,8 @@ import {
   isHiddenAt,
 } from '../dashboards/responsiveLayout.js'
 import ChatPanel from './ChatPanel.jsx'
+import WidgetHtmlEditor from './shared/WidgetHtmlEditor.jsx'
+import WidgetFocusShell from './shared/WidgetFocusShell.jsx'
 import {
   createHistory,
   push as historyPush,
@@ -115,9 +119,10 @@ import {
 // ── Shared inspector panels ──────────────────────────────────────────────────
 import {
   inputCls, selectCls, FieldLabel, SectionLabel, Section, ToggleRow, ChipRow, ColumnSelect,
-  useColumnIntrospection, useMetricsList,
+  ColorField, ColorSwatch,
+  useColumnIntrospection, useMetricsList, useWidgetLibrary,
   QueryPicker, BackgroundEditor, ParamBindingSection,
-  ChartConfig, KpiConfig,
+  ChartConfig, KpiConfig, IconPicker,
   TableConfig, ColumnFormatsEditor, ConditionalRulesEditor,
   FilterConfig, TextConfig, PlacementControl, effectivePlacement,
   DEMO_QUERY_IDS, CHART_TYPES, SERIES_TYPES, FILTER_SUBTYPES, VARIABLE_TYPES,
@@ -497,6 +502,10 @@ function SectionConfig({ widget, onChange }) {
         <input type="text" className={inputCls} value={props.subtitle ?? ''} placeholder="Optional subtitle" onChange={e => setProps('subtitle', e.target.value)} />
       </div>
       <div>
+        <FieldLabel>Icon</FieldLabel>
+        <IconPicker value={props.icon} onChange={v => setProps('icon', v)} />
+      </div>
+      <div>
         <FieldLabel>Alignment</FieldLabel>
         <div className="flex h-8 rounded-lg border border-border overflow-hidden">
           {['left', 'center', 'right'].map(a => (
@@ -693,10 +702,52 @@ function VariablesEditor({ variables, onChange }) {
 // BackgroundEditor is now imported from ./shared/index.js
 
 // ---------------------------------------------------------------------------
+// StylePresetChips — shared preset-picker chip row for widget/dashboard style
+// (same visual language as ChipRow, but each option carries its own label
+// distinct from its key, plus a description tooltip).
+// ---------------------------------------------------------------------------
+
+function StylePresetChips({ presets, activeKey, onSelect }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {presets.map(preset => (
+        <button
+          key={preset.key}
+          type="button"
+          title={preset.description}
+          onClick={() => onSelect(preset)}
+          className={[
+            'px-3 py-1.5 text-xs font-medium rounded-lg border transition-all duration-150',
+            'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+            activeKey === preset.key
+              ? 'bg-primary text-primary-fg border-primary shadow-sm'
+              : 'bg-surface text-muted border-border hover:border-primary/60 hover:text-fg hover:bg-surface-2',
+          ].join(' ')}
+        >
+          {preset.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // WidgetAppearanceSection — widget.style + widget.html (full HTML flexibility)
 // ---------------------------------------------------------------------------
 
-const HTML_CHEATSHEET = '{{value}} · {{col:NAME}} · {{row.0.NAME}} · {{prop:NAME}}'
+// Whitespace-insensitive compare so a preset chip still lights up when a spec
+// carries an older/hand-edited variant of the same values (e.g. boxShadow with
+// different comma spacing). `color`/`padding` are additive and ignored here.
+const normStyleVal = (v) => (typeof v === 'string' ? v.replace(/\s+/g, '') : v)
+const PRESET_MATCH_KEYS = ['background', 'border', 'borderRadius', 'boxShadow', 'backdropFilter', 'WebkitBackdropFilter']
+function matchWidgetPresetKey(style) {
+  if (!style || typeof style !== 'object') return 'default'
+  for (const p of WIDGET_STYLE_PRESETS) {
+    if (!p.style) continue
+    if (PRESET_MATCH_KEYS.every(k => normStyleVal(style[k]) === normStyleVal(p.style[k]))) return p.key
+  }
+  return 'default'
+}
 
 function WidgetAppearanceSection({ widget, onChange }) {
   const style = widget.style ?? {}
@@ -709,22 +760,39 @@ function WidgetAppearanceSection({ widget, onChange }) {
     const hasBg = bgVal && bgVal.type
     setStyle({ background: hasBg ? bgVal : '' })
   }
+  // Backdrop blur writes both the standard and -webkit properties together so
+  // the frosted effect works in every engine; clearing removes both.
+  const setBlur = (val) => setStyle({ backdropFilter: val, WebkitBackdropFilter: val })
+  const activePresetKey = matchWidgetPresetKey(style)
+  const applyPreset = (preset) => {
+    if (!preset.style) {
+      setStyle({ background: '', backdropFilter: '', WebkitBackdropFilter: '', border: '', borderRadius: '', boxShadow: '' })
+    } else {
+      setStyle(preset.style)
+    }
+  }
   return (
     <div className="space-y-3">
       <Section title="Appearance" defaultOpen={false} icon={Palette}>
+        <div className="space-y-1">
+          <SectionLabel>Style</SectionLabel>
+          <StylePresetChips presets={WIDGET_STYLE_PRESETS} activeKey={activePresetKey} onSelect={applyPreset} />
+          <p className="text-[10px] text-muted/70">
+            A preset sets a starting point — the controls below still fine-tune it.
+          </p>
+        </div>
         <div className="space-y-1">
           <SectionLabel>Card background</SectionLabel>
           <BackgroundEditor value={typeof style.background === 'object' ? style.background : undefined} onChange={setBg} />
         </div>
         <div className="space-y-1">
           <SectionLabel>Text color</SectionLabel>
-          <div className="flex items-center gap-2">
-            <input type="color" className="h-8 w-10 shrink-0 rounded-lg border border-border bg-surface cursor-pointer"
-              value={typeof style.color === 'string' && style.color ? style.color : '#000000'}
-              onChange={e => setStyle({ color: e.target.value })} />
-            <input type="text" className={`${inputCls} flex-1`} placeholder="inherit (theme default)"
-              value={style.color ?? ''} onChange={e => setStyle({ color: e.target.value })} />
-          </div>
+          <ColorField
+            value={typeof style.color === 'string' ? style.color : undefined}
+            onChange={v => setStyle({ color: v })}
+            placeholder="inherit (theme default)"
+            fallback="#000000"
+          />
           <p className="text-[10px] text-muted/70">
             Applies to the whole card (KPI number, chart title, table text, etc.) unless a widget's own styling overrides it.
           </p>
@@ -740,6 +808,18 @@ function WidgetAppearanceSection({ widget, onChange }) {
           </div>
         </div>
         <div>
+          <FieldLabel>Box shadow</FieldLabel>
+          <input type="text" className={inputCls} placeholder="0 8px 24px rgba(0,0,0,0.2)"
+            value={style.boxShadow ?? ''} onChange={e => setStyle({ boxShadow: e.target.value })} />
+          <p className="text-[10px] text-muted/70 mt-1">Any CSS shadow — e.g. a colored glow <code>0 8px 24px #7c3aed55</code>.</p>
+        </div>
+        <div>
+          <FieldLabel>Backdrop blur</FieldLabel>
+          <input type="text" className={inputCls} placeholder="blur(14px) saturate(140%)"
+            value={style.backdropFilter ?? ''} onChange={e => setBlur(e.target.value)} />
+          <p className="text-[10px] text-muted/70 mt-1">Frosts whatever is behind the card — pair a translucent background with <code>blur(…)</code> for a glass look.</p>
+        </div>
+        <div>
           <FieldLabel>Padding</FieldLabel>
           <input type="text" className={inputCls} placeholder="8px 12px" value={style.padding ?? ''} onChange={e => setStyle({ padding: e.target.value })} />
         </div>
@@ -748,16 +828,9 @@ function WidgetAppearanceSection({ widget, onChange }) {
       <Section title="Custom HTML" defaultOpen={false}
         right={widget.html ? <span className="text-[10px] text-primary font-medium">active</span> : null}>
         <p className="text-[10px] text-muted/70 leading-relaxed">
-          Replaces the default widget body with your own sanitized HTML. Tokens pull live query data:
-          <span className="block font-mono text-muted mt-0.5">{HTML_CHEATSHEET}</span>
+          Replaces the default widget body with your own sanitized HTML — inline styles welcome. Tokens pull live query data.
         </p>
-        <textarea rows={6} className={`${inputCls} h-auto py-1.5 font-mono text-xs resize-y`}
-          placeholder={'<div class="p-4">\n  <h2>{{prop:label}}</h2>\n  <p class="text-2xl">{{value}}</p>\n</div>'}
-          value={widget.html ?? ''} onChange={e => onChange({ ...widget, html: e.target.value || undefined })} />
-        {widget.html && (
-          <button onClick={() => onChange({ ...widget, html: undefined })}
-            className="text-xs text-muted hover:text-red-500 transition-colors">Clear custom HTML → use default widget</button>
-        )}
+        <WidgetHtmlEditor widget={widget} onChange={onChange} />
       </Section>
     </div>
   )
@@ -789,9 +862,38 @@ function DashboardPanel({ spec, onSpecChange }) {
     const v = parseInt(raw, 10)
     setLayout({ breakpoints: { ...bp, [key]: Number.isFinite(v) ? v : DEFAULT_BREAKPOINTS_PX[key] } })
   }
+  const activeStylePreset = spec.stylePreset ?? 'default'
+  const applyDashboardPreset = (preset) => {
+    onSpecChange({
+      ...spec,
+      stylePreset: preset.key === 'default' ? undefined : preset.key,
+      background: preset.background ?? undefined,
+    })
+  }
+
   return (
     <div className="p-4 space-y-3 overflow-y-auto h-full">
       <h3 className="text-sm font-semibold text-fg">Dashboard</h3>
+
+      {/* Description — rendered under the dashboard title in the viewer */}
+      <div className="space-y-1">
+        <SectionLabel>Description</SectionLabel>
+        <textarea
+          className="w-full text-xs rounded-lg border border-border bg-surface px-2.5 py-2 text-fg placeholder:text-muted/60 focus:outline-none focus:ring-2 focus:ring-ring/50 resize-y min-h-[52px]"
+          placeholder="Optional subtitle shown under the dashboard title…"
+          value={spec.description ?? ''}
+          onChange={e => onSpecChange({ ...spec, description: e.target.value || undefined })}
+        />
+      </div>
+
+      <Section title="Style" icon={Palette}>
+        <div className="space-y-1">
+          <StylePresetChips presets={DASHBOARD_STYLE_PRESETS} activeKey={activeStylePreset} onSelect={applyDashboardPreset} />
+          <p className="text-[10px] text-muted/70">
+            &ldquo;Glass&rdquo; gives every widget with no style of its own a frosted-glass card over a soft backdrop — pick it once, the whole dashboard updates.
+          </p>
+        </div>
+      </Section>
 
       <Section title="Background" icon={Palette}>
         <BackgroundEditor value={spec.background} onChange={bg => onSpecChange({ ...spec, background: bg && bg.type ? bg : undefined })} />
@@ -897,7 +999,17 @@ function DashboardPanel({ spec, onSpecChange }) {
 // ConfigPanel — per-widget configuration
 // ---------------------------------------------------------------------------
 
-function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec, activeBreakpoint = 'lg', onLayoutCommit, onMoveToTab }) {
+/**
+ * ConfigPanel — the per-widget config sections.
+ *
+ * variant 'panel' (default) is the right-sidebar inspector. variant 'focus' is
+ * the same sections inside focus mode's right rail, which drops the chrome the
+ * shell already provides: the header (shell header), the remove button (shell
+ * header) and the query picker (shell data rail).
+ */
+function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec, activeBreakpoint = 'lg', onLayoutCommit, onMoveToTab, onLibrarySaved, variant = 'panel' }) {
+  const focus = variant === 'focus'
+
   if (!widget) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-sm text-muted py-10 px-5 text-center gap-3">
@@ -930,24 +1042,26 @@ function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec, activeBr
   return (
     <div className="p-3 space-y-4 overflow-y-auto h-full">
       {/* Widget header */}
-      <div className="flex items-center justify-between gap-2 pb-1 border-b border-border/60">
-        <h3 className="flex items-center gap-2 text-sm font-semibold text-fg capitalize">
-          {(() => { const I = WIDGET_ICONS[widget.type]; return I ? <I size={14} className="text-primary" /> : null })()}
-          {widget.type} widget
-        </h3>
-        <button
-          onClick={onRemove}
-          title="Remove widget"
-          className={[
-            'flex items-center gap-1 text-xs px-2 h-7 rounded-lg border border-transparent',
-            'text-muted hover:text-red-500 hover:border-red-200 hover:bg-red-50/80',
-            'transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400/60',
-            'dark:hover:bg-red-950/40',
-          ].join(' ')}
-        >
-          <Trash2 size={12} /> Remove
-        </button>
-      </div>
+      {!focus && (
+        <div className="flex items-center justify-between gap-2 pb-1 border-b border-border/60">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-fg capitalize">
+            {(() => { const I = WIDGET_ICONS[widget.type]; return I ? <I size={14} className="text-primary" /> : null })()}
+            {widget.type} widget
+          </h3>
+          <button
+            onClick={onRemove}
+            title="Remove widget"
+            className={[
+              'flex items-center gap-1 text-xs px-2 h-7 rounded-lg border border-transparent',
+              'text-muted hover:text-red-500 hover:border-red-200 hover:bg-red-50/80',
+              'transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400/60',
+              'dark:hover:bg-red-950/40',
+            ].join(' ')}
+          >
+            <Trash2 size={12} /> Remove
+          </button>
+        </div>
+      )}
 
       {Array.isArray(spec?.tabs) && spec.tabs.length > 0 && onMoveToTab && (
         <div>
@@ -963,7 +1077,7 @@ function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec, activeBr
         </div>
       )}
 
-      {isDataWidget && (
+      {isDataWidget && !focus && (
         <div className="space-y-1.5">
           <FieldLabel className="flex items-center gap-1.5"><Database size={12} /> Query</FieldLabel>
           <QueryPicker value={widget.query_id} onChange={setQueryId} extraIds={extraQueryIds} />
@@ -980,7 +1094,7 @@ function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec, activeBr
       {(widget.type === 'kpi' || widget.type === 'metric') && <KpiConfig widget={widget} onChange={onChange} />}
       {widget.type === 'table' && <TableConfig widget={widget} onChange={onChange} />}
       {widget.type === 'pivot' && <PivotConfig widget={widget} onChange={onChange} />}
-      {widget.type === 'filter' && <FilterConfig widget={widget} onChange={onChange} />}
+      {widget.type === 'filter' && <FilterConfig widget={widget} onChange={onChange} spec={spec} />}
       {widget.type === 'text' && <TextConfig widget={widget} onChange={onChange} />}
       {widget.type === 'section' && <SectionConfig widget={widget} onChange={onChange} />}
 
@@ -997,7 +1111,76 @@ function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec, activeBr
 
       <WidgetAppearanceSection widget={widget} onChange={onChange} />
 
+      <Section title="Save to library" defaultOpen={false} icon={BookmarkPlus}>
+        <SaveToLibrarySection widget={widget} onSaved={onLibrarySaved} />
+      </Section>
+
       <p className="text-[10px] text-muted/50 pt-1 font-mono">{widget.id}</p>
+    </div>
+  )
+}
+
+/**
+ * SaveToLibrarySection — "save this widget for reuse on other boards".
+ *
+ * Lives in ConfigPanel, so it shows up in both the sidebar inspector and the
+ * focus-mode config rail without being written twice. Defaults the entry name
+ * to whatever the widget already calls itself.
+ */
+function SaveToLibrarySection({ widget, onSaved }) {
+  const suggested = widget.config?.title || widget.props?.label || widget.title || `${widget.type} widget`
+  const [name, setName] = useState(suggested)
+  const [saving, setSaving] = useState(false)
+
+  // Re-suggest only when the user switches to a DIFFERENT widget — keyed on
+  // widget.id, not `suggested`, so retyping the name isn't clobbered when the
+  // title happens to change underneath.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { setName(suggested) }, [widget.id])
+
+  const save = async () => {
+    const trimmed = name.trim()
+    if (!trimmed || saving) return
+    setSaving(true)
+    try {
+      await saveWidgetToLibrary(trimmed, widget)
+      toast.success(`Saved “${trimmed}” to the library`)
+      onSaved?.()
+    } catch (err) {
+      toast.error(`Could not save to library: ${err.message}`)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <p className="text-[11px] text-muted/70 leading-relaxed">
+        Save this widget so you can drop copies of it onto other boards. Copies
+        are independent — editing the library entry later won’t change them.
+      </p>
+      <input
+        type="text"
+        className={inputCls}
+        value={name}
+        onChange={e => setName(e.target.value)}
+        placeholder="Library entry name"
+        data-testid="library-save-name"
+      />
+      <button
+        type="button"
+        onClick={save}
+        disabled={saving || !name.trim()}
+        data-testid="library-save-btn"
+        className={[
+          'w-full flex items-center justify-center gap-1.5 h-8 rounded-lg border border-border',
+          'bg-surface text-xs font-medium text-fg hover:border-primary/60 hover:text-primary',
+          'transition-colors disabled:opacity-50 disabled:pointer-events-none',
+        ].join(' ')}
+      >
+        {saving ? <Loader2 size={12} className="animate-spin" /> : <BookmarkPlus size={12} />}
+        {saving ? 'Saving…' : 'Save to library'}
+      </button>
     </div>
   )
 }
@@ -1023,7 +1206,7 @@ const PALETTE_ITEMS = [
  * Clicking an item appends the widget via addWidget(type) and (because
  * addWidget selects the new widget) the parent switches to the config tab.
  */
-function AddPanel({ onAdd }) {
+function AddPanel({ onAdd, onAddFromLibrary, library, libraryLoading, onDeleteLibraryEntry }) {
   return (
     <div className="p-3 space-y-3 overflow-y-auto h-full">
       <p className="text-xs text-muted/70 leading-relaxed px-0.5">
@@ -1061,6 +1244,54 @@ function AddPanel({ onAdd }) {
             </button>
           )
         })}
+      </div>
+
+      {/* ── From library ──
+          Reusable widgets saved from any board in this org/project. Adding one
+          inlines a DETACHED copy, so the board spec stays self-contained. */}
+      <div className="pt-1 space-y-1.5">
+        <SectionLabel>From library</SectionLabel>
+
+        {libraryLoading && <p className="text-[11px] text-muted/60 px-0.5">Loading…</p>}
+
+        {!libraryLoading && library.length === 0 && (
+          <p className="text-[11px] text-muted/60 leading-relaxed px-0.5">
+            No saved widgets yet. Configure a widget, then use{' '}
+            <span className="text-fg/70 font-medium">Save to library</span> in its
+            settings to reuse it here.
+          </p>
+        )}
+
+        {library.map(row => (
+          <div
+            key={row.id}
+            className="w-full flex items-center gap-2 px-2.5 py-2 rounded-xl border border-border bg-surface hover:border-primary/60 transition-all duration-150 group"
+          >
+            <button
+              onClick={() => onAddFromLibrary(row)}
+              data-testid={`library-add-${row.id}`}
+              title={`Add a copy of “${row.name}”`}
+              className="flex items-center gap-2.5 min-w-0 flex-1 text-left focus:outline-none"
+            >
+              <span className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg bg-surface-2 text-muted group-hover:text-primary group-hover:bg-primary/10 transition-all">
+                {(() => { const I = WIDGET_ICONS[row.config?.type] ?? Library; return <I size={14} /> })()}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-fg group-hover:text-primary transition-colors leading-tight truncate">{row.name}</p>
+                <p className="text-[11px] text-muted/80 truncate mt-0.5">{row.config?.type ?? 'widget'}</p>
+              </div>
+            </button>
+            <button
+              onClick={() => onDeleteLibraryEntry(row)}
+              title={`Remove “${row.name}” from the library`}
+              aria-label={`Remove ${row.name} from the library`}
+              data-testid={`library-delete-${row.id}`}
+              className="w-6 h-6 shrink-0 flex items-center justify-center rounded-md text-muted/50 hover:text-red-500 hover:bg-red-50/80 transition-colors dark:hover:bg-red-950/40"
+            >
+              <Trash2 size={12} />
+            </button>
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -1176,7 +1407,7 @@ function WidgetCardFallback({ widget }) {
 // WidgetHoverToolbar — top-right actions: duplicate + delete
 // ---------------------------------------------------------------------------
 
-function WidgetHoverToolbar({ widget, onDuplicate, onDelete, visible, reorder = false, onHeightStep }) {
+function WidgetHoverToolbar({ widget, onDuplicate, onDelete, onFocus, visible, reorder = false, onHeightStep }) {
   return (
     <div
       className={`absolute top-1 right-1 flex items-center gap-1 z-10 transition-opacity ${visible ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
@@ -1201,6 +1432,18 @@ function WidgetHoverToolbar({ widget, onDuplicate, onDelete, visible, reorder = 
             data-testid={`widget-taller-${widget.id}`}
           ><ChevronUp size={13} /></button>
         </span>
+      )}
+      {/* Expand into focus mode — the roomy single-widget editing surface. */}
+      {onFocus && !reorder && (
+        <button
+          title="Edit in focus mode (⏎)"
+          onMouseDown={e => { e.stopPropagation(); e.preventDefault() }}
+          onClick={e => { e.stopPropagation(); onFocus(widget.id) }}
+          className="w-6 h-6 flex items-center justify-center rounded-md bg-surface border border-border hover:border-primary hover:text-primary text-muted shadow-sm transition-all"
+          data-testid={`widget-focus-${widget.id}`}
+        >
+          <Maximize2 size={11} />
+        </button>
       )}
       <button
         title="Duplicate widget (⌘D)"
@@ -1529,12 +1772,11 @@ function TabsPanel({ spec, onSpecChange, activeTabId, onActivate, onAddTab }) {
             </select>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <input type="color" className="h-8 w-10 shrink-0 rounded-lg border border-border bg-surface cursor-pointer"
-            value={tabBar.accent ?? '#6366f1'} onChange={e => setTabBar({ accent: e.target.value })} />
-          <input type="text" className={`${inputCls} flex-1`} placeholder="Accent color (active tab)"
-            value={tabBar.accent ?? ''} onChange={e => setTabBar({ accent: e.target.value })} />
-        </div>
+        <ColorField
+          value={tabBar.accent}
+          onChange={v => setTabBar({ accent: v })}
+          placeholder="Accent color (active tab)"
+        />
         <div>
           <FieldLabel>Custom CSS (sanitized)</FieldLabel>
           <textarea rows={2} className={`${inputCls} h-auto py-1.5 font-mono text-xs resize-y`}
@@ -1569,12 +1811,11 @@ function TabsPanel({ spec, onSpecChange, activeTabId, onActivate, onAddTab }) {
           </div>
           <div className="space-y-1">
             <SectionLabel>Active-tab accent override</SectionLabel>
-            <div className="flex items-center gap-2">
-              <input type="color" className="h-8 w-10 shrink-0 rounded-lg border border-border bg-surface cursor-pointer"
-                value={activeTab.style?.accent ?? '#6366f1'} onChange={e => setTabStyle(activeTab.id, { accent: e.target.value })} />
-              <input type="text" className={`${inputCls} flex-1`} placeholder="inherit from tab bar"
-                value={activeTab.style?.accent ?? ''} onChange={e => setTabStyle(activeTab.id, { accent: e.target.value })} />
-            </div>
+            <ColorField
+              value={activeTab.style?.accent}
+              onChange={v => setTabStyle(activeTab.id, { accent: v })}
+              placeholder="inherit from tab bar"
+            />
           </div>
           <div>
             <FieldLabel>Tab custom CSS (sanitized)</FieldLabel>
@@ -1722,7 +1963,13 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   }, [spec])
 
   const [selectedId, setSelectedId] = useState(null)
+  // focusId — the widget open in full-screen focus mode (null = canvas view).
+  // Focus mode edits the same spec widget through updateWidget, so there is
+  // nothing to commit on close; it is purely a roomier editing surface.
+  const [focusId, setFocusId] = useState(null)
   const [preview, setPreview] = useState(false)
+  // Reusable library widgets for the Add palette's "From library" section.
+  const { rows: library, loading: libraryLoading, reload: reloadLibrary } = useWidgetLibrary()
   // VS Code-style full-pane "Code" view (third mode alongside edit + preview).
   // When on, the canvas is replaced by DashboardCodeView (dashboard.json editor).
   const [codeView, setCodeView] = useState(false)
@@ -1891,6 +2138,10 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         e.target?.closest?.('.monaco-editor')
       ) return
 
+      // Focus mode is its own surface and handles its own keys (Escape closes).
+      // Canvas shortcuts — delete, nudge, duplicate — must not fire behind it.
+      if (focusId) return
+
       const isMac = navigator.platform?.toUpperCase().includes('MAC') || navigator.userAgent?.includes('Mac')
       const ctrl = isMac ? e.metaKey : e.ctrlKey
 
@@ -1928,6 +2179,13 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
       }
 
       // ── Non-ctrl shortcuts (need a selected widget for most) ──────────────
+
+      // Enter opens the selected widget in focus mode (Escape there returns).
+      if (e.key === 'Enter' && selectedId) {
+        e.preventDefault()
+        setFocusId(selectedId)
+        return
+      }
 
       if (e.key === 'Escape') {
         setSelectedId(null)
@@ -1983,7 +2241,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedId])
+  }, [selectedId, focusId])
 
   const handleUndo = useCallback(() => setHist(h => canUndo(h) ? historyUndo(h) : h), [])
   const handleRedo = useCallback(() => setHist(h => canRedo(h) ? historyRedo(h) : h), [])
@@ -2014,6 +2272,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
 
   // ── Derived state ─────────────────────────────────────────────────────────
   const selectedWidget = spec.widgets.find(w => w.id === selectedId) ?? null
+  const focusedWidget = focusId ? (spec.widgets.find(w => w.id === focusId) ?? null) : null
 
   // Tabs (T5). When spec.tabs is empty this is the full widget list (today's
   // behavior); otherwise the canvas only shows the active tab's widgets — exactly
@@ -2115,6 +2374,56 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   const removeWidget = useCallback((id) => {
     setHist(h => historyPush(h, { ...h.present, widgets: h.present.widgets.filter(w => w.id !== id) }))
     setSelectedId(prev => prev === id ? null : prev)
+    // Removing the widget you're focused on drops you back to the canvas.
+    setFocusId(prev => prev === id ? null : prev)
+  }, [])
+
+  /**
+   * Add a DETACHED copy of a library widget to the active tab. "Detached"
+   * means the copy carries no reference back to the library row: later edits to
+   * the entry never mutate boards already using it, and the board spec stays
+   * self-contained for embedding.
+   */
+  const addLibraryWidget = useCallback((row) => {
+    const { widget: body, size: savedSize } = fromLibraryRow(row)
+    if (!body?.type) { toast.error('That library entry is missing a widget type.'); return }
+
+    setHist(h => {
+      const prev = h.present
+      const cols = prev.layout?.cols ?? 12
+      const tab = resolveActiveTab(prev, activeTabIdRaw)
+      const peers = tab ? widgetsForTab(prev, tab) : prev.widgets
+      const size = savedSize ?? WIDGET_SIZES[body.type] ?? WIDGET_SIZES.chart
+      const pos = findFreeSpot(peers, size.w, size.h, cols)
+      const widget = { ...body, id: genId(body.type), pos: { ...size, ...pos } }
+      if (tab) widget.tab_id = tab
+      setTimeout(() => setSelectedId(widget.id), 0)
+      return historyPush(h, { ...prev, widgets: [...prev.widgets, widget] })
+    })
+    setPreview(false)
+    toast.success(`Added a copy of “${row.name}”`)
+  }, [activeTabIdRaw])
+
+  /** Delete a library entry. Boards that already copied it are unaffected. */
+  const removeLibraryEntry = useCallback(async (row) => {
+    try {
+      await deleteLibraryWidget(row.id)
+      await reloadLibrary()
+      toast.success(`Removed “${row.name}” from the library`)
+    } catch (err) {
+      toast.error(`Could not remove entry: ${err.message}`)
+    }
+  }, [reloadLibrary])
+
+  /**
+   * Open a widget in focus mode. Focus follows selection so that closing the
+   * overlay leaves you on the same widget's inspector, not on whatever was
+   * selected before.
+   */
+  const openFocus = useCallback((id) => {
+    setSelectedId(id)
+    setRightPanel(p => (p === 'chat' ? p : 'config'))
+    setFocusId(id)
   }, [])
 
   const duplicateWidget = useCallback((id) => {
@@ -2372,7 +2681,15 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   // ── Right-panel body (shared by desktop sidebar + mobile sheet) ───────────
   const RIGHT_PANEL_TITLES = { add: 'Add widget', config: 'Configure', chat: 'Chat', board: 'Dashboard', tabs: 'Tabs' }
   const renderRightPanelBody = () => {
-    if (rightPanel === 'add') return <AddPanel onAdd={addWidget} />
+    if (rightPanel === 'add') return (
+      <AddPanel
+        onAdd={addWidget}
+        onAddFromLibrary={addLibraryWidget}
+        library={library}
+        libraryLoading={libraryLoading}
+        onDeleteLibraryEntry={removeLibraryEntry}
+      />
+    )
     if (rightPanel === 'board') return <DashboardPanel spec={spec} onSpecChange={setSpec} />
     if (rightPanel === 'tabs') return <TabsPanel spec={spec} onSpecChange={setSpec} activeTabId={activeTabId} onActivate={setActiveTabIdRaw} onAddTab={addTab} />
     if (rightPanel === 'chat') return <ChatPanel boardId={savedBoardId} spec={spec} onApplySpec={handleAIApply} />
@@ -2386,6 +2703,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         activeBreakpoint={activeBreakpoint}
         onLayoutCommit={(item) => commitLayout([item])}
         onMoveToTab={moveWidgetToTab}
+        onLibrarySaved={reloadLibrary}
       />
     )
   }
@@ -2702,7 +3020,15 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
 
   // Render the mobile/tablet sheet body based on mobileSheet state
   const renderSheetBody = () => {
-    if (mobileSheet === 'palette') return <AddPanel onAdd={(t) => { addWidget(t); setMobileSheet(null) }} />
+    if (mobileSheet === 'palette') return (
+      <AddPanel
+        onAdd={(t) => { addWidget(t); setMobileSheet(null) }}
+        onAddFromLibrary={(row) => { addLibraryWidget(row); setMobileSheet(null) }}
+        library={library}
+        libraryLoading={libraryLoading}
+        onDeleteLibraryEntry={removeLibraryEntry}
+      />
+    )
     if (mobileSheet === 'board') return <DashboardPanel spec={spec} onSpecChange={setSpec} />
     if (mobileSheet === 'tabs') return <TabsPanel spec={spec} onSpecChange={setSpec} activeTabId={activeTabId} onActivate={setActiveTabIdRaw} onAddTab={addTab} />
     if (mobileSheet === 'chat') return <ChatPanel boardId={savedBoardId} spec={spec} onApplySpec={handleAIApply} />
@@ -2716,6 +3042,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         activeBreakpoint={activeBreakpoint}
         onLayoutCommit={(item) => commitLayout([item])}
         onMoveToTab={moveWidgetToTab}
+        onLibrarySaved={reloadLibrary}
       />
     )
     return null
@@ -2989,6 +3316,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                           widget={widget}
                           onDuplicate={duplicateWidget}
                           onDelete={removeWidget}
+                          onFocus={openFocus}
                           visible={isHovered || isSelected}
                           reorder={reorder}
                           onHeightStep={handleHeightStep}
@@ -3082,6 +3410,37 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
           )}
           </div>
         </div>
+      )}
+
+      {/* ── Focus mode ──
+          Full-screen single-widget authoring surface: data rail + big live
+          preview + the same config sections the sidebar uses. Edits go through
+          updateWidget, so the board spec (and undo history) stay authoritative. */}
+      {focusedWidget && (
+        <WidgetFocusShell
+          widget={focusedWidget}
+          onChange={updateWidget}
+          onClose={() => setFocusId(null)}
+          onRemove={() => removeWidget(focusedWidget.id)}
+          extraQueryIds={queryIds}
+          icon={WIDGET_ICONS[focusedWidget.type]}
+          rowHeight={spec.layout?.row_height ?? 60}
+          frameStyle={styleToCss(focusedWidget.style)}
+          preview={<WidgetPreview widget={focusedWidget} />}
+          config={
+            <ConfigPanel
+              variant="focus"
+              widget={focusedWidget}
+              onChange={updateWidget}
+              extraQueryIds={queryIds}
+              spec={spec}
+              activeBreakpoint={activeBreakpoint}
+              onLayoutCommit={(item) => commitLayout([item])}
+              onMoveToTab={moveWidgetToTab}
+              onLibrarySaved={reloadLibrary}
+            />
+          }
+        />
       )}
 
       {/* ── Mobile slide-out menu (<md) ──

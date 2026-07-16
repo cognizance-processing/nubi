@@ -4,12 +4,15 @@
  *
  * Exports:
  *   useColumnIntrospection(queryId) → { columns: string[], introspecting: bool }
+ *   useQuerySample(queryId, limit)  → { columns, rows, rowCount, loading, error }
  *   useMetricsList()                → MetricRow[]
+ *   useWidgetLibrary()              → { rows, loading, reload }
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { listMetrics } from '../../lib/metrics.js'
+import { listLibraryWidgets } from '../../lib/widgetLibrary.js'
 
 /**
  * Run a query by ID and return its schema column names.
@@ -35,6 +38,68 @@ export function useColumnIntrospection(queryId) {
     return () => { cancelled = true }
   }, [queryId])
   return { columns, introspecting }
+}
+
+/**
+ * Run a query by ID and return its columns (name + arrow type) alongside the
+ * first `limit` rows. Powers the focus-mode data rail, where seeing actual
+ * values — not just column names — is the point.
+ *
+ * Unlike useColumnIntrospection this surfaces the failure, because the data
+ * rail has room to explain why a query came back empty.
+ */
+export function useQuerySample(queryId, limit = 8) {
+  const [state, setState] = useState({ columns: [], rows: [], rowCount: 0, loading: false, error: null })
+
+  useEffect(() => {
+    if (!queryId) { setState({ columns: [], rows: [], rowCount: 0, loading: false, error: null }); return }
+    let cancelled = false
+    setState(s => ({ ...s, loading: true, error: null }))
+
+    runArrowQueryById(queryId)
+      .then(({ table }) => {
+        if (cancelled) return
+        const columns = table.schema.fields.map(f => ({ name: f.name, type: String(f.type) }))
+        const vectors = Object.fromEntries(columns.map(c => [c.name, table.getChild(c.name)]))
+        const rows = []
+        for (let i = 0; i < Math.min(table.numRows, limit); i++) {
+          const row = {}
+          for (const c of columns) {
+            const val = vectors[c.name] ? vectors[c.name].get(i) : null
+            row[c.name] = typeof val === 'bigint' ? Number(val) : val
+          }
+          rows.push(row)
+        }
+        setState({ columns, rows, rowCount: table.numRows, loading: false, error: null })
+      })
+      .catch(err => {
+        if (!cancelled) setState({ columns: [], rows: [], rowCount: 0, loading: false, error: err?.message ?? 'Query failed' })
+      })
+
+    return () => { cancelled = true }
+  }, [queryId, limit])
+
+  return state
+}
+
+/**
+ * Load the org's reusable library widgets. `reload` is exposed so the palette
+ * refreshes right after a save/delete without a full remount.
+ */
+export function useWidgetLibrary() {
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  const reload = useCallback(async () => {
+    setLoading(true)
+    const next = await listLibraryWidgets()
+    setRows(next)
+    setLoading(false)
+  }, [])
+
+  useEffect(() => { reload() }, [reload])
+
+  return { rows, loading, reload }
 }
 
 /**

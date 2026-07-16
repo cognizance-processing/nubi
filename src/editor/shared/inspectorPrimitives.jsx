@@ -12,7 +12,12 @@
  *   ToggleRow       React component  (label + toggle switch)
  *   ChipRow         React component  (preset chip row)
  *   ColumnSelect    React component  (column-picker <select> with label)
+ *   ColorSwatch     React component  (a lone <input type="color">)
+ *   ColorField      React component  (swatch + free-text colour input)
  */
+
+import { useMemo } from 'react'
+import { resolveSwatchHex } from './colorValue.js'
 
 // Shared control styling. Targets a consistent ~32px control height across
 // inputs and selects, with calm focus rings and the app's design tokens.
@@ -138,6 +143,55 @@ export function ChipRow({ options, value, onChange, suffix = '' }) {
           {opt}{suffix}
         </button>
       ))}
+    </div>
+  )
+}
+
+/**
+ * A colour swatch — a lone `<input type="color">` with consistent chrome.
+ *
+ * The swatch is a VIEW of the stored value, never the source of truth: `value`
+ * is resolved for display only (see resolveSwatchHex), so a field holding a
+ * named colour still shows that colour, while one holding 'inherit' or
+ * 'var(--fg)' shows `fallback` instead of silently painting the chip black.
+ *
+ * Props: value, onChange(hex), fallback, title, size ('sm' | 'md')
+ */
+export function ColorSwatch({ value, onChange, fallback = '#6366f1', title, size = 'md' }) {
+  const dims = size === 'sm' ? 'h-6 w-6 rounded' : 'h-8 w-10 rounded-lg'
+  const hex = useMemo(() => resolveSwatchHex(value, fallback), [value, fallback])
+  return (
+    <input
+      type="color"
+      title={title}
+      value={hex}
+      onChange={e => onChange(e.target.value)}
+      className={`${dims} shrink-0 border border-border bg-surface cursor-pointer transition-colors hover:border-border/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60`}
+    />
+  )
+}
+
+/**
+ * A colour field — swatch + free-text input, the inspector's most-repeated
+ * control. The text side accepts any CSS colour (or blank to inherit); the
+ * swatch is a convenience picker over it.
+ *
+ * `onChange` receives the raw string. When `clearable` (the default) an empty
+ * text box reports `undefined`, which is how callers express "inherit".
+ *
+ * Props: value, onChange(str|undefined), placeholder, fallback, clearable
+ */
+export function ColorField({ value, onChange, placeholder, fallback = '#6366f1', clearable = true }) {
+  return (
+    <div className="flex items-center gap-2">
+      <ColorSwatch value={value} onChange={onChange} fallback={fallback} title="Pick a colour" />
+      <input
+        type="text"
+        className={`${inputCls} flex-1`}
+        placeholder={placeholder}
+        value={value ?? ''}
+        onChange={e => onChange(clearable ? (e.target.value || undefined) : e.target.value)}
+      />
     </div>
   )
 }

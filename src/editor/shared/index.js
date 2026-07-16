@@ -7,9 +7,12 @@
 
 export * from './constants.js'
 export * from './inspectorPrimitives.jsx'
+export { toSwatchHex, resolveSwatchHex, rgbToHex } from './colorValue.js'
 export * from './useInspectorData.js'
 export { QueryPicker } from './QueryPicker.jsx'
+export { default as WidgetFocusShell } from './WidgetFocusShell.jsx'
 export { BackgroundEditor } from './BackgroundEditor.jsx'
+export { IconPicker } from './IconPicker.jsx'
 export { ParamBindingSection } from './ParamBindingSection.jsx'
 export { ChartConfig } from './ChartConfig.jsx'
 export { KpiConfig } from './KpiConfig.jsx'

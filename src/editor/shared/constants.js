@@ -23,7 +23,7 @@ export const CHART_TYPES = [
 
 // Per-series type options (for multi-series / combo chart series rows in the editor)
 export const SERIES_TYPES = ['bar', 'line', 'area', 'scatter']
-export const FILTER_SUBTYPES = ['select', 'multiselect', 'daterange', 'text']
+export const FILTER_SUBTYPES = ['select', 'multiselect', 'list', 'daterange', 'text']
 export const VARIABLE_TYPES = ['text', 'number', 'date', 'daterange', 'select', 'multiselect']
 
 // Conditional-formatting operators (mirror conditionalFormat.js evalRules)

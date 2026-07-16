@@ -8,7 +8,7 @@
  *   onChange (bg)=>void        — called with the updated descriptor
  */
 
-import { inputCls } from './inspectorPrimitives.jsx'
+import { inputCls, ColorField, ColorSwatch } from './inspectorPrimitives.jsx'
 import { BACKGROUND_TYPES } from './constants.js'
 
 export function BackgroundEditor({ value, onChange }) {
@@ -26,16 +26,19 @@ export function BackgroundEditor({ value, onChange }) {
         ))}
       </div>
       {type === 'solid' && (
-        <div className="flex items-center gap-2">
-          <input type="color" className="h-8 w-10 shrink-0 rounded-lg border border-border bg-surface cursor-pointer" value={bg.color ?? '#0b0f1a'} onChange={e => set({ color: e.target.value })} />
-          <input type="text" className={`${inputCls} flex-1`} value={bg.color ?? ''} placeholder="#0b0f1a or any CSS color" onChange={e => set({ color: e.target.value })} />
-        </div>
+        <ColorField
+          value={bg.color}
+          onChange={v => set({ color: v })}
+          placeholder="#0b0f1a or any CSS color"
+          fallback="#0b0f1a"
+          clearable={false}
+        />
       )}
       {type === 'gradient' && (
         <div className="flex items-center gap-2">
-          <input type="color" className="h-8 w-10 shrink-0 rounded-lg border border-border bg-surface cursor-pointer" value={bg.from ?? '#6366f1'} onChange={e => set({ from: e.target.value })} />
+          <ColorSwatch value={bg.from} onChange={v => set({ from: v })} fallback="#6366f1" title="Gradient start" />
           <span className="text-xs text-muted">→</span>
-          <input type="color" className="h-8 w-10 shrink-0 rounded-lg border border-border bg-surface cursor-pointer" value={bg.to ?? '#ec4899'} onChange={e => set({ to: e.target.value })} />
+          <ColorSwatch value={bg.to} onChange={v => set({ to: v })} fallback="#ec4899" title="Gradient end" />
           <input type="number" className={`${inputCls} flex-1`} placeholder="angle" value={bg.angle ?? 135} onChange={e => set({ angle: parseInt(e.target.value, 10) })} />
           <span className="text-xs text-muted">°</span>
         </div>
