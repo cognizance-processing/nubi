@@ -18,12 +18,15 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   BarChart2,
+  Check,
   CheckCircle2,
   Code2,
   ExternalLink,
+  Folder,
+  FolderPlus,
   GitCommitHorizontal,
   History,
   LayoutDashboard,
@@ -100,6 +103,197 @@ const SORT_OPTIONS = [
   { value: 'name',   label: 'Name' },
 ]
 
+function folderIdOf(config) {
+  return config?.folderId || null
+}
+
+// ---------------------------------------------------------------------------
+// Folders
+// ---------------------------------------------------------------------------
+
+function FolderPill({ folder, count, active, canWrite, dragOver, onSelect, onDelete, onDragOver, onDragLeave, onDrop }) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+      className={`group/pill inline-flex items-center gap-1.5 h-8 pl-3 pr-2 rounded-full border text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+        active
+          ? 'bg-primary text-primary-fg border-primary'
+          : dragOver
+          ? 'bg-primary/10 border-primary text-primary'
+          : 'bg-surface-2 border-border text-fg hover:border-primary/50'
+      }`}
+    >
+      <Folder size={12} aria-hidden="true" />
+      {folder.name}
+      <span className={`text-[10px] tabular-nums ${active ? 'text-primary-fg/70' : 'text-muted'}`}>{count}</span>
+      {canWrite && (
+        <span
+          role="button"
+          tabIndex={-1}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDelete() }}
+          className={`ml-0.5 flex items-center justify-center w-4 h-4 rounded-full opacity-0 group-hover/pill:opacity-100 transition-opacity ${active ? 'hover:bg-white/20' : 'hover:bg-surface'}`}
+          aria-label={`Delete folder ${folder.name}`}
+        >
+          <X size={10} />
+        </span>
+      )}
+    </button>
+  )
+}
+
+function FolderRail({ folders, boards, activeFolderId, canWrite, onSelect, onNewFolder, onDeleteFolder, onDropBoard }) {
+  const [dragOverId, setDragOverId] = useState(null)
+
+  if (folders.length === 0 && !canWrite) return null
+
+  return (
+    <div className="flex items-center gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+      <button
+        type="button"
+        onClick={() => onSelect(null)}
+        onDragOver={(e) => { e.preventDefault(); setDragOverId('__all__') }}
+        onDragLeave={() => setDragOverId(null)}
+        onDrop={(e) => { e.preventDefault(); setDragOverId(null); onDropBoard(e, null) }}
+        className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-full border text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+          !activeFolderId
+            ? 'bg-primary text-primary-fg border-primary'
+            : dragOverId === '__all__'
+            ? 'bg-primary/10 border-primary text-primary'
+            : 'bg-surface-2 border-border text-fg hover:border-primary/50'
+        }`}
+      >
+        All dashboards
+        <span className={`text-[10px] tabular-nums ${!activeFolderId ? 'text-primary-fg/70' : 'text-muted'}`}>{boards.length}</span>
+      </button>
+
+      {folders.map(folder => (
+        <FolderPill
+          key={folder.id}
+          folder={folder}
+          count={boards.filter(b => folderIdOf(b.config) === folder.id).length}
+          active={activeFolderId === folder.id}
+          canWrite={canWrite}
+          dragOver={dragOverId === folder.id}
+          onSelect={() => onSelect(folder.id)}
+          onDelete={() => onDeleteFolder(folder)}
+          onDragOver={(e) => { e.preventDefault(); setDragOverId(folder.id) }}
+          onDragLeave={() => setDragOverId(null)}
+          onDrop={(e) => { e.preventDefault(); setDragOverId(null); onDropBoard(e, folder.id) }}
+        />
+      ))}
+
+      {canWrite && (
+        <button
+          type="button"
+          onClick={onNewFolder}
+          className="inline-flex items-center gap-1.5 h-8 px-3 rounded-full border border-dashed border-border text-xs font-medium text-muted hover:text-primary hover:border-primary/50 transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <FolderPlus size={12} aria-hidden="true" />
+          New folder
+        </button>
+      )}
+    </div>
+  )
+}
+
+function NewFolderDialog({ onCreate, onCancel, busy }) {
+  const [name, setName] = useState('')
+  const inputRef = useRef(null)
+
+  useEffect(() => {
+    const t = setTimeout(() => inputRef.current?.focus(), 50)
+    return () => clearTimeout(t)
+  }, [])
+
+  function submit(e) {
+    e.preventDefault()
+    const trimmed = name.trim()
+    if (!trimmed || busy) return
+    onCreate(trimmed)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="new-folder-title">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={busy ? undefined : onCancel} />
+      <form
+        onSubmit={submit}
+        className="relative z-10 w-full max-w-sm rounded-2xl border border-border bg-surface p-6 shadow-nubi-xl nubi-animate-scale-in"
+      >
+        <div className="flex items-center justify-center w-11 h-11 rounded-xl bg-primary/10 mb-4">
+          <Folder size={20} className="text-primary" />
+        </div>
+        <h2 id="new-folder-title" className="font-display font-semibold text-lg text-fg mb-1">New folder</h2>
+        <p className="text-muted text-sm mb-4 leading-relaxed">Group related dashboards together.</p>
+        <input
+          ref={inputRef}
+          type="text"
+          value={name}
+          onChange={e => setName(e.target.value)}
+          placeholder="e.g. Route Efficiency"
+          className="w-full h-10 px-3 rounded-xl border border-border bg-surface-2 text-sm text-fg placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-ring mb-6"
+        />
+        <div className="flex gap-2.5">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="flex-1 h-9 rounded-xl border border-border bg-surface-2 text-sm font-medium text-fg hover:bg-surface-2/80 transition-colors disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={busy || !name.trim()}
+            className="flex-1 h-9 rounded-xl bg-primary text-primary-fg text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            {busy && <Loader2 size={13} className="animate-spin" />}
+            {busy ? 'Creating…' : 'Create'}
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+function DeleteFolderDialog({ folder, count, onConfirm, onCancel, busy }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="delete-folder-title">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={busy ? undefined : onCancel} />
+      <div className="relative z-10 w-full max-w-sm rounded-2xl border border-border bg-surface p-6 shadow-nubi-xl nubi-animate-scale-in">
+        <div className="flex items-center justify-center w-11 h-11 rounded-xl bg-danger-bg mb-4">
+          <Trash2 size={20} className="text-danger" />
+        </div>
+        <h2 id="delete-folder-title" className="font-display font-semibold text-lg text-fg mb-1">Delete folder?</h2>
+        <p className="text-muted text-sm mb-6 leading-relaxed">
+          <span className="font-medium text-fg">&ldquo;{folder.name}&rdquo;</span> will be deleted.
+          {count > 0 ? ` Its ${count} dashboard${count === 1 ? '' : 's'} will be ungrouped, not deleted.` : ''}
+        </p>
+        <div className="flex gap-2.5">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="flex-1 h-9 rounded-xl border border-border bg-surface-2 text-sm font-medium text-fg hover:bg-surface-2/80 transition-colors disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            className="flex-1 h-9 rounded-xl bg-danger text-white text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            {busy && <Loader2 size={13} className="animate-spin" />}
+            {busy ? 'Deleting…' : 'Delete'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
@@ -144,7 +338,7 @@ function CardThumbnail({ board }) {
   )
 }
 
-function CardMenu({ onEdit, onCheckpoint, onHistory, onPromote, onDelete }) {
+function CardMenu({ onEdit, onCheckpoint, onHistory, onPromote, onDelete, folders, currentFolderId, onMoveToFolder, onNewFolderFromCard }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
 
@@ -171,6 +365,27 @@ function CardMenu({ onEdit, onCheckpoint, onHistory, onPromote, onDelete }) {
         <DropdownItem icon={GitCommitHorizontal} onClick={() => { setOpen(false); onCheckpoint() }}>Checkpoint</DropdownItem>
         <DropdownItem icon={History} onClick={() => { setOpen(false); onHistory() }}>History</DropdownItem>
         <DropdownItem icon={Rocket} onClick={() => { setOpen(false); onPromote() }}>Promote</DropdownItem>
+        {onMoveToFolder && (
+          <>
+            <DropdownDivider />
+            <div className="px-3 pt-1.5 pb-1 text-[10px] font-semibold text-muted uppercase tracking-wider">
+              Move to folder
+            </div>
+            {folders.map(folder => (
+              <DropdownItem
+                key={folder.id}
+                icon={Folder}
+                onClick={() => { setOpen(false); onMoveToFolder(folder.id === currentFolderId ? null : folder.id) }}
+              >
+                <span className="flex-1 text-left truncate">{folder.name}</span>
+                {folder.id === currentFolderId && <Check size={13} className="text-primary shrink-0" aria-hidden="true" />}
+              </DropdownItem>
+            ))}
+            <DropdownItem icon={FolderPlus} onClick={() => { setOpen(false); onNewFolderFromCard() }}>
+              New folder…
+            </DropdownItem>
+          </>
+        )}
         <DropdownDivider />
         <DropdownItem icon={Trash2} danger onClick={() => { setOpen(false); onDelete() }}>Delete</DropdownItem>
       </DropdownMenu>
@@ -262,7 +477,7 @@ function StrictEnvBadge({ pinned_envs, strictEnv }) {
   )
 }
 
-function BoardCard({ board, onDeleted, onRestored, canWrite, environments, strictEnv }) {
+function BoardCard({ board, onDeleted, onRestored, canWrite, environments, strictEnv, folders, onMoveToFolder, onNewFolderFromCard, linkState }) {
   const navigate = useNavigate()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleteBusy, setDeleteBusy] = useState(false)
@@ -296,10 +511,20 @@ function BoardCard({ board, onDeleted, onRestored, canWrite, environments, stric
     }
   }
 
+  const currentFolderId = folderIdOf(board.config)
+
   return (
     <>
-      <article className="nubi-resource-card group">
-        <Link to={`/d/${board.id}`} className="block" tabIndex={-1} aria-hidden="true">
+      <article
+        className="nubi-resource-card group"
+        draggable={canWrite && Boolean(onMoveToFolder)}
+        onDragStart={(e) => {
+          if (!canWrite || !onMoveToFolder) return
+          e.dataTransfer.setData('text/nubi-board-id', board.id)
+          e.dataTransfer.effectAllowed = 'move'
+        }}
+      >
+        <Link to={`/d/${board.id}`} state={linkState} className="block" tabIndex={-1} aria-hidden="true">
           <CardThumbnail board={board} />
         </Link>
 
@@ -308,6 +533,7 @@ function BoardCard({ board, onDeleted, onRestored, canWrite, environments, stric
             <div className="min-w-0 flex-1">
               <Link
                 to={`/d/${board.id}`}
+                state={linkState}
                 className="block font-display font-semibold text-sm text-fg hover:text-primary transition-colors truncate leading-snug"
               >
                 {board.name || 'Untitled dashboard'}
@@ -324,6 +550,10 @@ function BoardCard({ board, onDeleted, onRestored, canWrite, environments, stric
                 onHistory={() => setHistoryOpen(true)}
                 onPromote={() => setPromoteOpen(true)}
                 onDelete={() => setConfirmDelete(true)}
+                folders={folders}
+                currentFolderId={currentFolderId}
+                onMoveToFolder={onMoveToFolder ? (folderId) => onMoveToFolder(board, folderId) : undefined}
+                onNewFolderFromCard={onNewFolderFromCard ? () => onNewFolderFromCard(board) : undefined}
               />
             )}
           </div>
@@ -331,6 +561,7 @@ function BoardCard({ board, onDeleted, onRestored, canWrite, environments, stric
           <div className="flex gap-2 mt-auto">
             <Link
               to={`/d/${board.id}`}
+              state={linkState}
               className="flex items-center gap-1.5 flex-1 justify-center h-8 rounded-xl bg-primary text-primary-fg text-xs font-medium hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <ExternalLink size={12} aria-hidden="true" />
@@ -379,7 +610,7 @@ function BoardCard({ board, onDeleted, onRestored, canWrite, environments, stric
   )
 }
 
-function BoardListRow({ board, canWrite, selected, onToggle, strictEnv }) {
+function BoardListRow({ board, canWrite, selected, onToggle, strictEnv, linkState }) {
   const updated = board.updated_at ?? board.created_at
   let updatedLabel = null
   if (updated) {
@@ -419,6 +650,7 @@ function BoardListRow({ board, canWrite, selected, onToggle, strictEnv }) {
       <div className="flex-1 min-w-0">
         <Link
           to={`/d/${board.id}`}
+          state={linkState}
           className="block text-sm font-medium text-fg hover:text-primary transition-colors truncate"
         >
           {board.name || 'Untitled dashboard'}
@@ -438,6 +670,7 @@ function BoardListRow({ board, canWrite, selected, onToggle, strictEnv }) {
       <div className="flex items-center gap-0.5 shrink-0">
         <Link
           to={`/d/${board.id}`}
+          state={linkState}
           title="Open"
           aria-label={`Open ${board.name || 'Untitled dashboard'}`}
           className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
@@ -537,6 +770,21 @@ export default function DashboardsPage() {
   const [search, setSearch] = useState('')
   const [sort, setSort] = useState('recent')
 
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeFolderId = searchParams.get('folder') || null
+  const setActiveFolderId = useCallback((folderId) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (folderId) next.set('folder', folderId)
+      else next.delete('folder')
+      return next
+    }, { replace: true })
+  }, [setSearchParams])
+
+  const [newFolderState, setNewFolderState] = useState(null) // null | { busy, forBoard? }
+  const [deleteFolderDialog, setDeleteFolderDialog] = useState(null)
+  const [deleteFolderBusy, setDeleteFolderBusy] = useState(false)
+
   const [viewMode, setViewMode] = useState(() => {
     try {
       return localStorage.getItem('nubi-dashboards-view') === 'list' ? 'list' : 'grid'
@@ -590,6 +838,70 @@ export default function DashboardsPage() {
   }, [projectId])
   const boards = boardsData ?? []
 
+  const { data: foldersData, reload: reloadFolders } = useAsyncLoad(async () => {
+    const data = await api.get('/dashboard_folders')
+    return Array.isArray(data) ? data : Array.isArray(data?.dashboard_folders) ? data.dashboard_folders : []
+  }, [projectId])
+  const folders = foldersData ?? []
+
+  // Clear a stale/deleted folder out of the URL so the grid doesn't silently
+  // stay empty pointing at a folder that no longer exists.
+  useEffect(() => {
+    if (activeFolderId && folders.length > 0 && !folders.some(f => f.id === activeFolderId)) {
+      setActiveFolderId(null)
+    }
+  }, [activeFolderId, folders, setActiveFolderId])
+
+  const moveBoardToFolder = useCallback(async (board, folderId) => {
+    try {
+      await api.put(`/boards/${board.id}`, { config: { ...board.config, folderId: folderId || undefined } })
+      reloadBoards()
+    } catch (err) {
+      console.error('Move to folder failed:', err)
+      toast.error(err?.message || 'Failed to move dashboard.')
+    }
+  }, [reloadBoards])
+
+  const createFolder = useCallback(async (name, forBoard) => {
+    setNewFolderState(prev => ({ ...(prev ?? {}), busy: true }))
+    try {
+      const folder = await api.post('/dashboard_folders', { name, config: {} })
+      reloadFolders()
+      if (forBoard) await moveBoardToFolder(forBoard, folder.id)
+      else setActiveFolderId(folder.id)
+      setNewFolderState(null)
+    } catch (err) {
+      console.error('Create folder failed:', err)
+      toast.error(err?.message || 'Failed to create folder.')
+      setNewFolderState(prev => (prev ? { ...prev, busy: false } : null))
+    }
+  }, [reloadFolders, moveBoardToFolder, setActiveFolderId])
+
+  const confirmDeleteFolder = useCallback(async () => {
+    if (!deleteFolderDialog || deleteFolderBusy) return
+    setDeleteFolderBusy(true)
+    try {
+      const affected = boards.filter(b => folderIdOf(b.config) === deleteFolderDialog.id)
+      for (const board of affected) {
+        try {
+          await api.put(`/boards/${board.id}`, { config: { ...board.config, folderId: undefined } })
+        } catch (err) {
+          console.error(`Failed to ungroup board ${board.id}:`, err)
+        }
+      }
+      await api.del(`/dashboard_folders/${deleteFolderDialog.id}`)
+      if (activeFolderId === deleteFolderDialog.id) setActiveFolderId(null)
+      reloadFolders()
+      reloadBoards()
+      setDeleteFolderDialog(null)
+    } catch (err) {
+      console.error('Delete folder failed:', err)
+      toast.error(err?.message || 'Failed to delete folder.')
+    } finally {
+      setDeleteFolderBusy(false)
+    }
+  }, [deleteFolderDialog, deleteFolderBusy, boards, activeFolderId, setActiveFolderId, reloadFolders, reloadBoards])
+
   const handleDeleted = useCallback((id) => {
     setSelected(prev => {
       if (!prev.has(id)) return prev
@@ -602,6 +914,7 @@ export default function DashboardsPage() {
 
   const filtered = boards
     .filter(b => b.name?.toLowerCase().includes(search.toLowerCase()))
+    .filter(b => !activeFolderId || folderIdOf(b.config) === activeFolderId)
     .sort((a, b) => {
       if (sort === 'name') return (a.name ?? '').localeCompare(b.name ?? '')
       return 0
@@ -712,6 +1025,24 @@ export default function DashboardsPage() {
         )}
       </PageHeader>
 
+      {/* ── Folder rail ── */}
+      {!loading && !error && (boards.length > 0 || folders.length > 0) && (
+        <FolderRail
+          folders={folders}
+          boards={boards}
+          activeFolderId={activeFolderId}
+          canWrite={canWrite}
+          onSelect={setActiveFolderId}
+          onNewFolder={() => setNewFolderState({ busy: false })}
+          onDeleteFolder={(folder) => setDeleteFolderDialog(folder)}
+          onDropBoard={(e, folderId) => {
+            const boardId = e.dataTransfer.getData('text/nubi-board-id')
+            const board = boards.find(b => b.id === boardId)
+            if (board) moveBoardToFolder(board, folderId)
+          }}
+        />
+      )}
+
       {/* ── Search + sort bar ── */}
       {!loading && !error && boards.length > 0 && (
         <Toolbar>
@@ -792,8 +1123,8 @@ export default function DashboardsPage() {
       {/* ── Empty state ── */}
       {!loading && !error && filtered.length === 0 && (
         <EmptyBoards
-          hasFilter={search.length > 0}
-          onClearFilter={() => setSearch('')}
+          hasFilter={search.length > 0 || Boolean(activeFolderId)}
+          onClearFilter={() => { setSearch(''); setActiveFolderId(null) }}
           onAskAI={() => openChat?.()}
           canWrite={canWrite}
         />
@@ -811,6 +1142,10 @@ export default function DashboardsPage() {
               canWrite={canWrite}
               environments={environments}
               strictEnv={strictEnv}
+              folders={folders}
+              onMoveToFolder={moveBoardToFolder}
+              onNewFolderFromCard={(board) => setNewFolderState({ busy: false, forBoard: board })}
+              linkState={activeFolderId ? { folder: activeFolderId } : undefined}
             />
           ))}
         </CardGrid>
@@ -855,6 +1190,7 @@ export default function DashboardsPage() {
               selected={selected.has(board.id)}
               onToggle={() => toggleSelected(board.id)}
               strictEnv={strictEnv}
+              linkState={activeFolderId ? { folder: activeFolderId } : undefined}
             />
           ))}
 
@@ -881,6 +1217,26 @@ export default function DashboardsPage() {
           error={bulkError}
           onCancel={() => { if (!bulkBusy) { setBulkDialog(null); setBulkError(null) } }}
           onConfirm={handleBulkConfirm}
+        />
+      )}
+
+      {/* ── New folder ── */}
+      {newFolderState && (
+        <NewFolderDialog
+          busy={newFolderState.busy}
+          onCancel={() => setNewFolderState(null)}
+          onCreate={(name) => createFolder(name, newFolderState.forBoard)}
+        />
+      )}
+
+      {/* ── Delete folder ── */}
+      {deleteFolderDialog && (
+        <DeleteFolderDialog
+          folder={deleteFolderDialog}
+          count={boards.filter(b => folderIdOf(b.config) === deleteFolderDialog.id).length}
+          busy={deleteFolderBusy}
+          onCancel={() => (!deleteFolderBusy && setDeleteFolderDialog(null))}
+          onConfirm={confirmDeleteFolder}
         />
       )}
     </PageRoot>
