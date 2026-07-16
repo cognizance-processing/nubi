@@ -184,7 +184,11 @@ export default function ChartWidget({ widget, providerTable = null }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query_id, JSON.stringify(metric), JSON.stringify(resolvedParams), refreshEpoch, providerTable])
 
-  const height = (widget.props?.height) ?? 260
+  // Fill the card by default: grid cells have a fixed height, so '100%' sizes
+  // the canvas to the widget instead of leaving dead space under a fixed 260px
+  // chart. An explicit props.height still wins (and contexts without a sized
+  // parent are caught by the min-height on the flex wrapper below).
+  const height = (widget.props?.height) ?? '100%'
 
   // Drilldown / cross-filter
   const setVariable = useSetVariable()
@@ -279,7 +283,7 @@ export default function ChartWidget({ widget, providerTable = null }) {
           {error}
         </div>
       )}
-      <div className="flex-1 min-h-0">
+      <div className="flex-1 min-h-0" style={{ minHeight: 180 }}>
         {option
           ? <EChart option={option} height={height} onEvents={onEvents} />
           : (

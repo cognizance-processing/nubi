@@ -120,11 +120,12 @@ export default function Combobox({
   }
 
   const listboxId = `${uid}-listbox`
+  const hasValue = !!current
 
   return (
-    <div className="flex flex-col gap-1 h-full px-5 py-4">
+    <div className="flex flex-col gap-1.5 h-full justify-center px-3 py-2 min-w-0">
       {label && (
-        <label htmlFor={uid} className="text-xs font-semibold text-muted uppercase tracking-wider">
+        <label htmlFor={uid} className="text-[10.5px] font-semibold text-muted/80 uppercase tracking-[0.06em] leading-none">
           {label}
         </label>
       )}
@@ -140,28 +141,42 @@ export default function Combobox({
           onClick={() => (open ? setOpen(false) : openMenu())}
           onKeyDown={onTriggerKey}
           className={[
-            'w-full flex items-center justify-between gap-2 rounded-lg border border-border bg-surface text-fg',
+            'w-full flex items-center justify-between gap-2 rounded-lg border bg-surface transition-all duration-150',
             SIZES[size] ?? SIZES.md,
-            'focus:outline-none focus:ring-2 focus:ring-brand-teal/40 cursor-pointer',
+            'focus:outline-none focus:ring-2 focus:ring-ring/50 cursor-pointer',
+            // Active state (a value is selected) — a primary rim + dot is the
+            // clearest "this filter is applied" cue; matches BI slicer convention.
+            hasValue
+              ? 'border-primary/60 text-fg font-medium hover:border-primary'
+              : 'border-border text-muted hover:border-ring/50',
           ].join(' ')}
         >
-          <span className={selectedLabel ? 'truncate' : 'truncate text-muted'}>
-            {selectedLabel || (placeholder ?? allLabel)}
+          <span className="flex items-center gap-2 min-w-0">
+            {hasValue && <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" aria-hidden="true" />}
+            <span className={hasValue ? 'truncate' : 'truncate text-muted'}>
+              {selectedLabel || (placeholder ?? allLabel)}
+            </span>
           </span>
-          <span className="flex items-center gap-1 shrink-0">
-            {clearable && current && (
+          <span className="flex items-center gap-0.5 shrink-0">
+            {clearable && hasValue && (
               <span
                 role="button"
                 tabIndex={0}
                 aria-label="Clear"
                 onClick={e => { e.stopPropagation(); onChange('') }}
                 onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onChange('') } }}
-                className="text-[11px] text-muted hover:text-fg px-1 rounded"
+                className="w-4 h-4 flex items-center justify-center text-[11px] text-muted hover:text-fg rounded"
               >
                 ✕
               </span>
             )}
-            <span aria-hidden="true" className="text-muted">▾</span>
+            <svg
+              width="12" height="12" viewBox="0 0 12 12" fill="none"
+              className={`text-muted transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
+              aria-hidden="true"
+            >
+              <path d="M3 4.5 6 7.5 9 4.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
           </span>
         </button>
 

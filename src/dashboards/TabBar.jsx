@@ -140,10 +140,10 @@ export default function TabBar({ tabs, activeTabId, onChange, tabBar }) {
           default:
             // Active tab is underlined via a bottom border that sits on the bar line.
             variantBtn = cx(
-              'px-3.5 py-2 -mb-px border-b-2',
+              'px-3.5 py-2 -mb-px border-b-2 rounded-t-lg',
               isActive
-                ? 'text-fg border-accent'
-                : 'text-muted hover:text-fg border-transparent',
+                ? 'text-fg border-accent font-semibold'
+                : 'text-muted hover:text-fg hover:bg-surface-2/60 border-transparent',
             )
             inlineStyle = isActive && accent
               ? { color: accent, borderBottomColor: accent }

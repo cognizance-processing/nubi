@@ -69,13 +69,18 @@ const STYLE_WHITELIST = new Set([
   'background', 'backgroundColor', 'backgroundImage', 'backgroundSize',
   'backgroundPosition', 'backgroundRepeat',
   'color', 'border', 'borderColor', 'borderWidth', 'borderStyle',
-  'borderRadius', 'padding', 'margin', 'boxShadow', 'opacity', 'backdropFilter',
+  'borderRadius', 'padding', 'margin', 'boxShadow', 'opacity',
+  'backdropFilter', 'WebkitBackdropFilter',
 ])
 
 /**
  * Build a safe inline-style object for a widget card from a widget.style
- * descriptor: { background?, border?, padding?, borderRadius?, color?, css? }.
- * Any freeform `css` string is parsed and property-whitelisted.
+ * descriptor: { background?, css?, ...anyWhitelistedProp }. Any whitelisted
+ * key present directly on `style` (border, borderRadius, boxShadow,
+ * backdropFilter, ...) is passed through as-is; a freeform `css` string is
+ * parsed and property-whitelisted on top. Keeping this loop driven by
+ * STYLE_WHITELIST (rather than a hand-picked subset) means a new preset can
+ * introduce any already-whitelisted property without an editor-side change.
  *
  * @param {object} style
  * @returns {object|undefined}
@@ -91,7 +96,8 @@ export function styleToCss(style) {
     out.background = style.background
   }
 
-  for (const k of ['border', 'padding', 'borderRadius', 'color', 'boxShadow']) {
+  for (const k of STYLE_WHITELIST) {
+    if (k === 'background') continue // handled above (string vs. descriptor)
     if (typeof style[k] === 'string' && style[k]) out[k] = style[k]
   }
 

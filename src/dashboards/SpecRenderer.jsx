@@ -49,6 +49,7 @@ import { RefreshContext } from './RefreshContext.jsx'
 import { useAutoRefresh } from './useAutoRefresh.js'
 import { runArrowQueryById, prefetchDemoData } from '../lib/wasmRuntime.js'
 import { backgroundToCss, styleToCss } from './widgetHtml.js'
+import { findWidgetStylePreset } from './stylePresets.js'
 import { buildResponsiveLayouts, isHiddenAt } from './responsiveLayout.js'
 import { useProviderData } from './useProviderData.js'
 import Button from '../components/ui/Button.jsx'
@@ -578,11 +579,19 @@ function SpecRendererBody({
   }, [JSON.stringify(allWidgets), providerResults])
   // ── End BET-3 DataProvider wiring ─────────────────────────────────────────
 
+  // Dashboard-level style preset (e.g. "glass") — only used as a fallback for
+  // widgets that don't declare their own `widget.style`, so per-widget
+  // overrides always win and dashboards with no `stylePreset` are unaffected.
+  const dashboardPresetStyle = useMemo(
+    () => (spec.stylePreset ? findWidgetStylePreset(spec.stylePreset)?.style ?? null : null),
+    [spec.stylePreset],
+  )
+
   // Stable per-cell renderer.
   const renderItem = useCallback((item) => {
     const widget = visibleWidgetsById.get(item.i)
     if (!widget) return null
-    const customStyle = styleToCss(widget.style)
+    const customStyle = styleToCss(widget.style) ?? (dashboardPresetStyle ? styleToCss(dashboardPresetStyle) : undefined)
     const hasCustomBg = customStyle && (
       'background' in customStyle || 'backgroundColor' in customStyle || 'backgroundImage' in customStyle
     )
@@ -600,21 +609,27 @@ function SpecRendererBody({
         <WidgetComponent widget={widget} onOpenDrawer={setOpenDrawer} editMode={editMode} providerTable={providerTable} />
       </div>
     )
-  }, [visibleWidgetsById, editMode, setOpenDrawer, widgetProviderTableMap])
+  }, [visibleWidgetsById, editMode, setOpenDrawer, widgetProviderTableMap, dashboardPresetStyle])
 
   return (
     <RefreshContext.Provider value={refreshEpoch}>
     <CrossFilterProviderWrapper onCrossFilter={onCrossFilter} onTabChange={setTab}>
     <div
       className="w-full"
+      data-dashboard-root
       ref={containerRef}
       style={bgStyle ? { ...bgStyle, padding: 16, borderRadius: 12 } : undefined}
     >
-      {(spec.title || hasFilters) && (
-        <div className="flex items-center justify-between px-1 mb-4 gap-3">
-          {spec.title && (
-            <h2 className="text-xl font-bold font-display text-fg leading-tight">{spec.title}</h2>
-          )}
+      {(spec.title || spec.description || hasFilters) && (
+        <div className="flex items-start justify-between px-1 mb-5 gap-3">
+          <div className="min-w-0">
+            {spec.title && (
+              <h2 className="text-[22px] font-bold font-display text-fg leading-tight tracking-tight">{spec.title}</h2>
+            )}
+            {spec.description && (
+              <p className="mt-1 text-[13px] text-muted leading-relaxed max-w-3xl">{spec.description}</p>
+            )}
+          </div>
           {hasFilters && (
             <Button
               variant="secondary"
@@ -631,7 +646,7 @@ function SpecRendererBody({
         </div>
       )}
       {tabs.length > 1 && (
-        <div className="mb-4">
+        <div className="mb-5">
           <TabBar
             tabs={tabs}
             activeTabId={effectiveTabId}

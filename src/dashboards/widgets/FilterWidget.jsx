@@ -65,10 +65,11 @@ import {
 function TextFilter({ label, placeholder, value, onChange, size = 'md' }) {
   const uid = useId()
   const sizeCls = size === 'sm' ? 'text-xs px-2.5 py-1.5' : size === 'lg' ? 'text-base px-3.5 py-2.5' : 'text-sm px-3 py-2'
+  const hasValue = !!value
   return (
-    <div className="flex flex-col gap-1 h-full px-5 py-4">
+    <div className="flex flex-col gap-1.5 h-full justify-center px-3 py-2 min-w-0">
       {label && (
-        <label htmlFor={uid} className="text-xs font-semibold text-muted uppercase tracking-wider">
+        <label htmlFor={uid} className="text-[10.5px] font-semibold text-muted/80 uppercase tracking-[0.06em] leading-none">
           {label}
         </label>
       )}
@@ -79,11 +80,76 @@ function TextFilter({ label, placeholder, value, onChange, size = 'md' }) {
         placeholder={placeholder ?? 'Filter…'}
         onChange={e => onChange(e.target.value)}
         className={[
-          'w-full rounded-lg border border-border bg-surface text-fg',
+          'w-full rounded-lg border bg-surface text-fg transition-all duration-150',
           sizeCls,
-          'focus:outline-none focus:ring-2 focus:ring-brand-teal/40',
+          'focus:outline-none focus:ring-2 focus:ring-ring/50',
+          hasValue ? 'border-primary/60 font-medium' : 'border-border hover:border-ring/50',
         ].join(' ')}
       />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// List slicer (vertical nav-style single-select — no dropdown, options inline)
+// ---------------------------------------------------------------------------
+
+function _rgba(hex, a) {
+  if (typeof hex !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(hex)) return undefined
+  const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16)
+  return `rgba(${r},${g},${b},${a})`
+}
+
+/**
+ * ListSlicer — a vertical list of options rendered inline (Power-BI "list
+ * slicer" / nav-rail look). Single-select; writes the chosen value (or '' for
+ * the "All" row) to the target variable. Active row is highlighted with the
+ * accent (props.accentColor, else the theme primary). No portal/dropdown — the
+ * options are always visible, so it doubles as a sidebar nav.
+ */
+function ListSlicer({ label, options, value, onChange, allLabel = 'All', accent, showAll = true }) {
+  const current = value == null ? '' : String(value)
+  const rows = showAll ? [{ v: '', l: allLabel }, ...options] : options
+  return (
+    <div className="flex flex-col h-full px-2.5 py-2.5 gap-0.5 overflow-auto min-w-0">
+      {label && (
+        <div className="px-2 pb-1.5 text-[10.5px] font-semibold text-muted/80 uppercase tracking-[0.06em] leading-none">
+          {label}
+        </div>
+      )}
+      <div role="listbox" aria-label={label || 'Filter'} className="flex flex-col gap-0.5">
+        {rows.map((o) => {
+          const active = current === o.v
+          return (
+            <button
+              key={o.v}
+              type="button"
+              role="option"
+              aria-selected={active}
+              onClick={() => onChange(o.v)}
+              style={active && accent ? { backgroundColor: _rgba(accent, 0.16), color: accent } : undefined}
+              className={[
+                'flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-left transition-colors duration-150',
+                'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+                active
+                  ? (accent ? 'font-semibold' : 'font-semibold bg-primary/15 text-primary')
+                  : 'text-muted hover:text-fg hover:bg-surface-2/70',
+              ].join(' ')}
+            >
+              <span
+                className="w-1.5 h-1.5 rounded-full shrink-0"
+                style={{
+                  background: active ? (accent || 'var(--primary)') : 'transparent',
+                  boxShadow: active && accent ? `0 0 8px ${accent}` : undefined,
+                  border: active ? 'none' : '1px solid var(--border)',
+                }}
+                aria-hidden="true"
+              />
+              <span className="truncate">{o.l}</span>
+            </button>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -111,6 +177,8 @@ export default function FilterWidget({ widget, options = [] }) {
     display     = 'chips',
     size        = 'md',
     presets,
+    accentColor,
+    show_all    = true,
   } = wProps
 
   const setVariable = useSetVariable()
@@ -202,9 +270,10 @@ export default function FilterWidget({ widget, options = [] }) {
   // No behaviour change is needed beyond keeping the same render; the portal
   // works identically in both contexts.
 
-  const containerCls = widget.drawer
-    ? 'flex flex-col justify-start h-full bg-transparent'
-    : 'flex flex-col justify-center h-full bg-surface rounded-xl border border-border'
+  // The grid cell (SpecRenderer.renderItem) already draws the card surface +
+  // border, so the widget itself stays transparent — otherwise stacked filters
+  // read as heavy double-bordered boxes. Drawer placement is likewise borderless.
+  const containerCls = 'flex flex-col justify-center h-full bg-transparent'
 
   return (
     <div className={containerCls}>
@@ -257,6 +326,18 @@ export default function FilterWidget({ widget, options = [] }) {
         />
       )}
 
+      {subtype === 'list' && (
+        <ListSlicer
+          label={label}
+          options={optionsForList}
+          value={localValue}
+          onChange={handleChange}
+          allLabel={all_label}
+          accent={accentColor}
+          showAll={show_all !== false}
+        />
+      )}
+
       {subtype === 'text' && (
         <TextFilter
           label={label}
@@ -267,7 +348,7 @@ export default function FilterWidget({ widget, options = [] }) {
         />
       )}
 
-      {!['select', 'multiselect', 'daterange', 'text'].includes(subtype) && (
+      {!['select', 'multiselect', 'daterange', 'text', 'list'].includes(subtype) && (
         <div className="flex items-center justify-center h-full px-5 py-4 text-sm text-muted">
           Unknown filter subtype: {subtype}
         </div>

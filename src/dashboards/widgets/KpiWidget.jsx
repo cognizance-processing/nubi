@@ -23,9 +23,12 @@
  * - props.label       {string}  Card label (defaults to a prettified value col).
  * - props.format      {string}  Headline number format (number|integer|percent|currency).
  * - props.deltaFormat {string}  Delta display: 'percent' (default) or 'absolute'.
- * - props.progress    {object}  Optional segmented progress bar: { segments, target }.
+ * - props.labelPosition {string} 'bottom' (default — value first) or 'top'
+ *                              (label above the value, stat-tile style).
+ * - props.progress    {object}  Optional progress bar: { segments, target, style }.
  *                              Fraction filled = value / target (share the same scale,
  *                              e.g. target: 100 for a 0-100 percent value).
+ *                              style: 'segments' (default pips) or 'bar' (continuous meter).
  *
  * Behaviour
  * ---------
@@ -46,6 +49,7 @@ import { applySignal } from '../../viz/signals.js'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
 import Skeleton from '../../components/ui/Skeleton.jsx'
 import Badge from '../../components/ui/Badge.jsx'
+import { findKpiIcon } from '../kpiIcons.jsx'
 
 /** Format a raw value for display. */
 function formatValue(raw, format) {
@@ -141,6 +145,9 @@ export default function KpiWidget({ widget, providerTable = null }) {
   const label = wProps.label || (valueCol ? valueCol.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'KPI')
   const format = wProps.format || 'number'
   const deltaFormat = wProps.deltaFormat || 'percent'
+  // 'top' renders the label as a small uppercase eyebrow above the value
+  // (stat-tile style); default 'bottom' keeps the historical value-first layout.
+  const labelOnTop = wProps.labelPosition === 'top'
   // Signal rules for threshold coloring: widget.signalRules or widget.props.signalRules.
   const signalRules = widget.signalRules ?? wProps.signalRules ?? null
 
@@ -260,8 +267,26 @@ export default function KpiWidget({ widget, providerTable = null }) {
     [value, signalRules],
   )
 
-  // When a signal matched, tint the number; keep default color otherwise.
-  const valueColor = signal.matched ? signal.color : undefined
+  // Number vs progress colouring (decoupled so a headline can stay neutral/ink
+  // while the progress bar carries a separate accent):
+  //   - the headline NUMBER follows the card's own text colour (widget.style.color),
+  //     falling back to props.accentColor when no text colour is set;
+  //   - the PROGRESS pips prefer an explicit props.accentColor, falling back to
+  //     the card text colour, then the default indigo.
+  // A matched signal (threshold colouring) overrides both. When style.color +
+  // accentColor are the same (the common case) both stay in sync — backward
+  // compatible with tiles that set one colour for the whole card.
+  const valueColor = signal.matched ? signal.color : (widget.style?.color ?? wProps.accentColor)
+  const progressColor = signal.matched ? signal.color : (wProps.accentColor ?? widget.style?.color ?? '#6366f1')
+
+  // Optional Phosphor icon badge (props.icon = a key from kpiIcons.jsx). The
+  // badge tint follows the same accent chain as the progress bar, and a matched
+  // signal recolors it too so it stays consistent with the headline. Rendered
+  // in a translucent chip (color-mix keeps it readable on any card style,
+  // including the frosted Glass preset) above the value/eyebrow.
+  const IconCmp = findKpiIcon(wProps.icon)
+  const iconTint = signal.matched ? signal.color
+    : (wProps.accentColor ?? (typeof widget.style?.color === 'string' ? widget.style.color : null) ?? '#6366f1')
 
   // Optional segmented "pip" progress bar: props.progress = { segments, target }.
   // Fraction filled = value / target, clamped to [0, segments]. `target`
@@ -275,7 +300,7 @@ export default function KpiWidget({ widget, providerTable = null }) {
     const segments = p.segments || 10
     const target = p.target ?? 100
     const ratio = target > 0 ? Math.max(0, Math.min(1, num / target)) : 0
-    return { segments, filled: Math.round(ratio * segments) }
+    return { segments, filled: Math.round(ratio * segments), ratio, style: p.style === 'bar' ? 'bar' : 'segments' }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, JSON.stringify(wProps.progress)])
 
@@ -288,9 +313,29 @@ export default function KpiWidget({ widget, providerTable = null }) {
         </div>
       ) : (
         <>
+          {IconCmp && (
+            <div
+              className="mb-2.5 inline-flex items-center justify-center rounded-xl shrink-0"
+              style={{
+                width: 38,
+                height: 38,
+                color: iconTint,
+                background: `color-mix(in srgb, ${iconTint} 15%, transparent)`,
+                boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${iconTint} 22%, transparent)`,
+              }}
+              aria-hidden="true"
+            >
+              <IconCmp size={21} weight="duotone" />
+            </div>
+          )}
+          {labelOnTop && (
+            <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted leading-snug">
+              {label}
+            </p>
+          )}
           <div className="flex items-baseline gap-2 flex-wrap">
             <p
-              className="text-3xl font-bold font-display tabular-nums leading-none tracking-tight"
+              className="text-3xl font-bold font-display leading-none tracking-tight"
               style={{ color: valueColor ?? undefined }}
             >
               {formatValue(value, format)}
@@ -317,8 +362,22 @@ export default function KpiWidget({ widget, providerTable = null }) {
               </span>
             )}
           </div>
-          <p className="mt-1 text-sm font-medium text-muted leading-snug">{label}</p>
-          {progress && (
+          {!labelOnTop && (
+            <p className="mt-1 text-sm font-medium text-muted leading-snug">{label}</p>
+          )}
+          {progress && progress.style === 'bar' && (
+            <div
+              className="mt-2.5 h-1 w-full rounded-full overflow-hidden"
+              style={{ backgroundColor: 'rgba(148,163,184,0.25)' }}
+              aria-hidden="true"
+            >
+              <div
+                className="h-full rounded-full"
+                style={{ width: `${progress.ratio * 100}%`, backgroundColor: progressColor }}
+              />
+            </div>
+          )}
+          {progress && progress.style === 'segments' && (
             <div className="flex gap-1 mt-2" aria-hidden="true">
               {Array.from({ length: progress.segments }).map((_, i) => (
                 <span
@@ -326,7 +385,7 @@ export default function KpiWidget({ widget, providerTable = null }) {
                   className="h-1.5 flex-1 rounded-sm"
                   style={{
                     backgroundColor: i < progress.filled
-                      ? (valueColor ?? '#6366f1')
+                      ? progressColor
                       : 'rgba(148,163,184,0.25)',
                   }}
                 />

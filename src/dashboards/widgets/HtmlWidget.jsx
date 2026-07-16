@@ -69,6 +69,12 @@ export default function HtmlWidget({ widget }) {
     )
   }
 
+  // A data-bound template renders empty-string tokens until the query lands —
+  // a flash of half-built copy ("…: %"). Hold the frame until data arrives.
+  if (query_id && !table) {
+    return <div className="h-full w-full" aria-busy="true" aria-label="Loading" />
+  }
+
   return (
     <div
       className="h-full w-full overflow-auto"
