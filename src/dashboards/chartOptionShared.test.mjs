@@ -483,3 +483,71 @@ describe('tableView', () => {
     assert.equal(tv, tv2, 'already-wrapped view must be returned as-is')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Long-format (colour-grouped) line charts
+//
+// Regression: a line chart with a `color` encoding built its category axis
+// from every ROW, so long-format data ("day, metric, value" — one row per
+// day PER series) produced an axis with N_days x N_series slots and squashed
+// each line into the first 1/N of the plot. buildBar already deduped; buildLine
+// did not.
+// ---------------------------------------------------------------------------
+
+const LONG_ROWS = [
+  { day: 'Mon', metric: 'Revenue', value: 84 },
+  { day: 'Mon', metric: 'Orders', value: 70 },
+  { day: 'Tue', metric: 'Revenue', value: 81 },
+  { day: 'Tue', metric: 'Orders', value: 72 },
+  { day: 'Wed', metric: 'Revenue', value: 86 },
+  { day: 'Wed', metric: 'Orders', value: 69 },
+]
+
+describe('line chart with colour grouping (long format)', () => {
+  const opt = buildChartOption({
+    type: 'line',
+    table: makeRows(LONG_ROWS),
+    encoding: { x: 'day', y: 'value', color: 'metric' },
+  })
+
+  test('category axis is deduped to the distinct x values, in first-seen order', () => {
+    assert.deepEqual(opt.xAxis.data, ['Mon', 'Tue', 'Wed'])
+  })
+
+  test('emits one series per colour value', () => {
+    assert.equal(opt.series.length, 2)
+    assert.deepEqual(opt.series.map(s => s.name), ['Revenue', 'Orders'])
+  })
+
+  test('each series spans the whole axis, aligned to its own categories', () => {
+    for (const s of opt.series) {
+      assert.equal(s.data.length, opt.xAxis.data.length,
+        `${s.name} must have one point per category, not per row`)
+    }
+    assert.deepEqual(opt.series[0].data, [84, 81, 86])
+    assert.deepEqual(opt.series[1].data, [70, 72, 69])
+  })
+
+  test('a category missing from one series becomes a gap, not a zero', () => {
+    const sparse = buildChartOption({
+      type: 'line',
+      table: makeRows([...LONG_ROWS, { day: 'Thu', metric: 'Revenue', value: 90 }]),
+      encoding: { x: 'day', y: 'value', color: 'metric' },
+    })
+    const orders = sparse.series.find(s => s.name === 'Orders')
+    // Thu has no Orders row — a 0 would draw a false crash to the axis.
+    assert.equal(orders.data[3], null)
+  })
+
+  test('numeric x still pairs [x, y] rather than using the category path', () => {
+    const opt2 = buildChartOption({
+      type: 'line',
+      table: makeRows([
+        { x: 1, metric: 'A', y: 10 }, { x: 2, metric: 'A', y: 20 },
+        { x: 1, metric: 'B', y: 5 },  { x: 2, metric: 'B', y: 8 },
+      ]),
+      encoding: { x: 'x', y: 'y', color: 'metric' },
+    })
+    assert.deepEqual(opt2.series[0].data, [[1, 10], [2, 20]])
+  })
+})

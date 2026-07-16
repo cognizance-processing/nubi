@@ -35,7 +35,7 @@
  *   legend:    boolean | { show, position: 'top'|'bottom'|'left'|'right', ... },
  *   tooltip:   boolean | { ...echarts tooltip, valueFormat: FormatSpec },
  *   palette:   string[] | string,        // custom colors; string -> theme token key
- *   stack:     boolean | 'normal' | 'percent',   // bar/area stacking (percent = 100%)
+ *   stack:     boolean | 'normal' | 'percent',   // bar/area/combo-bar stacking (percent = 100%)
  *   orientation: 'vertical' | 'horizontal',
  *   smooth:    boolean,                   // line/area/fan
  *   areaOpacity: number,                  // 0..1
@@ -314,7 +314,16 @@ function legendConfig(config, theme, { singleSeries = false, hasTitle = false } 
   // for one (config.legend set to a position/object rather than left auto).
   if (l === undefined && singleSeries) return undefined
   const pos = (isDeepObject(l) && l.position) || 'top'
-  const base = { type: 'scroll', textStyle: { color: theme.fgMuted, fontSize: 11 } }
+  // Small round swatches + comfortable gaps read as considered chrome rather
+  // than the default chunky rectangles.
+  const base = {
+    type: 'scroll',
+    icon: 'circle',
+    itemWidth: 8,
+    itemHeight: 8,
+    itemGap: 14,
+    textStyle: { color: theme.fgMuted, fontSize: 11 },
+  }
   switch (pos) {
     case 'bottom': base.bottom = 4; base.left = 'center'; break
     case 'left': base.left = 4; base.top = 'middle'; base.orient = 'vertical'; break
@@ -335,11 +344,14 @@ function titleConfig(config, theme) {
   const subtext = config.subtitle
   if (!title && !subtext) return undefined
   if (typeof title === 'string' || title == null) {
+    // Left-aligned by default — matches how premium analytics products anchor a
+    // card's title to its reading edge. Object-form titles pass through untouched.
     return {
       text: title || '',
       subtext: subtext || '',
-      left: 'center',
-      textStyle: { color: theme.fg, fontSize: 14, fontWeight: 600 },
+      left: 4,
+      top: 2,
+      textStyle: { color: theme.fg, fontSize: 13, fontWeight: 600 },
       subtextStyle: { color: theme.fgMuted, fontSize: 11 },
     }
   }
@@ -368,7 +380,9 @@ function buildAxis(kind, spec, theme, locale, defaults = {}) {
   if (s.min != null) axis.min = s.min
   if (s.max != null) axis.max = s.max
   if (s.rotate != null) axis.axisLabel = { ...axis.axisLabel, rotate: s.rotate }
-  if (s.format && axis.type !== 'category') {
+  // Formatting applies to category axes too — e.g. an ISO date string category
+  // ("2026-06-15") with format:'date' renders as "Jun 15, 2026" tick labels.
+  if (s.format) {
     const fmt = makeFormatter(s.format, locale)
     axis.axisLabel = { ...axis.axisLabel, formatter: (v) => fmt(v) }
   }
@@ -509,8 +523,10 @@ function buildBar(table, e, config, theme, locale) {
   const vals = toNumbers(valRaw)
   const stack = config.stack === true ? 'normal' : config.stack
 
+  // No auto-title on the category axis: the category values (names, dates) are
+  // self-describing, and an auto name collides with rotated tick labels. An
+  // explicit config.xAxis.label still renders.
   const catAxis = buildAxis('category', config.xAxis, theme, locale, { data: cats, boundaryGap: true })
-  if (!config.xAxis?.label && e.x) { catAxis.name = e.x; catAxis.nameLocation = 'middle'; catAxis.nameGap = 28 }
   if (n > 12 && !horizontal) catAxis.axisLabel = { ...catAxis.axisLabel, rotate: config.xAxis?.rotate ?? 30 }
   const valAxis = buildAxis('value', config.yAxis, theme, locale)
   if (!config.yAxis?.label && e.y) {
@@ -530,17 +546,28 @@ function buildBar(table, e, config, theme, locale) {
       return {
         type: 'bar', name: g.category, data,
         stack: stack ? 'total' : undefined,
-        barMaxWidth: 40,
+        barMaxWidth: 28,
         itemStyle: { borderRadius: stack ? 0 : [2, 2, 0, 0] },
       }
     })
     if (config.stack === 'percent') applyPercentStack(series)
   } else {
-    series = [{
-      type: 'bar', name: e.y, data: vals,
-      barMaxWidth: 48,
-      itemStyle: { color: theme.palette[0], borderRadius: horizontal ? [0, 2, 2, 0] : [2, 2, 0, 0] },
-    }]
+    // colorByPoint: paint each bar its own palette colour (a common BI look for
+    // a single categorical breakdown, e.g. "revenue by product"). Otherwise all
+    // bars share palette[0]. Generic — any single-series bar/hbar can opt in.
+    const radius = horizontal ? [0, 2, 2, 0] : [2, 2, 0, 0]
+    if (config.colorByPoint) {
+      series = [{
+        type: 'bar', name: e.y, barMaxWidth: 40,
+        data: vals.map((v, i) => ({ value: v, itemStyle: { color: theme.palette[i % theme.palette.length], borderRadius: radius } })),
+      }]
+    } else {
+      series = [{
+        type: 'bar', name: e.y, data: vals,
+        barMaxWidth: 40,
+        itemStyle: { color: theme.palette[0], borderRadius: radius },
+      }]
+    }
   }
 
   const singleSeries = !(colorRaw && !isNumericArray(colorRaw))
@@ -576,7 +603,8 @@ function buildLine(table, e, config, theme, locale, { area = false } = {}) {
   const xAxis = xIsNumeric
     ? buildAxis('value', config.xAxis, theme, locale)
     : buildAxis('category', config.xAxis, theme, locale, { data: toStrings(xRaw), boundaryGap: false })
-  if (!config.xAxis?.label && e.x) { xAxis.name = e.x; xAxis.nameLocation = 'middle'; xAxis.nameGap = 28 }
+  // Auto-title only a NUMERIC x-axis — categories (names, dates) are self-describing.
+  if (xIsNumeric && !config.xAxis?.label && e.x) { xAxis.name = e.x; xAxis.nameLocation = 'middle'; xAxis.nameGap = 28 }
   if (!xIsNumeric && n > 20) xAxis.axisLabel = { ...xAxis.axisLabel, rotate: config.xAxis?.rotate ?? 30 }
 
   const hasY2 = !!e.y2
@@ -599,15 +627,39 @@ function buildLine(table, e, config, theme, locale, { area = false } = {}) {
   const colorRaw = e.color ? table.col(e.color) : null
   let series
   if (colorRaw && !isNumericArray(colorRaw)) {
-    const xv = xIsNumeric ? toNumbers(xRaw) : Array.from({ length: n }, (_, i) => i)
-    const groups = groupByCategory(xv, yVals, colorRaw)
-    series = groups.map((g) => ({
-      type: 'line', name: g.category,
-      data: xIsNumeric ? g.a.map((x, i) => [x, g.b[i]]) : g.b,
-      smooth, sampling, showSymbol: n <= 60,
-      stack: area && stack ? stack : undefined,
-      areaStyle: area ? { opacity } : undefined,
-    }))
+    if (xIsNumeric) {
+      const groups = groupByCategory(toNumbers(xRaw), yVals, colorRaw)
+      series = groups.map((g) => ({
+        type: 'line', name: g.category,
+        data: g.a.map((x, i) => [x, g.b[i]]),
+        smooth, sampling, showSymbol: n <= 60,
+        stack: area && stack ? stack : undefined,
+        areaStyle: area ? { opacity } : undefined,
+      }))
+    } else {
+      // Long-format data ("day, metric, value") repeats each category once per
+      // series, so the axis must be DEDUPED and every series re-indexed onto it
+      // — same rule buildBar already applies. Grouping on row index instead
+      // would leave the axis with one slot per ROW and squash each line into
+      // the first 1/Nth of the plot. Missing points are null (a gap) rather
+      // than bar's 0, since a line must not dive to zero for absent data.
+      const cats = toStrings(xRaw)
+      const allCats = Array.from(new Set(cats))
+      xAxis.data = allCats
+      if (allCats.length > 20) xAxis.axisLabel = { ...xAxis.axisLabel, rotate: config.xAxis?.rotate ?? 30 }
+      const groups = groupByCategory(cats, yVals, colorRaw)
+      series = groups.map((g) => {
+        const m = new Map(g.a.map((c, i) => [String(c), g.b[i]]))
+        return {
+          type: 'line', name: g.category,
+          data: allCats.map((c) => (m.has(c) ? m.get(c) : null)),
+          smooth, sampling, showSymbol: allCats.length <= 60,
+          connectNulls: false,
+          stack: area && stack ? stack : undefined,
+          areaStyle: area ? { opacity } : undefined,
+        }
+      })
+    }
     if (config.stack === 'percent' && area) applyPercentStack(series)
   } else {
     series = [{
@@ -629,12 +681,17 @@ function buildLine(table, e, config, theme, locale, { area = false } = {}) {
   }
 
   const singleSeries = !(colorRaw && !isNumericArray(colorRaw)) && !hasY2
-  return {
+  const option = {
     ...baseFrame(config, theme, locale, { trigger: 'axis', dataZoom: n > 100, singleSeries }),
     xAxis,
     yAxis: hasY2 ? yAxes : yAxis,
     series,
   }
+  // Secondary-axis tick labels + title need a wider right gutter (see buildCombo).
+  if (hasY2 && option.grid && config.grid?.right == null) {
+    option.grid.right = 48
+  }
+  return option
 }
 
 // Bar+line combo: one or more bar series on the primary y-axis, one or more
@@ -642,8 +699,8 @@ function buildLine(table, e, config, theme, locale, { area = false } = {}) {
 // buildBar/buildLine (which take a single `y` column, optionally grouped by
 // `color`), combo takes explicit column-name ARRAYS so heterogeneous series
 // (e.g. 3 volume bars + 2 rate% lines) can share one chart.
-//   encoding: { x: 'branch', bars: ['planned_calls', 'completed_calls'],
-//               lines: ['strike_rate', 'adherence'] }
+//   encoding: { x: 'region', bars: ['units_shipped', 'units_delivered'],
+//               lines: ['fill_rate', 'on_time_pct'] }
 //   config:   { yAxis: {...}, y2Axis: {...} }  // bars use yAxis, lines use y2Axis
 function buildCombo(table, e, config, theme, locale) {
   const catRaw = table.col(e.x)
@@ -654,8 +711,9 @@ function buildCombo(table, e, config, theme, locale) {
   const lineCols = Array.isArray(e.lines) ? e.lines : (e.lines ? [e.lines] : [])
   if (!barCols.length && !lineCols.length) return emptyOption(theme)
 
+  // No auto-title on the category axis (self-describing values; collides with
+  // rotated tick labels). An explicit config.xAxis.label still renders.
   const catAxis = buildAxis('category', config.xAxis, theme, locale, { data: cats, boundaryGap: true })
-  if (!config.xAxis?.label && e.x) { catAxis.name = e.x; catAxis.nameLocation = 'middle'; catAxis.nameGap = 28 }
   // Combo categories are often named entities (branch/region) rather than short
   // codes, so rotate on label length too, not just count — n>12 alone (buildBar's
   // rule) still overlaps a handful of long names.
@@ -668,12 +726,16 @@ function buildCombo(table, e, config, theme, locale) {
   if (!config.y2Axis?.label && lineCols[0]) { y2Axis.name = lineCols[0]; y2Axis.nameLocation = 'middle'; y2Axis.nameGap = 44 }
 
   const palette = resolvePalette(config, theme)
+  // config.stack stacks the BAR series (lines are never stacked in a combo).
+  const stacked = config.stack === true || config.stack === 'normal' || config.stack === 'percent'
   const barSeries = barCols.map((col, i) => ({
     type: 'bar', name: col, yAxisIndex: 0,
     data: toNumbers(table.col(col) || []),
-    barMaxWidth: 32,
-    itemStyle: { color: palette[i % palette.length], borderRadius: [2, 2, 0, 0] },
+    barMaxWidth: stacked ? 28 : 24,
+    stack: stacked ? 'total' : undefined,
+    itemStyle: { color: palette[i % palette.length], borderRadius: stacked ? 0 : [2, 2, 0, 0] },
   }))
+  if (config.stack === 'percent') applyPercentStack(barSeries)
   const lineSeries = lineCols.map((col, i) => ({
     type: 'line', name: col, yAxisIndex: 1,
     data: toNumbers(table.col(col) || []),
@@ -683,12 +745,18 @@ function buildCombo(table, e, config, theme, locale) {
     lineStyle: { color: palette[(barCols.length + i) % palette.length], width: 2 },
   }))
 
-  return {
+  const option = {
     ...baseFrame(config, theme, locale, { trigger: 'axis', singleSeries: false }),
     xAxis: catAxis,
     yAxis: lineCols.length ? [yAxis, y2Axis] : yAxis,
     series: [...barSeries, ...lineSeries],
   }
+  // A secondary axis carries its own tick labels + title on the right — the
+  // default 24px gutter clips them. Only widen when the author didn't say.
+  if (lineCols.length && option.grid && config.grid?.right == null) {
+    option.grid.right = 48
+  }
+  return option
 }
 
 function buildScatter(table, e, config, theme, locale, { bubble = false } = {}) {
@@ -767,7 +835,7 @@ function buildPie(table, e, config, theme, locale, { donut = false } = {}) {
     series: [{
       type: 'pie', name: e.y || e.value,
       data: names.map((name, i) => ({ name, value: vals[i] })),
-      radius: donut ? ['42%', '70%'] : ['0%', '68%'],
+      radius: donut ? ['48%', '72%'] : ['0%', '68%'],
       center: ['50%', '46%'],
       label: {
         show: showLabel, color: theme.fg, fontSize: 10,
@@ -1110,7 +1178,8 @@ function buildFan(table, e, config, theme, locale) {
   const xAxis = xIsNumeric
     ? buildAxis('value', config.xAxis, theme, locale)
     : buildAxis('category', config.xAxis, theme, locale, { data: cats, boundaryGap: false })
-  if (!config.xAxis?.label && e.x) { xAxis.name = e.x; xAxis.nameLocation = 'middle'; xAxis.nameGap = 28 }
+  // Auto-title only a NUMERIC x-axis — categories (names, dates) are self-describing.
+  if (xIsNumeric && !config.xAxis?.label && e.x) { xAxis.name = e.x; xAxis.nameLocation = 'middle'; xAxis.nameGap = 28 }
   const yAxis = buildAxis('value', config.yAxis, theme, locale, { scale: true })
   if (!config.yAxis?.label && e.y) {
     yAxis.name = e.y; yAxis.nameLocation = 'middle'
