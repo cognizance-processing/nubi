@@ -336,14 +336,127 @@ function buildChartOption(widget, colMap) {
  * @param {number} height
  * @returns {string}  SVG string
  */
-function renderChart(widget, colMap, width, height) {
+function renderChart(widget, colMap, width, height, theme = 'light') {
   const option = buildChartOption(widget, colMap)
+  // A chart draws to a canvas/SVG of its own, so it can't inherit CSS the way an
+  // HTML widget would: axis + legend text must be told the theme explicitly, or
+  // a dark tile gets near-black labels on it.
+  const skin = widgetSkin(widget, theme, { bgFallback: 'transparent', fgFallback: null })
+  const tokens = THEME_TOKENS[theme]
+  const textColor = skin.fg || tokens['--text']
+  option.backgroundColor = skin.bg || 'transparent'
+  option.textStyle = { ...(option.textStyle || {}), color: textColor }
+  for (const axis of ['xAxis', 'yAxis']) {
+    if (option[axis]) {
+      option[axis] = {
+        ...option[axis],
+        axisLabel: { ...(option[axis].axisLabel || {}), color: textColor },
+        axisLine: { ...(option[axis].axisLine || {}), lineStyle: { color: tokens['--border'] } },
+        splitLine: { ...(option[axis].splitLine || {}), lineStyle: { color: tokens['--border'] } },
+      }
+    }
+  }
+  if (option.legend) option.legend = { ...option.legend, textStyle: { color: textColor } }
   const chart = echartsInit(null, null, { renderer: 'svg', ssr: true, width, height })
   try {
     chart.setOption(option)
     return chart.renderToSVGString()
   } finally {
     chart.dispose()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Theme tokens
+// ---------------------------------------------------------------------------
+
+/**
+ * Nubi's CSS custom properties, resolved to concrete colours per theme.
+ *
+ * Board widget styles are written against theme TOKENS on purpose — a board is
+ * authored once and is meant to look right in light AND dark (see the
+ * theme-adaptive dashboard work). That's correct in a browser, where the cascade
+ * resolves them, and meaningless here: a standalone SVG has no DOM and no
+ * cascade, so `fill="var(--surface)"` renders as nothing. A server render must
+ * therefore CHOOSE a theme and resolve the tokens itself.
+ *
+ * Values mirror src/index.css (`:root` and the dark block). Keep them in sync;
+ * a token missing here simply falls through to the caller's default, which is
+ * the safe direction — a wrong-but-plausible colour is worse than the default.
+ *
+ * NOTE `--fg` is deliberately mapped even though src/index.css does NOT define
+ * it: Tailwind's `text-fg` maps to `var(--text)`, and real board specs in the
+ * wild say `color: "var(--fg)"` — which is dead CSS in the app (it resolves to
+ * nothing and inherits). Treating it as `--text` renders what the author plainly
+ * meant, and matches what the browser ends up showing via inheritance anyway.
+ */
+const THEME_TOKENS = {
+  light: {
+    '--bg': '#f6f8fb',
+    '--surface': '#ffffff',
+    '--surface-2': '#eef2f7',
+    '--surface-3': '#e4eaf3',
+    '--border': '#e2e8f0',
+    '--text': '#0e1729',
+    '--fg': '#0e1729',
+    '--text-muted': '#566377',
+    '--muted': '#566377',
+    '--text-subtle': '#8496ae',
+    '--primary': '#2456a6',
+    '--primary-fg': '#ffffff',
+    '--accent': '#0f9e90',
+  },
+  dark: {
+    '--bg': '#0a1020',
+    '--surface': '#111a2e',
+    '--surface-2': '#16223b',
+    '--surface-3': '#1c2d47',
+    '--border': '#21304a',
+    '--text': '#e7edf6',
+    '--fg': '#e7edf6',
+    '--text-muted': '#93a4bd',
+    '--muted': '#93a4bd',
+    '--text-subtle': '#5f7694',
+    '--primary': '#4d8de0',
+    '--primary-fg': '#06101f',
+    '--accent': '#2dd4bf',
+  },
+}
+
+/**
+ * Resolve a CSS colour value for *theme*, or return `fallback`.
+ *
+ * Handles the shapes that actually appear in board styles: a plain colour, a
+ * `var(--token)` (with optional fallback), and `color-mix(...)`/gradients, which
+ * we deliberately DON'T attempt — returning the fallback for anything we can't
+ * resolve honestly is better than emitting a broken paint value.
+ */
+function resolveColor(value, theme, fallback = null) {
+  if (value == null) return fallback
+  const s = String(value).trim()
+  if (!s) return fallback
+
+  const varMatch = s.match(/^var\(\s*(--[a-z0-9-]+)\s*(?:,\s*([^)]+))?\)$/i)
+  if (varMatch) {
+    const tok = THEME_TOKENS[theme]?.[varMatch[1]]
+    if (tok) return tok
+    // var(--x, <fallback>) — honour the author's own fallback before ours.
+    return varMatch[2] ? resolveColor(varMatch[2].trim(), theme, fallback) : fallback
+  }
+  // Anything containing a var()/color-mix we can't statically resolve.
+  if (/var\(|color-mix\(/i.test(s)) return fallback
+  // A plain colour: hex, rgb(), hsl(), or a named colour.
+  return s
+}
+
+/** The widget's own background + text colour, resolved for *theme*. */
+function widgetSkin(widget, theme, { bgFallback = '#f9fafb', fgFallback = '#1f2937' } = {}) {
+  const st = widget.style || {}
+  const bg = st.background ?? st.backgroundColor
+  return {
+    bg: resolveColor(bg, theme, bgFallback),
+    fg: resolveColor(st.color, theme, fgFallback),
+    border: resolveColor(st.borderColor ?? (typeof st.border === 'string' ? st.border.split(' ').pop() : null), theme, null),
   }
 }
 
@@ -370,7 +483,11 @@ function svgEsc(s) {
  * @param {number} height
  * @returns {string}  SVG string
  */
-function renderKpi(widget, colMap, width, height) {
+function renderKpi(widget, colMap, width, height, theme = 'light') {
+  const skin = widgetSkin(widget, theme)
+  // The caption is the value's colour, softened — a second hard-coded grey
+  // would fight a dark tile.
+  const labelFg = skin.fg
   const enc = widget.encoding || {}
   const props = widget.props || {}
   const valueCol = enc.value || enc.y || enc.x || Object.keys(colMap)[0] || ''
@@ -380,24 +497,42 @@ function renderKpi(widget, colMap, width, height) {
   const vals = colMap[valueCol] || []
   const rawVal = vals[0] ?? ''
   const fmt = props.format || ''
-  let displayVal = rawVal === null || rawVal === undefined ? '--' : String(rawVal)
-  if (fmt === 'currency') displayVal = '$' + Number(rawVal).toLocaleString()
-  else if (fmt === 'percent') displayVal = Number(rawVal).toFixed(1) + '%'
-  else if (typeof rawVal === 'number') displayVal = rawVal.toLocaleString()
+
+  // Format ONLY a real number. The previous version set '--' for a missing
+  // value and then unconditionally overwrote it with `Number(rawVal)…`, so an
+  // absent or non-numeric value under format:'percent' rendered the headline
+  // "NaN%" — a KPI confidently displaying nonsense. Anything unparseable now
+  // falls back to the raw text, or to '--' when there is nothing at all.
+  const num = Number(rawVal)
+  const isNum = rawVal !== null && rawVal !== undefined && rawVal !== '' && Number.isFinite(num)
+
+  let displayVal
+  if (rawVal === null || rawVal === undefined || rawVal === '') displayVal = '--'
+  else if (!isNum) displayVal = String(rawVal)
+  else if (fmt === 'currency') displayVal = '$' + num.toLocaleString()
+  else if (fmt === 'percent') displayVal = num.toFixed(1) + '%'
+  else displayVal = num.toLocaleString()
 
   const cx = width / 2
-  const valueFontSize = Math.min(48, Math.floor(height * 0.35))
+  // Size the headline by BOTH axes. Height alone (the old rule) let a long
+  // value like "9,100,313.6" render at 48px in a 234px-wide tile and spill out
+  // past its card. SVG <text> does not wrap or shrink, so the fit has to be
+  // computed here. 0.6em per char is a good approximation of bold sans digit
+  // advance width; the 0.9 keeps a little breathing room inside the card.
+  const fitByWidth = Math.floor((width * 0.9) / Math.max(1, displayVal.length * 0.6))
+  const valueFontSize = Math.max(11, Math.min(48, Math.floor(height * 0.35), fitByWidth))
   const labelFontSize = Math.min(16, Math.floor(height * 0.12))
 
   return [
     `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">`,
-    `  <rect width="${width}" height="${height}" fill="#f9fafb" rx="8"/>`,
+    `  <rect width="${width}" height="${height}" fill="${svgEsc(skin.bg)}" rx="8"${
+        skin.border ? ` stroke="${svgEsc(skin.border)}" stroke-width="1"` : ''}/>`,
     `  <text x="${cx}" y="${Math.floor(height * 0.52)}" text-anchor="middle"`,
-    `    font-family="sans-serif" font-size="${valueFontSize}" font-weight="700" fill="#1f2937">`,
+    `    font-family="sans-serif" font-size="${valueFontSize}" font-weight="700" fill="${svgEsc(skin.fg)}">`,
     `    ${svgEsc(displayVal)}`,
     `  </text>`,
     `  <text x="${cx}" y="${Math.floor(height * 0.75)}" text-anchor="middle"`,
-    `    font-family="sans-serif" font-size="${labelFontSize}" fill="#6b7280">`,
+    `    font-family="sans-serif" font-size="${labelFontSize}" fill="${svgEsc(labelFg)}" opacity="0.75">`,
     `    ${svgEsc(label)}`,
     `  </text>`,
     `</svg>`,
@@ -415,7 +550,9 @@ function renderKpi(widget, colMap, width, height) {
  * @param {number} height
  * @returns {string}  SVG string
  */
-function renderTable(widget, colMap, columns, width, height) {
+function renderTable(widget, colMap, columns, width, height, theme = 'light') {
+  const skin = widgetSkin(widget, theme, { bgFallback: THEME_TOKENS[theme]['--surface'], fgFallback: THEME_TOKENS[theme]['--text'] })
+  const tokens = THEME_TOKENS[theme]
   const props = widget.props || {}
   const limit = Math.min(props.limit || 50, 50)
   const colsToRender = (props.columns || columns).slice(0, 8)
@@ -429,9 +566,9 @@ function renderTable(widget, colMap, columns, width, height) {
 
   const lines = [
     `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">`,
-    `  <rect width="${width}" height="${height}" fill="#ffffff"/>`,
+    `  <rect width="${width}" height="${height}" fill="${svgEsc(skin.bg)}"/>`,
     // Header row background
-    `  <rect x="0" y="0" width="${width}" height="${headerH}" fill="#f3f4f6"/>`,
+    `  <rect x="0" y="0" width="${width}" height="${headerH}" fill="${svgEsc(tokens['--surface-2'])}"/>`,
   ]
 
   // Header labels
@@ -486,7 +623,7 @@ function renderTable(widget, colMap, columns, width, height) {
  * @param {number} height
  * @returns {string}  SVG string
  */
-function renderText(widget, width, height) {
+function renderText(widget, width, height, theme = 'light') {
   const content = widget.content || ''
   // Strip markdown headers/bold/italic/links — keep plain text for the preview.
   const plain = content
@@ -543,14 +680,65 @@ function renderText(widget, width, height) {
  * @param {number} height
  * @returns {string}  SVG string
  */
-function renderPlaceholder(widget, width, height) {
+/**
+ * Section header — a title (+ optional subtitle) and a divider rule.
+ *
+ * Sections used to fall through to renderPlaceholder, so every section on a
+ * rendered board read as a literal "[section]" chip. They carry no data and are
+ * pure chrome, but they are what makes a board scannable — dropping them makes
+ * a thumbnail or PDF look broken rather than minimal.
+ */
+function renderSection(widget, width, height, theme = 'light') {
+  const p = widget.props || {}
+  const title = p.title || ''
+  const subtitle = p.subtitle || ''
+  const align = p.align || 'left'
+  const divider = p.divider !== false
+  // Resolve, don't trust: a raw `var(--fg)` in fill= paints nothing.
+  const color = resolveColor(widget.style?.color, theme, THEME_TOKENS[theme]['--text'])
+
+  const x = align === 'center' ? width / 2 : align === 'right' ? width - 4 : 4
+  const anchor = align === 'center' ? 'middle' : align === 'right' ? 'end' : 'start'
+  // Baseline: title sits above centre when a subtitle follows it.
+  const titleY = subtitle ? height / 2 - 2 : height / 2 + 6
+  const parts = [
+    `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">`,
+  ]
+  if (title) {
+    parts.push(
+      `  <text x="${x}" y="${titleY}" text-anchor="${anchor}"`,
+      `    font-family="sans-serif" font-size="18" font-weight="700" fill="${svgEsc(color)}">`,
+      `    ${svgEsc(title)}`,
+      `  </text>`,
+    )
+  }
+  if (subtitle) {
+    parts.push(
+      `  <text x="${x}" y="${height / 2 + 18}" text-anchor="${anchor}"`,
+      `    font-family="sans-serif" font-size="12" fill="#6b7280">`,
+      `    ${svgEsc(subtitle)}`,
+      `  </text>`,
+    )
+  }
+  if (divider) {
+    parts.push(
+      `  <line x1="0" y1="${height - 1}" x2="${width}" y2="${height - 1}"`,
+      `    stroke="#e5e7eb" stroke-width="1"/>`,
+    )
+  }
+  parts.push(`</svg>`)
+  return parts.join('\n')
+}
+
+function renderPlaceholder(widget, width, height, theme = 'light') {
+  const tokens = THEME_TOKENS[theme]
   const label = widget.props?.label || widget.target_var || widget.type || 'widget'
   return [
     `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">`,
-    `  <rect width="${width}" height="${height}" fill="#f3f4f6" rx="4"`,
-    `    stroke="#e5e7eb" stroke-width="1"/>`,
+    `  <rect width="${width}" height="${height}" fill="${svgEsc(tokens['--surface-2'])}" rx="4"`,
+    `    stroke="${svgEsc(THEME_TOKENS[theme]['--border'])}" stroke-width="1"/>`,
     `  <text x="${width / 2}" y="${height / 2 + 5}" text-anchor="middle"`,
-    `    font-family="sans-serif" font-size="12" fill="#9ca3af">`,
+    `    font-family="sans-serif" font-size="12" fill="${svgEsc(tokens['--text-muted'])}">`,
     `    [${svgEsc(label)}]`,
     `  </text>`,
     `</svg>`,
@@ -578,7 +766,7 @@ function isWebGLWidget(widget) {
  * @param {object} widget   – Widget descriptor with optional columns/rows data.
  * @returns {{ id: string, svg: string|null, webgl: boolean, error?: string }}
  */
-function renderWidget(widget) {
+function renderWidget(widget, theme = 'light') {
   const id = widget.id || '?'
   const width = widget.width || 800
   const height = widget.height || 400
@@ -596,23 +784,27 @@ function renderWidget(widget) {
     switch (widget.type) {
       case 'chart':
       case 'metric':
-        svg = renderChart(widget, colMap, width, height)
+        svg = renderChart(widget, colMap, width, height, theme)
         break
       case 'kpi':
-        svg = renderKpi(widget, colMap, width, height)
+        svg = renderKpi(widget, colMap, width, height, theme)
         break
       case 'table':
       case 'pivot':
-        svg = renderTable(widget, colMap, columns, width, height)
+        svg = renderTable(widget, colMap, columns, width, height, theme)
         break
       case 'text':
       case 'html':
-        svg = renderText(widget, width, height)
+        svg = renderText(widget, width, height, theme)
+        break
+      case 'section':
+        svg = renderSection(widget, width, height, theme)
         break
       case 'filter':
-      case 'section':
       default:
-        svg = renderPlaceholder(widget, width, height)
+        // A filter is an interactive control — a placeholder chip is the honest
+        // representation in a static render.
+        svg = renderPlaceholder(widget, width, height, theme)
         break
     }
     return { id, svg, webgl: false }
@@ -643,7 +835,11 @@ async function main() {
   }
 
   const widgets = Array.isArray(payload.widgets) ? payload.widgets : []
-  const results = widgets.map(renderWidget)
+  // Board styles are written against theme TOKENS, so a render has to pick a
+  // theme — see THEME_TOKENS. Light is the safe default (it matches the
+  // composer's white page).
+  const theme = payload.theme === 'dark' ? 'dark' : 'light'
+  const results = widgets.map(w => renderWidget(w, theme))
 
   process.stdout.write(JSON.stringify({ widgets: results }) + '\n')
 }

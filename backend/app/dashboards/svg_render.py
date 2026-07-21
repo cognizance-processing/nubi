@@ -39,13 +39,14 @@ Public API
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
 import threading
 from typing import Any
 
-from app.dashboards.spec import DashboardSpec, get_surface_layout
+from app.dashboards.spec import DashboardSpec, get_surface_layout, validate_spec
 from app.errors import AppError
 
 # ---------------------------------------------------------------------------
@@ -172,6 +173,46 @@ def renderer_available() -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _json_default(o: Any) -> Any:
+    """Coerce driver-native values into something JSON (and ECharts) can take.
+
+    Widget rows arrive straight off the database driver, so they carry real
+    Python objects — ``datetime.date`` for a day axis, ``Decimal`` for a numeric
+    column, occasionally ``UUID``/``bytes``. Plain ``json.dumps`` raises
+    ``TypeError: Object of type date is not JSON serializable`` on the first of
+    those, which surfaced as a **500 on any board with a date axis** (and took
+    the PDF export down the same way). It went unnoticed because boards whose SQL
+    already ``CAST(... AS CHAR)``s its date axis hand over plain strings.
+
+    Decimal → float, not str: it is a MEASURE, and a stringified number would be
+    plotted by ECharts as a category. Dates → ISO strings, which is what a
+    category axis wants anyway.
+    """
+    import datetime as _dt  # noqa: PLC0415
+    import decimal as _dec  # noqa: PLC0415
+    import uuid as _uuid  # noqa: PLC0415
+
+    if isinstance(o, _dec.Decimal):
+        # float() can lose precision on absurd scales, but a chart pixel cannot
+        # express it anyway — and NaN/Inf would break json.dumps, so guard.
+        try:
+            f = float(o)
+        except (ValueError, OverflowError):
+            return str(o)
+        return f if f == f and f not in (float("inf"), float("-inf")) else str(o)
+    if isinstance(o, (_dt.datetime, _dt.date, _dt.time)):
+        return o.isoformat()
+    if isinstance(o, _dt.timedelta):
+        return o.total_seconds()
+    if isinstance(o, _uuid.UUID):
+        return str(o)
+    if isinstance(o, (bytes, bytearray, memoryview)):
+        return bytes(o).decode("utf-8", "replace")
+    if isinstance(o, set):
+        return list(o)
+    return str(o)
+
+
 def _run_node_script(
     script_path: str,
     payload: dict[str, Any],
@@ -202,7 +243,7 @@ def _run_node_script(
     node_bin = _require_node()
     _require_script(script_path)
 
-    input_bytes = json.dumps(payload).encode("utf-8")
+    input_bytes = json.dumps(payload, default=_json_default).encode("utf-8")
     try:
         with _NODE_SEMAPHORE:
             result = subprocess.run(
@@ -303,6 +344,11 @@ def _widget_to_payload(
         "chart_type": widget_spec.chart_type,
         "encoding": dict(widget_spec.encoding or {}),
         "props": dict(widget_spec.props or {}),
+        # The widget's own look — background, text colour, radius. Omitting this
+        # was why every server render came out light: a board styled with dark
+        # tiles rendered on the SSR default white, so the picture was accurate
+        # about the DATA and wrong about the DESIGN.
+        "style": dict(widget_spec.style or {}),
         "content": widget_spec.content,
         "columns": columns,
         "rows": rows,
@@ -318,6 +364,7 @@ def _widget_to_payload(
 
 def render_widgets_svg(
     widget_payloads: list[dict[str, Any]],
+    theme: str = "light",
     *,
     timeout: float = 60.0,
 ) -> list[dict[str, Any]]:
@@ -338,10 +385,13 @@ def render_widgets_svg(
     """
     result = _run_node_script(
         _ECHARTS_SSR_SCRIPT,
-        {"widgets": widget_payloads},
+        {"widgets": widget_payloads, "theme": theme},
         timeout=timeout,
     )
     return list(result.get("widgets") or [])
+
+
+_PAGE_BG = {"light": "#ffffff", "dark": "#111a2e"}   # mirrors --surface in src/index.css
 
 
 def compose_page_svg(
@@ -353,6 +403,7 @@ def compose_page_svg(
     row_height_px: int = _DEFAULT_ROW_HEIGHT_PX,
     margin_px: int = _DEFAULT_MARGIN_PX,
     gap_px: int = _DEFAULT_GAP_PX,
+    page_bg: str = "#ffffff",
     timeout: float = 30.0,
 ) -> dict[str, Any]:
     """Call the SVG-composer subprocess to assemble a full page SVG.
@@ -383,6 +434,7 @@ def compose_page_svg(
         "row_height_px": row_height_px,
         "margin_px": margin_px,
         "gap_px": gap_px,
+        "page_bg": page_bg,
         "widgets": surface_widgets,
     }
     return _run_node_script(_SVG_COMPOSER_SCRIPT, payload, timeout=timeout)
@@ -393,13 +445,98 @@ def compose_page_svg(
 # ---------------------------------------------------------------------------
 
 
+# Top-level spec keys that describe BEHAVIOUR, not the picture. A renderer draws
+# geometry; these have no pixels.
+_NON_VISUAL_SPEC_KEYS = ("variables",)
+
+
+def spec_for_render(spec_dict: dict[str, Any], *, fallback_title: str | None = None):
+    """Parse *spec_dict* into a DashboardSpec good enough to DRAW, or None.
+
+    The strict validator (``validate_spec``) is the wrong gate for a picture, and
+    using it as one had a visible cost: **every board with a filter lost its
+    thumbnail**. Filter boards carry ``spec.variables``, and real boards declare
+    e.g. ``variables[].type: "string"`` (or a filter ``subtype: "list"``) — values
+    the Pydantic schema rejects but the FRONTEND renderer happily ignores. Those
+    boards work perfectly in the app; they simply could not be validated, so they
+    could not be drawn.
+
+    Neither field has anything to do with the output: ``variables`` are filter
+    state, and a filter widget renders as a placeholder chip regardless of its
+    subtype. So when the whole spec won't validate, retry without the parts that
+    cannot affect pixels, and draw what's left.
+
+    This is deliberately a RENDERING concession, not a loosening of the product's
+    contract — ``validate_spec`` and ``POST /dashboards/validate`` are untouched,
+    so a genuinely malformed spec still fails there. The underlying problem is
+    that the backend schema has drifted behind the frontend renderer (the combo
+    ``encoding.y`` array form is rejected the same way); fixing that drift at the
+    schema is a separate, contract-level decision.
+
+    Returns ``None`` when even the geometry won't parse — callers should then
+    show a placeholder rather than a blank, which would be a convincing lie.
+    """
+    validated, _ = validate_spec(spec_dict)
+    if validated is not None:
+        return validated
+
+    if not isinstance(spec_dict, dict):
+        return None
+
+    probe = copy.deepcopy(spec_dict)
+    for key in _NON_VISUAL_SPEC_KEYS:
+        probe.pop(key, None)
+    for w in probe.get("widgets") or []:
+        # A filter draws as a chip; its subtype only decides how it BEHAVES.
+        if isinstance(w, dict) and w.get("type") == "filter":
+            w.pop("subtype", None)
+    if fallback_title and not probe.get("title"):
+        probe["title"] = fallback_title
+
+    validated, _ = validate_spec(probe)
+    return validated
+
+
+def widgets_for_tab(spec: DashboardSpec, tab_id: str | None = None) -> list[Any]:
+    """The widgets that belong on one tab — the SHARED partition contract.
+
+    Mirrors the frontend renderer exactly (SpecRenderer's tab partition, and
+    ``widgetsForTab`` in the editor):
+
+      - no tabs declared        → every widget (today's behaviour)
+      - widget.tab_id == tab    → in
+      - widget.tab_id is None   → belongs to the FIRST tab
+
+    Why this exists: ``render_board_svg`` used to iterate ``spec.widgets``
+    wholesale, so a tabbed board rendered EVERY tab stacked on top of itself.
+    Tabs reuse the same grid coordinates, so on the real 5-tab MacMobile board
+    that meant 31 widgets fighting for the 9 widgets' worth of space a viewer
+    actually sees — five different widgets all at grid cell (1,1). It looked
+    like a layout engine bug; it was a missing partition. This affected the PDF
+    export too, not just thumbnails.
+    """
+    tabs = list(getattr(spec, "tabs", None) or [])
+    if not tabs:
+        return list(spec.widgets)
+    first_tab_id = getattr(tabs[0], "id", None)
+    effective = tab_id or first_tab_id
+    out = []
+    for w in spec.widgets:
+        wt = getattr(w, "tab_id", None)
+        if wt == effective or (wt is None and effective == first_tab_id):
+            out.append(w)
+    return out
+
+
 def render_board_svg(
     spec: DashboardSpec,
     widget_data: list[dict[str, Any]],
     *,
     surface: str = "grid",
+    tab_id: str | None = None,
+    theme: str = "light",
     page_width_px: int = _DEFAULT_PAGE_WIDTH_PX,
-    row_height_px: int = _DEFAULT_ROW_HEIGHT_PX,
+    row_height_px: int | None = None,
     margin_px: int = _DEFAULT_MARGIN_PX,
     gap_px: int = _DEFAULT_GAP_PX,
     ssr_timeout: float = 60.0,
@@ -454,8 +591,21 @@ def render_board_svg(
     """
     cols = int((spec.layout or {}).get("cols", 12))
 
+    # Honour the board's OWN row height. This used to always use the module
+    # default (120), so a board declaring the usual row_height=60 rendered at
+    # double height — every widget correctly placed relative to the others, but
+    # the whole board twice as tall as it looks in the app. An explicit caller
+    # argument still wins.
+    if row_height_px is None:
+        _spec_rh = (spec.layout or {}).get("row_height")
+        row_height_px = int(_spec_rh) if _spec_rh else _DEFAULT_ROW_HEIGHT_PX
+
     # 1. Resolve grid layout (backward-compatible accessor).
     layout = get_surface_layout(spec, surface)
+
+    # Partition to ONE tab — tabs share grid coordinates, so rendering them all
+    # stacks them (see widgets_for_tab).
+    tab_widgets = widgets_for_tab(spec, tab_id)
 
     # Index widget data by widget_id for quick lookup.
     data_by_widget: dict[str, dict[str, Any]] = {
@@ -470,7 +620,7 @@ def render_board_svg(
     payloads: list[dict[str, Any]] = []
     widget_layout_map: dict[str, dict[str, Any]] = {}
 
-    for widget in spec.widgets:
+    for widget in tab_widgets:
         # Only grid-placed widgets have a position in the surface layout.
         entry = layout.get(widget.id)
         if entry is None:
@@ -504,7 +654,7 @@ def render_board_svg(
         )
 
     # 3. Render per-widget SVGs via Node SSR.
-    rendered = render_widgets_svg(payloads, timeout=ssr_timeout)
+    rendered = render_widgets_svg(payloads, theme=theme, timeout=ssr_timeout)
 
     # 4. Merge layout + SVG for the composer.
     svg_by_id: dict[str, dict[str, Any]] = {r["id"]: r for r in rendered if "id" in r}
@@ -530,6 +680,7 @@ def render_board_svg(
         row_height_px=row_height_px,
         margin_px=margin_px,
         gap_px=gap_px,
+        page_bg=_PAGE_BG.get(theme, _PAGE_BG["light"]),
         timeout=compose_timeout,
     )
     return composed["svg"]

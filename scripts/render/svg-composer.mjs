@@ -143,6 +143,9 @@ export function composePage({
   row_height_px = DEFAULT_ROW_HEIGHT_PX,
   margin_px = DEFAULT_MARGIN_PX,
   gap_px = DEFAULT_GAP_PX,
+  // The page behind the widgets. A dark board on a white sheet reads as broken,
+  // so the caller passes the theme's canvas colour.
+  page_bg = '#ffffff',
   widgets = [],
 }) {
   const colW = (page_width_px - 2 * margin_px) / cols
@@ -181,7 +184,7 @@ export function composePage({
     `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"`,
     `  width="${page_width_px}" height="${page_height_px}"`,
     `  viewBox="0 0 ${page_width_px} ${page_height_px}">`,
-    `  <rect width="${page_width_px}" height="${page_height_px}" fill="#ffffff"/>`,
+    `  <rect width="${page_width_px}" height="${page_height_px}" fill="${page_bg}"/>`,
   ]
 
   for (const rect of rects) {

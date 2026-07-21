@@ -66,7 +66,10 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import hashlib
 import io
+import json
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -135,7 +138,7 @@ async def export_board_json(
 
     # First-party access tokens carry no RLS policies (full-access editor view).
     widgets_out = await collect_board_data(
-        board_id, org_id, claims={"policies": {}}, repo=repo, only_query_id=query_id
+        board_id, org_id, claims=_collect_claims(user), repo=repo, only_query_id=query_id
     )
 
     return {
@@ -238,15 +241,20 @@ async def export_board_pdf(
     AppError("node_not_found", 503)
         When Node.js is not available for SVG rendering.
     """
-    from app.dashboards.spec import get_export_config, validate_spec  # noqa: PLC0415
-    from app.dashboards.svg_render import render_board_svg  # noqa: PLC0415
+    from app.dashboards.spec import get_export_config  # noqa: PLC0415
+    from app.dashboards.svg_render import render_board_svg, spec_for_render  # noqa: PLC0415
     from app.embedding.render_pdf import render_board_pdf, svg_page_size_px  # noqa: PLC0415
 
     board = await _load_board(board_id, str(user["id"]), repo, request)
     spec_dict = spec_from_board(board)
-    validated_spec, _ = validate_spec(spec_dict)
+    # Same leniency as the thumbnail: a filter board's `variables` cannot affect
+    # the exported picture, so they must not be able to blank the export either.
+    validated_spec = spec_for_render(spec_dict, fallback_title=board.get("name"))
     if validated_spec is None:
-        validated_spec, _ = validate_spec({"widgets": []})
+        # Last resort so an explicit export never 500s. (Was
+        # `validate_spec({"widgets": []})`, which returns None — title is
+        # required — and then crashed the renderer. See _blank_spec.)
+        validated_spec = _blank_spec(board, board_id)
 
     export_cfg = get_export_config(validated_spec)
     resolved_page_size = page_size or export_cfg.get("page_size") or "A4"
@@ -256,7 +264,7 @@ async def export_board_pdf(
     from app.routes._org import resolve_org_id as _resolve  # noqa: PLC0415
     org_id = await _resolve(str(user["id"]), repo, request)
     widget_data = await collect_board_data(
-        board_id, org_id, claims={"policies": {}}, repo=repo
+        board_id, org_id, claims=_collect_claims(user), repo=repo
     )
 
     # Render page SVG via T2 (Node.js echarts-SSR).
@@ -283,6 +291,250 @@ async def export_board_pdf(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{safe_name}.pdf"'},
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /boards/{id}/thumbnail.svg
+# ---------------------------------------------------------------------------
+
+# Rendered thumbnails are cached in-process, keyed by the board's SPEC hash AND
+# the policy fingerprint of the claims they were rendered under, so an unchanged
+# board is rendered once and an edited one regenerates with no explicit
+# invalidation anywhere. Keep this modest: entries are small (tens of KB of SVG)
+# but a big org has a lot of boards.
+#
+# SECURITY — why the policy fingerprint is in the key:
+# A thumbnail is rendered data. Caching one rendered under one viewer's RLS
+# policies and serving it to another viewer would leak rows THROUGH AN IMAGE,
+# which no amount of query-level RLS would catch. Today that is latent rather
+# than live: this route is first-party only (Depends(current_user)) and
+# first-party access tokens carry no `policies` claim (see
+# tests/test_embed_rls.py::test_first_party_token_no_rls_returns_all_rows), so
+# every render here has an identical, empty fingerprint and shows exactly what
+# the same user sees in the UI. The fingerprint keeps it that way BY
+# CONSTRUCTION: if a policy-bearing caller ever reaches this route, it simply
+# misses the cache instead of being served someone else's pixels.
+# Cross-org is already impossible — _load_board is org-scoped and 404s first.
+_THUMB_CACHE: dict[str, tuple[str, str, str]] = {}   # board_id -> (spec_hash, policy_fp, svg)
+_THUMB_CACHE_MAX = 512
+
+# Thumbnail render width in px. The card displays it a few hundred px wide, but
+# the SSR layout is width-driven (font sizes and chart geometry are absolute),
+# so rendering too narrow makes axis labels collide. Render at a readable
+# desktop-ish width and let the card scale the vector down.
+_THUMB_WIDTH_PX = 1000
+
+# Hard cap on how much of a tall board ends up in the thumbnail.
+#
+# Chosen as an ASPECT, not an arbitrary cap: ~1.4:1 against _THUMB_WIDTH_PX. A
+# card displays the whole render (object-contain — cropping would silently eat
+# the right-hand widgets of a wide board), so the render's aspect decides how
+# much dead letterbox the card carries. Let a 3000px board through and, fitted
+# into a landscape card, it shrinks to an unreadable sliver with huge side bars.
+# Capping near the card's own aspect keeps the board big and the letterbox small,
+# and the top of a board is what identifies it anyway.
+_THUMB_MAX_HEIGHT_PX = int(_THUMB_WIDTH_PX / 1.4)   # 714 at 1000px wide
+
+
+def _collect_claims(user: dict[str, Any]) -> dict[str, Any]:
+    """The claims server-side board collection runs under — ONE choke point.
+
+    Today: `{"policies": {}}` — RLS off, the full editor view. That is not an
+    oversight, it is what these first-party routes already show: a first-party
+    access token carries no `policies` claim, so the same user hitting
+    `POST /query` from the UI gets the same unfiltered rows. Per-viewer row
+    slicing exists only for host-signed EMBED tokens, and embed identities cannot
+    reach these routes at all (every one is `Depends(current_user)`).
+
+    It exists as a function so that when that stops being true, there is exactly
+    one place to change — and so the thumbnail cache key is always derived from
+    the same claims the render actually used (see _policy_fingerprint).
+    """
+    return {"policies": {}}
+
+
+def _policy_fingerprint(claims: dict[str, Any]) -> str:
+    """Stable fingerprint of the RLS policies a render was performed under.
+
+    Part of the thumbnail cache key so a cached render can never cross a policy
+    boundary. Empty policies fingerprint to a constant, so today's first-party
+    renders all share one cache entry per board — which is the intent.
+    """
+    policies = (claims or {}).get("policies") or {}
+    raw = json.dumps(policies, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _blank_spec(board: dict[str, Any], board_id: str) -> Any:
+    """A valid empty DashboardSpec, for boards whose spec won't validate.
+
+    NOT ``validate_spec({"widgets": []})`` — the schema requires ``title``, so
+    that call returns ``None`` and any caller using it as a fallback then hands
+    ``None`` to the renderer and raises ``AttributeError: 'NoneType' has no
+    attribute 'layout'``. Build the object directly instead of guessing at a
+    dict the validator will accept.
+    """
+    from app.dashboards.spec import DashboardSpec  # noqa: PLC0415
+
+    return DashboardSpec(title=board.get("name") or f"Dashboard {board_id}", widgets=[])
+
+
+def _spec_hash(spec_dict: dict[str, Any]) -> str:
+    """Stable hash of a board spec — the thumbnail's cache key."""
+    raw = json.dumps(spec_dict, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _clamp_svg_height(svg: str, max_h: int, theme: str = "light") -> str:
+    """Crop a composed page SVG to *max_h* px by rewriting its height/viewBox.
+
+    The composer emits ``width``/``height``/``viewBox`` on the root element and
+    positions widgets absolutely inside it, so shrinking the frame crops from the
+    bottom (widgets below simply fall outside) without touching their geometry.
+    Left alone when the SVG is already short enough or doesn't match the shape
+    we expect — a thumbnail is never worth raising on.
+
+    A cropped board is faded out over its last stretch rather than guillotined.
+    The cut lands wherever the clamp falls — usually straight through the middle
+    of a chart — and a hard edge reads as a broken image; a fade reads as "this
+    board carries on", which is the truth.
+    """
+    m = re.search(r'viewBox="0 0 ([\d.]+) ([\d.]+)"', svg)
+    if not m:
+        return svg
+    w, h = float(m.group(1)), float(m.group(2))
+    if h <= max_h:
+        return svg
+    svg = svg.replace(f'viewBox="0 0 {m.group(1)} {m.group(2)}"', f'viewBox="0 0 {m.group(1)} {max_h}"', 1)
+    svg = re.sub(r'(<svg[^>]*?)height="[\d.]+"', rf'\1height="{max_h}"', svg, count=1)
+
+    # Fade to the page's own white, so the crop dissolves instead of slicing.
+    fade_h = min(90.0, max_h * 0.16)
+    # Fade to the page's OWN colour: fading a dark board to white would paint a
+    # bright bar across its bottom edge.
+    page = "#111a2e" if theme == "dark" else "#ffffff"
+    fade = (
+        f'<defs><linearGradient id="_nubiFade" x1="0" y1="0" x2="0" y2="1">'
+        f'<stop offset="0%" stop-color="{page}" stop-opacity="0"/>'
+        f'<stop offset="100%" stop-color="{page}" stop-opacity="1"/>'
+        f'</linearGradient></defs>'
+        f'<rect x="0" y="{max_h - fade_h:.1f}" width="{w:.1f}" height="{fade_h:.1f}" '
+        f'fill="url(#_nubiFade)"/>'
+    )
+    idx = svg.rfind("</svg>")
+    return svg[:idx] + fade + svg[idx:] if idx != -1 else svg
+
+
+@router.get("/{board_id}/thumbnail.svg")
+async def board_thumbnail_svg(
+    board_id: str,
+    request: Request,
+    theme: str | None = None,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> Response:
+    """Render the board to an SVG thumbnail — the REAL board, with real data.
+
+    This is the same T2 pipeline the PDF export uses (collect widget data →
+    Node/echarts SSR → compose page SVG), just at thumbnail size and without the
+    SVG→PDF step, so it needs no cairo/reportlab backend — only Node.
+
+    Why a real render rather than a drawing of the layout: a dashboard card
+    should be a window into the dashboard. The client-side ``BoardMiniature``
+    (dashboards/specMiniature.js) draws real widget POSITIONS but has no data;
+    this endpoint gives the actual charts. The card shows the miniature instantly
+    and swaps in this render when it arrives.
+
+    Cached by spec hash, so repeat views are free and an edited board
+    self-invalidates. The data is a snapshot as of render time — a thumbnail is
+    an identifying picture, not a live view.
+
+    Returns
+    -------
+    Response
+        ``image/svg+xml``. 503 when Node.js is unavailable, so the caller can
+        keep its placeholder rather than show a broken image.
+    """
+    from app.dashboards.svg_render import (  # noqa: PLC0415
+        render_board_svg,
+        renderer_available,
+        spec_for_render,
+    )
+
+    board = await _load_board(board_id, str(user["id"]), repo, request)
+    spec_dict = spec_from_board(board)
+
+    claims = _collect_claims(user)
+    # A board has no intrinsic colour — its widgets are styled with CSS theme
+    # tokens so one spec looks right in light AND dark. The render must therefore
+    # pick a theme, which makes theme part of the picture's identity: it belongs
+    # in the cache key, or a dark viewer gets served the light render.
+    theme_key = "dark" if (theme or "").strip().lower() == "dark" else "light"
+    cache_key = _spec_hash(spec_dict) + ":" + theme_key
+    policy_fp = _policy_fingerprint(claims)
+
+    # Access is authorised BEFORE this lookup (_load_board is org-scoped and
+    # 404s cross-org), and the key carries the policy fingerprint, so a hit can
+    # only ever be this org's board rendered under these exact policies.
+    cached = _THUMB_CACHE.get(board_id)
+    if cached and cached[0] == cache_key and cached[1] == policy_fp:
+        return Response(
+            content=cached[2],
+            media_type="image/svg+xml",
+            headers={"Cache-Control": "private, max-age=300", "X-Nubi-Thumb-Cache": "hit"},
+        )
+
+    if not renderer_available():
+        # No Node → no render. Fail soft: the card keeps its miniature.
+        raise AppError(
+            "renderer_unavailable",
+            "Server-side rendering is unavailable (Node.js not found).",
+            503,
+        )
+
+    # `spec_for_render`, not `validate_spec`: the strict validator is the wrong
+    # gate for a picture, and using it as one meant EVERY board with a filter
+    # lost its thumbnail (filter boards carry `variables`, and real ones declare
+    # types the schema rejects but the frontend renderer ignores). See
+    # svg_render.spec_for_render.
+    validated_spec = spec_for_render(spec_dict, fallback_title=board.get("name"))
+    if validated_spec is None:
+        # Even the geometry won't parse. Do NOT fall back to a blank spec here
+        # (the PDF route does, to avoid crashing an explicit export): a blank
+        # render is a convincing, WRONG picture — an empty white card. 503 →
+        # the card keeps its spec-derived miniature, truthful about the layout.
+        raise AppError(
+            "spec_unrenderable",
+            "Board spec cannot be parsed for rendering.",
+            503,
+        )
+
+    from app.routes._org import resolve_org_id as _resolve  # noqa: PLC0415
+    org_id = await _resolve(str(user["id"]), repo, request)
+
+    # Per-widget query errors are reported inline rather than raised, so a board
+    # with one broken query still gets a thumbnail of everything else.
+    widget_data = await collect_board_data(board_id, org_id, claims=claims, repo=repo)
+
+    # Off-thread: render_board_svg shells out to Node via blocking subprocess.run.
+    page_svg = await asyncio.to_thread(
+        render_board_svg,
+        validated_spec,
+        widget_data,
+        page_width_px=_THUMB_WIDTH_PX,
+        theme=theme_key,
+    )
+    page_svg = _clamp_svg_height(page_svg, _THUMB_MAX_HEIGHT_PX, theme=theme_key)
+
+    if len(_THUMB_CACHE) >= _THUMB_CACHE_MAX:
+        _THUMB_CACHE.clear()  # crude but bounded; entries are cheap to rebuild
+    _THUMB_CACHE[board_id] = (cache_key, policy_fp, page_svg)
+
+    return Response(
+        content=page_svg,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "private, max-age=300", "X-Nubi-Thumb-Cache": "miss"},
     )
 
 

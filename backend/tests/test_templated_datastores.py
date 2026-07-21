@@ -393,7 +393,13 @@ async def test_existing_datastore_no_template_unchanged():
 
     with (
         patch(
-            "app.routes.query.get_connector_registry",
+            # The connector-construction block moved out of app.routes.query into
+            # the shared app/connectors/resolve.py (one resolver for the query
+            # route AND server-side board collection, which used to hand-roll a
+            # broken copy). _build_connector_for_plan now delegates there, so the
+            # registry lookup to intercept lives in that module's namespace.
+            # Production behaviour is identical — it is the same registry object.
+            "app.connectors.resolve.get_connector_registry",
         ) as mock_registry_fn,
         patch(
             "app.connectors.network.resolve_network",

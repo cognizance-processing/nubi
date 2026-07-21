@@ -171,6 +171,7 @@ async def test_run_query_rows_uses_single_to_thread_for_conversion(
                 },
             )(),
             False,
+            lambda: None,
         ),
     ), mock.patch("asyncio.to_thread", side_effect=_spy_to_thread):
         columns, rows = await run_query_rows("q-offloop", _ORG, repo, {})

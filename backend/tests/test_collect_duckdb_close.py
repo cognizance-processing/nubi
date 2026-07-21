@@ -35,6 +35,30 @@ from app.repos.provider import set_repo
 _ORG = "org-close-test"
 
 
+@pytest.fixture(autouse=True)
+def _stub_secret_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the secret store — these tests are about connection lifecycle.
+
+    ``_resolve_connector`` now delegates to the shared resolver
+    (app/connectors/resolve.py), which ALWAYS runs secret injection; the default
+    ``EncryptedStoreResolver`` reads the secrets table, so without a DB pool
+    these unit tests fail with "Database pool is not initialised". A DuckDB
+    datastore has no secrets, so an empty store is the faithful stub — and it
+    keeps the resolver's fail-hard-on-secret-error contract intact rather than
+    weakening the resolver to suit a test.
+    """
+
+    class _EmptySecretStore:
+        async def get(self, datastore_id: str, org_id: str | None) -> dict | None:
+            return None
+
+    monkeypatch.setattr(
+        "app.connectors.secret_store.get_secret_store",
+        lambda: _EmptySecretStore(),
+        raising=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # 1. DuckDBConnector.close() closes the connection
 # ---------------------------------------------------------------------------
@@ -262,11 +286,15 @@ async def test_resolve_connector_hardens_ondisk_duckdb(
         original_harden(conn, **kwargs)  # type: ignore[arg-type]
 
     with mock.patch.object(_dmod, "harden_connection", _spy_harden):
-        connector, owned = await _resolve_connector(
+        connector, owned, _net_cleanup = await _resolve_connector(
             mock.MagicMock(datastore_id="ds-harden"),
             org,
             repo,
-            None,  # physical_plan not used in the duckdb branch
+            # physical_plan is now read for EVERY ctype (rls_claims drives
+            # template resolution + the RLS gate in the shared resolver), so the
+            # duckdb branch can no longer be handed None. No policies here — this
+            # test is about connection hardening, not RLS.
+            mock.MagicMock(rls_claims={"policies": {}}),
         )
 
     try:

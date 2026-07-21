@@ -87,6 +87,7 @@ async def test_run_query_rows_offloads_planner_to_thread(repo: InMemoryRepo) -> 
                 },
             )(),
             False,
+            lambda: None,
         ),
     ), mock.patch("asyncio.to_thread", side_effect=_spy_to_thread):
         columns, rows = await run_query_rows("q-planner-offloop", _ORG, repo, {})
@@ -146,6 +147,7 @@ async def test_planner_to_thread_called_before_execute_to_thread(
                 },
             )(),
             False,
+            lambda: None,
         ),
     ), mock.patch("asyncio.to_thread", side_effect=_spy_to_thread):
         await run_query_rows("q-order-check", _ORG, repo, {})

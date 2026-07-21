@@ -661,6 +661,23 @@ class Widget(BaseModel):
     # embed/widgets/chart-options.js.
     encoding: dict[str, str | list[str]] = Field(default_factory=dict)
     props: dict[str, Any] = Field(default_factory=dict)
+    style: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Per-widget presentation (background, color, border, boxShadow, "
+            "backdropFilter, …). An opaque pass-through, exactly like `props`: "
+            "the frontend owns the vocabulary and sanitises it (styleToCss + the "
+            "style whitelist), so this model must not try to type it. "
+            "Values are commonly CSS theme TOKENS (`var(--surface)`) rather than "
+            "fixed colours, because a board is authored once to look right in "
+            "both light and dark — anything rendering a board outside the browser "
+            "has to resolve them itself (see svg_render THEME_TOKENS). "
+            "Added because the model was silently DROPPING this field: the "
+            "frontend has written widget.style for a long time, so every "
+            "server-side render (thumbnail, PDF) came out unstyled — accurate "
+            "about the data, wrong about the design."
+        ),
+    )
     pos: WidgetPos | None = Field(
         default=None,
         description=(

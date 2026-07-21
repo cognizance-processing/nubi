@@ -177,6 +177,15 @@ class BigQueryConnector(Connector):
 
     def __init__(self, config: dict[str, Any]) -> None:
         self._config = dict(config or {})
+        # Emulator mode: a configured api_endpoint means "talk to a local
+        # BigQuery emulator (goccy) instead of Google". It flips two behaviours,
+        # both in the safe direction:
+        #   * auth is FORCED to AnonymousCredentials (see _build_client) — never
+        #     ADC, never a service account — so the client cannot authenticate
+        #     to the real service even if creds are lying around on the host;
+        #   * the BigQuery Storage API (used by to_arrow's fast path) is disabled
+        #     because the emulator's Storage endpoint is incomplete.
+        self._api_endpoint = (self._config.get("api_endpoint") or "").strip() or None
         self.validate_capabilities()
 
     # ------------------------------------------------------------------
@@ -206,12 +215,35 @@ class BigQueryConnector(Connector):
     # ------------------------------------------------------------------
 
     def _build_client(self) -> Any:
-        """Construct a ``bigquery.Client`` from config (service account or ADC)."""
+        """Construct a ``bigquery.Client`` from config (emulator, service account, or ADC)."""
         bigquery = _import_bigquery()
 
         project = self._config.get("project") or self._config.get("project_id")
         location = self._config.get("location")
         sa = self._config.get("service_account_json")
+
+        # ── Emulator mode (safety-critical) ───────────────────────────────────
+        # A configured api_endpoint routes the client at a local emulator. This
+        # branch runs BEFORE the service-account / ADC branches and RETURNS, so
+        # neither can ever run alongside it: credentials are pinned to
+        # AnonymousCredentials (which cannot obtain a Google access token) and
+        # the endpoint is a caller-supplied host (in practice http://localhost:*).
+        # Anonymous creds + a localhost endpoint make it structurally impossible
+        # for this connector to authenticate to or reach the real BigQuery
+        # service, even on a host with live ADC / gcloud auth. A service_account
+        # in config is deliberately IGNORED here — mixing a real SA with an
+        # emulator endpoint is never intended, and ignoring it removes it as a
+        # leak path.
+        if self._api_endpoint:
+            from google.api_core.client_options import ClientOptions  # noqa: PLC0415
+            from google.auth.credentials import AnonymousCredentials  # noqa: PLC0415
+
+            return bigquery.Client(
+                project=project or "local-emulator",
+                credentials=AnonymousCredentials(),
+                client_options=ClientOptions(api_endpoint=self._api_endpoint),
+                location=location,
+            )
 
         if sa:
             credentials_cls = _import_service_account_credentials()
@@ -278,6 +310,12 @@ class BigQueryConnector(Connector):
                 query_parameters=self._build_query_params(ordered)
             )
             row_iter = client.query(sql, job_config=job_config).result()
+            # In emulator mode force the REST (tabledata.list) path: the goccy
+            # emulator does not implement the BigQuery Storage API that
+            # to_arrow() would otherwise try first. Against real BigQuery the
+            # default (storage fast-path with REST fallback) is kept.
+            if self._api_endpoint:
+                return row_iter.to_arrow(create_bqstorage_client=False)
             return row_iter.to_arrow()
         except AppError:
             raise

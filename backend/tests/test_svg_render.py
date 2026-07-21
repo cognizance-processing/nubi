@@ -429,3 +429,258 @@ def test_node_semaphore_caps_concurrency(monkeypatch):
     assert peak_concurrency <= cap, (
         f"Peak concurrency {peak_concurrency} exceeded semaphore cap {cap}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Tab partition + spec-driven row height
+# ---------------------------------------------------------------------------
+
+
+def _tabbed_spec() -> DashboardSpec:
+    """A 2-tab board whose tabs REUSE the same grid coordinates.
+
+    That reuse is normal and is exactly what broke the renderer: tabs are a
+    render partition, so two widgets legitimately share cell (1,1).
+    """
+    return DashboardSpec(
+        title="Tabbed board",
+        layout={"cols": 12, "row_height": 60},
+        tabs=[{"id": "t_one", "label": "One"}, {"id": "t_two", "label": "Two"}],
+        widgets=[
+            # tab_id None → implicitly the FIRST tab (renderer contract).
+            Widget(id="legacy_kpi", type="kpi", query_id="q1",
+                   encoding={"value": "v"}, pos=WidgetPos(x=1, y=1, w=3, h=2)),
+            Widget(id="one_kpi", type="kpi", query_id="q1", tab_id="t_one",
+                   encoding={"value": "v"}, pos=WidgetPos(x=4, y=1, w=3, h=2)),
+            # Same cell as legacy_kpi — different tab.
+            Widget(id="two_kpi", type="kpi", query_id="q1", tab_id="t_two",
+                   encoding={"value": "v"}, pos=WidgetPos(x=1, y=1, w=3, h=2)),
+        ],
+    )
+
+
+class TestTabPartition:
+    """render_board_svg must draw ONE tab, not every tab stacked.
+
+    Regression: it iterated spec.widgets wholesale. On the real 5-tab MacMobile
+    board that put 31 widgets into the 9 widgets' worth of space a viewer sees —
+    five different widgets all at grid cell (1,1) — which read as a broken layout
+    engine but was a missing partition. Hit the PDF export too, not just
+    thumbnails.
+    """
+
+    def test_widgets_for_tab_defaults_to_the_first_tab(self):
+        from app.dashboards.svg_render import widgets_for_tab
+
+        ids = [w.id for w in widgets_for_tab(_tabbed_spec())]
+        # tab_id None belongs to the first tab; the second tab's widget is out.
+        assert ids == ["legacy_kpi", "one_kpi"]
+
+    def test_widgets_for_tab_selects_an_explicit_tab(self):
+        from app.dashboards.svg_render import widgets_for_tab
+
+        ids = [w.id for w in widgets_for_tab(_tabbed_spec(), "t_two")]
+        assert ids == ["two_kpi"]
+
+    def test_untabbed_board_renders_every_widget(self):
+        from app.dashboards.svg_render import widgets_for_tab
+
+        spec = _small_spec_legacy()
+        assert len(widgets_for_tab(spec)) == len(spec.widgets)
+
+    @pytest.mark.skipif(not renderer_available(), reason="Node.js / echarts not available")
+    def test_rendered_svg_contains_only_the_active_tab(self):
+        from app.dashboards.svg_render import render_board_svg
+
+        svg = render_board_svg(_tabbed_spec(), [])
+        assert "widget: legacy_kpi" in svg
+        assert "widget: one_kpi" in svg
+        assert "widget: two_kpi" not in svg, "a second tab's widget must not be stacked in"
+
+
+class TestSpecRowHeight:
+    """The board's own row_height drives the render, not the module default."""
+
+    @pytest.mark.skipif(not renderer_available(), reason="Node.js / echarts not available")
+    def test_spec_row_height_is_honoured(self):
+        import re
+
+        from app.dashboards.svg_render import render_board_svg
+
+        spec = _small_spec_legacy()          # row_height 60, tallest widget h=3
+        svg = render_board_svg(spec, [])
+        height = float(re.search(r'<svg[^>]*height="([\d.]+)"', svg).group(1))
+        # 3 rows * 60 + 2*16 margin = 212. With the old hardcoded 120 this was 392.
+        assert height == pytest.approx(3 * 60 + 32, abs=1)
+
+    @pytest.mark.skipif(not renderer_available(), reason="Node.js / echarts not available")
+    def test_explicit_row_height_argument_still_wins(self):
+        import re
+
+        from app.dashboards.svg_render import render_board_svg
+
+        svg = render_board_svg(_small_spec_legacy(), [], row_height_px=120)
+        height = float(re.search(r'<svg[^>]*height="([\d.]+)"', svg).group(1))
+        assert height == pytest.approx(3 * 120 + 32, abs=1)
+
+
+class TestDriverNativeTypes:
+    """Rows arrive as real driver objects — the renderer must not choke on them.
+
+    Regression: ``_run_node_script`` did a plain ``json.dumps(payload)``, so the
+    first ``datetime.date`` on a day axis raised "Object of type date is not JSON
+    serializable" and the whole render 500'd. It hid for a long time because the
+    boards that were exercised either had no date axis on their first tab, or
+    their SQL already did ``CAST(... AS CHAR)``. It took down the PDF export the
+    same way, not just thumbnails.
+    """
+
+    def test_json_default_coerces_driver_types(self):
+        import datetime
+        import decimal
+        import uuid
+
+        from app.dashboards.svg_render import _json_default
+
+        # Decimal → float, NOT str: it's a measure. A stringified number would be
+        # plotted by ECharts as a category.
+        assert _json_default(decimal.Decimal("12.5")) == 12.5
+        assert isinstance(_json_default(decimal.Decimal("12.5")), float)
+
+        assert _json_default(datetime.date(2026, 7, 1)) == "2026-07-01"
+        assert _json_default(datetime.datetime(2026, 7, 1, 10, 30)) == "2026-07-01T10:30:00"
+        assert _json_default(datetime.time(10, 30)) == "10:30:00"
+        assert _json_default(datetime.timedelta(seconds=90)) == 90.0
+        assert _json_default(uuid.UUID("00000000-0000-0000-0000-000000000001")) == (
+            "00000000-0000-0000-0000-000000000001"
+        )
+        assert _json_default(b"hi") == "hi"
+        assert sorted(_json_default({"b", "a"})) == ["a", "b"]
+
+    def test_json_default_never_emits_unserialisable_decimal_edges(self):
+        import decimal
+        import json
+
+        from app.dashboards.svg_render import _json_default
+
+        # NaN/Infinity would round-trip through json.dumps as bare NaN/Infinity,
+        # which is not valid JSON for the Node side to parse.
+        for bad in (decimal.Decimal("NaN"), decimal.Decimal("Infinity")):
+            out = _json_default(bad)
+            assert isinstance(out, str), f"{bad} must degrade to a string, got {out!r}"
+        json.dumps({"v": _json_default(decimal.Decimal("NaN"))})  # must not raise
+
+    @pytest.mark.skipif(not renderer_available(), reason="Node.js / echarts not available")
+    def test_board_with_a_date_axis_renders(self):
+        import datetime
+        import decimal
+
+        from app.dashboards.svg_render import render_board_svg
+
+        spec = DashboardSpec(
+            title="Date axis",
+            layout={"cols": 12, "row_height": 60},
+            widgets=[
+                Widget(
+                    id="c1", type="chart", query_id="q1", chart_type="line",
+                    encoding={"x": "day", "y": "n"},
+                    pos=WidgetPos(x=1, y=1, w=6, h=3),
+                ),
+            ],
+        )
+        data = [{
+            "widget_id": "c1", "query_id": "q1", "columns": ["day", "n"],
+            "rows": [
+                [datetime.date(2026, 7, 1), decimal.Decimal("12.5")],
+                [datetime.date(2026, 7, 2), decimal.Decimal("18.0")],
+            ],
+        }]
+        svg = render_board_svg(spec, data, page_width_px=1000)   # used to raise TypeError
+        assert "<svg" in svg
+        assert svg.count("<path") > 0, "the line must actually be drawn"
+
+
+class TestWidgetStyleAndTheme:
+    """A board is authored once to look right in light AND dark.
+
+    Widget styles are written against CSS theme TOKENS (`var(--surface)`), which
+    only a browser can resolve. Two things had to be true for a server render to
+    honour them, and neither was:
+
+    1. The `Widget` model had NO `style` field at all, so `validate_spec`
+       silently DROPPED it — the renderer never saw a style to honour.
+    2. Even with it, a raw `var(--surface)` in an SVG `fill=` paints nothing, so
+       the renderer has to resolve tokens for a chosen theme itself.
+    """
+
+    def test_widget_model_keeps_style(self):
+        """Regression: style was dropped on the floor by validation."""
+        from app.dashboards.spec import validate_spec
+
+        spec, _ = validate_spec({
+            "title": "styled",
+            "layout": {"cols": 12, "row_height": 60},
+            "widgets": [{
+                "id": "k1", "type": "kpi", "query_id": "q1",
+                "encoding": {"value": "v"},
+                "style": {"background": "var(--surface)", "color": "var(--fg)"},
+                "pos": {"x": 1, "y": 1, "w": 3, "h": 2},
+            }],
+        })
+        assert spec is not None
+        assert spec.widgets[0].style == {"background": "var(--surface)", "color": "var(--fg)"}
+
+    @pytest.mark.skipif(not renderer_available(), reason="Node.js / echarts not available")
+    def test_theme_tokens_resolve_and_never_leak_into_paint(self):
+        from app.dashboards.svg_render import render_board_svg
+
+        spec = DashboardSpec(
+            title="Themed",
+            layout={"cols": 12, "row_height": 60},
+            widgets=[
+                Widget(
+                    id="k1", type="kpi", query_id="q1", encoding={"value": "v"},
+                    style={"background": "var(--surface)", "color": "var(--fg)"},
+                    pos=WidgetPos(x=1, y=1, w=3, h=2),
+                ),
+            ],
+        )
+        data = [{"widget_id": "k1", "query_id": "q1", "columns": ["v"], "rows": [[42]]}]
+
+        light = render_board_svg(spec, data, page_width_px=600, theme="light")
+        dark = render_board_svg(spec, data, page_width_px=600, theme="dark")
+
+        # An unresolved var() in a fill= paints nothing — it must never survive.
+        assert "var(--" not in light
+        assert "var(--" not in dark
+        # Tokens resolved to each theme's real values (src/index.css).
+        assert "#ffffff" in light and "#0e1729" in light      # --surface / --fg(→--text)
+        assert "#111a2e" in dark and "#e7edf6" in dark
+        # The two themes must genuinely differ — a cache keyed by theme is only
+        # worth having if the picture actually changes.
+        assert light != dark
+
+    @pytest.mark.skipif(not renderer_available(), reason="Node.js / echarts not available")
+    def test_a_hardcoded_colour_is_honoured_verbatim_in_both_themes(self):
+        """Fidelity means obeying the widget, not imposing the theme.
+
+        A widget that hard-codes its background renders that colour in dark mode
+        too — exactly as it does in the app.
+        """
+        from app.dashboards.svg_render import render_board_svg
+
+        spec = DashboardSpec(
+            title="Fixed",
+            layout={"cols": 12, "row_height": 60},
+            widgets=[
+                Widget(
+                    id="k1", type="kpi", query_id="q1", encoding={"value": "v"},
+                    style={"background": "#161b22", "color": "#ffffff"},
+                    pos=WidgetPos(x=1, y=1, w=3, h=2),
+                ),
+            ],
+        )
+        data = [{"widget_id": "k1", "query_id": "q1", "columns": ["v"], "rows": [[42]]}]
+        for theme in ("light", "dark"):
+            svg = render_board_svg(spec, data, page_width_px=600, theme=theme)
+            assert "#161b22" in svg, f"{theme}: the widget's own colour must win"
