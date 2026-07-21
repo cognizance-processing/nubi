@@ -422,6 +422,19 @@ async def update_resource(
     if row is None:
         raise AppError("not_found", f"{resource[:-1].capitalize()} not found.", 404)
 
+    # Evict the updated query from the process-global runtime registry, which is
+    # otherwise only populated at startup or lazily on a miss — so a query edited
+    # through this route keeps serving its OLD sql/params/output_schema (stale
+    # columns) until the process restarts. Dropping the entry makes the next
+    # resolve miss and reload the fresh row via ``ensure_persisted_query``; that
+    # path is already org-scoped, so we reuse it rather than re-registering here.
+    # The result cache needs no eviction: its key derives from the plan sql
+    # (connectors/cache_key.py), so changed sql simply misses.
+    if resource == "queries" and body.config is not None:
+        from app.queries.registry import get_query_registry  # noqa: PLC0415
+
+        get_query_registry().unregister(id)
+
     # Surface AI-authorship attribution on the response for versionable kinds.
     if _is_versionable(resource):
         row["author_kind"] = author_kind(claims)
@@ -458,6 +471,14 @@ async def delete_resource(
     deleted = await repo.delete(resource, org_id, id)
     if not deleted:
         raise AppError("not_found", f"{resource[:-1].capitalize()} not found.", 404)
+
+    # Evict from the runtime registry — same staleness hazard as update, but with
+    # a sharper edge: without this the deleted query stays resolvable (and
+    # runnable) from the process-global registry until the server restarts.
+    if resource == "queries":
+        from app.queries.registry import get_query_registry  # noqa: PLC0415
+
+        get_query_registry().unregister(id)
 
     # Audit — fire-and-forget; POPIA-safe metadata only (no row data).
     resource_singular = resource.rstrip("s")

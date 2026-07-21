@@ -21,8 +21,8 @@
  *   /queries            → QueriesPage
  *   /queries/:id        → QueriesPage
  *   /dashboards         → DashboardsPage
- *   /editor             → EditorPage  (existing)
- *   /editor/:id         → EditorPage  (existing)
+ *   /editor             → EditorPage  (create a new board only)
+ *   /editor/:id         → redirect → /d/:id/edit  (a board edits in place now)
  *   /playground         → redirect → /queries  (Playground merged into Queries)
  *   /settings           → redirect → /settings/profile  (SettingsLayout grouped sidebar)
  *   /settings/profile   → ProfileSettings   (Account)
@@ -252,6 +252,43 @@ function LegacyConnectorDataRedirect() {
   return <Navigate to={`/data?connector=${id}`} replace />
 }
 
+/**
+ * /editor/:id → /d/:id/edit
+ *
+ * Editing an existing board is no longer a separate page. A board lives at one
+ * URL with two modes (live + edit), the way Power BI's Reading/Editing views and
+ * Looker Studio's View/Edit do — so the old route redirects into edit mode.
+ * /editor (no id) still exists: creating a board has no board URL to live at yet.
+ */
+function LegacyEditorRedirect() {
+  const { id } = useParams()
+  return <Navigate to={`/d/${id}/edit`} replace />
+}
+
+/**
+ * The `/d/:id` route element, in live or edit mode.
+ *
+ * Full-viewport (no AppShell), but still needs org/project context: the page
+ * calls useCanWrite() and board fetches need the X-Org-Id / X-Project-Id headers
+ * the providers install. UiProvider is required too — in edit mode the embedded
+ * editor portals its toolbar into the page header through UiContext's topbarSlot.
+ */
+function dashboardRoute({ edit = false } = {}) {
+  return (
+    <ProtectedRoute>
+      <UiProvider>
+        <OrgProvider>
+          <ProjectProvider>
+            <EnvProvider>
+              <DashboardViewPage edit={edit} />
+            </EnvProvider>
+          </ProjectProvider>
+        </OrgProvider>
+      </UiProvider>
+    </ProtectedRoute>
+  )
+}
+
 export default function App() {
   return (
     <AuthProvider>
@@ -314,7 +351,7 @@ export default function App() {
           {/* Usage moved into Settings — keep the old route as a redirect. */}
           <Route path="usage" element={<Navigate to="/settings/usage" replace />} />
           <Route path="editor" element={<EditorPage />} />
-          <Route path="editor/:id" element={<EditorPage />} />
+          <Route path="editor/:id" element={<LegacyEditorRedirect />} />
           {/* Playground merged into Queries — keep route as a redirect so old links work */}
           <Route path="playground" element={<Navigate to="/queries" replace />} />
           {/* Settings — sub-nav layout with per-section routes */}
@@ -368,25 +405,17 @@ export default function App() {
             </ProtectedRoute>
           }
         />
-        <Route
-          path="d/:id"
-          element={
-            <ProtectedRoute>
-              {/* Full-viewport, but still needs org/project context: the page
-                  calls useCanWrite() and board fetches need the X-Org-Id /
-                  X-Project-Id headers the providers install. */}
-              <UiProvider>
-                <OrgProvider>
-                  <ProjectProvider>
-                    <EnvProvider>
-                      <DashboardViewPage />
-                    </EnvProvider>
-                  </ProjectProvider>
-                </OrgProvider>
-              </UiProvider>
-            </ProtectedRoute>
-          }
-        />
+        {/* A board lives at ONE url with two modes. `/d/:id` is the live view;
+            `/d/:id/edit` is the same page in edit mode (canWrite only — the page
+            itself redirects viewers back to live). Kept as a path segment rather
+            than ?mode=edit because this route's query string is already the
+            user's namespace (variables, _tab, _token, _embed).
+
+            Both share the identical provider stack via `dashboardRoute()` — they
+            are the same page, so drifting providers between them would be a bug
+            waiting to happen. */}
+        <Route path="d/:id" element={dashboardRoute()} />
+        <Route path="d/:id/edit" element={dashboardRoute({ edit: true })} />
         {/* ── Dev only ─────────────────────────────────────────────────── */}
         <Route path="dev/illustrations" element={<IllustrationGallery />} />
 

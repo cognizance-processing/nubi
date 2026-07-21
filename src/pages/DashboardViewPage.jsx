@@ -34,12 +34,17 @@
  *   server independently verifies the token signature and re-enforces the lock.
  */
 
-import { useState, useEffect, useMemo, useCallback } from 'react'
-import { useParams, useLocation, Link, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, Pencil, Sun, Moon, ChevronRight, LayoutDashboard } from 'lucide-react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { useParams, useLocation, Link, useSearchParams, useNavigate } from 'react-router-dom'
+import { ArrowLeft, Pencil, Eye, Rocket, Sun, Moon, ChevronRight, LayoutDashboard } from 'lucide-react'
 import { get } from '../lib/api.js'
 import DashboardView from '../dashboards/DashboardView.jsx'
 import SpecRenderer from '../dashboards/SpecRenderer.jsx'
+import EditorShell from '../editor/EditorShell.jsx'
+import { useUi } from '../contexts/UiContext.jsx'
+import { useEnv } from '../contexts/EnvContext.jsx'
+import { pushToLive, resolveLiveEnvKey, resolveLiveRender, canPushToLive } from '../lib/liveBoard.js'
+import { toast } from '../components/ui/Toast.jsx'
 import ExportShareMenu from '../components/ExportShareMenu.jsx'
 import { extractVarsFromURL, applyVarToSearchParams } from '../dashboards/urlSync.js'
 import { decodeJwtPayload } from '../dashboards/embedLock.js'
@@ -114,17 +119,83 @@ export const SAMPLE_DASHBOARD_HTML = `
 // is the only way back in, so it always renders in that case.
 // ---------------------------------------------------------------------------
 
-function ViewToolbar({ backTo, title, boardId, spec, canEdit }) {
+/**
+ * ModeSwitch — the Live ↔ Edit control.
+ *
+ * This is the spine of the merged surface: one board, one URL, two modes. It
+ * mirrors the control every mature BI tool converged on (Power BI's Reading /
+ * Editing views, Looker Studio's View / Edit) rather than sending an author to a
+ * different page to change the thing they're looking at.
+ */
+function ModeSwitch({ mode, onChange }) {
+  const items = [
+    { id: 'live', label: 'Live', Icon: Eye, title: 'Live view — what viewers see' },
+    { id: 'edit', label: 'Edit', Icon: Pencil, title: 'Edit this dashboard' },
+  ]
+  return (
+    <div
+      className="flex h-8 rounded-lg border border-border bg-surface overflow-hidden shrink-0"
+      role="group"
+      aria-label="Dashboard mode"
+      data-testid="dashboard-mode-switch"
+    >
+      {items.map((it, i) => {
+        const active = mode === it.id
+        return (
+          <button
+            key={it.id}
+            type="button"
+            onClick={() => onChange(it.id)}
+            aria-pressed={active}
+            title={it.title}
+            data-testid={`dashboard-mode-${it.id}`}
+            className={[
+              'inline-flex items-center gap-1.5 px-2.5 sm:px-3 text-[13px] font-medium transition-all duration-150',
+              'focus:outline-none focus-visible:ring-inset focus-visible:ring-2 focus-visible:ring-ring/60',
+              i > 0 ? 'border-l border-border' : '',
+              active
+                ? 'bg-primary text-primary-fg'
+                : 'text-muted hover:text-fg hover:bg-surface-2',
+            ].join(' ')}
+          >
+            <it.Icon size={13} aria-hidden="true" />
+            <span className="hidden sm:inline">{it.label}</span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
+ * ViewToolbar — the single header for BOTH modes.
+ *
+ * In edit mode the embedded DashboardEditor portals its own toolbar into
+ * `editorSlotRef` (via UiContext's topbarSlot), so the board keeps ONE header
+ * instead of the old stack of two (EditorPage's route-level toolbar + the
+ * editor's portaled one). The view-mode actions (theme, share) collapse away in
+ * edit mode because the editor's toolbar already carries its own.
+ */
+function ViewToolbar({
+  backTo, title, boardId, spec, canEdit, mode, onModeChange, editorSlotRef, dirty,
+  isLive, liveVersion, pushing, onPushToLive,
+}) {
   const { activeOrg } = useOrg()
   const { activeProject } = useProject()
   const { theme, toggleTheme } = useTheme()
   const isDark = theme === 'dark'
+  const isEdit = mode === 'edit'
+
+  // Nothing to publish when the board is already live and the draft is clean.
+  // (A redundant push is harmless — checkpoint dedupes — but offering it invites
+  // the author to wonder whether they forgot something.)
+  const pushable = canPushToLive({ isLive, dirty })
 
   const orgProject = [activeOrg?.name, activeProject?.name].filter(Boolean).join(' / ')
 
   return (
     <header
-      className="sticky top-0 z-40 border-b border-border"
+      className="sticky top-0 z-40 border-b border-border shrink-0"
       style={{
         background: 'color-mix(in srgb, var(--surface) 82%, transparent)',
         backdropFilter: 'blur(14px) saturate(180%)',
@@ -141,7 +212,8 @@ function ViewToolbar({ backTo, title, boardId, spec, canEdit }) {
           <ArrowLeft size={16} aria-hidden="true" />
         </Link>
 
-        {/* Breadcrumb → board title */}
+        {/* Breadcrumb → board title. In edit mode the editor's own toolbar owns
+            the (editable) title, so we drop ours rather than show it twice. */}
         <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 min-w-0">
           <Link
             to={backTo}
@@ -150,7 +222,7 @@ function ViewToolbar({ backTo, title, boardId, spec, canEdit }) {
             <LayoutDashboard size={14} aria-hidden="true" className="opacity-70" />
             Dashboards
           </Link>
-          {orgProject && (
+          {orgProject && !isEdit && (
             <>
               <ChevronRight size={13} aria-hidden="true" className="hidden sm:block shrink-0" style={{ color: 'var(--text-subtle)' }} />
               <span
@@ -161,7 +233,7 @@ function ViewToolbar({ backTo, title, boardId, spec, canEdit }) {
               </span>
             </>
           )}
-          {title && (
+          {title && !isEdit && (
             <>
               <ChevronRight size={13} aria-hidden="true" className="hidden sm:block shrink-0" style={{ color: 'var(--text-subtle)' }} />
               <span className="text-sm font-semibold text-fg truncate min-w-0" title={title}>
@@ -171,36 +243,102 @@ function ViewToolbar({ backTo, title, boardId, spec, canEdit }) {
           )}
         </nav>
 
-        <span className="flex-1" />
+        {canEdit && (
+          <div className="shrink-0 ml-1">
+            <ModeSwitch mode={mode} onChange={onModeChange} />
+          </div>
+        )}
 
-        {/* Actions */}
-        <div className="flex items-center gap-1.5 shrink-0">
+        {/* Viewing live while holding unsaved edits is a real state (the editor
+            stays mounted across a mode flip so history survives) — say so rather
+            than let the author wonder why live doesn't show their change. */}
+        {!isEdit && dirty && (
+          <span
+            className="hidden md:inline-flex items-center gap-1 text-[11px] px-2 h-6 rounded-md border whitespace-nowrap shrink-0"
+            style={{ background: 'color-mix(in srgb, #f59e0b 8%, transparent)', color: '#b45309', borderColor: 'color-mix(in srgb, #f59e0b 25%, transparent)' }}
+            data-testid="dashboard-draft-pending"
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+            Unsaved edits
+          </span>
+        )}
+
+        {/* Live provenance: which version viewers are actually on. A board that
+            has never been pushed says so rather than implying it's published. */}
+        {!isEdit && canEdit && (
+          isLive
+            ? (
+              <span
+                className="hidden lg:inline-flex items-center gap-1.5 text-[11px] px-2 h-6 rounded-md border border-border text-muted whitespace-nowrap shrink-0"
+                title="Viewers are seeing this published version"
+                data-testid="dashboard-live-version"
+              >
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--success, #22c55e)' }} />
+                Live{liveVersion ? ` · v${liveVersion}` : ''}
+              </span>
+            )
+            : (
+              <span
+                className="hidden lg:inline-flex items-center gap-1.5 text-[11px] px-2 h-6 rounded-md border border-border text-muted whitespace-nowrap shrink-0"
+                title="This board has never been pushed live — viewers see the draft"
+                data-testid="dashboard-not-pushed"
+              >
+                Draft · not pushed
+              </span>
+            )
+        )}
+
+        {/* The editor's toolbar lands here in edit mode (createPortal via
+            UiContext.topbarSlot). Always mounted so the ref is attached before
+            the editor first renders and looks the slot up. */}
+        <div ref={editorSlotRef} className={isEdit ? 'flex-1 min-w-0 flex items-center' : 'hidden'} />
+
+        {!isEdit && <span className="flex-1" />}
+
+        {/* Push to live — edit mode's terminal action. Deliberately separate
+            from Save (which is a draft write) so publishing is always explicit,
+            the way Hex's Publish works. */}
+        {isEdit && canEdit && boardId && (
           <button
             type="button"
-            onClick={toggleTheme}
-            aria-pressed={isDark}
-            title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-            className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring/60"
+            onClick={onPushToLive}
+            disabled={pushing || !pushable}
+            data-testid="dashboard-push-live"
+            title={
+              pushable
+                ? 'Publish the current draft so viewers see it'
+                : `Live is already up to date${liveVersion ? ` (v${liveVersion})` : ''}`
+            }
+            className={[
+              'ml-1 shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[13px] font-medium',
+              'transition-all shadow-sm focus:outline-none focus:ring-2 focus:ring-ring/60',
+              pushing || !pushable
+                ? 'opacity-50 cursor-not-allowed'
+                : 'hover:opacity-90 active:scale-[0.98]',
+            ].join(' ')}
+            style={{ background: 'var(--primary)', color: 'var(--primary-fg)' }}
           >
-            {isDark ? <Sun size={15} /> : <Moon size={15} />}
+            <Rocket size={13} aria-hidden="true" />
+            <span className="hidden md:inline">{pushing ? 'Pushing…' : 'Push to live'}</span>
           </button>
+        )}
 
-          {boardId && <ExportShareMenu board={boardId} spec={spec} />}
+        {/* View-mode actions. Edit mode's equivalents live in the editor toolbar. */}
+        {!isEdit && (
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={toggleTheme}
+              aria-pressed={isDark}
+              title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+              className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring/60"
+            >
+              {isDark ? <Sun size={15} /> : <Moon size={15} />}
+            </button>
 
-          {canEdit && boardId && (
-            <>
-              <span className="w-px h-5 mx-1 bg-border hidden sm:block" aria-hidden="true" />
-              <Link
-                to={`/editor/${boardId}`}
-                className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg text-[13px] font-medium transition-all shadow-sm hover:opacity-90 active:scale-[0.98] focus:outline-none focus:ring-2 focus:ring-ring/60"
-                style={{ background: 'var(--primary)', color: 'var(--primary-fg)' }}
-              >
-                <Pencil size={13} aria-hidden="true" />
-                <span className="hidden sm:inline">Edit</span>
-              </Link>
-            </>
-          )}
-        </div>
+            {boardId && <ExportShareMenu board={boardId} spec={spec} />}
+          </div>
+        )}
       </div>
     </header>
   )
@@ -214,10 +352,12 @@ function ViewToolbar({ backTo, title, boardId, spec, canEdit }) {
 // DashboardViewPage
 // ---------------------------------------------------------------------------
 
-export default function DashboardViewPage() {
+export default function DashboardViewPage({ edit = false }) {
   const { id } = useParams()
   const location = useLocation()
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
+  const { setTopbarSlot } = useUi()
 
   // Full navigation chrome is suppressed only for a genuine filter-locked
   // embed view (a share link opened with ?_token=/&_embed=) — see the
@@ -228,8 +368,34 @@ export default function DashboardViewPage() {
   const isEmbedView = Boolean(searchParams.get('_token') || searchParams.get('_embed'))
   const backTo = location.state?.folder ? `/dashboards?folder=${location.state.folder}` : '/dashboards'
 
-  // Viewers (read-only) cannot edit — hide the "Edit in editor" link.
+  // Viewers (read-only) cannot edit — hide the mode switch entirely.
   const canWrite = useCanWrite()
+
+  // ── Live ↔ Edit mode ──────────────────────────────────────────────────────
+  // Mode is the route (/d/:id vs /d/:id/edit), so browser back leaves edit mode
+  // and a refresh reopens it. The sample board and legacy HTML boards have no
+  // spec for the editor to edit, so they are live-only.
+  const mode = edit ? 'edit' : 'live'
+
+  const handleModeChange = useCallback((next) => {
+    // Preserve the query string across a mode flip: variables/_tab are the
+    // author's current view of the board and shouldn't reset when they hit Edit.
+    const qs = searchParams.toString()
+    const suffix = qs ? `?${qs}` : ''
+    navigate(next === 'edit' ? `/d/${id}/edit${suffix}` : `/d/${id}${suffix}`, {
+      state: location.state,
+    })
+  }, [navigate, id, searchParams, location.state])
+
+  // The editor owns the draft; we only observe its dirty flag, to drive the
+  // header's "unsaved edits" pill when the author is looking at Live.
+  const [draftDirty, setDraftDirty] = useState(false)
+
+  // Once entered, the editor stays MOUNTED (hidden in live mode) so undo history
+  // and unsaved work survive a mode flip — flipping to Live to check something
+  // must not silently throw away edits.
+  const [editorMounted, setEditorMounted] = useState(edit)
+  useEffect(() => { if (edit) setEditorMounted(true) }, [edit])
 
   // What to render — 'spec' | 'html' | null (loading / fallback)
   const [renderMode, setRenderMode] = useState(null)
@@ -239,6 +405,71 @@ export default function DashboardViewPage() {
 
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
+
+  // ── Draft vs live ─────────────────────────────────────────────────────────
+  // Live mode serves the version pinned to the project's default environment.
+  // A board nobody has pushed yet has no pinned version, so `?env=` hands back
+  // the draft and `isLive` is false — which is why every pre-existing board
+  // keeps behaving exactly as it did before this feature.
+  const { environments } = useEnv()
+  const liveEnvKey = useMemo(() => resolveLiveEnvKey(environments), [environments])
+  const [isLive, setIsLive] = useState(false)
+  const [liveVersion, setLiveVersion] = useState(null)
+  const [pushing, setPushing] = useState(false)
+
+  // A save is a DRAFT write. It only changes what Live shows for a board that
+  // has never been pushed (where live === draft); once a board has a pinned
+  // version, Live must keep showing that version until the author pushes again.
+  // Getting this backwards would make "Push to live" decorative.
+  const handleEditorSaved = useCallback((board) => {
+    if (!isLive && board?.config?.spec) setSpec(board.config.spec)
+  }, [isLive])
+
+  // The editor hands us its save action (see DashboardEditor's onSetSave seam)
+  // so Push can flush the draft first. Held in a ref, not state, because it's an
+  // imperative handle rather than something we render from.
+  const editorSaveRef = useRef(null)
+  const registerEditorSave = useCallback((fn) => { editorSaveRef.current = fn }, [])
+
+  /**
+   * Push to live: flush the draft, then checkpoint + promote it.
+   *
+   * Saving first is not optional — checkpoint snapshots the SERVER's draft row,
+   * so publishing without flushing would quietly ship the previously-saved spec
+   * while the author watches their newest edits not appear.
+   */
+  const handlePushToLive = useCallback(async () => {
+    if (!boardId || pushing) return
+    setPushing(true)
+    try {
+      if (draftDirty && editorSaveRef.current) {
+        // Throws on failure → we abort rather than publish stale work.
+        await editorSaveRef.current()
+      }
+      const result = await pushToLive(boardId, { environments })
+      setIsLive(true)
+      setLiveVersion(result.version)
+
+      // Adopt the just-published spec as what Live renders. The draft and the
+      // live version are identical at this instant, so this is accurate — and it
+      // saves a refetch.
+      const board = await get(`/boards/${id}?env=${encodeURIComponent(liveEnvKey)}`)
+      const live = resolveLiveRender(board)
+      if (live.spec) { setSpec(live.spec); setRenderMode('spec') }
+      setIsLive(live.isLive)
+      setLiveVersion(live.version)
+
+      toast.success(
+        result.deduped
+          ? `Already live — nothing changed since v${result.version}.`
+          : `Pushed live${result.version ? ` as v${result.version}` : ''}.`
+      )
+    } catch (err) {
+      toast.error(err?.message || 'Push to live failed.')
+    } finally {
+      setPushing(false)
+    }
+  }, [boardId, id, pushing, draftDirty, environments, liveEnvKey])
 
   useEffect(() => {
     // Short-circuit for the built-in sample route
@@ -255,18 +486,25 @@ export default function DashboardViewPage() {
       setLoading(true)
       setError(null)
       try {
-        const board = await get(`/boards/${id}`)
+        // `?env=` asks the server for the version pinned to the live env, and
+        // transparently falls back to the draft (resolved_version: null) when
+        // nothing is pinned — see resources.py _apply_env_resolution.
+        const board = await get(`/boards/${id}?env=${encodeURIComponent(liveEnvKey)}`)
         if (cancelled) return
 
         setBoardId(board?.id ?? id)
 
-        if (board?.config?.spec) {
+        const live = resolveLiveRender(board)
+        setIsLive(live.isLive)
+        setLiveVersion(live.version)
+
+        if (live.spec) {
           // New spec path
-          setSpec(board.config.spec)
+          setSpec(live.spec)
           setRenderMode('spec')
-        } else if (board?.config?.html) {
+        } else if (live.html) {
           // Legacy HTML path
-          setHtml(board.config.html)
+          setHtml(live.html)
           setRenderMode('html')
         } else {
           // Board exists but has no content
@@ -290,7 +528,7 @@ export default function DashboardViewPage() {
 
     load()
     return () => { cancelled = true }
-  }, [id])
+  }, [id, liveEnvKey])
 
   // ---------------------------------------------------------------------------
   // Variable ↔ URL sync
@@ -395,12 +633,24 @@ export default function DashboardViewPage() {
   // Render states
   // ---------------------------------------------------------------------------
 
+  // The editor edits a spec — a legacy HTML board or the built-in sample has
+  // nothing for it to open, so those stay live-only.
   const canEdit = canWrite && renderMode === 'spec' && id !== 'sample'
+
+  // A viewer (or anyone) landing on /d/:id/edit for an uneditable board is sent
+  // back to live rather than shown a broken half-editor. Waits for `loading` so
+  // we don't bounce before renderMode is known. Backend enforces the same rule
+  // on save (app/auth/roles.py) — this is UX, not the security boundary.
+  useEffect(() => {
+    if (edit && !loading && !canEdit) {
+      navigate(`/d/${id}`, { replace: true, state: location.state })
+    }
+  }, [edit, loading, canEdit, navigate, id, location.state])
 
   if (loading) {
     return (
       <div data-testid="dashboard-view-page">
-        {!isEmbedView && <ViewToolbar backTo={backTo} title="" boardId={null} spec={null} canEdit={false} />}
+        {!isEmbedView && <ViewToolbar backTo={backTo} title="" boardId={null} spec={null} canEdit={false} mode="live" />}
         <div className="max-w-[110rem] mx-auto px-4 sm:px-6 lg:px-8 py-6" aria-busy="true" aria-label="Loading dashboard">
           {/* Title + tab row skeleton — mirrors the real board anatomy so the
               loaded page doesn't jump. */}
@@ -439,8 +689,10 @@ export default function DashboardViewPage() {
     )
   }
 
+  const isEdit = mode === 'edit' && canEdit
+
   return (
-    <div data-testid="dashboard-view-page">
+    <div className="flex flex-col min-h-screen" data-testid="dashboard-view-page" data-mode={isEdit ? 'edit' : 'live'}>
       {!isEmbedView && (
         <ViewToolbar
           backTo={backTo}
@@ -448,10 +700,40 @@ export default function DashboardViewPage() {
           boardId={id !== 'sample' ? boardId : null}
           spec={spec}
           canEdit={canEdit}
+          mode={isEdit ? 'edit' : 'live'}
+          onModeChange={handleModeChange}
+          editorSlotRef={setTopbarSlot}
+          dirty={draftDirty}
+          isLive={isLive}
+          liveVersion={liveVersion}
+          pushing={pushing}
+          onPushToLive={handlePushToLive}
         />
       )}
 
-      <div className="max-w-[110rem] mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      {/* ── Edit mode ──────────────────────────────────────────────────────
+          The editor owns the whole viewport below the header and portals its
+          toolbar up into it. Kept mounted but hidden when the author flips to
+          Live, so undo history and unsaved edits survive the round trip. */}
+      {editorMounted && (
+        <div
+          className={isEdit ? 'flex flex-col flex-1 min-h-0' : 'hidden'}
+          data-testid="dashboard-edit-surface"
+          aria-hidden={!isEdit}
+        >
+          <EditorShell
+            boardId={boardId ?? id}
+            onDirtyChange={setDraftDirty}
+            onSaved={handleEditorSaved}
+            onSetSave={registerEditorSave}
+          />
+        </div>
+      )}
+
+      {/* ── Live mode ──────────────────────────────────────────────────────
+          Renders the SAVED spec, never the editor's in-memory draft — that's
+          what makes "Live" an honest answer to "what do my viewers see?". */}
+      <div className={isEdit ? 'hidden' : 'max-w-[110rem] w-full mx-auto px-4 sm:px-6 lg:px-8 py-6'}>
 
       {/* Fallback / error notice */}
       {error && (

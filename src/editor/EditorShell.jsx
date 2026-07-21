@@ -20,12 +20,19 @@ import DashboardEditor from './DashboardEditor.jsx'
  * @param {{
  *   boardId?: string|null,
  *   onSaved?: (board: object) => void,
+ *   onDirtyChange?: (dirty: boolean) => void,
+ *   onSetSave?: (save: () => Promise<object>) => void,
  * }} props
  */
-export default function EditorShell({ boardId = null, onSaved }) {
+export default function EditorShell({ boardId = null, onSaved, onDirtyChange, onSetSave }) {
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden" data-testid="editor-shell">
-      <DashboardEditor boardId={boardId} onSaved={onSaved} />
+      <DashboardEditor
+        boardId={boardId}
+        onSaved={onSaved}
+        onDirtyChange={onDirtyChange}
+        onSetSave={onSetSave}
+      />
     </div>
   )
 }

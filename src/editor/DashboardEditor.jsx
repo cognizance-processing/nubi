@@ -1906,13 +1906,20 @@ function ToolbarPopover({ icon: Icon, label, title, testId, active, children }) 
  *   onSpecChange?: (spec: object) => void,
  * }} props
  */
-export default function DashboardEditor({ boardId = null, onSaved, onSpecChange, onSetSpec }) {
+export default function DashboardEditor({ boardId = null, onSaved, onSpecChange, onSetSpec, onDirtyChange, onSetSave }) {
   // ── History state ─────────────────────────────────────────────────────────
   const [hist, setHist] = useState(() => createHistory(DEFAULT_SPEC))
   const spec = hist.present
 
   const isDraggingRef = useRef(false)
   const frozenLayoutsRef = useRef(null)
+
+  // The loaded board's full `config`, kept so a save can merge `spec` back into
+  // it rather than replacing it. PUT /boards/:id overwrites `config` wholesale
+  // (resources.py update_resource), so sending a bare `{ spec }` silently drops
+  // every sibling key — `folderId` most visibly, which DashboardsPage writes
+  // alongside the spec. Empty on a new board; populated on load.
+  const boardConfigRef = useRef({})
 
   // ── Dirty tracking ────────────────────────────────────────────────────────
   // We track the spec at last save time to compute dirtyness.
@@ -1921,6 +1928,13 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
     if (savedSpecRef.current === null && spec.widgets.length === 0) return false
     return JSON.stringify(spec) !== JSON.stringify(savedSpecRef.current)
   }, [spec])
+
+  // Publish dirtyness to the host page (DashboardViewPage) so its header can
+  // warn that Live isn't showing the author's unsaved work. Read-only signal —
+  // the editor stays the owner of the draft.
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+  }, [dirty, onDirtyChange])
 
   // beforeunload guard
   useEffect(() => {
@@ -2254,6 +2268,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
     get(`/boards/${boardId}`)
       .then(board => {
         if (cancelled) return
+        boardConfigRef.current = board?.config ?? {}
         const loadedSpec = board?.config?.spec
         if (loadedSpec) {
           setHist(createHistory(loadedSpec))
@@ -2600,23 +2615,42 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
     setSaveError(null)
     try {
       let board
+      const config = { ...boardConfigRef.current, spec }
       if (savedBoardId) {
-        board = await put(`/boards/${savedBoardId}`, { name: spec.title, config: { spec } })
+        board = await put(`/boards/${savedBoardId}`, { name: spec.title, config })
       } else {
-        board = await post('/boards', { name: spec.title, config: { spec } })
+        board = await post('/boards', { name: spec.title, config })
         setSavedBoardId(board.id)
       }
+      boardConfigRef.current = board?.config ?? config
       savedSpecRef.current = spec  // mark clean
       toast.success('Dashboard saved')
       onSaved?.(board)
+      return board
     } catch (err) {
       const msg = err.message ?? 'Save failed.'
       setSaveError(msg)
       toast.error(msg)
+      // Rethrow so callers that chain off a save (e.g. the host page's
+      // "Push to live", which must save the draft first) can abort instead of
+      // publishing the previously-saved spec as if it were the new work.
+      throw err
     } finally {
       setSaving(false)
     }
   }
+
+  // Expose the save action to the host page (DashboardViewPage's "Push to live",
+  // which must flush the draft before publishing it). Mirrors the onSetSpec seam
+  // above. Routed through a ref so the handed-out function is stable across
+  // renders but always invokes the current handleSave (which closes over the
+  // live spec) — handing out handleSave directly would publish a stale closure.
+  const handleSaveRef = useRef(null)
+  handleSaveRef.current = handleSave
+  const invokeSave = useCallback(() => handleSaveRef.current?.(), [])
+  useEffect(() => {
+    onSetSave?.(invokeSave)
+  }, [onSetSave, invokeSave])
 
   // Save affordance shown while the Configure or Dashboard (layout) panel is
   // open, so committing a widget's setup or the grid/layout settings has an
@@ -2629,7 +2663,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         {dirty ? 'Unsaved changes' : 'All changes saved'}
       </span>
       <button
-        onClick={handleSave}
+        onClick={() => { handleSave().catch(() => {}) }}
         disabled={saving}
         data-testid="config-panel-save-btn"
         className={[
@@ -2997,7 +3031,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         <ToolbarDivider />
 
         <button
-          onClick={handleSave}
+          onClick={() => { handleSave().catch(() => {}) }}
           disabled={saving}
           data-testid="editor-save-btn"
           title={savedBoardId ? 'Save dashboard (⌘S)' : 'Create dashboard'}
