@@ -180,10 +180,14 @@ const DEFAULT_CASCADE_DEBOUNCE_MS = 200
  * spec — optional dashboard spec. When provided, the provider builds the
  *   cascading-filter dependency graph (§W4-G) so that changing one variable
  *   marks the dependent filter-option-queries stale and they refire to fetch
- *   fresh options (e.g. country → city). Cycles are REJECTED at build time;
- *   the error is surfaced via onFilterGraphError and the dashboard falls back
- *   to non-cascading behavior (every existing variable behavior is preserved
- *   when there are no cross-filter dependencies).
+ *   fresh options (e.g. country → city). Mutual cross-filter references
+ *   (A's options depend on B, B's options depend on A — common in legacy
+ *   boards with many cross-filtering dropdowns) are auto-broken inside
+ *   buildFilterGraph, not rejected: see filterGraph.js's module docstring.
+ *   onFilterGraphError only fires for the rare case a cycle survives that
+ *   auto-break, in which case the dashboard falls back to non-cascading
+ *   behavior (every existing variable behavior is preserved when there are
+ *   no cross-filter dependencies).
  *
  * cascadeDebounceMs — coalesce window for the downstream refire (default 200ms).
  */

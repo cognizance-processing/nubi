@@ -183,11 +183,13 @@ test('topological order places country before city option-query before city var'
 })
 
 // ---------------------------------------------------------------------------
-// buildFilterGraph — cycle rejection
+// buildFilterGraph — mutual cross-filter cycles are auto-broken, not rejected
 // ---------------------------------------------------------------------------
 
-test('a circular filter dependency throws FilterGraphCycleError', () => {
-  // A's options depend on B, B's options depend on A.
+test('a mutual cross-filter cycle builds without throwing (auto-broken)', () => {
+  // A's options depend on B, B's options depend on A — legacy CA&S-style
+  // cross-filtering. This used to throw FilterGraphCycleError; it must now
+  // resolve, because refreshing options is not the same as changing a value.
   const spec = {
     widgets: [
       {
@@ -204,12 +206,72 @@ test('a circular filter dependency throws FilterGraphCycleError', () => {
       },
     ],
   }
-  assert.throws(() => buildFilterGraph(spec), (err) => {
-    assert.ok(err instanceof FilterGraphCycleError)
-    assert.ok(Array.isArray(err.cycle) && err.cycle.length >= 2)
-    assert.match(err.message, /cycle detected/i)
-    return true
-  })
+  const g = buildFilterGraph(spec)
+  assert.equal(g.order.length, g.nodes.size)
+
+  // Reference edges (option-refresh fan-out) survive for BOTH directions —
+  // changing either filter still refreshes the other's option list.
+  assert.deepEqual(g.varToOptionQueries.get('a'), ['opt:B'])
+  assert.deepEqual(g.varToOptionQueries.get('b'), ['opt:A'])
+
+  // Exactly one of the two cascade edges (opt → var) had to be dropped to
+  // break the cycle; the other survives untouched.
+  assert.equal(g.meshBrokenOptIds.size, 1)
+  const brokenId = [...g.meshBrokenOptIds][0]
+  assert.ok(brokenId === 'opt:A' || brokenId === 'opt:B')
+  const survivorId = brokenId === 'opt:A' ? 'opt:B' : 'opt:A'
+  const survivorVar = survivorId === 'opt:A' ? 'var:a' : 'var:b'
+  assert.ok(g.edges.get(survivorId).has(survivorVar))
+})
+
+test('a real 23-filter cross-filter mesh (CA&S-shaped) resolves without throwing', () => {
+  // Every filter's option-query reads every OTHER filter's var — the actual
+  // shape found in legacy CA&S DIGITAL boards (23 BasicAutoCompleteFilter
+  // dropdowns, each guarded on ~16-18 sibling vars). One big SCC.
+  const names = [
+    'Buying_Group', 'Sub_Buying_Group', 'Brand', 'Sub_Channel', 'Town',
+    'Storage_Type', 'Supplier', 'Province', 'Channel', 'Sub_Brand',
+    'Division', 'Region', 'Country', 'Store_Classification',
+    'Product_Category', 'Product_Sub_Category', 'OPCO2', 'Product',
+    'Currency', 'Exchange_Rate', 'Month_Year',
+  ]
+  const widgets = names.map((name) => ({
+    id: `f_${name}`,
+    type: 'filter',
+    target_var: name,
+    props: {
+      options_query_id: `q_${name}`,
+      options_params: Object.fromEntries(
+        names.filter((n) => n !== name).map((n) => [n, { ref: n }]),
+      ),
+    },
+  }))
+
+  const g = buildFilterGraph({ widgets })
+  assert.equal(g.order.length, g.nodes.size)
+  // Full mesh: only the last-resolved filter keeps its cascade edge.
+  assert.equal(g.meshBrokenOptIds.size, names.length - 1)
+  // Every filter's reference edges are intact regardless of mesh-breaking —
+  // changing any one still refreshes every sibling's options.
+  for (const name of names) {
+    const opts = g.varToOptionQueries.get(name) ?? []
+    assert.equal(opts.length, names.length - 1)
+  }
+})
+
+test('a spec with no cross-filter references produces an empty meshBrokenOptIds', () => {
+  // Sanity check that mesh-breaking is a no-op off the happy path: a
+  // trivial, non-cyclic spec must not report any broken cascade edges.
+  const g = buildFilterGraph({ widgets: [{ id: 'f', type: 'filter', target_var: 'x' }] })
+  assert.equal(g.meshBrokenOptIds.size, 0)
+})
+
+test('the linear country → city cascade is unaffected by mesh-breaking', () => {
+  // Regression guard: mesh-breaking must only ever engage when a cycle is
+  // actually detected. A non-cyclic cascade graph keeps every cascade edge.
+  const g = buildFilterGraph(cascadeSpec())
+  assert.equal(g.meshBrokenOptIds.size, 0)
+  assert.ok(g.edges.get('opt:cityFilter').has('var:city'))
 })
 
 // ---------------------------------------------------------------------------

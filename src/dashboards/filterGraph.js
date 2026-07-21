@@ -6,10 +6,42 @@
  * (e.g. the `city` filter's options) and widget-queries must refire — and in
  * what order.
  *
- * Decision: CYCLES ARE REJECTED at graph-build time (not auto-broken). A circular
- * filter dependency (A's options depend on B, B's options depend on A) has no
- * well-defined evaluation order, so `buildFilterGraph` throws a `FilterGraphCycleError`
- * naming the cycle.
+ * Decision: MUTUAL CROSS-FILTER CYCLES ARE AUTO-BROKEN, not rejected (revised —
+ * see below). A circular filter dependency (A's options depend on B, B's options
+ * depend on A) is a legitimate, common pattern (legacy CA&S-style boards ship
+ * 20+ dropdowns that all cross-filter each other's option lists) and has no
+ * well-defined single evaluation order — but it doesn't need one, because
+ * REFRESHING A FILTER'S OPTIONS DOES NOT CHANGE ITS SELECTED VALUE. Only a
+ * user action (or an option-list refresh that invalidates the current
+ * selection) changes a variable's value, and neither of those is itself
+ * triggered by another filter's option-query running.
+ *
+ * So the graph distinguishes two edge roles that used to be conflated:
+ *   - REFERENCE edges (var → option-query, tracked in `varToOptionQueries`):
+ *     "when X changes, refresh W's option list". These may freely form cycles
+ *     — they're a fan-out lookup, never topologically sorted.
+ *   - CASCADE edges (option-query → var, in `edges`/`order`): "W's options
+ *     settled, so the variable it writes is now orderable relative to its
+ *     consumers". These MUST stay acyclic — they feed `order`/`dirtySubgraph`.
+ *
+ * By construction in this module, option-query nodes are the only nodes with
+ * an outgoing var edge, so every possible cycle strictly alternates
+ * var → option-query → var → option-query → … — i.e. every cycle IS a mutual
+ * cross-filter reference. `buildFilterGraph` breaks these automatically: when
+ * a cycle remains after Kahn's sort, it drops the CASCADE edge (not the
+ * reference edge) of one option-query on the cycle and retries, repeating
+ * until the graph is acyclic. Reference edges are never touched, so cascading
+ * option refresh (`varToOptionQueries`) still works for every filter — only
+ * the "this filter's value should be treated as changed too" propagation is
+ * dropped for the filters that would otherwise deadlock the ordering.
+ * Broken cascade edges are recorded in `meshBrokenOptIds` (Set of `opt:<id>`)
+ * for callers that want to know which filters are mesh members.
+ *
+ * If a cycle somehow remains after every option-query cascade edge on it has
+ * been tried (shouldn't happen given the node/edge model above, but the loop
+ * is capped rather than infinite), `buildFilterGraph` throws
+ * `FilterGraphCycleError` as a last resort — so a genuinely unresolvable graph
+ * still fails loudly instead of silently producing a bad order.
  *
  * Node kinds
  * ----------
@@ -118,8 +150,16 @@ function optionsParamsOf(widget) {
  *   edges: Map<string, Set<string>>,        // adjacency: node id → dependent node ids
  *   varToOptionQueries: Map<string,string[]>, // var name → option-query node ids that read it
  *   order: string[],                          // a valid full topological order
+ *   meshBrokenOptIds: Set<string>,            // opt:<widgetId> nodes whose cascade edge
+ *                                              // (option-query → var) was dropped to break a
+ *                                              // mutual cross-filter cycle. Their reference
+ *                                              // edges (varToOptionQueries) are untouched — the
+ *                                              // filter's options still refresh normally, it just
+ *                                              // no longer implies its VALUE changed for ordering
+ *                                              // purposes. Empty for graphs with no cross-filter
+ *                                              // mesh.
  * }}
- * @throws {FilterGraphCycleError} if the dependency graph contains a cycle.
+ * @throws {FilterGraphCycleError} only if a cycle survives auto-breaking — see module docstring.
  */
 export function buildFilterGraph(spec) {
   const nodes = new Map()
@@ -206,18 +246,21 @@ export function buildFilterGraph(spec) {
     }
   }
 
-  // 3. Cycle detection (Kahn). Reject — do NOT auto-break.
-  const order = topoSortOrThrow(nodes, edges)
+  // 3. Cycle resolution (Kahn + auto-break). Mutual cross-filter references
+  //    are expected (see module docstring) and are broken automatically by
+  //    dropping cascade edges, not rejected outright.
+  const { order, meshBrokenOptIds } = resolveGraphOrder(nodes, edges)
 
-  return { nodes, edges, varToOptionQueries, order }
+  return { nodes, edges, varToOptionQueries, order, meshBrokenOptIds }
 }
 
 /**
- * Kahn topological sort. Returns a full order on success; on a remaining cycle
- * it locates one concrete cycle (DFS over the unresolved subgraph) and throws
- * a FilterGraphCycleError naming it.
+ * Kahn topological sort attempt. Never throws — reports success/failure so
+ * the caller can break a cycle and retry.
+ *
+ * @returns {{ok:true, order:string[]} | {ok:false, cycle:string[]}}
  */
-function topoSortOrThrow(nodes, edges) {
+function tryTopoSort(nodes, edges) {
   const indeg = new Map()
   for (const id of nodes.keys()) indeg.set(id, 0)
   for (const id of edges.keys()) if (!indeg.has(id)) indeg.set(id, 0)
@@ -256,9 +299,45 @@ function topoSortOrThrow(nodes, edges) {
     // Cycle remains: find one concrete loop among nodes with indeg > 0.
     const stuck = new Set([...indeg.keys()].filter((id) => indeg.get(id) > 0))
     const cycle = findOneCycle(stuck, edges)
-    throw new FilterGraphCycleError(cycle)
+    return { ok: false, cycle }
   }
-  return order
+  return { ok: true, order }
+}
+
+/**
+ * Resolve a full firing order, auto-breaking mutual cross-filter cycles.
+ *
+ * Every cycle in this graph strictly alternates var → option-query → var
+ * (option-query nodes are the only ones with an outgoing var edge — see
+ * module docstring), so any remaining cycle can always be broken by dropping
+ * one option-query's CASCADE edge (its `writesVar` edge, not its reference
+ * edges). Repeats until acyclic; each break removes exactly one edge, so this
+ * terminates in at most `nodes.size` iterations. Mutates `edges` in place.
+ *
+ * @returns {{order:string[], meshBrokenOptIds:Set<string>}}
+ * @throws {FilterGraphCycleError} only if a cycle survives with no
+ *   option-query node to break (not reachable via the public API today, but
+ *   kept as a loud failure instead of an infinite loop / silent bad order).
+ */
+function resolveGraphOrder(nodes, edges) {
+  const meshBrokenOptIds = new Set()
+  const maxIterations = nodes.size + 5
+
+  for (let i = 0; i < maxIterations; i++) {
+    const result = tryTopoSort(nodes, edges)
+    if (result.ok) return { order: result.order, meshBrokenOptIds }
+
+    const optIdOnCycle = result.cycle.find((id) => id.startsWith('opt:'))
+    const targetVar = optIdOnCycle ? nodes.get(optIdOnCycle)?.writesVar : undefined
+    const removed = optIdOnCycle && targetVar
+      ? edges.get(optIdOnCycle)?.delete(VAR(targetVar))
+      : false
+
+    if (!removed) throw new FilterGraphCycleError(result.cycle)
+    meshBrokenOptIds.add(optIdOnCycle)
+  }
+
+  throw new FilterGraphCycleError(['<cross-filter mesh did not converge>'])
 }
 
 /** DFS over the stuck subgraph to extract one concrete cycle (closed loop). */
