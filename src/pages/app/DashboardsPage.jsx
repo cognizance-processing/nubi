@@ -44,6 +44,8 @@ import * as api from '../../lib/api.js'
 import { checkpoint, listEnvironments } from '../../lib/versions.js'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import PromoteDialog from '../../components/app/PromoteDialog.jsx'
+import BoardThumbnail from '../../components/app/BoardThumbnail.jsx'
+import { buildMiniature } from '../../dashboards/specMiniature.js'
 import DangerConfirmDialog from '../../components/app/DangerConfirmDialog.jsx'
 import { toast } from '../../components/ui/Toast.jsx'
 import {
@@ -321,18 +323,92 @@ function ThumbnailPattern() {
   )
 }
 
+/**
+ * CardThumbnail — the board, shown as a page.
+ *
+ * The dashboard render is presented like a sheet of paper floating on a tinted
+ * backdrop: the render keeps its own aspect and is shown WHOLE (never cropped),
+ * the board's identity gradient survives only as a soft wash behind it, and a
+ * shadow lifts the page off that wash.
+ *
+ * Why whole and not filled-to-frame: `object-cover` would crop a wide board's
+ * left/right edges — quietly amputating real widgets (the Total Sales KPI, say).
+ * A card exists to answer "which dashboard is this?", and a cropped board is a
+ * worse answer than a slightly letterboxed one. The server caps the render's
+ * aspect (_THUMB_MAX_HEIGHT_PX) so the letterbox stays small.
+ *
+ * The earlier treatment put a blurred glass pane over a full-bleed gradient.
+ * That made sense when the content was a monochrome wireframe; once the content
+ * is a real, white, densely-coloured dashboard it was just noise competing with
+ * the thing you're meant to be looking at — thirteen loud gradients per screen.
+ *
+ * BoardThumbnail is itself two layers: the spec-derived <BoardMiniature> (drawn
+ * instantly from the widgets' real grid positions) and, swapped in when it
+ * arrives, the board rendered server-side with its real data. See
+ * BoardThumbnail.jsx for why the real render can't be the thing a card waits on.
+ *
+ * Falls back to the icon treatment when there's no truthful layout to show:
+ * legacy HTML boards (no spec) and specs whose widgets carry no geometry.
+ */
 function CardThumbnail({ board }) {
   const isHtml = Boolean(board.config?.html)
+  // Ask the pure model, not the component — calling BoardMiniature() directly
+  // would run its hooks inside this component. `buildMiniature` returns null for
+  // exactly the boards with no truthful layout (no spec / no geometry), which is
+  // the same rule the component itself uses to bow out.
+  const hasLayout = !isHtml && buildMiniature(board.config?.spec) !== null
+
+  if (!hasLayout) {
+    return (
+      <div
+        className="relative w-full h-[6.5rem] overflow-hidden flex items-center justify-center"
+        style={{ background: cardGradient(board.id) }}
+      >
+        <ThumbnailPattern />
+        <div className="relative z-10 flex items-center justify-center w-9 h-9 rounded-xl bg-white/15 backdrop-blur-sm">
+          {isHtml
+            ? <Code2 size={18} className="text-white" aria-hidden="true" />
+            : <BarChart2 size={18} className="text-white" aria-hidden="true" />}
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div
-      className="relative w-full h-[6.5rem] overflow-hidden flex items-center justify-center"
-      style={{ background: cardGradient(board.id) }}
-    >
-      <ThumbnailPattern />
-      <div className="relative z-10 flex items-center justify-center w-9 h-9 rounded-xl bg-white/15 backdrop-blur-sm">
-        {isHtml
-          ? <Code2 size={18} className="text-white" aria-hidden="true" />
-          : <BarChart2 size={18} className="text-white" aria-hidden="true" />}
+    // 16:9 rather than something squarer: a real board's render lands between
+    // ~1.4:1 (tall, height-capped by the server) and ~2.2:1 (a short board), and
+    // 16:9 sits close enough to both that neither extreme carries much dead
+    // letterbox once contained.
+    <div className="relative w-full aspect-video overflow-hidden bg-surface-2">
+      {/* Identity wash — the per-board gradient, dialled from a full-bleed
+          background down to a soft corner glow. Still enough to tell two cards
+          apart at a glance; no longer shouting over the dashboard itself. */}
+      <div
+        className="absolute inset-0 opacity-[0.22] dark:opacity-[0.3]"
+        style={{ background: cardGradient(board.id) }}
+        aria-hidden="true"
+      />
+      {/* Fade the wash out toward the middle so the page reads against a calm
+          backdrop rather than a saturated one. */}
+      <div
+        className="absolute inset-0"
+        style={{ background: 'radial-gradient(120% 100% at 50% 0%, transparent 30%, var(--surface-2) 100%)' }}
+        aria-hidden="true"
+      />
+
+      {/* The page. Insets leave the wash visible as a frame; the shadow lifts it. */}
+      <div className="absolute inset-x-3 top-3 bottom-0">
+        <div
+          className="w-full h-full rounded-t-md overflow-hidden transition-transform duration-300 ease-out group-hover:-translate-y-0.5"
+          style={{
+            border: '1px solid var(--border)',
+            borderBottom: 'none',
+            boxShadow: '0 6px 20px rgba(0,0,0,0.18)',
+            background: 'var(--surface)',
+          }}
+        >
+          <BoardThumbnail boardId={board.id} spec={board.config?.spec} />
+        </div>
       </div>
     </div>
   )
@@ -524,9 +600,54 @@ function BoardCard({ board, onDeleted, onRestored, canWrite, environments, stric
           e.dataTransfer.effectAllowed = 'move'
         }}
       >
-        <Link to={`/d/${board.id}`} state={linkState} className="block" tabIndex={-1} aria-hidden="true">
-          <CardThumbnail board={board} />
-        </Link>
+        {/* Picture + its hover actions. The actions are a SIBLING of the link,
+            not a child — a link inside a link is invalid HTML and browsers
+            resolve it unpredictably. */}
+        <div className="relative">
+          <Link to={`/d/${board.id}`} state={linkState} className="block" tabIndex={-1} aria-hidden="true">
+            <CardThumbnail board={board} />
+          </Link>
+
+          {/* Actions live over the picture rather than in the body: parked at
+              the bottom of the card they reserved permanent empty space on every
+              card (opacity alone doesn't reclaim layout), which read as a void.
+              Here they cost nothing until wanted. Kept mounted (opacity, never
+              display:none) so they stay tabbable; focus-within reveals them for
+              keyboard users and hover:none devices always show them. */}
+          <div className="absolute inset-x-0 bottom-0 p-2.5 flex gap-2 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity duration-200">
+            {/* Scrim: the picture underneath is arbitrary board content, so the
+                buttons need their own contrast floor. */}
+            <div
+              className="absolute inset-x-0 bottom-0 h-20 pointer-events-none"
+              style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.55), transparent)' }}
+              aria-hidden="true"
+            />
+            <Link
+              to={`/d/${board.id}`}
+              state={linkState}
+              className="relative flex items-center gap-1.5 flex-1 justify-center h-8 rounded-lg bg-primary text-primary-fg text-xs font-medium hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <ExternalLink size={12} aria-hidden="true" />
+              Open
+            </Link>
+            {canWrite && (
+              <Link
+                to={`/d/${board.id}/edit`}
+                className="relative flex items-center gap-1.5 flex-1 justify-center h-8 rounded-lg text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                style={{
+                  background: 'color-mix(in srgb, var(--surface) 88%, transparent)',
+                  border: '1px solid var(--border)',
+                  color: 'var(--fg)',
+                  backdropFilter: 'blur(6px)',
+                  WebkitBackdropFilter: 'blur(6px)',
+                }}
+              >
+                <Pencil size={12} aria-hidden="true" />
+                Edit
+              </Link>
+            )}
+          </div>
+        </div>
 
         <div className="nubi-resource-card-body">
           <div className="flex items-start justify-between gap-2 min-w-0">
@@ -545,7 +666,7 @@ function BoardCard({ board, onDeleted, onRestored, canWrite, environments, stric
             </div>
             {canWrite && (
               <CardMenu
-                onEdit={() => navigate(`/editor/${board.id}`)}
+                onEdit={() => navigate(`/d/${board.id}/edit`)}
                 onCheckpoint={handleCheckpoint}
                 onHistory={() => setHistoryOpen(true)}
                 onPromote={() => setPromoteOpen(true)}
@@ -558,25 +679,6 @@ function BoardCard({ board, onDeleted, onRestored, canWrite, environments, stric
             )}
           </div>
 
-          <div className="flex gap-2 mt-auto">
-            <Link
-              to={`/d/${board.id}`}
-              state={linkState}
-              className="flex items-center gap-1.5 flex-1 justify-center h-8 rounded-xl bg-primary text-primary-fg text-xs font-medium hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <ExternalLink size={12} aria-hidden="true" />
-              Open
-            </Link>
-            {canWrite && (
-              <Link
-                to={`/editor/${board.id}`}
-                className="flex items-center gap-1.5 flex-1 justify-center h-8 rounded-xl border border-border bg-surface-2 text-fg text-xs font-medium hover:bg-surface-2/60 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Pencil size={12} aria-hidden="true" />
-                Edit
-              </Link>
-            )}
-          </div>
         </div>
       </article>
 
@@ -679,7 +781,7 @@ function BoardListRow({ board, canWrite, selected, onToggle, strictEnv, linkStat
         </Link>
         {canWrite && (
           <Link
-            to={`/editor/${board.id}`}
+            to={`/d/${board.id}/edit`}
             title="Edit"
             aria-label={`Edit ${board.name || 'Untitled dashboard'}`}
             className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
