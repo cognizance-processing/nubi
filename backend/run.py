@@ -6,6 +6,7 @@
     ./run.py --no-reload     # disable autoreload (production-ish)
     ./run.py --worker        # run the flows worker (worker.py) instead
     ./run.py --no-install    # skip the dependency install step (assume deps present)
+    ./run.py --no-sims       # skip the local-sims hook even if sims.local exists
 
 On first run this creates a virtualenv at <repo-root>/.venv (Python 3.13, the
 version the project targets — see the Dockerfiles) and installs
@@ -16,6 +17,14 @@ otherwise falls back to the stdlib `venv` module.
 
 Configuration is read from a .env file at the repo root (see .env.example).
 Works no matter what directory you invoke it from.
+
+Optional local-sims hook: if <repo-root>/sims.local exists, its first line is
+run as a background command before the API starts (matched by *.local in
+.gitignore, so it's never committed — this repo is public). Use it to bring
+up whatever your own machine needs alongside the backend (a BigQuery/other
+emulator, a docker-based datastore sim, etc.) without baking any
+machine-specific paths or credentials into this script. Nothing runs unless
+you create that file yourself.
 """
 
 from __future__ import annotations
@@ -70,6 +79,28 @@ def _reexec_in_venv(py: Path) -> None:
     os.execve(str(py), [str(py), str(Path(__file__).resolve()), *sys.argv[1:]], env)
 
 
+def _run_sims_hook() -> None:
+    """Best-effort: fire-and-forget <repo-root>/sims.local's first line, if present.
+
+    Gitignored (*.local), never committed, purely opt-in per-machine. Any
+    failure here must never block the backend from starting.
+    """
+    sims_file = ROOT / "sims.local"
+    if not sims_file.exists():
+        return
+    try:
+        cmd = sims_file.read_text().splitlines()[0].strip()
+    except (OSError, IndexError):
+        return
+    if not cmd:
+        return
+    print(f"==> sims.local found — launching: {cmd}")
+    try:
+        subprocess.Popen(cmd, shell=True, cwd=str(ROOT), start_new_session=True)
+    except OSError as exc:
+        print(f"!!  sims.local hook failed to launch: {exc}", file=sys.stderr)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the Nubi backend")
     parser.add_argument("--host", default="0.0.0.0")
@@ -79,6 +110,8 @@ def main() -> int:
                         help="skip dependency install")
     parser.add_argument("--worker", action="store_true",
                         help="run the flows worker instead of the API server")
+    parser.add_argument("--no-sims", dest="sims", action="store_false",
+                        help="skip the sims.local hook even if the file exists")
     args = parser.parse_args()
 
     # Bootstrap into the venv on first pass, then re-exec ourselves inside it.
@@ -89,6 +122,9 @@ def main() -> int:
     if not (ROOT / ".env").exists():
         print("!!  No .env found at repo root — copy .env.example to .env first.\n"
               "    cp .env.example .env", file=sys.stderr)
+
+    if args.sims and not args.worker:
+        _run_sims_hook()
 
     if args.worker:
         cmd = [sys.executable, "worker.py"]
