@@ -75,7 +75,11 @@ import QueryCodeView from './QueryCodeView.jsx'
 import DataTable from '../../components/DataTable.jsx'
 import PythonCell from '../../components/PythonCell.jsx'
 import { runArrowQueryById, runArrowQuery, registerArrowTable, runLocalSqlForCell } from '../../lib/wasmRuntime.js'
-import { get, post, registerQuery, listConnectors } from '../../lib/api.js'
+import { get, post, registerQuery, listConnectors, listQueryWidgetUsages } from '../../lib/api.js'
+import TableWidget from '../../dashboards/widgets/TableWidget.jsx'
+import ChartWidget from '../../dashboards/widgets/ChartWidget.jsx'
+import KpiWidget from '../../dashboards/widgets/KpiWidget.jsx'
+import { VariableProvider } from '../../dashboards/VariableStore.jsx'
 import { checkpoint, restoreVersion } from '../../lib/versions.js'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
@@ -653,6 +657,142 @@ function CacheBadge({ status }) {
 }
 
 // ---------------------------------------------------------------------------
+// Results tabs — Results (raw DataTable, existing) | Preview (demo widget) |
+// Connected Widgets (every board widget referencing this saved query)
+// ---------------------------------------------------------------------------
+
+const PREVIEW_TYPES = [
+  { value: 'table', label: 'Table' },
+  { value: 'chart', label: 'Bar Chart' },
+  { value: 'kpi', label: 'KPI' },
+]
+
+/** True for Arrow field types that hold a plottable number (Int, Float, Decimal variants). */
+function isNumericField(field) {
+  return /Int|Float|Decimal/.test(field.type.toString())
+}
+
+/**
+ * Build the synthetic widget spec fed to TableWidget/ChartWidget/KpiWidget.
+ * `table` (an Arrow table, or undefined before the query has been run) is
+ * passed separately as `providerTable` -- these widgets skip their own fetch
+ * and render whatever table they're handed (the BET-3 DataProvider path), so
+ * this reuses the exact same query result the Results tab already shows.
+ */
+function buildDemoWidget(previewType, table) {
+  if (previewType === 'chart') {
+    const fields = table?.schema?.fields ?? []
+    const xField = fields.find(f => !isNumericField(f)) ?? fields[0]
+    const yField = fields.find(isNumericField)
+    return { id: 'demo-chart', type: 'chart', chart_type: 'bar', encoding: { x: xField?.name, y: yField?.name } }
+  }
+  if (previewType === 'kpi') {
+    const fields = table?.schema?.fields ?? []
+    const valueField = fields.find(isNumericField) ?? fields[0]
+    return { id: 'demo-kpi', type: 'kpi', encoding: { value: valueField?.name } }
+  }
+  return { id: 'demo-table', type: 'table' }
+}
+
+function QueryPreviewTab({ table }) {
+  const [previewType, setPreviewType] = useState('table')
+  const demoWidget = buildDemoWidget(previewType, table)
+
+  return (
+    <div className="px-3 pb-3">
+      <div className="flex items-center gap-1.5 mb-3">
+        {PREVIEW_TYPES.map(t => (
+          <button
+            key={t.value}
+            onClick={() => setPreviewType(t.value)}
+            className={`px-2.5 py-1 text-[11px] font-medium rounded-full border transition-colors ${
+              previewType === t.value
+                ? 'bg-primary text-primary-fg border-primary'
+                : 'border-border text-muted hover:text-fg'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {table ? (
+        // VariableProvider is otherwise unused here -- providerTable already
+        // supplies the data -- but TableWidget/ChartWidget/KpiWidget call
+        // useResolvedParams() unconditionally (hooks can't be conditional),
+        // and that hook throws outside a VariableProvider ancestor.
+        <VariableProvider>
+          <div style={{ height: 320 }}>
+            {demoWidget.type === 'table' && <TableWidget widget={demoWidget} providerTable={table} />}
+            {demoWidget.type === 'chart' && <ChartWidget widget={demoWidget} providerTable={table} />}
+            {demoWidget.type === 'kpi' && <KpiWidget widget={demoWidget} providerTable={table} />}
+          </div>
+        </VariableProvider>
+      ) : (
+        <p className="text-[11px] text-muted text-center py-10">Run the query to see a preview.</p>
+      )}
+    </div>
+  )
+}
+
+function ConnectedWidgetsTab({ queryId }) {
+  const [usages, setUsages] = useState(null) // null = loading
+  const [loadError, setLoadError] = useState(null)
+
+  useEffect(() => {
+    if (!queryId) return
+    let cancelled = false
+    setUsages(null)
+    setLoadError(null)
+    listQueryWidgetUsages(queryId)
+      .then(data => { if (!cancelled) setUsages(data) })
+      .catch(err => { if (!cancelled) setLoadError(err.message) })
+    return () => { cancelled = true }
+  }, [queryId])
+
+  if (!queryId) {
+    return <p className="text-[11px] text-muted text-center py-10 px-3">Save this query to see which widgets use it.</p>
+  }
+  if (usages === null) {
+    return (
+      <div className="flex items-center gap-2 text-[11px] text-muted py-10 justify-center">
+        <Loader2 size={11} className="animate-spin" /> Loading connected widgets…
+      </div>
+    )
+  }
+  if (loadError) {
+    return <p className="text-[11px] text-muted text-center py-10">Failed to load: {loadError}</p>
+  }
+  if (usages.length === 0) {
+    return <p className="text-[11px] text-muted text-center py-10">Not used by any widgets yet.</p>
+  }
+  return (
+    <ul className="divide-y divide-border px-3 pb-3">
+      {usages.map(u => (
+        <li key={`${u.board_id}-${u.widget_id}`}>
+          {/* Links back to the board — the return leg of the seam, so impact
+              analysis ("what breaks if I change this SQL?") is one click, not
+              a manual hunt through the dashboard list. */}
+          <Link
+            to={`/d/${u.board_id}/edit`}
+            className="py-2 flex items-center justify-between gap-3 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+          >
+            <div className="min-w-0">
+              <p className="text-xs text-fg truncate group-hover:text-primary group-hover:underline">
+                {u.board_name || u.board_id}
+              </p>
+              <p className="text-[10px] font-mono text-muted truncate">{u.widget_id}</p>
+            </div>
+            <span className="shrink-0 text-[10px] px-2 py-0.5 rounded-full bg-surface-2 text-muted">
+              {u.widget_type}
+            </span>
+          </Link>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // ConnectorPicker
 // ---------------------------------------------------------------------------
 
@@ -860,6 +1000,12 @@ function ScratchSqlCell({
         res = await runLocalSqlForCell(sql)
       } else {
         res = await runArrowQuery(sql, undefined, { datastoreId: datastoreId || undefined })
+      }
+      // Surface a failed query as the cell's error rather than an empty grid.
+      if (res?.error) {
+        setRunError(res.error.message)
+        setResult(null)
+        return
       }
       setResult(res)
       // Register result in DuckDB-WASM for downstream cells
@@ -1231,6 +1377,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
     const draft = metricToDraft(query?.metric, query?.name)
     setMetricDraft(draft)
     setMetricCollapsed(!draft.enabled)
+    setRightPanelTab('preview')
   }, [query?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-sync params list from SQL {{placeholders}}.
@@ -1292,6 +1439,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState(null)
   const [runError, setRunError] = useState(null)
+  const [rightPanelTab, setRightPanelTab] = useState('preview') // 'preview' | 'widgets' — the persistent right column
 
   // ── Save state ──────────────────────────────────────────────────────────
   const [showSaveDialog, setShowSaveDialog] = useState(false)
@@ -1432,6 +1580,12 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
         })
       } else {
         res = await runArrowQuery(sql, undefined, { datastoreId: datastoreId || undefined })
+      }
+      // Surface a failed query as the run error rather than an empty grid.
+      if (res?.error) {
+        setRunError(res.error.message)
+        setResult(null)
+        return
       }
       setResult(res)
 
@@ -1941,6 +2095,14 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
               />
             </div>
 
+            {/* ── SQL full width on top (the shape every SQL-first tool uses:
+                BigQuery, Snowflake, Databricks SQL, Mode, Hex, Redash), with
+                raw Results and the live widget Preview side by side beneath it.
+                That keeps both visible while iterating — the legacy
+                WidgetEditor.tsx behaviour worth keeping — without squeezing the
+                editor to 60% or the chart to a 360px column. ── */}
+            <div className="min-w-0">
+
             {/* Version-view params — static, read-only */}
             {viewing && Array.isArray(viewCfg.params) && viewCfg.params.length > 0 && (
               <div className="px-3 py-2.5 border-b border-border bg-surface-2/40">
@@ -2048,42 +2210,76 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
               <GripVertical size={14} className="rotate-90 text-muted/30 group-hover:text-muted/60 transition-colors" />
             </div>
 
-            {/* Results */}
-            <div className="border-t border-border">
-              <div className="flex items-center gap-2 px-3 py-2 flex-wrap">
-                <span className="text-[11px] font-semibold text-muted uppercase tracking-wider">Results</span>
-                {result && !running && (
-                  <>
-                    <span className="text-[11px] font-mono text-fg">
-                      {rowCount.toLocaleString()} row{rowCount !== 1 ? 's' : ''}
-                    </span>
-                    {result.elapsedMs != null && (
-                      <span className="inline-flex items-center gap-1 text-[10px] text-muted">
-                        <Clock size={9} /> {result.elapsedMs}ms
+            </div>
+
+            {/* ── Bottom row: raw Results (left, wider) | widget Preview
+                (right). Both stay visible while you iterate on the SQL above;
+                stacks to one column below lg. ── */}
+            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] border-t border-border">
+
+              {/* Results */}
+              <div className="min-w-0 lg:border-r lg:border-border">
+                <div className="flex items-center gap-2 px-3 py-2 flex-wrap">
+                  <span className="text-[11px] font-semibold text-muted uppercase tracking-wider">Results</span>
+                  {result && !running && (
+                    <>
+                      <span className="text-[11px] font-mono text-fg">
+                        {rowCount.toLocaleString()} row{rowCount !== 1 ? 's' : ''}
                       </span>
-                    )}
-                    <CacheBadge status={result.cacheStatus} />
-                    <span className="text-[10px] text-muted/60 ml-auto shrink-0">
-                      registered as{' '}
-                      <code className="font-mono text-indigo-600 dark:text-indigo-400">cell_1</code>
+                      {result.elapsedMs != null && (
+                        <span className="inline-flex items-center gap-1 text-[10px] text-muted">
+                          <Clock size={9} /> {result.elapsedMs}ms
+                        </span>
+                      )}
+                      <CacheBadge status={result.cacheStatus} />
+                      <span className="text-[10px] text-muted/60 ml-auto shrink-0">
+                        registered as{' '}
+                        <code className="font-mono text-indigo-600 dark:text-indigo-400">cell_1</code>
+                      </span>
+                    </>
+                  )}
+                  {running && (
+                    <span className="inline-flex items-center gap-1.5 text-[11px] text-muted">
+                      <Loader2 size={11} className="animate-spin" /> Streaming…
                     </span>
-                  </>
-                )}
-                {running && (
-                  <span className="inline-flex items-center gap-1.5 text-[11px] text-muted">
-                    <Loader2 size={11} className="animate-spin" /> Streaming…
-                  </span>
-                )}
+                  )}
+                </div>
+                <div style={{ height: 360 }} className="px-3 pb-3">
+                  <DataTable
+                    arrow={result?.table ?? undefined}
+                    loading={running}
+                    error={runError}
+                    meta={result ? { cacheStatus: result.cacheStatus, elapsedMs: result.elapsedMs } : undefined}
+                    toolbar={Boolean(result?.table)}
+                    pageSize={50}
+                  />
+                </div>
               </div>
-              <div style={{ height: 360 }} className="px-3 pb-3">
-                <DataTable
-                  arrow={result?.table ?? undefined}
-                  loading={running}
-                  error={runError}
-                  meta={result ? { cacheStatus: result.cacheStatus, elapsedMs: result.elapsedMs } : undefined}
-                  toolbar={Boolean(result?.table)}
-                  pageSize={50}
-                />
+
+              {/* Preview / Connected Widgets — persistent, switched by a small
+                  local toggle (unlike results-vs-preview, these two don't need
+                  to be visible simultaneously). */}
+              <div className="min-w-0 border-t lg:border-t-0 border-border flex flex-col">
+                <div className="flex items-center gap-1 px-3 py-2 shrink-0">
+                  {[
+                    { value: 'preview', label: 'Preview' },
+                    { value: 'widgets', label: 'Connected' },
+                  ].map(t => (
+                    <button
+                      key={t.value}
+                      onClick={() => setRightPanelTab(t.value)}
+                      className={`text-[11px] font-semibold uppercase tracking-wider px-2 py-1 rounded-md transition-colors ${
+                        rightPanelTab === t.value ? 'bg-primary/10 text-primary' : 'text-muted hover:text-fg'
+                      }`}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex-1 overflow-auto">
+                  {rightPanelTab === 'preview' && <QueryPreviewTab table={result?.table} />}
+                  {rightPanelTab === 'widgets' && <ConnectedWidgetsTab queryId={query?.id} />}
+                </div>
               </div>
             </div>
           </div>

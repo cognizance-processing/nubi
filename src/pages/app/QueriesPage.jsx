@@ -28,7 +28,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { Link } from 'react-router-dom'
+import { Link, useParams, useNavigate } from 'react-router-dom'
 import {
   FileCode2,
   Plus,
@@ -50,7 +50,7 @@ import {
   Trash2,
 } from 'lucide-react'
 
-import { del, get, listRegisteredQueries, registerQuery } from '../../lib/api.js'
+import { del, get, listRegisteredQueries, registerQuery, getRegisteredQuery } from '../../lib/api.js'
 import Button from '../../components/ui/Button.jsx'
 import Badge from '../../components/ui/Badge.jsx'
 import EmptyState from '../../components/ui/EmptyState.jsx'
@@ -565,6 +565,10 @@ export default function QueriesPage() {
   // ── Active query ───────────────────────────────────────────────────────
   const [activeQuery, setActiveQuery] = useState(null)
 
+  // Deep-link support: /queries/:id selects that query (see effect below).
+  const { id: routeQueryId } = useParams()
+  const navigate = useNavigate()
+
   // ── Rail search ────────────────────────────────────────────────────────
   const [railSearch, setRailSearch] = useState('')
 
@@ -610,20 +614,53 @@ export default function QueriesPage() {
     loadRegistry()
   }, [projectId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Init active selection after first load
+  // ── Deep link: /queries/:id ─────────────────────────────────────────────
+  // The route has always existed (App.jsx) but nothing read the param, so
+  // every /queries/:id URL silently rendered a blank new draft. It is the
+  // prerequisite for "Open in query editor →" on a dashboard widget.
+  //
+  // Resolution order: the already-loaded registry list first (no round-trip),
+  // then GET /query/registry/{id} — which also resolves slug ids that the list
+  // endpoint deliberately omits, so a migrated board's q_xxxxxxxx opens too.
+  useEffect(() => {
+    if (!routeQueryId) return
+    if (activeQuery?.id === routeQueryId) return
+
+    const fromList = registeredQueries.find(q => q.id === routeQueryId)
+    if (fromList) {
+      setActiveQuery(fromList)
+      setView('editor')
+      return
+    }
+    let cancelled = false
+    getRegisteredQuery(routeQueryId).then(q => {
+      if (!cancelled && q) {
+        setActiveQuery(q)
+        setView('editor')
+      }
+    })
+    return () => { cancelled = true }
+  }, [routeQueryId, registeredQueries]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Init active selection after first load. Skipped while a deep link is
+  // pending so we don't flash an unrelated draft over the requested query.
   useEffect(() => {
     if (activeQuery) return
+    if (routeQueryId) return
     if (localQueries.length > 0) {
       setActiveQuery(localQueries[0])
     }
-  }, [localQueries, activeQuery])
+  }, [localQueries, activeQuery, routeQueryId])
 
   // ── Actions ────────────────────────────────────────────────────────────
 
   const handleSelectQuery = useCallback((q) => {
     setActiveQuery(q)
     setView('editor') // picking a query from the sidebar always lands in the editor
-  }, [])
+    // Keep the URL in step so the selection is shareable and back-navigable.
+    // Unsaved drafts have no id — those fall back to the bare /queries URL.
+    navigate(q?.id ? `/queries/${encodeURIComponent(q.id)}` : '/queries', { replace: true })
+  }, [navigate])
 
   const handleNewQuery = useCallback(() => {
     const draft = newAdHocQuery()

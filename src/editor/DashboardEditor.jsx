@@ -122,6 +122,7 @@ import {
   ColorField, ColorSwatch,
   useColumnIntrospection, useMetricsList, useWidgetLibrary,
   QueryPicker, BackgroundEditor, ParamBindingSection,
+  QueryStatusLink,
   ChartConfig, KpiConfig, IconPicker,
   TableConfig, ColumnFormatsEditor, ConditionalRulesEditor,
   FilterConfig, TextConfig, PlacementControl, effectivePlacement,
@@ -1081,6 +1082,9 @@ function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec, activeBr
         <div className="space-y-1.5">
           <FieldLabel className="flex items-center gap-1.5"><Database size={12} /> Query</FieldLabel>
           <QueryPicker value={widget.query_id} onChange={setQueryId} extraIds={extraQueryIds} />
+          {/* Live status + jump into the query editor — without this the only
+              relationship between a widget and its data was a typed id. */}
+          <QueryStatusLink queryId={widget.query_id} />
         </div>
       )}
 

@@ -32,6 +32,7 @@ import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Database, X, Trash2, Table2, AlertCircle } from 'lucide-react'
 import { QueryPicker } from './QueryPicker.jsx'
+import QueryStatusLink from './QueryStatusLink.jsx'
 import { useQuerySample } from './useInspectorData.js'
 import { FieldLabel } from './inspectorPrimitives.jsx'
 
@@ -95,6 +96,7 @@ function DataRail({ widget, onChange, extraQueryIds }) {
       <div className="p-3 space-y-1.5 border-b border-border shrink-0">
         <FieldLabel className="flex items-center gap-1.5"><Database size={12} /> Query</FieldLabel>
         <QueryPicker value={widget.query_id} onChange={setQueryId} extraIds={extraQueryIds} />
+        <QueryStatusLink queryId={widget.query_id} />
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">

@@ -473,6 +473,49 @@ export function registerQuery(body) {
   return post('/query/registry', body)
 }
 
+/**
+ * Fetch a single registered query by id — the deep-link path into the editor.
+ *
+ * GET /api/v1/query/registry/{queryId}
+ *
+ * Works for ids that the LIST endpoint deliberately omits (slug ids such as a
+ * migrated board's `q_xxxxxxxx`, which exist for the embed allowlist rather
+ * than first-party browsing), so "Open in query editor" works from any widget.
+ *
+ * @param {string} queryId
+ * @returns {Promise<{id, name, sql, params, datastore_id} | null>} null if not found
+ */
+export async function getRegisteredQuery(queryId) {
+  try {
+    return await get(`/query/registry/${encodeURIComponent(queryId)}`)
+  } catch (cause) {
+    console.warn('[api] getRegisteredQuery failed:', cause.message)
+    return null
+  }
+}
+
+/**
+ * List every widget (across boards in the active project) that references
+ * a registered query, via either `query_id` or (for filter widgets)
+ * `options_query_id`.
+ *
+ * GET /api/v1/query/registry/{queryId}/widgets
+ *
+ * Returns [] on any failure so callers can degrade gracefully.
+ *
+ * @param {string} queryId
+ * @returns {Promise<Array<{ board_id: string, board_name: string, widget_id: string, widget_type: string }>>}
+ */
+export async function listQueryWidgetUsages(queryId) {
+  try {
+    const data = await get(`/query/registry/${encodeURIComponent(queryId)}/widgets`)
+    return Array.isArray(data?.widgets) ? data.widgets : []
+  } catch (cause) {
+    console.warn('[api] listQueryWidgetUsages failed; returning []:', cause.message)
+    return []
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Datastores (connectors) — used by the Queries connector picker
 // ---------------------------------------------------------------------------
