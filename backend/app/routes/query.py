@@ -621,6 +621,7 @@ async def _resolve_effective_datastore_id(
 async def _resolve_target_dialect(
     effective_datastore_id: str | None,
     identity: VerifiedIdentity,
+    request: "Request | None" = None,
 ) -> str:
     """Resolve the target sqlglot dialect for SQL generation.
 
@@ -637,7 +638,7 @@ async def _resolve_target_dialect(
     if effective_datastore_id is None:
         return DEFAULT_DIALECT
     try:
-        org_id, _ = await _resolve_caller_org(identity, get_repo())
+        org_id, _ = await _resolve_caller_org(identity, get_repo(), request)
         if not org_id:
             return DEFAULT_DIALECT
         ds = await get_repo().get("datastores", org_id, effective_datastore_id)
@@ -692,7 +693,7 @@ async def _resolve_request_plan(
     # ``ensure_persisted_query`` DB read could return/load ANOTHER org's
     # persisted query for a caller-supplied query_id. See
     # ``app.queries.registry.resolve_registered_query``.
-    _allowlist_org_id, _ = await _resolve_caller_org(identity, get_repo())
+    _allowlist_org_id, _ = await _resolve_caller_org(identity, get_repo(), request)
 
     if identity.kind == "embed":
         if not body.query_id:
@@ -768,7 +769,7 @@ async def _resolve_request_plan(
             _expand_org_id: str | None = (
                 identity.org
                 if identity.kind == "embed"
-                else (await _resolve_caller_org(identity, get_repo()))[0]
+                else (await _resolve_caller_org(identity, get_repo(), request))[0]
             )
             if _expand_org_id:
                 _expanded_policies = await _expand_rls(
@@ -870,7 +871,7 @@ async def _resolve_request_plan(
     effective_datastore_id = await _resolve_effective_datastore_id(
         body, registered, identity
     )
-    target_dialect = await _resolve_target_dialect(effective_datastore_id, identity)
+    target_dialect = await _resolve_target_dialect(effective_datastore_id, identity, request)
 
     # ── Plan (RLS predicates injected at the AST level) ──────────────────────
     # [LOW event-loop] planner_plan() is pure-Python (sqlglot parse + RLS AST
@@ -894,7 +895,7 @@ async def _resolve_request_plan(
         from app.connectors.planner import route_to_rollup_shape as _route_rollup
         from app.connectors.preagg import get_registry as _get_rollup_registry
 
-        _rollup_org_id, _ = await _resolve_caller_org(identity, get_repo())
+        _rollup_org_id, _ = await _resolve_caller_org(identity, get_repo(), request)
         _route = _route_rollup(
             physical_plan, _get_rollup_registry(), org_id=_rollup_org_id
         )
@@ -913,7 +914,7 @@ async def _resolve_request_plan(
 
 
 async def _resolve_caller_org(
-    identity: VerifiedIdentity, repo
+    identity: VerifiedIdentity, repo, request: "Request | None" = None
 ) -> tuple[str | None, Exception | None]:
     """Resolve the caller's org id for attribution/quota (shared path).
 
@@ -921,9 +922,30 @@ async def _resolve_caller_org(
     DB lookup. Returns ``(org_id, lookup_error)`` — a non-None error is only
     surfaced by the caller on the datastore path (the demo path tolerates a
     no-org caller).
+
+    BUG FIX — pass *request* whenever you have it. Without it this resolves the
+    user's DEFAULT (first) org and ignores ``X-Org-Id``, so a member of several
+    orgs who switched workspaces got ``query_not_registered`` (403) for every
+    registered query in the org they were actually looking at — the query is
+    owned by org B, the gate checked org A. Boards in any non-default org
+    therefore failed wholesale, which the old SAMPLE_TABLE fallback disguised as
+    "sample data" instead of surfacing.
+
+    ``resolve_org_id`` verifies membership before honouring the header (403 if
+    the user is not a member), so this is strictly more correct scoping, not a
+    weaker gate.
     """
     if identity.kind == "embed" and identity.org:
         return identity.org, None
+
+    if request is not None:
+        from app.routes._org import resolve_org_id as _resolve_org_id
+
+        try:
+            return await _resolve_org_id(identity.user_id, repo, request), None
+        except Exception as exc:  # noqa: BLE001 — demo path tolerates no-org callers
+            return None, exc
+
     from app.routes.resources import get_user_org as _get_user_org
 
     try:
@@ -1062,16 +1084,11 @@ async def query(
     from app.routes.resources import get_user_org as _get_user_org
 
     repo = get_repo()
-    org_id: str | None
-    _org_lookup_error: Exception | None = None
-    if identity.kind == "embed" and identity.org:
-        org_id = identity.org
-    else:
-        try:
-            org_id = await _get_user_org(identity.user_id, repo)
-        except Exception as exc:  # noqa: BLE001 — demo path tolerates no-org callers
-            org_id = None
-            _org_lookup_error = exc
+    # Header-aware (see _resolve_caller_org): this org_id scopes the cache key,
+    # quota attribution AND the datastore lookup below, so resolving the user's
+    # DEFAULT org here would make every registered query in a switched-into org
+    # fail with datastore_not_found even once the allowlist gate had passed.
+    org_id, _org_lookup_error = await _resolve_caller_org(identity, repo, request)
 
     # ── 2. Cache lookup (org+datastore-scoped key) ────────────────────────────
     # SECURITY: use scope_cache_key to ensure two orgs with policies={} running
@@ -1632,7 +1649,7 @@ async def query_estimate(
 
     # ── Org attribution + quota (mirror /query; estimate consumes plan budget) ─
     repo = get_repo()
-    org_id, _org_lookup_error = await _resolve_caller_org(identity, repo)
+    org_id, _org_lookup_error = await _resolve_caller_org(identity, repo, request)
 
     from app.features import enforce_quota as _enforce_quota
 
@@ -1807,6 +1824,151 @@ async def list_query_registry(
             }
         )
     return {"queries": queries}
+
+
+@router.get("/query/registry/{query_id}")
+async def get_registered_query(
+    query_id: str,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Return a single registered query by id, for deep-linking into the editor.
+
+    The LIST endpoint above deliberately excludes slug-only registry entries
+    (non-uuid ids with no persisted ``queries`` row) because those exist for the
+    embed allowlist, not for first-party project browsing. That makes such
+    queries -- e.g. every migrated board's ``q_xxxxxxxx`` -- impossible to open
+    in the query editor even though the boards referencing them are readable.
+
+    This endpoint closes that gap without widening the browse policy: a caller
+    must already know the id (they got it from a board they can read), and
+    resolution goes through ``resolve_registered_query``, which is org-scoped
+    and returns ``None`` for another org's persisted query. So slug queries
+    become OPENABLE BY ID while staying OUT OF THE LIST.
+
+    Returns the same entry shape as GET /query/registry.
+
+    Raises
+    ------
+    AppError("query_not_found", 404)
+        If no query with *query_id* is visible to the caller's org.
+    """
+    from app.errors import AppError as _AppError
+
+    _scopes = identity.scope
+    _has_read = has_scope(_scopes, "read:query") or any(
+        s.startswith("read:") for s in _scopes
+    )
+    if not _has_read:
+        raise _AppError(
+            "insufficient_scope",
+            "Token does not carry the required scope: read:query",
+            403,
+        )
+
+    # Must honour X-Org-Id exactly like GET /query/registry does —
+    # _resolve_caller_org returns the user's DEFAULT org and would 404 for a
+    # caller viewing any other org they belong to.
+    org_id = None
+    try:
+        from app.routes._org import resolve_org_id as _resolve_org_id  # noqa: PLC0415
+
+        org_id = await _resolve_org_id(identity.user_id, get_repo(), request)
+    except Exception:  # noqa: BLE001 — embed/org-less callers fall through below
+        if identity.kind == "embed" and identity.org:
+            org_id = identity.org
+
+    rq = await resolve_registered_query(query_id, org_id)
+    if rq is None:
+        raise _AppError(
+            "query_not_found",
+            f"No registered query found for id={query_id!r}.",
+            404,
+        )
+
+    return {
+        "id": rq.id,
+        "name": rq.name,
+        "sql": rq.sql,
+        "metric": rq.metric,
+        "required_scope": rq.required_scope,
+        "datastore_id": rq.datastore_id,
+        "params": [
+            {
+                "name": p.name,
+                "type": p.type,
+                "default": p.default,
+                "required": p.required,
+                "options_query_id": p.options_query_id,
+            }
+            for p in rq.params
+        ],
+    }
+
+
+@router.get("/query/registry/{query_id}/widgets")
+async def list_query_widget_usages(
+    query_id: str,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Return every widget, across every board in the caller's active
+    project, that references *query_id* (via ``query_id`` or, for filter
+    widgets, ``options_query_id``).
+
+    Widgets are not a queryable DB resource on their own -- they live nested
+    inside each board's ``config.spec.widgets`` array (the ``widgets`` table
+    is an unused generic resource stub). Board counts per project are small,
+    so this scans ``repo.list("boards", ...)`` in Python rather than adding a
+    jsonb path query or any denormalized index -- same org/project scoping as
+    GET /query/registry above.
+
+    Returns
+    -------
+    dict
+        ``{"widgets": [{board_id, board_name, widget_id, widget_type}]}``.
+    """
+    from app.errors import AppError as _AppError
+
+    _scopes = identity.scope
+    _has_read = has_scope(_scopes, "read:query") or any(
+        s.startswith("read:") for s in _scopes
+    )
+    if not _has_read:
+        raise _AppError(
+            "insufficient_scope",
+            "Token does not carry the required scope: read:query",
+            403,
+        )
+
+    usages: list[dict] = []
+    try:
+        from app.routes._org import (  # noqa: PLC0415
+            resolve_org_id as _resolve_org_id,
+            resolve_project_filter as _resolve_project_filter,
+        )
+
+        repo = get_repo()
+        _org_id = await _resolve_org_id(identity.user_id, repo, request)
+        _project_id = await _resolve_project_filter(_org_id, request)
+        boards = await repo.list("boards", _org_id, _project_id)
+    except Exception:  # noqa: BLE001 — scoping unavailable → empty, not an error.
+        boards = []
+
+    for board in boards:
+        widgets = (board.get("config") or {}).get("spec", {}).get("widgets", [])
+        for w in widgets:
+            if w.get("query_id") == query_id or w.get("options_query_id") == query_id:
+                usages.append(
+                    {
+                        "board_id": board["id"],
+                        "board_name": board.get("name", ""),
+                        "widget_id": w.get("id", ""),
+                        "widget_type": w.get("type", ""),
+                    }
+                )
+
+    return {"widgets": usages}
 
 
 # ---------------------------------------------------------------------------
