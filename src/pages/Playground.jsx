@@ -839,12 +839,15 @@ function SqlNotebookCellAutoRun({ autoRunTrigger, onAutoRunComplete, ...props })
     }
 
     try {
-      const { table, cacheStatus, elapsedMs } = await runArrowQuery(sql, onBatch)
+      const { table, cacheStatus, elapsedMs, error: queryError } = await runArrowQuery(sql, onBatch)
+      // A failed query surfaces its real reason; `table` is null in that case,
+      // so this must return before touching table.numRows below.
+      if (queryError) {
+        setError(queryError.message)
+        return
+      }
       setResult(table)
       setMeta({ cacheStatus, elapsedMs })
-      if (cacheStatus === 'SAMPLE') {
-        setNotice('Backend unavailable — showing sample data.')
-      }
       props.onHistoryPush?.({ sql, cacheStatus, elapsedMs, rows: table.numRows })
     } catch (err) {
       setError(err.message)

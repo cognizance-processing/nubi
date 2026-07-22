@@ -48,6 +48,7 @@ import { useRefreshEpoch } from '../RefreshContext.jsx'
 import DataGrid from '../../components/DataGrid.jsx'
 import { arrowTypeToColumnType } from '../../components/dataTableUtils.js'
 import Skeleton from '../../components/ui/Skeleton.jsx'
+import WidgetError from '../../components/app/WidgetError.jsx'
 
 // ---------------------------------------------------------------------------
 // DetailPanel — lazy child grid rendered when a row is expanded
@@ -247,6 +248,8 @@ export default function TableWidget({ widget, providerTable = null }) {
   const [data, setData] = useState(null) // { cols, rows }
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  // Bumped by the error state's Retry button to re-run the fetch effect.
+  const [retryEpoch, setRetryEpoch] = useState(0)
 
   // BET-3: when a providerTable is supplied, use it directly — skip own fetch.
   useEffect(() => {
@@ -272,15 +275,19 @@ export default function TableWidget({ widget, providerTable = null }) {
         // Governed metric path: server-side compile + RLS injection.
         // Otherwise the existing query_id path is used EXACTLY as before.
         const hasParams = Object.keys(resolvedParams).length > 0
-        const { table, cacheStatus } = metric
+        const { table, error: queryError } = metric
           ? await runMetricQuery(metric)
           : await runArrowQueryById(
               query_id,
               hasParams ? { namedParams: resolvedParams } : undefined,
             )
-        if (!cancelled) {
+        if (cancelled) return
+        // Failed query → real reason, no grid. Never substitute rows.
+        if (queryError) {
+          setData(null)
+          setError(queryError.message)
+        } else {
           setData(tableToGrid(table, columns, limit))
-          if (cacheStatus === 'SAMPLE') setError('Using sample data.')
         }
       } catch (err) {
         if (!cancelled) setError(err.message ?? 'Query failed.')
@@ -291,7 +298,7 @@ export default function TableWidget({ widget, providerTable = null }) {
 
     fetchData()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query_id, JSON.stringify(metric), limit, columnsRaw, JSON.stringify(resolvedParams), refreshEpoch, providerTable])
+  }, [query_id, JSON.stringify(metric), limit, columnsRaw, JSON.stringify(resolvedParams), refreshEpoch, providerTable, retryEpoch])
 
   // ── Column descriptors with columnFormats applied via renderCell ──────────
   const gridColumns = useMemo(() => {
@@ -378,6 +385,18 @@ export default function TableWidget({ widget, providerTable = null }) {
     return (row, colKey) => evalRow(row).cellStyles[colKey] ?? null
   }, [evalRow, rules.length])
 
+  // A failed query replaces the grid outright — showing rows next to an error
+  // is how a broken board came to look like a working one.
+  if (error) {
+    return (
+      <WidgetError
+        message={error}
+        queryId={query_id}
+        onRetry={() => setRetryEpoch(e => e + 1)}
+      />
+    )
+  }
+
   // When expandable, we render each row + its optional detail panel in a
   // custom wrapper instead of the bare DataGrid, so detail panels slot in
   // between rows without disrupting DataGrid's virtualizer.
@@ -388,20 +407,6 @@ export default function TableWidget({ widget, providerTable = null }) {
     const rows = data.rows
     return (
       <div className="flex flex-col h-full overflow-hidden">
-        {error && (
-          <div
-            className="px-3 py-1.5 text-xs border border-b-0 rounded-t-xl shrink-0 flex items-center gap-1.5"
-            style={{
-              background: 'var(--warning-bg)',
-              color: 'var(--warning)',
-              borderColor: 'color-mix(in srgb, var(--warning) 20%, transparent)',
-            }}
-            role="status"
-          >
-            <span aria-hidden="true">&#9888;</span>
-            {error}
-          </div>
-        )}
         <div className="flex-1 min-h-0 overflow-auto">
           {/* Header row */}
           <table className="w-full text-xs border-collapse">
@@ -469,18 +474,6 @@ export default function TableWidget({ widget, providerTable = null }) {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {error && (
-        <div
-          className="px-3 py-1.5 text-xs border border-b-0 rounded-t-xl shrink-0"
-          style={{
-            background: 'color-mix(in srgb, #f59e0b 8%, transparent)',
-            color: '#d97706',
-            borderColor: 'color-mix(in srgb, #f59e0b 20%, transparent)',
-          }}
-        >
-          {error}
-        </div>
-      )}
       <div className="flex-1 min-h-0">
         <DataGrid
           columns={gridColumns}

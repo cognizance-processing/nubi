@@ -23,6 +23,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { useResolvedParams } from '../VariableStore.jsx'
+import WidgetError from '../../components/app/WidgetError.jsx'
 
 const AGGS = {
   sum:   (acc) => acc.reduce((s, v) => s + v, 0),
@@ -94,6 +95,8 @@ export default function PivotWidget({ widget }) {
   const [table, setTable] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  // Bumped by the error state's Retry button to re-run the fetch effect.
+  const [retryEpoch, setRetryEpoch] = useState(0)
 
   useEffect(() => {
     if (!query_id) return
@@ -103,13 +106,17 @@ export default function PivotWidget({ widget }) {
       setError(null)
       try {
         const hasParams = Object.keys(resolvedParams).length > 0
-        const { table: t, cacheStatus } = await runArrowQueryById(
+        const { table: t, error: queryError } = await runArrowQueryById(
           query_id,
           hasParams ? { namedParams: resolvedParams } : undefined,
         )
-        if (!cancelled) {
+        if (cancelled) return
+        // Failed query → real reason, no pivot. Never substitute rows.
+        if (queryError) {
+          setTable(null)
+          setError(queryError.message)
+        } else {
           setTable(t)
-          if (cacheStatus === 'SAMPLE') setError('Using sample data — query unavailable.')
         }
       } catch (err) {
         if (!cancelled) setError(err.message ?? 'Query failed.')
@@ -120,7 +127,7 @@ export default function PivotWidget({ widget }) {
     fetchData()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query_id, JSON.stringify(resolvedParams)])
+  }, [query_id, JSON.stringify(resolvedParams), retryEpoch])
 
   const pivot = useMemo(() => {
     if (!table || !rowCol || !colCol) return null
@@ -135,14 +142,19 @@ export default function PivotWidget({ widget }) {
     )
   }
 
+  // A failed query replaces the pivot outright — no table of substitute rows.
+  if (error) {
+    return (
+      <WidgetError
+        message={error}
+        queryId={query_id}
+        onRetry={() => setRetryEpoch(e => e + 1)}
+      />
+    )
+  }
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {error && (
-        <div className="px-3 py-1.5 text-xs border-b shrink-0"
-          style={{ background: 'color-mix(in srgb, #f59e0b 8%, transparent)', color: '#d97706', borderColor: 'color-mix(in srgb, #f59e0b 20%, transparent)' }}>
-          {error}
-        </div>
-      )}
       <div className="flex-1 min-h-0 overflow-auto">
         {pivot ? (
           <table className="w-full text-xs border-collapse">

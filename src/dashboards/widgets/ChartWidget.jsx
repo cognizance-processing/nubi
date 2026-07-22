@@ -61,6 +61,7 @@ import { useCrossFilter } from '../CrossFilterContext.jsx'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
 import Skeleton from '../../components/ui/Skeleton.jsx'
 import EmptyState from '../../components/ui/EmptyState.jsx'
+import WidgetError from '../../components/app/WidgetError.jsx'
 import { useTheme } from '../../contexts/ThemeContext.jsx'
 
 /**
@@ -140,6 +141,8 @@ export default function ChartWidget({ widget, providerTable = null }) {
   const [table, setTable] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  // Bumped by the error state's Retry button to re-run the fetch effect.
+  const [retryEpoch, setRetryEpoch] = useState(0)
 
   // BET-3: DataProvider path — use the shared table directly
   useEffect(() => {
@@ -160,17 +163,20 @@ export default function ChartWidget({ widget, providerTable = null }) {
       setError(null)
       try {
         const hasParams = Object.keys(resolvedParams).length > 0
-        const { table: t, cacheStatus } = metric
+        const { table: t, error: queryError } = metric
           ? await runMetricQuery(metric)
           : await runArrowQueryById(
               query_id,
               hasParams ? { namedParams: resolvedParams } : undefined,
             )
-        if (!cancelled) {
+        if (cancelled) return
+        // A failed query surfaces its real reason and renders NO chart — never
+        // a chart of substitute rows (see wasmRuntime's SAMPLE_TABLE note).
+        if (queryError) {
+          setTable(null)
+          setError(queryError.message)
+        } else {
           setTable(t)
-          if (cacheStatus === 'SAMPLE') {
-            setError('Using sample data — query unavailable.')
-          }
         }
       } catch (err) {
         if (!cancelled) setError(err.message ?? 'Query failed.')
@@ -182,7 +188,7 @@ export default function ChartWidget({ widget, providerTable = null }) {
     fetchData()
     return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query_id, JSON.stringify(metric), JSON.stringify(resolvedParams), refreshEpoch, providerTable])
+  }, [query_id, JSON.stringify(metric), JSON.stringify(resolvedParams), refreshEpoch, providerTable, retryEpoch])
 
   // Fill the card by default: grid cells have a fixed height, so '100%' sizes
   // the canvas to the widget instead of leaving dead space under a fixed 260px
@@ -267,22 +273,20 @@ export default function ChartWidget({ widget, providerTable = null }) {
     )
   }
 
+  // A failed query replaces the body outright — rendering a chart alongside an
+  // error would be showing numbers we know are wrong.
+  if (error) {
+    return (
+      <WidgetError
+        message={error}
+        queryId={query_id}
+        onRetry={() => setRetryEpoch(e => e + 1)}
+      />
+    )
+  }
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {error && (
-        <div
-          className="px-3 py-1.5 text-xs border-b shrink-0 flex items-center gap-1.5"
-          style={{
-            background: 'color-mix(in srgb, #f59e0b 8%, transparent)',
-            color: '#d97706',
-            borderColor: 'color-mix(in srgb, #f59e0b 20%, transparent)',
-          }}
-          role="status"
-        >
-          <span aria-hidden="true">&#9888;</span>
-          {error}
-        </div>
-      )}
       <div className="flex-1 min-h-0" style={{ minHeight: 180 }}>
         {option
           ? <EChart option={option} height={height} onEvents={onEvents} />

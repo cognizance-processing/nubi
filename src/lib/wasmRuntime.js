@@ -10,11 +10,13 @@
  *                              a Table; calls onBatch(rowsSoFar) after each batch.
  *                            — Falls back to buffered arrayBuffer + tableFromIPC if
  *                              the async iterator path is unavailable.
- *                            — On any failure returns SAMPLE_TABLE fallback.
+ *                            — On any failure returns {table:null,
+ *                              cacheStatus:'ERROR', error:{status,code,message}}.
  *   registerArrowTable(name, table) — insert Arrow table into DuckDB-WASM
  *   queryLocal(sql)        — run SQL against in-browser DuckDB, return Arrow Table
  *   fetchPreaggSuggestions() — GET /api/v1/_preagg/suggestions → suggestion array
- *   SAMPLE_TABLE           — small in-memory Arrow table for offline fallback
+ *   SAMPLE_TABLE           — demo fixture for the local/offline demo path ONLY;
+ *                            never substituted for a failed query
  *
  * D2 — Demo-datastore browser routing (free wedge):
  *   fetchDemoManifest()    — GET /api/v1/demo-parquet/_manifest (cached, no auth)
@@ -35,7 +37,8 @@
  * which wraps `response.body` (the browser ReadableStream<Uint8Array>) in an
  * AsyncByteStream internally. This gives us true batch-by-batch iteration with
  * the `for await` loop below. If the reader construction or iteration fails for any
- * reason (old browser, CORS, malformed stream), we catch and fall back to SAMPLE_TABLE.
+ * reason (old browser, CORS, malformed stream), we catch and return a structured
+ * failure result (see `queryFailure`) — never fabricated rows.
  */
 
 import * as arrow from 'apache-arrow'
@@ -60,15 +63,77 @@ const MANUAL_BUNDLES = {
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? ''
 
 // ---------------------------------------------------------------------------
-// SAMPLE_TABLE — graceful fallback when backend is unavailable
+// SAMPLE_TABLE — EXPLICIT demo fixture only, never an error fallback
 // ---------------------------------------------------------------------------
 
+/**
+ * A small in-memory Arrow table used by the offline/local demo path
+ * (`runDemoQueryLocal`) and by tests.
+ *
+ * IMPORTANT: this must NEVER be substituted for a failed query. Doing so was a
+ * real bug — a broken query rendered a fully-populated chart of alpha/beta/gamma
+ * numbers behind a small amber banner, so a failing board was visually
+ * indistinguishable from a working one. Query failures now return
+ * `cacheStatus: 'ERROR'` with a structured `error` (see `queryFailure`) and the
+ * widgets render an error state instead of a body.
+ */
 export const SAMPLE_TABLE = arrow.tableFromArrays({
   id:    arrow.vectorFromArray([1, 2, 3, 4, 5], new arrow.Int32()),
   name:  arrow.vectorFromArray(['alpha', 'beta', 'gamma', 'delta', 'epsilon']),
   value: arrow.vectorFromArray([10.5, 22.3, 7.8, 99.1, 45.0], new arrow.Float64()),
   active: arrow.vectorFromArray([true, false, true, true, false]),
 })
+
+// ---------------------------------------------------------------------------
+// Query failure result
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the structured failure result returned by every query runner below.
+ *
+ * Shape mirrors the success result (`{table, cacheStatus, elapsedMs}`) so
+ * destructuring callers keep working, with `table: null` (which existing
+ * callers already degrade to a "No data" empty state) plus an `error` object
+ * the widgets use to render a real message.
+ *
+ * @param {{status?: number, code?: string, message: string}} error
+ * @param {number} t0 performance.now() timestamp when the request started
+ */
+function queryFailure(error, t0) {
+  return {
+    table: null,
+    cacheStatus: 'ERROR',
+    elapsedMs: Math.round(performance.now() - t0),
+    error,
+  }
+}
+
+/**
+ * Extract a human-readable message from a failed Response.
+ *
+ * Mirrors the canonical extraction in `src/lib/api.js` — the backend returns
+ * `{"error": {"code", "message"}}` for AppErrors, FastAPI returns `{"detail"}`,
+ * and unhandled 500s return plain text.
+ *
+ * @param {Response} response
+ * @returns {Promise<{status: number, code?: string, message: string}>}
+ */
+async function readResponseError(response) {
+  let payload = null
+  try {
+    payload = await response.json()
+  } catch {
+    payload = null
+  }
+  return {
+    status: response.status,
+    code: payload?.error?.code,
+    message:
+      payload?.error?.message ??
+      payload?.detail ??
+      `Request failed: ${response.status} ${response.statusText}`,
+  }
+}
 
 // ---------------------------------------------------------------------------
 // DuckDB-WASM singleton
@@ -126,8 +191,9 @@ export function initDuckDB() {
  *     live rows counter while data is still arriving.
  *   - A final Table is constructed from all accumulated batches.
  *
- * Fallback: on ANY error (network, parse, browser compatibility) returns the
- * SAMPLE_TABLE with cacheStatus='SAMPLE' so the UI degrades gracefully.
+ * Failure: on ANY error (network, HTTP, parse) returns
+ * `{table: null, cacheStatus: 'ERROR', error: {status, code, message}}` so the
+ * caller can surface the real reason. Never returns fabricated rows.
  *
  * @param {string} sql
  * @param {((rowsSoFar: number) => void) | undefined} [onBatch]
@@ -136,7 +202,8 @@ export function initDuckDB() {
  * @param {{ datastoreId?: string }} [opts]
  *   Optional execution options.  `datastoreId` binds the query to a specific
  *   datastore (connector); when omitted the backend uses the demo connector.
- * @returns {Promise<{ table: arrow.Table, cacheStatus: string, elapsedMs: number }>}
+ * @returns {Promise<{ table: arrow.Table|null, cacheStatus: string, elapsedMs: number,
+ *                      error?: {status?: number, code?: string, message: string} }>}
  */
 export async function runArrowQuery(sql, onBatch, opts) {
   const datastoreId = opts && typeof opts === 'object' ? opts.datastoreId : undefined
@@ -166,14 +233,17 @@ export async function runArrowQuery(sql, onBatch, opts) {
       body: JSON.stringify(reqBody),
     })
   } catch (cause) {
-    // Network failure — fall back to sample
-    console.warn('[wasmRuntime] Network error; using SAMPLE_TABLE:', cause.message)
-    return { table: SAMPLE_TABLE, cacheStatus: 'SAMPLE', elapsedMs: Math.round(performance.now() - t0) }
+    console.warn('[wasmRuntime] runArrowQuery network error:', cause.message)
+    return queryFailure(
+      { message: `Could not reach the query service: ${cause.message}` },
+      t0,
+    )
   }
 
   if (!response.ok) {
-    console.warn(`[wasmRuntime] Query API returned ${response.status}; using SAMPLE_TABLE`)
-    return { table: SAMPLE_TABLE, cacheStatus: 'SAMPLE', elapsedMs: Math.round(performance.now() - t0) }
+    const error = await readResponseError(response)
+    console.warn(`[wasmRuntime] runArrowQuery failed (${error.status}):`, error.message)
+    return queryFailure(error, t0)
   }
 
   // Read the X-Nubi-Cache header (HIT | MISS) set by the streaming backend
@@ -212,12 +282,8 @@ export async function runArrowQuery(sql, onBatch, opts) {
     return { table, cacheStatus, elapsedMs }
 
   } catch (cause) {
-    console.warn('[wasmRuntime] Arrow stream parse failed; using SAMPLE_TABLE:', cause.message)
-    return {
-      table: SAMPLE_TABLE,
-      cacheStatus: 'SAMPLE',
-      elapsedMs: Math.round(performance.now() - t0),
-    }
+    console.warn('[wasmRuntime] runArrowQuery stream parse failed:', cause.message)
+    return queryFailure({ message: `Could not read the result stream: ${cause.message}` }, t0)
   }
 }
 
@@ -243,7 +309,8 @@ export async function runArrowQuery(sql, onBatch, opts) {
  *
  * @param {string} queryId  — Registered query id (e.g. "demo_all").
  * @param {{ namedParams?: Record<string, unknown>, onBatch?: (rowsSoFar: number) => void, isDemo?: boolean, datastoreId?: string }} [opts]
- * @returns {Promise<{ table: arrow.Table, cacheStatus: string, elapsedMs: number }>}
+ * @returns {Promise<{ table: arrow.Table|null, cacheStatus: string, elapsedMs: number,
+ *                      error?: {status?: number, code?: string, message: string} }>}
  */
 export async function runArrowQueryById(queryId, opts) {
   // Support legacy positional (queryId, onBatch) as well as new (queryId, { namedParams, datastoreId, onBatch, isDemo })
@@ -328,13 +395,17 @@ export async function runArrowQueryById(queryId, opts) {
       body: JSON.stringify(reqBody),
     })
   } catch (cause) {
-    console.warn('[wasmRuntime] runArrowQueryById network error; using SAMPLE_TABLE:', cause.message)
-    return { table: SAMPLE_TABLE, cacheStatus: 'SAMPLE', elapsedMs: Math.round(performance.now() - t0) }
+    console.warn('[wasmRuntime] runArrowQueryById network error:', cause.message)
+    return queryFailure(
+      { message: `Could not reach the query service: ${cause.message}` },
+      t0,
+    )
   }
 
   if (!response.ok) {
-    console.warn(`[wasmRuntime] runArrowQueryById ${queryId} returned ${response.status}; using SAMPLE_TABLE`)
-    return { table: SAMPLE_TABLE, cacheStatus: 'SAMPLE', elapsedMs: Math.round(performance.now() - t0) }
+    const error = await readResponseError(response)
+    console.warn(`[wasmRuntime] runArrowQueryById ${queryId} failed (${error.status}):`, error.message)
+    return queryFailure(error, t0)
   }
 
   const cacheStatus = response.headers.get('X-Nubi-Cache') ?? 'MISS'
@@ -360,8 +431,8 @@ export async function runArrowQueryById(queryId, opts) {
 
     return { table: new arrow.Table(batches), cacheStatus, elapsedMs }
   } catch (cause) {
-    console.warn('[wasmRuntime] runArrowQueryById Arrow parse failed; using SAMPLE_TABLE:', cause.message)
-    return { table: SAMPLE_TABLE, cacheStatus: 'SAMPLE', elapsedMs: Math.round(performance.now() - t0) }
+    console.warn('[wasmRuntime] runArrowQueryById stream parse failed:', cause.message)
+    return queryFailure({ message: `Could not read the result stream: ${cause.message}` }, t0)
   }
 }
 
@@ -759,7 +830,8 @@ export function _resetDemoCache() {
  * Returns { table, cacheStatus: 'LOCAL', elapsedMs } on success, or throws.
  *
  * @param {string} sql
- * @returns {Promise<{ table: arrow.Table, cacheStatus: string, elapsedMs: number }>}
+ * @returns {Promise<{ table: arrow.Table|null, cacheStatus: string, elapsedMs: number,
+ *                      error?: {status?: number, code?: string, message: string} }>}
  */
 export async function runLocalSqlForCell(sql) {
   const t0 = performance.now()

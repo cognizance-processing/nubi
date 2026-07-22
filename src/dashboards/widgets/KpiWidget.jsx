@@ -49,6 +49,7 @@ import { applySignal } from '../../viz/signals.js'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
 import Skeleton from '../../components/ui/Skeleton.jsx'
 import Badge from '../../components/ui/Badge.jsx'
+import WidgetError from '../../components/app/WidgetError.jsx'
 import { findKpiIcon } from '../kpiIcons.jsx'
 
 /** Format a raw value for display. */
@@ -163,6 +164,8 @@ export default function KpiWidget({ widget, providerTable = null }) {
   const [sparkValues, setSparkValues] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  // Bumped by the error state's Retry button to re-run the fetch effect.
+  const [retryEpoch, setRetryEpoch] = useState(0)
 
   /**
    * Extract KPI values from an Arrow table (shared by both provider and legacy paths).
@@ -224,17 +227,18 @@ export default function KpiWidget({ widget, providerTable = null }) {
         // Otherwise the existing query_id path is used EXACTLY as before
         // (resolved params threaded as { namedParams }; empty {} is a no-op).
         const hasParams = Object.keys(resolvedParams).length > 0
-        const { table, cacheStatus } = metric
+        const { table, error: queryError } = metric
           ? await runMetricQuery(metric)
           : await runArrowQueryById(
               query_id,
               hasParams ? { namedParams: resolvedParams } : undefined,
             )
-        if (!cancelled) {
+        if (cancelled) return
+        // Failed query → the real reason, not a headline number we invented.
+        if (queryError) {
+          setError(queryError.message)
+        } else {
           extractFromTable(table)
-          if (cacheStatus === 'SAMPLE') {
-            setError('Sample data')
-          }
         }
       } catch (err) {
         if (!cancelled) setError(err.message ?? 'Query failed.')
@@ -249,7 +253,7 @@ export default function KpiWidget({ widget, providerTable = null }) {
   // a stable dependency so the effect only re-fires when the actual values differ.
   // refreshEpoch increments on board auto-refresh ticks.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query_id, JSON.stringify(metric), valueCol, compareCol, sparkCol, JSON.stringify(resolvedParams), refreshEpoch, providerTable])
+  }, [query_id, JSON.stringify(metric), valueCol, compareCol, sparkCol, JSON.stringify(resolvedParams), refreshEpoch, providerTable, retryEpoch])
 
   const delta = useMemo(
     () => (compareCol ? computeDelta(value, compareValue, deltaFormat) : null),
@@ -303,6 +307,19 @@ export default function KpiWidget({ widget, providerTable = null }) {
     return { segments, filled: Math.round(ratio * segments), ratio, style: p.style === 'bar' ? 'bar' : 'segments' }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, JSON.stringify(wProps.progress)])
+
+  // A failed query replaces the headline number — a KPI showing a fabricated
+  // figure is the single most misleading thing this app could render.
+  if (error) {
+    return (
+      <WidgetError
+        message={error}
+        queryId={query_id}
+        onRetry={() => setRetryEpoch(e => e + 1)}
+        compact
+      />
+    )
+  }
 
   return (
     <div className="flex flex-col justify-center h-full px-5 py-4 gap-1">
@@ -396,9 +413,6 @@ export default function KpiWidget({ widget, providerTable = null }) {
             <div className="mt-2 -mx-1">
               <EChart option={spark} height={36} />
             </div>
-          )}
-          {error && (
-            <p className="mt-1 text-xs text-warning" role="status">{error}</p>
           )}
         </>
       )}

@@ -28,7 +28,8 @@ export function useColumnIntrospection(queryId) {
     runArrowQueryById(queryId)
       .then(({ table }) => {
         if (!cancelled) {
-          setColumns(table.schema.fields.map(f => f.name))
+          // table is null when the query failed — degrade to no columns.
+          setColumns(table ? table.schema.fields.map(f => f.name) : [])
           setIntrospecting(false)
         }
       })
@@ -57,8 +58,16 @@ export function useQuerySample(queryId, limit = 8) {
     setState(s => ({ ...s, loading: true, error: null }))
 
     runArrowQueryById(queryId)
-      .then(({ table }) => {
+      .then(({ table, error }) => {
         if (cancelled) return
+        // A failed query reports its real reason instead of an empty sample.
+        if (error || !table) {
+          setState({
+            columns: [], rows: [], rowCount: 0, loading: false,
+            error: error?.message ?? 'Query failed',
+          })
+          return
+        }
         const columns = table.schema.fields.map(f => ({ name: f.name, type: String(f.type) }))
         const vectors = Object.fromEntries(columns.map(c => [c.name, table.getChild(c.name)]))
         const rows = []
