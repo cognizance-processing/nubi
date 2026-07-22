@@ -336,6 +336,16 @@ def _build_env(style: str) -> SandboxedEnvironment:
 # references, not filter chains or expressions.
 _SIMPLE_VAR_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
 
+# Matches the start of a filter chain on a name, e.g. `{{ X | inclause }}` or
+# `{{X|upper}}`. A name used through a filter ANYWHERE in the template must
+# always resolve to its real value there -- a filter like `inclause` calls
+# `len()`/iterates the value, which a `_FirstOnceValue` proxy can't do. Used
+# below to exclude such names from the bare-dedup optimization entirely,
+# rather than just skipping the filtered occurrence (Jinja resolves a context
+# name once per lookup and shares it across every reference to it, so a name
+# can't be "wrapped for its bare uses but not its filtered one").
+_FILTERED_VAR_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\|")
+
 
 def _build_dedup_context(
     sql: str,
@@ -384,6 +394,14 @@ def _build_dedup_context(
         if name in names_seen:
             multi_names.add(name)
         names_seen.add(name)
+
+    # A name also used through a filter (e.g. `{{ X | inclause }}`) must never
+    # be wrapped -- see _FILTERED_VAR_RE above. Bug: a query mixing a bare
+    # scalar use of X with an `X | inclause` use elsewhere (both legitimately
+    # referencing the same param) raised "'_FirstOnceValue' object is not
+    # iterable" from the filtered site, since it received the dedup proxy
+    # instead of the real value.
+    multi_names -= {m.group(1) for m in _FILTERED_VAR_RE.finditer(sql)}
 
     if not multi_names:
         # No duplicates — return context as-is (no wrapping needed).
