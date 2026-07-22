@@ -304,8 +304,8 @@ class BigQueryConnector(Connector):
         """
         bigquery = _import_bigquery()
         sql, ordered = _translate_placeholders(plan.sql, plan.params)
+        client = self._build_client()
         try:
-            client = self._build_client()
             job_config = bigquery.QueryJobConfig(
                 query_parameters=self._build_query_params(ordered)
             )
@@ -325,6 +325,17 @@ class BigQueryConnector(Connector):
                 f"BigQuery query failed: {exc}",
                 status=500,
             ) from exc
+        finally:
+            # _build_client() is called fresh per execute() (see docstring), so
+            # without this the client's underlying requests.Session (its own
+            # connection pool + kept-alive sockets) is only reclaimed whenever
+            # the GC gets to it. Under a boards-page burst of concurrent widget
+            # queries that's slow enough for unclosed sessions to pile up and
+            # exhaust the local emulator's connection capacity, wedging EVERY
+            # subsequent BigQuery query (including on unrelated datastores)
+            # until the whole backend process is restarted — reproduced via a
+            # 48-widget dashboard tab where every query hung indefinitely.
+            client.close()
 
     def estimate(self, plan: PhysicalPlan) -> "QueryEstimate | None":
         """Exact bytes-scanned via a BigQuery dry-run job (free, synchronous).
@@ -336,8 +347,8 @@ class BigQueryConnector(Connector):
         """
         bigquery = _import_bigquery()
         sql, ordered = _translate_placeholders(plan.sql, plan.params)
+        client = self._build_client()
         try:
-            client = self._build_client()
             job_config = bigquery.QueryJobConfig(
                 query_parameters=self._build_query_params(ordered),
                 dry_run=True,
@@ -351,6 +362,8 @@ class BigQueryConnector(Connector):
             )
         except Exception:  # noqa: BLE001 — advisory; never raise
             return None
+        finally:
+            client.close()
 
     def execute_stream(self, plan: PhysicalPlan) -> Iterator["pa.RecordBatch"]:
         """Execute *plan* and yield the result as a stream of RecordBatches.
