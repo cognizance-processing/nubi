@@ -380,3 +380,40 @@ class TestAskRouteThreadsModel:
             json={"question": "show me orders", "model": "anything"},
         )
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# 6. /ai/chat "run query" tool must not be 403'd by its own claims (regression)
+# ---------------------------------------------------------------------------
+
+
+class TestChatRunQueryScope:
+    """Regression test for a HIGH finding: the AI chat "Run query" action
+    failed for every authenticated user because ``ai_chat`` hardcoded
+    ``claims["scope"]`` to ``["read:*", "write:*"]``, omitting ``author:sql``
+    — the scope the ``run_query`` tool requires for ad-hoc SQL (see
+    ``app/ai/tools.py``). The failure was invisible: ``_scripted_run_sequence``
+    catches the resulting ``insufficient_scope`` AppError and folds it into a
+    silent "0 rows" result.
+    """
+
+    @pytest.mark.asyncio
+    async def test_run_intent_actually_executes_the_query(self, ai_client, monkeypatch):
+        # Pin generate_sql's output so this test is only about the scope gate,
+        # not about the (separate, pre-existing) catalog/grounding SQL it
+        # produces for arbitrary questions.
+        monkeypatch.setattr(
+            "app.ai.sql.generate_sql",
+            lambda *a, **k: {"sql": "SELECT * FROM demo", "valid": True, "issues": []},
+        )
+        ac, user_id = ai_client
+        resp = await ac.post(
+            "/api/v1/ai/chat",
+            json={"messages": [{"role": "user", "content": "show me orders"}]},
+            headers=_auth_headers(user_id),
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        run_action = next(a for a in body["actions"] if a["tool"] == "run_query")
+        assert run_action["result"].get("row_count", 0) > 0, run_action
+        assert "error" not in run_action["result"]

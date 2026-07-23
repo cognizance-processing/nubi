@@ -954,7 +954,11 @@ async def ai_chat(
         "sub": str(_user.get("id", "")),
         "org": org_id,
         "policies": dict(identity.policies or {}),
-        "scope": ["read:*", "write:*"],
+        # Mirror _FIRST_PARTY_SCOPES (app/auth/verify.py): a real login session
+        # carries author:sql/author:metric, so the agent's own tool calls must
+        # too. Without these the "run query" tool's author:sql gate
+        # (app/ai/tools.py) 403s for every authenticated user.
+        "scope": ["read:*", "write:*", "author:sql", "author:metric"],
     }
 
     # Convert Pydantic ChatMessage objects to plain dicts for the agent.
@@ -1016,7 +1020,7 @@ async def ai_chat_stream(
         "sub": str(_user.get("id", "")),
         "org": org_id,
         "policies": dict(identity.policies or {}),
-        "scope": ["read:*", "write:*"],
+        "scope": ["read:*", "write:*", "author:sql", "author:metric"],
     }
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
 
