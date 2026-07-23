@@ -83,7 +83,8 @@ import { VariableProvider } from '../../dashboards/VariableStore.jsx'
 import { checkpoint, restoreVersion } from '../../lib/versions.js'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
-import { useCanWrite } from '../../contexts/OrgContext.jsx'
+import { useCanWrite, useOrg } from '../../contexts/OrgContext.jsx'
+import { useProject } from '../../contexts/ProjectContext.jsx'
 import { dialectForConnectorType } from '../../lib/sqlDialect.js'
 import TranspileDialog from './TranspileDialog.jsx'
 
@@ -1344,6 +1345,10 @@ function ToolbarKebabMenu({ items }) {
 
 export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, toolbarExtra = null }) {
   const canWrite = useCanWrite()
+  // Active workspace — the connector list is org/project-scoped, so switching
+  // either must refetch it (see the listConnectors effect below).
+  const { activeOrg } = useOrg()
+  const { activeProject } = useProject()
   // AppShell topbar slot — the toolbar portals into the single top bar.
   const { topbarSlot } = useUi()
   // ── PRIMARY cell: SQL / params state (the query of record) ──────────────
@@ -1405,11 +1410,15 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
   )
   const lastDerivedKey = useRef(null)
 
+  // Reload the connector list whenever the active workspace changes — it is
+  // org-scoped, so switching orgs must refetch it. Keying only on mount left
+  // the picker showing the previous org's connectors (or just the demo one),
+  // so a query ran against the wrong datastore and failed.
   useEffect(() => {
     let alive = true
     listConnectors().then(ds => { if (alive) setDatastores(Array.isArray(ds) ? ds : []) })
     return () => { alive = false }
-  }, [])
+  }, [activeOrg?.id, activeProject?.id])
 
   useEffect(() => {
     setDatastoreId(query?.datastore_id ?? '')

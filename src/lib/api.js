@@ -91,6 +91,27 @@ export function setActiveProjectId(projectId) {
   _activeProjectId = projectId || null
 }
 
+/**
+ * Tenant-scoping headers for callers that build their own fetch requests
+ * instead of going through the wrapper below — currently the Arrow query
+ * runners in wasmRuntime.js and metricRuntime.js.
+ *
+ * Those runners assembled headers by hand and sent only Authorization, so
+ * every data query executed against the user's DEFAULT org no matter which
+ * workspace was on screen. For anyone whose default org was not the one they
+ * were viewing that meant the wrong (or no) datastore — queries fell back to
+ * the demo connector and failed — while the org's own dashboards looked
+ * simply broken.
+ *
+ * @returns {Record<string, string>} headers to merge into a manual request
+ */
+export function tenantHeaders() {
+  const headers = {}
+  if (_activeOrgId) headers['X-Org-Id'] = _activeOrgId
+  if (_activeProjectId) headers['X-Project-Id'] = _activeProjectId
+  return headers
+}
+
 // ---------------------------------------------------------------------------
 // Core fetch wrapper
 // ---------------------------------------------------------------------------

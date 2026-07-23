@@ -27,7 +27,7 @@
  */
 
 import * as arrow from 'apache-arrow'
-import { getAccessToken } from './api.js'
+import { getAccessToken, tenantHeaders } from './api.js'
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? ''
 
@@ -60,6 +60,8 @@ export async function runMetricQuery(metric, { signal } = {}) {
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
   }
+  // Scope to the workspace on screen, not the user's default org.
+  Object.assign(headers, tenantHeaders())
 
   // Build the request body from the metric binding. Always send the governed
   // shape the backend expects; default optional fields so the body is stable.

@@ -43,7 +43,7 @@
 
 import * as arrow from 'apache-arrow'
 import * as duckdb from '@duckdb/duckdb-wasm'
-import { getAccessToken } from './api.js'
+import { getAccessToken, tenantHeaders } from './api.js'
 
 // Self-hosted DuckDB-WASM assets. Vite fingerprints these and serves them from
 // our OWN origin, so `new Worker(url)` is same-origin (browsers forbid workers
@@ -218,6 +218,8 @@ export async function runArrowQuery(sql, onBatch, opts) {
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
   }
+  // Scope to the workspace on screen, not the user's default org.
+  Object.assign(headers, tenantHeaders())
 
   const t0 = performance.now()
 
@@ -376,6 +378,8 @@ export async function runArrowQueryById(queryId, opts) {
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
   }
+  // Scope to the workspace on screen, not the user's default org.
+  Object.assign(headers, tenantHeaders())
 
   const t0 = performance.now()
 
@@ -482,6 +486,8 @@ export async function runPythonCell(code, inputs) {
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
   }
+  // Scope to the workspace on screen, not the user's default org.
+  Object.assign(headers, tenantHeaders())
 
   const body = { code }
   if (typeof inputs === 'string') {
@@ -578,6 +584,8 @@ export async function fetchPreaggSuggestions() {
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
   }
+  // Scope to the workspace on screen, not the user's default org.
+  Object.assign(headers, tenantHeaders())
 
   try {
     const response = await fetch(url, {
@@ -702,6 +710,7 @@ export function fetchDemoQueryMap() {
       const headers = {}
       const token = getAccessToken()
       if (token) headers['Authorization'] = `Bearer ${token}`
+      Object.assign(headers, tenantHeaders())
       const r = await fetch(`${BACKEND_URL}/api/v1/demo-parquet/_query-map`, {
         headers,
         credentials: 'include',
