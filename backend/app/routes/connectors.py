@@ -486,8 +486,16 @@ async def list_connectors(
     The built-in virtual "Demo data" connector is surfaced ONLY in the org's
     demo/default project — other projects start empty and require a real
     connector. Real datastores remain org-wide.
+
+    Uses the header-aware ``resolve_org_id`` (not ``_get_user_org``): the
+    connector picker must reflect the workspace the user is VIEWING, not their
+    default org. With the default-org lookup, switching to any other org showed
+    only that other org's connectors were invisible and just the demo one
+    remained, so every query there ran against the wrong datastore and failed.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    from app.routes._org import resolve_org_id as _resolve_org_id  # noqa: PLC0415
+
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     all_datastores = await repo.list("datastores", org_id)
     # The active project (X-Project-Id else the org default) scopes the

@@ -460,6 +460,41 @@ class TestGetConnector:
         assert "real-connector" in names
         assert "plain-datastore" not in names
 
+    @pytest.mark.asyncio
+    async def test_list_honours_x_org_id_for_a_switched_org(self, connectors_client):
+        """GET /connectors must list the VIEWED org's connectors, not the default.
+
+        Regression: the route resolved the caller's default org via
+        _get_user_org and ignored X-Org-Id, so switching workspace showed only
+        the demo connector — every real connector in the switched-into org was
+        invisible and queries there ran against the wrong (demo) datastore and
+        failed.
+        """
+        client, alice_id, default_org_id, repo = connectors_client
+
+        # Alice also belongs to a second org that owns a real connector.
+        second_org_id = str(uuid.uuid4())
+        repo.seed_org_member(org_id=second_org_id, user_id=alice_id)
+        await repo.create(
+            resource="datastores",
+            org_id=second_org_id,
+            created_by=alice_id,
+            name="second-org-mysql",
+            config={"connector_type": "mysql", "host": "127.0.0.1", "port": 3306},
+        )
+
+        # Viewing the second org, its connector must be listed...
+        switched = await client.get(
+            "/api/v1/connectors",
+            headers={**_auth_headers(alice_id), "X-Org-Id": second_org_id},
+        )
+        assert switched.status_code == 200, switched.text
+        assert "second-org-mysql" in [c["name"] for c in switched.json()]
+
+        # ...and NOT while viewing the default org.
+        default = await client.get("/api/v1/connectors", headers=_auth_headers(alice_id))
+        assert "second-org-mysql" not in [c["name"] for c in default.json()]
+
 
 # ---------------------------------------------------------------------------
 # Tests: update (rotate secret + update config)
