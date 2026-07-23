@@ -230,8 +230,17 @@ async def resolve_datastore_connector(
                     except Exception:  # noqa: BLE001
                         pass
             from app.connectors.duckdb_conn import harden_connection as _harden
+            from app.demo_bundle import LOCAL_PARQUET_DIR
 
-            _harden(_mem_conn, block_local_fs=False)
+            # The only view_sql source for a ":memory:" duckdb datastore is
+            # the local-parquet demo/sample config, which points at
+            # LOCAL_PARQUET_DIR — allow-list just that directory rather than
+            # leaving external access (incl. local-file reads) wide open.
+            _harden(
+                _mem_conn,
+                disable_external_access=True,
+                allowed_directories=[str(LOCAL_PARQUET_DIR)],
+            )
             connector = factory(_mem_conn)
     elif ctype == "postgres":
         _dsn: str | None = cfg.get("dsn")

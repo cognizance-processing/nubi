@@ -413,7 +413,9 @@ def _build_demo_connector() -> DuckDBConnector:
     """
     import duckdb  # noqa: PLC0415
 
+    from app.connectors.duckdb_conn import harden_connection  # noqa: PLC0415
     from app.demo_bundle import (  # noqa: PLC0415
+        LOCAL_PARQUET_DIR,
         export_demo_parquet_local,
         local_parquet_datastore_config,
     )
@@ -432,6 +434,18 @@ def _build_demo_connector() -> DuckDBConnector:
                 mem_conn.execute(stmt)
             except Exception:  # noqa: BLE001 — skip malformed stmts
                 pass
+
+    # Harden AFTER the views are created (they need external access to read
+    # their backing parquet at CREATE VIEW time) but BEFORE any tenant SQL
+    # runs: this is the default connector for every user's Queries workspace,
+    # so without this it lets arbitrary authenticated users read host files
+    # via read_csv_auto('/etc/passwd') etc. Views are read lazily, so allow
+    # only the parquet export directory they point at.
+    harden_connection(
+        mem_conn,
+        disable_external_access=True,
+        allowed_directories=[str(LOCAL_PARQUET_DIR)],
+    )
 
     # Legacy 5-row ``demo`` table — kept for backward compatibility with
     # existing tests and fixtures that query ``SELECT * FROM demo``.
@@ -1306,8 +1320,18 @@ async def query(
                         except Exception:  # noqa: BLE001
                             pass
                 from app.connectors.duckdb_conn import harden_connection as _harden
+                from app.demo_bundle import LOCAL_PARQUET_DIR
 
-                _harden(_mem_conn, block_local_fs=False)
+                # The only view_sql source for a ":memory:" duckdb datastore
+                # is the local-parquet demo/sample config, which points at
+                # LOCAL_PARQUET_DIR — allow-list just that directory rather
+                # than leaving external access (incl. local-file reads)
+                # wide open.
+                _harden(
+                    _mem_conn,
+                    disable_external_access=True,
+                    allowed_directories=[str(LOCAL_PARQUET_DIR)],
+                )
                 connector = factory(_mem_conn)
         elif ctype == "postgres":
             # PostgresConnector takes a DSN string, not a raw config dict.
