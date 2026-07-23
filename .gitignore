@@ -39,6 +39,9 @@ backend/.env
 !.env.example
 !.env.deploy.example
 !.env.local.example
+# ...and .env.compose itself — docker-compose.yml's `env_file` requires it to
+# exist on disk; it ships with safe placeholders only (see docs/self-host.md).
+!.env.compose
 
 # Secret/credential files
 backend/storage/secret-files/
