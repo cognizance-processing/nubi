@@ -205,6 +205,7 @@ class _Config:
         "_loaded",
         "enabled",
         "auth_rpm",
+        "auth_session_rpm",
         "query_rpm",
         "flowrun_rpm",
         "chat_rpm",
@@ -229,6 +230,16 @@ class _Config:
         # WEB_CONCURRENCY alongside `--workers`), this estimate becomes exact.
         workers = max(1, _int_env("WEB_CONCURRENCY", _int_env("UVICORN_WORKERS", 1)))
         self.auth_rpm = max(1, _int_env("NUBI_RATELIMIT_AUTH_RPM", default=30) // workers)
+        # Routine session-probe endpoints (/auth/refresh, /auth/config, /auth/me,
+        # /auth/scope) are hit on every page load/reload — they don't guess
+        # credentials (refresh needs a valid HttpOnly cookie; me/scope need a
+        # valid access token; config is public), so they must not share the
+        # credential-guessing bucket meant for /auth/login and /auth/register.
+        # Lumping them together made ordinary reload-heavy use (and any e2e
+        # test that reloads the page) self-throttle into 429s within seconds.
+        self.auth_session_rpm = max(
+            1, _int_env("NUBI_RATELIMIT_AUTH_SESSION_RPM", default=120) // workers
+        )
         self.query_rpm = max(1, _int_env("NUBI_RATELIMIT_QUERY_RPM", default=120) // workers)
         self.flowrun_rpm = max(1, _int_env("NUBI_RATELIMIT_FLOWRUN_RPM", default=60) // workers)
         # Chat/AI endpoints are expensive (LLM cost per turn) — default 20 rpm,
@@ -451,7 +462,7 @@ _SKIP_PREFIXES = (
 def _classify(path: str) -> tuple[str | None, int]:
     """Return (route_class, rpm) or (None, 0) to skip.
 
-    route_class values: 'auth', 'query', 'flow-run', 'chat'
+    route_class values: 'auth', 'auth-session', 'query', 'flow-run', 'chat'
     """
     for pfx in _SKIP_PREFIXES:
         if path == pfx or path.startswith(pfx):
@@ -489,6 +500,18 @@ def _classify(path: str) -> tuple[str | None, int]:
         return "flow-run", _cfg.flowrun_rpm
 
     # Auth: anything under /api/v1/auth/
+    # Routine session-probe endpoints — called on every page load/reload, never
+    # credential-guessing targets (refresh needs a valid HttpOnly cookie;
+    # me/scope need a valid access token; config is public) — get their own,
+    # more generous bucket so they can't be starved by (or starve) the strict
+    # login/register brute-force bucket.
+    if path in (
+        "/api/v1/auth/refresh",
+        "/api/v1/auth/config",
+        "/api/v1/auth/me",
+        "/api/v1/auth/scope",
+    ):
+        return "auth-session", _cfg.auth_session_rpm
     if path.startswith("/api/v1/auth/") or path == "/api/v1/auth":
         return "auth", _cfg.auth_rpm
 

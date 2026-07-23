@@ -35,14 +35,32 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     let cancelled = false
 
+    async function attemptRestore() {
+      // Exchange the HttpOnly refresh cookie for a new access token
+      const refreshData = await api.refresh()
+      api.setAccessToken(refreshData.access_token)
+
+      // Fetch the user profile with the new token
+      return api.me()
+    }
+
     async function restoreSession() {
       try {
-        // Exchange the HttpOnly refresh cookie for a new access token
-        const refreshData = await api.refresh()
-        api.setAccessToken(refreshData.access_token)
-
-        // Fetch the user profile with the new token
-        const meData = await api.me()
+        let meData
+        try {
+          meData = await attemptRestore()
+        } catch (err) {
+          // A 429 is a transient rate limit, not proof the session is
+          // invalid — retry once after a short backoff instead of
+          // force-logging the user out (this used to fire on every ordinary
+          // page reload once the auth bucket was exhausted).
+          if (err?.status === 429) {
+            await new Promise((resolve) => setTimeout(resolve, 1500))
+            meData = await attemptRestore()
+          } else {
+            throw err
+          }
+        }
         if (!cancelled) {
           setUser(meData.user)
         }

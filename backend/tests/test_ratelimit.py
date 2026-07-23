@@ -40,6 +40,7 @@ def limited_app():
         "_loaded": getattr(cfg, "_loaded", False),
         "enabled": getattr(cfg, "enabled", False),
         "auth_rpm": getattr(cfg, "auth_rpm", 30),
+        "auth_session_rpm": getattr(cfg, "auth_session_rpm", 120),
         "query_rpm": getattr(cfg, "query_rpm", 120),
         "flowrun_rpm": getattr(cfg, "flowrun_rpm", 60),
         "burst_factor": getattr(cfg, "burst_factor", 1.5),
@@ -48,6 +49,7 @@ def limited_app():
     cfg._loaded = True
     cfg.enabled = True
     cfg.auth_rpm = 3
+    cfg.auth_session_rpm = 3
     cfg.query_rpm = 3
     cfg.flowrun_rpm = 3
     cfg.burst_factor = 1.0
@@ -58,6 +60,10 @@ def limited_app():
 
     @app.post("/api/v1/auth/login")
     async def _login() -> dict[str, str]:
+        return {"ok": "yes"}
+
+    @app.post("/api/v1/auth/refresh")
+    async def _refresh() -> dict[str, str]:
         return {"ok": "yes"}
 
     try:
@@ -74,6 +80,26 @@ def test_limiter_throttles_after_cap(limited_app):
     codes = [client.post("/api/v1/auth/login").status_code for _ in range(6)]
     assert codes[:3] == [200, 200, 200], codes
     assert 429 in codes[3:], codes
+
+
+def test_auth_refresh_has_its_own_bucket_from_login(limited_app):
+    """/auth/refresh must not share /auth/login's credential-guessing bucket.
+
+    Regression test: both used to classify as the same 'auth' route_class, so
+    ordinary page-load refresh probes could exhaust the same 30 rpm budget
+    meant to throttle login brute-forcing (and vice versa) — see
+    AuthContext.jsx's restoreSession, which force-logs-out on ANY refresh
+    failure including a transient 429 from this shared bucket.
+    """
+    client = TestClient(limited_app)
+
+    # Exhaust the login bucket (cap=3) from one client.
+    login_codes = [client.post("/api/v1/auth/login").status_code for _ in range(6)]
+    assert 429 in login_codes, login_codes
+
+    # /auth/refresh from the SAME client must still succeed — independent bucket.
+    refresh_codes = [client.post("/api/v1/auth/refresh").status_code for _ in range(3)]
+    assert refresh_codes == [200, 200, 200], refresh_codes
 
 
 def test_leftmost_xff_spoof_does_not_grant_fresh_bucket(limited_app):
