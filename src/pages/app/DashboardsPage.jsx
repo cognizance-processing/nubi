@@ -414,7 +414,9 @@ function CardThumbnail({ board }) {
   )
 }
 
-function CardMenu({ onEdit, onCheckpoint, onHistory, onPromote, onDelete, folders, currentFolderId, onMoveToFolder, onNewFolderFromCard }) {
+// Actions are individually optional: the menu now sits on every card, including
+// ones a read-only viewer sees, where Open is the only thing they may do.
+function CardMenu({ onOpen, onEdit, onCheckpoint, onHistory, onPromote, onDelete, folders, currentFolderId, onMoveToFolder, onNewFolderFromCard }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
 
@@ -437,10 +439,12 @@ function CardMenu({ onEdit, onCheckpoint, onHistory, onPromote, onDelete, folder
       </button>
 
       <DropdownMenu open={open} onClose={() => setOpen(false)}>
-        <DropdownItem icon={Pencil} onClick={() => { setOpen(false); onEdit() }}>Edit</DropdownItem>
-        <DropdownItem icon={GitCommitHorizontal} onClick={() => { setOpen(false); onCheckpoint() }}>Checkpoint</DropdownItem>
-        <DropdownItem icon={History} onClick={() => { setOpen(false); onHistory() }}>History</DropdownItem>
-        <DropdownItem icon={Rocket} onClick={() => { setOpen(false); onPromote() }}>Promote</DropdownItem>
+        {onOpen && <DropdownItem icon={ExternalLink} onClick={() => { setOpen(false); onOpen() }}>Open</DropdownItem>}
+        {onEdit && <DropdownItem icon={Pencil} onClick={() => { setOpen(false); onEdit() }}>Edit</DropdownItem>}
+        {(onOpen || onEdit) && (onCheckpoint || onHistory || onPromote) && <DropdownDivider />}
+        {onCheckpoint && <DropdownItem icon={GitCommitHorizontal} onClick={() => { setOpen(false); onCheckpoint() }}>Checkpoint</DropdownItem>}
+        {onHistory && <DropdownItem icon={History} onClick={() => { setOpen(false); onHistory() }}>History</DropdownItem>}
+        {onPromote && <DropdownItem icon={Rocket} onClick={() => { setOpen(false); onPromote() }}>Promote</DropdownItem>}
         {onMoveToFolder && (
           <>
             <DropdownDivider />
@@ -608,44 +612,30 @@ function BoardCard({ board, onDeleted, onRestored, canWrite, environments, stric
             <CardThumbnail board={board} />
           </Link>
 
-          {/* Actions live over the picture rather than in the body: parked at
-              the bottom of the card they reserved permanent empty space on every
-              card (opacity alone doesn't reclaim layout), which read as a void.
-              Here they cost nothing until wanted. Kept mounted (opacity, never
-              display:none) so they stay tabbable; focus-within reveals them for
-              keyboard users and hover:none devices always show them. */}
-          <div className="absolute inset-x-0 bottom-0 p-2.5 flex gap-2 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity duration-200">
-            {/* Scrim: the picture underneath is arbitrary board content, so the
-                buttons need their own contrast floor. */}
-            <div
-              className="absolute inset-x-0 bottom-0 h-20 pointer-events-none"
-              style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.55), transparent)' }}
-              aria-hidden="true"
+          {/* One affordance in the corner instead of a row of buttons across
+              the picture. The board render is the point of the card, and a
+              full-width action bar (plus its scrim) covered the bottom third of
+              it on hover — exactly where a board's first chart sits. Everything
+              those buttons did now lives in the menu.
+
+              A SIBLING of the link, never a child: a link inside a link is
+              invalid HTML and browsers resolve it unpredictably. Kept mounted
+              and revealed with opacity (never display:none) so it stays
+              tabbable; focus-within covers keyboards and hover:none devices
+              show it always. */}
+          <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity duration-200">
+            <CardMenu
+              onOpen={() => navigate(`/d/${board.id}`, { state: linkState })}
+              onEdit={canWrite ? () => navigate(`/d/${board.id}/edit`) : undefined}
+              onCheckpoint={canWrite ? handleCheckpoint : undefined}
+              onHistory={canWrite ? () => setHistoryOpen(true) : undefined}
+              onPromote={canWrite ? () => setPromoteOpen(true) : undefined}
+              onDelete={canWrite ? () => setConfirmDelete(true) : undefined}
+              folders={folders}
+              currentFolderId={currentFolderId}
+              onMoveToFolder={canWrite && onMoveToFolder ? (folderId) => onMoveToFolder(board, folderId) : undefined}
+              onNewFolderFromCard={canWrite && onNewFolderFromCard ? () => onNewFolderFromCard(board) : undefined}
             />
-            <Link
-              to={`/d/${board.id}`}
-              state={linkState}
-              className="relative flex items-center gap-1.5 flex-1 justify-center h-8 rounded-lg bg-primary text-primary-fg text-xs font-medium hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <ExternalLink size={12} aria-hidden="true" />
-              Open
-            </Link>
-            {canWrite && (
-              <Link
-                to={`/d/${board.id}/edit`}
-                className="relative flex items-center gap-1.5 flex-1 justify-center h-8 rounded-lg text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                style={{
-                  background: 'color-mix(in srgb, var(--surface) 88%, transparent)',
-                  border: '1px solid var(--border)',
-                  color: 'var(--fg)',
-                  backdropFilter: 'blur(6px)',
-                  WebkitBackdropFilter: 'blur(6px)',
-                }}
-              >
-                <Pencil size={12} aria-hidden="true" />
-                Edit
-              </Link>
-            )}
           </div>
         </div>
 
@@ -664,19 +654,6 @@ function BoardCard({ board, onDeleted, onRestored, canWrite, environments, stric
                 <StrictEnvBadge pinned_envs={board.pinned_envs} strictEnv={strictEnv} />
               </p>
             </div>
-            {canWrite && (
-              <CardMenu
-                onEdit={() => navigate(`/d/${board.id}/edit`)}
-                onCheckpoint={handleCheckpoint}
-                onHistory={() => setHistoryOpen(true)}
-                onPromote={() => setPromoteOpen(true)}
-                onDelete={() => setConfirmDelete(true)}
-                folders={folders}
-                currentFolderId={currentFolderId}
-                onMoveToFolder={onMoveToFolder ? (folderId) => onMoveToFolder(board, folderId) : undefined}
-                onNewFolderFromCard={onNewFolderFromCard ? () => onNewFolderFromCard(board) : undefined}
-              />
-            )}
           </div>
 
         </div>
