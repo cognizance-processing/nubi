@@ -58,6 +58,7 @@ import { resolveSpaTheme } from '../../lib/spaTheme.js'
 import EChart from '../../viz/EChart.jsx'
 import { useResolvedParams, useSetVariable } from '../VariableStore.jsx'
 import { useCrossFilter } from '../CrossFilterContext.jsx'
+import { useStepper } from '../StepperContext.jsx'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
 import Skeleton from '../../components/ui/Skeleton.jsx'
 import EmptyState from '../../components/ui/EmptyState.jsx'
@@ -199,11 +200,15 @@ export default function ChartWidget({ widget, providerTable = null }) {
   // Drilldown / cross-filter
   const setVariable = useSetVariable()
   const { emit: emitCrossFilter } = useCrossFilter()
+  const { advance: stepAdvance } = useStepper()
 
   const onEvents = useMemo(() => {
     const targetVar = drilldown?.target_var
     const hasCrossFilter = !!(onClickSpec?.setVar || onClickSpec?.navigateTab)
-    if (!targetVar && !hasCrossFilter) return undefined
+    // `stepNext` advances an enclosing stepper widget (no-op outside one), so a
+    // click can both set the drill-down value and move to the next step.
+    const stepsNext = !!onClickSpec?.stepNext
+    if (!targetVar && !hasCrossFilter && !stepsNext) return undefined
     return {
       click: (params) => {
         if (targetVar) {
@@ -219,11 +224,13 @@ export default function ChartWidget({ widget, providerTable = null }) {
         if (hasCrossFilter) {
           emitCrossFilter(onClickSpec, params)
         }
+        // Advance last, so the variable the next step reads is already set.
+        if (stepsNext) stepAdvance()
       },
     }
   }, [
     drilldown?.target_var, drilldown?.value_field, setVariable,
-    onClickSpec, emitCrossFilter,
+    onClickSpec, emitCrossFilter, stepAdvance,
   ])
 
   // Build ECharts option via the shared builder

@@ -43,6 +43,7 @@ import HtmlWidget from './widgets/HtmlWidget.jsx'
 import MetricWidget from './widgets/MetricWidget.jsx'
 import PivotWidget from './widgets/PivotWidget.jsx'
 import SectionWidget from './widgets/SectionWidget.jsx'
+import StepperWidget from './widgets/StepperWidget.jsx'
 import { VariableProvider, useSetVariable, useResolvedParams } from './VariableStore.jsx'
 import { CrossFilterProvider } from './CrossFilterContext.jsx'
 import { RefreshContext } from './RefreshContext.jsx'
@@ -218,6 +219,21 @@ function WidgetComponent({ widget, onOpenDrawer, editMode = false, providerTable
     case 'filter':  return <FilterWidgetLoader widget={w} editMode={editMode} />
     case 'text':    return <TextWidget   widget={w} />
     case 'section': return <SectionWidget widget={w} />
+    // A stepper shows one child widget at a time in a single tile (the legacy
+    // in-tile drill-down). It renders its children back through this same
+    // dispatch, so nesting and every widget type keep working inside it.
+    case 'stepper': return (
+      <StepperWidget
+        widget={w}
+        renderChild={(child) => (
+          <WidgetComponent
+            widget={child}
+            onOpenDrawer={onOpenDrawer}
+            editMode={editMode}
+          />
+        )}
+      />
+    )
     default:
       return (
         <div className="flex items-center justify-center h-full px-4">

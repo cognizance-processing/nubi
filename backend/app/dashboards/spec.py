@@ -632,6 +632,10 @@ class Widget(BaseModel):
         "kpi", "table", "chart", "filter", "text",
         # Extended widget types (rendered by the frontend SpecRenderer):
         "metric", "pivot", "section", "html",
+        # Container: shows one child widget at a time in a single tile, with a
+        # step bar. Children are full widget specs under props.steps[].widget
+        # and carry no pos of their own.
+        "stepper",
     ]
     tab_id: str | None = Field(
         default=None,
@@ -649,9 +653,17 @@ class Widget(BaseModel):
             "query_id for rendering (the embed renderer reads the metric-* attrs)."
         ),
     )
+    # Kept in step with SUPPORTED_TYPES in embed/widgets/chart-options.js (the
+    # renderer is the source of truth). This list had drifted behind the
+    # renderer, so specs using a real-but-unlisted type failed the optional
+    # /dashboards/validate oracle even though they rendered fine.
+    # 'hbar' is legacy-only: the renderer has no such case and falls through to
+    # scatter — use 'bar' + config.orientation='horizontal'.
     chart_type: (
         Literal[
-            "line", "bar", "hbar", "scatter", "area", "pie", "donut", "heatmap", "gauge", "combo",
+            "line", "bar", "hbar", "scatter", "area", "pie", "donut", "heatmap",
+            "gauge", "combo", "bubble", "sankey", "funnel", "waterfall", "radar",
+            "treemap", "boxplot", "candlestick", "fan", "map",
         ]
         | None
     ) = None
