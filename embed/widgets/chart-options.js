@@ -75,7 +75,7 @@
 export const SUPPORTED_TYPES = [
   'bar', 'line', 'area', 'scatter', 'bubble', 'pie', 'donut',
   'sankey', 'funnel', 'waterfall', 'heatmap', 'radar', 'treemap',
-  'boxplot', 'gauge', 'candlestick', 'fan', 'combo',
+  'boxplot', 'gauge', 'candlestick', 'fan', 'combo', 'map',
 ]
 
 // Default palette (used when no theme palette supplied).
@@ -823,6 +823,8 @@ function buildPie(table, e, config, theme, locale, { donut = false } = {}) {
   const dl = config.dataLabels
   const showLabel = dl === false ? false : (n <= 14)
   const fmt = isDeepObject(dl) && dl.format ? makeFormatter(dl.format, locale) : null
+  const labelInside = isDeepObject(dl) && dl.position === 'inside'
+  const labelFormatter = isDeepObject(dl) && typeof dl.formatter === 'string' ? dl.formatter : null
 
   // Pie legend defaults to bottom unless the user said otherwise.
   const legendCfg = config.legend === false ? undefined
@@ -837,11 +839,18 @@ function buildPie(table, e, config, theme, locale, { donut = false } = {}) {
       data: names.map((name, i) => ({ name, value: vals[i] })),
       radius: donut ? ['48%', '72%'] : ['0%', '68%'],
       center: ['50%', '46%'],
+      // `dataLabels.position: 'inside'` draws the label on the slice itself and
+      // drops the leader line — outside labels need horizontal room the tile
+      // often doesn't have, and get clipped. `dataLabels.formatter` overrides
+      // the label template outright (e.g. '{d}%' for percentage-only rings).
       label: {
-        show: showLabel, color: theme.fg, fontSize: 10,
-        formatter: fmt ? (p) => `${p.name}: ${fmt(p.value)}` : '{b}: {d}%',
+        show: showLabel,
+        color: labelInside ? '#fff' : theme.fg,
+        fontSize: 10,
+        position: labelInside ? 'inside' : 'outside',
+        formatter: labelFormatter ?? (fmt ? (p) => `${p.name}: ${fmt(p.value)}` : '{b}: {d}%'),
       },
-      labelLine: { show: showLabel },
+      labelLine: { show: showLabel && !labelInside },
       itemStyle: { borderColor: theme.border, borderWidth: 1 },
     }],
   }
@@ -1065,6 +1074,74 @@ function buildTreemap(table, e, config, theme, locale) {
         { itemStyle: { borderColor: theme.border, borderWidth: 2, gapWidth: 2 } },
         { itemStyle: { gapWidth: 1 } },
       ],
+    }],
+  }
+}
+
+/**
+ * Choropleth map. Colours named regions of a registered GeoJSON map by a metric.
+ *
+ *   encoding: { name: '<region column>', value: '<metric column>' }
+ *             (x/y and label/value are accepted as aliases)
+ *   config.map: name of a map registered via echarts.registerMap() — see
+ *               registerMapGeoJson() in src/lib/maps.js. Defaults to 'world'.
+ *
+ * Region values in the data must match the GeoJSON feature names. Rows whose
+ * name doesn't match simply don't paint — ECharts ignores them — so a partial
+ * match degrades gracefully instead of erroring.
+ *
+ * `config.roam` enables pan/zoom (off by default: a dashboard tile is usually
+ * a fixed view, and roam swallows scroll events on a scrolling board).
+ */
+function buildMap(table, e, config, theme, locale) {
+  const nameRaw = table.col(e.name || e.x || e.label)
+  const valRaw = table.col(e.value || e.y)
+  if (!nameRaw || !valRaw) return emptyOption(theme)
+  const names = toStrings(nameRaw)
+  const vals = toNumbers(valRaw)
+  const data = names.map((name, i) => ({ name, value: vals[i] }))
+
+  const finite = vals.filter((v) => Number.isFinite(v))
+  const min = finite.length ? Math.min(...finite) : 0
+  const max = finite.length ? Math.max(...finite) : 1
+
+  const palette = resolvePalette(config, theme)
+  // Low end is a neutral fill so unmatched/low regions read as "background".
+  const lowColor = config.lowColor ?? theme.grid ?? '#e5e7eb'
+  const highColor = config.highColor ?? palette[0]
+
+  return {
+    ...baseFrame(config, theme, locale, { trigger: 'item', noGrid: true }),
+    tooltip: tooltipConfig(config, theme, { trigger: 'item', locale }),
+    // visualMap does double duty: it IS the colour mapping as well as the
+    // on-screen scale. `legend:false` must therefore only hide the control
+    // (`show:false`) — dropping the block entirely would leave every region
+    // unpainted. A single-stop range would make it emit NaN colours, so widen.
+    visualMap: {
+      type: 'continuous',
+      show: config.legend !== false,
+      min,
+      max: max > min ? max : min + 1,
+      left: 8,
+      bottom: 8,
+      calculable: true,
+      inRange: { color: [lowColor, highColor] },
+      textStyle: { color: theme.fgMuted ?? theme.fg },
+    },
+    series: [{
+      type: 'map',
+      map: config.map || 'world',
+      data,
+      roam: !!config.roam,
+      // Keep the shape inside the tile regardless of the tile's aspect ratio.
+      layoutCenter: ['50%', '50%'],
+      layoutSize: '92%',
+      label: { show: !!config.dataLabels, color: theme.fg, fontSize: 10 },
+      itemStyle: { borderColor: theme.border, borderWidth: 0.5 },
+      emphasis: {
+        label: { show: true, color: theme.fg },
+        itemStyle: { areaColor: palette[1] ?? highColor },
+      },
     }],
   }
 }
@@ -1320,6 +1397,7 @@ export function buildChartOption({ type, table, encoding, config, theme } = {}) 
     case 'heatmap': option = buildHeatmap(view, e, cfg, th, locale); break
     case 'radar': option = buildRadar(view, e, cfg, th, locale); break
     case 'treemap': option = buildTreemap(view, e, cfg, th, locale); break
+    case 'map': option = buildMap(view, e, cfg, th, locale); break
     case 'boxplot': option = buildBoxplot(view, e, cfg, th, locale); break
     case 'gauge': option = buildGauge(view, e, cfg, th, locale); break
     case 'candlestick': option = buildCandlestick(view, e, cfg, th, locale); break

@@ -32,9 +32,17 @@ const WIDGET_TYPES = new Set([
   'metric', 'pivot', 'section', 'html',
 ])
 
-// Full set rendered by src/viz/chartOption.js (must match the editor palette
-// and backend spec.py — otherwise UI-authored charts fail Code-panel validation).
-const CHART_TYPES = new Set(['line', 'bar', 'hbar', 'scatter', 'area', 'pie', 'donut', 'heatmap', 'gauge', 'combo'])
+// Full set rendered by embed/widgets/chart-options.js (must match the editor
+// palette and backend spec.py — otherwise UI-authored charts fail Code-panel
+// validation). This had drifted to 10 entries while the renderer grew to 19, so
+// picking e.g. Treemap in the editor produced a spec its own validator rejected.
+// 'hbar' is accepted for legacy specs only — the renderer has no such case;
+// use 'bar' with config.orientation='horizontal'.
+const CHART_TYPES = new Set([
+  'line', 'bar', 'hbar', 'scatter', 'area', 'pie', 'donut', 'heatmap', 'gauge',
+  'combo', 'bubble', 'sankey', 'funnel', 'waterfall', 'radar', 'treemap',
+  'boxplot', 'candlestick', 'fan', 'map',
+])
 const FILTER_SUBTYPES = new Set(['select', 'multiselect', 'daterange', 'text'])
 const VARIABLE_TYPES = new Set(['text', 'number', 'date', 'daterange', 'select', 'multiselect'])
 

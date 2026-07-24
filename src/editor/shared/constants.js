@@ -19,6 +19,8 @@ export const CHART_TYPES = [
   'heatmap', 'radar',
   // Statistical / financial / forecast
   'boxplot', 'gauge', 'candlestick', 'fan',
+  // Geographic
+  'map',
 ]
 
 // Per-series type options (for multi-series / combo chart series rows in the editor)

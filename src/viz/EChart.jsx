@@ -22,6 +22,13 @@
 
 import { useEffect, useRef } from 'react'
 import * as echarts from 'echarts'
+import { attachECharts } from '../lib/maps.js'
+
+// Choropleth (`chart_type: 'map'`) geometry must be registered on the ECharts
+// module before a map chart renders. This is the one place that holds the
+// module, so hand it to the registry at import time; any GeoJSON registered
+// before or after is flushed through.
+attachECharts(echarts)
 
 /**
  * @param {{

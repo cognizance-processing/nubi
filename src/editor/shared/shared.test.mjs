@@ -28,7 +28,7 @@ test('constants: DEMO_QUERY_IDS is a non-empty array of strings', () => {
   assert.ok(DEMO_QUERY_IDS.every(id => typeof id === 'string'))
 })
 
-test('constants: CHART_TYPES includes all 18 chart kinds', () => {
+test('constants: CHART_TYPES includes all 19 chart kinds', () => {
   assert.ok(Array.isArray(CHART_TYPES))
   const required = [
     'bar', 'line', 'area', 'scatter', 'bubble', 'combo',
@@ -36,11 +36,12 @@ test('constants: CHART_TYPES includes all 18 chart kinds', () => {
     'sankey', 'funnel', 'waterfall', 'treemap',
     'heatmap', 'radar',
     'boxplot', 'gauge', 'candlestick', 'fan',
+    'map',
   ]
   for (const t of required) {
     assert.ok(CHART_TYPES.includes(t), `CHART_TYPES should include '${t}'`)
   }
-  assert.equal(CHART_TYPES.length, 18, 'CHART_TYPES must contain exactly 18 types')
+  assert.equal(CHART_TYPES.length, 19, 'CHART_TYPES must contain exactly 19 types')
 })
 
 test('constants: FILTER_SUBTYPES includes select and daterange', () => {

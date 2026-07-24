@@ -3,7 +3,7 @@
  * exposed through the shared embed/widgets/chart-options.js builder.
  *
  * Covers:
- *   - All 17 chart types produce a valid ECharts option (no throw)
+ *   - All 19 chart types produce a valid ECharts option (no throw)
  *   - Sankey: nodes + links structure
  *   - Boxplot: five-number summary output
  *   - Fan chart: confidence band series + forecast line
@@ -81,16 +81,16 @@ const HEATMAP_ROWS = [
 // ---------------------------------------------------------------------------
 
 describe('SUPPORTED_TYPES', () => {
-  test('exports an array of 18 types', () => {
+  test('exports an array of 19 types', () => {
     assert.ok(Array.isArray(SUPPORTED_TYPES))
-    assert.equal(SUPPORTED_TYPES.length, 18)
+    assert.equal(SUPPORTED_TYPES.length, 19)
   })
 
   test('includes all expected types', () => {
     const required = [
       'bar', 'line', 'area', 'scatter', 'bubble', 'pie', 'donut',
       'sankey', 'funnel', 'waterfall', 'heatmap', 'radar', 'treemap',
-      'boxplot', 'gauge', 'candlestick', 'fan', 'combo',
+      'boxplot', 'gauge', 'candlestick', 'fan', 'combo', 'map',
     ]
     for (const t of required) {
       assert.ok(SUPPORTED_TYPES.includes(t), `SUPPORTED_TYPES must include '${t}'`)
@@ -99,10 +99,10 @@ describe('SUPPORTED_TYPES', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 2. All 17 types produce a valid option without throwing
+// 2. All 19 types produce a valid option without throwing
 // ---------------------------------------------------------------------------
 
-describe('all 17 types - no throw', () => {
+describe('all 19 types - no throw', () => {
   const cases = [
     { type: 'bar',         table: CAT_NUM, encoding: { x: 'cat', y: 'val' } },
     { type: 'line',        table: XY_NUM,  encoding: { x: 'x', y: 'y' } },
@@ -121,6 +121,7 @@ describe('all 17 types - no throw', () => {
     { type: 'gauge',       table: XY_NUM,  encoding: { y: 'y' } },
     { type: 'candlestick', table: CANDLE_ROWS,  encoding: { x: 'date', open: 'open', close: 'close', low: 'low', high: 'high' } },
     { type: 'fan',         table: FAN_ROWS, encoding: { x: 't', y: 'mid', lower: 'lo', upper: 'hi' } },
+    { type: 'map',         table: CAT_NUM, encoding: { name: 'cat', value: 'val' } },
   ]
 
   for (const { type, table, encoding } of cases) {
@@ -549,5 +550,146 @@ describe('line chart with colour grouping (long format)', () => {
       encoding: { x: 'x', y: 'y', color: 'metric' },
     })
     assert.deepEqual(opt2.series[0].data, [[1, 10], [2, 20]])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Choropleth map (chart_type: 'map')
+// ---------------------------------------------------------------------------
+
+describe('map (choropleth)', () => {
+  const REGIONS = makeRows([
+    { region: 'North', units: 300 },
+    { region: 'South', units: 120 },
+    { region: 'Central', units: 210 },
+  ])
+
+  test('emits a map series with {name,value} data', () => {
+    const opt = buildChartOption({
+      type: 'map', table: REGIONS,
+      encoding: { name: 'region', value: 'units' },
+      config: { map: 'sales-regions' },
+    })
+    const s = opt.series[0]
+    assert.equal(s.type, 'map')
+    assert.equal(s.map, 'sales-regions')
+    assert.deepEqual(s.data[0], { name: 'North', value: 300 })
+    assert.equal(s.data.length, 3)
+  })
+
+  test('visualMap spans the data range', () => {
+    const opt = buildChartOption({
+      type: 'map', table: REGIONS,
+      encoding: { name: 'region', value: 'units' },
+    })
+    assert.equal(opt.visualMap.min, 120)
+    assert.equal(opt.visualMap.max, 300)
+  })
+
+  test('a single-value dataset still yields a usable range', () => {
+    // min === max would make ECharts emit NaN colours, so max is nudged up.
+    const opt = buildChartOption({
+      type: 'map',
+      table: makeRows([{ region: 'North', units: 7 }]),
+      encoding: { name: 'region', value: 'units' },
+    })
+    assert.equal(opt.visualMap.min, 7)
+    assert.ok(opt.visualMap.max > opt.visualMap.min)
+  })
+
+  test('defaults to the world map when config.map is omitted', () => {
+    const opt = buildChartOption({
+      type: 'map', table: REGIONS, encoding: { name: 'region', value: 'units' },
+    })
+    assert.equal(opt.series[0].map, 'world')
+  })
+
+  test('x/y aliases work in place of name/value', () => {
+    const opt = buildChartOption({
+      type: 'map', table: REGIONS, encoding: { x: 'region', y: 'units' },
+    })
+    assert.deepEqual(opt.series[0].data[0], { name: 'North', value: 300 })
+  })
+
+  test('legend:false hides the scale but keeps the colour mapping', () => {
+    // visualMap IS the colour mapping, not just the on-screen scale — dropping
+    // it would leave every region unpainted.
+    const opt = buildChartOption({
+      type: 'map', table: REGIONS,
+      encoding: { name: 'region', value: 'units' },
+      config: { legend: false },
+    })
+    assert.equal(opt.visualMap.show, false)
+    assert.ok(opt.visualMap.inRange.color.length >= 2)
+  })
+
+  test('legend defaults to visible', () => {
+    const opt = buildChartOption({
+      type: 'map', table: REGIONS, encoding: { name: 'region', value: 'units' },
+    })
+    assert.equal(opt.visualMap.show, true)
+  })
+
+  test('roam is off by default so it does not swallow board scrolling', () => {
+    const opt = buildChartOption({
+      type: 'map', table: REGIONS, encoding: { name: 'region', value: 'units' },
+    })
+    assert.equal(opt.series[0].roam, false)
+    const roamed = buildChartOption({
+      type: 'map', table: REGIONS,
+      encoding: { name: 'region', value: 'units' }, config: { roam: true },
+    })
+    assert.equal(roamed.series[0].roam, true)
+  })
+
+  test('missing columns degrade to an empty option instead of throwing', () => {
+    assert.doesNotThrow(() => {
+      const opt = buildChartOption({
+        type: 'map', table: REGIONS, encoding: { name: 'nope', value: 'nah' },
+      })
+      assert.ok(opt && typeof opt === 'object')
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Pie/donut label placement (dataLabels.position / .formatter)
+// ---------------------------------------------------------------------------
+
+describe('pie label placement', () => {
+  const TWO = makeRows([{ k: 'Completed', v: 96 }, { k: 'Outstanding', v: 4 }])
+
+  test('defaults to outside labels with a leader line', () => {
+    const opt = buildChartOption({ type: 'donut', table: TWO, encoding: { x: 'k', y: 'v' } })
+    const s = opt.series[0]
+    assert.equal(s.label.position, 'outside')
+    assert.equal(s.labelLine.show, true)
+  })
+
+  test("position:'inside' draws on the slice and drops the leader line", () => {
+    // Outside labels need horizontal room a dashboard tile often lacks, so they
+    // get clipped; inside placement is what a compact ring needs.
+    const opt = buildChartOption({
+      type: 'donut', table: TWO, encoding: { x: 'k', y: 'v' },
+      config: { dataLabels: { position: 'inside' } },
+    })
+    const s = opt.series[0]
+    assert.equal(s.label.position, 'inside')
+    assert.equal(s.labelLine.show, false)
+  })
+
+  test('a formatter string overrides the default label template', () => {
+    const opt = buildChartOption({
+      type: 'donut', table: TWO, encoding: { x: 'k', y: 'v' },
+      config: { dataLabels: { position: 'inside', formatter: '{d}%' } },
+    })
+    assert.equal(opt.series[0].label.formatter, '{d}%')
+  })
+
+  test('dataLabels:false still hides labels entirely', () => {
+    const opt = buildChartOption({
+      type: 'donut', table: TWO, encoding: { x: 'k', y: 'v' }, config: { dataLabels: false },
+    })
+    assert.equal(opt.series[0].label.show, false)
   })
 })

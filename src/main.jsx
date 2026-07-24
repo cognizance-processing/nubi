@@ -13,6 +13,10 @@ import './index.css'
 // ---------------------------------------------------------------------------
 import '../embed/widgets/authoring-index.js'
 
+// Choropleth geometry for `chart_type: 'map'` widgets. Side-effect-only;
+// registration is idempotent. See src/lib/maps/README.md to add your own.
+import './lib/maps/index.js'
+
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <BrowserRouter>

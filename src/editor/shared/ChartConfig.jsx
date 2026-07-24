@@ -18,7 +18,7 @@
  *   onChange  (w)=>void — full widget update callback
  */
 
-import { Plus, Trash2, Database, SlidersHorizontal, BarChart3, Layers } from 'lucide-react'
+import { Plus, Trash2, Database, SlidersHorizontal, BarChart3, Layers, Map as MapIcon } from 'lucide-react'
 import {
   inputCls, selectCls, FieldLabel, Section, ToggleRow, ColumnSelect, ColorSwatch,
 } from './inspectorPrimitives.jsx'
@@ -51,6 +51,7 @@ const CHART_ICONS = {
   candlestick: CandlestickChart,
   fan:         Wind,
   combo:       Layers,
+  map:         MapIcon,
 }
 
 // Human-readable labels for chart types
@@ -73,11 +74,15 @@ const CHART_LABELS = {
   candlestick: 'Candle',
   fan:         'Fan',
   combo:       'Combo',
+  map:         'Map',
 }
 
 // Per-type encoding field definitions
 // Each entry: { key, label, required?, hint? }
 const TYPE_ENCODING = {
+  // A choropleth needs the region NAME column (matched against the registered
+  // GeoJSON feature names) and the value that colours it.
+  map:         [{ key: 'name', label: 'Region column' }, { key: 'value', label: 'Value column' }],
   bar:         [{ key: 'x', label: 'X (category)' }, { key: 'y', label: 'Y (value)' }, { key: 'color', label: 'Group / color', optional: true }],
   line:        [{ key: 'x', label: 'X' }, { key: 'y', label: 'Y' }, { key: 'y2', label: 'Y2 (secondary axis)', optional: true }, { key: 'color', label: 'Group / color', optional: true }],
   area:        [{ key: 'x', label: 'X' }, { key: 'y', label: 'Y' }, { key: 'color', label: 'Group / color', optional: true }],
