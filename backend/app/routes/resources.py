@@ -31,6 +31,8 @@ it up automatically.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -47,6 +49,8 @@ from app.routes._helpers import get_or_404
 
 # Audit (fire-and-forget — never breaks a mutation path)
 from app.audit import record_audit as _record_audit
+
+logger = logging.getLogger(__name__)
 
 # ── Sub-router ────────────────────────────────────────────────────────────────
 router = APIRouter(tags=["resources"])
@@ -440,6 +444,14 @@ async def update_resource(
         row["author_kind"] = author_kind(claims)
         row["deduped"] = False
 
+    # A saved board gets its card thumbnail re-rendered and stored, so the
+    # gallery serves a picture of what the board looks like NOW without anyone
+    # paying the ~8s render on first view. Detached: the save has already
+    # succeeded, the render is slow, and a thumbnail is decorative — it must
+    # neither delay this response nor fail it.
+    if resource == "boards" and body.config is not None:
+        _schedule_thumbnail_warm(row, org_id, claims, repo)
+
     # Audit — fire-and-forget; POPIA-safe metadata only (no row data).
     resource_singular = resource.rstrip("s")
     await _record_audit(
@@ -452,6 +464,41 @@ async def update_resource(
         summary={"name": str(row.get("name") or "")},
     )
     return row
+
+
+def _schedule_thumbnail_warm(
+    row: dict[str, Any],
+    org_id: str,
+    claims: dict[str, Any],
+    repo: Repo,
+) -> None:
+    """Kick off a background re-render of a board's stored thumbnail.
+
+    No-op unless thumbnail persistence is configured, so self-hosters without
+    object storage keep the previous on-demand behaviour and pay nothing here.
+    """
+    from app.dashboards import thumbnail_store  # noqa: PLC0415
+
+    if not thumbnail_store.is_enabled():
+        return
+
+    from app.dashboards.collect import spec_from_board  # noqa: PLC0415
+    from app.routes.export_share import warm_board_thumbnails  # noqa: PLC0415
+
+    try:
+        spec_dict = spec_from_board(row)
+    except Exception:  # noqa: BLE001 - an unparseable spec simply has no thumbnail
+        return
+
+    async def _warm() -> None:
+        try:
+            await warm_board_thumbnails(
+                str(row.get("id")), org_id, spec_dict, row.get("name"), claims, repo,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.info("thumbnail warm failed for board %s: %s", row.get("id"), exc)
+
+    asyncio.create_task(_warm())
 
 
 @router.delete("/{resource}/{id}", status_code=204, dependencies=[Depends(require_writer)])

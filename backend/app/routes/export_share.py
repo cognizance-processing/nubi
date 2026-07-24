@@ -69,6 +69,7 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import re
 from typing import Any
 
@@ -82,9 +83,12 @@ from app.dashboards.collect import (
     spec_from_board,
     widget_query_targets,
 )
+from app.dashboards import thumbnail_store
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
 from app.routes._org import resolve_org_id
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/boards", tags=["export-share"])
 
@@ -319,6 +323,13 @@ async def export_board_pdf(
 _THUMB_CACHE: dict[str, tuple[str, str, str]] = {}   # board_id -> (spec_hash, policy_fp, svg)
 _THUMB_CACHE_MAX = 512
 
+
+def _remember_thumb(board_id: str, cache_key: str, policy_fp: str, svg: str) -> None:
+    """Put a render in the in-process cache, bounding its size."""
+    if len(_THUMB_CACHE) >= _THUMB_CACHE_MAX:
+        _THUMB_CACHE.clear()  # crude but bounded; entries are cheap to rebuild
+    _THUMB_CACHE[board_id] = (cache_key, policy_fp, svg)
+
 # Thumbnail render width in px. The card displays it a few hundred px wide, but
 # the SSR layout is width-driven (font sizes and chart geometry are absolute),
 # so rendering too narrow makes axis labels collide. Render at a readable
@@ -426,6 +437,85 @@ def _clamp_svg_height(svg: str, max_h: int, theme: str = "light") -> str:
     return svg[:idx] + fade + svg[idx:] if idx != -1 else svg
 
 
+async def warm_board_thumbnails(
+    board_id: str,
+    org_id: str,
+    spec_dict: dict[str, Any],
+    board_name: str | None,
+    claims: dict[str, Any],
+    repo: Repo,
+) -> int:
+    """Render and store this board's thumbnail for BOTH themes.
+
+    Called after a board is saved or published so the picture is ready before
+    anyone opens the gallery — the render is ~8s, and paying it on first view is
+    exactly what made cards feel broken. Rendering both themes matters because a
+    board has no intrinsic colour: the light render is the wrong picture for a
+    dark-mode viewer, so each theme is its own object.
+
+    Best-effort by construction: every failure path returns rather than raises,
+    because this runs in the background of a save that has already succeeded and
+    must not surface as an error to the user. Returns the number of themes
+    stored.
+    """
+    if not thumbnail_store.is_enabled():
+        return 0
+
+    from app.dashboards.svg_render import (  # noqa: PLC0415
+        render_board_svg,
+        renderer_available,
+        spec_for_render,
+    )
+
+    if not renderer_available():
+        return 0
+    validated_spec = spec_for_render(spec_dict, fallback_title=board_name)
+    if validated_spec is None:
+        return 0
+
+    # Warming happens as the saving user, so the stored objects carry that
+    # caller's policy fingerprint — the same key material the read path uses.
+    policy_fp = _policy_fingerprint(claims)
+    spec_hash = _spec_hash(spec_dict)
+
+    try:
+        widget_data = await collect_board_data(board_id, org_id, claims=claims, repo=repo)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("thumbnail warm skipped for board %s: %s", board_id, exc)
+        return 0
+
+    keep: set[str] = set()
+    stored = 0
+    for theme_key in ("light", "dark"):
+        try:
+            page_svg = await asyncio.to_thread(
+                render_board_svg,
+                validated_spec,
+                widget_data,
+                page_width_px=_THUMB_WIDTH_PX,
+                theme=theme_key,
+            )
+            page_svg = _clamp_svg_height(page_svg, _THUMB_MAX_HEIGHT_PX, theme=theme_key)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("thumbnail render failed (%s) for board %s: %s", theme_key, board_id, exc)
+            continue
+
+        if await asyncio.to_thread(
+            thumbnail_store.save, board_id, spec_hash, theme_key, policy_fp, page_svg,
+        ):
+            keep.add(thumbnail_store.object_key(board_id, spec_hash, theme_key, policy_fp))
+            stored += 1
+        # Refresh the in-process cache too, so the worker that saved also serves
+        # the new picture without a round-trip.
+        _remember_thumb(board_id, f"{spec_hash}:{theme_key}", policy_fp, page_svg)
+
+    # Drop superseded versions only once the new ones are safely written, so a
+    # failed render never leaves the board with no stored thumbnail at all.
+    if keep:
+        await asyncio.to_thread(thumbnail_store.prune_other_versions, board_id, keep)
+    return stored
+
+
 @router.get("/{board_id}/thumbnail.svg")
 async def board_thumbnail_svg(
     board_id: str,
@@ -485,6 +575,21 @@ async def board_thumbnail_svg(
             headers={"Cache-Control": "private, max-age=300", "X-Nubi-Thumb-Cache": "hit"},
         )
 
+    # Then durable storage. The in-process dict above only helps the worker that
+    # rendered; this is what makes a restart — or a second worker, or a card
+    # gallery after a deploy — free instead of an ~8s re-render per board.
+    # Same key material, so it carries the same policy isolation.
+    stored = await asyncio.to_thread(
+        thumbnail_store.load, board_id, _spec_hash(spec_dict), theme_key, policy_fp,
+    )
+    if stored:
+        _remember_thumb(board_id, cache_key, policy_fp, stored)
+        return Response(
+            content=stored,
+            media_type="image/svg+xml",
+            headers={"Cache-Control": "private, max-age=300", "X-Nubi-Thumb-Cache": "stored"},
+        )
+
     if not renderer_available():
         # No Node → no render. Fail soft: the card keeps its miniature.
         raise AppError(
@@ -527,9 +632,13 @@ async def board_thumbnail_svg(
     )
     page_svg = _clamp_svg_height(page_svg, _THUMB_MAX_HEIGHT_PX, theme=theme_key)
 
-    if len(_THUMB_CACHE) >= _THUMB_CACHE_MAX:
-        _THUMB_CACHE.clear()  # crude but bounded; entries are cheap to rebuild
-    _THUMB_CACHE[board_id] = (cache_key, policy_fp, page_svg)
+    _remember_thumb(board_id, cache_key, policy_fp, page_svg)
+    # Persist so the next reader — after a restart, or on another worker — gets
+    # it for free. Off-thread: the S3 call is blocking.
+    await asyncio.to_thread(
+        thumbnail_store.save,
+        board_id, _spec_hash(spec_dict), theme_key, policy_fp, page_svg,
+    )
 
     return Response(
         content=page_svg,

@@ -69,7 +69,7 @@ litellm>=1.0
 # Storage backends (lazy-imported in app/storage/*.py — app runs without them).
 # Install whichever provider(s) you configure via storage URIs.
 # boto3 is also the S3-compatible path (MinIO, Cloudflare R2, etc.) via endpoint_url.
-# boto3>=1.34                     # for S3StorageClient  (s3:// URIs)
+boto3>=1.34                       # S3StorageClient (s3:// URIs) + board thumbnail storage
 # google-cloud-storage>=2.10      # for GCSStorageClient (gs:// URIs)
 # azure-storage-blob>=12.19       # for AzureStorageClient (az:// URIs)
 
