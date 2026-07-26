@@ -263,6 +263,14 @@ export default function FilterWidget({ widget, options = [] }) {
     for (const [k, v] of Object.entries(s)) {
       if (k.startsWith('--')) out[k] = v
     }
+    // A dark per-widget background makes the theme's muted label color
+    // unreadable — derive a light label color so the label stays visible.
+    const bg = s.background
+    if (!out['--filter-label-color'] && typeof bg === 'string' && /^#[0-9a-fA-F]{6}$/.test(bg)) {
+      const r = parseInt(bg.slice(1, 3), 16), g = parseInt(bg.slice(3, 5), 16), b = parseInt(bg.slice(5, 7), 16)
+      const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+      if (lum < 0.45) out['--filter-label-color'] = 'rgba(255,255,255,0.78)'
+    }
     return Object.keys(out).length ? out : undefined
   }, [widget.style])
 

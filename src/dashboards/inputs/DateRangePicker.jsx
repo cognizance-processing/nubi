@@ -87,7 +87,7 @@ export default function DateRangePicker({
   return (
     <div className="flex flex-col gap-1 h-full px-5 py-4">
       {label && (
-        <label htmlFor={uid} className="text-xs font-semibold text-muted uppercase tracking-wider">
+        <label htmlFor={uid} style={styleVars?.['--filter-label-color'] ? { color: styleVars['--filter-label-color'] } : undefined} className="text-xs font-semibold text-muted uppercase tracking-wider">
           {label}
         </label>
       )}

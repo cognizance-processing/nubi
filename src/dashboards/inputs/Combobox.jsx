@@ -125,7 +125,7 @@ export default function Combobox({
   return (
     <div className="flex flex-col gap-1.5 h-full justify-center px-3 py-2 min-w-0">
       {label && (
-        <label htmlFor={uid} className="text-[10.5px] font-semibold text-muted/80 uppercase tracking-[0.06em] leading-none">
+        <label htmlFor={uid} style={styleVars?.['--filter-label-color'] ? { color: styleVars['--filter-label-color'] } : undefined} className="text-[10.5px] font-semibold text-muted/80 uppercase tracking-[0.06em] leading-none">
           {label}
         </label>
       )}
