@@ -298,6 +298,19 @@ export default function KpiWidget({ widget, providerTable = null }) {
   const iconTint = signal.matched ? signal.color
     : (wProps.accentColor ?? (typeof widget.style?.color === 'string' ? widget.style.color : null) ?? '#6366f1')
 
+  // A tile with an EXPLICIT background color (common on boards migrated from
+  // other tools) can't rely on the theme's muted label color: dark-theme muted
+  // (light grey) disappears on a pastel tile, light-theme muted on a dark one.
+  // Derive the label color from the tile's own luminance instead; tiles
+  // without a baked background keep the theme default.
+  const labelColor = useMemo(() => {
+    const bg = widget.style?.background
+    if (typeof bg !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(bg)) return undefined
+    const r = parseInt(bg.slice(1, 3), 16), g = parseInt(bg.slice(3, 5), 16), b = parseInt(bg.slice(5, 7), 16)
+    const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+    return lum < 0.45 ? 'rgba(255,255,255,0.75)' : 'rgba(30,41,59,0.72)'
+  }, [widget.style?.background])
+
   // Optional segmented "pip" progress bar: props.progress = { segments, target }.
   // Fraction filled = value / target, clamped to [0, segments]. `target`
   // should share the headline value's scale (e.g. target: 100 for a 0-100
@@ -352,7 +365,10 @@ export default function KpiWidget({ widget, providerTable = null }) {
             </div>
           )}
           {labelOnTop && (
-            <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted leading-snug">
+            <p
+              className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted leading-snug"
+              style={labelColor ? { color: labelColor } : undefined}
+            >
               {label}
             </p>
           )}
@@ -386,7 +402,12 @@ export default function KpiWidget({ widget, providerTable = null }) {
             )}
           </div>
           {!labelOnTop && (
-            <p className="mt-1 text-sm font-medium text-muted leading-snug">{label}</p>
+            <p
+              className="mt-1 text-sm font-medium text-muted leading-snug"
+              style={labelColor ? { color: labelColor } : undefined}
+            >
+              {label}
+            </p>
           )}
           {progress && progress.style === 'bar' && (
             <div

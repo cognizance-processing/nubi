@@ -1197,6 +1197,34 @@ function buildGauge(table, e, config, theme, locale) {
   const min = config.yAxis?.min ?? (config.min ?? 0)
   const fmt = isDeepObject(config.dataLabels) && config.dataLabels.format
     ? makeFormatter(config.dataLabels.format, locale) : null
+
+  // 'ring' — a minimal radial progress ring (Apex radialBar look): full-circle
+  // track, round-capped progress in the palette color, centered % readout, no
+  // pointer/ticks/bands. The default remains the classic banded needle gauge.
+  if (config.gaugeStyle === 'ring') {
+    const ringColor = (config.palette && config.palette[0]) || theme.palette[0]
+    return {
+      ...baseFrame(config, theme, locale, { noGrid: true }),
+      series: [{
+        type: 'gauge', min, max,
+        startAngle: 90, endAngle: -270,
+        progress: { show: true, width: 12, roundCap: true, itemStyle: { color: ringColor } },
+        axisLine: { lineStyle: { width: 12, color: [[1, 'rgba(148,163,184,0.18)']] } },
+        pointer: { show: false },
+        axisTick: { show: false },
+        splitLine: { show: false },
+        axisLabel: { show: false },
+        detail: {
+          valueAnimation: true, color: theme.fg, fontSize: 20, fontWeight: 700,
+          offsetCenter: [0, 0],
+          formatter: fmt ? (v) => fmt(v) : (v) => `${Number(v).toFixed(2)}%`,
+        },
+        title: { show: false },
+        data: [{ value: Math.max(min, Math.min(max, value)), name: e.y || e.value || '' }],
+      }],
+    }
+  }
+
   return {
     ...baseFrame(config, theme, locale, { noGrid: true }),
     series: [{

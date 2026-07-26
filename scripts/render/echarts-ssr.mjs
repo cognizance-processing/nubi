@@ -276,11 +276,34 @@ function buildHBar(colMap, xCol, yCol) {
   }
 }
 
-function buildGauge(colMap, valueCol, props = {}) {
+function buildGauge(colMap, valueCol, props = {}, config = {}) {
   const vals = toNumbers(colMap[valueCol] || [])
   const value = vals[0] ?? 0
-  const max = props.max ?? Math.max(value * 1.5, 100)
-  const min = props.min ?? 0
+  const max = props.max ?? config.max ?? Math.max(value * 1.5, 100)
+  const min = props.min ?? config.min ?? 0
+  // 'ring' — radial progress ring (Apex radialBar look), mirroring the
+  // browser builder in embed/widgets/chart-options.js so thumbnails match.
+  if (config.gaugeStyle === 'ring') {
+    const ringColor = (config.palette && config.palette[0]) || PALETTE[0]
+    return {
+      backgroundColor: 'transparent',
+      animation: false,
+      series: [{
+        type: 'gauge', min, max,
+        startAngle: 90, endAngle: -270,
+        progress: { show: true, width: 12, roundCap: true, itemStyle: { color: ringColor } },
+        axisLine: { lineStyle: { width: 12, color: [[1, 'rgba(148,163,184,0.18)']] } },
+        pointer: { show: false },
+        axisTick: { show: false },
+        splitLine: { show: false },
+        axisLabel: { show: false },
+        detail: { fontSize: 18, fontWeight: 700, offsetCenter: [0, 0],
+                  formatter: (v) => `${Number(v).toFixed(2)}%` },
+        title: { show: false },
+        data: [{ value: Math.max(min, Math.min(max, value)) }],
+      }],
+    }
+  }
   return {
     color: PALETTE,
     backgroundColor: 'transparent',
@@ -318,7 +341,7 @@ function buildChartOption(widget, colMap) {
     case 'pie':     return buildPie(colMap, xCol, yCol, false)
     case 'donut':   return buildPie(colMap, xCol, yCol, true)
     case 'hbar':    return buildHBar(colMap, xCol, yCol)
-    case 'gauge':   return buildGauge(colMap, enc.value || yCol, props)
+    case 'gauge':   return buildGauge(colMap, enc.value || yCol, props, widget.config || {})
     default:        return buildBar(colMap, xCol, yCol)
   }
 }
