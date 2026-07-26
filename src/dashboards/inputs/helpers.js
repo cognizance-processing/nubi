@@ -191,6 +191,14 @@ export function resolveDateRange(value, now = new Date()) {
 export const FILTER_SHELL_CLS =
   'flex flex-col gap-1.5 h-full justify-center px-3 py-2 min-w-0 min-h-0 overflow-hidden'
 
-/** Label classes for a filter control. Pair with FILTER_SHELL_CLS. */
+/**
+ * Label classes for a filter control. Pair with FILTER_SHELL_CLS.
+ *
+ * `shrink-0` is load-bearing: the shell is a flex column, so when a cell is
+ * even slightly shorter than the chrome the label — the smallest flex item —
+ * is squashed to height 0 and silently disappears while the control stays
+ * full size. Pinning it means a tight cell trims the control instead, and the
+ * label a filter is useless without is always rendered.
+ */
 export const FILTER_LABEL_CLS =
-  'text-[10.5px] font-semibold text-muted/80 uppercase tracking-[0.06em] leading-none truncate'
+  'shrink-0 text-[10.5px] font-semibold text-muted/80 uppercase tracking-[0.06em] leading-none truncate'
