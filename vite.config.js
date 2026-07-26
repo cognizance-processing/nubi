@@ -78,6 +78,18 @@ export default defineConfig(({ mode }) => {
           secure: false,
         },
       },
-    }
+    },
+    // `vite preview` (serving the production build locally) needs the same
+    // /api proxy as the dev server — preview does NOT inherit server.proxy.
+    preview: {
+      port: 4173,
+      proxy: {
+        '/api': {
+          target: env.VITE_BACKEND_URL || 'http://localhost:8000',
+          changeOrigin: true,
+          secure: false,
+        },
+      },
+    },
   }
 })

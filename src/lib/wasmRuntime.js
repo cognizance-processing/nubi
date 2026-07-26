@@ -42,23 +42,36 @@
  */
 
 import * as arrow from 'apache-arrow'
-import * as duckdb from '@duckdb/duckdb-wasm'
 import { getAccessToken, tenantHeaders } from './api.js'
 import { descaleDecimalTable } from './arrowDecimal.js'
 
-// Self-hosted DuckDB-WASM assets. Vite fingerprints these and serves them from
-// our OWN origin, so `new Worker(url)` is same-origin (browsers forbid workers
-// from a cross-origin URL) and nothing is fetched from a CDN — which also keeps
-// it working under the app's CSP and inside embedded (iframe) hosts.
-import duckdb_mvp_wasm from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url'
-import duckdb_mvp_worker from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url'
-import duckdb_eh_wasm from '@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url'
-import duckdb_eh_worker from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url'
-
-/** Same-origin, Vite-bundled DuckDB-WASM bundles (no jsDelivr CDN). */
-const MANUAL_BUNDLES = {
-  mvp: { mainModule: duckdb_mvp_wasm, mainWorker: duckdb_mvp_worker },
-  eh: { mainModule: duckdb_eh_wasm, mainWorker: duckdb_eh_worker },
+// DuckDB-WASM is ONLY needed for the local/demo query paths (initDuckDB below),
+// never for live server-backed boards — yet a static import made every
+// dashboard route download and evaluate the multi-MB duckdb-wasm JS before the
+// first widget query could even be dispatched (a measured multi-second
+// main-thread stall on board load). It is now imported dynamically inside
+// initDuckDB(), so live boards never pay for it. The wasm/worker assets stay
+// self-hosted via Vite `?url` imports (same-origin Worker + CSP-safe), which
+// are resolved inside the lazy loader too.
+let _duckdbModulePromise = null
+function loadDuckDBModule() {
+  if (!_duckdbModulePromise) {
+    _duckdbModulePromise = Promise.all([
+      import('@duckdb/duckdb-wasm'),
+      import('@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url'),
+      import('@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url'),
+      import('@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url'),
+      import('@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url'),
+    ]).then(([duckdb, mvpWasm, mvpWorker, ehWasm, ehWorker]) => ({
+      duckdb,
+      /** Same-origin, Vite-bundled DuckDB-WASM bundles (no jsDelivr CDN). */
+      bundles: {
+        mvp: { mainModule: mvpWasm.default, mainWorker: mvpWorker.default },
+        eh: { mainModule: ehWasm.default, mainWorker: ehWorker.default },
+      },
+    }))
+  }
+  return _duckdbModulePromise
 }
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? ''
@@ -158,7 +171,8 @@ export function initDuckDB() {
   if (_initPromise) return _initPromise
 
   _initPromise = (async () => {
-    const bundle = await duckdb.selectBundle(MANUAL_BUNDLES)
+    const { duckdb, bundles } = await loadDuckDBModule()
+    const bundle = await duckdb.selectBundle(bundles)
 
     // Same-origin worker URL → classic Worker (the browser blocks constructing a
     // Worker from a cross-origin URL, which is why the CDN bundle failed).
