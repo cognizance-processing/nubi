@@ -308,6 +308,57 @@ def _run_node_script(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_stepper_step(
+    widget: Any,
+    data_by_widget: dict[str, dict[str, Any]],
+) -> tuple[Any, dict[str, Any] | None]:
+    """For a ``stepper``, return its first step's widget + that child's data.
+
+    A stepper is a container: it holds several widgets and shows one at a time,
+    so it has no content of its own to draw. The first step is what a viewer
+    sees when the board loads, which makes it the honest thing to put in a
+    static picture.
+
+    The child keeps its own id (that is how its data was collected) but has no
+    position — it occupies the parent's tile — so the caller renders it at the
+    stepper's rect. Anything else, or a malformed/empty stepper, passes through
+    untouched.
+    """
+    if getattr(widget, "type", None) != "stepper":
+        return widget, data_by_widget.get(widget.id)
+
+    props = getattr(widget, "props", None) or {}
+    steps = props.get("steps") if isinstance(props, dict) else None
+    if not isinstance(steps, list) or not steps:
+        return widget, data_by_widget.get(widget.id)
+
+    first = steps[0]
+    child = first.get("widget") if isinstance(first, dict) else None
+    if not isinstance(child, dict):
+        return widget, data_by_widget.get(widget.id)
+
+    # The child's data was collected under the CHILD's id, but everything
+    # downstream — the layout map and the composer's svg-by-id merge — is keyed
+    # by the PARENT's id, since the parent is the widget with a position. So
+    # look the data up by the child's id, then render it under the parent's.
+    child_data = data_by_widget.get(str(child.get("id") or ""))
+
+    # Children are plain dicts inside props (the Widget model treats props as an
+    # opaque pass-through), so validate to the same model the renderer expects.
+    try:
+        from app.dashboards.spec import Widget  # noqa: PLC0415
+
+        child_spec = dict(child)
+        child_spec["id"] = widget.id
+        # Widget requires a position; the caller overrides the rect anyway.
+        child_spec.setdefault("pos", {"x": 1, "y": 1, "w": 1, "h": 1})
+        child_widget = Widget.model_validate(child_spec)
+    except Exception:  # noqa: BLE001 - an unparseable child just isn't drawn
+        return widget, data_by_widget.get(widget.id)
+
+    return child_widget, child_data
+
+
 def _widget_to_payload(
     widget_spec: Any,
     widget_data: dict[str, Any] | None,
@@ -597,8 +648,23 @@ def render_board_svg(
     # the whole board twice as tall as it looks in the app. An explicit caller
     # argument still wins.
     if row_height_px is None:
-        _spec_rh = (spec.layout or {}).get("row_height")
-        row_height_px = int(_spec_rh) if _spec_rh else _DEFAULT_ROW_HEIGHT_PX
+        _layout_cfg = spec.layout or {}
+        _spec_rh = _layout_cfg.get("row_height")
+        _rh = int(_spec_rh) if _spec_rh else _DEFAULT_ROW_HEIGHT_PX
+
+        # Rows stack at (row_height + marginY), not at row_height — that is how
+        # react-grid-layout lays out the real board, so it is what the picture
+        # has to match. Taking row_height literally rendered a board declaring
+        # `row_height: 1, margin: [10, 10]` (an 11px pitch) as a 124px-tall
+        # sliver at 1000px wide: every widget correctly placed, but squeezed to
+        # ~8% of its true height and illegible.
+        _margin = _layout_cfg.get("margin")
+        _margin_y = (
+            int(_margin[1])
+            if isinstance(_margin, (list, tuple)) and len(_margin) > 1
+            else 0
+        )
+        row_height_px = _rh + _margin_y
 
     # 1. Resolve grid layout (backward-compatible accessor).
     layout = get_surface_layout(spec, surface)
@@ -629,10 +695,15 @@ def render_board_svg(
         w_px = max(1, int(round(entry.w * col_w_px - gap_px)))
         h_px = max(1, int(entry.h * row_height_px - gap_px))
 
+        # A stepper shows one child at a time in its tile, so a static render
+        # draws the step a viewer sees on arrival — the first. Rendering the
+        # container itself would only ever produce an "unknown widget" chip.
+        render_spec, render_data = _resolve_stepper_step(widget, data_by_widget)
+
         payloads.append(
             _widget_to_payload(
-                widget,
-                data_by_widget.get(widget.id),
+                render_spec,
+                render_data,
                 width=w_px,
                 height=h_px,
             )

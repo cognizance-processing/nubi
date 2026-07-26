@@ -800,6 +800,14 @@ function renderWidget(widget, theme = 'light') {
       case 'section':
         svg = renderSection(widget, width, height, theme)
         break
+      case 'stepper':
+        // The Python side normally swaps a stepper for its first step's child
+        // before we ever see it (svg_render._resolve_stepper_step), so reaching
+        // here means the child could not be resolved — an empty or malformed
+        // steps list. A titled placeholder is then the honest answer; drawing
+        // the container would show nothing at all.
+        svg = renderPlaceholder(widget, width, height, theme)
+        break
       case 'filter':
       default:
         // A filter is an interactive control — a placeholder chip is the honest

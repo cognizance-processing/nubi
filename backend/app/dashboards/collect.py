@@ -280,20 +280,32 @@ def widget_query_targets(
 
     targets: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    for w in widgets:
+
+    def _visit(w: Any) -> None:
         if not isinstance(w, dict):
-            continue
+            return
         qid = w.get("query_id")
-        if not qid:
-            continue
-        if only_query_id and qid != only_query_id:
-            continue
-        wid = str(w.get("id") or qid)
-        key = (wid, str(qid))
-        if key in seen:
-            continue
-        seen.add(key)
-        targets.append({"widget_id": wid, "query_id": str(qid)})
+        if qid and not (only_query_id and qid != only_query_id):
+            wid = str(w.get("id") or qid)
+            key = (wid, str(qid))
+            if key not in seen:
+                seen.add(key)
+                targets.append({"widget_id": wid, "query_id": str(qid)})
+
+        # A `stepper` nests real data widgets under props.steps[].widget — they
+        # carry their own query_id and id but no position, since the parent's
+        # tile is what they occupy. Walking into them is what makes their data
+        # available to EVERY server-side consumer: CSV/JSON export, PDF and the
+        # board thumbnail all read this list, so skipping them silently dropped
+        # those widgets' rows from all of them.
+        steps = (w.get("props") or {}).get("steps")
+        if isinstance(steps, list):
+            for step in steps:
+                if isinstance(step, dict):
+                    _visit(step.get("widget"))
+
+    for w in widgets:
+        _visit(w)
     return targets
 
 

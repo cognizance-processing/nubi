@@ -345,7 +345,14 @@ _THUMB_WIDTH_PX = 1000
 # into a landscape card, it shrinks to an unreadable sliver with huge side bars.
 # Capping near the card's own aspect keeps the board big and the letterbox small,
 # and the top of a board is what identifies it anyway.
-_THUMB_MAX_HEIGHT_PX = int(_THUMB_WIDTH_PX / 1.4)   # 714 at 1000px wide
+#
+# Matched to the card's own 16:9 frame. The card fits the whole render rather
+# than cropping it (cropping a wide board silently amputates its right-hand
+# widgets), so any mismatch between this aspect and the frame's shows up as dead
+# letterbox around the picture. Rendering AT the frame's aspect means the board
+# fills the card edge to edge.
+_THUMB_ASPECT = 16 / 9
+_THUMB_MAX_HEIGHT_PX = int(_THUMB_WIDTH_PX / _THUMB_ASPECT)   # 562 at 1000px wide
 
 
 def _collect_claims(user: dict[str, Any]) -> dict[str, Any]:
