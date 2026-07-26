@@ -44,6 +44,7 @@
 import * as arrow from 'apache-arrow'
 import * as duckdb from '@duckdb/duckdb-wasm'
 import { getAccessToken, tenantHeaders } from './api.js'
+import { descaleDecimalTable } from './arrowDecimal.js'
 
 // Self-hosted DuckDB-WASM assets. Vite fingerprints these and serves them from
 // our OWN origin, so `new Worker(url)` is same-origin (browsers forbid workers
@@ -280,7 +281,7 @@ export async function runArrowQuery(sql, onBatch, opts) {
     }
 
     // Construct the final Table from all accumulated RecordBatches
-    const table = new arrow.Table(batches)
+    const table = descaleDecimalTable(new arrow.Table(batches))
     return { table, cacheStatus, elapsedMs }
 
   } catch (cause) {
@@ -433,7 +434,7 @@ export async function runArrowQueryById(queryId, opts) {
       return { table: new arrow.Table(reader.schema, []), cacheStatus, elapsedMs }
     }
 
-    return { table: new arrow.Table(batches), cacheStatus, elapsedMs }
+    return { table: descaleDecimalTable(new arrow.Table(batches)), cacheStatus, elapsedMs }
   } catch (cause) {
     console.warn('[wasmRuntime] runArrowQueryById stream parse failed:', cause.message)
     return queryFailure({ message: `Could not read the result stream: ${cause.message}` }, t0)
@@ -540,7 +541,7 @@ export async function runPythonCell(code, inputs) {
   // Parse the Arrow IPC response body — buffered path is fine for compute results
   try {
     const buffer = await response.arrayBuffer()
-    const table = arrow.tableFromIPC(buffer)
+    const table = descaleDecimalTable(arrow.tableFromIPC(buffer))
     const elapsedMs = Math.round(performance.now() - t0)
     return { table, tier, elapsedMs }
   } catch (cause) {

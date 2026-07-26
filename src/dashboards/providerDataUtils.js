@@ -6,6 +6,7 @@
  */
 
 import * as arrow from 'apache-arrow'
+import { descaleDecimalTable } from '../lib/arrowDecimal.js'
 
 /**
  * Decode a multi-table Arrow IPC frame produced by the backend's
@@ -46,7 +47,7 @@ export function decodeMultiTableIPC(buffer) {
     offset += ipcLen
 
     try {
-      const table = arrow.tableFromIPC(ipcBytes)
+      const table = descaleDecimalTable(arrow.tableFromIPC(ipcBytes))
       tables[name] = table
     } catch (e) {
       console.warn(`[decodeMultiTableIPC] Failed to decode table "${name}":`, e?.message)

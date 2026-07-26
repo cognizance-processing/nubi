@@ -252,6 +252,9 @@ export function makeFormatter(spec, locale = undefined) {
       })
       return (v) => (v == null || isNaN(v) ? '' : nf.format(Number(v)))
     }
+    case 'percent100':
+      // value is already on a 0-100 scale (common for migrated legacy queries)
+      return (v) => (v == null || isNaN(v) ? '' : `${Number(v).toFixed(s.decimals ?? 1)}%`)
     case 'si':
       return (v) => (v == null || isNaN(v) ? '' : siFormat(Number(v), s.decimals ?? 1))
     case 'date': {
