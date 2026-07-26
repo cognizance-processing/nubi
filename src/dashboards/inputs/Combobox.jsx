@@ -13,6 +13,7 @@
 import { useId, useMemo, useRef, useState } from 'react'
 import Popover from './Popover.jsx'
 import OptionList from './OptionList.jsx'
+import { FILTER_SHELL_CLS, FILTER_LABEL_CLS } from './helpers.js'
 
 const SIZES = {
   sm: 'text-xs px-2.5 py-1.5',
@@ -123,9 +124,9 @@ export default function Combobox({
   const hasValue = !!current
 
   return (
-    <div className="flex flex-col gap-1.5 h-full justify-center px-3 py-2 min-w-0">
+    <div className={FILTER_SHELL_CLS}>
       {label && (
-        <label htmlFor={uid} style={styleVars?.['--filter-label-color'] ? { color: styleVars['--filter-label-color'] } : undefined} className="text-[10.5px] font-semibold text-muted/80 uppercase tracking-[0.06em] leading-none">
+        <label htmlFor={uid} style={styleVars?.['--filter-label-color'] ? { color: styleVars['--filter-label-color'] } : undefined} className={FILTER_LABEL_CLS}>
           {label}
         </label>
       )}

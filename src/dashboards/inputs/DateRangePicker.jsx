@@ -23,6 +23,8 @@ import {
   PRESET_LABELS,
   resolvePreset,
   resolveDateRange,
+  FILTER_SHELL_CLS,
+  FILTER_LABEL_CLS,
 } from './helpers.js'
 
 const SIZES = {
@@ -85,9 +87,9 @@ export default function DateRangePicker({
   const isCustom = !activePreset || activePreset === 'custom'
 
   return (
-    <div className="flex flex-col gap-1 h-full px-5 py-4">
+    <div className={FILTER_SHELL_CLS}>
       {label && (
-        <label htmlFor={uid} style={styleVars?.['--filter-label-color'] ? { color: styleVars['--filter-label-color'] } : undefined} className="text-xs font-semibold text-muted uppercase tracking-wider">
+        <label htmlFor={uid} style={styleVars?.['--filter-label-color'] ? { color: styleVars['--filter-label-color'] } : undefined} className={FILTER_LABEL_CLS}>
           {label}
         </label>
       )}

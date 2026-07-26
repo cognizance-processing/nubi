@@ -54,6 +54,7 @@ import Skeleton from '../../components/ui/Skeleton.jsx'
 import Badge from '../../components/ui/Badge.jsx'
 import WidgetError from '../../components/app/WidgetError.jsx'
 import { findKpiIcon } from '../kpiIcons.jsx'
+import { ensureReadable, readableInk } from '../../lib/contrast.js'
 
 /** Format a raw value for display. */
 function formatValue(raw, format) {
@@ -286,7 +287,15 @@ export default function KpiWidget({ widget, providerTable = null }) {
   // A matched signal (threshold colouring) overrides both. When style.color +
   // accentColor are the same (the common case) both stay in sync — backward
   // compatible with tiles that set one colour for the whole card.
-  const valueColor = signal.matched ? signal.color : (widget.style?.color ?? wProps.accentColor)
+  // On a tile with an explicit background, an author colour that fails a 3:1
+  // contrast check is swapped for readable ink. Boards migrated from other
+  // tools often carry ONE text colour stamped across every tile (a converter
+  // default), which lands unreadable on the darker ones; a legible colour is
+  // always kept as-is. See src/lib/contrast.js.
+  const tileBg = widget.style?.background
+  const valueColor = signal.matched
+    ? signal.color
+    : ensureReadable(widget.style?.color ?? wProps.accentColor, tileBg)
   const progressColor = signal.matched ? signal.color : (wProps.accentColor ?? widget.style?.color ?? '#6366f1')
 
   // Optional Phosphor icon badge (props.icon = a key from kpiIcons.jsx). The
@@ -298,18 +307,11 @@ export default function KpiWidget({ widget, providerTable = null }) {
   const iconTint = signal.matched ? signal.color
     : (wProps.accentColor ?? (typeof widget.style?.color === 'string' ? widget.style.color : null) ?? '#6366f1')
 
-  // A tile with an EXPLICIT background color (common on boards migrated from
-  // other tools) can't rely on the theme's muted label color: dark-theme muted
-  // (light grey) disappears on a pastel tile, light-theme muted on a dark one.
-  // Derive the label color from the tile's own luminance instead; tiles
+  // A tile with an EXPLICIT background can't rely on the theme's muted label
+  // colour: dark-theme muted (light grey) disappears on a pastel tile, and
+  // light-theme muted on a dark one. Derive it from the tile instead; tiles
   // without a baked background keep the theme default.
-  const labelColor = useMemo(() => {
-    const bg = widget.style?.background
-    if (typeof bg !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(bg)) return undefined
-    const r = parseInt(bg.slice(1, 3), 16), g = parseInt(bg.slice(3, 5), 16), b = parseInt(bg.slice(5, 7), 16)
-    const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
-    return lum < 0.45 ? 'rgba(255,255,255,0.75)' : 'rgba(30,41,59,0.72)'
-  }, [widget.style?.background])
+  const labelColor = useMemo(() => readableInk(tileBg, true), [tileBg])
 
   // Optional segmented "pip" progress bar: props.progress = { segments, target }.
   // Fraction filled = value / target, clamped to [0, segments]. `target`

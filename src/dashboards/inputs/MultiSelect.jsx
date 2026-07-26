@@ -17,7 +17,7 @@
 import { useId, useMemo, useRef, useState } from 'react'
 import Popover from './Popover.jsx'
 import OptionList from './OptionList.jsx'
-import { modeOf, valuesOf, makeMulti } from './helpers.js'
+import { modeOf, valuesOf, makeMulti, FILTER_SHELL_CLS, FILTER_LABEL_CLS } from './helpers.js'
 
 const SIZES = {
   sm: 'text-xs px-2.5 py-1.5',
@@ -209,9 +209,9 @@ export default function MultiSelect({
   const listboxId = `${uid}-listbox`
 
   return (
-    <div className="flex flex-col gap-1 h-full px-5 py-4">
+    <div className={FILTER_SHELL_CLS}>
       {label && (
-        <span style={styleVars?.['--filter-label-color'] ? { color: styleVars['--filter-label-color'] } : undefined} className="text-xs font-semibold text-muted uppercase tracking-wider">{label}</span>
+        <span style={styleVars?.['--filter-label-color'] ? { color: styleVars['--filter-label-color'] } : undefined} className={FILTER_LABEL_CLS}>{label}</span>
       )}
       <div className="relative">
         <button

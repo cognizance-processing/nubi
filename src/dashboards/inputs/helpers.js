@@ -169,3 +169,28 @@ export function resolveDateRange(value, now = new Date()) {
   }
   return { from: value.from ?? '', to: value.to ?? '' }
 }
+
+// ---------------------------------------------------------------------------
+// Shared filter chrome
+// ---------------------------------------------------------------------------
+
+/**
+ * Container classes for a filter control's [label + input] stack.
+ *
+ * Every filter primitive (Combobox, MultiSelect, DateRangePicker) MUST use
+ * this so a row of mixed filter types aligns on one baseline — they had
+ * drifted to different paddings (`px-3 py-2` vs `px-5 py-4`) and different
+ * label sizes, which made the labels in one filter row sit at three
+ * different heights.
+ *
+ * `overflow-hidden` + `min-h-0` matter: dashboards migrated from other tools
+ * often declare filter cells shorter than the chrome needs, and without
+ * clipping the centered content bleeds ABOVE the card and reads as a
+ * detached, cut-off heading.
+ */
+export const FILTER_SHELL_CLS =
+  'flex flex-col gap-1.5 h-full justify-center px-3 py-2 min-w-0 min-h-0 overflow-hidden'
+
+/** Label classes for a filter control. Pair with FILTER_SHELL_CLS. */
+export const FILTER_LABEL_CLS =
+  'text-[10.5px] font-semibold text-muted/80 uppercase tracking-[0.06em] leading-none truncate'
