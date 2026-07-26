@@ -675,6 +675,37 @@ def test_empty_inclause_raises_value_error():
 
 
 # ===========================================================================
+# (20b) Dedup proxy stays falsy/comparable for guards on repeated names
+# ===========================================================================
+
+
+def test_repeated_name_guard_sees_underlying_value():
+    """A name bound in MORE than one bare slot is wrapped in the dedup proxy;
+    {% if name %} must still test the underlying value, not the proxy object —
+    an empty value has to take the else-branch in every guard."""
+    tpl = (
+        "SELECT 1 FROM t WHERE "
+        "({% if c %}a = {{ c }}{% else %}TRUE{% endif %}) "
+        "AND ({% if c %}b = {{ c }}{% else %}TRUE{% endif %})"
+    )
+    sql, params = _render(tpl, {"c": ""})
+    assert "TRUE" in sql and "$1" not in sql
+    assert params == []
+
+    sql, params = _render(tpl, {"c": "7"})
+    # both slots reuse ONE binding
+    assert sql.count("$1") == 2
+    assert params == ["7"]
+
+
+def test_repeated_name_equality_compares_value():
+    tpl = "SELECT {{ c }}, {{ c }}{% if c == 'x' %}, 1{% endif %}"
+    sql, params = _render(tpl, {"c": "x"})
+    assert sql.endswith(", 1")
+    assert params == ["x"]
+
+
+# ===========================================================================
 # (21) Module exports
 # ===========================================================================
 

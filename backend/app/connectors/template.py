@@ -450,6 +450,20 @@ class _FirstOnceValue:
         assert self._slot_ref is not None
         return self._slot_ref.placeholder
 
+    def __bool__(self) -> bool:
+        # {% if name %} on a deduplicated name must test the underlying value,
+        # not the proxy — otherwise an empty value ('' / []) is truthy and the
+        # guard's else-branch is unreachable.
+        return bool(self._value)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _FirstOnceValue):
+            other = other._value
+        return self._value == other
+
+    def __hash__(self) -> int:  # keep hashable despite __eq__
+        return id(self)
+
 
 # ---------------------------------------------------------------------------
 # Updated finalize to handle _FirstOnceValue
