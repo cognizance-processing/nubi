@@ -510,7 +510,8 @@ function renderKpi(widget, colMap, width, height, theme = 'light') {
   if (rawVal === null || rawVal === undefined || rawVal === '') displayVal = '--'
   else if (!isNum) displayVal = String(rawVal)
   else if (fmt === 'currency') displayVal = '$' + num.toLocaleString()
-  else if (fmt === 'percent') displayVal = num.toFixed(1) + '%'
+  else if (fmt === 'percent') displayVal = (num * 100).toFixed(1) + '%'
+  else if (fmt === 'percent100') displayVal = num.toFixed(1) + '%'
   else displayVal = num.toLocaleString()
 
   const cx = width / 2

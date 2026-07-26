@@ -53,7 +53,7 @@ export function KpiConfig({ widget, onChange }) {
         <div>
           <FieldLabel>Format</FieldLabel>
           <select className={selectCls} value={props.format ?? 'number'} onChange={e => setProps('format', e.target.value)}>
-            {['number', 'integer', 'percent', 'currency'].map(f => <option key={f} value={f}>{f}</option>)}
+            {['number', 'integer', 'percent', 'percent100', 'currency'].map(f => <option key={f} value={f}>{f}</option>)}
           </select>
         </div>
         <div>

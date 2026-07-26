@@ -21,7 +21,10 @@
  * Props
  * -----
  * - props.label       {string}  Card label (defaults to a prettified value col).
- * - props.format      {string}  Headline number format (number|integer|percent|currency).
+ * - props.format      {string}  Headline number format
+ *                              (number|integer|percent|percent100|currency);
+ *                              percent expects a 0-1 fraction, percent100 a
+ *                              value already on a 0-100 scale.
  * - props.deltaFormat {string}  Delta display: 'percent' (default) or 'absolute'.
  * - props.labelPosition {string} 'bottom' (default — value first) or 'top'
  *                              (label above the value, stat-tile style).
@@ -63,6 +66,9 @@ function formatValue(raw, format) {
       return num.toLocaleString(undefined, { maximumFractionDigits: 0 })
     case 'percent':
       return `${(num * 100).toFixed(1)}%`
+    case 'percent100':
+      // value is already on a 0-100 scale (common for migrated legacy queries)
+      return `${num.toFixed(1)}%`
     case 'currency':
       return `$${num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
     default:
