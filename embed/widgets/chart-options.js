@@ -1347,7 +1347,12 @@ function baseFrame(config, theme, locale, { trigger = 'axis', dataZoom = false, 
   if (title) frame.title = title
   if (hasLegend) frame.legend = legend
   if (!noGrid) frame.grid = gridConfig(config, hasLegend, legendPos)
-  if (dataZoom) {
+  // The zoom slider is normally auto-enabled past a point-count threshold, but
+  // a small trend/sparkline tile has no room for it and migrated boards often
+  // reproduce charts that never had one. `config.dataZoom` overrides the
+  // heuristic in both directions; omitting it keeps the existing behaviour.
+  const showZoom = config.dataZoom === undefined ? dataZoom : !!config.dataZoom
+  if (showZoom) {
     frame.dataZoom = [
       { type: 'inside', xAxisIndex: 0 },
       {

@@ -30,8 +30,22 @@ export default function TextWidget({ widget }) {
     )
   }
 
+  // The grid cell already carries widget.style (including an author-set
+  // `color`), so an explicit colour must be allowed to win — the blanket
+  // `text-fg` class silently overrode it, which turned coloured section
+  // headings on migrated boards into plain theme-foreground text.
+  const inheritsColor = typeof widget.style?.color === 'string' && widget.style.color
+
+  // MarkdownRenderer's own elements carry `text-fg`, which beats plain
+  // inheritance, so an explicit colour additionally forces descendants to
+  // inherit. Without an author colour nothing changes.
   return (
-    <div className="h-full overflow-y-auto px-5 py-4 text-fg prose-sm">
+    <div
+      className={
+        'h-full overflow-y-auto px-5 py-4 prose-sm' +
+        (inheritsColor ? ' [&_*]:text-inherit' : ' text-fg')
+      }
+    >
       <MarkdownRenderer content={content} />
     </div>
   )
