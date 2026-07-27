@@ -294,7 +294,12 @@ export default function ChartWidget({ widget, providerTable = null }) {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      <div className="flex-1 min-h-0" style={{ minHeight: 180 }}>
+      {/* The 180px floor keeps a chart from collapsing when the parent has no
+          definite height, but as a hard value it also forced a chart TALLER
+          than a short grid cell, so the cell clipped it — a small gauge tile
+          rendered a 180px ring inside 111px and lost its bottom third.
+          `min()` keeps the floor only while it fits the space available. */}
+      <div className="flex-1 min-h-0" style={{ minHeight: 'min(180px, 100%)' }}>
         {option
           ? <EChart option={option} height={height} onEvents={onEvents} />
           : (

@@ -75,9 +75,13 @@ export default function HtmlWidget({ widget }) {
     return <div className="h-full w-full" aria-busy="true" aria-label="Loading" />
   }
 
+  // `leading-tight` + vertical centring: these templates are usually a single
+  // short line (a month name, a total), and with the default line-height one
+  // line measured a pixel or two TALLER than a compact cell, so `overflow-auto`
+  // put a scrollbar on it. Genuinely tall content still scrolls.
   return (
     <div
-      className="h-full w-full overflow-auto"
+      className="h-full w-full overflow-auto leading-tight flex flex-col justify-center"
       dangerouslySetInnerHTML={{ __html: safeHtml }}
     />
   )
