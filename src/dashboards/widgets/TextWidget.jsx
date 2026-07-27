@@ -39,10 +39,19 @@ export default function TextWidget({ widget }) {
   // MarkdownRenderer's own elements carry `text-fg`, which beats plain
   // inheritance, so an explicit colour additionally forces descendants to
   // inherit. Without an author colour nothing changes.
+  // Markdown blocks carry their own vertical margins (`my-4` on a paragraph),
+  // which on top of this padding pushed a ONE-LINE heading past a short grid
+  // cell and produced a scrollbar on every section title. Collapse the leading
+  // and trailing margins — the same reset used elsewhere in MarkdownRenderer —
+  // at both nesting levels, since the renderer wraps its output in an element.
+  const marginReset =
+    '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0 ' +
+    '[&>*>*:first-child]:mt-0 [&>*>*:last-child]:mb-0'
+
   return (
     <div
       className={
-        'h-full overflow-y-auto px-5 py-4 prose-sm' +
+        `h-full overflow-y-auto px-5 py-3 prose-sm flex flex-col justify-center ${marginReset}` +
         (inheritsColor ? ' [&_*]:text-inherit' : ' text-fg')
       }
     >
