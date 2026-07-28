@@ -24,6 +24,7 @@ import {
 } from './inspectorPrimitives.jsx'
 import { useColumnIntrospection } from './useInspectorData.js'
 import { CHART_TYPES, SERIES_TYPES } from './constants.js'
+import { registeredMaps } from '../../lib/maps.js'
 
 // Lucide icon map for the chart-type picker grid
 import {
@@ -207,6 +208,8 @@ export function ChartConfig({ widget, onChange }) {
   const isOrientable = ORIENTABLE_TYPES.has(baseType)
   const isDualAxis = DUAL_AXIS_TYPES.has(baseType)
   const isGauge = baseType === 'gauge'
+  const isMap = baseType === 'map'
+  const availableMaps = registeredMaps()
 
   // Reference lines state helpers
   const refLines = Array.isArray(cfg.referenceLines) ? cfg.referenceLines : []
@@ -323,6 +326,37 @@ export function ChartConfig({ widget, onChange }) {
               onChange={e => setAxisConfig('yAxis', 'max', e.target.value === '' ? undefined : (parseFloat(e.target.value) || undefined))}
             />
           </div>
+        )}
+
+        {/* Map geography (choropleth region set) */}
+        {isMap && (
+          <div>
+            <FieldLabel>Geography</FieldLabel>
+            <select
+              className={selectCls}
+              value={cfg.map ?? ''}
+              onChange={e => setConfig('map', e.target.value || undefined)}
+            >
+              <option value="">— select a registered map —</option>
+              {availableMaps.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+            {availableMaps.length === 0 && (
+              <p className="text-[10px] text-muted/70 mt-1">
+                No GeoJSON is registered yet — a developer needs to add one via
+                registerMapGeoJson() in src/lib/maps/index.js.
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Pan / zoom (off by default so a map tile doesn't swallow board scroll) */}
+        {isMap && (
+          <ToggleRow
+            label="Pan & zoom"
+            hint="Let viewers drag and scroll-zoom the map"
+            checked={!!cfg.roam}
+            onChange={v => setConfig('roam', v || undefined)}
+          />
         )}
 
         {/* Legend */}
