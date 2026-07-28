@@ -64,6 +64,7 @@ import Skeleton from '../../components/ui/Skeleton.jsx'
 import EmptyState from '../../components/ui/EmptyState.jsx'
 import WidgetError from '../../components/app/WidgetError.jsx'
 import { useTheme } from '../../contexts/ThemeContext.jsx'
+import { adaptBackgroundColor, ensureReadable } from '../../lib/themeColor.js'
 
 /**
  * Translate a widget spec into the encoding object expected by buildChartOption.
@@ -245,10 +246,23 @@ export default function ChartWidget({ widget, providerTable = null }) {
     // legends, titles, and centerLabel by painting theme.fg/fgMuted onto a
     // canvas, entirely outside the CSS box. Feed the same override in here so
     // "Text color" means the same thing for every widget type.
+    // Contrast-check the author's text color against the card's ACTUAL
+    // rendered background (SpecRenderer adapts widget.style.background the
+    // same way — see lib/themeColor.js), not the raw authored value, so a
+    // fixed dark color doesn't go illegible once a light-neutral card
+    // becomes the dark surface token.
+    const rawBg = typeof widget.style?.background === 'string' ? widget.style.background : undefined
+    const effectiveBg = widget.style?.themeAdapt === false
+      ? rawBg
+      : (adaptBackgroundColor(rawBg, isDark ? 'dark' : 'light').hex ?? rawBg)
     const textColorOverride = typeof widget.style?.color === 'string' && widget.style.color
-      ? widget.style.color
+      ? ensureReadable(widget.style.color, effectiveBg)
       : null
     if (textColorOverride) {
+      // Deliberately don't touch tooltipBg/tooltipFg here: the tooltip is a
+      // floating DOM surface with its own background, not on-canvas text, so
+      // it must keep the base theme's readable bg/fg pair regardless of the
+      // author's per-widget text color override.
       theme = { ...theme, fg: textColorOverride, fgMuted: textColorOverride }
     }
 
@@ -261,7 +275,7 @@ export default function ChartWidget({ widget, providerTable = null }) {
     })
     return opt
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [table, chart_type, JSON.stringify(widget.encoding), JSON.stringify(widget.config), JSON.stringify(widget.props), widget.style?.color, isDark])
+  }, [table, chart_type, JSON.stringify(widget.encoding), JSON.stringify(widget.config), JSON.stringify(widget.props), widget.style?.color, widget.style?.background, widget.style?.themeAdapt, isDark])
 
   if (loading) {
     return (

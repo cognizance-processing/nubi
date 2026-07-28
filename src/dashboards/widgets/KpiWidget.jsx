@@ -55,6 +55,8 @@ import Badge from '../../components/ui/Badge.jsx'
 import WidgetError from '../../components/app/WidgetError.jsx'
 import { findKpiIcon } from '../kpiIcons.jsx'
 import { ensureReadable, readableInk } from '../../lib/contrast.js'
+import { adaptBackgroundColor } from '../../lib/themeColor.js'
+import { useTheme } from '../../contexts/ThemeContext.jsx'
 
 /** Format a raw value for display. */
 function formatValue(raw, format) {
@@ -158,6 +160,8 @@ export default function KpiWidget({ widget, providerTable = null }) {
   const labelOnTop = wProps.labelPosition === 'top'
   // Signal rules for threshold coloring: widget.signalRules or widget.props.signalRules.
   const signalRules = widget.signalRules ?? wProps.signalRules ?? null
+
+  const { theme } = useTheme()
 
   // Resolve widget params against the variable store. Re-renders (and re-queries)
   // whenever any referenced variable changes. Widgets with no params get {}.
@@ -292,7 +296,15 @@ export default function KpiWidget({ widget, providerTable = null }) {
   // tools often carry ONE text colour stamped across every tile (a converter
   // default), which lands unreadable on the darker ones; a legible colour is
   // always kept as-is. See src/lib/contrast.js.
-  const tileBg = widget.style?.background
+  // The card's ACTUAL rendered background (SpecRenderer applies the same
+  // adaptation to the wrapper div's style) — not the raw authored value —
+  // so contrast decisions below match what's really on screen. A widget
+  // pinned via style.themeAdapt:false skips adaptation, matching the wrapper.
+  const rawTileBg = typeof widget.style?.background === 'string' ? widget.style.background : undefined
+  const tileBg = useMemo(() => {
+    if (widget.style?.themeAdapt === false) return rawTileBg
+    return adaptBackgroundColor(rawTileBg, theme).hex ?? rawTileBg
+  }, [rawTileBg, theme, widget.style?.themeAdapt])
   const valueColor = signal.matched
     ? signal.color
     : ensureReadable(widget.style?.color ?? wProps.accentColor, tileBg)

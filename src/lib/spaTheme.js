@@ -2,7 +2,7 @@
  * spaTheme.js — Resolve ECharts theme tokens from the SPA's CSS design tokens.
  *
  * The embed/widgets/chart-options.js builder accepts a `theme` object with the
- * shape: { palette, fg, fgMuted, primary, border, grid, axis }
+ * shape: { palette, fg, fgMuted, primary, border, grid, axis, tooltipBg, tooltipFg }
  *
  * This module reads the current document's CSS custom properties (set by the
  * ThemeContext via Tailwind's dark-mode class) and maps them to those tokens.
@@ -25,6 +25,8 @@ const DARK_THEME = {
   border: '#2d3748',
   grid: 'rgba(148,163,184,0.12)',
   axis: 'rgba(148,163,184,0.35)',
+  tooltipBg: 'rgba(15,17,23,0.96)',
+  tooltipFg: '#e2e8f0',
 }
 
 // Light-mode theme tokens
@@ -39,6 +41,8 @@ const LIGHT_THEME = {
   border: '#e2e8f0',
   grid: 'rgba(100,116,139,0.10)',
   axis: 'rgba(100,116,139,0.28)',
+  tooltipBg: 'rgba(255,255,255,0.97)',
+  tooltipFg: '#0f172a',
 }
 
 /**
@@ -46,7 +50,7 @@ const LIGHT_THEME = {
  *
  * @param {boolean} [isDark=true] — pass the current app theme mode
  * @param {string[]} [palette]    — optional custom palette override
- * @returns {{ palette, fg, fgMuted, primary, border, grid, axis }}
+ * @returns {{ palette, fg, fgMuted, primary, border, grid, axis, tooltipBg, tooltipFg }}
  */
 export function resolveSpaTheme(isDark = true, palette = null) {
   const base = isDark ? DARK_THEME : LIGHT_THEME

@@ -3,19 +3,30 @@
  *
  * Three concerns, all pure (no React, no DOM writes):
  *
- *   backgroundToCss(bg)   — DashboardSpec.background / widget.style.background
- *                           descriptor → React inline-style object.
- *   styleToCss(style)     — widget.style descriptor → whitelisted inline style.
- *   renderWidgetHtml(...)  — interpolate {{tokens}} from a widget's query result
- *                           then run the result through the dashboard sanitizer.
+ *   backgroundToCss(bg, ctx?)   — DashboardSpec.background / widget.style.background
+ *                                 descriptor → React inline-style object.
+ *   styleToCss(style, ctx?)    — widget.style descriptor → whitelisted inline style.
+ *   renderWidgetHtml(...)      — interpolate {{tokens}} from a widget's query result
+ *                                then run the result through the dashboard sanitizer.
  *
  * SECURITY: all custom HTML passes through sanitizeDashboardHtml() (DOMPurify)
  * before it can reach innerHTML, and every interpolated DATA value is
  * HTML-escaped first so a cell value can never introduce markup. This keeps the
  * stored-XSS trust boundary that sanitize.js already enforces.
+ *
+ * THEME ADAPTATION: `ctx` is an optional `{ theme: 'light'|'dark' }`. When
+ * omitted (existing call sites), both builders behave EXACTLY as before —
+ * this is what makes the feature backward-compatible by construction rather
+ * than by convention. When passed, a widget's near-white/near-gray
+ * background (the shape a converter emits when no real chrome was authored)
+ * is swapped for the app's own `--surface` token so it follows the light/dark
+ * toggle, and any explicit `color` is re-checked for contrast against
+ * whichever background actually renders. See src/lib/themeColor.js for why
+ * chromatic/dark colors are deliberately left untouched.
  */
 
 import { sanitizeDashboardHtml } from './sanitize.js'
+import { adaptBackgroundColor, resolveEffectiveBgHex, ensureReadable } from '../lib/themeColor.js'
 
 // ---------------------------------------------------------------------------
 // Background descriptor → inline style
@@ -24,15 +35,19 @@ import { sanitizeDashboardHtml } from './sanitize.js'
 /**
  * @param {{ type?: 'solid'|'gradient'|'image', color?: string, from?: string,
  *   to?: string, angle?: number, imageUrl?: string, css?: string }} bg
+ * @param {{ theme?: 'light'|'dark' }} [ctx] omit to keep pre-adaptation behavior
  * @returns {object|undefined} React style object (or undefined when empty)
  */
-export function backgroundToCss(bg) {
+export function backgroundToCss(bg, ctx) {
   if (!bg || typeof bg !== 'object') return undefined
   switch (bg.type) {
     case 'transparent':
       return { background: 'transparent' }
-    case 'solid':
-      return bg.color ? { background: bg.color } : undefined
+    case 'solid': {
+      if (!bg.color) return undefined
+      const color = ctx ? adaptBackgroundColor(bg.color, ctx.theme).css : bg.color
+      return { background: color }
+    }
     case 'gradient': {
       const from = bg.from || '#6366f1'
       const to = bg.to || '#ec4899'
@@ -83,17 +98,18 @@ const STYLE_WHITELIST = new Set([
  * introduce any already-whitelisted property without an editor-side change.
  *
  * @param {object} style
+ * @param {{ theme?: 'light'|'dark' }} [ctx] omit to keep pre-adaptation behavior
  * @returns {object|undefined}
  */
-export function styleToCss(style) {
+export function styleToCss(style, ctx) {
   if (!style || typeof style !== 'object') return undefined
   const out = {}
 
   // background can be a plain color string or a background descriptor object
   if (style.background && typeof style.background === 'object') {
-    Object.assign(out, backgroundToCss(style.background))
+    Object.assign(out, backgroundToCss(style.background, ctx))
   } else if (typeof style.background === 'string' && style.background) {
-    out.background = style.background
+    out.background = ctx ? adaptBackgroundColor(style.background, ctx.theme).css : style.background
   }
 
   for (const k of STYLE_WHITELIST) {
@@ -101,7 +117,21 @@ export function styleToCss(style) {
     if (typeof style[k] === 'string' && style[k]) out[k] = style[k]
   }
 
+  if (ctx && typeof out.backgroundColor === 'string' && out.backgroundColor) {
+    out.backgroundColor = adaptBackgroundColor(out.backgroundColor, ctx.theme).css
+  }
+
   if (style.css) Object.assign(out, parseCssString(style.css))
+
+  // Re-check the author's text color against whichever background actually
+  // renders (adapted or not) — a fixed color that was fine on the ORIGINAL
+  // background can go unreadable once a neutral background is swapped for
+  // the theme's surface token (or simply once the page around it flips
+  // theme). See src/lib/contrast.js.
+  if (ctx && typeof out.color === 'string' && out.color) {
+    const effectiveBgHex = resolveEffectiveBgHex(out, ctx.theme)
+    if (effectiveBgHex) out.color = ensureReadable(out.color, effectiveBgHex)
+  }
 
   return Object.keys(out).length ? out : undefined
 }

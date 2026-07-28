@@ -94,6 +94,7 @@ import DashboardCodeView from './DashboardCodeView.jsx'
 import { VariableProvider } from '../dashboards/VariableStore.jsx'
 import SpecRenderer from '../dashboards/SpecRenderer.jsx'
 import { backgroundToCss, styleToCss } from '../dashboards/widgetHtml.js'
+import { useTheme } from '../contexts/ThemeContext.jsx'
 import { WIDGET_STYLE_PRESETS, DASHBOARD_STYLE_PRESETS } from '../dashboards/stylePresets.js'
 import TabBar from '../dashboards/TabBar.jsx'
 import {
@@ -1915,6 +1916,14 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   const [hist, setHist] = useState(() => createHistory(DEFAULT_SPEC))
   const spec = hist.present
 
+  // Theme-adaptation ctx (see SpecRenderer.jsx / lib/themeColor.js) — the
+  // canvas/preview must match what viewers actually see.
+  const { theme } = useTheme()
+  const adaptCtx = useMemo(
+    () => (spec.themeAdapt === 'off' ? undefined : { theme }),
+    [spec.themeAdapt, theme],
+  )
+
   const isDraggingRef = useRef(false)
   const frozenLayoutsRef = useRef(null)
 
@@ -3161,7 +3170,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
             ref={mainRef}
             className="flex-1 min-w-0 overflow-auto p-3 sm:p-4 bg-bg"
             data-testid="editor-canvas"
-            style={{ ...backgroundToCss(canvasBackground), touchAction: 'pan-x pan-y' }}
+            style={{ ...backgroundToCss(canvasBackground, adaptCtx), touchAction: 'pan-x pan-y' }}
             onClick={(e) => {
               // Click on empty canvas → deselect
               if (e.target === e.currentTarget) setSelectedId(null)
@@ -3341,7 +3350,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                         onClick={(e) => { e.stopPropagation(); setSelectedId(widget.id); setRightCollapsed(false); setRightPanel(p => p === 'chat' ? p : 'config'); setMobileSheet('config') }}
                         onMouseEnter={() => setHoveredId(widget.id)}
                         onMouseLeave={() => setHoveredId(null)}
-                        style={styleToCss(widget.style)}
+                        style={styleToCss(widget.style, widget.style?.themeAdapt === false ? undefined : adaptCtx)}
                         className={[
                           'h-full w-full rounded-xl border-2 bg-surface transition-all duration-150 relative flex flex-col',
                           isSelected
@@ -3463,7 +3472,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
           extraQueryIds={queryIds}
           icon={WIDGET_ICONS[focusedWidget.type]}
           rowHeight={spec.layout?.row_height ?? 60}
-          frameStyle={styleToCss(focusedWidget.style)}
+          frameStyle={styleToCss(focusedWidget.style, focusedWidget.style?.themeAdapt === false ? undefined : adaptCtx)}
           preview={<WidgetPreview widget={focusedWidget} />}
           config={
             <ConfigPanel

@@ -157,7 +157,12 @@ function buildSeriesOption(series, spaTheme) {
   const y = points.map((p) => Number(p.value) || 0)
   return {
     grid: { left: 48, right: 16, top: 16, bottom: 28 },
-    tooltip: { trigger: 'axis' },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: spaTheme.tooltipBg,
+      borderColor: spaTheme.border,
+      textStyle: { color: spaTheme.tooltipFg },
+    },
     xAxis: {
       type: 'category',
       data: x,

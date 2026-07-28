@@ -333,6 +333,10 @@ class NubiChart extends HTMLElement {
       border: get('--nubi-border', '#2d3748'),
       grid: 'rgba(148,163,184,0.12)',
       axis: 'rgba(148,163,184,0.35)',
+      // No fallback: an embed host that doesn't theme these vars falls
+      // through to chart-options.js's own light/dark inference from `fg`.
+      tooltipBg: get('--nubi-tooltip-bg', undefined),
+      tooltipFg: get('--nubi-tooltip-fg', undefined),
     }
   }
 

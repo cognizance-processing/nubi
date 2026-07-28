@@ -50,6 +50,7 @@ import { RefreshContext } from './RefreshContext.jsx'
 import { useAutoRefresh } from './useAutoRefresh.js'
 import { runArrowQueryById, prefetchDemoData } from '../lib/wasmRuntime.js'
 import { backgroundToCss, styleToCss } from './widgetHtml.js'
+import { useTheme } from '../contexts/ThemeContext.jsx'
 import { findWidgetStylePreset } from './stylePresets.js'
 import { buildResponsiveLayouts, isHiddenAt } from './responsiveLayout.js'
 import { useProviderData } from './useProviderData.js'
@@ -426,6 +427,15 @@ function SpecRendererBody({
   onCrossFilter,
   editMode,
 }) {
+  // Theme-adaptation ctx for styleToCss/backgroundToCss (see widgetHtml.js /
+  // lib/themeColor.js). `spec.themeAdapt: 'off'` is a per-board escape hatch;
+  // omitting it (or 'auto') keeps the default on — the no-ctx / adapted
+  // outputs are proven identical whenever the viewer's theme already matches
+  // an authored light chrome, so this is safe to default on.
+  const { theme } = useTheme()
+  const themeAdaptOn = spec.themeAdapt !== 'off'
+  const adaptCtx = useMemo(() => (themeAdaptOn ? { theme } : undefined), [themeAdaptOn, theme])
+
   // Partition widgets by effective placement (SHARED CONTRACT):
   //   'drawer' → slide-over panel, grouped by drawer_group ('filters' or 'dg_*')
   //   'header' → horizontal filter bar above the grid (ordered by widget.order)
@@ -529,7 +539,11 @@ function SpecRendererBody({
     ? { x: spec.layout.container_padding[0] ?? 0, y: spec.layout.container_padding[1] ?? 0 }
     : { x: spec.layout?.padding_x ?? 0, y: spec.layout?.padding_y ?? 0 }
 
-  const bgStyle = useMemo(() => backgroundToCss(spec.background), [JSON.stringify(spec.background)])
+  const bgStyle = useMemo(
+    () => backgroundToCss(spec.background, adaptCtx),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(spec.background), adaptCtx],
+  )
 
   // ── BET-3 DataProvider wiring ──────────────────────────────────────────────
   // useResolvedParams reads VariableValuesContext — this component is rendered
@@ -607,7 +621,10 @@ function SpecRendererBody({
   const renderItem = useCallback((item) => {
     const widget = visibleWidgetsById.get(item.i)
     if (!widget) return null
-    const customStyle = styleToCss(widget.style) ?? (dashboardPresetStyle ? styleToCss(dashboardPresetStyle) : undefined)
+    // A widget can pin its own colors (widget.style.themeAdapt: false) — e.g.
+    // a brand logo tile that must never repaint.
+    const widgetCtx = widget.style?.themeAdapt === false ? undefined : adaptCtx
+    const customStyle = styleToCss(widget.style, widgetCtx) ?? (dashboardPresetStyle ? styleToCss(dashboardPresetStyle, widgetCtx) : undefined)
     const hasCustomBg = customStyle && (
       'background' in customStyle || 'backgroundColor' in customStyle || 'backgroundImage' in customStyle
     )
@@ -625,7 +642,7 @@ function SpecRendererBody({
         <WidgetComponent widget={widget} onOpenDrawer={setOpenDrawer} editMode={editMode} providerTable={providerTable} />
       </div>
     )
-  }, [visibleWidgetsById, editMode, setOpenDrawer, widgetProviderTableMap, dashboardPresetStyle])
+  }, [visibleWidgetsById, editMode, setOpenDrawer, widgetProviderTableMap, dashboardPresetStyle, adaptCtx])
 
   return (
     <RefreshContext.Provider value={refreshEpoch}>

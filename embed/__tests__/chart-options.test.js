@@ -227,6 +227,69 @@ describe('buildChartOption — theme tokens applied', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Tooltip contrast (light/dark) — regression coverage for the invisible
+// tooltip bug: tooltip bg/fg must always contrast, in both app modes.
+// ---------------------------------------------------------------------------
+
+describe('buildChartOption — tooltip contrast', () => {
+  test('explicit light theme gets a light tooltip bg + dark tooltip text', () => {
+    const opt = buildChartOption({
+      type: 'line',
+      table: CAT_ROWS,
+      encoding: { x: 'month', y: 'sales' },
+      theme: { fg: '#1e293b', fgMuted: '#64748b', tooltipBg: 'rgba(255,255,255,0.97)', tooltipFg: '#0f172a' },
+    })
+    expect(opt.tooltip.backgroundColor).toBe('rgba(255,255,255,0.97)')
+    expect(opt.tooltip.textStyle.color).toBe('#0f172a')
+  })
+
+  test('explicit dark theme gets a dark tooltip bg + light tooltip text', () => {
+    const opt = buildChartOption({
+      type: 'line',
+      table: CAT_ROWS,
+      encoding: { x: 'month', y: 'sales' },
+      theme: { fg: '#e2e8f0', fgMuted: '#94a3b8', tooltipBg: 'rgba(15,17,23,0.96)', tooltipFg: '#f8fafc' },
+    })
+    expect(opt.tooltip.backgroundColor).toBe('rgba(15,17,23,0.96)')
+    expect(opt.tooltip.textStyle.color).toBe('#f8fafc')
+  })
+
+  test('legacy theme with only a dark `fg` (light mode) still infers a readable tooltip', () => {
+    // No tooltipBg/tooltipFg supplied — this is the exact shape that used to
+    // produce dark-on-dark (hardcoded dark bg + theme.fg used as text color).
+    const opt = buildChartOption({
+      type: 'line',
+      table: CAT_ROWS,
+      encoding: { x: 'month', y: 'sales' },
+      theme: { fg: '#1e293b', fgMuted: '#64748b' },
+    })
+    expect(opt.tooltip.backgroundColor).not.toBe('rgba(15,17,23,0.95)')
+    expect(opt.tooltip.textStyle.color).not.toBe('#1e293b')
+  })
+
+  test('legacy theme with only a light `fg` (dark mode) still infers a readable tooltip', () => {
+    const opt = buildChartOption({
+      type: 'line',
+      table: CAT_ROWS,
+      encoding: { x: 'month', y: 'sales' },
+      theme: { fg: '#e2e8f0', fgMuted: '#94a3b8' },
+    })
+    expect(opt.tooltip.backgroundColor).not.toBe(opt.tooltip.textStyle.color)
+  })
+
+  test('config.tooltip object still deep-merges over the resolved bg/fg', () => {
+    const opt = buildChartOption({
+      type: 'line',
+      table: CAT_ROWS,
+      encoding: { x: 'month', y: 'sales' },
+      theme: { tooltipBg: 'rgba(255,255,255,0.97)', tooltipFg: '#0f172a' },
+      config: { tooltip: { backgroundColor: '#ff0000' } },
+    })
+    expect(opt.tooltip.backgroundColor).toBe('#ff0000')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Config overrides
 // ---------------------------------------------------------------------------
 

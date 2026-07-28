@@ -19,8 +19,11 @@
  *               `bars`/`lines` are arrays of column names, used only by
  *               chart_type 'combo' — see buildCombo.)
  *   config    — declarative customization object (deep-merged LAST, so it wins)
- *   theme     — { palette: string[], fg, fgMuted, primary, border, grid, axis }
- *               resolved theme tokens used as ECharts defaults
+ *   theme     — { palette: string[], fg, fgMuted, primary, border, grid, axis,
+ *                 tooltipBg, tooltipFg }
+ *               resolved theme tokens used as ECharts defaults. tooltipBg/Fg
+ *               are optional — when omitted they're inferred from `fg` so
+ *               older callers still get a readable (not-invisible) tooltip.
  *
  * The returned object is a complete ECharts option. Type-specific logic lives
  * entirely here; the web component only handles data loading, lifecycle and
@@ -92,6 +95,8 @@ const DEFAULT_THEME = {
   border: '#2d3748',
   grid: 'rgba(148,163,184,0.12)',
   axis: 'rgba(148,163,184,0.35)',
+  tooltipBg: 'rgba(15,17,23,0.96)',
+  tooltipFg: '#f8fafc',
 }
 
 // ---------------------------------------------------------------------------
@@ -478,14 +483,51 @@ function decorateCartesian(option, config, theme, locale) {
   })
 }
 
+/** Parse '#rgb' / '#rrggbb' / 'rgb(...)' / 'rgba(...)' into 0-255 channels, or null. */
+function parseColorChannels(color) {
+  if (typeof color !== 'string') return null
+  const hex = color.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i)
+  if (hex) {
+    let h = hex[1]
+    if (h.length === 3) h = h.split('').map((c) => c + c).join('')
+    const n = parseInt(h, 16)
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 }
+  }
+  const fn = color.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i)
+  if (fn) return { r: Number(fn[1]), g: Number(fn[2]), b: Number(fn[3]) }
+  return null
+}
+
+/** WCAG relative luminance (0 = black, 1 = white); defaults to mid-gray if unparseable. */
+function relativeLuminance(color) {
+  const ch = parseColorChannels(color)
+  if (!ch) return 0.5
+  const lin = (c) => {
+    const s = c / 255
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+  }
+  return 0.2126 * lin(ch.r) + 0.7152 * lin(ch.g) + 0.0722 * lin(ch.b)
+}
+
+/** True when `color` reads as a dark surface (used to infer a tooltip bg/fg pair from legacy themes). */
+function isDarkColor(color) {
+  return relativeLuminance(color) < 0.5
+}
+
 function tooltipConfig(config, theme, { trigger = 'axis', locale } = {}) {
   if (config.tooltip === false) return { show: false }
+  // Legacy themes only carry `fg` (on-canvas text). Infer a readable tooltip
+  // surface from it when the theme doesn't supply tooltipBg/tooltipFg directly —
+  // a light theme.fg implies a dark app surface and vice versa.
+  const appIsDark = theme.fg == null ? true : !isDarkColor(theme.fg)
+  const bg = theme.tooltipBg ?? (appIsDark ? 'rgba(15,17,23,0.96)' : 'rgba(255,255,255,0.97)')
+  const fg = theme.tooltipFg ?? (appIsDark ? '#f8fafc' : '#0f172a')
   const base = {
     trigger,
     confine: true,
-    backgroundColor: 'rgba(15,17,23,0.95)',
+    backgroundColor: bg,
     borderColor: theme.border,
-    textStyle: { color: theme.fg, fontSize: 11 },
+    textStyle: { color: fg, fontSize: 11 },
     axisPointer: trigger === 'axis' ? { type: 'cross', crossStyle: { color: theme.fgMuted } } : undefined,
   }
   if (isDeepObject(config.tooltip)) {
