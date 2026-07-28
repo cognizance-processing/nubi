@@ -40,6 +40,7 @@ import {
   Tag,
   ListChecks,
   AlertCircle,
+  AlertTriangle,
   Database,
   List,
   Combine,
@@ -50,7 +51,10 @@ import {
   Trash2,
 } from 'lucide-react'
 
-import { del, get, listRegisteredQueries, registerQuery, getRegisteredQuery } from '../../lib/api.js'
+import {
+  del, get, listRegisteredQueries, registerQuery, getRegisteredQuery,
+  validateRegisteredQueries,
+} from '../../lib/api.js'
 import Button from '../../components/ui/Button.jsx'
 import Badge from '../../components/ui/Badge.jsx'
 import EmptyState from '../../components/ui/EmptyState.jsx'
@@ -83,9 +87,12 @@ function newAdHocQuery() {
 // QueryListItem — single entry in the left rail
 // ---------------------------------------------------------------------------
 
-function QueryListItem({ query, isActive, onClick, onHistory, strictEnv, manageMode = false, checked = false, onToggleCheck }) {
+function QueryListItem({ query, isActive, onClick, onHistory, strictEnv, manageMode = false, checked = false, onToggleCheck, health }) {
   const hasParams = Array.isArray(query.params) && query.params.length > 0
   const isSaved = Boolean(query.id) && !query.isNew
+  // `health` is undefined until POST /query/registry/validate has covered this
+  // row, so only an explicit `valid: false` flags it — never a pending check.
+  const broken = health?.valid === false
 
   // In manage (multi-select) mode the whole row toggles its checkbox instead
   // of opening the query, and the leading icon becomes the checkbox.
@@ -136,10 +143,22 @@ function QueryListItem({ query, isActive, onClick, onHistory, strictEnv, manageM
                 {query.id}
               </p>
             )}
-            {(hasParams || query.isNew || (!query.isNew && strictEnv && Array.isArray(query.pinned_envs) && !query.pinned_envs.includes(strictEnv))) && (
+            {(hasParams || broken || query.isNew || (!query.isNew && strictEnv && Array.isArray(query.pinned_envs) && !query.pinned_envs.includes(strictEnv))) && (
               <div className="flex flex-wrap items-center gap-1 mt-1.5">
                 {query.isNew && (
                   <Badge variant="warning" size="sm">Draft</Badge>
+                )}
+                {/* Stored SQL does not parse — running it can only 400. Say so
+                    here rather than letting the user find out on Run. */}
+                {broken && (
+                  <Badge
+                    variant="danger"
+                    size="sm"
+                    title={health?.error ?? 'The stored SQL cannot be parsed.'}
+                  >
+                    <AlertTriangle size={8} />
+                    won&apos;t run
+                  </Badge>
                 )}
                 {/* Strict-env visibility: the active env is protected and this
                     query has no pinned version there (pinned_envs joined from
@@ -191,7 +210,7 @@ function QueryListItem({ query, isActive, onClick, onHistory, strictEnv, manageM
 
 function QueriesPanel({
   queries, localQueries, activeId, loading, onSelect, onNewQuery, onRefresh,
-  searchQuery, onSearchChange, canWrite, onHistory, strictEnv,
+  searchQuery, onSearchChange, canWrite, onHistory, strictEnv, queryHealth,
   // Manage (multi-select bulk delete) mode
   manageMode = false, onToggleManage,
   selectedIds, onToggleSelect, onSelectAll, onClearSelection,
@@ -397,6 +416,7 @@ function QueriesPanel({
                 manageMode={manageMode}
                 checked={Boolean(selectedIds?.has(q.id))}
                 onToggleCheck={() => onToggleSelect?.(q.id)}
+                health={queryHealth?.[q.id]}
               />
             ))}
           </div>
@@ -558,6 +578,10 @@ export default function QueriesPage() {
   const [registeredQueries, setRegisteredQueries] = useState([])
   const [loadingRegistry, setLoadingRegistry] = useState(true)
   const [registryError, setRegistryError] = useState(null)
+  // { [queryId]: { valid: boolean, error?: string } } — filled in progressively
+  // by POST /query/registry/validate; an id absent from the map is "not checked
+  // yet" and is rendered exactly as before.
+  const [queryHealth, setQueryHealth] = useState({})
 
   // ── Local drafts (in-memory; not persisted) ───────────────────────────
   const [localQueries, setLocalQueries] = useState(() => [newAdHocQuery()])
@@ -613,6 +637,29 @@ export default function QueriesPage() {
   useEffect(() => {
     loadRegistry()
   }, [projectId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Which registered queries can actually run? ──────────────────────────
+  // A query whose stored SQL no longer parses is indistinguishable from a
+  // healthy one in this list — you only find out after opening it and pressing
+  // Run. Migrated estates can carry hundreds of those, so flag them in the rail
+  // instead. This runs AFTER the list renders and fills in progressively, so a
+  // slow validation never delays the library.
+  useEffect(() => {
+    if (registeredQueries.length === 0) return
+    const controller = new AbortController()
+    setQueryHealth({})
+    validateRegisteredQueries(
+      registeredQueries.map(q => q.id).filter(Boolean),
+      {
+        signal: controller.signal,
+        onChunk: partial => {
+          if (controller.signal.aborted) return
+          setQueryHealth(prev => ({ ...prev, ...partial }))
+        },
+      },
+    )
+    return () => controller.abort()
+  }, [registeredQueries])
 
   // ── Deep link: /queries/:id ─────────────────────────────────────────────
   // The route has always existed (App.jsx) but nothing read the param, so
@@ -1058,6 +1105,7 @@ export default function QueriesPage() {
               canWrite={canWrite}
               onHistory={setHistoryQuery}
               strictEnv={strictEnv}
+              queryHealth={queryHealth}
               manageMode={manageMode}
               onToggleManage={handleToggleManage}
               selectedIds={selectedIds}

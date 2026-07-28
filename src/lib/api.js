@@ -478,6 +478,48 @@ export async function listRegisteredQueries() {
   }
 }
 
+/**
+ * Report which registered queries can actually be planned, in batches.
+ *
+ * POST /api/v1/query/registry/validate
+ *
+ * A query whose stored SQL no longer parses (common after a migration, where a
+ * legacy filter variable rendered to the empty string and left `BETWEEN  AND`)
+ * otherwise looks fine in the library and only fails once you open it and press
+ * Run. This lets the list flag those up front.
+ *
+ * The backend caps each call at 250 ids and shares the rate-limit bucket with
+ * POST /query, so ids are chunked and sent SEQUENTIALLY — a whole library is a
+ * handful of calls, not one per row. Results are reported per chunk via
+ * `onChunk` so badges can appear progressively instead of after the last call.
+ *
+ * Never throws: a failed chunk is skipped, so validation degrading only means
+ * fewer badges, never a broken list.
+ *
+ * @param {string[]} ids
+ * @param {{ onChunk?: (partial: Record<string, {valid: boolean, error?: string}>) => void,
+ *           chunkSize?: number, signal?: AbortSignal }} [opts]
+ * @returns {Promise<Record<string, { valid: boolean, error?: string }>>}
+ */
+export async function validateRegisteredQueries(ids, opts = {}) {
+  const { onChunk, chunkSize = 250, signal } = opts
+  const all = {}
+  const list = (ids ?? []).filter(Boolean)
+  for (let i = 0; i < list.length; i += chunkSize) {
+    if (signal?.aborted) break
+    const chunk = list.slice(i, i + chunkSize)
+    try {
+      const data = await post('/query/registry/validate', { ids: chunk })
+      const results = data?.results ?? {}
+      Object.assign(all, results)
+      onChunk?.(results)
+    } catch (cause) {
+      console.warn('[api] validateRegisteredQueries chunk failed:', cause.message)
+    }
+  }
+  return all
+}
+
 // ---------------------------------------------------------------------------
 // Query registration
 // ---------------------------------------------------------------------------

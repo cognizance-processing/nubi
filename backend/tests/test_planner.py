@@ -322,3 +322,64 @@ class TestPhysicalPlanHelpers:
         assert d["sql"] == p.sql
         assert d["params"] == p.params
         assert d["cache_key"] == p.cache_key
+
+
+# ---------------------------------------------------------------------------
+# Parse-error humanisation (INVALID_SQL messages are user-facing)
+# ---------------------------------------------------------------------------
+#
+# sqlglot's own str(ParseError) is terminal output: it wraps the offending token
+# in ANSI escapes and names the internal AST class that failed to build. Those
+# messages are rendered verbatim in the query editor, so the planner rewrites
+# them. These tests pin the properties the UI depends on.
+
+
+class TestInvalidSqlMessage:
+    # A migrated query whose date-range filter variable rendered to the empty
+    # string — the single most common broken-SQL shape in a converted estate.
+    DANGLING_BETWEEN = "SELECT * FROM t\nWHERE d BETWEEN \nAND x IS NOT NULL\n"
+
+    def _message(self, sql: str, dialect: str = "mysql") -> str:
+        with pytest.raises(AppError) as excinfo:
+            plan(sql, dialect=dialect)
+        assert excinfo.value.code == "INVALID_SQL"
+        assert excinfo.value.status == 400
+        return excinfo.value.message
+
+    def test_message_has_no_ansi_escapes(self) -> None:
+        """ANSI colour/underline codes must never reach the browser."""
+        assert "\x1b" not in self._message(self.DANGLING_BETWEEN)
+
+    def test_message_has_no_python_class_repr(self) -> None:
+        """sqlglot's internal AST class names mean nothing to a user."""
+        msg = self._message(self.DANGLING_BETWEEN)
+        assert "<class" not in msg
+        assert "sqlglot" not in msg
+
+    def test_message_explains_the_missing_operand(self) -> None:
+        """The known grammar slots get a plain-English cause.
+
+        Which bound sqlglot reports as missing depends on how it resynchronises
+        after the hole, so assert the shared phrasing rather than a side.
+        """
+        msg = self._message(self.DANGLING_BETWEEN)
+        assert "BETWEEN range has no" in msg
+        assert "bound" in msg
+
+    def test_message_carries_a_position(self) -> None:
+        msg = self._message(self.DANGLING_BETWEEN)
+        assert "line" in msg and "column" in msg
+
+    def test_dangling_equality_is_explained(self) -> None:
+        """The other common migration artefact: `WHERE col = ` with no value."""
+        msg = self._message("SELECT * FROM t\nWHERE country_id =  \nGROUP BY id\n")
+        assert "'=' comparison" in msg
+
+    def test_unmapped_grammar_slot_still_reads_sensibly(self) -> None:
+        """An AST node with no hand-written phrase falls back, not to internals."""
+        msg = self._message("SELECT * FROM t WHERE )")
+        assert "<class" not in msg
+        assert "incomplete" in msg.lower()
+
+    def test_valid_sql_does_not_raise(self) -> None:
+        plan("SELECT a FROM t WHERE d BETWEEN 1 AND 2", dialect="mysql")

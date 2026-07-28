@@ -81,6 +81,88 @@ _NAMED_PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")
 
 
 # ---------------------------------------------------------------------------
+# Parse-error humanisation
+# ---------------------------------------------------------------------------
+#
+# sqlglot's ``str(ParseError)`` is written for a terminal, not for a UI: it
+# embeds ANSI underline escapes around the offending token and names the
+# internal AST class that failed to build, e.g.
+#
+#     Required keyword: 'high' missing for <class 'sqlglot.expressions.core.
+#     Between'>. Line 114, Col: 6.\n  … cl.date BETWEEN \n \x1b[4munion\x1b[0m…
+#
+# Rendered in the browser that reads as garbage. ``ParseError.errors`` carries
+# the same failure as structured data (description / line / col / highlight),
+# so we rebuild the message from that instead.
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+# sqlglot says "Required keyword: '<slot>' missing for <class '…<Node>'>" when a
+# grammar slot was left empty. Map the (node, slot) pairs we can phrase better
+# than the raw internals; anything unmapped falls back to a generic sentence
+# built from the node name, so new sqlglot nodes still read sensibly.
+_MISSING_KEYWORD_PHRASES: dict[tuple[str, str], str] = {
+    ("Between", "low"): "the BETWEEN range has no lower bound",
+    ("Between", "high"): "the BETWEEN range has no upper bound",
+    ("EQ", "this"): "the '=' comparison has nothing on its left-hand side",
+    ("EQ", "expression"): "the '=' comparison has nothing on its right-hand side",
+    ("NEQ", "this"): "the '<>' comparison has nothing on its left-hand side",
+    ("NEQ", "expression"): "the '<>' comparison has nothing on its right-hand side",
+    ("In", "this"): "the IN test has nothing on its left-hand side",
+}
+
+_REQUIRED_KEYWORD_RE = re.compile(
+    r"Required keyword:\s*'(?P<slot>[^']+)'\s*missing for\s*<class\s*'[^']*\.(?P<node>\w+)'>"
+)
+
+
+def _humanise_parse_error(exc: Exception) -> str:
+    """Turn a sqlglot parse failure into a message that is safe to show a user.
+
+    Strips the ANSI escapes, replaces sqlglot's internal AST-class wording with
+    a plain description of what is missing, and anchors the failure with the
+    1-based line/column plus the token sqlglot choked on.
+
+    Falls back progressively: structured errors → first line of ``str(exc)`` →
+    a generic sentence.  It never raises, because it runs on an error path.
+    """
+    try:
+        structured = getattr(exc, "errors", None) or []
+        detail = next((e for e in structured if isinstance(e, dict)), None)
+
+        if detail is None:
+            first = _ANSI_RE.sub("", str(exc)).strip().splitlines()
+            return first[0] if first else "The SQL could not be parsed."
+
+        description = _ANSI_RE.sub("", str(detail.get("description") or "")).strip()
+        # sqlglot quotes the description in some versions ("…") — unwrap it.
+        description = description.strip('"').strip()
+
+        cause = description or "the statement is not valid SQL"
+        m = _REQUIRED_KEYWORD_RE.search(description)
+        if m:
+            node, slot = m.group("node"), m.group("slot")
+            cause = _MISSING_KEYWORD_PHRASES.get(
+                (node, slot),
+                f"the {node.upper()} expression is incomplete ('{slot}' is missing)",
+            )
+
+        where = ""
+        line, col = detail.get("line"), detail.get("col")
+        if isinstance(line, int) and isinstance(col, int):
+            where = f" at line {line}, column {col}"
+
+        near = ""
+        highlight = _ANSI_RE.sub("", str(detail.get("highlight") or "")).strip().strip("'\"")
+        if highlight:
+            near = f' (found "{highlight}")'
+
+        return f"The SQL could not be parsed{where}: {cause}{near}."
+    except Exception:  # noqa: BLE001 — humanising must never mask the real error
+        return "The SQL could not be parsed."
+
+
+# ---------------------------------------------------------------------------
 # RLS policy cardinality cap (fail-closed)
 # ---------------------------------------------------------------------------
 
@@ -439,7 +521,7 @@ def plan(
     try:
         tree = parse_sql_cached(sql, dialect=dialect)
     except sqlglot.errors.SqlglotError as exc:
-        raise AppError("INVALID_SQL", f"Failed to parse SQL: {exc}", status=400) from exc
+        raise AppError("INVALID_SQL", _humanise_parse_error(exc), status=400) from exc
 
     # ── 2. Reject non-SELECT (but allow Union by wrapping it) ───────────────
     # The metric compiler emits UNION ALL for top_n.other queries.  A bare

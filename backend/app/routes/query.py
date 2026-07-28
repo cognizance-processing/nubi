@@ -103,9 +103,10 @@ import logging
 import os
 
 import pyarrow as pa
+import sqlglot
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.auth.deps import verified_identity
 from app.auth.scopes import has_scope, SCOPE_AUTHOR_SQL
@@ -1741,6 +1742,192 @@ async def query_estimate(
 
 
 # ---------------------------------------------------------------------------
+# Registry visibility scoping (shared by the list + validate endpoints)
+# ---------------------------------------------------------------------------
+
+
+async def _visible_registry_row_ids(
+    request: Request, identity: VerifiedIdentity
+) -> set[str] | None:
+    """Return the persisted query row ids the caller may see, or ``None``.
+
+    ``None`` means "no scoping available" (persistence-free demo path) and the
+    caller should not filter.  Built-in/seed queries (``RegisteredQuery.system``,
+    e.g. ``demo_*``) are global and stay visible regardless of this set.
+
+    Shared by ``GET /query/registry`` and ``POST /query/registry/validate`` so
+    the two can never drift into different visibility rules — a validate call
+    must not become a side channel that confirms the existence of another org's
+    query ids.
+
+    Fail-closed: any scoping error yields an EMPTY set, so non-system queries
+    are never leaked cross-org.
+    """
+    try:
+        repo = get_repo()
+        if identity.kind == "embed":
+            if identity.org:
+                rows = await repo.list("queries", identity.org)
+                return {str(r["id"]) for r in rows}
+            return None
+        from app.routes._org import (  # noqa: PLC0415
+            resolve_org_id as _resolve_org_id,
+            resolve_project_filter as _resolve_project_filter,
+        )
+
+        _org_id = await _resolve_org_id(identity.user_id, repo, request)
+        _project_id = await _resolve_project_filter(_org_id, request)
+        rows = await repo.list("queries", _org_id, _project_id)
+        return {str(r["id"]) for r in rows}
+    except Exception:  # noqa: BLE001 — scoping unavailable → fail closed (empty).
+        return set()
+
+
+# ---------------------------------------------------------------------------
+# POST /query/registry/validate — batch "will this query even run?" check
+# ---------------------------------------------------------------------------
+# The query library lists every registered query, and a query whose stored SQL
+# no longer parses fails only once the user opens it and presses Run.  Migrated
+# estates can carry a lot of those (a legacy filter variable that rendered to
+# the empty string leaves `WHERE d BETWEEN  AND x`), so the list needs to say
+# up front which entries cannot run.
+#
+# This mirrors the POST /query pre-execution pipeline exactly — declared params
+# rendered with their defaults, {{ vars.* }} resolved, parsed in the datastore's
+# native dialect — so a green badge here means the same thing as a successful
+# Run.  It is a batch endpoint on purpose: per-row calls would exhaust the
+# 'query' rate-limit bucket that `/api/v1/query/*` shares.
+
+_REGISTRY_VALIDATE_MAX_IDS = 250
+
+
+class RegistryValidateIn(BaseModel):
+    """Request body for POST /query/registry/validate."""
+
+    ids: list[str] = Field(default_factory=list)
+
+
+def _parse_check(sql: str, dialect: str) -> str | None:
+    """Return ``None`` when *sql* parses, else a human-readable reason."""
+    from app.connectors.planner import _humanise_parse_error  # noqa: PLC0415
+    from app.connectors.sql_parse import parse_sql_cached  # noqa: PLC0415
+
+    try:
+        parse_sql_cached(sql, dialect=dialect)
+        return None
+    except sqlglot.errors.SqlglotError as exc:
+        return _humanise_parse_error(exc)
+    except Exception as exc:  # noqa: BLE001 — any parser failure is "won't run"
+        return str(exc).splitlines()[0][:300] or "The SQL could not be parsed."
+
+
+@router.post("/query/registry/validate")
+async def validate_registered_queries(
+    body: RegistryValidateIn,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Report which of the given registered queries can actually be planned.
+
+    Body: ``{"ids": ["<query_id>", ...]}`` — capped at
+    ``_REGISTRY_VALIDATE_MAX_IDS`` per call so one request stays cheap; the
+    caller pages through a long library.
+
+    Returns ``{"results": {"<id>": {"valid": true}
+                                  | {"valid": false, "error": "..."}}}``.
+    Ids the caller cannot see are simply absent from ``results`` — the endpoint
+    never reveals whether an invisible id exists.
+    """
+    from app.errors import AppError as _AppError
+
+    _scopes = identity.scope
+    _has_read = has_scope(_scopes, "read:query") or any(
+        s.startswith("read:") for s in _scopes
+    )
+    if not _has_read:
+        raise _AppError(
+            "insufficient_scope",
+            "Token does not carry the required scope: read:query",
+            403,
+        )
+
+    ids = list(dict.fromkeys(body.ids or []))[:_REGISTRY_VALIDATE_MAX_IDS]
+    if not ids:
+        return {"results": {}}
+
+    registry = get_query_registry()
+    row_ids = await _visible_registry_row_ids(request, identity)
+
+    # {{ vars.* }} namespace — loaded once, not per query.
+    template_vars: dict[str, object] = {}
+    try:
+        org_id, _ = await _resolve_caller_org(identity, get_repo(), request)
+        if org_id:
+            template_vars = await _load_query_vars(
+                org_id, request.headers.get("X-Project-Id") or None
+            )
+    except Exception:  # noqa: BLE001 — best-effort, mirrors the query path.
+        template_vars = {}
+
+    dialect_cache: dict[str | None, str] = {}
+    results: dict[str, dict] = {}
+
+    for qid in ids:
+        rq = registry.get(qid)
+        if rq is None:
+            continue
+        if row_ids is not None and not rq.system and rq.id not in row_ids:
+            continue  # invisible to this caller — omit rather than confirm
+
+        # 1. Render exactly as POST /query would: declared params take their
+        #    defaults, and {{ vars.* }} resolves from the org namespace.
+        sql = rq.sql or ""
+        try:
+            if rq.params:
+                resolved: dict[str, object] = {
+                    p.name: p.default for p in rq.params
+                }
+                resolved["vars"] = template_vars
+                effective_sql, _ = resolve_named_params(sql, resolved)
+            elif "{{" in sql:
+                effective_sql, _ = resolve_named_params(sql, {"vars": template_vars})
+            else:
+                effective_sql = sql
+        except KeyError as exc:
+            results[qid] = {
+                "valid": False,
+                "error": f"Template references an undefined variable: {exc}.",
+            }
+            continue
+        except Exception as exc:  # noqa: BLE001 — a bad template is "won't run"
+            results[qid] = {
+                "valid": False,
+                "error": f"The query template could not be rendered: {exc}"[:300],
+            }
+            continue
+
+        if not effective_sql.strip():
+            results[qid] = {"valid": False, "error": "The query has no SQL."}
+            continue
+
+        # 2. Parse in the datastore's native dialect, as the planner will.
+        if rq.datastore_id not in dialect_cache:
+            dialect_cache[rq.datastore_id] = await _resolve_target_dialect(
+                rq.datastore_id, identity, request
+            )
+        dialect = dialect_cache[rq.datastore_id]
+
+        # sqlglot parsing is CPU-bound; keep it off the event loop.
+        error = await asyncio.to_thread(_parse_check, effective_sql, dialect)
+        results[qid] = {"valid": True} if error is None else {
+            "valid": False,
+            "error": error,
+        }
+
+    return {"results": results}
+
+
+# ---------------------------------------------------------------------------
 # GET /query/registry — list registered queries with their declared params
 # ---------------------------------------------------------------------------
 
@@ -1796,32 +1983,7 @@ async def list_query_registry(
     registry = get_query_registry()
     entries = registry.all()
 
-    # ── ORG/PROJECT SCOPING (DECISION 3) ─────────────────────────────────────
-    # Built-in/seed queries (RegisteredQuery.system, e.g. demo_*) are global —
-    # safe to surface to any authenticated caller. User/runtime queries are
-    # per-tenant and MUST be org-scoped: we gate them by the caller's org
-    # row_ids. On a scoping error we fail closed (row_ids=set()) so non-system
-    # queries are never leaked cross-org, while system queries stay visible.
-    row_ids: set[str] | None = None
-    try:
-        repo = get_repo()
-        if identity.kind == "embed":
-            if identity.org:
-                rows = await repo.list("queries", identity.org)
-                row_ids = {str(r["id"]) for r in rows}
-        else:
-            from app.routes._org import (  # noqa: PLC0415
-                resolve_org_id as _resolve_org_id,
-                resolve_project_filter as _resolve_project_filter,
-            )
-
-            _org_id = await _resolve_org_id(identity.user_id, repo, request)
-            _project_id = await _resolve_project_filter(_org_id, request)
-            rows = await repo.list("queries", _org_id, _project_id)
-            row_ids = {str(r["id"]) for r in rows}
-    except Exception:  # noqa: BLE001 — scoping unavailable → fail closed (empty).
-        row_ids = set()  # fail closed: never leak cross-org SQL on error
-
+    row_ids = await _visible_registry_row_ids(request, identity)
     if row_ids is not None:
         entries = [rq for rq in entries if rq.system or rq.id in row_ids]
 
