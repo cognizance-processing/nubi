@@ -26,6 +26,27 @@
  *   grid is rendered inline beneath the parent row in a collapsible panel. The
  *   plain table path (no detailQueryId) is 100% unchanged.
  *
+ * Click-to-filter (widget.onClick / widget.drilldown):
+ *   Clicking a row publishes column values as board variables, so one table can
+ *   drive other widgets — the table-side counterpart of ChartWidget's data-point
+ *   cross-filter. Both widgets share the same CrossFilterContext bus, so the
+ *   spec shape is identical apart from `setVars` (below).
+ *
+ *     widget.drilldown = { target_var, value_field }
+ *         Writes the row's `value_field` column straight to `target_var`.
+ *     widget.onClick   = { setVar, valueField, navigateTab, stepNext, trigger, setVars }
+ *         setVar/valueField — same, but routed through the cross-filter bus so
+ *              embeds receive an onCrossFilter event too.
+ *         setVars  {Array<{var, field}>} — emit SEVERAL variables from one click
+ *              (legacy's `multipleOutputs`). Applied after setVar.
+ *         trigger  {'click'|'doubleClick'} — default 'click', matching
+ *              ChartWidget. Legacy tables used double-click; set
+ *              'doubleClick' when a board relies on that (it keeps text
+ *              selection and cell interaction usable on dense tables).
+ *   `valueField`/`field` default to the clicked column when omitted, so a
+ *   config with only `setVar` emits whatever cell the user actually clicked.
+ *   Grouped/subtotal rows are not clickable (they carry no single source row).
+ *
  * Props
  * -----
  * widget  {object}  A spec Widget object with type === 'table'.
@@ -43,8 +64,10 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { runMetricQuery } from '../../lib/metricRuntime.js'
 import { evalRules, formatValue } from './conditionalFormat.js'
-import { useResolvedParams } from '../VariableStore.jsx'
+import { useResolvedParams, useSetVariable } from '../VariableStore.jsx'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
+import { useCrossFilter } from '../CrossFilterContext.jsx'
+import { useStepper } from '../StepperContext.jsx'
 import DataGrid from '../../components/DataGrid.jsx'
 import { arrowTypeToColumnType } from '../../components/dataTableUtils.js'
 import Skeleton from '../../components/ui/Skeleton.jsx'
@@ -204,6 +227,8 @@ export default function TableWidget({ widget, providerTable = null }) {
     columnFormats,
     params: widgetParams,
     metric,
+    onClick: onClickSpec,
+    drilldown,
   } = widget
 
   const limit = wProps.limit ?? 50
@@ -385,6 +410,63 @@ export default function TableWidget({ widget, providerTable = null }) {
     return (row, colKey) => evalRow(row).cellStyles[colKey] ?? null
   }, [evalRow, rules.length])
 
+  // ── Click-to-filter ────────────────────────────────────────────────────
+  // Mirrors ChartWidget's data-point cross-filter, sourcing the value from the
+  // clicked ROW instead of an ECharts params object.
+  const setVariable = useSetVariable()
+  const { emit: emitCrossFilter } = useCrossFilter()
+  const { advance: stepAdvance } = useStepper()
+
+  const handleRowClick = useCallback(
+    // Signature matches DataGrid's onCellClick(value, row, col); the column id
+    // is unused — an explicit valueField wins, else the clicked value is taken
+    // as-is, so the column name never needs resolving.
+    (cellValue, row, _colKey) => {
+      // Resolve a configured column off the row, falling back to the cell the
+      // user actually clicked when no explicit field is named.
+      const pick = (field) =>
+        (field && row && typeof row === 'object' && field in row) ? row[field] : cellValue
+
+      if (drilldown?.target_var) {
+        const val = pick(drilldown.value_field)
+        if (val !== undefined && val !== null) setVariable(drilldown.target_var, val)
+      }
+
+      if (onClickSpec?.setVar || onClickSpec?.navigateTab) {
+        // emit() reads `data[valueField]` then falls back to `name`, so pass the
+        // row as `data` and the clicked cell as the fallback.
+        emitCrossFilter(onClickSpec, { data: row, name: cellValue })
+      }
+
+      // Legacy `multipleOutputs`: several variables from one click. Written
+      // directly — the bus carries a single {var, value} pair per event.
+      if (Array.isArray(onClickSpec?.setVars)) {
+        for (const entry of onClickSpec.setVars) {
+          if (!entry?.var) continue
+          const val = pick(entry.field)
+          if (val !== undefined && val !== null) setVariable(entry.var, val)
+        }
+      }
+
+      // Advance last, so the variables the next step reads are already set.
+      if (onClickSpec?.stepNext) stepAdvance()
+    },
+    [drilldown?.target_var, drilldown?.value_field, onClickSpec,
+     setVariable, emitCrossFilter, stepAdvance],
+  )
+
+  // Only attach a handler when the widget actually declares an interaction —
+  // otherwise cells must not gain a pointer cursor or swallow text selection.
+  const hasRowClick = !!(
+    drilldown?.target_var || onClickSpec?.setVar || onClickSpec?.navigateTab ||
+    (Array.isArray(onClickSpec?.setVars) && onClickSpec.setVars.length > 0) ||
+    onClickSpec?.stepNext
+  )
+  const wantsDoubleClick = onClickSpec?.trigger === 'doubleClick'
+  const cellClickProps = hasRowClick
+    ? (wantsDoubleClick ? { onCellDoubleClick: handleRowClick } : { onCellClick: handleRowClick })
+    : {}
+
   // A failed query replaces the grid outright — showing rows next to an error
   // is how a broken board came to look like a working one.
   if (error) {
@@ -439,11 +521,17 @@ export default function TableWidget({ widget, providerTable = null }) {
                       const cellStyle = getCellStyle ? getCellStyle(row, col.key) : null
                       const val       = row[col.key]
                       const rendered  = col.renderCell ? col.renderCell(val, row) : (val == null ? '' : String(val))
+                      // The expand toggle owns its own click — never let it
+                      // double as a cross-filter source.
+                      const clickable = hasRowClick && col.key !== '__expand__'
+                      const fire      = () => handleRowClick(val, row, col.key)
                       return (
                         <td
                           key={col.key}
-                          className="px-2 py-1.5 whitespace-nowrap"
+                          className={`px-2 py-1.5 whitespace-nowrap${clickable ? ' cursor-pointer' : ''}`}
                           style={{ textAlign: col.align ?? 'left', ...(cellStyle ?? {}) }}
+                          onClick={clickable && !wantsDoubleClick ? fire : undefined}
+                          onDoubleClick={clickable && wantsDoubleClick ? fire : undefined}
                         >
                           {rendered}
                         </td>
@@ -486,6 +574,7 @@ export default function TableWidget({ widget, providerTable = null }) {
           exportFileName={`table-${query_id ?? 'widget'}`}
           getRowStyle={getRowStyle}
           getCellStyle={getCellStyle}
+          {...cellClickProps}
           emptyMessage="No rows returned."
         />
       </div>

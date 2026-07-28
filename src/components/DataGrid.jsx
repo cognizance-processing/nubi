@@ -30,6 +30,7 @@
  *     getCellStyle={(row, col) => style|null}  // per-cell inline style
  *     exportFileName={'data'}
  *     onCellClick={(value, row, col) => void}
+ *     onCellDoubleClick={(value, row, col) => void}
  *     className, style                  // applied to the outer card (transparent-friendly)
  *   />
  *
@@ -268,6 +269,7 @@ export default function DataGrid({
   getCellStyle,
   exportFileName = 'data',
   onCellClick,
+  onCellDoubleClick,
   className = '',
   style,
   emptyMessage = 'No rows returned.',
@@ -499,13 +501,19 @@ export default function DataGrid({
         className={`flex flex-col h-full rounded-xl border border-border overflow-hidden ${className}`}
         style={style}
       >
-        <div className="flex-1 flex flex-col items-center justify-center gap-3 p-8 text-center">
-          <div className="w-10 h-10 rounded-full bg-rose-500/10 border border-rose-500/20 flex items-center justify-center">
+        <div className="flex-1 flex flex-col items-center justify-center gap-3 p-8 text-center min-h-0">
+          <div className="w-10 h-10 rounded-full bg-rose-500/10 border border-rose-500/20 flex items-center justify-center shrink-0">
             <AlertCircle size={18} className="text-rose-500" />
           </div>
-          <div>
+          <div className="min-w-0 max-w-xl w-full">
             <p className="text-sm font-medium text-fg mb-1">Query error</p>
-            <p className="text-xs text-muted font-mono max-w-sm">{error}</p>
+            {/* Engine errors are multi-line and can contain very long SQL
+                fragments. Preserve the line breaks, wrap long tokens, and let a
+                big message scroll inside its own box instead of overflowing the
+                card or being clipped to an unreadable stub. */}
+            <p className="text-xs text-muted font-mono whitespace-pre-wrap break-words text-left max-h-48 overflow-auto">
+              {typeof error === 'string' ? error : (error?.message ?? String(error))}
+            </p>
           </div>
         </div>
       </div>
@@ -887,13 +895,18 @@ export default function DataGrid({
                               cellPx,
                               fontSize,
                               textAlign,
-                              onCellClick && !isGrouped ? 'cursor-pointer' : '',
+                              (onCellClick || onCellDoubleClick) && !isGrouped ? 'cursor-pointer' : '',
                               col.getIsPinned() ? 'bg-surface group-hover:bg-surface-2' : '',
                             ].join(' ')}
                             style={{ width: cell.column.getSize(), ...pinStyle(col), ...(cellStyle ?? {}) }}
                             onClick={
                               onCellClick && !isGrouped
                                 ? () => onCellClick(cell.getValue(), row.original, col.id)
+                                : undefined
+                            }
+                            onDoubleClick={
+                              onCellDoubleClick && !isGrouped
+                                ? () => onCellDoubleClick(cell.getValue(), row.original, col.id)
                                 : undefined
                             }
                           >
