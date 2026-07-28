@@ -18,6 +18,21 @@ Security contract
 - All operations are org-scoped; a row belonging to a different org is treated
   as not-found (no information leak).
 
+Org resolution
+--------------
+EVERY route resolves the org with the header-aware ``resolve_org_id`` — the org
+the caller is VIEWING (``X-Org-Id``), verified for membership, falling back to
+their default org when the header is absent. The write guards use the matching
+header-aware ``require_writer`` so the role checked is always the role in the
+org the route actually writes to (see ``app/auth/roles.py``).
+
+This must stay consistent across the whole file. When only ``GET /connectors``
+was header-aware, creating a connector while viewing any non-default org wrote
+it to the caller's DEFAULT org: it vanished from the list they were looking at,
+and every subsequent get/update/delete/test 404'd because those routes searched
+the wrong org too. There was effectively no way to attach a connector to a
+non-default org.
+
 The router self-registers on the shared ``api_router`` at import time so that
 ``main.py``'s ``include_router(api_router, prefix="/api/v1")`` picks it up
 automatically.
@@ -33,11 +48,11 @@ from pydantic import BaseModel, model_validator
 
 from app.audit import record_audit as _record_audit
 from app.auth.deps import current_user
-from app.auth.roles import require_writer_default
+from app.auth.roles import require_writer
 from app.errors import AppError
 from app.repos.provider import get_repo, Repo
 from app.routes import api_router
-from app.routes._org import get_user_org as _get_user_org
+from app.routes._org import resolve_org_id as _resolve_org_id
 
 # ── Sub-router ────────────────────────────────────────────────────────────────
 
@@ -272,7 +287,7 @@ class UpdateConnectorIn(BaseModel):
 
 
 # ── Org resolution helper — shared, pin-aware (app.routes._org). Imported at the
-#    top as ``_get_user_org``; the shared helper honours the API-key org pin,
+#    top as ``_resolve_org_id``; the shared helper honours the API-key org pin,
 #    which the old local copy did not (cross-tenant data op for API-key callers).
 
 
@@ -399,7 +414,7 @@ async def _build_demo_seed_config(org_id: str, request: Request) -> dict[str, An
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 
-@router.post("", status_code=201, dependencies=[Depends(require_writer_default)])
+@router.post("", status_code=201, dependencies=[Depends(require_writer)])
 async def create_connector(
     body: CreateConnectorIn,
     request: Request,
@@ -413,7 +428,7 @@ async def create_connector(
 
     Returns the datastore row without any secret material.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     # ── Demo connector re-add ─────────────────────────────────────────────────
     # The demo connector is virtual; "creating" it simply clears the per-org
@@ -487,14 +502,12 @@ async def list_connectors(
     demo/default project — other projects start empty and require a real
     connector. Real datastores remain org-wide.
 
-    Uses the header-aware ``resolve_org_id`` (not ``_get_user_org``): the
-    connector picker must reflect the workspace the user is VIEWING, not their
-    default org. With the default-org lookup, switching to any other org showed
-    only that other org's connectors were invisible and just the demo one
-    remained, so every query there ran against the wrong datastore and failed.
+    Uses the header-aware ``resolve_org_id``: the connector picker must reflect
+    the workspace the user is VIEWING, not their default org. With a default-org
+    lookup, switching to any other org showed only that other org's connectors
+    were invisible and just the demo one remained, so every query there ran
+    against the wrong datastore and failed.
     """
-    from app.routes._org import resolve_org_id as _resolve_org_id  # noqa: PLC0415
-
     org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     all_datastores = await repo.list("datastores", org_id)
@@ -571,6 +584,7 @@ async def _in_demo_project(org_id: str, request: Request) -> bool:
 @router.get("/{connector_id}")
 async def get_connector(
     connector_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -578,7 +592,7 @@ async def get_connector(
 
     Returns 404 if not found or belongs to a different org.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     # Virtual demo connector — resolvable unless this org removed it.
     if connector_id == DEMO_CONNECTOR_ID:
@@ -594,10 +608,11 @@ async def get_connector(
     return await _shape_row(row, org_id, repo)
 
 
-@router.put("/{connector_id}", dependencies=[Depends(require_writer_default)])
+@router.put("/{connector_id}", dependencies=[Depends(require_writer)])
 async def update_connector(
     connector_id: str,
     body: UpdateConnectorIn,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -607,7 +622,7 @@ async def update_connector(
     If ``secret`` is supplied, a new encrypted blob replaces the existing one.
     Returns the updated datastore row without any secret material.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     # Verify the row exists and belongs to this org
     existing = await repo.get("datastores", org_id, connector_id)
@@ -661,9 +676,10 @@ async def update_connector(
     return _sanitise(row)
 
 
-@router.delete("/{connector_id}", status_code=204, dependencies=[Depends(require_writer_default)])
+@router.delete("/{connector_id}", status_code=204, dependencies=[Depends(require_writer)])
 async def delete_connector(
     connector_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> Response:
@@ -671,7 +687,7 @@ async def delete_connector(
 
     Returns 204 on success, 404 if not found or belongs to a different org.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     # ── Demo connector removal ────────────────────────────────────────────────
     # The demo connector is virtual and shared across orgs — we never delete the
@@ -724,6 +740,7 @@ async def delete_connector(
 @router.post("/{connector_id}/test")
 async def test_connector(
     connector_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -741,7 +758,7 @@ async def test_connector(
            type: ..., layers: {config: True, secret: True}}``
         or a structured error result if a layer is missing.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     # Virtual demo connector — always resolvable (no secret, in-process data).
     if connector_id == DEMO_CONNECTOR_ID:
