@@ -153,6 +153,36 @@ function paramInputType(type) {
   return 'text'
 }
 
+/**
+ * Seed the run-form values from the params' declared defaults.
+ *
+ * Not every default is a scalar: a `daterange` default is `{from, to}` and a
+ * `multiselect` default is an array. Blanket-stringifying them (the old
+ * `String(p.default)`) turned a date range into the literal `"[object Object]"`
+ * and a list into `"a,b"`, and the editor then POSTed that as the parameter
+ * value — so a query that a dashboard renders fine 500'd the moment you opened
+ * it in the editor and pressed Run. Keep structured defaults structured.
+ */
+function initialParamValues(params) {
+  const init = {}
+  ;(params ?? []).forEach(p => {
+    if (p.default == null) return
+    init[p.name] = (typeof p.default === 'object') ? p.default : String(p.default)
+  })
+  return init
+}
+
+/**
+ * True when a param's form value carries nothing the server should be told
+ * about, so the query's own declared default applies instead.
+ */
+function isBlankParamValue(v) {
+  if (v == null || v === '') return true
+  if (Array.isArray(v)) return v.length === 0
+  if (typeof v === 'object') return Object.values(v).every(x => x == null || x === '')
+  return false
+}
+
 // ---------------------------------------------------------------------------
 // ParamInputRow
 // ---------------------------------------------------------------------------
@@ -160,15 +190,75 @@ function paramInputType(type) {
 function ParamInputRow({ param, value, onChange }) {
   const hasOptions = Boolean(param.options_query_id)
 
+  const label = (
+    <label className="text-[11px] font-semibold text-muted uppercase tracking-wide flex items-center gap-1">
+      <span className="font-mono normal-case text-fg/80">{param.name}</span>
+      <span className="text-muted/60 normal-case">({param.type})</span>
+      {param.required && (
+        <span className="text-danger text-[10px]" title="Required">*</span>
+      )}
+    </label>
+  )
+
+  const inputCls =
+    'h-8 px-2.5 text-xs bg-surface border border-border rounded-lg text-fg placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-ring transition-colors'
+
+  // A daterange is a {from, to} OBJECT, not a string. Rendering it through the
+  // generic text input stringified it to "[object Object]", which then went to
+  // the server as the parameter value and 500'd the query — a board using the
+  // same query worked fine because it sends the object. Give it two real date
+  // fields and keep the value structured.
+  if (param.type === 'daterange') {
+    const v = value && typeof value === 'object' ? value : {}
+    const setSide = (side, next) => onChange(param.name, { ...v, [side]: next })
+    return (
+      <div className="flex flex-col gap-1 min-w-0">
+        {label}
+        <div className="flex items-center gap-1">
+          <input
+            type="date"
+            value={v.from ?? ''}
+            onChange={e => setSide('from', e.target.value)}
+            aria-label={`${param.name} from`}
+            className={inputCls}
+          />
+          <span className="text-[10px] text-muted/60">to</span>
+          <input
+            type="date"
+            value={v.to ?? ''}
+            onChange={e => setSide('to', e.target.value)}
+            aria-label={`${param.name} to`}
+            className={inputCls}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  // A multiselect is a LIST. Show it comma-separated but keep it an array, so
+  // `{{ p | inclause }}` receives real elements rather than one joined string.
+  if (param.type === 'multiselect') {
+    const list = Array.isArray(value) ? value : []
+    return (
+      <div className="flex flex-col gap-1 min-w-0">
+        {label}
+        <input
+          type="text"
+          value={list.join(', ')}
+          onChange={e => {
+            const parts = e.target.value.split(',').map(s => s.trim()).filter(Boolean)
+            onChange(param.name, parts)
+          }}
+          placeholder="comma-separated — empty uses the default"
+          className={inputCls}
+        />
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col gap-1 min-w-0">
-      <label className="text-[11px] font-semibold text-muted uppercase tracking-wide flex items-center gap-1">
-        <span className="font-mono normal-case text-fg/80">{param.name}</span>
-        <span className="text-muted/60 normal-case">({param.type})</span>
-        {param.required && (
-          <span className="text-danger text-[10px]" title="Required">*</span>
-        )}
-      </label>
+      {label}
       {hasOptions ? (
         <input
           type="text"
@@ -1354,13 +1444,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
   // ── PRIMARY cell: SQL / params state (the query of record) ──────────────
   const [sql, setSql] = useState(query?.sql ?? '')
   const [params, setParams] = useState(() => query?.params ?? [])
-  const [paramValues, setParamValues] = useState(() => {
-    const init = {}
-    ;(query?.params ?? []).forEach(p => {
-      if (p.default != null) init[p.name] = String(p.default)
-    })
-    return init
-  })
+  const [paramValues, setParamValues] = useState(() => initialParamValues(query?.params))
 
   // ── "Expose as metric" panel draft (config.metric block) ─────────────────
   const [metricDraft, setMetricDraft] = useState(() =>
@@ -1372,11 +1456,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
   useEffect(() => {
     setSql(query?.sql ?? '')
     setParams(query?.params ?? [])
-    const init = {}
-    ;(query?.params ?? []).forEach(p => {
-      if (p.default != null) init[p.name] = String(p.default)
-    })
-    setParamValues(init)
+    setParamValues(initialParamValues(query?.params))
     // Re-parse the query's config.metric block into the panel draft; expand the
     // panel for queries that already expose a metric so it's discoverable.
     const draft = metricToDraft(query?.metric, query?.name)
@@ -1571,16 +1651,19 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
       if (query?.id && !isNew) {
         const namedParams = {}
         Object.entries(paramValues).forEach(([k, v]) => {
-          if (v !== '' && v != null) {
-            const descriptor = params.find(p => p.name === k)
-            const ptype = descriptor?.type ?? 'text'
-            if (ptype === 'number' || ptype === 'integer' || ptype === 'float') {
-              namedParams[k] = Number(v)
-            } else if (ptype === 'boolean') {
-              namedParams[k] = v === 'true' || v === true
-            } else {
-              namedParams[k] = v
-            }
+          // Blank means "use the query's declared default" — omit it entirely
+          // rather than sending '' / [] / {from:'',to:''}.
+          if (isBlankParamValue(v)) return
+          const descriptor = params.find(p => p.name === k)
+          const ptype = descriptor?.type ?? 'text'
+          if (ptype === 'number' || ptype === 'integer' || ptype === 'float') {
+            namedParams[k] = Number(v)
+          } else if (ptype === 'boolean') {
+            namedParams[k] = v === 'true' || v === true
+          } else {
+            // daterange objects and multiselect arrays pass through as-is —
+            // the template engine expects the structure, not a stringification.
+            namedParams[k] = v
           }
         })
         res = await runArrowQueryById(query.id, {
@@ -1741,9 +1824,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
       setSql(nextSql)
       setParams(nextParams)
       setDatastoreId(nextDs)
-      const init = {}
-      nextParams.forEach(p => { if (p.default != null) init[p.name] = String(p.default) })
-      setParamValues(init)
+      setParamValues(initialParamValues(nextParams))
       // Re-parse the restored config.metric block into the panel draft.
       const restoredMetric = metricToDraft(cfg.metric, cfg.name ?? row?.name ?? query.name)
       setMetricDraft(restoredMetric)
@@ -2157,6 +2238,10 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                           <option value="number">number</option>
                           <option value="boolean">boolean</option>
                           <option value="date">date</option>
+                          {/* daterange was missing, so a migrated filter param
+                              rendered as the first option ("text") and silently
+                              retyped itself the moment anything else changed. */}
+                          <option value="daterange">daterange</option>
                           <option value="select">select</option>
                           <option value="multiselect">multiselect</option>
                         </select>
