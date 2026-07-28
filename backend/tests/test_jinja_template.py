@@ -297,6 +297,24 @@ class TestIncluaseFilter:
         assert "bob" not in sql
         assert params == ["alice", "bob"]
 
+    def test_bare_string_is_one_value_not_characters(self):
+        # A widget click emits the single value clicked, not a list. Without
+        # the scalar guard, list("Botswana") explodes into 8 char params.
+        sql, params = _render(
+            "SELECT * FROM t WHERE name IN {{ country | inclause }}",
+            {"country": "Botswana"},
+        )
+        assert "($1)" in sql
+        assert params == ["Botswana"]
+
+    def test_bare_int_is_one_value(self):
+        sql, params = _render(
+            "SELECT * FROM t WHERE id IN {{ cid | inclause }}",
+            {"cid": 7},
+        )
+        assert "($1)" in sql
+        assert params == [7]
+
     def test_mixed_types_bound(self):
         sql, params = _render(
             "SELECT * FROM t WHERE x IN {{ vals | inclause }}",

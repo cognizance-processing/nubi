@@ -86,6 +86,7 @@ from __future__ import annotations
 
 import re
 import threading
+from collections.abc import Iterable
 from typing import Any, Callable
 
 import jinja2
@@ -206,6 +207,9 @@ def _filter_inclause(value: Any) -> _RawSQL:
     value:
         An iterable of scalar values to be bound.  Strings, ints, floats, etc.
         are all accepted.  Each element becomes a separate bound parameter.
+        A bare scalar (str/bytes/int/…) is treated as a ONE-element list: a
+        widget click emits the single value the user clicked, and `list("EU")`
+        would otherwise silently explode it into ``('E', 'U')``.
 
     Returns
     -------
@@ -221,7 +225,12 @@ def _filter_inclause(value: Any) -> _RawSQL:
     ValueError
         If *value* is empty (an empty IN clause is invalid SQL).
     """
-    items = list(value)
+    # A string IS iterable, so `list()` would split it into characters. Any
+    # non-iterable or string-like value means "one value".
+    if isinstance(value, (str, bytes)) or not isinstance(value, Iterable):
+        items = [value]
+    else:
+        items = list(value)
     if not items:
         raise ValueError("inclause filter received an empty list; IN () is invalid SQL.")
 
