@@ -4,11 +4,15 @@
  * Loads a board by id via GET /boards/:id, then:
  *   - If board.config.spec is present → renders via <SpecRenderer> (new path).
  *   - Else if board.config.html is present → renders via <DashboardView> (legacy HTML path).
- *   - Else → falls back to the built-in sample dashboard.
+ *   - Else → shows an honest "no content yet" notice.
+ *
+ * A failed load NEVER renders the sample dashboard: fabricated rows under a real
+ * board's name is how a broken board comes to look like a working one. The board
+ * fetch is org-scoped, so it also waits for the active workspace to be restored
+ * before firing — a cold-pasted deep link used to lose that race and 404.
  *
  * Special cases:
  *   /d/sample  — renders the built-in sample dashboard without a backend request.
- *   Any fetch failure (no backend, 404, etc.) — falls back to the same sample.
  *
  * Variable / URL integration (M14-C)
  * ------------------------------------
@@ -371,6 +375,11 @@ export default function DashboardViewPage({ edit = false }) {
   // Viewers (read-only) cannot edit — hide the mode switch entirely.
   const canWrite = useCanWrite()
 
+  // The board fetch is org-scoped (api.js sends X-Org-Id from the active
+  // workspace), so the load effect below must wait for the workspace to be
+  // restored — see the comment there.
+  const { activeOrg: viewOrg, loading: orgLoading } = useOrg()
+
   // ── Live ↔ Edit mode ──────────────────────────────────────────────────────
   // Mode is the route (/d/:id vs /d/:id/edit), so browser back leaves edit mode
   // and a refresh reopens it. The sample board and legacy HTML boards have no
@@ -480,6 +489,13 @@ export default function DashboardViewPage({ edit = false }) {
       return
     }
 
+    // Deep links (/d/:id pasted cold) mount BEFORE OrgContext has restored the
+    // active workspace, so api.js would send no X-Org-Id and the server would
+    // resolve the user's DEFAULT org — a 404 for any board in another
+    // workspace. That isn't a slow load, it's a lost race the effect never
+    // re-ran to recover from. Wait for the workspace, and refetch if it changes.
+    if (orgLoading) return
+
     let cancelled = false
 
     async function load() {
@@ -507,20 +523,25 @@ export default function DashboardViewPage({ edit = false }) {
           setHtml(live.html)
           setRenderMode('html')
         } else {
-          // Board exists but has no content
-          setError('This board has no content yet. Showing the sample dashboard.')
-          setHtml(SAMPLE_DASHBOARD_HTML)
-          setRenderMode('html')
+          // Board exists but has no content — say so rather than dressing an
+          // empty board in the sample's fabricated rows.
+          setError('This board has no content yet. Open the editor to add widgets.')
+          setRenderMode(null)
         }
       } catch (err) {
         if (cancelled) return
+        // Never substitute the sample dashboard for a board that failed to
+        // load: fabricated alpha/beta/gamma rows under a real board's name is
+        // how a broken board comes to look like a working one. Say what went
+        // wrong — and for a 404, name the workspace, because "not found" here
+        // usually means "not in THIS workspace".
         setError(
           err.status === 404
-            ? `Board "${id}" not found. Showing the sample dashboard.`
-            : `Could not load board "${id}" (${err.message}). Showing the sample dashboard.`
+            ? `Board not found in ${viewOrg?.name ? `the "${viewOrg.name}" workspace` : 'this workspace'}. `
+              + 'It may belong to a different workspace — switch workspace and try again.'
+            : `Could not load this board: ${err.message}`
         )
-        setHtml(SAMPLE_DASHBOARD_HTML)
-        setRenderMode('html')
+        setRenderMode(null)
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -528,7 +549,7 @@ export default function DashboardViewPage({ edit = false }) {
 
     load()
     return () => { cancelled = true }
-  }, [id, liveEnvKey])
+  }, [id, liveEnvKey, orgLoading, viewOrg?.id, viewOrg?.name])
 
   // ---------------------------------------------------------------------------
   // Variable ↔ URL sync
@@ -618,14 +639,40 @@ export default function DashboardViewPage({ edit = false }) {
    * persistence layer. Embed-locked params are never written back (the token wins),
    * and only declared variable names sync — both enforced in applyVarToSearchParams.
    */
+  // One widget interaction can set SEVERAL variables (a table row click with
+  // `onClick.setVars`, legacy's multipleOutputs). Each arrives as its own
+  // callback, and react-router resolves every functional `setSearchParams`
+  // updater against the CURRENT location — batched calls in one tick all see
+  // the same `prev`, so the last write wins and the earlier variables never
+  // reach the URL. The board itself was correct (VariableStore uses a real
+  // functional updater); only the shareable link lost them. So coalesce: merge
+  // pending writes into a ref and flush them in a single update.
+  const pendingVarWrites = useRef(null)
   const handleVariableChange = useCallback((name, value) => {
-    setSearchParams(
-      prev => applyVarToSearchParams(prev, name, value, {
-        knownVarNames,
-        lockedParams: embedLockedParams,
-      }),
-      { replace: true },
-    )
+    if (pendingVarWrites.current) {
+      // A flush is already scheduled — just join this write to it.
+      pendingVarWrites.current.push([name, value])
+      return
+    }
+    pendingVarWrites.current = [[name, value]]
+    // setTimeout (not queueMicrotask): setVariable defers each callback with
+    // setTimeout(…, 0), so sibling writes land in later macrotasks. A
+    // microtask would flush before they arrive and re-split the batch.
+    setTimeout(() => {
+      const writes = pendingVarWrites.current ?? []
+      pendingVarWrites.current = null
+      if (writes.length === 0) return
+      setSearchParams(
+        prev => writes.reduce(
+          (params, [n, v]) => applyVarToSearchParams(params, n, v, {
+            knownVarNames,
+            lockedParams: embedLockedParams,
+          }),
+          prev,
+        ),
+        { replace: true },
+      )
+    }, 0)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setSearchParams, JSON.stringify(embedLockedParams), knownVarNames])
 
