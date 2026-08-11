@@ -14,11 +14,11 @@ import assert from 'node:assert/strict'
 // Inline copies of the implementation (kept in sync with specGraph.js)
 // ---------------------------------------------------------------------------
 
-function topoDepths(tasks) {
-  const deps = new Map(tasks.map(t => [t.key, t.needs ?? []]))
-  const depths = new Map()
-  function depth(key, visited = new Set()) {
-    if (depths.has(key)) return depths.get(key)
+function topoDepths(tasks: Array<{ key: string; needs?: string[] }>): Map<string, number> {
+  const deps = new Map<string, string[]>(tasks.map(t => [t.key, t.needs ?? []]))
+  const depths = new Map<string, number>()
+  function depth(key: string, visited: Set<string> = new Set()): number {
+    if (depths.has(key)) return depths.get(key) as number
     if (visited.has(key)) return 0
     visited.add(key)
     const needs = deps.get(key) ?? []
@@ -214,7 +214,7 @@ function specToGraph(spec) {
   return { nodes, edges }
 }
 
-function graphToSpec(nodes, edges, meta = {}) {
+function graphToSpec(nodes: any[], edges: any[], meta: Record<string, any> = {}): Record<string, any> {
   const skipEdgeIds = new Set(
     edges
       .filter(e => e.data != null && ('branchCondIndex' in e.data || e.data.inferred))

@@ -66,7 +66,7 @@ export default function VariablesPanel({ onInsert = null, readOnly = false }) {
   // Draft for the add/edit form.
   const [draftName, setDraftName] = useState('')
   const [draftValue, setDraftValue] = useState('')
-  const [draftType, setDraftType] = useState('string')
+  const [draftType, setDraftType] = useState<'string' | 'number' | 'boolean' | 'json'>('string')
 
   const refresh = useCallback(() => {
     listVariables().then(rows => setVars(rows ?? []))
@@ -205,7 +205,7 @@ export default function VariablesPanel({ onInsert = null, readOnly = false }) {
           <select
             className={[selectCls, 'w-[110px]'].join(' ')}
             value={draftType}
-            onChange={e => setDraftType(e.target.value)}
+            onChange={e => setDraftType(e.target.value as 'string' | 'number' | 'boolean' | 'json')}
             disabled={readOnly}
           >
             {VARIABLE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}

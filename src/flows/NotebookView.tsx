@@ -130,7 +130,20 @@ export function SaveStatusBadge({ dirty, saving, autosaveStatus, className = '' 
 // NotebookView
 // ---------------------------------------------------------------------------
 
-const NotebookView = forwardRef(function NotebookView({ flow, spec, onSpecChange, onRun, env = 'prod' }, ref) {
+export interface NotebookViewHandle {
+  runAll: () => void
+  addCell: (cellType?: string) => void
+}
+
+interface NotebookViewProps {
+  flow: Record<string, any> | null
+  spec: Record<string, any>
+  onSpecChange: (spec: Record<string, any>) => void
+  onRun?: (result: { flowRun: any; runId: any }) => void
+  env?: string
+}
+
+const NotebookView = forwardRef<NotebookViewHandle, NotebookViewProps>(function NotebookView({ flow, spec, onSpecChange, onRun, env = 'prod' }, ref) {
   const [runError, setRunError] = useState(null)
 
   const specTasks = spec?.tasks
@@ -278,10 +291,10 @@ const NotebookView = forwardRef(function NotebookView({ flow, spec, onSpecChange
           const CellComponent = isNote ? NoteCell : cellType === 'python' ? PythonCell : SqlCell
 
           // Note cells never execute — don't hand them a run callback.
-          const cellProps = {
+          const cellProps: Record<string, any> = {
             index: idx,
             cell,
-            onCellChange: (updated) => handleCellChange(idx, updated),
+            onCellChange: (updated: any) => handleCellChange(idx, updated),
             onMoveUp: idx > 0 ? () => handleMoveUp(idx) : null,
             onMoveDown: idx < tasks.length - 1 ? () => handleMoveDown(idx) : null,
             onDelete: () => handleDelete(idx),
@@ -290,7 +303,7 @@ const NotebookView = forwardRef(function NotebookView({ flow, spec, onSpecChange
 
           return (
             <div key={cell.key} className="space-y-0">
-              <CellComponent {...cellProps} />
+              <CellComponent {...(cellProps as any)} />
 
               {/* Add-cell bar after each cell */}
               <AddCellBar

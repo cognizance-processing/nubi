@@ -22,17 +22,13 @@
 // Topological sort helpers (no external deps)
 // ---------------------------------------------------------------------------
 
-/**
- * Build a map of key → depth (longest path from root) given a tasks array.
- * @param {Array<{key: string, needs?: string[]}>} tasks
- * @returns {Map<string, number>}
- */
-function topoDepths(tasks) {
-  const deps = new Map(tasks.map(t => [t.key, t.needs ?? []]))
-  const depths = new Map()
+/** Build a map of key → depth (longest path from root) given a tasks array. */
+function topoDepths(tasks: Array<{ key: string; needs?: string[] }>): Map<string, number> {
+  const deps = new Map<string, string[]>(tasks.map(t => [t.key, t.needs ?? []]))
+  const depths = new Map<string, number>()
 
-  function depth(key, visited = new Set()) {
-    if (depths.has(key)) return depths.get(key)
+  function depth(key: string, visited: Set<string> = new Set()): number {
+    if (depths.has(key)) return depths.get(key) as number
     if (visited.has(key)) return 0 // cycle guard
     visited.add(key)
     const needs = deps.get(key) ?? []
@@ -61,16 +57,16 @@ const NODE_GAP_Y = 100   // vertical gap between nodes in same column
  * @param {Array} tasks
  * @returns {Map<string, {x: number, y: number}>}
  */
-function autoLayout(tasks) {
+function autoLayout(tasks: Array<{ key: string; needs?: string[] }>): Map<string, { x: number; y: number }> {
   const depths = topoDepths(tasks)
   // Group by depth
-  const byDepth = new Map()
+  const byDepth = new Map<number, string[]>()
   for (const [key, d] of depths) {
     if (!byDepth.has(d)) byDepth.set(d, [])
-    byDepth.get(d).push(key)
+    byDepth.get(d)!.push(key)
   }
 
-  const positions = new Map()
+  const positions = new Map<string, { x: number; y: number }>()
   for (const [d, keys] of byDepth) {
     const x = d * LAYER_GAP_X + 60
     const totalH = keys.length * NODE_H + (keys.length - 1) * (NODE_GAP_Y - NODE_H)
@@ -93,14 +89,13 @@ function autoLayout(tasks) {
  * - map tasks     → type: 'mapNode';    data.expanded=false, data.bodySpec=config.body
  * - branch tasks  → type: 'branchNode'; outgoing edges carry condition labels
  *
- * @param {object} spec  — FlowSpec (version 1)
- * @returns {{ nodes: Array, edges: Array }}
+ * @param spec  — FlowSpec (version 1)
  */
-export function specToGraph(spec) {
-  const tasks = spec?.tasks ?? []
+export function specToGraph(spec: Record<string, any>): { nodes: any[]; edges: any[] } {
+  const tasks: any[] = spec?.tasks ?? []
 
   // Sibling task keys — used to infer SQL FROM/JOIN dependencies (see below).
-  const siblingKeys = new Set(tasks.map(t => t.key))
+  const siblingKeys = new Set<string>(tasks.map(t => t.key))
 
   // Pre-compute auto-layout positions (used as fallback)
   const auto = autoLayout(tasks)
@@ -255,11 +250,8 @@ export function specToGraph(spec) {
  * Derive a short human-readable label for a branch condition edge.
  * Truncates the `when` expression to 20 chars.
  *
- * @param {string} whenExpr
- * @param {number} index
- * @returns {string}
  */
-function _branchLabel(whenExpr, index) {
+function _branchLabel(whenExpr: string, index: number): string {
   if (!whenExpr) return `condition_${index}`
   // Strip outer {{ }} if present, then trim and truncate.
   const inner = whenExpr.replace(/^\s*\{\{\s*/, '').replace(/\s*\}\}\s*$/, '').trim()
@@ -268,10 +260,8 @@ function _branchLabel(whenExpr, index) {
 
 /**
  * Truncated label for a run_when conditional edge (strips outer {{ }}).
- * @param {string} expr
- * @returns {string}
  */
-function _runWhenLabel(expr) {
+function _runWhenLabel(expr: string): string {
   if (!expr) return 'if'
   const inner = expr.replace(/^\s*\{\{\s*/, '').replace(/\s*\}\}\s*$/, '').trim()
   return inner.length > 24 ? 'if ' + inner.slice(0, 22) + '…' : 'if ' + inner
@@ -287,10 +277,12 @@ function _runWhenLabel(expr) {
  * the corresponding block is absent/inert. TaskNode renders from this so it
  * never re-parses raw config.
  *
- * @param {{ config?: object }} task
- * @returns {{ materialized: object|null, forEach: object|null, runWhen: string|null }}
  */
-export function deriveCellBadges(task) {
+export function deriveCellBadges(task: { config?: Record<string, any> }): {
+  materialized: Record<string, any> | null
+  forEach: Record<string, any> | null
+  runWhen: string | null
+} {
   const config = task?.config ?? {}
 
   const mat = config.materialized
@@ -320,13 +312,11 @@ export function deriveCellBadges(task) {
  * the authoritative backend parser (sqlglot in app/flows/deps.py); the backend
  * is canonical for run ordering, this only drives canvas edge rendering.
  *
- * @param {string} sql
- * @param {Set<string>} siblingKeys
- * @returns {string[]} matched sibling keys (deduped)
+ * @returns matched sibling keys (deduped)
  */
-export function inferredRefs(sql, siblingKeys) {
+export function inferredRefs(sql: string, siblingKeys: Set<string>): string[] {
   if (!sql || !siblingKeys || siblingKeys.size === 0) return []
-  const refs = new Set()
+  const refs = new Set<string>()
   const re = /\b(?:from|join)\s+["'`]?([A-Za-z_][\w]*)["'`]?/gi
   let m
   while ((m = re.exec(sql))) {
@@ -354,12 +344,12 @@ export function inferredRefs(sql, siblingKeys) {
  *   needs for downstream tasks.  The branch node's own needs are reconstructed
  *   only from standard (non-branch-labeled) incoming edges.
  *
- * @param {Array} nodes    — React Flow nodes (id, position, data.task)
- * @param {Array} edges    — React Flow edges (source, target)
- * @param {object} meta    — { version?, name?, params? }
- * @returns {object}  FlowSpec
+ * @param nodes    — React Flow nodes (id, position, data.task)
+ * @param edges    — React Flow edges (source, target)
+ * @param meta     — { version?, name?, params? }
+ * @returns FlowSpec
  */
-export function graphToSpec(nodes, edges, meta = {}) {
+export function graphToSpec(nodes: any[], edges: any[], meta: Record<string, any> = {}): Record<string, any> {
   // Identify branch-labeled outgoing edges (visual-only; excluded from needs).
   // These are edges emitted by specToGraph with data.branchCondIndex defined.
   // Visual-only edges that must NOT be written back into needs:

@@ -83,10 +83,10 @@ const KIND_TO_NODE_TYPE = {
   branch: 'branchNode',
 }
 
-function makeTaskNode(kind, position, defaultConfig, cellType) {
+function makeTaskNode(kind: string, position: { x: number; y: number }, defaultConfig: Record<string, any>, cellType?: string) {
   const key = genKey(kind)
   const nodeType = KIND_TO_NODE_TYPE[kind] ?? 'taskNode'
-  const baseData = {
+  const baseData: Record<string, any> = {
     task: {
       key,
       kind,
@@ -213,10 +213,31 @@ function MobileInspectorSheet({ open, onClose, task, onChange }) {
 // FlowBuilder
 // ---------------------------------------------------------------------------
 
-const FlowBuilder = forwardRef(function FlowBuilder({ flow, spec, onSpecChange, onRun, env = 'prod', onSelectedTaskChange, codeOpen = false, onCodeClose, onViewModeChange }, ref) {
+export interface FlowBuilderHandle {
+  addNode: (kind: string, defaultConfig?: Record<string, any>, cellType?: string) => void
+  updateSelectedTask: (updated: Record<string, any>) => void
+  clearSelection: () => void
+  setView: (mode: 'canvas' | 'notebook' | 'code') => void
+  runAll: () => void
+  addCell: (cellType?: string) => void
+}
+
+interface FlowBuilderProps {
+  flow: Record<string, any> | null
+  spec: Record<string, any>
+  onSpecChange: (spec: Record<string, any>) => void
+  onRun?: (...args: any[]) => void
+  env?: string
+  onSelectedTaskChange?: (task: Record<string, any> | null) => void
+  codeOpen?: boolean
+  onCodeClose?: () => void
+  onViewModeChange?: (mode: 'canvas' | 'notebook' | 'code') => void
+}
+
+const FlowBuilder = forwardRef<FlowBuilderHandle, FlowBuilderProps>(function FlowBuilder({ flow, spec, onSpecChange, onRun, env = 'prod', onSelectedTaskChange, codeOpen = false, onCodeClose, onViewModeChange }, ref) {
   // ── View mode: 'canvas' | 'notebook' ─────────────────────────────────────
   // Initialise from spec.view if present; fall back to 'canvas'.
-  const [viewMode, setViewMode] = useState(() => spec?.view === 'notebook' ? 'notebook' : 'canvas')
+  const [viewMode, setViewMode] = useState<'canvas' | 'notebook' | 'code'>(() => spec?.view === 'notebook' ? 'notebook' : 'canvas')
 
   // Report the current view up so the app top bar (FlowsPage) can render the
   // Canvas/Notebook switcher. Fires on mount + whenever the view changes.
@@ -226,18 +247,21 @@ const FlowBuilder = forwardRef(function FlowBuilder({ flow, spec, onSpecChange, 
   }, [viewMode])
 
   // ── React Flow state ─────────────────────────────────────────────────────
+  // useNodesState/useEdgesState forward straight into React's useState, which
+  // honours a function argument as a lazy initializer — reactflow's types just
+  // don't advertise that, so the lazy initializer is cast past them here.
   const [nodes, setNodes, onNodesChange] = useNodesState(
-    () => specToGraph(spec).nodes
+    (() => specToGraph(spec).nodes) as unknown as any[]
   )
   const [edges, setEdges, onEdgesChange] = useEdgesState(
-    () => specToGraph(spec).edges
+    (() => specToGraph(spec).edges) as unknown as any[]
   )
   const reactFlowWrapper = useRef(null)
   const [rfInstance, setRfInstance] = useState(null)
 
   // Ref onto NotebookView so top-bar actions (Run all / add cell) can be
   // forwarded through this component's own imperative handle.
-  const notebookRef = useRef(null)
+  const notebookRef = useRef<import('./NotebookView.jsx').NotebookViewHandle>(null)
 
   // ── Inspector ─────────────────────────────────────────────────────────────
   const [selectedNodeId, setSelectedNodeId] = useState(null)

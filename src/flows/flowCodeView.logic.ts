@@ -151,11 +151,13 @@ export function selectActiveId(selectedId, cellFiles) {
  *  - flow.py        → the live editor value (or generated source).
  *  - source cell    → config[key] as a string.
  *  - read-only cell → pretty-printed config JSON.
- *
- * @param {object} args
- * @returns {string}
  */
-export function activeSourceFor({ activeId, pyValue, pySource, selectedCell }) {
+export function activeSourceFor({ activeId, pyValue, pySource, selectedCell }: {
+  activeId?: string
+  pyValue?: string | null
+  pySource?: string | null
+  selectedCell?: { key: string | null; task?: Record<string, any> } | null
+}): string {
   if (activeId === FLOW_PY_ID) return pyValue ?? pySource ?? ''
   if (!selectedCell) return ''
   if (selectedCell.key !== null) {

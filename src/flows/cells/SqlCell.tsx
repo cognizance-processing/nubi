@@ -48,7 +48,7 @@ const MONACO_SQL_OPTS = {
   automaticLayout: true,
   suggestOnTriggerCharacters: true,
   quickSuggestions: { strings: true, other: true, comments: false },
-}
+} as const
 
 // Minimum editor height + 1 line = ~20px; show at least 4 lines by default.
 const EDITOR_MIN_H = 100

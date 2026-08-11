@@ -490,7 +490,7 @@ function ForEachSection({ config, onChange }) {
     const next = { ...fe, ...patch }
     // Empty items ⇒ remove the whole block (no fan-out).
     if (next.items == null || next.items === '') {
-      // eslint-disable-next-line no-unused-vars
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { for_each, ...rest } = config
       onChange(rest)
       return
@@ -560,7 +560,7 @@ function ForEachSection({ config, onChange }) {
 function RunWhenSection({ config, onChange }) {
   const setRunWhen = (val) => {
     if (val == null || val.trim() === '') {
-      // eslint-disable-next-line no-unused-vars
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { run_when, ...rest } = config
       onChange(rest)
       return

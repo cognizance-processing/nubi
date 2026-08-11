@@ -103,7 +103,7 @@ const MONACO_OPTIONS = {
   insertSpaces: true,
   cursorSmoothCaretAnimation: 'on',
   smoothScrolling: true,
-}
+} as const
 
 // ---------------------------------------------------------------------------
 // File-tree row

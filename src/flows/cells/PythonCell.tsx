@@ -56,7 +56,7 @@ const MONACO_PY_OPTS = {
   tabSize: 4,
   insertSpaces: true,
   automaticLayout: true,
-}
+} as const
 
 const EDITOR_MIN_H = 120
 const EDITOR_MAX_H = 420

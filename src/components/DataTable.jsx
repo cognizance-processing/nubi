@@ -33,15 +33,15 @@ import DataGrid from './DataGrid.jsx'
 import { deriveColumns, arrowToRows } from './dataTableUtils.js'
 
 export default function DataTable({
-  arrow: arrowTable,
+  arrow: arrowTable = undefined,
   columns: columnsProp,
   rows: rowsProp,
   loading = false,
   error = null,
   pageSize = 50,
-  title,
+  title = undefined,
   toolbar = true,
-  meta,
+  meta = undefined,
   stickyFirstCol = false,
 }) {
   // Derive columns + rows from Arrow OR use explicit props.
