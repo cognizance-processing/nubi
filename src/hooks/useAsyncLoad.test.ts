@@ -148,7 +148,7 @@ describe('reload-on-mutation pattern', () => {
   })
 
   test('stale reload ignored when unmounted mid-flight', async () => {
-    let serverItems = ['x']
+    const serverItems = ['x']
 
     const slowLoad = async () => {
       await new Promise(r => setTimeout(r, 10))

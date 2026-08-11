@@ -28,7 +28,7 @@ function cx(...parts) {
   return parts.filter(Boolean).join(' ')
 }
 
-export default function BrandLoader({ size = 'md', label, className = '' }) {
+export default function BrandLoader({ size = 'md', label = undefined, className = '' }) {
   const px = typeof size === 'number' ? size : (SIZES[size] ?? SIZES.md)
   const gradId = useId()
   const strokeWidth = Math.max(2, Math.round(px * 0.055))
