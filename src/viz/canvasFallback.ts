@@ -19,14 +19,16 @@ const DEFAULT_FILL = 'rgba(79, 70, 229, 0.6)' // indigo-600 semi-transparent
 /**
  * Draw a scatter plot via Canvas 2D API.
  *
- * @param {HTMLCanvasElement} canvas
- * @param {Float32Array} x — x positions in [-1, 1]
- * @param {Float32Array} y — y positions in [-1, 1]
- * @param {Float32Array|Uint8Array|null} [color]
- *   Optional per-point color. Float32Array = RGB [0,1], Uint8Array = RGBA [0,255].
- * @param {number} [pointRadius=2] — circle radius in CSS pixels
+ * @param color Optional per-point color. Float32Array = RGB [0,1], Uint8Array = RGBA [0,255].
+ * @param pointRadius circle radius in CSS pixels
  */
-export function draw2dScatter(canvas, x, y, color = null, pointRadius = 2) {
+export function draw2dScatter(
+  canvas: HTMLCanvasElement,
+  x: Float32Array,
+  y: Float32Array,
+  color: Float32Array | Uint8Array | null = null,
+  pointRadius = 2,
+) {
   if (!canvas || !x || !y || x.length === 0 || y.length === 0) return
 
   const ctx = canvas.getContext('2d')

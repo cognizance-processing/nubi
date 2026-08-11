@@ -32,9 +32,17 @@ const orchestratorMds = import.meta.glob(
 
 // ── Frontmatter parser ────────────────────────────────────────────────────────
 
+type YamlScalar = string | number | boolean
+type YamlValue = YamlScalar | YamlValue[] | { [key: string]: YamlValue }
+type YamlData = Record<string, YamlValue>
+
+interface Frontmatter {
+  data: YamlData
+  content: string
+}
+
 /**
  * Parse YAML frontmatter from a markdown string.
- * Returns { data: Object, content: string }
  *
  * Supports:
  *   - scalar strings (quoted and unquoted)
@@ -43,7 +51,7 @@ const orchestratorMds = import.meta.glob(
  *   - nested mappings (key:\n  subkey: value)
  *   - deeply nested mappings for the matrix (2 levels of indentation)
  */
-function parseFrontmatter(raw) {
+function parseFrontmatter(raw: string): Frontmatter {
   const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/)
   if (!fmMatch) return { data: {}, content: raw }
 
@@ -67,9 +75,9 @@ function parseFrontmatter(raw) {
  *     - item1
  *     - item2
  */
-function parseYamlBlock(yaml) {
+function parseYamlBlock(yaml: string): YamlData {
   const lines = yaml.split('\n')
-  const result = {}
+  const result: YamlData = {}
   let i = 0
 
   while (i < lines.length) {
@@ -91,8 +99,8 @@ function parseYamlBlock(yaml) {
     } else {
       // Look ahead for nested content
       i++
-      const nested = {}
-      const list = []
+      const nested: YamlData = {}
+      const list: YamlValue[] = []
       let isMapping = false
       let isList = false
 
@@ -115,7 +123,7 @@ function parseYamlBlock(yaml) {
           // (- key: value\n  label: value\n  description: value).
           const inlineMap = itemInline.match(/^([a-zA-Z_][a-zA-Z0-9_\s/]*):\s*(.*)$/)
           if (inlineMap) {
-            const obj = { [inlineMap[1].trim()]: parseScalar(inlineMap[2].trim()) }
+            const obj: YamlData = { [inlineMap[1].trim()]: parseScalar(inlineMap[2].trim()) }
             i++
             // Absorb continuation lines indented past the dash into this object.
             while (i < lines.length) {
@@ -149,7 +157,7 @@ function parseYamlBlock(yaml) {
           } else {
             // Deeper nesting (e.g. matrix sub-objects)
             i++
-            const deepNested = {}
+            const deepNested: YamlData = {}
             while (i < lines.length) {
               const deepLine = lines[i]
               if (!deepLine.trim()) { i++; continue }
@@ -177,7 +185,7 @@ function parseYamlBlock(yaml) {
   return result
 }
 
-function parseScalar(val) {
+function parseScalar(val: string): YamlScalar {
   if (!val) return ''
   // Quoted string
   if ((val.startsWith('"') && val.endsWith('"')) ||
@@ -194,9 +202,9 @@ function parseScalar(val) {
 
 // ── Build section entries ─────────────────────────────────────────────────────
 
-function getSectionContent(slug) {
-  for (const [path, raw] of Object.entries(sectionMds)) {
-    const file = path.split('/').pop().replace(/\.md$/, '')
+function getSectionContent(slug: string): Frontmatter {
+  for (const [path, raw] of Object.entries(sectionMds as Record<string, string>)) {
+    const file = (path.split('/').pop() ?? '').replace(/\.md$/, '')
     if (file === slug) return parseFrontmatter(raw)
   }
   return { data: {}, content: '' }
@@ -213,17 +221,24 @@ export const MATRIX_META = getSectionContent('matrix')
  * COMPARE_DIMENSIONS — array of { key, label, description }
  * Sourced from matrix.md frontmatter `dimensions` list.
  */
-export const COMPARE_DIMENSIONS = (MATRIX_META.data.dimensions ?? []).map(d => ({
-  key: d.key ?? '',
-  label: d.label ?? '',
-  description: d.description ?? '',
+export interface CompareDimension {
+  key: string
+  label: string
+  description: string
+}
+
+const rawDimensions = (MATRIX_META.data.dimensions ?? []) as YamlData[]
+export const COMPARE_DIMENSIONS: CompareDimension[] = rawDimensions.map(d => ({
+  key: String(d.key ?? ''),
+  label: String(d.label ?? ''),
+  description: String(d.description ?? ''),
 }))
 
 /**
  * MATRIX — { [dimensionKey]: { [toolName]: string } }
  * Sourced from matrix.md frontmatter `matrix` block.
  */
-export const MATRIX = MATRIX_META.data.matrix ?? {}
+export const MATRIX = (MATRIX_META.data.matrix ?? {}) as Record<string, Record<string, string>>
 
 // ── Competitors ───────────────────────────────────────────────────────────────
 
@@ -252,19 +267,27 @@ const COMPETITOR_ORDER = [
   'Preset / Apache Superset',
 ]
 
-/**
- * Build competitor entries from glob results.
- * Each entry: { name, tagline, selfHost, pricing, pricingUnverified, sourceUrls, content, slug }
- */
-function buildCompetitors() {
-  const entries = Object.entries(competitorMds).map(([path, raw]) => {
+export interface CompetitorEntry {
+  name: string
+  tagline: string
+  selfHost: string
+  pricing: string
+  pricingUnverified: boolean
+  sourceUrls: YamlValue[]
+  content: string
+  slug: string
+}
+
+/** Build competitor entries from glob results. */
+function buildCompetitors(): CompetitorEntry[] {
+  const entries = Object.entries(competitorMds as Record<string, string>).map(([path, raw]) => {
     const { data, content } = parseFrontmatter(raw)
-    const slug = path.split('/').pop().replace(/\.md$/, '')
+    const slug = (path.split('/').pop() ?? '').replace(/\.md$/, '')
     return {
-      name: data.name ?? slug,
-      tagline: data.tagline ?? '',
-      selfHost: data.selfHost ?? '',
-      pricing: data.pricing ?? '',
+      name: String(data.name ?? slug),
+      tagline: String(data.tagline ?? ''),
+      selfHost: String(data.selfHost ?? ''),
+      pricing: String(data.pricing ?? ''),
       pricingUnverified: data.pricingUnverified === true,
       sourceUrls: Array.isArray(data.sourceUrls) ? data.sourceUrls : [],
       content,
@@ -301,15 +324,15 @@ const ORCHESTRATOR_ORDER = [
  * Build orchestrator entries from glob results.
  * Same shape as competitor entries — reuses the same CompetitorCard component.
  */
-function buildOrchestrators() {
-  const entries = Object.entries(orchestratorMds).map(([path, raw]) => {
+function buildOrchestrators(): CompetitorEntry[] {
+  const entries = Object.entries(orchestratorMds as Record<string, string>).map(([path, raw]) => {
     const { data, content } = parseFrontmatter(raw)
-    const slug = path.split('/').pop().replace(/\.md$/, '')
+    const slug = (path.split('/').pop() ?? '').replace(/\.md$/, '')
     return {
-      name: data.name ?? slug,
-      tagline: data.tagline ?? '',
-      selfHost: data.selfHost ?? '',
-      pricing: data.pricing ?? '',
+      name: String(data.name ?? slug),
+      tagline: String(data.tagline ?? ''),
+      selfHost: String(data.selfHost ?? ''),
+      pricing: String(data.pricing ?? ''),
       pricingUnverified: data.pricingUnverified === true,
       sourceUrls: Array.isArray(data.sourceUrls) ? data.sourceUrls : [],
       content,

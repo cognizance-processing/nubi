@@ -365,7 +365,7 @@ export const ORCH_COMPARISON = [
 // NOTE: Nubi has NO per-seat pricing at any tier (seats are unlimited).
 // Tier selection is driven by embedded-session volume, not editor count.
 // Viewers map to embedded sessions (1 viewer ≈ ~10 sessions/mo estimate).
-function nubiAnnual(viewers, editors) {
+function nubiAnnual(viewers: number, editors: number): number {
   // Viewers and editors are always free of seat charges.
   // Tier is chosen by estimated embedded-session volume.
   const estimatedSessions = viewers * 10 // rough 10 sessions/viewer/month
@@ -388,27 +388,27 @@ export const CALC_OPTIONS = [
   {
     name: 'Nubi', isNubi: true, note: 'Unlimited seats — viewers AND editors free; session-metered ($0/$9/$49/$149/$1k)',
     // Editors are free at every tier — the bar never moves with editor count.
-    annual: (v, e) => nubiAnnual(v, e),
+    annual: (v: number, e: number) => nubiAnnual(v, e),
   },
   {
     name: 'Power BI', note: 'Pro $14/user (viewers + editors), capped at F64 capacity',
-    annual: (v, e) => Math.min((v + (e || 0)) * 14 * 12, 8400 * 12),
+    annual: (v: number, e: number) => Math.min((v + (e || 0)) * 14 * 12, 8400 * 12),
   },
   {
     name: 'Tableau', note: 'Viewers @ $15/mo + Creator (editor) seats @ $70/mo',
-    annual: (v, e) => v * 15 * 12 + (e || 0) * 70 * 12,
+    annual: (v: number, e: number) => v * 15 * 12 + (e || 0) * 70 * 12,
   },
   {
     name: 'Metabase', note: 'Pro $575/mo + $12/embedded viewer + $12/editor seat',
-    annual: (v, e) => 575 * 12 + v * 12 * 12 + (e || 0) * 12 * 12,
+    annual: (v: number, e: number) => 575 * 12 + v * 12 * 12 + (e || 0) * 12 * 12,
   },
   {
     name: 'Preset', note: 'Embedded viewers ($500 / 50) + Creator seats @ $40/mo',
-    annual: (v, e) => Math.ceil(Math.max(v, 1) / 50) * 500 * 12 + (e || 0) * 40 * 12,
+    annual: (v: number, e: number) => Math.ceil(Math.max(v, 1) / 50) * 500 * 12 + (e || 0) * 40 * 12,
   },
   {
     name: 'Looker', note: 'Platform + ~$400/viewer/yr + ~$600/developer seat', estimate: true,
-    annual: (v, e) => 60000 + v * 400 + (e || 0) * 600,
+    annual: (v: number, e: number) => 60000 + v * 400 + (e || 0) * 600,
   },
 ]
 
@@ -430,7 +430,7 @@ export const CALC_OPTIONS = [
 // and is included in your platform subscription (only on-demand remote-kernel
 // agent runs are separately metered — see OVERAGE_RATES).
 const ORCH_GB_PER_COMPUTE_HOUR = 50          // ~50 GB processed per compute-hour
-const _ch = (gb) => Math.max(0, gb || 0) / ORCH_GB_PER_COMPUTE_HOUR   // compute-hours / mo
+const _ch = (gb: number | undefined) => Math.max(0, gb || 0) / ORCH_GB_PER_COMPUTE_HOUR   // compute-hours / mo
 
 export const ORCH_CALC_OPTIONS = [
   {
@@ -440,23 +440,23 @@ export const ORCH_CALC_OPTIONS = [
   },
   {
     name: 'Prefect Cloud', note: '$100/mo Starter → $400/mo Team (per-seat; serverless-minute allowance)',
-    annual: (envs) => (Math.max(1, envs) <= 1 ? 100 : 400) * 12,
+    annual: (envs: number) => (Math.max(1, envs) <= 1 ? 100 : 400) * 12,
   },
   {
     name: 'Microsoft Fabric', note: 'F2 capacity 24/7 (~$263/mo per env); compute within capacity, throttles at cap',
-    annual: (envs) => 263 * 12 * Math.max(1, envs),
+    annual: (envs: number) => 263 * 12 * Math.max(1, envs),
   },
   {
     name: 'AWS MWAA', note: 'Small env ~$365/mo (24/7) per env + worker hours (~$0.55/hr)',
-    annual: (envs, gb) => Math.round((365 * Math.max(1, envs) + _ch(gb) * 0.55) * 12),
+    annual: (envs: number, gb: number) => Math.round((365 * Math.max(1, envs) + _ch(gb) * 0.55) * 12),
   },
   {
     name: 'GCP Composer', note: 'Env fee + GKE/Cloud SQL (~$400/mo per env) + ~$0.20/vCPU-hr',
-    annual: (envs, gb) => Math.round((400 * Math.max(1, envs) + _ch(gb) * 0.20) * 12),
+    annual: (envs: number, gb: number) => Math.round((400 * Math.max(1, envs) + _ch(gb) * 0.20) * 12),
   },
   {
     name: 'Apache Airflow (self-host)', note: 'Infra ~$400/mo per env + on-call ops + your own compute', estimate: true,
-    annual: (envs, gb) => Math.round((400 * Math.max(1, envs) + _ch(gb) * 0.10) * 12) + 6000,
+    annual: (envs: number, gb: number) => Math.round((400 * Math.max(1, envs) + _ch(gb) * 0.10) * 12) + 6000,
   },
 ]
 

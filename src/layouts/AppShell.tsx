@@ -26,7 +26,7 @@
  * Wrapped by UiProvider + OrgProvider (injected in App.jsx routing tree).
  */
 
-import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
+import { useState, useEffect, useCallback, lazy, Suspense, type ComponentType } from 'react'
 import { Outlet } from 'react-router-dom'
 import { useUi } from '../contexts/UiContext.jsx'
 import { useProject } from '../contexts/ProjectContext.jsx'
@@ -37,9 +37,12 @@ import NotificationCenter from '../components/app/NotificationCenter.jsx'
 import { GitBranch, MessageSquare, Bell } from 'lucide-react'
 
 // Lazy-load GitSyncPanel — a sibling agent creates this; it may not exist yet
-// in the OSS build, so we degrade silently if the import fails.
-const GitSyncPanel = lazy(() =>
-  import('../components/app/GitSyncPanel.jsx').catch(() => ({ default: () => null }))
+// in the OSS build, so we degrade silently if the import fails. Untyped .jsx
+// until components/app/ is converted, so widen to accept any props for now.
+const GitSyncPanel = lazy<ComponentType<any>>(() =>
+  import('../components/app/GitSyncPanel.jsx')
+    .then(mod => ({ default: mod.default as ComponentType<any> }))
+    .catch(() => ({ default: (() => null) as ComponentType<any> }))
 )
 
 // Width of the shared RHS sidebar (desktop) is a literal `md:w-[380px]` below —
@@ -158,7 +161,7 @@ export default function AppShell() {
           <aside
             aria-label="Side panel"
             aria-hidden={!activePanel}
-            inert={!activePanel ? '' : undefined}
+            inert={!activePanel ? true : undefined}
             className={[
               'flex flex-col bg-surface shrink-0',
               'md:border-l md:border-border md:transition-[width] md:duration-[250ms] md:ease-in-out md:overflow-hidden',

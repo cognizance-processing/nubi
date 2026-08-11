@@ -368,7 +368,7 @@ function _doRefresh() {
 
 /**
  * Register a new account.
- * @param {{ email: string, password: string, name: string }} body
+ * @param {{ email: string, password: string, name: string, org_name?: string, project_name?: string, demo_project?: boolean }} body
  * @returns {Promise<{ user: User, access_token: string }>}
  *   Side-effect: backend sets the HttpOnly refresh cookie.
  */

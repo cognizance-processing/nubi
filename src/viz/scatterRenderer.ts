@@ -74,11 +74,9 @@ const DEFAULT_COLOR = new Float32Array([0.31, 0.275, 0.898, 0.85])
 /**
  * Initialise a regl-backed WebGL scatter renderer on the given canvas element.
  *
- * @param {HTMLCanvasElement} canvas
- * @returns {{ draw: Function, destroy: Function }}
  * @throws {Error} if WebGL context or regl init fails
  */
-export function createScatter(canvas) {
+export function createScatter(canvas: HTMLCanvasElement) {
   if (!canvas || !(canvas instanceof HTMLCanvasElement)) {
     throw new Error('[scatterRenderer] canvas must be an HTMLCanvasElement')
   }
@@ -89,7 +87,9 @@ export function createScatter(canvas) {
     throw new Error('[scatterRenderer] WebGL is not supported in this browser/environment')
   }
 
-  let regl
+  // regl's generic prop()/buffer() typings require type params we don't model
+  // here — treat the instance loosely rather than fighting its generics.
+  let regl: any
   try {
     regl = createRegl({
       canvas,
@@ -98,7 +98,7 @@ export function createScatter(canvas) {
       // Suppress regl's default console warnings for missing extensions
       optionalExtensions: ['OES_standard_derivatives'],
     })
-  } catch (err) {
+  } catch (err: any) {
     throw new Error(`[scatterRenderer] regl init failed: ${err.message}`)
   }
 
@@ -154,15 +154,12 @@ export function createScatter(canvas) {
   // Public draw API
   // ---------------------------------------------------------------------------
 
-  /**
-   * @param {{
-   *   x: Float32Array,
-   *   y: Float32Array,
-   *   color?: Uint8Array|Float32Array,
-   *   pointSize?: number
-   * }} opts
-   */
-  function draw({ x, y, color, pointSize = 3 }) {
+  function draw({ x, y, color, pointSize = 3 }: {
+    x: Float32Array
+    y: Float32Array
+    color?: Uint8Array | Float32Array
+    pointSize?: number
+  }) {
     if (!x || !y || x.length === 0 || y.length === 0) {
       // Nothing to draw — clear and return
       regl.clear({ color: [0.98, 0.98, 0.99, 1], depth: 1 })
@@ -179,7 +176,7 @@ export function createScatter(canvas) {
     }
 
     // Build RGBA Float32Array for colors
-    let colorData
+    let colorData: Float32Array
     if (color instanceof Uint8Array && color.length >= n * 4) {
       // RGBA bytes [0,255] -> normalize to [0,1]
       colorData = new Float32Array(n * 4)

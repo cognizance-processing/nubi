@@ -28,27 +28,43 @@ import {
   useEffect,
   useState,
   useCallback,
+  type ReactNode,
 } from 'react'
 import * as api from '../lib/api.js'
+
+export interface Org {
+  id: string
+  name: string
+  role: string
+  [key: string]: any
+}
+
+export interface OrgContextValue {
+  orgs: Org[]
+  activeOrg: Org | null
+  setActiveOrg: (id: string) => void
+  createOrg: (name: string) => Promise<Org>
+  loading: boolean
+  hasNoOrgs: boolean
+}
 
 // ---------------------------------------------------------------------------
 // Module-level active org ref — readable by other modules without React
 // ---------------------------------------------------------------------------
 
-/** @type {{ id: string, name: string, role: string } | null} */
-export let currentActiveOrg = null
+export let currentActiveOrg: Org | null = null
 
 // ---------------------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------------------
 
-const OrgContext = createContext(null)
+const OrgContext = createContext<OrgContextValue | null>(null)
 
 const ACTIVE_ORG_KEY = 'nubi-active-org-id'
 
-const DEFAULT_ORG = { id: 'personal', name: 'Personal', role: 'owner' }
+const DEFAULT_ORG: Org = { id: 'personal', name: 'Personal', role: 'owner' }
 
-function getSavedOrgId() {
+function getSavedOrgId(): string | null {
   try {
     return localStorage.getItem(ACTIVE_ORG_KEY) ?? null
   } catch {
@@ -56,7 +72,7 @@ function getSavedOrgId() {
   }
 }
 
-function saveOrgId(id) {
+function saveOrgId(id: string) {
   try {
     localStorage.setItem(ACTIVE_ORG_KEY, id)
   } catch {
@@ -67,16 +83,15 @@ function saveOrgId(id) {
 /**
  * Update both the module-level ref AND the api client's active org id.
  * Called whenever the active org changes.
- * @param {{ id: string, name: string, role: string } | null} org
  */
-function _applyActiveOrg(org) {
+function _applyActiveOrg(org: Org | null) {
   currentActiveOrg = org
   api.setActiveOrgId(org ? org.id : null)
 }
 
-export function OrgProvider({ children }) {
-  const [orgs, setOrgs] = useState([])
-  const [activeOrg, setActiveOrgState] = useState(null)
+export function OrgProvider({ children }: { children: ReactNode }) {
+  const [orgs, setOrgs] = useState<Org[]>([])
+  const [activeOrg, setActiveOrgState] = useState<Org | null>(null)
   const [loading, setLoading] = useState(true)
   // True when GET /orgs SUCCEEDED but the user belongs to zero orgs
   // (e.g. a brand-new Google OAuth user). The shell guard redirects such
@@ -90,7 +105,7 @@ export function OrgProvider({ children }) {
     async function fetchOrgs() {
       try {
         const data = await api.get('/orgs')
-        const list = Array.isArray(data?.orgs)
+        const list: Org[] = Array.isArray(data?.orgs)
           ? data.orgs
           : Array.isArray(data)
           ? data
@@ -133,7 +148,7 @@ export function OrgProvider({ children }) {
   }, [])
 
   const setActiveOrg = useCallback(
-    (id) => {
+    (id: string) => {
       const org = orgs.find(o => o.id === id)
       if (!org) return
       setActiveOrgState(org)
@@ -147,7 +162,7 @@ export function OrgProvider({ children }) {
    * Create a new org (current user becomes owner) and switch to it.
    * POST /orgs {name} → {id, name, role}
    */
-  const createOrg = useCallback(async (name) => {
+  const createOrg = useCallback(async (name: string) => {
     const org = await api.post('/orgs', { name })
     setOrgs(prev => [...prev, org])
     setActiveOrgState(org)
@@ -164,10 +179,7 @@ export function OrgProvider({ children }) {
   )
 }
 
-/**
- * @returns {{ orgs: Array<{id:string,name:string,role:string}>, activeOrg: Object|null, setActiveOrg: Function, loading: boolean, hasNoOrgs: boolean }}
- */
-export function useOrg() {
+export function useOrg(): OrgContextValue {
   const ctx = useContext(OrgContext)
   if (!ctx) throw new Error('useOrg must be used inside <OrgProvider>')
   return ctx
@@ -178,10 +190,8 @@ export function useOrg() {
  * `viewer` is read-only; every other role (owner/admin/member) can write.
  * Used to hide/disable mutating actions in the UI — the backend enforces the
  * same rule authoritatively (see app/auth/roles.py).
- *
- * @returns {boolean}
  */
-export function useCanWrite() {
+export function useCanWrite(): boolean {
   const { activeOrg } = useOrg()
   return activeOrg?.role !== 'viewer'
 }

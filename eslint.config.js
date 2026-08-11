@@ -21,7 +21,6 @@ export default defineConfig([
     files: ['**/*.{js,jsx,ts,tsx}'],
     extends: [
       js.configs.recommended,
-      ...tseslint.configs.recommended,
       reactHooks.configs.flat.recommended,
       reactRefresh.configs.vite,
     ],
@@ -50,11 +49,21 @@ export default defineConfig([
       'react-hooks/static-components': 'off',
       'react-hooks/preserve-manual-memoization': 'off',
       'react-hooks/incompatible-library': 'off',
+    },
+  },
+  // TypeScript files only — the typescript-eslint parser understands type-only
+  // syntax (interfaces, type params, `declare`) that the base no-unused-vars
+  // rule does not, so it must be swapped for the TS-aware equivalent here
+  // rather than applied repo-wide (that misparsed every .js/.jsx file too).
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [...tseslint.configs.recommended],
+    rules: {
+      'no-unused-vars': 'off',
+      '@typescript-eslint/no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]', argsIgnorePattern: '^[A-Z_]', destructuredArrayIgnorePattern: '^[A-Z_]' }],
       // Pragmatic incremental migration: TS files coexist with untyped JS
       // (imports, third-party libs) for a long time yet — don't block on `any`.
       '@typescript-eslint/no-explicit-any': 'off',
-      // JS-side is already covered by the base no-unused-vars rule above.
-      '@typescript-eslint/no-unused-vars': 'off',
     },
   },
   // Test + e2e files run under Node/Vitest/Playwright — give them those globals.

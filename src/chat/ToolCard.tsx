@@ -23,17 +23,25 @@
  * this file can stay a clean component-only module for fast-refresh).
  */
 
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import {
   ChevronDown, ChevronRight, AlertCircle, Check, Loader2, FileJson,
 } from 'lucide-react'
 import { getToolMeta, toolLabel, truncate, coerce, toolSummary } from './toolMeta.js'
 
+export interface ToolAction {
+  id: string
+  tool: string
+  args?: Record<string, any>
+  result?: any
+  status: 'running' | 'done' | 'error'
+}
+
 // ---------------------------------------------------------------------------
 // Result renderers
 // ---------------------------------------------------------------------------
 
-function MiniTable({ columns = [], rows = [] }) {
+function MiniTable({ columns = [], rows = [] }: { columns?: string[]; rows?: Record<string, any>[] }) {
   const cols = columns.length ? columns : (rows[0] ? Object.keys(rows[0]) : [])
   if (!cols.length) return <p className="text-[11px] text-muted">No columns.</p>
   return (
@@ -68,7 +76,7 @@ function MiniTable({ columns = [], rows = [] }) {
 }
 
 /** A labelled section with an uppercase caption. */
-function Field({ label, children }) {
+function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div>
       <p className="text-muted uppercase tracking-wider mb-1 text-[10px] font-semibold">{label}</p>
@@ -78,8 +86,8 @@ function Field({ label, children }) {
 }
 
 /** Rich result body, keyed on the tool. Falls back to pretty JSON. */
-function ToolResultBody({ tool, result }) {
-  const value = coerce(result)
+function ToolResultBody({ tool, result }: { tool: string; result: any }) {
+  const value = coerce(result) as Record<string, any>
 
   if (value == null) return null
   if (typeof value !== 'object') {
@@ -160,14 +168,11 @@ function ToolResultBody({ tool, result }) {
 // ToolCard — collapsible tool invocation
 // ---------------------------------------------------------------------------
 
-/**
- * @param {{
- *   action: { id, tool, args?, result?, status: 'running'|'done'|'error' },
- *   footer?: React.ReactNode,   // optional extra UI under the result (e.g. a Pin button)
- *   defaultOpen?: boolean,
- * }} props
- */
-export default function ToolCard({ action, footer = null, defaultOpen = false }) {
+export default function ToolCard({ action, footer = null, defaultOpen = false }: {
+  action: ToolAction
+  footer?: ReactNode
+  defaultOpen?: boolean
+}) {
   const [open, setOpen] = useState(defaultOpen)
   const { icon: Icon, color, bg } = getToolMeta(action.tool)
   const running = action.status === 'running'

@@ -28,22 +28,40 @@ import {
   useEffect,
   useState,
   useCallback,
+  type ReactNode,
 } from 'react'
 import * as api from '../lib/api.js'
 import { useOrg } from './OrgContext.jsx'
+
+export interface Project {
+  id: string
+  name: string
+  slug?: string
+  org_id?: string
+  [key: string]: any
+}
+
+export interface ProjectContextValue {
+  projects: Project[]
+  activeProject: Project | null
+  setActiveProject: (id: string) => void
+  refreshProjects: () => Promise<Project[]>
+  createProject: (name: string) => Promise<Project>
+  loading: boolean
+}
 
 // ---------------------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------------------
 
-const ProjectContext = createContext(null)
+const ProjectContext = createContext<ProjectContextValue | null>(null)
 
 /** localStorage key for a given org's active project id. */
-function activeProjectKey(orgId) {
+function activeProjectKey(orgId: string | null): string {
   return `nubi-active-project-id:${orgId ?? 'default'}`
 }
 
-function getSavedProjectId(orgId) {
+function getSavedProjectId(orgId: string | null): string | null {
   try {
     return localStorage.getItem(activeProjectKey(orgId)) ?? null
   } catch {
@@ -51,7 +69,7 @@ function getSavedProjectId(orgId) {
   }
 }
 
-function saveProjectId(orgId, id) {
+function saveProjectId(orgId: string | null, id: string) {
   try {
     localStorage.setItem(activeProjectKey(orgId), id)
   } catch {
@@ -60,16 +78,16 @@ function saveProjectId(orgId, id) {
 }
 
 /** Update the api client's active project id so fetches send X-Project-Id. */
-function _applyActiveProject(project) {
+function _applyActiveProject(project: Project | null) {
   api.setActiveProjectId(project ? project.id : null)
 }
 
-export function ProjectProvider({ children }) {
+export function ProjectProvider({ children }: { children: ReactNode }) {
   const { activeOrg } = useOrg()
   const orgId = activeOrg?.id ?? null
 
-  const [projects, setProjects] = useState([])
-  const [activeProject, setActiveProjectState] = useState(null)
+  const [projects, setProjects] = useState<Project[]>([])
+  const [activeProject, setActiveProjectState] = useState<Project | null>(null)
   const [loading, setLoading] = useState(true)
 
   // Load (and reload) projects whenever the active org changes.
@@ -102,7 +120,7 @@ export function ProjectProvider({ children }) {
   }, [orgId])
 
   const setActiveProject = useCallback(
-    (id) => {
+    (id: string) => {
       const project = projects.find(p => p.id === id)
       if (!project) return
       setActiveProjectState(project)
@@ -117,7 +135,7 @@ export function ProjectProvider({ children }) {
     setProjects(list)
     // Keep the current selection if it still exists, otherwise fall back.
     setActiveProjectState(prev => {
-      const next = list.find(p => p.id === prev?.id) ?? list[0] ?? null
+      const next = list.find((p: Project) => p.id === prev?.id) ?? list[0] ?? null
       _applyActiveProject(next)
       return next
     })
@@ -125,7 +143,7 @@ export function ProjectProvider({ children }) {
   }, [])
 
   const createProject = useCallback(
-    async (name) => {
+    async (name: string) => {
       const created = await api.createProject(name)
       // Refresh the list and switch to the new project.
       const list = await api.listProjects()
@@ -148,17 +166,7 @@ export function ProjectProvider({ children }) {
   )
 }
 
-/**
- * @returns {{
- *   projects: Array<{id:string,name:string,slug?:string,org_id?:string}>,
- *   activeProject: Object|null,
- *   setActiveProject: (id: string) => void,
- *   refreshProjects: () => Promise<Array>,
- *   createProject: (name: string) => Promise<Object>,
- *   loading: boolean,
- * }}
- */
-export function useProject() {
+export function useProject(): ProjectContextValue {
   const ctx = useContext(ProjectContext)
   if (!ctx) throw new Error('useProject must be used inside <ProjectProvider>')
   return ctx

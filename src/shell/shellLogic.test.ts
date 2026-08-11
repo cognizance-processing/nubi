@@ -1,9 +1,7 @@
 /**
- * shellLogic.test.mjs — unit tests for the app-shell / admin pure helpers.
+ * shellLogic.test.ts — unit tests for the app-shell / admin pure helpers.
  *
- * Run with:
- *   node --test src/shell/shellLogic.test.mjs
- *   # or via the project test:dash script (glob src/**\/*.test.mjs)
+ * Run via the project test:dash script (glob src/**\/*.test.{mjs,ts,tsx}).
  *
  * Covers env selection, right-rail filtering/labels, git push/pull notice
  * formatting and settings-form validation — the logic that drives the topbar,

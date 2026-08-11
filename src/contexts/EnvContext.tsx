@@ -38,6 +38,7 @@ import {
   useEffect,
   useState,
   useCallback,
+  type ReactNode,
 } from 'react'
 import {
   listEnvironments,
@@ -49,6 +50,7 @@ import {
   envDotClass as envDotClassImpl,
   defaultEnvKey,
   resolveActiveEnv,
+  type EnvRow,
 } from '../shell/shellLogic.js'
 
 // ---------------------------------------------------------------------------
@@ -58,18 +60,28 @@ import {
 /** prod = emerald (live), dev = sky, anything else (custom) = violet. */
 export const envDotClass = envDotClassImpl
 
+export interface EnvContextValue {
+  environments: EnvRow[] | null
+  activeEnv: string
+  setActiveEnv: (key: string) => void
+  refresh: () => Promise<EnvRow[] | null>
+  addEnv: (key: string, opts?: { git_branch?: string; from_branch?: string }) => Promise<EnvRow>
+  removeEnv: (env: EnvRow) => Promise<void>
+  loading: boolean
+}
+
 // ---------------------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------------------
 
-const EnvContext = createContext(null)
+const EnvContext = createContext<EnvContextValue | null>(null)
 
 /** localStorage key for a given project's active env key. */
-function activeEnvStorageKey(projectId) {
+function activeEnvStorageKey(projectId: string | null): string {
   return `nubi.activeEnv.${projectId ?? 'default'}`
 }
 
-function getSavedEnv(projectId) {
+function getSavedEnv(projectId: string | null): string | null {
   try {
     return localStorage.getItem(activeEnvStorageKey(projectId)) || null
   } catch {
@@ -77,7 +89,7 @@ function getSavedEnv(projectId) {
   }
 }
 
-function saveEnv(projectId, key) {
+function saveEnv(projectId: string, key: string) {
   try {
     localStorage.setItem(activeEnvStorageKey(projectId), key)
   } catch {
@@ -85,12 +97,12 @@ function saveEnv(projectId, key) {
   }
 }
 
-export function EnvProvider({ children }) {
+export function EnvProvider({ children }: { children: ReactNode }) {
   const { activeProject } = useProject()
   const projectId = activeProject?.id ?? null
 
   // null until loaded / when the API is unavailable (read helpers degrade).
-  const [environments, setEnvironments] = useState(null)
+  const [environments, setEnvironments] = useState<EnvRow[] | null>(null)
   const [activeEnv, setActiveEnvState] = useState('prod')
   const [loading, setLoading] = useState(true)
 
@@ -125,7 +137,7 @@ export function EnvProvider({ children }) {
   }, [projectId])
 
   const setActiveEnv = useCallback(
-    (key) => {
+    (key: string) => {
       if (!key || typeof key !== 'string') return
       setActiveEnvState(key)
       if (projectId) saveEnv(projectId, key)
@@ -133,7 +145,7 @@ export function EnvProvider({ children }) {
     [projectId],
   )
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<EnvRow[] | null> => {
     if (!projectId) return null
     const list = await listEnvironments(projectId)
     setEnvironments(list)
@@ -141,7 +153,7 @@ export function EnvProvider({ children }) {
   }, [projectId])
 
   const addEnv = useCallback(
-    async (key, opts = {}) => {
+    async (key: string, opts: { git_branch?: string; from_branch?: string } = {}) => {
       if (!projectId) throw new Error('No active project.')
       // opts: { git_branch?, from_branch? } — from_branch seeds the new env
       // from an existing branch in the project's git workspace repo (the
@@ -159,7 +171,7 @@ export function EnvProvider({ children }) {
   )
 
   const removeEnv = useCallback(
-    async (env) => {
+    async (env: EnvRow) => {
       // Throws on failure (e.g. 409 deleting the default / a protected env)
       // so callers can surface the backend's message.
       await deleteEnvironment(env.id)
@@ -179,18 +191,7 @@ export function EnvProvider({ children }) {
   )
 }
 
-/**
- * @returns {{
- *   environments: Array<{id:string,key:string,name:string,is_default:boolean,protected:boolean,position:number}>|null,
- *   activeEnv: string,
- *   setActiveEnv: (key: string) => void,
- *   refresh: () => Promise<Array|null>,
- *   addEnv: (key: string) => Promise<Object>,
- *   removeEnv: (env: {id:string,key:string}) => Promise<void>,
- *   loading: boolean,
- * }}
- */
-export function useEnv() {
+export function useEnv(): EnvContextValue {
   const ctx = useContext(EnvContext)
   if (!ctx) throw new Error('useEnv must be used inside <EnvProvider>')
   return ctx

@@ -22,7 +22,44 @@
  *     showIf  — (config) => boolean   (conditional visibility)
  */
 
-const logo = (file) => `/logos/connectors/${file}`
+export interface ConnectorFieldOption {
+  value: string
+  label: string
+  desc?: string
+}
+
+export interface ConnectorField {
+  key: string
+  label: string
+  type: 'text' | 'number' | 'password' | 'url' | 'select' | 'textarea' | 'segmented' | 'sa_json'
+  group?: 'config' | 'secret'
+  default?: unknown
+  placeholder?: string
+  required?: boolean
+  optional?: boolean
+  options?: (string | ConnectorFieldOption)[]
+  help?: string
+  width?: 'full' | 'half' | 'third'
+  rows?: number
+  showIf?: (cfg: Record<string, any>) => boolean
+}
+
+export interface ConnectorType {
+  id: string
+  label: string
+  description: string
+  category: string
+  logo: string
+  color: string
+  fields: ConnectorField[]
+  summary: (cfg: Record<string, any>) => string
+  hidden?: boolean
+  system?: boolean
+  apiType?: string
+  apiSeed?: string
+}
+
+const logo = (file: string) => `/logos/connectors/${file}`
 
 // ── SQL dialect map (display-only frontend mirror) ──────────────────────────
 //
@@ -35,7 +72,7 @@ const logo = (file) => `/logos/connectors/${file}`
 // `apiType` below already resolves to).
 export const DEFAULT_DIALECT = 'postgres' // mirrors dialects.py DEFAULT_DIALECT
 
-export const CONNECTOR_DIALECT = {
+export const CONNECTOR_DIALECT: Record<string, string | null> = {
   // ── verbatim mirror of backend/app/connectors/dialects.py ──────────────
   postgres: 'postgres',
   redshift: 'postgres',
@@ -71,13 +108,13 @@ export const CONNECTOR_DIALECT = {
 }
 
 /** SQL dialect for a connector-type id, for display (badges, etc). */
-export function dialectFor(typeId) {
+export function dialectFor(typeId: string): string | null {
   return typeId in CONNECTOR_DIALECT ? CONNECTOR_DIALECT[typeId] : DEFAULT_DIALECT
 }
 
 // ── Field helpers ─────────────────────────────────────────────────────────
 
-const NETWORK_FIELD = {
+const NETWORK_FIELD: ConnectorField = {
   key: 'network_mode',
   label: 'Network mode',
   type: 'select',
@@ -91,7 +128,7 @@ const NETWORK_FIELD = {
   help: 'Use "bridge" if Nubi reaches your database through a private-network agent.',
 }
 
-const SSL_FIELD = {
+const SSL_FIELD: ConnectorField = {
   key: 'sslmode',
   label: 'SSL mode',
   type: 'select',
@@ -109,8 +146,16 @@ function sqlFields({
   dbPlaceholder = 'mydb',
   ssl = false,
   network = true,
-} = {}) {
-  const fields = [
+}: {
+  port: number
+  userDefault?: string
+  dbKey?: string
+  dbLabel?: string
+  dbPlaceholder?: string
+  ssl?: boolean
+  network?: boolean
+}): ConnectorField[] {
+  const fields: ConnectorField[] = [
     { key: 'host', label: 'Host', type: 'text', placeholder: 'localhost', required: true, width: 'half' },
     { key: 'port', label: 'Port', type: 'number', default: port, width: 'half' },
     { key: dbKey, label: dbLabel, type: 'text', placeholder: dbPlaceholder, required: true, width: 'half' },
@@ -123,7 +168,7 @@ function sqlFields({
 }
 
 /** Generic "host:port · database · user" summary for the connector card. */
-function hostSummary(cfg = {}) {
+function hostSummary(cfg: Record<string, any> = {}): string {
   const parts = []
   if (cfg.host) parts.push(cfg.host + (cfg.port ? `:${cfg.port}` : ''))
   if (cfg.database) parts.push(cfg.database)
@@ -134,7 +179,7 @@ function hostSummary(cfg = {}) {
 
 // ── Categories (display order) ────────────────────────────────────────────
 
-export const CONNECTOR_CATEGORIES = [
+export const CONNECTOR_CATEGORIES: { id: string; label: string }[] = [
   { id: 'relational', label: 'Relational databases' },
   { id: 'cloud', label: 'Cloud-managed SQL' },
   { id: 'warehouse', label: 'Cloud warehouses' },
@@ -145,7 +190,7 @@ export const CONNECTOR_CATEGORIES = [
 
 // ── Catalog ───────────────────────────────────────────────────────────────
 
-export const CONNECTOR_TYPES = [
+export const CONNECTOR_TYPES: ConnectorType[] = [
   // ── Relational ──────────────────────────────────────────────────────────
   {
     id: 'postgres',
@@ -660,7 +705,7 @@ export const CONNECTOR_TYPES = [
 
 // ── Lookups ───────────────────────────────────────────────────────────────
 
-export function getTypeInfo(typeId) {
+export function getTypeInfo(typeId: string): ConnectorType {
   return CONNECTOR_TYPES.find((t) => t.id === typeId) ?? CONNECTOR_TYPES[0]
 }
 
@@ -680,9 +725,9 @@ export function getConnectorsByCategory() {
 }
 
 /** Seed an initial config object from a type's field defaults (config group). */
-export function defaultsFor(typeId) {
+export function defaultsFor(typeId: string): Record<string, unknown> {
   const info = getTypeInfo(typeId)
-  const out = {}
+  const out: Record<string, unknown> = {}
   for (const f of info.fields ?? []) {
     if (f.default !== undefined && (f.group ?? 'config') === 'config') {
       out[f.key] = f.default

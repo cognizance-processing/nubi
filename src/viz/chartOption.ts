@@ -205,7 +205,11 @@ function groupByCategory(xVals, yVals, colorArr) {
  *   stackId:    string|null,
  * }}
  */
-function resolveMultiSpec({ chartType, encoding = {}, props = {} }) {
+function resolveMultiSpec({ chartType, encoding = {}, props = {} }: {
+  chartType?: string
+  encoding?: Record<string, any>
+  props?: Record<string, any>
+}) {
   const baseType = (chartType || 'bar').toLowerCase()
 
   // --- series definitions ---
@@ -255,12 +259,15 @@ function resolveMultiSpec({ chartType, encoding = {}, props = {} }) {
 
 /**
  * Shared grid / tooltip / legend / toolbox defaults for all chart types.
- *
- * @param {{ showLegend?: boolean, showDataZoom?: boolean, dualAxis?: boolean }} opts
- * @returns {object} partial ECharts option
+ * Returns a loosely-typed partial ECharts option — the full option shape
+ * varies too much per chart type to model precisely here.
  */
-function baseOption({ showLegend = false, showDataZoom = false, dualAxis = false } = {}) {
-  const opt = {
+function baseOption({ showLegend = false, showDataZoom = false, dualAxis = false }: {
+  showLegend?: boolean
+  showDataZoom?: boolean
+  dualAxis?: boolean
+} = {}): Record<string, any> {
+  const opt: Record<string, any> = {
     color: PALETTE,
     backgroundColor: 'transparent',
     animation: false,
@@ -599,7 +606,7 @@ function buildPie(table, xCol, yCol) {
  * @param {object} [props]
  * @returns {object} ECharts option
  */
-function buildDonut(table, xCol, yCol, props = {}) {
+function buildDonut(table: any, xCol: string, yCol: string, props: Record<string, any> = {}) {
   const opt = buildPie(table, xCol, yCol)
   if (!opt.series) return opt // safe empty (degenerate table)
 
@@ -802,7 +809,7 @@ function buildHeatmap(table, xCol, yCol, valueCol) {
  * @param {object} [props]
  * @returns {object} ECharts option
  */
-function buildWaterfall(table, xCol, yCol, props = {}) {
+function buildWaterfall(table: any, xCol: string, yCol: string, props: Record<string, any> = {}) {
   const xRaw = getColumn(table, xCol)
   const yRaw = getColumn(table, yCol)
   if (!xRaw || !yRaw) return {}
@@ -939,7 +946,7 @@ function buildWaterfall(table, xCol, yCol, props = {}) {
  * @param {object} [props]
  * @returns {object} ECharts option
  */
-function buildQuadrant(table, xCol, yCol, colorCol, encoding = {}, props = {}) {
+function buildQuadrant(table: any, xCol: string, yCol: string, colorCol: string, encoding: Record<string, any> = {}, props: Record<string, any> = {}) {
   const xRaw = getColumn(table, xCol)
   const yRaw = getColumn(table, yCol)
   if (!xRaw || !yRaw) return {}
@@ -1119,7 +1126,7 @@ function buildQuadrant(table, xCol, yCol, colorCol, encoding = {}, props = {}) {
  * @param {object} [props]
  * @returns {object} ECharts option
  */
-function buildSparkline(table, yCol, props = {}) {
+function buildSparkline(table: any, yCol: string, props: Record<string, any> = {}) {
   const yRaw = getColumn(table, yCol)
   if (!yRaw) return {}
 
@@ -1176,7 +1183,7 @@ function buildSparkline(table, yCol, props = {}) {
  * @param {object} [props]
  * @returns {object} ECharts option
  */
-function buildGauge(table, valueCol, props = {}) {
+function buildGauge(table: any, valueCol: string, props: Record<string, any> = {}) {
   const vRaw = getColumn(table, valueCol)
   if (!vRaw || vRaw.length === 0) return {}
 
@@ -1342,7 +1349,15 @@ function buildMultiSeries(table, xCol, seriesDefs, stackId) {
  * }} params
  * @returns {object} ECharts option (ready for chart.setOption())
  */
-export function buildChartOption({ chartType, table, x, y, color, encoding = {}, props = {} }) {
+export function buildChartOption({ chartType, table, x, y, color, encoding = {}, props = {} }: {
+  chartType?: string
+  table: any
+  x?: string
+  y?: string
+  color?: string
+  encoding?: Record<string, any>
+  props?: Record<string, any>
+}): Record<string, any> {
   if (!table || table.numRows === 0) {
     // Return a safe empty option with a placeholder message
     return {
@@ -1419,7 +1434,7 @@ export function buildChartOption({ chartType, table, x, y, color, encoding = {},
  * @param {object} [props]  — sparkColor, sparkType, showDot
  * @returns {object} ECharts option
  */
-export function buildSparklineOption(values, props = {}) {
+export function buildSparklineOption(values: number[], props: Record<string, any> = {}): Record<string, any> {
   if (!values || values.length === 0) return {}
   const n = values.length
   const color = props.sparkColor ?? PALETTE[0]

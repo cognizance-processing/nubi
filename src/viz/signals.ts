@@ -37,7 +37,7 @@
 // Semantic severity colour map
 // ---------------------------------------------------------------------------
 
-export const SEVERITY_COLORS = {
+export const SEVERITY_COLORS: Record<string, string> = {
   red:     '#ef4444',
   amber:   '#f59e0b',
   green:   '#10b981',
@@ -45,24 +45,33 @@ export const SEVERITY_COLORS = {
   neutral: '#9ca3af',
 }
 
+export interface SignalRule {
+  op: 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'ne' | 'between' | 'contains'
+  value: number | string
+  value2?: number | string
+  color?: string
+  label?: string
+  severity?: 'red' | 'amber' | 'green' | 'info' | 'neutral'
+}
+
+export interface SignalResult {
+  color: string | null
+  label: string | null
+  severity: string | null
+  matched: boolean
+}
+
 // ---------------------------------------------------------------------------
 // Default / empty result
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_SIGNAL = { color: null, label: null, severity: null, matched: false }
+export const DEFAULT_SIGNAL: SignalResult = { color: null, label: null, severity: null, matched: false }
 
 // ---------------------------------------------------------------------------
 // Operator evaluator
 // ---------------------------------------------------------------------------
 
-/**
- * @param {*} v      — cell value to test
- * @param {string} op
- * @param {*} a      — primary operand
- * @param {*} b      — secondary operand (for 'between')
- * @returns {boolean}
- */
-function evalOp(v, op, a, b) {
+function evalOp(v: unknown, op: SignalRule['op'], a: unknown, b: unknown): boolean {
   switch (op) {
     case 'gt':      return Number(v) > Number(a)
     case 'gte':     return Number(v) >= Number(a)
@@ -86,12 +95,8 @@ function evalOp(v, op, a, b) {
 /**
  * Evaluate signal rules against a scalar value.
  * Returns the first matching rule's signal, or DEFAULT_SIGNAL.
- *
- * @param {*} value          — the scalar value to test (number, string, etc.)
- * @param {Array|null} rules — ordered array of SignalRule objects
- * @returns {{ color: string|null, label: string|null, severity: string|null, matched: boolean }}
  */
-export function applySignal(value, rules) {
+export function applySignal(value: unknown, rules: SignalRule[] | null | undefined): SignalResult {
   if (!Array.isArray(rules) || rules.length === 0) return DEFAULT_SIGNAL
   if (value == null) return DEFAULT_SIGNAL
 

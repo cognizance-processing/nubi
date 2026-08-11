@@ -30,18 +30,15 @@ import { attachECharts } from '../lib/maps.js'
 // before or after is flushed through.
 attachECharts(echarts)
 
-/**
- * @param {{
- *   option: object,
- *   height?: number|string,
- *   theme?: string|object,
- *   onEvents?: Record<string, (params: any, chart: any) => void>
- * }} props
- */
-export default function EChart({ option, height = 320, theme, onEvents }) {
-  const containerRef = useRef(null)
-  const chartRef = useRef(null)    // echarts instance
-  const eventsRef = useRef(null)   // track bound events for cleanup
+export default function EChart({ option, height = 320, theme, onEvents }: {
+  option: Record<string, any>
+  height?: number | string
+  theme?: string | object
+  onEvents?: Record<string, (params: any, chart: echarts.ECharts) => void>
+}) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const chartRef = useRef<echarts.ECharts | null>(null)    // echarts instance
+  const eventsRef = useRef<Record<string, (params: any, chart: echarts.ECharts) => void> | null>(null)   // track bound events for cleanup
 
   // ----- Init / dispose lifecycle -----
   useEffect(() => {

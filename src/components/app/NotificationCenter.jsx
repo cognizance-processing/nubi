@@ -350,6 +350,7 @@ function NotificationPanel({ open, onClose, items, loading, onMarkRead, onMarkAl
  *   open: boolean,
  *   onClose: () => void,
  *   onCount?: (n: number) => void,   // report unread count up to the rail badge
+ *   embedded?: boolean,
  * }} props
  */
 export default function NotificationCenter({ open, onClose, onCount, embedded = false }) {

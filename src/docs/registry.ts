@@ -113,22 +113,39 @@ const LAYOUT = [
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+export interface Doc {
+  slug: string
+  title: string
+  group: string
+  section: string | null
+  content: string
+  path: string
+  children?: Doc[]
+  parentSlug?: string
+}
+
+export interface DocGroup {
+  name: string
+  section: string | null
+  docs: Doc[]
+}
+
 /** Extract the first H1 heading from markdown content */
-function extractTitle(content, slug) {
+function extractTitle(content: string, slug: string): string {
   const h1Match = content.match(/^#\s+(.+)$/m)
   if (h1Match) return h1Match[1].trim()
   return slug.charAt(0).toUpperCase() + slug.slice(1).replace(/-/g, ' ')
 }
 
 /** /docs/foo-bar.md → "foo-bar"; /docs/index.md → "home" */
-function pathToSlug(filePath) {
-  const filename = filePath.split('/').pop().replace(/\.md$/, '')
+function pathToSlug(filePath: string): string {
+  const filename = (filePath.split('/').pop() ?? '').replace(/\.md$/, '')
   return filename === 'index' ? 'home' : filename.toLowerCase()
 }
 
 // Build a slug → { content, path } map.
-const bySlug = {}
-for (const [path, content] of Object.entries(mdFiles)) {
+const bySlug: Record<string, { content: string; path: string }> = {}
+for (const [path, content] of Object.entries(mdFiles as Record<string, string>)) {
   bySlug[pathToSlug(path)] = { content, path }
 }
 
@@ -137,22 +154,22 @@ for (const [path, content] of Object.entries(mdFiles)) {
 // its children) — used for search, prev/next, and slug resolution. DOC_GROUPS
 // carries the nested tree (each parent doc may have a `children` array) for the
 // sidebar renderer.
-const DOCS = []
-const seen = new Set()
+const DOCS: Doc[] = []
+const seen = new Set<string>()
 
 /** Build a single doc object (and record it in the flat DOCS list). */
-function buildDoc(slug, group, section) {
+function buildDoc(slug: string, group: string, section: string | null): Doc | null {
   const entry = bySlug[slug]
   if (!entry || seen.has(slug)) return null
   seen.add(slug)
   const title = slug === 'home' ? 'Nubi Docs' : extractTitle(entry.content, slug)
-  const doc = { slug, title, group, section, content: entry.content, path: entry.path }
+  const doc: Doc = { slug, title, group, section, content: entry.content, path: entry.path }
   DOCS.push(doc)
   return doc
 }
 
-export const DOC_GROUPS = LAYOUT.map(({ section, group, items }) => {
-  const docs = []
+export const DOC_GROUPS: DocGroup[] = LAYOUT.map(({ section, group, items }) => {
+  const docs: Doc[] = []
   for (const item of items) {
     const slug = typeof item === 'string' ? item : item.slug
     const childSlugs = typeof item === 'string' ? [] : (item.children ?? [])
@@ -160,7 +177,7 @@ export const DOC_GROUPS = LAYOUT.map(({ section, group, items }) => {
     if (!doc) continue
     // Children are appended to DOCS right after their parent (display order) and
     // attached to the parent for nested sidebar rendering.
-    const children = []
+    const children: Doc[] = []
     for (const childSlug of childSlugs) {
       const child = buildDoc(childSlug, group, section)
       if (child) {
@@ -177,13 +194,13 @@ export const DOC_GROUPS = LAYOUT.map(({ section, group, items }) => {
 // Ordered list of the three section names (for rendering section headers).
 export const DOC_SECTIONS = DOC_GROUPS
   .map(g => g.section)
-  .filter((s, i, arr) => s && arr.indexOf(s) === i)
+  .filter((s, i, arr): s is string => Boolean(s) && arr.indexOf(s) === i)
 
-export function getDocs() {
+export function getDocs(): Doc[] {
   return DOCS
 }
 
-export function getDoc(slug) {
+export function getDoc(slug: string): Doc | null {
   return DOCS.find(d => d.slug === slug) ?? null
 }
 

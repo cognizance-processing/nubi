@@ -12,13 +12,26 @@
  * sidebarCollapsed is persisted to localStorage under 'nubi-sidebar-collapsed'.
  */
 
-import { createContext, useContext, useState, useCallback } from 'react'
+import { createContext, useContext, useState, useCallback, type ReactNode } from 'react'
 
-const UiContext = createContext(null)
+export interface UiContextValue {
+  sidebarCollapsed: boolean
+  toggleSidebar: () => void
+  chatOpen: boolean
+  openChat: () => void
+  closeChat: () => void
+  toggleChat: () => void
+  topbarSlot: HTMLElement | null
+  setTopbarSlot: (node: HTMLElement | null) => void
+  pageOwnsChat: boolean
+  setPageOwnsChat: (owns: boolean) => void
+}
+
+const UiContext = createContext<UiContextValue | null>(null)
 
 const SIDEBAR_KEY = 'nubi-sidebar-collapsed'
 
-function getInitialSidebarCollapsed() {
+function getInitialSidebarCollapsed(): boolean {
   try {
     return localStorage.getItem(SIDEBAR_KEY) === 'true'
   } catch {
@@ -26,12 +39,12 @@ function getInitialSidebarCollapsed() {
   }
 }
 
-export function UiProvider({ children }) {
+export function UiProvider({ children }: { children: ReactNode }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(getInitialSidebarCollapsed)
   const [chatOpen, setChatOpen] = useState(false)
   // DOM node in AppTopbar that pages (e.g. the dashboard editor) portal their
   // own toolbar into — so there's a single top bar instead of a stacked second one.
-  const [topbarSlot, setTopbarSlot] = useState(null)
+  const [topbarSlot, setTopbarSlot] = useState<HTMLElement | null>(null)
   // When a page (e.g. the dashboard editor) owns the chat UI itself, the global
   // chat button and panel are suppressed so there are never two chats at once.
   const [pageOwnsChat, setPageOwnsChat] = useState(false)
@@ -72,10 +85,7 @@ export function UiProvider({ children }) {
   )
 }
 
-/**
- * @returns {{ sidebarCollapsed: boolean, toggleSidebar: Function, chatOpen: boolean, openChat: Function, closeChat: Function, toggleChat: Function }}
- */
-export function useUi() {
+export function useUi(): UiContextValue {
   const ctx = useContext(UiContext)
   if (!ctx) throw new Error('useUi must be used inside <UiProvider>')
   return ctx

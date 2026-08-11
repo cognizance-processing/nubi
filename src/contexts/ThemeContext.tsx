@@ -17,16 +17,24 @@
  * in src/index.css — Tailwind's `darkMode: 'class'` reads it.
  */
 
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+
+export type Theme = 'light' | 'dark'
+
+export interface ThemeContextValue {
+  theme: Theme
+  toggleTheme: () => void
+  setTheme: (t: Theme) => void
+}
 
 // Exported so components that must render outside a ThemeProvider (editors used
 // in tests / Storybook) can read it via useContext with a null-safe default,
 // instead of calling useTheme() in a try/catch (which violates rules-of-hooks).
-export const ThemeContext = createContext(null)
+export const ThemeContext = createContext<ThemeContextValue | null>(null)
 
 const STORAGE_KEY = 'nubi-theme'
 
-function getInitialTheme() {
+function getInitialTheme(): Theme {
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
     if (stored === 'dark' || stored === 'light') return stored
@@ -39,7 +47,7 @@ function getInitialTheme() {
   return 'light'
 }
 
-function applyTheme(theme) {
+function applyTheme(theme: Theme) {
   const root = document.documentElement
   if (theme === 'dark') {
     root.classList.add('dark')
@@ -48,8 +56,8 @@ function applyTheme(theme) {
   }
 }
 
-export function ThemeProvider({ children }) {
-  const [theme, setThemeState] = useState(getInitialTheme)
+export function ThemeProvider({ children }: { children: ReactNode }) {
+  const [theme, setThemeState] = useState<Theme>(getInitialTheme)
 
   // Sync DOM on every theme change
   useEffect(() => {
@@ -64,7 +72,7 @@ export function ThemeProvider({ children }) {
   // Listen for OS preference changes (only if no stored preference)
   useEffect(() => {
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    const handler = (e) => {
+    const handler = (e: MediaQueryListEvent) => {
       try {
         if (!localStorage.getItem(STORAGE_KEY)) {
           setThemeState(e.matches ? 'dark' : 'light')
@@ -77,7 +85,7 @@ export function ThemeProvider({ children }) {
     return () => mq.removeEventListener('change', handler)
   }, [])
 
-  function setTheme(t) {
+  function setTheme(t: Theme) {
     if (t === 'light' || t === 'dark') {
       setThemeState(t)
     }
@@ -94,11 +102,8 @@ export function ThemeProvider({ children }) {
   )
 }
 
-/**
- * Access theme state and actions from any component inside <ThemeProvider>.
- * @returns {{ theme: 'light'|'dark', toggleTheme: Function, setTheme: Function }}
- */
-export function useTheme() {
+/** Access theme state and actions from any component inside <ThemeProvider>. */
+export function useTheme(): ThemeContextValue {
   const ctx = useContext(ThemeContext)
   if (!ctx) {
     throw new Error('useTheme must be used inside <ThemeProvider>')

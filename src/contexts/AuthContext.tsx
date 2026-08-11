@@ -14,21 +14,43 @@
  * On failure the user is left logged-out; the app never crashes.
  */
 
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import * as api from '../lib/api.js'
+
+export interface AuthUser {
+  id: string
+  email: string
+  name?: string
+  [key: string]: any
+}
+
+export interface AuthContextValue {
+  user: AuthUser | null
+  loading: boolean
+  login: (credentials: { email: string; password: string }) => Promise<void>
+  register: (fields: {
+    email: string
+    password: string
+    name: string
+    org_name?: string
+    project_name?: string
+    demo_project?: boolean
+  }) => Promise<void>
+  logout: () => Promise<void>
+}
 
 // ---------------------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------------------
 
-const AuthContext = createContext(null)
+const AuthContext = createContext<AuthContextValue | null>(null)
 
 // ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
-export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null)
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<AuthUser | null>(null)
   const [loading, setLoading] = useState(true)
 
   // -- Session restore on mount ---------------------------------------------
@@ -49,7 +71,7 @@ export function AuthProvider({ children }) {
         let meData
         try {
           meData = await attemptRestore()
-        } catch (err) {
+        } catch (err: any) {
           // A 429 is a transient rate limit, not proof the session is
           // invalid — retry once after a short backoff instead of
           // force-logging the user out (this used to fire on every ordinary
@@ -83,11 +105,8 @@ export function AuthProvider({ children }) {
 
   // -- Actions --------------------------------------------------------------
 
-  /**
-   * Log in with email + password.
-   * @param {{ email: string, password: string }} credentials
-   */
-  async function login({ email, password }) {
+  /** Log in with email + password. */
+  async function login({ email, password }: { email: string; password: string }) {
     const data = await api.login({ email, password })
     api.setAccessToken(data.access_token)
     setUser(data.user)
@@ -99,9 +118,15 @@ export function AuthProvider({ children }) {
    * passed straight through to POST /auth/register so the backend creates
    * the user's first org/project (and, when demo_project is set, seeds the
    * demo bundle INTO that single project) atomically.
-   * @param {{ email: string, password: string, name: string, org_name?: string, project_name?: string, demo_project?: boolean }} fields
    */
-  async function register({ email, password, name, org_name, project_name, demo_project }) {
+  async function register({ email, password, name, org_name, project_name, demo_project }: {
+    email: string
+    password: string
+    name: string
+    org_name?: string
+    project_name?: string
+    demo_project?: boolean
+  }) {
     const data = await api.register({ email, password, name, org_name, project_name, demo_project })
     api.setAccessToken(data.access_token)
     setUser(data.user)
@@ -134,11 +159,8 @@ export function AuthProvider({ children }) {
 // Hook
 // ---------------------------------------------------------------------------
 
-/**
- * Access auth state and actions from any component inside <AuthProvider>.
- * @returns {{ user: import('../lib/api.js').User | null, loading: boolean, login: Function, register: Function, logout: Function }}
- */
-export function useAuth() {
+/** Access auth state and actions from any component inside <AuthProvider>. */
+export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext)
   if (!ctx) {
     throw new Error('useAuth must be used inside <AuthProvider>')

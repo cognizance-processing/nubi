@@ -18,23 +18,30 @@
 
 import { post, postStream } from '../lib/api.js'
 
-/**
- * Send the full conversation history to the AI chat endpoint.
- *
- * @param {{
- *   messages: Array<{ role: 'user' | 'assistant', content: string }>,
- *   model?: string,
- *   board_id?: string,
- * }} params
- *
- * @returns {Promise<{
- *   reply: string,
- *   actions: Array<{ tool: string, arguments: Record<string, any>, result: Record<string, any> }>,
- *   model: string | null,
- * }>}
- */
-export async function sendChatMessage({ messages, model, board_id }) {
-  const body = { messages }
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface ChatAction {
+  tool: string
+  arguments: Record<string, any>
+  result: Record<string, any>
+}
+
+export interface ChatReply {
+  reply: string
+  actions: ChatAction[]
+  model: string | null
+}
+
+/** Send the full conversation history to the AI chat endpoint. */
+export async function sendChatMessage({ messages, model, board_id }: {
+  messages: ChatMessage[]
+  model?: string
+  board_id?: string
+}): Promise<ChatReply> {
+  const body: Record<string, any> = { messages }
   if (model) body.model = model
   if (board_id) body.board_id = board_id
   return post('/ai/chat', body)
@@ -51,21 +58,25 @@ export async function sendChatMessage({ messages, model, board_id }) {
  *   { type: 'text',        delta }
  *   { type: 'done',        reply, actions }
  *   { type: 'error',       message }
- *
- * @param {{
- *   messages: Array<{ role: 'user' | 'assistant', content: string }>,
- *   model?: string,
- *   board_id?: string,
- *   onEvent: (ev: any) => void,
- *   signal?: AbortSignal,
- * }} params
- * @returns {Promise<void>} resolves when the stream closes
  */
-export async function streamChatMessage({ messages, model, board_id, onEvent, signal }) {
-  const body = { messages }
+export async function streamChatMessage({ messages, model, board_id, onEvent, signal }: {
+  messages: ChatMessage[]
+  model?: string
+  board_id?: string
+  onEvent: (ev: any) => void
+  signal?: AbortSignal
+}): Promise<void> {
+  const body: Record<string, any> = { messages }
   if (model) body.model = model
   if (board_id) body.board_id = board_id
   return postStream('/ai/chat/stream', body, { onEvent, signal })
+}
+
+export interface PinAnswerBody {
+  title: string
+  source: { query_id?: string; metric_id?: string }
+  viz: { type: 'kpi' | 'table' | 'chart'; chart_type?: string; encoding?: object }
+  board_id?: string
 }
 
 /**
@@ -77,15 +88,12 @@ export async function streamChatMessage({ messages, model, board_id, onEvent, si
  * refresh). On a 400 the thrown error carries `.status === 400` and
  * `.payload` (structured validation errors) so the caller can surface them
  * inline.
- *
- * @param {{
- *   title: string,
- *   source: { query_id?: string, metric_id?: string },
- *   viz: { type: 'kpi' | 'table' | 'chart', chart_type?: string, encoding?: object },
- *   board_id?: string,
- * }} body
- * @returns {Promise<{ board_id: string, widget_id: string, spec: object, valid: boolean }>}
  */
-export async function pinAnswer(body) {
+export async function pinAnswer(body: PinAnswerBody): Promise<{
+  board_id: string
+  widget_id: string
+  spec: object
+  valid: boolean
+}> {
   return post('/ai/pin', body)
 }

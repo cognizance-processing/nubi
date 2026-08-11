@@ -14,7 +14,7 @@
  *   onClose {Function} — called when the user closes the panel
  */
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, type KeyboardEvent } from 'react'
 import {
   X, Sparkles, Send, Square, AlertCircle,
   Check, Loader2, Bot, Pin, ExternalLink,
@@ -26,6 +26,28 @@ import { streamChatMessage, pinAnswer } from './chatApi.js'
 import ModelPicker, { MODEL_DEFAULT_VALUE } from '../components/ai/ModelPicker.jsx'
 
 // ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface StreamAction {
+  id: string
+  tool: string
+  arguments?: Record<string, any>
+  status: 'running' | 'done' | 'error'
+  result?: any
+  ok?: boolean | null
+}
+
+interface ChatUiMessage {
+  role: 'user' | 'assistant'
+  content: string
+  actions?: StreamAction[]
+  streaming?: boolean
+  status?: string | null
+  error?: string | null
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -35,7 +57,7 @@ import ModelPicker, { MODEL_DEFAULT_VALUE } from '../components/ai/ModelPicker.j
 // valid (e.g. the operator disabled that provider).
 const MODEL_STORAGE_KEY = 'nubi-chat-model'
 
-function loadStoredModel() {
+function loadStoredModel(): string {
   try {
     const stored = localStorage.getItem(MODEL_STORAGE_KEY)
     if (stored) return stored
@@ -57,7 +79,7 @@ const SUGGESTIONS = [
 // A result is pinnable when it carries a query_id (a runnable query) or a
 // generated spec/widget that the dashboard can render. Plain text turns and
 // errored results are never pinnable.
-function isPinnable(tool, result) {
+function isPinnable(tool: string, result: any): boolean {
   if (!result || typeof result !== 'object' || result.error) return false
   return Boolean(
     result.query_id || result.metric_id ||
@@ -67,7 +89,7 @@ function isPinnable(tool, result) {
 }
 
 // Map a result's chart type → a viz descriptor for /ai/pin.
-function vizFromResult(result) {
+function vizFromResult(result: Record<string, any>) {
   const chart = result.chart_type || result.viz?.chart_type || result.spec?.chart_type
   if (chart) {
     return { type: 'chart', chart_type: chart, ...(result.encoding ? { encoding: result.encoding } : {}) }
@@ -78,7 +100,7 @@ function vizFromResult(result) {
 }
 
 // Build the POST /ai/pin body from a (pinnable) tool result.
-function buildPinPayload(tool, result) {
+function buildPinPayload(tool: string, result: Record<string, any>) {
   const source = result.query_id
     ? { query_id: result.query_id }
     : result.metric_id
@@ -90,23 +112,23 @@ function buildPinPayload(tool, result) {
   return { title, source, viz: vizFromResult(result) }
 }
 
-function PinButton({ tool, result }) {
-  const [state, setState]   = useState('idle') // idle | pinning | pinned | error
-  const [boardId, setBoard] = useState(null)
-  const [error, setError]   = useState(null)
+function PinButton({ tool, result }: { tool: string; result: Record<string, any> }) {
+  const [state, setState]   = useState<'idle' | 'pinning' | 'pinned' | 'error'>('idle')
+  const [boardId, setBoard] = useState<string | null>(null)
+  const [error, setError]   = useState<string | null>(null)
 
   const onPin = useCallback(async () => {
     setState('pinning'); setError(null)
     try {
-      const res = await pinAnswer(buildPinPayload(tool, result))
+      const res = await pinAnswer(buildPinPayload(tool, result) as any)
       setBoard(res?.board_id ?? null)
       setState('pinned')
-    } catch (err) {
+    } catch (err: any) {
       // Surface a structured 400 (validation errors) inline.
       const detail =
         err?.payload?.error?.message ??
         (Array.isArray(err?.payload?.detail)
-          ? err.payload.detail.map(d => d?.msg ?? String(d)).join(', ')
+          ? err.payload.detail.map((d: any) => d?.msg ?? String(d)).join(', ')
           : err?.payload?.detail) ??
         err?.message ?? 'Could not pin.'
       setError(detail)
@@ -154,7 +176,7 @@ function PinButton({ tool, result }) {
 // adding a Pin-to-dashboard footer for pinnable results.
 // ---------------------------------------------------------------------------
 
-function ToolBlock({ action }) {
+function ToolBlock({ action }: { action: StreamAction }) {
   const pinnable = isPinnable(action.tool, action.result)
   return (
     <ToolCard
@@ -178,7 +200,7 @@ function ToolBlock({ action }) {
 // Message bubble
 // ---------------------------------------------------------------------------
 
-function StatusLine({ text }) {
+function StatusLine({ text }: { text: string }) {
   return (
     <div className="flex items-center gap-2 text-[12px] text-muted">
       <span className="block w-1.5 h-1.5 rounded-full bg-brand-teal" style={{ animation: 'nubiChatPulse 1s ease-in-out infinite' }} />
@@ -187,7 +209,7 @@ function StatusLine({ text }) {
   )
 }
 
-function MessageBubble({ message }) {
+function MessageBubble({ message }: { message: ChatUiMessage }) {
   if (message.role === 'user') {
     return (
       <div className="flex justify-end px-3 py-1">
@@ -239,7 +261,11 @@ function MessageBubble({ message }) {
   )
 }
 
-function SuggestionChip({ text, onClick, disabled }) {
+function SuggestionChip({ text, onClick, disabled }: {
+  text: string
+  onClick: (text: string) => void
+  disabled?: boolean
+}) {
   return (
     <button
       onClick={() => onClick(text)}
@@ -255,15 +281,15 @@ function SuggestionChip({ text, onClick, disabled }) {
 // ChatPanel
 // ---------------------------------------------------------------------------
 
-export function ChatPanel({ onClose }) {
-  const [messages, setMessages]   = useState([])
+export function ChatPanel({ onClose }: { onClose: () => void }) {
+  const [messages, setMessages]   = useState<ChatUiMessage[]>([])
   const [draft, setDraft]         = useState('')
   const [loading, setLoading]     = useState(false)
   const [selectedModel, setModel] = useState(loadStoredModel)
 
-  const listRef     = useRef(null)
-  const textareaRef = useRef(null)
-  const abortRef    = useRef(null)
+  const listRef     = useRef<HTMLDivElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const abortRef    = useRef<AbortController | null>(null)
 
   useEffect(() => {
     const el = listRef.current
@@ -282,7 +308,7 @@ export function ChatPanel({ onClose }) {
   }, [selectedModel])
 
   // Update the most recent assistant message immutably.
-  const updateLast = useCallback((fn) => {
+  const updateLast = useCallback((fn: (m: ChatUiMessage) => ChatUiMessage) => {
     setMessages(prev => {
       const copy = prev.slice()
       for (let i = copy.length - 1; i >= 0; i--) {
@@ -292,11 +318,11 @@ export function ChatPanel({ onClose }) {
     })
   }, [])
 
-  const sendMessage = useCallback(async (text) => {
+  const sendMessage = useCallback(async (text?: string) => {
     const trimmed = (text ?? draft).trim()
     if (!trimmed || loading) return
 
-    const userMsg = { role: 'user', content: trimmed }
+    const userMsg: ChatUiMessage = { role: 'user', content: trimmed }
     const history = [...messages, userMsg]
     setMessages([...history, {
       role: 'assistant', content: '', actions: [], streaming: true, status: 'Thinking…', error: null,
@@ -307,7 +333,7 @@ export function ChatPanel({ onClose }) {
     const controller = new AbortController()
     abortRef.current = controller
 
-    const handleEvent = (ev) => {
+    const handleEvent = (ev: any) => {
       switch (ev.type) {
         case 'status':
           updateLast(m => ({ ...m, status: ev.text }))
@@ -347,14 +373,14 @@ export function ChatPanel({ onClose }) {
 
     try {
       await streamChatMessage({
-        messages: history.map(m => ({ role: m.role === 'error' ? 'user' : m.role, content: m.content })),
+        messages: history.map(m => ({ role: m.role, content: m.content })),
         model: selectedModel === MODEL_DEFAULT_VALUE ? undefined : selectedModel,
         onEvent: handleEvent,
         signal: controller.signal,
       })
       // Ensure the streaming flag is cleared if the stream closed without a done event.
       updateLast(m => (m.streaming ? { ...m, streaming: false, status: null } : m))
-    } catch (err) {
+    } catch (err: any) {
       if (err?.name === 'AbortError') {
         updateLast(m => ({ ...m, streaming: false, status: null }))
       } else {
@@ -371,7 +397,7 @@ export function ChatPanel({ onClose }) {
     abortRef.current?.abort()
   }, [])
 
-  const handleKeyDown = useCallback((e) => {
+  const handleKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       sendMessage()
@@ -440,7 +466,7 @@ export function ChatPanel({ onClose }) {
               aria-label="Chat input"
               className="flex-1 resize-none bg-transparent text-[13px] text-fg font-sans leading-relaxed placeholder:text-muted focus:outline-none min-h-[22px] max-h-32 py-0.5"
               style={{ overflowY: draft.split('\n').length > 4 ? 'auto' : 'hidden' }}
-              onInput={e => { e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 128) + 'px' }}
+              onInput={e => { e.currentTarget.style.height = 'auto'; e.currentTarget.style.height = Math.min(e.currentTarget.scrollHeight, 128) + 'px' }}
             />
             {loading ? (
               <button

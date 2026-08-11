@@ -13,10 +13,10 @@
  */
 import { useState, useEffect, useCallback, useRef } from 'react'
 
-export function useAsyncLoad(asyncFn, deps = []) {
-  const [data, setData] = useState(null)
+export function useAsyncLoad<T>(asyncFn: () => Promise<T>, deps: unknown[] = []) {
+  const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [error, setError] = useState<unknown>(null)
   const [reloadCounter, setReloadCounter] = useState(0)
   // Keep stable ref to asyncFn so we don't re-run if caller doesn't memoize
   const fnRef = useRef(asyncFn)
