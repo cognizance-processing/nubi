@@ -223,7 +223,7 @@ export function initDuckDB() {
  * @returns {Promise<{ table: arrow.Table|null, cacheStatus: string, elapsedMs: number,
  *                      error?: {status?: number, code?: string, message: string} }>}
  */
-export async function runArrowQuery(sql, onBatch, opts) {
+export async function runArrowQuery(sql: string, onBatch?: (rowsSoFar: number) => void, opts?: { datastoreId?: string }): Promise<{ table: any; cacheStatus: string; elapsedMs: number; error?: { status?: number; code?: string; message: string } }> {
   const datastoreId = opts && typeof opts === 'object' ? opts.datastoreId : undefined
   const url = `${BACKEND_URL}/api/v1/query`
 

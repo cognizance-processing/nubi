@@ -20,7 +20,7 @@ import { getTypeInfo } from '../../data/connectors.js'
 // Shared field primitives
 // ---------------------------------------------------------------------------
 
-function Label({ htmlFor, children, optional }) {
+function Label({ htmlFor = undefined, children, optional = false }) {
   return (
     <label htmlFor={htmlFor} className="block text-xs font-medium text-fg mb-1">
       {children}

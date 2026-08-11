@@ -580,7 +580,7 @@ export default function HomePage() {
       const attention = runLists
         .flat()
         .filter((r) => r.state === 'failed' || r.state === 'running')
-        .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+        .sort((a, b) => Number(new Date(b.created_at || 0)) - Number(new Date(a.created_at || 0)))
         .slice(0, 20)
       setBadRuns(attention)
       setAttentionLoading(false)

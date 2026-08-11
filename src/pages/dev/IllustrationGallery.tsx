@@ -5,6 +5,7 @@
  * Route: /dev/illustrations
  */
 
+import type { ReactNode } from 'react'
 import HeroIllustration from '../../components/illustrations/HeroIllustration.jsx'
 import KernelInBrowser from '../../components/illustrations/KernelInBrowser.jsx'
 import WebGLPerf from '../../components/illustrations/WebGLPerf.jsx'
@@ -19,7 +20,7 @@ import OpenCoreSplit from '../../components/illustrations/OpenCoreSplit.jsx'
 import SelfHostTopology from '../../components/illustrations/SelfHostTopology.jsx'
 import TrustBoundary from '../../components/illustrations/TrustBoundary.jsx'
 
-const ITEMS = [
+const ITEMS: [string, (props: { className?: string }) => ReactNode][] = [
   ['OpenCoreSplit', OpenCoreSplit],
   ['SelfHostTopology', SelfHostTopology],
   ['TrustBoundary', TrustBoundary],

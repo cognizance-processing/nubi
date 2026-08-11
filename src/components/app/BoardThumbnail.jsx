@@ -28,11 +28,12 @@ import { useTheme } from '../../contexts/ThemeContext.jsx'
  * @param {{
  *   boardId: string,
  *   spec?: object|null,
- *   enabled?: boolean,   set false to stay on the miniature (e.g. legacy boards)
+ *   enabled?: boolean,
  *   className?: string,
  * }} props
+ *   enabled: set false to stay on the miniature (e.g. legacy boards).
  */
-export default function BoardThumbnail({ boardId, spec, enabled = true, className = '' }) {
+export default function BoardThumbnail({ boardId, spec = undefined, enabled = true, className = '' }) {
   // The render is theme-specific (the board is styled in theme tokens the
   // server must resolve), so a theme flip needs a NEW picture — hence theme
   // is a dependency of the fetch, not a class on the img.

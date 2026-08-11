@@ -386,10 +386,10 @@ export default function BlendBuilder() {
   }, [])
 
   const buildBody = () => {
-    const body = {
+    const body: Record<string, any> = {
       name: name.trim(),
       sources: sources.map(s => {
-        const src = { key: s.key.trim(), datastore_id: s.datastore_id }
+        const src: Record<string, any> = { key: s.key.trim(), datastore_id: s.datastore_id }
         if (s.mode === 'query') src.query_id = s.query_id
         else src.sql = s.sql.trim()
         return src

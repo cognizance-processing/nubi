@@ -186,11 +186,9 @@ export function draftToMetricBlock(draft) {
  * Validate a draft. Returns a map of { field: message } — empty ⇒ valid. A
  * disabled panel is always valid (no block is written).
  *
- * @param {object} draft
- * @returns {Record<string,string>}
  */
-export function validateMetricDraft(draft) {
-  const errors = {}
+export function validateMetricDraft(draft: Record<string, any>): Record<string, string> {
+  const errors: Record<string, string> = {}
   if (!draft || !draft.enabled) return errors
 
   const measureName = (draft.measure?.name ?? '').trim()

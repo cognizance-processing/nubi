@@ -181,8 +181,8 @@ function ModeSwitch({ mode, onChange }) {
  * edit mode because the editor's toolbar already carries its own.
  */
 function ViewToolbar({
-  backTo, title, boardId, spec, canEdit, mode, onModeChange, editorSlotRef, dirty,
-  isLive, liveVersion, pushing, onPushToLive,
+  backTo, title, boardId, spec, canEdit, mode, onModeChange = undefined, editorSlotRef = undefined, dirty = false,
+  isLive = false, liveVersion = null, pushing = false, onPushToLive = undefined,
 }) {
   const { activeOrg } = useOrg()
   const { activeProject } = useProject()

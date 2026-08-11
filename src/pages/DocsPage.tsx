@@ -472,7 +472,7 @@ function SearchModal({ onClose }) {
 // state, an animated left rail on top-level items, inset focus ring, ≥32px tap
 // target. `depth === 1` renders a nested sub-page (dot marker + guide indent).
 
-function NavItem({ doc, isActive, onClick, depth = 0, hasChildren = false, expanded = false, onToggle }) {
+function NavItem({ doc, isActive, onClick, depth = 0, hasChildren = false, expanded = false, onToggle = undefined }) {
   const Icon = docIcon(doc.slug)
   const isChild = depth > 0
   return (

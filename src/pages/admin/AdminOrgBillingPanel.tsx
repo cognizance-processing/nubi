@@ -82,13 +82,13 @@ export default function AdminOrgBillingPanel({ orgId }) {
 
   const dirtyOverrides = useMemo(() => {
     const out = {}
-    for (const { key, float } of LIMIT_FIELDS) {
+    for (const { key } of LIMIT_FIELDS) {
       const fs = fields[key]
       if (!fs || fs.mode === 'default') continue
       if (fs.mode === 'unlimited') {
         out[key] = null
       } else {
-        const n = float ? parseFloat(fs.value) : parseInt(fs.value, 10)
+        const n = parseInt(fs.value, 10)
         if (!Number.isNaN(n) && n >= 0) out[key] = n
       }
     }
@@ -199,7 +199,7 @@ export default function AdminOrgBillingPanel({ orgId }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {LIMIT_FIELDS.map(({ key, label, float }) => {
+                {LIMIT_FIELDS.map(({ key, label }) => {
                   const fs = fields[key] || { mode: 'default', value: '' }
                   return (
                     <tr key={key} className="hover:bg-surface-2/40 transition-colors">
@@ -221,7 +221,7 @@ export default function AdminOrgBillingPanel({ orgId }) {
                           <input
                             type="number"
                             min="0"
-                            step={float ? '0.1' : '1'}
+                            step="1"
                             value={fs.value}
                             onChange={(e) => setFieldValue(key, e.target.value)}
                             placeholder={fmtLimit(defaults[key])}

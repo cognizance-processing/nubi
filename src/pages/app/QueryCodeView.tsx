@@ -51,7 +51,7 @@ const MONACO_OPTIONS = {
   insertSpaces: true,
   cursorSmoothCaretAnimation: 'on',
   smoothScrolling: true,
-}
+} as const
 
 /** Slugify a name the same way portability.slug_for_envelope does. */
 function slugify(s) {
@@ -65,7 +65,7 @@ function slugify(s) {
 
 /** Build the `<slug>.meta.json` sidecar (everything bar the raw SQL). */
 function buildMeta({ query, params, datastoreId }) {
-  const meta = {
+  const meta: Record<string, any> = {
     id: query?.id ?? null,
     name: query?.name ?? 'New query',
     datastore_id: datastoreId || null,

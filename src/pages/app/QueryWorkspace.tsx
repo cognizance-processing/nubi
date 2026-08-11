@@ -1740,7 +1740,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
     setSaving(true)
     setSaveStatus(null)
     try {
-      const payload = {
+      const payload: Record<string, any> = {
         name,
         sql,
         params: params.map(p => ({
@@ -2408,7 +2408,6 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
               {cell.type === 'sql' ? (
                 <ScratchSqlCell
                   cell={cell}
-                  cellNumber={index + 2}
                   cellRef={`cell_${index + 2}`}
                   index={index}
                   total={scratchCells.length}
@@ -2426,8 +2425,6 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                 />
               ) : (
                 <ScratchPythonCell
-                  cell={cell}
-                  cellNumber={index + 2}
                   cellRef={`cell_${index + 2}`}
                   index={index}
                   total={scratchCells.length}
@@ -2495,7 +2492,6 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
         <ScheduleDialog
           query={query}
           params={params}
-          paramValues={paramValues}
           onConfirm={handleScheduleConfirm}
           onCancel={() => setShowScheduleDialog(false)}
           scheduling={scheduling}

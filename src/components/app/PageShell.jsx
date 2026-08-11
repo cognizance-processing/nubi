@@ -32,7 +32,7 @@ function cx(...parts) {
 
 // ── Page root ────────────────────────────────────────────────────────────────
 
-export function PageRoot({ className, children, ...rest }) {
+export function PageRoot({ className = undefined, children, ...rest }) {
   return (
     <div className={cx('nubi-page', className)} {...rest}>
       {children}
@@ -42,7 +42,7 @@ export function PageRoot({ className, children, ...rest }) {
 
 // ── Page header ──────────────────────────────────────────────────────────────
 
-export function PageHeader({ title, subtitle, children, className }) {
+export function PageHeader({ title, subtitle = undefined, children, className = undefined }) {
   return (
     <div className={cx('nubi-page-header', className)}>
       <div>
@@ -60,7 +60,7 @@ export function PageHeader({ title, subtitle, children, className }) {
 
 // ── Toolbar ──────────────────────────────────────────────────────────────────
 
-export function Toolbar({ className, children }) {
+export function Toolbar({ className = undefined, children }) {
   return (
     <div className={cx('nubi-toolbar', className)}>
       {children}
@@ -70,7 +70,7 @@ export function Toolbar({ className, children }) {
 
 // ── Search bar ───────────────────────────────────────────────────────────────
 
-export function SearchBar({ value, onChange, placeholder = 'Search…', className }) {
+export function SearchBar({ value, onChange, placeholder = 'Search…', className = undefined }) {
   return (
     <div className={cx('nubi-search-wrap', className)}>
       <Search size={14} className="nubi-search-icon" aria-hidden="true" />
@@ -101,7 +101,7 @@ export function SearchBar({ value, onChange, placeholder = 'Search…', classNam
 /**
  * @param {{ value: string, onChange: fn, options: Array<{value,label}>, label?: string }} props
  */
-export function SortMenu({ value, onChange, options = [], label }) {
+export function SortMenu({ value, onChange, options = [], label = undefined }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
 
@@ -162,7 +162,7 @@ const VIEW_OPTS = [
   { id: 'list', Icon: List,       label: 'List view' },
 ]
 
-export function ViewToggle({ value, onChange, className }) {
+export function ViewToggle({ value, onChange, className = undefined }) {
   return (
     <div className={cx('nubi-view-toggle', className)} role="toolbar" aria-label="View options">
       {VIEW_OPTS.map(v => (
@@ -185,7 +185,7 @@ export function ViewToggle({ value, onChange, className }) {
 
 // ── Card grid ─────────────────────────────────────────────────────────────────
 
-export function CardGrid({ className, children }) {
+export function CardGrid({ className = undefined, children }) {
   return (
     <div className={cx('nubi-card-grid', className)}>
       {children}
@@ -195,7 +195,7 @@ export function CardGrid({ className, children }) {
 
 // ── List wrap + header + row ──────────────────────────────────────────────────
 
-export function ListWrap({ className, children }) {
+export function ListWrap({ className = undefined, children }) {
   return (
     <div className={cx('nubi-list-wrap', className)}>
       {children}
@@ -203,7 +203,7 @@ export function ListWrap({ className, children }) {
   )
 }
 
-export function ListHeader({ className, children }) {
+export function ListHeader({ className = undefined, children }) {
   return (
     <div className={cx('nubi-list-header', className)}>
       {children}
@@ -215,7 +215,7 @@ export function ListHeaderLabel({ children }) {
   return <span className="nubi-list-header-label flex-1">{children}</span>
 }
 
-export function ListRow({ selected, className, children, ...rest }) {
+export function ListRow({ selected = undefined, className = undefined, children, ...rest }) {
   return (
     <div
       className={cx('nubi-list-row', selected && 'selected', className)}
@@ -228,7 +228,7 @@ export function ListRow({ selected, className, children, ...rest }) {
 
 // ── Notice banner ─────────────────────────────────────────────────────────────
 
-export function NoticeBanner({ variant = 'success', icon, onDismiss, children }) {
+export function NoticeBanner({ variant = 'success', icon = undefined, onDismiss = undefined, children }) {
   return (
     <div
       className={cx(
@@ -255,7 +255,7 @@ export function NoticeBanner({ variant = 'success', icon, onDismiss, children })
 
 // ── Selection bar ─────────────────────────────────────────────────────────────
 
-export function SelectionBar({ className, children }) {
+export function SelectionBar({ className = undefined, children }) {
   return (
     <div className={cx('nubi-selection-bar', className)} role="toolbar" aria-label="Bulk actions">
       {children}
@@ -265,7 +265,7 @@ export function SelectionBar({ className, children }) {
 
 // ── Error state ───────────────────────────────────────────────────────────────
 
-export function ErrorState({ icon, title = 'Something went wrong', message, onRetry }) {
+export function ErrorState({ icon = undefined, title = 'Something went wrong', message = undefined, onRetry = undefined }) {
   return (
     <div className="nubi-error-state">
       {icon && (
@@ -348,7 +348,7 @@ export function ListRowSkeleton() {
  *   className
  *   children   <DropdownItem> | <DropdownDivider>
  */
-export function DropdownMenu({ open, onClose, align = 'right', className, children }) {
+export function DropdownMenu({ open, onClose, align = 'right', className = undefined, children }) {
   const ref = useRef(null)
 
   useEffect(() => {
@@ -378,7 +378,7 @@ export function DropdownMenu({ open, onClose, align = 'right', className, childr
   )
 }
 
-export function DropdownItem({ icon: Icon, onClick, danger, children, className, ...rest }) {
+export function DropdownItem({ icon: Icon = undefined, onClick, danger = false, children, className = undefined, ...rest }) {
   return (
     <button
       type="button"

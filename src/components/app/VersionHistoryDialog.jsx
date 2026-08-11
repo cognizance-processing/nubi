@@ -38,8 +38,8 @@ export default function VersionHistoryDialog({
   open,
   onClose,
   onRestored,
-  onView,
-  environments,
+  onView = undefined,
+  environments = undefined,
 }) {
   const [loading, setLoading] = useState(false)
   const [versions, setVersions] = useState([])

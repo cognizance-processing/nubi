@@ -25,7 +25,7 @@
  *  #about        — Footer brand tagline (re-used for about anchor)
  */
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, type CSSProperties } from 'react'
 import MarketingStyles from '../components/marketing/MarketingStyles.jsx'
 import useReveal from '../components/marketing/useReveal.js'
 import CalcShell from '../components/marketing/CalcShell.jsx'
@@ -404,7 +404,7 @@ function DecisionCard({ d, idx }) {
     <div
       ref={ref}
       id={d.id}
-      style={{ '--lp-card-accent': d.accent, transitionDelay: `${(idx % 3) * 90}ms` }}
+      style={{ '--lp-card-accent': d.accent, transitionDelay: `${(idx % 3) * 90}ms` } as CSSProperties}
       className={[
         'lp-card lp-reveal',
         seen ? 'lp-in' : '',
@@ -662,7 +662,7 @@ function CompareCell({ value, isNubi = false }) {
   )
 }
 
-function Chip({ icon: Icon, children, accent = false }) {
+function Chip({ icon: Icon = undefined, children, accent = false }) {
   return (
     <span
       className={`lp-chip ${
@@ -787,7 +787,7 @@ function highlightCode(code, lang) {
  * On mobile/tablet: always stacks (illustration on top, copy below).
  * On desktop (lg+): alternates left/right based on `reverse` prop.
  */
-function DiffRow({ icon: Icon, index, title, hook, desc, outcome, Illustration, reverse = false, badge, id }) {
+function DiffRow({ icon: Icon, index = undefined, title, hook = undefined, desc, outcome = undefined, Illustration, reverse = false, badge = undefined, id = undefined }) {
   // Scroll reveal: each row fades/slides in once, the first time it enters the
   // viewport. Falls back to always-visible when IntersectionObserver is absent.
   const revealRef = useRef(null)

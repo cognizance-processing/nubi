@@ -34,8 +34,8 @@ import { deriveColumns, arrowToRows } from './dataTableUtils.js'
 
 export default function DataTable({
   arrow: arrowTable = undefined,
-  columns: columnsProp,
-  rows: rowsProp,
+  columns: columnsProp = undefined,
+  rows: rowsProp = undefined,
   loading = false,
   error = null,
   pageSize = 50,

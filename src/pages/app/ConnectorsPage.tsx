@@ -778,7 +778,7 @@ export default function ConnectorsPage() {
   // Create / Update connector
   // ---------------------------------------------------------------------------
 
-  async function handleFormSubmit({ name, type, config, secret, seed }) {
+  async function handleFormSubmit({ name, type, config, secret, seed = undefined }) {
     setFormLoading(true)
     setFormError(null)
     try {
@@ -794,7 +794,7 @@ export default function ConnectorsPage() {
         // 'duckdb_storage') we send the backend type, not the catalog id.
         const info = getTypeInfo(type)
         const backendType = info.apiType ?? type
-        const body = { name, type: backendType, config, secret }
+        const body: Record<string, any> = { name, type: backendType, config, secret }
         if (seed) body.seed = seed
         await createConnector(body)
         reloadConnectors()

@@ -48,7 +48,7 @@ function AddServerForm({ onSaved, onCancel }) {
     const url = form.url.trim()
     if (!name) { setError('Name is required.'); return }
     if (!url) { setError('URL is required.'); return }
-    const body = { name, url, transport: form.transport, enabled: form.enabled }
+    const body: Record<string, any> = { name, url, transport: form.transport, enabled: form.enabled }
     if (form.auth_token.trim()) body.auth_token = form.auth_token.trim()
     setSaving(true)
     setError(null)

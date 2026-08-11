@@ -90,7 +90,7 @@ function SettingsNavItem({ to, label, Icon, end = true, external = false }) {
   )
 }
 
-function NavGroup({ label, context, children }) {
+function NavGroup({ label, context = undefined, children }) {
   return (
     <div
       className="

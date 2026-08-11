@@ -352,7 +352,7 @@ function FlowListItem({ flow, isActive, onClick, onDelete, canWrite, strictEnv }
 // FlowList — shared content between rail and bottom sheet
 // ---------------------------------------------------------------------------
 
-function FlowList({ flows, activeId, loading, onSelect, onNew, onRefresh, onDelete, onItemClick, showHeader = true, canWrite = true, strictEnv = null }) {
+function FlowList({ flows, activeId, loading, onSelect, onNew, onRefresh, onDelete, onItemClick = undefined, showHeader = true, canWrite = true, strictEnv = null }) {
   const [query, setQuery] = useState('')
 
   const handleSelect = useCallback((flow) => {

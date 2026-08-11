@@ -87,7 +87,7 @@ function newAdHocQuery() {
 // QueryListItem — single entry in the left rail
 // ---------------------------------------------------------------------------
 
-function QueryListItem({ query, isActive, onClick, onHistory, strictEnv, manageMode = false, checked = false, onToggleCheck, health }) {
+function QueryListItem({ query, isActive, onClick, onHistory = undefined, strictEnv = null, manageMode = false, checked = false, onToggleCheck = undefined, health = undefined }) {
   const hasParams = Array.isArray(query.params) && query.params.length > 0
   const isSaved = Boolean(query.id) && !query.isNew
   // `health` is undefined until POST /query/registry/validate has covered this

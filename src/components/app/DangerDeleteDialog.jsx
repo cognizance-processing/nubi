@@ -73,7 +73,7 @@ function impactLabel(type, count) {
  *     blockers: Array<{type:string, count:number, reason:string}>,
  *     deletes:  Array<{type:string, count:number}>,
  *   } | null,
- *   loading: boolean,
+ *   loading?: boolean,
  *   onCancel: () => void,
  *   onConfirm: () => void,
  * }} props

@@ -5,7 +5,7 @@
  * calculator (it was previously exported from the removed LakehouseCalculator).
  */
 
-export function SliderField({ id, label, display, min, max, step, value, onChange, lo, hi, ariaLabel }) {
+export function SliderField({ id, label, display, min, max, step = undefined, value, onChange, lo, hi, ariaLabel }) {
   return (
     <div>
       <div className="flex items-baseline justify-between gap-3 mb-3">

@@ -16,15 +16,12 @@
 
 import DashboardEditor from './DashboardEditor.jsx'
 
-/**
- * @param {{
- *   boardId?: string|null,
- *   onSaved?: (board: object) => void,
- *   onDirtyChange?: (dirty: boolean) => void,
- *   onSetSave?: (save: () => Promise<object>) => void,
- * }} props
- */
-export default function EditorShell({ boardId = null, onSaved, onDirtyChange, onSetSave }) {
+export default function EditorShell({ boardId = null, onSaved = undefined, onDirtyChange = undefined, onSetSave = undefined }: {
+  boardId?: string | null
+  onSaved?: (board: Record<string, any>) => void
+  onDirtyChange?: (dirty: boolean) => void
+  onSetSave?: (save: () => Promise<Record<string, any>>) => void
+}) {
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden" data-testid="editor-shell">
       <DashboardEditor

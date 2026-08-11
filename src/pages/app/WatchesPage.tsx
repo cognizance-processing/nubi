@@ -329,12 +329,12 @@ function draftFromWatch(watch) {
 
 /** Build the API body { name, metric_id, config } from a draft. Returns
  *  { body } on success or { error } when the draft is invalid. */
-function bodyFromDraft(draft) {
+function bodyFromDraft(draft: Record<string, any>) {
   const name = draft.name.trim()
   if (!name) return { error: 'Give the watch a name.' }
   if (!draft.metric_id) return { error: 'Pick a metric to monitor.' }
 
-  const config = {}
+  const config: Record<string, any> = {}
 
   const dimensions = draft.dimensions
     .split(',')
@@ -362,7 +362,7 @@ function bodyFromDraft(draft) {
     config.threshold = { op: draft.thresholdOp, value }
   }
 
-  const channel_config = {}
+  const channel_config: Record<string, any> = {}
   if (draft.integrationId) {
     channel_config.integration_id = draft.integrationId
   }

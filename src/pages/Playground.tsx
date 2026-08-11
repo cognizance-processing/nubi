@@ -368,7 +368,7 @@ function PlaygroundToolbar({
 
 export default function Playground() {
   // Cells: array of { id, type: 'sql'|'python', sql? }
-  const [cells, setCells] = useState(() => [
+  const [cells, setCells] = useState<{ id: string; type: string; sql?: string }[]>(() => [
     { id: makeCellId(), type: 'sql', sql: SAMPLE_QUERIES[3].sql },
   ])
 

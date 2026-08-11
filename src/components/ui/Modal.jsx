@@ -45,7 +45,7 @@ const SIZE_CLASS = {
   full: 'max-w-[calc(100vw-2rem)]',
 }
 
-function ModalFooter({ className, children, ...rest }) {
+function ModalFooter({ className = undefined, children, ...rest }) {
   return (
     <div
       className={cx(
@@ -59,7 +59,7 @@ function ModalFooter({ className, children, ...rest }) {
   )
 }
 
-function ModalBody({ className, children, ...rest }) {
+function ModalBody({ className = undefined, children, ...rest }) {
   return (
     <div className={cx('px-6 py-5 flex-1 overflow-y-auto', className)} {...rest}>
       {children}
@@ -70,12 +70,12 @@ function ModalBody({ className, children, ...rest }) {
 function Modal({
   open,
   onClose,
-  title,
-  description,
+  title = undefined,
+  description = undefined,
   size = 'md',
   hideClose = false,
   persistent = false,
-  className,
+  className = undefined,
   children,
 }) {
   const dialogRef = useRef(null)

@@ -52,7 +52,7 @@ export default function DangerConfirmDialog({
   items = [],
   count,
   itemNoun = 'item',
-  itemNounPlural,
+  itemNounPlural = undefined,
   confirmLabel = 'Delete',
   loading = false,
   error = null,

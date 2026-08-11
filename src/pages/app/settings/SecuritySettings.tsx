@@ -165,7 +165,7 @@ function IssuerForm({ initial, onSave, onCancel, saving, saveError }) {
 
   function handleSubmit(e) {
     e.preventDefault()
-    const payload = {
+    const payload: Record<string, any> = {
       name: form.name.trim(),
       issuer: form.issuer.trim(),
       algorithms: form.algorithms.length > 0 ? form.algorithms : ['RS256'],

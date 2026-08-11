@@ -12,7 +12,7 @@ import { Loader2, AlertTriangle, CheckCircle2, Search, ChevronLeft, ChevronRight
 // Cards
 // ---------------------------------------------------------------------------
 
-export function AdminCard({ title, description, children, className = '' }) {
+export function AdminCard({ title = undefined, description = undefined, children, className = '' }) {
   return (
     <section className={`rounded-2xl border border-border bg-surface overflow-hidden ${className}`}>
       {(title || description) && (
@@ -26,7 +26,7 @@ export function AdminCard({ title, description, children, className = '' }) {
   )
 }
 
-export function StatCard({ icon, label, value, testId }) {
+export function StatCard({ icon = undefined, label, value, testId = undefined }) {
   const Icon = icon
   return (
     <div
@@ -74,7 +74,7 @@ export function LoadingState({ label = 'Loading…' }) {
   )
 }
 
-export function ErrorState({ message = 'Failed to load data.', onRetry }) {
+export function ErrorState({ message = 'Failed to load data.', onRetry = undefined }) {
   return (
     <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
       <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-danger-bg">
@@ -203,7 +203,7 @@ export function Pagination({ offset, limit, total, onPage }) {
 // Misc bits
 // ---------------------------------------------------------------------------
 
-export function Avatar({ label, icon, iconSize = 13, className = '' }) {
+export function Avatar({ label = undefined, icon = undefined, iconSize = 13, className = '' }) {
   const Icon = icon
   return (
     <div
@@ -246,7 +246,7 @@ export const inputCls =
  * screens; stacks to one column on mobile. Meant for a set of siblings
  * inside an <AdminCard>.
  */
-export function FieldRow({ label, htmlFor, description, hint, children }) {
+export function FieldRow({ label = undefined, htmlFor = undefined, description = undefined, hint = undefined, children }) {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,13rem)_1fr] gap-x-6 gap-y-2 py-4 first:pt-0 last:pb-0">
       <div className="min-w-0">
@@ -266,7 +266,7 @@ export function FieldRow({ label, htmlFor, description, hint, children }) {
 }
 
 /** Toggle — native checkbox styled as an accessible switch (.nubi-switch). */
-export function Toggle({ checked, onChange, disabled, id, label, description }) {
+export function Toggle({ checked, onChange, disabled = false, id = undefined, label = undefined, description = undefined }) {
   return (
     <label className="flex items-start gap-3 cursor-pointer select-none" htmlFor={id}>
       <button

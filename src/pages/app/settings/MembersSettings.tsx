@@ -44,7 +44,7 @@ const ROLE_BADGE = {
   viewer: 'bg-surface-2 text-muted',
 }
 
-function Avatar({ name, email }) {
+function Avatar({ name = undefined, email = undefined }) {
   const initial = (name || email || '?').trim().charAt(0).toUpperCase()
   return (
     <div className="w-8 h-8 rounded-full bg-surface-2 border border-border flex items-center justify-center text-xs font-semibold text-muted shrink-0">

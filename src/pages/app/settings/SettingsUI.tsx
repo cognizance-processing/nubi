@@ -30,7 +30,7 @@ import { Loader2, CheckCircle, AlertTriangle } from 'lucide-react'
 // Page header
 // ---------------------------------------------------------------------------
 
-export function SettingsPageHeader({ title, description, children }) {
+export function SettingsPageHeader({ title, description = undefined, children = undefined }) {
   return (
     <header className="flex flex-wrap items-start justify-between gap-4 mb-6">
       <div className="min-w-0">
@@ -48,7 +48,7 @@ export function SettingsPageHeader({ title, description, children }) {
 // Card
 // ---------------------------------------------------------------------------
 
-export function SettingsCard({ title, description, children, footer }) {
+export function SettingsCard({ title = undefined, description = undefined, children = undefined, footer = undefined }) {
   const hasHeader = Boolean(title || description)
   return (
     <section className="rounded-2xl border border-border bg-surface overflow-hidden">
@@ -81,7 +81,7 @@ export function SettingsCard({ title, description, children, footer }) {
 export const inputCls =
   'w-full px-3 py-2 rounded-xl bg-bg border border-border text-sm text-fg placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-ring/50 focus:border-ring/60 transition-[border-color,box-shadow] duration-100'
 
-export function Field({ label, htmlFor, hint, children }) {
+export function Field({ label = undefined, htmlFor = undefined, hint = undefined, children }) {
   return (
     <div className="space-y-1.5">
       {label && (
@@ -115,7 +115,7 @@ export function FieldRowGroup({ children, className = '' }) {
  * <FieldRowGroup> inside a <SettingsCard> so a wide card doesn't leave a
  * form stranded in a narrow column with empty space beside it.
  */
-export function FieldRow({ label, htmlFor, description, hint, children }) {
+export function FieldRow({ label = undefined, htmlFor = undefined, description = undefined, hint = undefined, children }) {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,15rem)_1fr] gap-x-8 gap-y-2 py-5 first:pt-0 last:pb-0">
       <div className="min-w-0">
@@ -183,7 +183,7 @@ export function ErrorText({ children }) {
  * Toggle — native checkbox styled as an accessible switch.
  * Wraps .nubi-switch + .nubi-switch-thumb from the design system CSS.
  */
-export function Toggle({ checked, onChange, disabled, id, label }) {
+export function Toggle({ checked, onChange, disabled = false, id = undefined, label = undefined }) {
   return (
     <label
       className="inline-flex items-center gap-2.5 cursor-pointer select-none"
@@ -224,7 +224,7 @@ export function DangerZone({ children }) {
   )
 }
 
-export function DangerRow({ title, description, children, extra }) {
+export function DangerRow({ title, description = undefined, children, extra = undefined }) {
   return (
     <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 py-3 first:pt-0 last:pb-0">
       <div className="min-w-0">

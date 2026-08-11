@@ -4,10 +4,10 @@
  *   const [ref, seen] = useReveal()
  *   <div ref={ref} className={`lp-reveal ${seen ? 'lp-in' : ''}`}>
  */
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, type RefObject } from 'react'
 
-export default function useReveal() {
-  const ref = useRef(null)
+export default function useReveal<T extends HTMLElement = HTMLDivElement>(): [RefObject<T | null>, boolean] {
+  const ref = useRef<T | null>(null)
   const [seen, setSeen] = useState(() => typeof IntersectionObserver === 'undefined')
   useEffect(() => {
     const el = ref.current

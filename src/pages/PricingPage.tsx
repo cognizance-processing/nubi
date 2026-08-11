@@ -14,7 +14,7 @@
  * page (MarketingStyles + useReveal) — hero/CTA panels, glass cards with
  * per-tier accents, mono data styling, terminal-framed calculators.
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Check, X, ArrowRight, ChevronRight, Headset, Star,
@@ -258,7 +258,7 @@ function TierCard({ tier, idx }) {
 
   return (
     <Reveal delay={(idx % 5) * 70} className={`h-full ${gridPlace}`}>
-      <div className="pp-card h-full" style={{ '--pp-accent': accent }}>
+      <div className="pp-card h-full" style={{ '--pp-accent': accent } as CSSProperties}>
         {tier.badge && (
           <span
             className="absolute -top-3 left-1/2 -translate-x-1/2 z-20 inline-flex items-center gap-1.5 px-3 py-1 rounded-full font-mono text-[10px] font-bold uppercase tracking-[0.14em] whitespace-nowrap bg-surface shadow-sm border"
@@ -647,7 +647,7 @@ function OverageShowcase() {
           const accent = OVERAGE_ACCENTS[i % OVERAGE_ACCENTS.length]
           return (
             <Reveal key={o.label} delay={(i % 3) * 80} className="h-full">
-              <div className="pp-card h-full p-5 sm:p-6" style={{ '--pp-accent': accent }}>
+              <div className="pp-card h-full p-5 sm:p-6" style={{ '--pp-accent': accent } as CSSProperties}>
                 <div className="flex items-center justify-between mb-3">
                   <span
                     className="inline-flex w-9 h-9 rounded-xl items-center justify-center text-white shadow-sm"
@@ -671,7 +671,7 @@ function OverageShowcase() {
         })}
         {/* the wedge cell — never per-seat */}
         <Reveal delay={160} className="h-full">
-          <div className="pp-card h-full p-5 sm:p-6 bg-brand-teal/[0.05]" style={{ '--pp-accent': '#17b3a3' }}>
+          <div className="pp-card h-full p-5 sm:p-6 bg-brand-teal/[0.05]" style={{ '--pp-accent': '#17b3a3' } as CSSProperties}>
             <div className="flex items-center justify-between mb-3">
               <span className="inline-flex w-9 h-9 rounded-xl items-center justify-center bg-brand-teal/10 border border-brand-teal/30 text-brand-teal">
                 <X size={16} strokeWidth={2.5} />
@@ -1065,7 +1065,7 @@ export default function PricingPage() {
             <div className="grid md:grid-cols-2 gap-5">
               {/* what we charge for */}
               <Reveal className="h-full">
-                <div className="pp-card h-full p-6 sm:p-7" style={{ '--pp-accent': '#4d8de0' }}>
+                <div className="pp-card h-full p-6 sm:p-7" style={{ '--pp-accent': '#4d8de0' } as CSSProperties}>
                   <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-primary mb-1.5">
                     metered
                   </p>

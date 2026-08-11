@@ -18,7 +18,7 @@
  * so they read on both white surfaces (light) and dark-navy (dark).
  */
 
-import { useState, Fragment } from 'react'
+import { useState, Fragment, type ReactNode, type CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
 import MarketingStyles from '../components/marketing/MarketingStyles.jsx'
 import useReveal from '../components/marketing/useReveal.js'
@@ -232,7 +232,12 @@ const B = ({ children }) => (
 )
 
 /** One-shot scroll reveal wrapper (lp-reveal / lp-in from MarketingStyles). */
-function Reveal({ children, className = '', delay = 0, id }) {
+function Reveal({ children, className = '', delay = 0, id = undefined }: {
+  children: ReactNode
+  className?: string
+  delay?: number
+  id?: string
+}) {
   const [ref, seen] = useReveal()
   return (
     <div
@@ -265,8 +270,8 @@ function SectionHead({ eyebrow, title, children, wide = false }) {
 
 /** Style helper: render a string title with its last word in gradient text.
  *  Non-string titles (already-styled JSX) pass through untouched. */
-function gradientLast(title, gradientClass = 'text-brand-gradient') {
-  if (typeof title !== 'string') return title
+function gradientLast(title: unknown, gradientClass = 'text-brand-gradient'): ReactNode {
+  if (typeof title !== 'string') return title as ReactNode
   const words = title.trim().split(' ')
   if (words.length < 2) return title
   const last = words.pop()
@@ -410,7 +415,7 @@ function AtAGlanceScorecard() {
           <Reveal key={key} delay={(i % 3) * 70}>
             <div
               className="cp-card h-full p-4 sm:p-5 flex items-start gap-3"
-              style={{ '--cp-accent': d.accent }}
+              style={{ '--cp-accent': d.accent } as CSSProperties}
             >
               <span
                 className="shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-xl text-white shadow-sm"
@@ -1260,7 +1265,7 @@ function WhyBentoCard({ card, idx }) {
   return (
     <div
       ref={ref}
-      style={{ '--cp-accent': card.accent, transitionDelay: `${(idx % 3) * 90}ms` }}
+      style={{ '--cp-accent': card.accent, transitionDelay: `${(idx % 3) * 90}ms` } as CSSProperties}
       className={`lp-reveal ${seen ? 'lp-in' : ''} cp-card flex flex-col p-6 sm:p-7`}
     >
       <div className="flex items-center justify-between mb-4">
@@ -1382,7 +1387,7 @@ export default function ComparePage() {
                       <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-60" />
                       <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-teal-300" />
                     </span>
-                    {introData?.eyebrow ?? 'competitive overview · 2026'}
+                    {(introData?.eyebrow as string) ?? 'competitive overview · 2026'}
                   </p>
 
                   <h1 className="font-display text-[2rem] sm:text-5xl lg:text-[3.9rem] xl:text-[4.3rem] font-bold leading-[1.04] tracking-tight mb-5 sm:mb-7 text-fg">
@@ -1392,7 +1397,7 @@ export default function ComparePage() {
                   </h1>
 
                   <p className="text-base sm:text-lg leading-relaxed mb-7 max-w-lg text-muted dark:text-slate-300/90">
-                    {introData?.subtitle ?? 'An honest comparison against 14 platforms — Metabase, Hex, Cube, Holistics, Embeddable, Luzmo, Omni, GoodData, Looker, Sigma, Tableau, Power BI, Preset, and Count.'}
+                    {(introData?.subtitle as string) ?? 'An honest comparison against 14 platforms — Metabase, Hex, Cube, Holistics, Embeddable, Luzmo, Omni, GoodData, Looker, Sigma, Tableau, Power BI, Preset, and Count.'}
                   </p>
 
                   {/* structural edges — checked claims */}
@@ -1553,7 +1558,7 @@ export default function ComparePage() {
 
             <div className="grid sm:grid-cols-2 gap-4 sm:gap-5">
               <Reveal>
-                <div className="cp-card h-full p-5 flex items-start gap-3" style={{ '--cp-accent': '#17b3a3' }}>
+                <div className="cp-card h-full p-5 flex items-start gap-3" style={{ '--cp-accent': '#17b3a3' } as CSSProperties}>
                   <span className="shrink-0 mt-0.5 inline-flex items-center justify-center w-8 h-8 rounded-lg bg-brand-teal/10 border border-brand-teal/25">
                     <Info size={14} className="text-brand-teal" />
                   </span>
@@ -1570,7 +1575,7 @@ export default function ComparePage() {
                 </div>
               </Reveal>
               <Reveal delay={90}>
-                <div className="cp-card h-full p-5 flex items-start gap-3" style={{ '--cp-accent': '#2456a6' }}>
+                <div className="cp-card h-full p-5 flex items-start gap-3" style={{ '--cp-accent': '#2456a6' } as CSSProperties}>
                   <span className="shrink-0 mt-0.5 inline-flex items-center justify-center w-8 h-8 rounded-lg bg-brand-blue/10 border border-brand-blue/25">
                     <AlertTriangle size={14} className="text-brand-blue" />
                   </span>
@@ -1616,7 +1621,7 @@ export default function ComparePage() {
                     : <>The <span className="lp-hero-gradient-text">structural</span> difference.</>}
                 </h2>
                 <p className="text-sm sm:text-base lg:text-lg leading-relaxed text-muted dark:text-slate-300/90">
-                  {WHY_NUBI.data?.tagline ?? 'Three architectural bets that change what\'s possible — and what it costs.'}
+                  {(WHY_NUBI.data?.tagline as string) ?? 'Three architectural bets that change what\'s possible — and what it costs.'}
                 </p>
               </div>
 
@@ -1628,7 +1633,7 @@ export default function ComparePage() {
 
               {/* Honest limitations from why-nubi.md — section after --- */}
               <Reveal className="max-w-4xl mx-auto">
-                <div className="cp-card cp-hairline p-6" style={{ '--cp-accent': '#e8a35c' }}>
+                <div className="cp-card cp-hairline p-6" style={{ '--cp-accent': '#e8a35c' } as CSSProperties}>
                   <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-muted mb-3 flex items-center gap-1.5">
                     <AlertTriangle size={11} className="text-brand-teal" />
                     Honest limitations
@@ -1911,7 +1916,7 @@ export default function ComparePage() {
 
             {/* Nubi Flows highlight card */}
             <Reveal className="mb-10">
-              <div className="cp-card cp-hairline overflow-hidden" style={{ '--cp-accent': '#17b3a3' }}>
+              <div className="cp-card cp-hairline overflow-hidden" style={{ '--cp-accent': '#17b3a3' } as CSSProperties}>
                 <div className="px-6 py-5 border-b border-border dark:border-white/[0.07] flex flex-col sm:flex-row sm:items-center gap-4">
                   <div className="flex-1">
                     <div className="flex items-center gap-2 mb-1">
