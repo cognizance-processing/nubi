@@ -25,7 +25,7 @@ export default defineConfig({
     emptyOutDir: true,
 
     lib: {
-      entry: resolve(import.meta.dirname, 'src/index.js'),
+      entry: resolve(import.meta.dirname, 'src/index.ts'),
       name: 'NubiSDK',
       formats: ['es', 'umd'],
       fileName: (format) =>

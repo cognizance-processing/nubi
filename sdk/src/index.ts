@@ -89,7 +89,7 @@ export function createNubiClient({ baseUrl, getToken }) {
    * @param {RequestInit} [init]
    * @returns {Promise<any>}
    */
-  async function apiFetch(path, init = {}) {
+  async function apiFetch(path, init: RequestInit = {}) {
     const token = await resolveToken()
 
     const headers = new Headers(init.headers ?? {})
@@ -121,7 +121,7 @@ export function createNubiClient({ baseUrl, getToken }) {
         errPayload?.detail ??
         `Request failed: ${response.status} ${response.statusText}`
 
-      const err = new Error(message)
+      const err: Error & { code?: string; status?: number } = new Error(message)
       err.code = code
       err.status = response.status
       throw err
@@ -139,7 +139,7 @@ export function createNubiClient({ baseUrl, getToken }) {
    * @param {RequestInit} [init]
    * @returns {Promise<ArrayBuffer>}
    */
-  async function apiFetchBinary(path, init = {}) {
+  async function apiFetchBinary(path, init: RequestInit = {}) {
     const token = await resolveToken()
 
     const headers = new Headers(init.headers ?? {})
@@ -169,7 +169,7 @@ export function createNubiClient({ baseUrl, getToken }) {
         errPayload?.error?.message ??
         `Request failed: ${response.status} ${response.statusText}`
 
-      const err = new Error(message)
+      const err: Error & { code?: string; status?: number } = new Error(message)
       err.code = code
       err.status = response.status
       throw err
@@ -266,7 +266,7 @@ export function createNubiClient({ baseUrl, getToken }) {
    *     `named_params` (valid only for registered queries that declare params).
    * @returns {Promise<import('apache-arrow').Table>}
    */
-  async function query(sqlOrId, { params } = {}) {
+  async function query(sqlOrId, { params }: { params?: any } = {}) {
     const body = looksLikeQueryId(sqlOrId)
       ? { query_id: sqlOrId, ...normaliseParams(params) }
       : { sql: sqlOrId, ...normaliseParams(params) }
@@ -376,8 +376,8 @@ export function createNubiClient({ baseUrl, getToken }) {
      *                                     the baseUrl used to create this client.
      * @returns {{ unmount: () => void }}
      */
-    mount(el, { query: queryArg, token, backend } = {}) {
-      const dashboard = document.createElement('nubi-dashboard')
+    mount(el, { query: queryArg, token, backend }: { query?: string; token?: string; backend?: string } = {}) {
+      const dashboard: any = document.createElement('nubi-dashboard')
 
       if (queryArg !== undefined) {
         dashboard.setAttribute('query', queryArg)

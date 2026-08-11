@@ -39,7 +39,7 @@ function buildArrowBuffer() {
   const table = tableFromArrays({
     id:    vectorFromArray([1, 2, 3], new Int32()),
     score: vectorFromArray([1.1, 2.2, 3.3], new Float64()),
-  })
+  } as any)
   return tableToIPC(table, 'stream')
 }
 
@@ -47,7 +47,7 @@ function buildArrowBuffer() {
  * Create a mock fetch that returns the given response for a single call.
  * Stores the last call's info in lastCall = { url, init }.
  */
-function makeFetchMock(responseInit) {
+function makeFetchMock(responseInit): any {
   let lastCall = null
 
   const mock = async (url, init) => {
@@ -95,14 +95,14 @@ function parsedBody(mock) {
 describe('createNubiClient — construction', () => {
   it('throws if baseUrl is missing', () => {
     assert.throws(
-      () => createNubiClient({ getToken: STATIC_TOKEN }),
+      () => createNubiClient({ getToken: STATIC_TOKEN } as any),
       /baseUrl is required/,
     )
   })
 
   it('throws if getToken is missing', () => {
     assert.throws(
-      () => createNubiClient({ baseUrl: BASE_URL }),
+      () => createNubiClient({ baseUrl: BASE_URL } as any),
       /getToken is required/,
     )
   })
@@ -473,7 +473,7 @@ describe('error handling — { error: { code, message } } shape', () => {
 
     await assert.rejects(
       () => client.resources.boards.get('nonexistent'),
-      (err) => {
+      (err: any) => {
         assert.equal(err.code, 'not_found')
         assert.match(err.message, /Board not found/)
         return true
@@ -482,10 +482,6 @@ describe('error handling — { error: { code, message } } shape', () => {
   })
 
   it('throws with code "http_error" on non-JSON error response', async () => {
-    const mockFetch = makeFetchMock({
-      status: 500,
-      body: 'Internal Server Error',
-    })
     // Override json() to throw (simulate non-JSON body)
     const origFetch = makeFetchMock({
       status: 500,
@@ -501,7 +497,7 @@ describe('error handling — { error: { code, message } } shape', () => {
 
     await assert.rejects(
       () => client.auth.me(),
-      (err) => {
+      (err: any) => {
         assert.equal(err.code, 'http_error')
         return true
       },
@@ -574,8 +570,8 @@ describe('embed.mount()', () => {
   beforeEach(() => {
     savedDocument = globalThis.document
     savedWindow = globalThis.window
-    globalThis.document = { createElement: (tag) => makeFakeElement(tag) }
-    globalThis.window = {}
+    globalThis.document = { createElement: (tag) => makeFakeElement(tag) } as any
+    globalThis.window = {} as any
   })
 
   afterEach(() => {
@@ -590,7 +586,7 @@ describe('embed.mount()', () => {
         createdEl = makeFakeElement(tag)
         return createdEl
       },
-    }
+    } as any
 
     const client = createNubiClient({
       baseUrl: 'https://x.com/api/v1/',
@@ -617,7 +613,7 @@ describe('embed.mount()', () => {
         createdEl = makeFakeElement(tag)
         return createdEl
       },
-    }
+    } as any
 
     const client = createNubiClient({
       baseUrl: 'https://x.com',
