@@ -64,8 +64,10 @@
 
 /** Error thrown when a dependency cycle is detected at graph build. */
 export class FilterGraphCycleError extends Error {
-  /** @param {string[]} cycle ordered node ids forming the cycle (closed loop). */
-  constructor(cycle) {
+  cycle: string[]
+
+  /** @param cycle ordered node ids forming the cycle (closed loop). */
+  constructor(cycle: string[]) {
     const pretty = (cycle || []).map(prettyNodeId).join(' → ')
     super(`Filter dependency cycle detected (rejected): ${pretty}`)
     this.name = 'FilterGraphCycleError'

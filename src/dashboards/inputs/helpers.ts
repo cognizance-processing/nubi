@@ -16,23 +16,31 @@
  * `undefined` / `null` / empty array / empty include all collapse to "all".
  */
 
+export type MultiMode = 'all' | 'include' | 'exclude'
+
+export interface NormMulti {
+  mode: MultiMode
+  values: string[]
+}
+
 // ---------------------------------------------------------------------------
 // Multiselect value shape
 // ---------------------------------------------------------------------------
 
 /** Normalise any supported multiselect value to { mode, values }. */
-export function normMulti(value) {
+export function normMulti(value: unknown): NormMulti {
   if (value == null) return { mode: 'all', values: [] }
   if (Array.isArray(value)) {
     const values = value.map(String)
     return values.length === 0 ? { mode: 'all', values: [] } : { mode: 'include', values }
   }
   if (typeof value === 'object') {
-    const mode = value.mode === 'exclude' ? 'exclude'
-      : value.mode === 'all' ? 'all'
-      : value.mode === 'include' ? 'include'
+    const v = value as Record<string, any>
+    const mode: MultiMode = v.mode === 'exclude' ? 'exclude'
+      : v.mode === 'all' ? 'all'
+      : v.mode === 'include' ? 'include'
       : 'include'
-    const values = Array.isArray(value.values) ? value.values.map(String) : []
+    const values = Array.isArray(v.values) ? v.values.map(String) : []
     if (mode === 'all') return { mode: 'all', values: [] }
     if (values.length === 0 && mode === 'include') return { mode: 'all', values: [] }
     return { mode, values }
@@ -42,17 +50,17 @@ export function normMulti(value) {
 }
 
 /** True when the value represents "all but the selected" semantics. */
-export function isExclude(value) {
+export function isExclude(value: unknown): boolean {
   return normMulti(value).mode === 'exclude'
 }
 
 /** The selected values array (strings) regardless of include/exclude. */
-export function valuesOf(value) {
+export function valuesOf(value: unknown): string[] {
   return normMulti(value).values
 }
 
 /** 'all' | 'include' | 'exclude'. */
-export function modeOf(value) {
+export function modeOf(value: unknown): MultiMode {
   return normMulti(value).mode
 }
 

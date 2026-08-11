@@ -32,9 +32,9 @@ import assert from 'node:assert/strict'
 // Inline copy; if the impl changes this test will catch divergence.
 // ---------------------------------------------------------------------------
 
-function buildVariableDefaults(specVariables) {
+function buildVariableDefaults(specVariables: unknown): Record<string, any> {
   if (!Array.isArray(specVariables)) return {}
-  const defaults = {}
+  const defaults: Record<string, any> = {}
   for (const v of specVariables) {
     if (v?.name) {
       defaults[v.name] = v.default ?? undefined
@@ -151,7 +151,7 @@ describe('variableDefaults merge (spec defaults + initialVariables overlay)', ()
 describe('SpecRendererInner → SpecRendererBody prop boundary', () => {
   // Simulate the prop-derivation logic that SpecRendererInner runs
   // BEFORE rendering <VariableProvider><SpecRendererBody .../></VariableProvider>.
-  function deriveOuterProps(spec, boardIdProp, initialVariables = {}) {
+  function deriveOuterProps(spec: Record<string, any>, boardIdProp: string | null, initialVariables: Record<string, any> = {}) {
     const cols        = spec.layout?.cols      ?? 12
     const rowHeight   = spec.layout?.row_height ?? 60
     const allWidgets  = spec.widgets ?? []

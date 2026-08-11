@@ -21,20 +21,20 @@ function makeDeltaTable() {
   return makeTable({
     category: vectorFromArray(['Start', 'Revenue', 'Cost', 'SubTotal', 'Tax', 'Net'], new Utf8()),
     delta:    vectorFromArray([0, 500, -200, 0, -50, 0], new Float64()),
-  })
+  } as any)
 }
 
 function makeXYTable() {
   return makeTable({
     x: vectorFromArray([1, 4, 2, 8, 3, 7], new Float64()),
     y: vectorFromArray([10, 40, 20, 80, 30, 70], new Float64()),
-  })
+  } as any)
 }
 
 function makeSparkTable() {
   return makeTable({
     value: vectorFromArray([10, 20, 15, 30, 25], new Float64()),
-  })
+  } as any)
 }
 
 // ---------------------------------------------------------------------------

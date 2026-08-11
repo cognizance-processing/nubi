@@ -37,10 +37,12 @@ import { decodeMultiTableIPC } from './providerDataUtils.js'
  * We produce a real Arrow IPC stream using apache-arrow so decodeMultiTableIPC
  * (which uses arrow.tableFromIPC) can parse it correctly.
  */
-async function buildArrowIPC(columnName, values) {
+async function buildArrowIPC(columnName: string, values: number[]) {
   // Dynamic import apache-arrow (the same version used by the main code)
   const arrow = await import('apache-arrow')
-  const table = arrow.tableFromArrays({ [columnName]: arrow.vectorFromArray(values, new arrow.Int32()) })
+  // apache-arrow's TS types for tableFromArrays() only advertise raw-array
+  // inputs, but its actual implementation also accepts pre-built Vectors.
+  const table = arrow.tableFromArrays({ [columnName]: arrow.vectorFromArray(values, new arrow.Int32()) } as any)
   const ipcBytes = arrow.tableToIPC(table, 'stream')
   return ipcBytes
 }
@@ -108,7 +110,6 @@ test('decodeMultiTableIPC: two-table frame decodes both tables correctly', async
   assert.ok('sales' in tables, 'should have "sales" table')
   assert.ok('summary' in tables, 'should have "summary" table')
 
-  const arrow = await import('apache-arrow')
   assert.equal(tables.sales.numRows, 3, '"sales" table should have 3 rows')
   assert.equal(tables.summary.numRows, 2, '"summary" table should have 2 rows')
 
@@ -156,8 +157,8 @@ test('decodeMultiTableIPC: empty frame (N=0) returns empty object', () => {
  * Given a list of widgets, return a map of providerId → [widgetId, resultName][].
  * This mirrors the grouping logic in SpecRenderer's widgetProviderTableMap.
  */
-function groupWidgetsByProvider(widgets) {
-  const groups = {}
+function groupWidgetsByProvider(widgets: Record<string, any>[]): Record<string, Record<string, any>[]> {
+  const groups: Record<string, Record<string, any>[]> = {}
   for (const w of widgets) {
     if (w.source?.provider && w.source?.result) {
       const pid = w.source.provider
@@ -221,10 +222,10 @@ test('widgetProviderTableMap: result slice is picked by widget.source.result', a
   // Simulate what providerResults[pid].tables would look like after decoding
   const salesTable = arrow.tableFromArrays({
     amount: arrow.vectorFromArray([100, 200], new arrow.Int32()),
-  })
+  } as any)
   const trendTable = arrow.tableFromArrays({
     date: arrow.vectorFromArray([1, 2, 3], new arrow.Int32()),
-  })
+  } as any)
 
   const providerResults = {
     p1: { tables: { sales: salesTable, trend: trendTable }, loading: false, error: null },
@@ -237,7 +238,7 @@ test('widgetProviderTableMap: result slice is picked by widget.source.result', a
   ]
 
   // Mirror the widgetProviderTableMap logic from SpecRenderer
-  const map = {}
+  const map: Record<string, any> = {}
   for (const w of allWidgets) {
     if (w.source?.provider && w.source?.result) {
       const pResult = providerResults[w.source.provider]
@@ -263,11 +264,11 @@ test('spec with spec.data + source widgets triggers exactly one fetch per provid
   // Build a two-result Arrow IPC frame for the mock response
   const arrow = await import('apache-arrow')
   const ipc1 = arrow.tableToIPC(
-    arrow.tableFromArrays({ revenue: arrow.vectorFromArray([100], new arrow.Int32()) }),
+    arrow.tableFromArrays({ revenue: arrow.vectorFromArray([100], new arrow.Int32()) } as any),
     'stream',
   )
   const ipc2 = arrow.tableToIPC(
-    arrow.tableFromArrays({ count: arrow.vectorFromArray([5], new arrow.Int32()) }),
+    arrow.tableFromArrays({ count: arrow.vectorFromArray([5], new arrow.Int32()) } as any),
     'stream',
   )
   const mockFrame = buildMultiTableFrame([

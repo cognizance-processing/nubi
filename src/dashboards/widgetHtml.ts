@@ -33,12 +33,17 @@ import { adaptBackgroundColor, resolveEffectiveBgHex, ensureReadable } from '../
 // ---------------------------------------------------------------------------
 
 /**
- * @param {{ type?: 'solid'|'gradient'|'image', color?: string, from?: string,
- *   to?: string, angle?: number, imageUrl?: string, css?: string }} bg
- * @param {{ theme?: 'light'|'dark' }} [ctx] omit to keep pre-adaptation behavior
- * @returns {object|undefined} React style object (or undefined when empty)
+ * @returns React style object (or undefined when empty)
  */
-export function backgroundToCss(bg, ctx) {
+export function backgroundToCss(bg: {
+  type?: 'solid' | 'gradient' | 'image' | 'transparent' | 'css' | 'none'
+  color?: string
+  from?: string
+  to?: string
+  angle?: number
+  imageUrl?: string
+  css?: string
+} | undefined, ctx?: { theme?: 'light' | 'dark' }): Record<string, any> | undefined {
   if (!bg || typeof bg !== 'object') return undefined
   switch (bg.type) {
     case 'transparent':
@@ -97,13 +102,11 @@ const STYLE_WHITELIST = new Set([
  * STYLE_WHITELIST (rather than a hand-picked subset) means a new preset can
  * introduce any already-whitelisted property without an editor-side change.
  *
- * @param {object} style
- * @param {{ theme?: 'light'|'dark' }} [ctx] omit to keep pre-adaptation behavior
- * @returns {object|undefined}
+ * @param ctx omit to keep pre-adaptation behavior
  */
-export function styleToCss(style, ctx) {
+export function styleToCss(style: Record<string, any>, ctx?: { theme?: 'light' | 'dark' }): Record<string, any> | undefined {
   if (!style || typeof style !== 'object') return undefined
-  const out = {}
+  const out: Record<string, any> = {}
 
   // background can be a plain color string or a background descriptor object
   if (style.background && typeof style.background === 'object') {

@@ -37,16 +37,20 @@ export function extractVarsFromURL(searchParams, knownVarNames) {
  * honoring the sync rules: locked/undeclared names are left untouched, and an
  * empty value deletes the param.
  *
- * @param {URLSearchParams} prev — the current params (not mutated).
- * @param {string} name
- * @param {unknown} value
- * @param {object} [opts]
- * @param {string[]} [opts.knownVarNames] — only these names may be written.
- * @param {Record<string, unknown>} [opts.lockedParams] — embed-locked names that
- *   must NEVER be written back to the URL (the token is the source of truth).
- * @returns {URLSearchParams} a new params object (caller passes to setSearchParams).
+ * @param prev — the current params (not mutated).
+ * @returns a new params object (caller passes to setSearchParams).
  */
-export function applyVarToSearchParams(prev, name, value, opts = {}) {
+export function applyVarToSearchParams(
+  prev: URLSearchParams,
+  name: string,
+  value: unknown,
+  opts: {
+    /** only these names may be written. */
+    knownVarNames?: string[]
+    /** embed-locked names that must NEVER be written back to the URL (the token is the source of truth). */
+    lockedParams?: Record<string, unknown>
+  } = {},
+): URLSearchParams {
   const { knownVarNames, lockedParams } = opts
   const next = new URLSearchParams(prev)
 

@@ -20,17 +20,16 @@ import { descaleDecimalTable } from '../lib/arrowDecimal.js'
  *     4 bytes big-endian: ipc_len
  *     ipc bytes (Arrow IPC stream for one table)
  *
- * @param {ArrayBuffer} buffer
- * @returns {Record<string, import('apache-arrow').Table>}  result_name → Arrow Table
+ * @returns result_name → Arrow Table
  */
-export function decodeMultiTableIPC(buffer) {
+export function decodeMultiTableIPC(buffer: ArrayBuffer): Record<string, arrow.Table> {
   const view = new DataView(buffer)
   let offset = 0
 
   const n = view.getUint32(offset, false) // big-endian count
   offset += 4
 
-  const tables = {}
+  const tables: Record<string, arrow.Table> = {}
 
   for (let i = 0; i < n; i++) {
     const nameLen = view.getUint32(offset, false)

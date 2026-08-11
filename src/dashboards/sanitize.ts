@@ -133,7 +133,8 @@ const PURIFY_CONFIG = {
 // ---------------------------------------------------------------------------
 
 // Register once (DOMPurify hooks are global per window — guard double-register).
-if (typeof window !== 'undefined' && !DOMPurify._nubiHookInstalled) {
+// _nubiHookInstalled is our own guard flag, not part of DOMPurify's real API.
+if (typeof window !== 'undefined' && !(DOMPurify as any)._nubiHookInstalled) {
   DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
     const name = data.attrName.toLowerCase()
 
@@ -154,7 +155,7 @@ if (typeof window !== 'undefined' && !DOMPurify._nubiHookInstalled) {
     }
   })
 
-  DOMPurify._nubiHookInstalled = true
+  ;(DOMPurify as any)._nubiHookInstalled = true
 }
 
 // ---------------------------------------------------------------------------

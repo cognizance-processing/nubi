@@ -49,7 +49,7 @@
  * the query layer binds as an array parameter for IN / NOT IN.
  */
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 // Multiselect value-shape helpers from Track F — imported here so resolveParams
 // can call them directly (no re-implementation) and re-exported so callers can
 // interrogate raw variable values without importing from the inputs/ layer.
@@ -82,7 +82,7 @@ import { buildFilterGraph, dirtySubgraph, staleOptionWidgetIds } from './filterG
  *     compat); structured { mode, values } passed through as normalized { mode,
  *     values } so callers that inspect the shape get a consistent object.
  */
-export function resolveParams(widgetParams, variables) {
+export function resolveParams(widgetParams: Record<string, any>, variables: Record<string, any>): Record<string, any> {
   if (!widgetParams || typeof widgetParams !== 'object' || Array.isArray(widgetParams)) {
     return {}
   }
@@ -90,7 +90,7 @@ export function resolveParams(widgetParams, variables) {
     variables = {}
   }
 
-  const resolved = {}
+  const resolved: Record<string, any> = {}
   for (const [paramName, paramValue] of Object.entries(widgetParams)) {
     if (
       paramValue !== null &&
@@ -193,11 +193,18 @@ const DEFAULT_CASCADE_DEBOUNCE_MS = 200
  */
 export function VariableProvider({
   initialValues = {},
-  onVariableChange,
-  spec,
+  onVariableChange = undefined,
+  spec = undefined,
   cascadeDebounceMs = DEFAULT_CASCADE_DEBOUNCE_MS,
-  onFilterGraphError,
+  onFilterGraphError = undefined,
   children,
+}: {
+  initialValues?: Record<string, any>
+  onVariableChange?: (name: string, value: any) => void
+  spec?: Record<string, any>
+  cascadeDebounceMs?: number
+  onFilterGraphError?: (err: unknown) => void
+  children: ReactNode
 }) {
   const [variables, setVariables] = useState(() => ({ ...initialValues }))
 
@@ -231,7 +238,7 @@ export function VariableProvider({
 
   // Pending (debounced) cascade: collects the union of stale option-widget ids
   // across rapid changes, then flushes once.
-  const pendingStaleRef = useRef(new Set())
+  const pendingStaleRef = useRef(new Set<string>())
   const cascadeTimerRef = useRef(null)
   const graphRef = useRef(filterGraph)
   useEffect(() => { graphRef.current = filterGraph }, [filterGraph])

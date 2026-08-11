@@ -26,12 +26,12 @@ function cx(...parts) {
 }
 
 export default function EmptyState({
-  icon,
+  icon = undefined,
   title,
-  description,
-  action,
+  description = undefined,
+  action = undefined,
   compact = false,
-  className,
+  className = undefined,
 }) {
   return (
     <div className={cx('nubi-empty', compact && 'py-8 gap-2', className)}>

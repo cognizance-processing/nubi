@@ -15,40 +15,44 @@
  * object (CSS custom properties) which is applied directly to the panel.
  */
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
 const VIEWPORT_MARGIN = 8   // px gap from viewport edges
 const TRIGGER_GAP = 4       // px gap between trigger and panel
 
-/**
- * @param {{
- *   anchorRef: React.RefObject<HTMLElement>,  // the trigger element
- *   open: boolean,
- *   onClose: () => void,
- *   children: React.ReactNode,
- *   styleVars?: Record<string, string>,       // CSS vars to bridge across the portal
- *   matchWidth?: boolean,                      // panel min-width = trigger width
- *   maxHeight?: number,
- *   className?: string,
- *   role?: string,
- *   ariaLabel?: string,
- * }} props
- */
 export default function Popover({
   anchorRef,
   open,
   onClose,
   children,
-  styleVars,
+  styleVars = undefined,
   matchWidth = true,
   maxHeight = 360,
   className = '',
-  role,
-  ariaLabel,
+  role = undefined,
+  ariaLabel = undefined,
+}: {
+  anchorRef: RefObject<HTMLElement | null>
+  open: boolean
+  onClose: () => void
+  children: ReactNode
+  styleVars?: Record<string, string>
+  matchWidth?: boolean
+  maxHeight?: number
+  className?: string
+  role?: string
+  ariaLabel?: string
 }) {
-  const panelRef = useRef(null)
-  const [pos, setPos] = useState(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState<{
+    left: number
+    top?: number
+    bottom?: number
+    minWidth?: number
+    maxHeight: number
+    flipUp: boolean
+  } | null>(null)
 
   // Measure the trigger and decide placement (below by default, above if tight).
   useLayoutEffect(() => {
@@ -90,7 +94,7 @@ export default function Popover({
     // + setState on EVERY raw scroll/resize event. `measure` itself stays the
     // authoritative reposition; these wrappers just coalesce how often it runs.
     let raf = 0          // pending requestAnimationFrame id (0 = none)
-    let resizeTimer = 0  // pending resize debounce timeout id (0 = none)
+    let resizeTimer: ReturnType<typeof setTimeout> | 0 = 0  // pending resize debounce timeout id (0 = none)
 
     // Scroll: coalesce to at most one measure per animation frame. With the
     // capture-phase listener firing for every ancestor scroll container (and

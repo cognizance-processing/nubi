@@ -36,7 +36,7 @@ function makeMonthTable() {
     month:   vectorFromArray(['Jan', 'Feb', 'Mar', 'Apr'], new Utf8()),
     revenue: vectorFromArray([100, 200, 150, 300], new Float64()),
     profit:  vectorFromArray([10, 30, 20, 60], new Float64()),
-  })
+  } as any)
 }
 
 /**
@@ -46,7 +46,7 @@ function makeScatterTable() {
   return makeTable({
     x: vectorFromArray([1, 2, 3, 4], new Float64()),
     y: vectorFromArray([10, 20, 15, 25], new Float64()),
-  })
+  } as any)
 }
 
 // ---------------------------------------------------------------------------

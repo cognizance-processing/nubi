@@ -53,15 +53,29 @@
  * selectedId, and onLayoutCommit=commitLayout.
  */
 
-import { useMemo, useState, useCallback } from 'react'
+import { useMemo, useState, useCallback, type ReactNode, type CSSProperties } from 'react'
 import { DndContext, closestCenter } from '@dnd-kit/core'
 import { useGridInteraction, computeCellSize } from './useGridInteraction.js'
 import { useResize, RESIZE_HANDLES } from './useResize.js'
 import { compact } from './compaction.js'
 import { DraggableItem } from './DraggableItem.jsx'
 
+export interface GridItem {
+  i: string
+  x: number
+  y: number
+  w: number
+  h: number
+  static?: boolean
+  minW?: number
+  minH?: number
+  maxW?: number
+  maxH?: number
+  [key: string]: any
+}
+
 /** Normalize padding prop ({x,y} | [x,y] | number) → { x, y }. */
-function normalizePadding(padding) {
+function normalizePadding(padding: { x?: number; y?: number } | [number, number] | number | null | undefined) {
   if (padding == null) return { x: 0, y: 0 }
   if (Array.isArray(padding)) return { x: padding[0] ?? 0, y: padding[1] ?? 0 }
   if (typeof padding === 'number') return { x: padding, y: padding }
@@ -84,11 +98,32 @@ export default function GridCanvas({
   selectedId = null,
   dragHandle = '.drag-handle',
   renderItem,
-  onInteractionStart,
-  onInteractionEnd,
-  onLayoutCommit,
+  onInteractionStart = undefined,
+  onInteractionEnd = undefined,
+  onLayoutCommit = undefined,
   className = '',
   style = undefined,
+}: {
+  layout: GridItem[]
+  cols?: number
+  rowHeight?: number
+  gap?: number
+  padding?: { x?: number; y?: number } | [number, number] | number
+  width?: number
+  draggable?: boolean
+  resizable?: boolean
+  mode?: 'grid' | 'reorder'
+  compaction?: 'free' | 'vertical' | 'horizontal' | 'none'
+  dense?: boolean
+  zoom?: number
+  selectedId?: string | null
+  dragHandle?: string
+  renderItem: (item: GridItem) => ReactNode
+  onInteractionStart?: () => void
+  onInteractionEnd?: () => void
+  onLayoutCommit?: (layout: GridItem[]) => void
+  className?: string
+  style?: CSSProperties
 }) {
   const pad = useMemo(() => normalizePadding(padding), [padding])
 
@@ -190,6 +225,8 @@ export default function GridCanvas({
   }, [layout, commitWithCompaction])
 
   // ── CSS Grid container style ────────────────────────────────────────────────
+  // Cast past CSSProperties: this includes a --grid-col-w CSS custom property,
+  // which the standard DOM style typings don't model.
   const gridStyle = useMemo(() => ({
     display: 'grid',
     gridTemplateColumns: `repeat(${Math.max(1, cols)}, 1fr)`,
@@ -202,7 +239,7 @@ export default function GridCanvas({
     // .grid-dragging class consumes (see index.css). Falls back gracefully.
     ...(isInteracting ? { '--grid-col-w': `${columnPitch(effectiveWidth, cols, gap, pad.x)}px` } : {}),
     ...style,
-  }), [cols, rowHeight, gap, pad.x, pad.y, isInteracting, effectiveWidth, style])
+  }) as CSSProperties, [cols, rowHeight, gap, pad.x, pad.y, isInteracting, effectiveWidth, style])
 
   const containerClass = [
     'grid-canvas',

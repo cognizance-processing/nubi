@@ -185,7 +185,7 @@ function FilterWidgetLoader({ widget, editMode = false }) {
  * resolved Arrow table slice for this widget is passed here so the widget
  * skips its own query_id / metric fetch.  null = legacy path unchanged.
  */
-function WidgetComponent({ widget, onOpenDrawer, editMode = false, providerTable = null }) {
+function WidgetComponent({ widget, onOpenDrawer = undefined, editMode = false, providerTable = null }) {
   // Normalize top-level spec fields into widget.props before dispatch
   const w = useMemo(() => normalizeWidget(widget), [widget])
 
@@ -441,9 +441,9 @@ function SpecRendererBody({
   //   'header' → horizontal filter bar above the grid (ordered by widget.order)
   //   'grid'   → the main GridCanvas (default)
   const { widgets, headerWidgets, drawerGroups } = useMemo(() => {
-    const grid = []
-    const header = []
-    const groups = {}
+    const grid: Record<string, any>[] = []
+    const header: Record<string, any>[] = []
+    const groups: Record<string, Record<string, any>[]> = {}
     for (const w of allWidgets) {
       const placement = effectivePlacement(w)
       if (placement === 'drawer') {

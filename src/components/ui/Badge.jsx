@@ -39,7 +39,7 @@ export default function Badge({
   variant = 'default',
   size = 'md',
   dot = false,
-  className,
+  className = undefined,
   children,
   ...rest
 }) {

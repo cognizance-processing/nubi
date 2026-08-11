@@ -31,7 +31,7 @@ function makeMonthTable() {
     month:   vectorFromArray(['Jan', 'Feb', 'Mar', 'Apr'], new Utf8()),
     revenue: vectorFromArray([100, 200, 150, 300], new Float64()),
     profit:  vectorFromArray([10, 30, 20, 60], new Float64()),
-  })
+  } as any)
 }
 
 function makeRegionTable() {
@@ -40,7 +40,7 @@ function makeRegionTable() {
     month:   vectorFromArray(['Jan', 'Jan', 'Feb', 'Feb'], new Utf8()),
     revenue: vectorFromArray([100, 200, 150, 300], new Float64()),
     region:  vectorFromArray(['EMEA', 'APAC', 'EMEA', 'APAC'], new Utf8()),
-  })
+  } as any)
 }
 
 // ---------------------------------------------------------------------------
@@ -261,7 +261,7 @@ function makeHeatTable() {
     day:   vectorFromArray(['Mon', 'Mon', 'Tue', 'Tue'], new Utf8()),
     hour:  vectorFromArray(['AM', 'PM', 'AM', 'PM'], new Utf8()),
     count: vectorFromArray([5, 9, 2, 7], new Float64()),
-  })
+  } as any)
 }
 
 test('donut: single pie series with an inner-radius hole', () => {

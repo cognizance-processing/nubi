@@ -113,12 +113,12 @@ export function useFilterOptions(widget) {
   const reqSeq = useRef(0)
 
   // Build named params, binding the live search text into any { input: true } slots.
-  const buildParams = useCallback((searchText) => {
+  const buildParams = useCallback((searchText: string) => {
     if (!optionsParams || typeof optionsParams !== 'object') {
       return searchText ? { search: searchText } : undefined
     }
-    const out = {}
-    for (const [k, v] of Object.entries(optionsParams)) {
+    const out: Record<string, any> = {}
+    for (const [k, v] of Object.entries(optionsParams as Record<string, any>)) {
       if (v && typeof v === 'object' && v.input === true) out[k] = searchText
       else out[k] = v
     }

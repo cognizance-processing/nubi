@@ -135,9 +135,13 @@ export function isHiddenAt(widget, breakpoint) {
  * `posToGridItem` during the dnd-kit / CSS-Grid migration — the item shape is
  * library-agnostic so the geometry layer outlives the grid library it feeds.
  */
-export function posToGridItem(id, pos, { cols, minDefaults, extra } = {}) {
+export function posToGridItem(id: string, pos: Record<string, any>, { cols, minDefaults, extra }: {
+  cols?: number
+  minDefaults?: { minW?: number; minH?: number }
+  extra?: Record<string, any>
+} = {}): Record<string, any> {
   const p = pos ?? { x: 1, y: 1, w: 4, h: 4 }
-  const item = {
+  const item: Record<string, any> = {
     i: id,
     x: Math.max(0, (p.x ?? 1) - 1),
     y: Math.max(0, (p.y ?? 1) - 1),
@@ -175,7 +179,7 @@ export function gridItemToPos(item, prevPos) {
  * Effective pos for a widget at a breakpoint: the override if present, else the
  * canonical widget.pos. (For lg there are never overrides — pos is canonical.)
  */
-export function effectivePos(widget, spec, breakpoint) {
+export function effectivePos(widget: Record<string, any>, spec: Record<string, any>, breakpoint: string): Record<string, any> {
   if (breakpoint === 'lg') return widget.pos
   const ov = overridesFor(spec, breakpoint)[widget.id]
   if (ov) return { ...(widget.pos ?? {}), ...ov }
@@ -187,7 +191,7 @@ export function effectivePos(widget, spec, breakpoint) {
  * `perWidget(widget)` may return per-item extras (constraints/min defaults).
  * `spec` is optional — when provided, surfaces.grid is checked first (T1).
  */
-export function buildLgLayout(widgets, cols, perWidget, spec) {
+export function buildLgLayout(widgets: Record<string, any>[], cols: number, perWidget?: (w: Record<string, any>) => Record<string, any>, spec?: Record<string, any>) {
   return widgets.filter(w => !isHiddenAt(w, 'lg')).map(w => {
     const opts = perWidget ? perWidget(w) : {}
     const pos = spec ? effectiveWidgetPos(w, spec) : w.pos
@@ -200,7 +204,7 @@ export function buildLgLayout(widgets, cols, perWidget, spec) {
  * present, else fall back to the lg-derived item (current behaviour).
  * Also respects surfaces.grid for the base lg pos (T1).
  */
-export function buildMdLayout(widgets, cols, spec, perWidget) {
+export function buildMdLayout(widgets: Record<string, any>[], cols: number, spec: Record<string, any>, perWidget?: (w: Record<string, any>) => Record<string, any>) {
   const ov = overridesFor(spec, 'md')
   return widgets.filter(w => !isHiddenAt(w, 'md')).map(w => {
     const opts = perWidget ? perWidget(w) : {}
@@ -222,7 +226,7 @@ export function buildMdLayout(widgets, cols, spec, perWidget) {
  * mobile layout); authors who want wider mobile widgets add explicit overrides.
  * Overrides are clamped to `smCols` so a stale wide override can't overflow.
  */
-export function buildSmLayout(widgets, spec, perWidget, smCols = SM_COLS) {
+export function buildSmLayout(widgets: Record<string, any>[], spec: Record<string, any>, perWidget?: (w: Record<string, any>) => Record<string, any>, smCols = SM_COLS) {
   const ov = overridesFor(spec, 'sm')
   let cursorY = 0
   return widgets.filter(w => !isHiddenAt(w, 'sm')).map(w => {
@@ -258,7 +262,7 @@ export function buildSmLayout(widgets, spec, perWidget, smCols = SM_COLS) {
  * (the desktop column count) and sm uses SM_COLS (1) — so existing callers that
  * pass only `(spec, cols, perWidget)` get identical behaviour.
  */
-export function buildResponsiveLayouts(spec, cols, perWidget, colsByBp = {}) {
+export function buildResponsiveLayouts(spec: Record<string, any>, cols: number, perWidget?: (w: Record<string, any>) => Record<string, any>, colsByBp: { lg?: number; md?: number; sm?: number } = {}) {
   const widgets = spec?.widgets ?? []
   const lgCols = colsByBp.lg ?? cols
   const mdCols = colsByBp.md ?? cols
@@ -282,8 +286,8 @@ export function buildResponsiveLayouts(spec, cols, perWidget, colsByBp = {}) {
  *
  * Returns a NEW spec (immutable). Only widgets present in `layout` are updated.
  */
-export function applyLayoutCommit(spec, breakpoint, layout) {
-  const byId = new Map(layout.map(l => [l.i, l]))
+export function applyLayoutCommit(spec: Record<string, any>, breakpoint: string, layout: Record<string, any>[]): Record<string, any> {
+  const byId = new Map<string, Record<string, any>>(layout.map(l => [l.i, l]))
 
   if (breakpoint === 'lg') {
     const nextWidgets = spec.widgets.map(w => {

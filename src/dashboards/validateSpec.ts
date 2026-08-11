@@ -46,7 +46,7 @@ const CHART_TYPES = new Set([
 const FILTER_SUBTYPES = new Set(['select', 'multiselect', 'daterange', 'text'])
 const VARIABLE_TYPES = new Set(['text', 'number', 'date', 'daterange', 'select', 'multiselect'])
 
-function isPlainObject(v) {
+function isPlainObject(v: unknown): v is Record<string, any> {
   return v != null && typeof v === 'object' && !Array.isArray(v)
 }
 

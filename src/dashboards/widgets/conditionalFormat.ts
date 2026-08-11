@@ -107,19 +107,21 @@ function matchesOp(cellValue, op, value, value2) {
  * Rules are applied in order; later rules win (last-writer-wins merge per cell).
  * Row-scope rules merge into rowStyle (same last-writer-wins).
  *
- * @param {Array}  rules   – array of rule objects (see file header)
- * @param {object} row     – plain key→value row object
- * @param {string[]} columns – columns present in the display (unused by eval
- *                            but kept for future column-existence guards)
- * @returns {{ cellStyles: Record<string, object>, rowStyle: object|null }}
+ * @param rules   – array of rule objects (see file header)
+ * @param row     – plain key→value row object
+ * @param _columns – columns present in the display (unused by eval
+ *                   but kept for future column-existence guards)
  */
-export function evalRules(rules, row, _columns) {
+export function evalRules(rules: Record<string, any>[], row: Record<string, any>, _columns?: string[]): {
+  cellStyles: Record<string, Record<string, any>>
+  rowStyle: Record<string, any> | null
+} {
   if (!rules || rules.length === 0) {
     return { cellStyles: {}, rowStyle: null }
   }
 
-  const cellStyles = {}
-  let rowStyle = null
+  const cellStyles: Record<string, Record<string, any>> = {}
+  let rowStyle: Record<string, any> | null = null
 
   for (const rule of rules) {
     const { column, op, value, value2, style, scope } = rule
@@ -157,11 +159,10 @@ export function evalRules(rules, row, _columns) {
  * If value is null/undefined, returns '—'.
  * If fmt is null/undefined, returns String(value).
  *
- * @param {*}      value – raw cell value
- * @param {object} fmt   – format descriptor { type, locale?, ...opts }
- * @returns {string}
+ * @param value – raw cell value
+ * @param fmt   – format descriptor { type, locale?, ...opts }
  */
-export function formatValue(value, fmt) {
+export function formatValue(value: any, fmt: Record<string, any>): string {
   if (value == null) return '—'
   if (!fmt || !fmt.type) return String(value)
 
@@ -170,7 +171,7 @@ export function formatValue(value, fmt) {
   try {
     switch (fmt.type) {
       case 'number': {
-        const opts = {}
+        const opts: Intl.NumberFormatOptions = {}
         if (fmt.decimals != null) {
           opts.minimumFractionDigits = fmt.decimals
           opts.maximumFractionDigits = fmt.decimals
@@ -179,7 +180,7 @@ export function formatValue(value, fmt) {
       }
 
       case 'currency': {
-        const opts = {
+        const opts: Intl.NumberFormatOptions = {
           style: 'currency',
           currency: fmt.currency ?? 'USD',
         }
@@ -191,7 +192,7 @@ export function formatValue(value, fmt) {
       }
 
       case 'percent': {
-        const opts = {
+        const opts: Intl.NumberFormatOptions = {
           style: 'percent',
         }
         if (fmt.decimals != null) {
@@ -209,7 +210,7 @@ export function formatValue(value, fmt) {
             ? new Date(value)
             : new Date(String(value))
 
-        const opts = {}
+        const opts: Intl.DateTimeFormatOptions = {}
         if (fmt.dateStyle) opts.dateStyle = fmt.dateStyle
         if (fmt.timeStyle) opts.timeStyle = fmt.timeStyle
         // default: short date if nothing specified

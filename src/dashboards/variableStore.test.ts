@@ -33,7 +33,7 @@ import assert from 'node:assert/strict'
  * Inline copy of resolveParams from VariableStore.jsx.
  * If the logic in VariableStore.jsx changes, update here too.
  */
-function resolveParams(widgetParams, variables) {
+function resolveParams(widgetParams: Record<string, any>, variables: Record<string, any>): Record<string, any> {
   if (!widgetParams || typeof widgetParams !== 'object' || Array.isArray(widgetParams)) {
     return {}
   }
@@ -41,7 +41,7 @@ function resolveParams(widgetParams, variables) {
     variables = {}
   }
 
-  const resolved = {}
+  const resolved: Record<string, any> = {}
   for (const [paramName, paramValue] of Object.entries(widgetParams)) {
     if (
       paramValue !== null &&

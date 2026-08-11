@@ -39,11 +39,21 @@ export interface MetricBinding {
   limit?: number
 }
 
-/** Run a governed metric query server-side and return its result table. */
+/**
+ * Run a governed metric query server-side and return its result table.
+ * Unlike runArrowQueryById, this throws on failure rather than returning a
+ * structured error — `error` is typed here only so callers that branch
+ * between the two (e.g. `metric ? runMetricQuery(...) : runArrowQueryById(...)`)
+ * can destructure both result shapes uniformly; it is never actually set.
+ */
 export async function runMetricQuery(
   metric: MetricBinding,
   { signal }: { signal?: AbortSignal } = {},
-): Promise<{ table: import('apache-arrow').Table; cacheStatus: string }> {
+): Promise<{
+  table: import('apache-arrow').Table
+  cacheStatus: string
+  error?: { status?: number; code?: string; message: string }
+}> {
   if (!metric || !metric.metric_id) {
     throw new Error('runMetricQuery: metric.metric_id is required')
   }

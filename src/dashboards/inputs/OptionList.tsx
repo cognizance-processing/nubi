@@ -114,35 +114,32 @@ function Radio({ checked }) {
 // OptionList
 // ---------------------------------------------------------------------------
 
-/**
- * @param {{
- *   options: Array<{v: string, l: string, icon?: string}>,
- *   selected: Set<string>,
- *   mode: 'plain' | 'radio' | 'checkbox',
- *   onSelect: (v: string) => void,
- *   activeIndex?: number,
- *   onActiveChange?: (i: number) => void,
- *   query?: string,
- *   loading?: boolean,
- *   emptyText?: string,
- *   typeToSearch?: boolean,
- *   listboxId?: string,
- *   optionIdPrefix?: string,
- * }} props
- */
 export default function OptionList({
   options,
   selected,
   mode = 'plain',
   onSelect,
   activeIndex = -1,
-  onActiveChange,
+  onActiveChange = undefined,
   query = '',
   loading = false,
   emptyText = 'No matches',
   typeToSearch = false,
-  listboxId,
-  optionIdPrefix,
+  listboxId = undefined,
+  optionIdPrefix = undefined,
+}: {
+  options: Array<{ v: string; l: string; icon?: string }>
+  selected: Set<string>
+  mode?: 'plain' | 'radio' | 'checkbox'
+  onSelect: (v: string) => void
+  activeIndex?: number
+  onActiveChange?: (i: number) => void
+  query?: string
+  loading?: boolean
+  emptyText?: string
+  typeToSearch?: boolean
+  listboxId?: string
+  optionIdPrefix?: string
 }) {
   if (loading) {
     return (

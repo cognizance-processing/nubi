@@ -22,7 +22,7 @@ import {
   migrateSpecToSurfaces,
 } from './responsiveLayout.js'
 
-const makeSpec = (responsive) => ({
+const makeSpec = (responsive?: Record<string, any>) => ({
   layout: { cols: 12 },
   widgets: [
     { id: 'a', type: 'chart', pos: { x: 1, y: 1, w: 4, h: 4 } },
@@ -169,7 +169,7 @@ describe('applyLayoutCommit — routes to active breakpoint only', () => {
   })
 
   test('editing md does NOT affect sm and vice-versa', () => {
-    let spec = makeSpec()
+    let spec: any = makeSpec()
     spec = applyLayoutCommit(spec, 'md', [{ i: 'a', x: 0, y: 0, w: 12, h: 6 }])
     spec = applyLayoutCommit(spec, 'sm', [{ i: 'a', x: 0, y: 0, w: 1, h: 8 }])
     assert.deepEqual(spec.responsive.md, { a: { x: 1, y: 1, w: 12, h: 6 } })
@@ -331,7 +331,7 @@ describe('T1 migrateSpecToSurfaces', () => {
   })
 
   test('does not mutate the original spec', () => {
-    const spec = makeSpec()
+    const spec: any = makeSpec()
     const origGrid = spec?.surfaces?.grid
     migrateSpecToSurfaces(spec)
     assert.equal(spec?.surfaces?.grid, origGrid)

@@ -322,6 +322,7 @@ export default function TableWidget({ widget, providerTable = null }) {
     }
 
     fetchData()
+    return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query_id, JSON.stringify(metric), limit, columnsRaw, JSON.stringify(resolvedParams), refreshEpoch, providerTable, retryEpoch])
 
