@@ -56,7 +56,7 @@ describe('_fetchAndApplyFeatures graceful degradation (OSS deployment)', () => {
   })
 
   test('GET /features 404s (EE frontend loaded, backend route absent) → no throw, defaults preserved', async () => {
-    const notFound = new Error('Request failed: 404 Not Found')
+    const notFound: Error & { status?: number } = new Error('Request failed: 404 Not Found')
     notFound.status = 404
     let applied = null
     let threw = false

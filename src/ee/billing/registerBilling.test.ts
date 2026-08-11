@@ -27,7 +27,7 @@ import { dirname, join } from 'node:path'
 import { getSlot, hasSlot, _resetRegistry, registerSlot } from '../registry.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const SOURCE = readFileSync(join(__dirname, 'registerBilling.js'), 'utf8')
+const SOURCE = readFileSync(join(__dirname, 'registerBilling.ts'), 'utf8')
 
 const DOCUMENTED_SLOTS = [
   'billing-page',

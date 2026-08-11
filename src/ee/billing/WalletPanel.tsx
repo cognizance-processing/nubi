@@ -252,7 +252,7 @@ function LedgerRow({ entry }) {
 const TOPUP_PRESETS_USD = [10, 25, 50, 100, 250]
 
 function TopupForm({ onCancel, onSuccess }) {
-  const [amountUsd, setAmountUsd] = useState(50)
+  const [amountUsd, setAmountUsd] = useState<string | number>(50)
   const [custom, setCustom] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)

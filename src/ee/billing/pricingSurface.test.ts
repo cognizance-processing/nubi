@@ -39,12 +39,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 
 describe('EE pricing-surface re-exports point at the right core components', () => {
   test('PricingCalculator.jsx re-exports the core calculator as its default', () => {
-    const src = readFileSync(join(__dirname, 'PricingCalculator.jsx'), 'utf8')
+    const src = readFileSync(join(__dirname, 'PricingCalculator.tsx'), 'utf8')
     assert.match(src, /export \{ default \} from ['"]\.\.\/\.\.\/components\/pricing\/PricingCalculator\.jsx['"]/)
   })
 
   test('TierCard.jsx re-exports the core TierCard (not the whole TierCards grid) as its default', () => {
-    const src = readFileSync(join(__dirname, 'TierCard.jsx'), 'utf8')
+    const src = readFileSync(join(__dirname, 'TierCard.tsx'), 'utf8')
     assert.match(src, /export \{ TierCard as default \} from ['"]\.\.\/\.\.\/components\/pricing\/TierCards\.jsx['"]/)
   })
 })

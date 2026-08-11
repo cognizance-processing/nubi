@@ -138,7 +138,7 @@ export default function PricingPage() {
   const [fxFallback, setFxFallback]           = useState(false)
   const [loadingStatus, setLoadingStatus]     = useState(true)
   const [statusError, setStatusError]         = useState(null)
-  const [billing, setBilling]                 = useState('monthly')
+  const [billing, setBilling]                 = useState<'monthly' | 'annual'>('monthly')
   const [upgradeLoading, setUpgradeLoading]   = useState(null)
   const [upgradeError, setUpgradeError]       = useState(null)
   const [managing, setManaging]               = useState(false)

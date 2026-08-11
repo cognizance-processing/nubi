@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const SOURCE = readFileSync(join(__dirname, 'FxNotice.jsx'), 'utf8')
+const SOURCE = readFileSync(join(__dirname, 'FxNotice.tsx'), 'utf8')
 
 // ---------------------------------------------------------------------------
 // Copy content — the honest ZAR-charged / USD-anchored disclosure

@@ -238,7 +238,7 @@ describe('WalletPanel load() graceful-degradation path', () => {
   })
 
   test('OSS mode: EE endpoint 404s → error state set, no throw escapes', async () => {
-    const notFound = new Error('Request failed: 404 Not Found')
+    const notFound: Error & { status?: number } = new Error('Request failed: 404 Not Found')
     notFound.status = 404
     let threw = false
     let result

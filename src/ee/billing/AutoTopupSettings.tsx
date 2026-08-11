@@ -46,7 +46,15 @@ import { setAutoTopup, centsToUsd, usdToCents } from '../../lib/ee/wallet.js'
  * label) the hint text is still exposed to assistive tech via aria-label so
  * the field is never an unlabelled number input.
  */
-function UsdInput({ label, hint, value, onChange, min = 1, max = 100000, disabled }) {
+function UsdInput({ label, hint, value, onChange, min = 1, max = 100000, disabled }: {
+  label: string
+  hint?: string
+  value: string | number
+  onChange: (value: string) => void
+  min?: number
+  max?: number
+  disabled?: boolean
+}) {
   const autoId = useId()
   const inputId = `usd-input-${autoId}`
   const accessibleLabel = label || hint || 'Amount (USD)'
@@ -82,7 +90,12 @@ function UsdInput({ label, hint, value, onChange, min = 1, max = 100000, disable
 /**
  * Saved-card chip.
  */
-function CardChip({ brand, last4, expMonth, expYear }) {
+function CardChip({ brand, last4, expMonth, expYear }: {
+  brand?: string
+  last4?: string
+  expMonth?: number | string
+  expYear?: number | string
+}) {
   if (!last4) return null
   const brandLabel = brand ? brand.charAt(0).toUpperCase() + brand.slice(1) : 'Card'
   return (
@@ -102,20 +115,17 @@ function CardChip({ brand, last4, expMonth, expYear }) {
 // AutoTopupSettings
 // ---------------------------------------------------------------------------
 
-/**
- * @param {{
- *   config: import('../../lib/ee/wallet.js').AutoTopupConfig | null,
- *   onSaved?: (config: import('../../lib/ee/wallet.js').AutoTopupConfig) => void,
- *   className?: string,
- * }} props
- */
-export default function AutoTopupSettings({ config, onSaved, className }) {
+export default function AutoTopupSettings({ config, onSaved, className }: {
+  config: import('../../lib/ee/wallet.js').AutoTopupConfig | null
+  onSaved?: (config: import('../../lib/ee/wallet.js').AutoTopupConfig) => void
+  className?: string
+}) {
   // Form state — all stored in USD (not cents) for the input fields
   const [enabled, setEnabled]             = useState(false)
-  const [threshold, setThreshold]         = useState(10)        // $10
-  const [topupAmount, setTopupAmount]     = useState(50)        // $50
-  const [monthlyCap, setMonthlyCap]       = useState('')        // '' = unlimited
-  const [spendCap, setSpendCap]           = useState('')        // '' = unlimited
+  const [threshold, setThreshold]         = useState<string | number>(10)        // $10
+  const [topupAmount, setTopupAmount]     = useState<string | number>(50)        // $50
+  const [monthlyCap, setMonthlyCap]       = useState<string | number>('')        // '' = unlimited
+  const [spendCap, setSpendCap]           = useState<string | number>('')        // '' = unlimited
   const [hasMonthlyCap, setHasMonthlyCap] = useState(false)
   const [hasSpendCap, setHasSpendCap]     = useState(false)
 

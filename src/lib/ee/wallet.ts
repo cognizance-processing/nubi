@@ -28,64 +28,54 @@ import { get, post, put } from '../api.js'
 // Typedefs
 // ---------------------------------------------------------------------------
 
-/**
- * @typedef {{
- *   balance_usd_cents: number,
- *   balance_zar_cents: number,
- *   last_fx_rate: number | null,
- *   last_fx_at: string | null,
- * }} WalletBalance
- */
+export interface WalletBalance {
+  balance_usd_cents: number
+  balance_zar_cents: number
+  last_fx_rate: number | null
+  last_fx_at: string | null
+}
 
-/**
- * @typedef {{
- *   auto_topup_enabled: boolean,
- *   threshold_usd_cents: number,
- *   topup_amount_usd_cents: number,
- *   monthly_topup_cap_usd_cents: number | null,
- *   spend_cap_usd_cents: number | null,
- *   paystack_card_last4: string | null,
- *   paystack_card_brand: string | null,
- *   paystack_card_exp_month: string | null,
- *   paystack_card_exp_year: string | null,
- *   paystack_auth_reusable: boolean,
- * }} AutoTopupConfig
- */
+export interface AutoTopupConfig {
+  auto_topup_enabled: boolean
+  threshold_usd_cents: number
+  topup_amount_usd_cents: number
+  monthly_topup_cap_usd_cents: number | null
+  spend_cap_usd_cents: number | null
+  paystack_card_last4: string | null
+  paystack_card_brand: string | null
+  paystack_card_exp_month: string | null
+  paystack_card_exp_year: string | null
+  paystack_auth_reusable: boolean
+}
 
-/**
- * @typedef {{
- *   id: string,
- *   entry_type: string,
- *   amount_usd_cents: number,
- *   balance_after_usd_cents: number,
- *   description: string | null,
- *   ref_id: string | null,
- *   metadata: Record<string, any> | null,
- *   created_at: string,
- * }} LedgerEntry
- */
+export interface LedgerEntry {
+  id: string
+  entry_type: string
+  amount_usd_cents: number
+  balance_after_usd_cents: number
+  description: string | null
+  ref_id: string | null
+  metadata: Record<string, any> | null
+  created_at: string
+}
 
-/**
- * @typedef {{
- *   total_spend_usd_cents: number,
- *   auto_topup_total_usd_cents: number,
- *   manual_topup_total_usd_cents: number,
- *   usage_llm_usd_cents: number,
- *   usage_storage_usd_cents: number,
- *   usage_compute_usd_cents: number,
- *   usage_embed_usd_cents: number,
- *   usage_overage_usd_cents: number,
- * }} MonthSpend
- */
+export interface MonthSpend {
+  total_spend_usd_cents: number
+  auto_topup_total_usd_cents: number
+  manual_topup_total_usd_cents: number
+  usage_llm_usd_cents: number
+  usage_storage_usd_cents: number
+  usage_compute_usd_cents: number
+  usage_embed_usd_cents: number
+  usage_overage_usd_cents: number
+}
 
-/**
- * @typedef {{
- *   balance: WalletBalance,
- *   config: AutoTopupConfig,
- *   month_spend: MonthSpend,
- *   ledger: LedgerEntry[],
- * }} WalletState
- */
+export interface WalletState {
+  balance: WalletBalance
+  config: AutoTopupConfig
+  month_spend: MonthSpend
+  ledger: LedgerEntry[]
+}
 
 // ---------------------------------------------------------------------------
 // Formatting helpers (exported for use in UI components)

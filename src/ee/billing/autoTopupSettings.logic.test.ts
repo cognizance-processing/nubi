@@ -36,10 +36,10 @@ function usdToCents(usd) {
 // Mirror: the useEffect hydration block — AutoTopupSettings.jsx lines ~113-134
 // ---------------------------------------------------------------------------
 
-function hydrateFromConfig(config) {
+function hydrateFromConfig(config: Record<string, any>): Record<string, any> | null {
   if (!config) return null // no-op: form keeps its current (default) state
 
-  const state = {
+  const state: Record<string, any> = {
     enabled: config.auto_topup_enabled ?? false,
     threshold: centsToUsd(config.threshold_usd_cents ?? 1000),
     topupAmount: centsToUsd(config.topup_amount_usd_cents ?? 5000),
