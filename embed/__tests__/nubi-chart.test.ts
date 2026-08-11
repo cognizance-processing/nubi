@@ -42,7 +42,7 @@ vi.mock('../widgets/glScatter.js', () => ({
 const { NubiChart } = await import('../widgets/nubi-chart.js')
 if (!customElements.get('nubi-chart')) customElements.define('nubi-chart', NubiChart)
 
-function makeChart(attrs = {}) {
+function makeChart(attrs: Record<string, string> = {}): any {
   const el = document.createElement('nubi-chart')
   for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v)
   return el

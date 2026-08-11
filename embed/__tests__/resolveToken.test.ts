@@ -10,6 +10,12 @@
 import { describe, it, expect } from 'vitest'
 import { resolveToken } from '../widgets/shared.js'
 
+declare global {
+  interface Window {
+    [key: string]: any
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Minimal fake element helper
 // ---------------------------------------------------------------------------
@@ -19,7 +25,7 @@ import { resolveToken } from '../widgets/shared.js'
  * We use actual jsdom elements (from the vitest jsdom env) so getAttribute
  * works exactly as it would in a real browser.
  */
-function makeElem(attrs = {}) {
+function makeElem(attrs: Record<string, string> = {}): any {
   const el = document.createElement('div')
   for (const [k, v] of Object.entries(attrs)) {
     el.setAttribute(k, v)

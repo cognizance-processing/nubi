@@ -62,11 +62,11 @@ beforeAll(async () => {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function make(attrs = {}) {
+function make(attrs: Record<string, string | boolean> = {}): any {
   const el = document.createElement('nubi-query-editor')
   for (const [k, v] of Object.entries(attrs)) {
     if (v === true) el.setAttribute(k, '')
-    else el.setAttribute(k, v)
+    else el.setAttribute(k, v as string)
   }
   return el
 }

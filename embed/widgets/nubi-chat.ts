@@ -203,6 +203,8 @@ function parseSseBuffer(buffer) {
 // ---------------------------------------------------------------------------
 
 class NubiChat extends HTMLElement {
+  [key: string]: any
+
   static get observedAttributes() {
     return [
       'endpoint', 'token', 'model', 'board-id', 'mcp-tools-url',
@@ -341,7 +343,7 @@ class NubiChat extends HTMLElement {
   // --- Send / stream -------------------------------------------------------
 
   _requestBody(message) {
-    const body = {
+    const body: Record<string, any> = {
       model: this.getAttribute('model') || DEFAULT_MODEL,
       message,
     }

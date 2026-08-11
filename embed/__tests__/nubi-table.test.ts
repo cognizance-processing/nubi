@@ -16,7 +16,7 @@ import { mount, unmount, nextTick } from './helpers.js'
 import { NubiTable } from '../widgets/nubi-table.js'
 if (!customElements.get('nubi-table')) customElements.define('nubi-table', NubiTable)
 
-function makeTable(attrs = {}) {
+function makeTable(attrs: Record<string, string> = {}): any {
   const el = document.createElement('nubi-table')
   for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v)
   return el
@@ -155,7 +155,7 @@ describe('<nubi-table> — theme + attributes', () => {
   })
 
   test('observedAttributes includes data, columns, limit, theme, and no-export', () => {
-    const attrs = customElements.get('nubi-table').observedAttributes
+    const attrs = (customElements.get('nubi-table') as any).observedAttributes
     for (const a of ['data', 'columns', 'limit', 'theme', 'no-sample-fallback', 'no-export']) {
       expect(attrs).toContain(a)
     }
@@ -252,7 +252,7 @@ describe('<nubi-table> — CSV export', () => {
 
       expect(URL.createObjectURL).toHaveBeenCalledOnce()
       // The Blob argument should be a real Blob with text/csv type
-      const blob = URL.createObjectURL.mock.calls[0][0]
+      const blob = (URL.createObjectURL as any).mock.calls[0][0]
       expect(blob).toBeInstanceOf(Blob)
       expect(blob.type).toContain('text/csv')
 
@@ -270,7 +270,7 @@ describe('<nubi-table> — CSV export', () => {
 
     const dl = stubDownload()
     const events = []
-    document.addEventListener('nubi:export', (e) => events.push(e.detail))
+    document.addEventListener('nubi:export', (e: any) => events.push(e.detail))
 
     try {
       const btn = el.shadowRoot.querySelector('[data-role="export"]')
@@ -281,7 +281,7 @@ describe('<nubi-table> — CSV export', () => {
       expect(events[0].format).toBe('csv')
       expect(events[0].rows).toBeGreaterThan(0)
     } finally {
-      document.removeEventListener('nubi:export', (e) => events.push(e.detail))
+      document.removeEventListener('nubi:export', (e: any) => events.push(e.detail))
       dl.restore()
     }
   })
@@ -331,7 +331,7 @@ describe('<nubi-table> — CSV export', () => {
 
     const dl = stubDownload()
     const events = []
-    document.addEventListener('nubi:export', (e) => events.push(e.detail))
+    document.addEventListener('nubi:export', (e: any) => events.push(e.detail))
 
     try {
       const btn = el.shadowRoot.querySelector('[data-role="export"]')
@@ -341,7 +341,7 @@ describe('<nubi-table> — CSV export', () => {
       expect(events.length).toBe(1)
       expect(events[0].rows).toBeGreaterThan(0)
     } finally {
-      document.removeEventListener('nubi:export', (e) => events.push(e.detail))
+      document.removeEventListener('nubi:export', (e: any) => events.push(e.detail))
       dl.restore()
     }
   })

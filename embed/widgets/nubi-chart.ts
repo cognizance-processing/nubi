@@ -174,6 +174,8 @@ function _deepMergeLocal(target, source) {
 // ---------------------------------------------------------------------------
 
 class NubiChart extends HTMLElement {
+  [key: string]: any
+
   static get observedAttributes() {
     return [
       'query-id', 'type', 'x', 'y', 'y2', 'color', 'size', 'value',
@@ -251,7 +253,7 @@ class NubiChart extends HTMLElement {
 
   /** Build config from individual attributes, then deep-merge JSON `config` (config wins). */
   _config() {
-    const cfg = {}
+    const cfg: Record<string, any> = {}
     const a = (n) => this.getAttribute(n)
 
     if (a('title') != null) cfg.title = a('title')
@@ -284,12 +286,12 @@ class NubiChart extends HTMLElement {
     const palette = a('palette')
     if (palette) cfg.palette = palette.includes(',') ? palette.split(',').map((s) => s.trim()) : palette
 
-    const xAxis = {}
+    const xAxis: Record<string, any> = {}
     if (a('x-label') != null) xAxis.label = a('x-label')
     if (a('x-format')) xAxis.format = a('x-format')
     if (Object.keys(xAxis).length) cfg.xAxis = xAxis
 
-    const yAxis = {}
+    const yAxis: Record<string, any> = {}
     if (a('y-label') != null) yAxis.label = a('y-label')
     if (a('y-format')) yAxis.format = a('y-format')
     if (a('y-min') != null) yAxis.min = Number(a('y-min'))
@@ -297,7 +299,7 @@ class NubiChart extends HTMLElement {
     if (_bool(a('log-y'))) yAxis.log = true
     if (Object.keys(yAxis).length) cfg.yAxis = yAxis
 
-    const y2Axis = {}
+    const y2Axis: Record<string, any> = {}
     if (a('y2-label') != null) y2Axis.label = a('y2-label')
     if (a('y2-format')) y2Axis.format = a('y2-format')
     if (Object.keys(y2Axis).length) cfg.y2Axis = y2Axis

@@ -381,6 +381,8 @@ function gaugeColor(score) {
 // ---------------------------------------------------------------------------
 
 class NubiHealth extends HTMLElement {
+  [key: string]: any
+
   static get observedAttributes() {
     return ['get-token', 'token', 'backend', 'theme', 'dataset-key', 'no-sample-fallback']
   }

@@ -236,7 +236,7 @@ describe('_showError DOM logic', () => {
     const shadow = createMockKpiShadow()
     simulateShowError(shadow, 'Network error')
 
-    const badge = shadow.querySelector('.nubi-badge')
+    const badge = shadow.querySelector('.nubi-badge') as HTMLElement
     expect(badge.style.display).toBe('none')
   })
 
@@ -244,7 +244,7 @@ describe('_showError DOM logic', () => {
     const shadow = createMockKpiShadow()
     simulateShowError(shadow, 'Network error')
 
-    const note = shadow.querySelector('.nubi-sample-note')
+    const note = shadow.querySelector('.nubi-sample-note') as HTMLElement
     expect(note.style.display).toBe('none')
   })
 
@@ -287,7 +287,7 @@ describe('_showError DOM logic', () => {
     simulateShowError(shadow, 'failed')
 
     const footer = shadow.querySelector('.kpi-footer')
-    const errNote = shadow.querySelector('.kpi-error-note')
+    const errNote = shadow.querySelector('.kpi-error-note') as HTMLElement
     expect(errNote).not.toBeNull()
     // errNote is present in the DOM (used by e2e selector)
     expect(errNote.style.display).toBe('none')
@@ -301,7 +301,7 @@ describe('_showError DOM logic', () => {
     const shadow = createMockKpiShadow()
     simulateShowError(shadow, 'Error')
 
-    const targetRow = shadow.querySelector('.kpi-target-row')
+    const targetRow = shadow.querySelector('.kpi-target-row') as HTMLElement
     expect(targetRow.style.display).toBe('none')
   })
 

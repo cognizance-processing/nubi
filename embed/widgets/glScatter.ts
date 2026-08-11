@@ -131,7 +131,7 @@ export function createGlScatter(canvas) {
    *   pointSize?: number
    * }} opts
    */
-  function draw({ x, y, color, pointSize = 3 }) {
+  function draw({ x, y, color = undefined, pointSize = 3 }) {
     if (!x || !y || x.length === 0 || y.length === 0) {
       regl.clear({ color: [0.059, 0.067, 0.09, 1], depth: 1 })
       return

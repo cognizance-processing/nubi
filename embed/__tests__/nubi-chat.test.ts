@@ -28,7 +28,7 @@ function sseWire(frames) {
 }
 
 /** A fetch Response stub whose body is a ReadableStream of the given SSE text. */
-function streamResponse(text, { ok = true, status = 200 } = {}) {
+function streamResponse(text, { ok = true, status = 200 } = {}): any {
   const encoder = new TextEncoder()
   const body = new ReadableStream({
     start(controller) {
@@ -42,7 +42,7 @@ function streamResponse(text, { ok = true, status = 200 } = {}) {
   return { ok, status, body }
 }
 
-function makeChat(attrs = {}) {
+function makeChat(attrs: Record<string, string> = {}): any {
   const el = document.createElement('nubi-chat')
   for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v)
   return el
@@ -80,7 +80,7 @@ describe('<nubi-chat> — scaffold', () => {
   })
 
   test('observedAttributes exposes the documented attributes', () => {
-    const attrs = customElements.get('nubi-chat').observedAttributes
+    const attrs = (customElements.get('nubi-chat') as any).observedAttributes
     for (const a of ['endpoint', 'token', 'model', 'board-id', 'mcp-tools-url', 'placeholder', 'height']) {
       expect(attrs).toContain(a)
     }
@@ -93,7 +93,7 @@ describe('<nubi-chat> — scaffold', () => {
 
 describe('<nubi-chat> — streaming', () => {
   let el
-  afterEach(() => { el && unmount(el); vi.restoreAllMocks() })
+  afterEach(() => { if (el) unmount(el); vi.restoreAllMocks() })
 
   test('renders a user message on send and appends streamed token text', async () => {
     const wire = sseWire([
@@ -154,7 +154,7 @@ describe('<nubi-chat> — streaming', () => {
     expect(el.chatId).toBe('c-42')
 
     // First request carries no chat_id.
-    const body1 = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body1 = JSON.parse(fetchMock.mock.calls[0][1].body as string)
     expect(body1.chat_id).toBeUndefined()
     expect(body1.message).toBe('turn one')
 
@@ -162,7 +162,7 @@ describe('<nubi-chat> — streaming', () => {
     await nextTick(6)
 
     // Second request replays the stored chat_id (server-side memory).
-    const body2 = JSON.parse(fetchMock.mock.calls[1][1].body)
+    const body2 = JSON.parse(fetchMock.mock.calls[1][1].body as string)
     expect(body2.chat_id).toBe('c-42')
     expect(body2.message).toBe('turn two')
   })
@@ -219,7 +219,7 @@ describe('<nubi-chat> — streaming', () => {
     await nextTick(6)
 
     expect(fetchMock.mock.calls[0][0]).toBe('/proxy/chat')
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string)
     expect(body.model).toBe('claude-opus-4-8')
     const headers = fetchMock.mock.calls[0][1].headers
     expect(headers['Accept']).toBe('text/event-stream')
@@ -232,7 +232,7 @@ describe('<nubi-chat> — streaming', () => {
 
 describe('<nubi-chat> — errors', () => {
   let el
-  afterEach(() => { el && unmount(el); vi.restoreAllMocks() })
+  afterEach(() => { if (el) unmount(el); vi.restoreAllMocks() })
 
   test('surfaces an error frame in the error banner', async () => {
     const wire = sseWire([

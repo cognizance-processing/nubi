@@ -24,7 +24,7 @@ const PORT = 8799
 
 export default defineConfig({
   testDir: './specs',
-  testMatch: '**/*.spec.js',
+  testMatch: '**/*.spec.ts',
 
   timeout: 30_000,
   fullyParallel: false,

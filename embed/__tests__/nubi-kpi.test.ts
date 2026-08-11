@@ -18,7 +18,7 @@ import { mount, unmount, nextTick } from './helpers.js'
 import { NubiKpi } from '../widgets/nubi-kpi.js'
 if (!customElements.get('nubi-kpi')) customElements.define('nubi-kpi', NubiKpi)
 
-function makeKpi(attrs = {}) {
+function makeKpi(attrs: Record<string, string> = {}): any {
   const el = document.createElement('nubi-kpi')
   for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v)
   return el
@@ -197,7 +197,7 @@ describe('<nubi-kpi> — theme tokens', () => {
   })
 
   test('observedAttributes includes theme, target columns and data', () => {
-    const attrs = customElements.get('nubi-kpi').observedAttributes
+    const attrs = (customElements.get('nubi-kpi') as any).observedAttributes
     for (const a of ['theme', 'target-col', 'rag-col', 'pct-col', 'data', 'no-sample-fallback']) {
       expect(attrs).toContain(a)
     }

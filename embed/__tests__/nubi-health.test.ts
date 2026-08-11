@@ -17,7 +17,7 @@ import '../widgets/nubi-health.js'
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeHealth(attrs = {}) {
+function makeHealth(attrs: Record<string, string> = {}): any {
   const el = document.createElement('nubi-health')
   for (const [k, v] of Object.entries(attrs)) {
     el.setAttribute(k, v)
@@ -203,7 +203,7 @@ describe('<nubi-health> — live backend fetch', () => {
         return Promise.resolve({ ok: true, json: () => Promise.resolve(MOCK_FRESHNESS) })
       }
       return Promise.resolve({ ok: true, json: () => Promise.resolve(MOCK_SCORE) })
-    })
+    }) as any
   })
 
   afterEach(() => {

@@ -21,9 +21,9 @@ import { describe, it, expect } from 'vitest'
 // ---------------------------------------------------------------------------
 
 const assert = {
-  ok:        (val, msg)  => expect(val, msg).toBeTruthy(),
-  equal:     (a, b, msg) => expect(a, msg).toBe(b),
-  deepEqual: (a, b, msg) => expect(a, msg).toEqual(b),
+  ok:        (val, msg = undefined)  => expect(val, msg).toBeTruthy(),
+  equal:     (a, b, msg = undefined) => expect(a, msg).toBe(b),
+  deepEqual: (a, b, msg = undefined) => expect(a, msg).toEqual(b),
 }
 
 // ---------------------------------------------------------------------------
@@ -483,7 +483,7 @@ describe('hasScope', () => {
 describe('crossFilterBus', () => {
   function createCrossFilterBus() {
     const _filters   = new Map()
-    const _listeners = new Set()
+    const _listeners = new Set<(snapshot: Map<any, any>) => void>()
     return {
       subscribe(cb) {
         _listeners.add(cb)

@@ -64,20 +64,7 @@ export default defineConfig({
   // Run from the repo root so node_modules resolution works correctly
   root: resolve(__embedDir, '..'),
 
-  // Treat .js files as JSX — nubi-kpi-react.js contains JSX with a .js extension
-  esbuild: {
-    loader: 'jsx',
-    // Only apply JSX loader to embed source files (avoids breaking other .js files)
-    include: [/embed\/.*\.js$/, /embed\/.*\.jsx$/],
-    exclude: [],
-  },
-
   optimizeDeps: {
-    esbuildOptions: {
-      loader: {
-        '.js': 'jsx',
-      },
-    },
     include: ['react', 'react-dom', 'apache-arrow', 'echarts'],
   },
 
@@ -87,7 +74,7 @@ export default defineConfig({
     emptyOutDir: true,
 
     lib: {
-      entry: resolve(__embedDir, 'nubi-embed-entry.js'),
+      entry: resolve(__embedDir, 'nubi-embed-entry.ts'),
       name: 'NubiEmbed',
       // Single ES module — browsers don't need UMD/CJS
       formats: ['es'],

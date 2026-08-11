@@ -96,7 +96,7 @@
  *     fetchOptions: { credentials: 'include' },   // send your session cookie
  *   })
  */
-export function createGetToken({ mintUrl, refreshLeadSeconds = 60, fetchOptions = {} }) {
+export function createGetToken({ mintUrl, refreshLeadSeconds = 60, fetchOptions = {} as RequestInit }) {
   if (!mintUrl) throw new Error('[getToken] mintUrl is required')
 
   /** @type {string | null} Cached JWT string */

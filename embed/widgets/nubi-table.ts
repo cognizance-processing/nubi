@@ -207,6 +207,8 @@ function buildTableHTML(table, colNames, limit) {
 // NubiTable — custom element
 // ---------------------------------------------------------------------------
 class NubiTable extends HTMLElement {
+  [key: string]: any
+
   static get observedAttributes() {
     return ['query-id', 'limit', 'columns', 'token', 'get-token', 'backend', 'theme', 'data', 'no-sample-fallback', 'no-export']
   }
@@ -348,7 +350,7 @@ class NubiTable extends HTMLElement {
     }
   }
 
-  _showError(_rawMsg) {
+  _showError(_rawMsg = undefined) {
     // Clear stash — nothing to export in error state
     this._currentTable = null
     this._currentCols  = null

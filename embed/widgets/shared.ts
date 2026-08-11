@@ -58,10 +58,10 @@ export async function resolveToken(elem) {
   // The get-token function may be registered slightly AFTER the element upgrades
   // (module-script execution order, async host bootstrap). Wait briefly for it
   // rather than failing closed to read-only on the first tick.
-  let fn = (typeof window !== 'undefined') ? window[fnName] : undefined
+  let fn: any = (typeof window !== 'undefined') ? (window as any)[fnName] : undefined
   for (let i = 0; i < 20 && typeof fn !== 'function'; i++) {
     await new Promise((r) => setTimeout(r, 25))
-    fn = (typeof window !== 'undefined') ? window[fnName] : undefined
+    fn = (typeof window !== 'undefined') ? (window as any)[fnName] : undefined
   }
   if (typeof fn !== 'function') {
     console.warn(`[nubi-widget] window.${fnName} is not a function`)
@@ -135,7 +135,7 @@ export function makeSampleKpiTable() {
     count:     vectorFromArray([42], new Int32()),
     label:     vectorFromArray(['Sample KPI']),
     category:  vectorFromArray(['demo']),
-  })
+  } as any)
 }
 
 /**
@@ -151,7 +151,7 @@ export function makeSampleTableData() {
     y:        vectorFromArray([2.4, 1.8, 3.9, 2.2, 4.6, 1.1, 3.3, 4.1], new Float64()),
     value:    vectorFromArray([10.5, 22.3, 7.8, 99.1, 45.0, 33.7, 18.2, 61.4], new Float64()),
     category: vectorFromArray(['A', 'B', 'A', 'C', 'B', 'C', 'A', 'B']),
-  })
+  } as any)
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +264,7 @@ export async function fetchMetricQuery(backend, metricId, dimensions, timeGrain,
   }
   if (token) headers['Authorization'] = `Bearer ${token}`
 
-  const body = { dimensions }
+  const body: Record<string, any> = { dimensions }
   if (timeGrain) body.time_grain = timeGrain
 
   const resp = await fetch(url, {
@@ -289,9 +289,9 @@ export async function fetchMetricQuery(backend, metricId, dimensions, timeGrain,
  * @param {Record<string, unknown>[]} rows
  * @returns {import('apache-arrow').Table}
  */
-export function rowsToArrowTable(rows) {
+export function rowsToArrowTable(rows): any {
   if (!Array.isArray(rows) || rows.length === 0) {
-    return tableFromArrays({ _empty: vectorFromArray([]) })
+    return tableFromArrays({ _empty: vectorFromArray([]) } as any)
   }
   const keys = Object.keys(rows[0])
   const arrays = {}

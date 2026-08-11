@@ -48,7 +48,7 @@ const SAMPLE_TABLE = tableFromArrays({
   value:    vectorFromArray([10.5, 22.3, 7.8, 99.1, 45.0], new Float64()),
   active:   vectorFromArray([true, false, true, true, false]),
   category: vectorFromArray(['A', 'B', 'A', 'C', 'B']),
-})
+} as any)
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -310,6 +310,8 @@ const STYLES = /* css */ `
 // ---------------------------------------------------------------------------
 
 class NubiDashboard extends HTMLElement {
+  [key: string]: any
+
   // ---- Custom element lifecycle ------------------------------------------
 
   static get observedAttributes() {

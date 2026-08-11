@@ -324,7 +324,7 @@ function legendConfig(config, theme, { singleSeries = false, hasTitle = false } 
   const pos = (isDeepObject(l) && l.position) || 'top'
   // Small round swatches + comfortable gaps read as considered chrome rather
   // than the default chunky rectangles.
-  const base = {
+  const base: Record<string, any> = {
     type: 'scroll',
     icon: 'circle',
     itemWidth: 8,
@@ -366,7 +366,7 @@ function titleConfig(config, theme) {
   return title // object form passed through
 }
 
-function axisCommon(theme) {
+function axisCommon(theme): Record<string, any> {
   return {
     axisLine: { lineStyle: { color: theme.axis } },
     axisLabel: { color: theme.fgMuted, fontSize: 10 },
@@ -375,9 +375,9 @@ function axisCommon(theme) {
   }
 }
 
-function buildAxis(kind, spec, theme, locale, defaults = {}) {
+function buildAxis(kind, spec, theme, locale, defaults: Record<string, any> = {}) {
   const s = spec || {}
-  const axis = { ...axisCommon(theme), ...defaults }
+  const axis: Record<string, any> = { ...axisCommon(theme), ...defaults }
   if (kind === 'category') axis.type = 'category'
   else axis.type = s.log ? 'log' : (s.type || defaults.type || 'value')
   if (s.label != null) {
@@ -514,7 +514,7 @@ function isDarkColor(color) {
   return relativeLuminance(color) < 0.5
 }
 
-function tooltipConfig(config, theme, { trigger = 'axis', locale } = {}) {
+function tooltipConfig(config, theme, { trigger = 'axis', locale }: { trigger?: string; locale?: any } = {}) {
   if (config.tooltip === false) return { show: false }
   // Legacy themes only carry `fg` (on-canvas text). Infer a readable tooltip
   // surface from it when the theme doesn't supply tooltipBg/tooltipFg directly —
@@ -522,7 +522,7 @@ function tooltipConfig(config, theme, { trigger = 'axis', locale } = {}) {
   const appIsDark = theme.fg == null ? true : !isDarkColor(theme.fg)
   const bg = theme.tooltipBg ?? (appIsDark ? 'rgba(15,17,23,0.96)' : 'rgba(255,255,255,0.97)')
   const fg = theme.tooltipFg ?? (appIsDark ? '#f8fafc' : '#0f172a')
-  const base = {
+  const base: Record<string, any> = {
     trigger,
     confine: true,
     backgroundColor: bg,
@@ -726,7 +726,7 @@ function buildLine(table, e, config, theme, locale, { area = false } = {}) {
   }
 
   const singleSeries = !(colorRaw && !isNumericArray(colorRaw)) && !hasY2
-  const option = {
+  const option: Record<string, any> = {
     ...baseFrame(config, theme, locale, { trigger: 'axis', dataZoom: n > 100, singleSeries }),
     xAxis,
     yAxis: hasY2 ? yAxes : yAxis,
@@ -790,7 +790,7 @@ function buildCombo(table, e, config, theme, locale) {
     lineStyle: { color: palette[(barCols.length + i) % palette.length], width: 2 },
   }))
 
-  const option = {
+  const option: Record<string, any> = {
     ...baseFrame(config, theme, locale, { trigger: 'axis', singleSeries: false }),
     xAxis: catAxis,
     yAxis: lineCols.length ? [yAxis, y2Axis] : yAxis,
@@ -876,7 +876,7 @@ function buildPie(table, e, config, theme, locale, { donut = false } = {}) {
     : legendConfig(isDeepObject(config.legend) ? config : { legend: { position: 'bottom' } }, theme)
 
   const frame = baseFrame(config, theme, locale, { trigger: 'item', noGrid: true })
-  const option = {
+  const option: Record<string, any> = {
     ...frame,
     legend: legendCfg,
     series: [{
@@ -1378,7 +1378,7 @@ function baseFrame(config, theme, locale, { trigger = 'axis', dataZoom = false, 
   const legend = legendConfig(config, theme, { singleSeries, hasTitle })
   const hasLegend = legend !== undefined
   const legendPos = (isDeepObject(config.legend) && config.legend.position) || 'top'
-  const frame = {
+  const frame: Record<string, any> = {
     color: palette,
     backgroundColor: 'transparent',
     animation: config.animation !== false,
@@ -1449,7 +1449,7 @@ function stripInterpretedKeys(config) {
  * @param {object} [args.theme]   — resolved theme tokens
  * @returns {object} ECharts option
  */
-export function buildChartOption({ type, table, encoding, config, theme } = {}) {
+export function buildChartOption({ type, table, encoding, config, theme }: { type?: string; table?: any; encoding?: any; config?: any; theme?: any } = {}) {
   const view = tableView(table)
   const th = resolveTheme(theme)
   const cfg = config || {}

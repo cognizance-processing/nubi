@@ -305,7 +305,7 @@ test.describe('live embed backend — query-editor fetches REAL data', () => {
       () => {
         const el = document.querySelector('#qe-metric')
         if (!el?.shadowRoot) return false
-        const sel = el.shadowRoot.querySelector('[data-role="metric"]')
+        const sel = el.shadowRoot.querySelector('[data-role="metric"]') as HTMLSelectElement | null
         return sel && sel.options.length > 0
       },
       { timeout: 10000 },
@@ -315,7 +315,7 @@ test.describe('live embed backend — query-editor fetches REAL data', () => {
     const clicked = await page.evaluate(() => {
       const el = document.querySelector('#qe-metric')
       if (!el?.shadowRoot) return false
-      const btn = el.shadowRoot.querySelector('.btn-run')
+      const btn = el.shadowRoot.querySelector('.btn-run') as HTMLButtonElement | null
       if (!btn || btn.disabled) return false
       btn.click()
       return true

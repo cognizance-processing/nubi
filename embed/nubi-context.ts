@@ -108,7 +108,7 @@ const FILTER_EVENT = 'nubi:filter'
  * @param {{ token?: string, getTokenFn?: () => Promise<string>, backend?: string }} opts
  * @returns {NubiContext}
  */
-export function createNubiContext({ token, getTokenFn, backend = 'http://localhost:8000' } = {}) {
+export function createNubiContext({ token, getTokenFn, backend = 'http://localhost:8000' }: { token?: string; getTokenFn?: () => any; backend?: string } = {}) {
   const bus = new EventTarget()
 
   /** Resolve a JWT; static string > provided function > null */

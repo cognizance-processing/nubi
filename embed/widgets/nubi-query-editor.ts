@@ -279,6 +279,8 @@ const EDITOR_STYLES = /* css */ `
 // ---------------------------------------------------------------------------
 
 export class NubiQueryEditor extends HTMLElement {
+  [key: string]: any
+
   static get observedAttributes() {
     return ['token', 'get-token', 'backend', 'query-id', 'metric-id', 'mode', 'theme', 'read-only']
   }
@@ -457,14 +459,14 @@ export class NubiQueryEditor extends HTMLElement {
       this._monacoModule = monaco
 
       // Configure workers if not already done (light DOM context)
-      if (!window.__nubiMonacoWorkerConfigured) {
+      if (!(window as any).__nubiMonacoWorkerConfigured) {
         window.MonacoEnvironment = {
           getWorkerUrl(_moduleId) {
             // Fallback: no worker (Monaco degrades gracefully to main-thread)
             return ''
           },
         }
-        window.__nubiMonacoWorkerConfigured = true
+        ;(window as any).__nubiMonacoWorkerConfigured = true
       }
 
       const theme = this.getAttribute('theme') || 'dark'

@@ -64,7 +64,7 @@ function buildShadowThemeCss(preset = 'dark') {
  * @param {{ observedAttributes?: string[], propTypes?: Record<string,string>, defaultTheme?: string }} [options]
  * @returns {typeof HTMLElement}
  */
-export function defineNubiElement(tag, ReactComponent, options = {}) {
+export function defineNubiElement(tag, ReactComponent, options: { observedAttributes?: string[]; propTypes?: Record<string, string>; defaultTheme?: string } = {}) {
   const {
     observedAttributes = [],
     propTypes = {},
@@ -75,6 +75,8 @@ export function defineNubiElement(tag, ReactComponent, options = {}) {
   const allObserved = [...new Set([...observedAttributes, 'theme'])]
 
   class NubiReactElement extends HTMLElement {
+    [key: string]: any
+
     static get observedAttributes() { return allObserved }
 
     constructor() {

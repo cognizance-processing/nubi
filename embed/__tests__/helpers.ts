@@ -47,11 +47,11 @@ export async function nextTick(ticks = 1) {
  * @param {HTMLElement} el
  * @returns {HTMLElement}
  */
-export function mount(el) {
+export function mount(el: any): any {
   document.body.appendChild(el)
   return el
 }
 
-export function unmount(el) {
+export function unmount(el: any) {
   el.remove()
 }

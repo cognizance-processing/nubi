@@ -19,6 +19,12 @@
 
 import { test, expect } from '@playwright/test'
 
+declare global {
+  interface Window {
+    [key: string]: any
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -193,8 +199,8 @@ test.describe('query-editor demo – scope gating', () => {
       if (!el || !el.shadowRoot) return null
       const sr = el.shadowRoot
       const badgeEl  = sr.querySelector('.scope-badge')
-      const btnRun   = sr.querySelector('.btn-run')
-      const btnSave  = sr.querySelector('.btn-save')
+      const btnRun   = sr.querySelector('.btn-run') as HTMLElement | null
+      const btnSave  = sr.querySelector('.btn-save') as HTMLElement | null
       const tabs     = [...sr.querySelectorAll('.mode-tab')].map(t => t.textContent.trim())
       return {
         badge:        badgeEl?.textContent?.trim() ?? null,
@@ -270,8 +276,8 @@ test.describe('query-editor demo – scope gating', () => {
       const el = editors[1]
       if (!el?.shadowRoot) return { error: 'no element' }
       const sr = el.shadowRoot
-      const builder = sr.querySelector('.nubi-qe-metric-builder')
-      const ph = sr.querySelector('.nubi-qe-placeholder')
+      const builder = sr.querySelector('.nubi-qe-metric-builder') as HTMLElement | null
+      const ph = sr.querySelector('.nubi-qe-placeholder') as HTMLElement | null
       return {
         builderVisible: builder ? builder.style.display !== 'none' : false,
         placeholderHidden: ph ? ph.style.display === 'none' : false,
@@ -357,7 +363,7 @@ test.describe('query-editor demo – scope gating', () => {
 
     await page.evaluate(() => {
       window.__nubiRunDetail = null
-      document.addEventListener('nubi:run', (e) => { window.__nubiRunDetail = e.detail })
+      document.addEventListener('nubi:run', (e: any) => { window.__nubiRunDetail = e.detail })
     })
 
     // Click Run button in editor index 1 (metric mode, author:metric)
@@ -365,7 +371,7 @@ test.describe('query-editor demo – scope gating', () => {
       const editors = [...document.querySelectorAll('nubi-query-editor')]
       const el = editors[1]
       if (!el?.shadowRoot) return false
-      const btn = el.shadowRoot.querySelector('.btn-run')
+      const btn = el.shadowRoot.querySelector('.btn-run') as HTMLElement | null
       if (!btn || btn.style.display === 'none') return false
       btn.click()
       return true
@@ -385,7 +391,7 @@ test.describe('query-editor demo – scope gating', () => {
 
     await page.evaluate(() => {
       window.__dirtyDetail = null
-      document.addEventListener('nubi:dirty', (e) => { window.__dirtyDetail = e.detail })
+      document.addEventListener('nubi:dirty', (e: any) => { window.__dirtyDetail = e.detail })
     })
 
     // Type into the textarea of the first editor (scenario 1, SQL, textarea fallback)
@@ -418,7 +424,7 @@ test.describe('theme — light vs dark', () => {
 
     await page.waitForFunction(
       () => {
-        const el = document.querySelectorAll('nubi-query-editor')[0]
+        const el = document.querySelectorAll('nubi-query-editor')[0] as HTMLElement
         return el?.style.getPropertyValue('--nubi-bg').trim() === '#0f1117'
       },
       { timeout: 12000 },
@@ -492,14 +498,14 @@ test.describe('light theme — all widgets in widgets.html', () => {
     // Wait for the first (dark) kpi to have the dark token set
     await page.waitForFunction(
       () => {
-        const el = document.querySelector('nubi-kpi:not([theme])')
+        const el = document.querySelector('nubi-kpi:not([theme])') as HTMLElement | null
         if (!el) return false
         return el.style.getPropertyValue('--nubi-bg').trim() === '#0f1117'
       },
       { timeout: 10000 },
     )
     const el = await page.evaluate(() => {
-      const el = document.querySelector('nubi-kpi:not([theme])')
+      const el = document.querySelector('nubi-kpi:not([theme])') as HTMLElement | null
       return el ? el.style.getPropertyValue('--nubi-bg').trim() : null
     })
     expect(el).toBe('#0f1117')
@@ -512,7 +518,7 @@ test.describe('light theme — all widgets in widgets.html', () => {
       () => {
         const el = document.querySelector('#light-kpi')
         if (!el?.shadowRoot) return false
-        return el.shadowRoot.querySelector('.nubi-sample-note')?.style.display !== 'none'
+        return (el.shadowRoot.querySelector('.nubi-sample-note') as HTMLElement | null)?.style.display !== 'none'
       },
       { timeout: 10000 },
     )
@@ -589,7 +595,7 @@ test.describe('getToken property — generic loader contract', () => {
     await waitForShadowDom(page, '#revenue-kpi')
 
     const result = await page.evaluate(async () => {
-      const el = document.querySelector('#revenue-kpi')
+      const el = document.querySelector('#revenue-kpi') as any
       if (!el) return { error: 'element not found' }
 
       // Set the getToken property
@@ -614,7 +620,7 @@ test.describe('getToken property — generic loader contract', () => {
     await waitForShadowDom(page, '#revenue-kpi')
 
     const result = await page.evaluate(() => {
-      const el = document.querySelector('#revenue-kpi')
+      const el = document.querySelector('#revenue-kpi') as any
       if (!el) return { error: 'element not found' }
 
       el.getToken = async () => 'test-jwt'
@@ -632,8 +638,8 @@ test.describe('getToken property — generic loader contract', () => {
     await waitForShadowDom(page, '#revenue-kpi')
 
     const result = await page.evaluate(async () => {
-      const el1 = document.querySelector('#revenue-kpi')
-      const el2 = document.querySelector('#users-kpi')
+      const el1 = document.querySelector('#revenue-kpi') as any
+      const el2 = document.querySelector('#users-kpi') as any
       if (!el1 || !el2) return { error: 'elements not found' }
 
       el1.getToken = async () => 'token-for-el1'
@@ -709,7 +715,7 @@ test.describe('kpi-targets demo — inline data + RAG chips', () => {
       () => {
         const el = document.querySelector('[data-rag="green"]')
         if (!el?.shadowRoot) return null
-        const bar = el.shadowRoot.querySelector('.kpi-goal-bar')
+        const bar = el.shadowRoot.querySelector('.kpi-goal-bar') as HTMLElement | null
         return bar ? bar.style.width : null
       },
       { timeout: 8000 },
@@ -726,7 +732,7 @@ test.describe('kpi-targets demo — inline data + RAG chips', () => {
     const hasSample = await page.evaluate(() => {
       return [...document.querySelectorAll('nubi-kpi')].some(el => {
         if (!el?.shadowRoot) return false
-        const badge = el.shadowRoot.querySelector('.nubi-badge')
+        const badge = el.shadowRoot.querySelector('.nubi-badge') as HTMLElement | null
         return badge && badge.style.display !== 'none' && badge.textContent.includes('SAMPLE')
       })
     })
@@ -765,8 +771,8 @@ test.describe('error-state demo — no-sample-fallback', () => {
       const el = document.querySelector('nubi-kpi[no-sample-fallback]')
       if (!el?.shadowRoot) return { error: 'no element' }
       const sr = el.shadowRoot
-      const badge = sr.querySelector('.nubi-badge')
-      const sampleNote = sr.querySelector('.nubi-sample-note')
+      const badge = sr.querySelector('.nubi-badge') as HTMLElement | null
+      const sampleNote = sr.querySelector('.nubi-sample-note') as HTMLElement | null
       const errNote = sr.querySelector('.kpi-error-note')
       return {
         sampleBadgeVisible: badge ? badge.style.display !== 'none' : false,
@@ -785,7 +791,7 @@ test.describe('error-state demo — no-sample-fallback', () => {
     await page.addInitScript(() => {
       window.__embedErrorDetail = null
       window.addEventListener('DOMContentLoaded', () => {
-        document.addEventListener('nubi:widget-error', e => {
+        document.addEventListener('nubi:widget-error', (e: any) => {
           window.__embedErrorDetail = e.detail
         })
       })

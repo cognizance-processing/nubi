@@ -16,7 +16,7 @@
  *   backend     — API base URL (default 'http://localhost:8000')
  */
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, type CSSProperties } from 'react'
 import { resolveToken, fetchArrow, makeSampleKpiTable } from './shared.js'
 import { defineNubiElement } from '../react-wc.js'
 
@@ -112,7 +112,7 @@ function NubiKpiReactComponent({
     return () => { cancelled = true; ac.abort() }
   }, [queryId, valueCol, token, getTokenAttr, backend])
 
-  const styles = {
+  const styles: Record<string, CSSProperties> = {
     wrap: {
       display: 'flex',
       flexDirection: 'column',

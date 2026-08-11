@@ -251,6 +251,8 @@ function formatPct(ratio) {
 // NubiKpi — custom element
 // ---------------------------------------------------------------------------
 class NubiKpi extends HTMLElement {
+  [key: string]: any
+
   static get observedAttributes() {
     return [
       'query-id', 'value-col', 'label', 'format',
@@ -413,7 +415,7 @@ class NubiKpi extends HTMLElement {
     ragChip.textContent = (rag || 'red').toUpperCase()
   }
 
-  _showError(_rawMessage) {
+  _showError(_rawMessage = undefined) {
     // Clear the big metric value — don't show giant text in error state
     const v = this._shadow.querySelector('.kpi-value')
     if (v) {

@@ -11,9 +11,9 @@ export default defineConfig({
   test: {
     // jsdom provides CustomElementRegistry, shadowRoot, CustomEvent, etc.
     environment: 'jsdom',
-    include: ['embed/__tests__/**/*.test.js'],
+    include: ['embed/__tests__/**/*.test.ts'],
     // Polyfills for APIs jsdom lacks (ResizeObserver, getBoundingClientRect, etc.)
-    setupFiles: ['embed/__tests__/setup.js'],
+    setupFiles: ['embed/__tests__/setup.ts'],
     // Pre-transform apache-arrow ESM so jsdom can consume it
     server: {
       deps: {

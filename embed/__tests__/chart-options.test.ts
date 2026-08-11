@@ -112,8 +112,8 @@ describe('buildChartOption — every chart type returns a valid option', () => {
     expect(names).toContain('mid')
   })
 
-  test('SUPPORTED_TYPES lists all 18 families', () => {
-    expect(SUPPORTED_TYPES).toHaveLength(18)
+  test('SUPPORTED_TYPES lists all 19 families', () => {
+    expect(SUPPORTED_TYPES).toHaveLength(19)
     expect(SUPPORTED_TYPES).toContain('fan')
     expect(SUPPORTED_TYPES).toContain('sankey')
     expect(SUPPORTED_TYPES).toContain('combo')
