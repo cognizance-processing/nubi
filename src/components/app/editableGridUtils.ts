@@ -514,8 +514,8 @@ export function baseColumnWidth(col) {
  * @returns {Record<string, number>}  {name: px} for every column
  */
 export function distributeColumnWidths(columns, explicit, available, minW = 80) {
-  const out = {}
-  const bases = {}
+  const out: Record<string, number> = {}
+  const bases: Record<string, number> = {}
   let total = 0
   for (const col of columns) {
     const w = Math.max(minW, explicit?.[col.name] ?? baseColumnWidth(col))
@@ -556,7 +556,7 @@ export function distributeColumnWidths(columns, explicit, available, minW = 80) 
  */
 export function moveSelection(cur, dir, rowCount, colCount) {
   if (rowCount <= 0 || colCount <= 0) return cur
-  let { row, col } = cur
+  const { row, col } = cur
   const clampRow = (r) => Math.max(0, Math.min(rowCount - 1, r))
   const clampCol = (c) => Math.max(0, Math.min(colCount - 1, c))
   switch (dir) {

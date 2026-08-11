@@ -16,7 +16,7 @@ const KEYWORDS = {
 }
 
 // Ordered token matchers. First match at the current scan position wins.
-function matchers(lang) {
+function matchers(lang): [string, RegExp][] {
   if (lang === 'shell') {
     return [
       ['comment', /^#.*/],

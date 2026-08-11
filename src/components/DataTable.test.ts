@@ -43,7 +43,7 @@ function buildTestTable() {
     name:   arrow.vectorFromArray(['Alice', 'Bob', null, 'Dave']),
     score:  arrow.vectorFromArray([95.5, 82.0, null, 60.25], new arrow.Float64()),
     active: arrow.vectorFromArray([true, false, true, null]),
-  })
+  } as any)
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +71,7 @@ describe('deriveColumns', () => {
   test('detects timestamp columns as date type', () => {
     const t = arrow.tableFromArrays({
       ts: arrow.vectorFromArray([new Date('2024-01-01'), new Date('2024-06-01')]),
-    })
+    } as any)
     const cols = deriveColumns(t)
     // Timestamps come back as 'date' type
     assert.equal(cols[0].type, 'date')
@@ -112,7 +112,7 @@ describe('arrowToRows', () => {
   test('handles BigInt values from Int64 columns', () => {
     const t = arrow.tableFromArrays({
       big: arrow.vectorFromArray([1n, 2n, 3n], new arrow.Int64()),
-    })
+    } as any)
     const rows = arrowToRows(t)
     // BigInt should be converted to Number
     assert.equal(typeof rows[0].big, 'number')
@@ -123,7 +123,7 @@ describe('arrowToRows', () => {
   test('handles empty Arrow table', () => {
     const t = arrow.tableFromArrays({
       id: arrow.vectorFromArray([], new arrow.Int32()),
-    })
+    } as any)
     const rows = arrowToRows(t)
     assert.deepEqual(rows, [])
   })

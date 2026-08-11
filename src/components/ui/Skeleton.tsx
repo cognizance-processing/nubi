@@ -32,7 +32,7 @@ function SkeletonBase({ className, ...rest }) {
   )
 }
 
-function SkeletonText({ lines = 3, lastLineWidth = '60%', className }) {
+function SkeletonText({ lines = 3, lastLineWidth = '60%', className = undefined }) {
   return (
     <div className={cx('flex flex-col gap-2', className)} aria-hidden="true">
       {Array.from({ length: lines }).map((_, i) => (

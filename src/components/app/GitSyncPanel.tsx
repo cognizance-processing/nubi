@@ -286,7 +286,7 @@ export default function GitSyncPanel({ projectId, open, onClose, envId, embedded
     }
   }
 
-  async function handlePull(strategy) {
+  async function handlePull(strategy = undefined) {
     if (!env?.id) return
     setBusy('pull')
     setNotice(null)

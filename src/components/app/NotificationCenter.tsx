@@ -471,7 +471,7 @@ export default function NotificationCenter({ open, onClose, onCount, embedded = 
   }, [handleNavigate])
 
   const sorted = useMemo(
-    () => [...items].sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)),
+    () => [...items].sort((a, b) => Number(new Date(b.created_at || 0)) - Number(new Date(a.created_at || 0))),
     [items],
   )
 

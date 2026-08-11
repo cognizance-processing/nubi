@@ -102,7 +102,7 @@ function PanelShell({ pos, width, label, children }) {
 // Section header used inside the popovers
 // ---------------------------------------------------------------------------
 
-function SectionLabel({ children, action }) {
+function SectionLabel({ children, action = undefined }) {
   return (
     <div className="flex items-center gap-2 px-3 pt-2 pb-1">
       <p className="flex-1 text-[10px] font-semibold text-muted uppercase tracking-wider">{children}</p>

@@ -16,6 +16,9 @@ export interface EnvRow {
   is_default?: boolean
   protected?: boolean
   _ghost?: boolean
+  imported?: boolean
+  warning?: string
+  git_branch?: string
 }
 
 // ---------------------------------------------------------------------------

@@ -49,7 +49,7 @@ function fmtUsd(usd) {
 // UsageInput slider
 // ---------------------------------------------------------------------------
 
-function UsageInput({ label, icon: Icon, value, onChange, min = 0, max, step = 1, unit = '' }) {
+function UsageInput({ label, icon: Icon = undefined, value, onChange, min = 0, max, step = 1, unit = '' }) {
   return (
     <label className="flex flex-col gap-1.5">
       <span className="flex items-center gap-1.5 text-xs font-medium text-muted uppercase tracking-wide">

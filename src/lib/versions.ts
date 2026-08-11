@@ -173,6 +173,6 @@ export function promote({ kind, resource_id, from_env, to_env, include_dependenc
   from_env: string
   to_env: string
   include_dependencies?: boolean
-}): Promise<{ promoted: any[] }> {
+}): Promise<{ promoted: any[]; git_merge?: any; git_conflict?: any; git_warning?: any }> {
   return post('/environments/promote', { kind, resource_id, from_env, to_env, include_dependencies })
 }

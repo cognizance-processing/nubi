@@ -26,6 +26,8 @@
  * Sub-components: CardHeader, CardTitle, CardDescription, CardBody, CardFooter
  */
 
+import type { ElementType } from 'react'
+
 function cx(...parts) {
   return parts.filter(Boolean).join(' ')
 }
@@ -59,7 +61,7 @@ export function CardHeader({ className, children, ...rest }) {
   )
 }
 
-export function CardTitle({ className, as: Tag = 'h3', children, ...rest }) {
+export function CardTitle({ className, as: Tag = 'h3' as ElementType, children, ...rest }) {
   return (
     <Tag className={cx('font-display font-semibold text-base text-fg', className)} {...rest}>
       {children}

@@ -371,7 +371,7 @@ export default function GitGraphDialog({ open, onClose }) {
     }
   }
 
-  async function handlePull(branch, env, strategy) {
+  async function handlePull(branch, env, strategy = undefined) {
     setBusy({ branch: branch.branch, action: 'pull' })
     setNotice(branch.branch, 'info', null)
     try {

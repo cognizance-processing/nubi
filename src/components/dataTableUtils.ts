@@ -214,7 +214,7 @@ export function matchesFilter(value, filter, type) {
  * @param {Record<string, {op: string, value: string}>} filters – keyed by column key
  * @returns {Array<Record<string, unknown>>}
  */
-export function filterRows(rows, columns, filters) {
+export function filterRows(rows, columns, filters: Record<string, { op: string; value: any }>) {
   if (!filters || Object.keys(filters).length === 0) return rows
 
   const activeFilters = Object.entries(filters).filter(([, f]) => f && f.value !== '' && f.value != null)

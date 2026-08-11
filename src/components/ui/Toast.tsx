@@ -51,7 +51,7 @@ function uid() { return `toast-${++_counter}` }
 
 // ── Imperative API ────────────────────────────────────────────────────────────
 
-function emit(message, opts = {}) {
+function emit(message, opts: Record<string, any> = {}) {
   const id = opts.id ?? uid()
   _dispatch?.({ type: 'ADD', toast: { id, message, variant: 'info', duration: 4000, ...opts } })
   return id
@@ -59,11 +59,11 @@ function emit(message, opts = {}) {
 
 // eslint-disable-next-line react-refresh/only-export-components
 export const toast = Object.assign(emit, {
-  success: (msg, opts) => emit(msg, { variant: 'success', ...opts }),
-  error:   (msg, opts) => emit(msg, { variant: 'error',   ...opts }),
-  warning: (msg, opts) => emit(msg, { variant: 'warning', ...opts }),
-  info:    (msg, opts) => emit(msg, { variant: 'info',    ...opts }),
-  dismiss: (id)        => _dispatch?.({ type: 'REMOVE', id }),
+  success: (msg, opts = undefined) => emit(msg, { variant: 'success', ...opts }),
+  error:   (msg, opts = undefined) => emit(msg, { variant: 'error',   ...opts }),
+  warning: (msg, opts = undefined) => emit(msg, { variant: 'warning', ...opts }),
+  info:    (msg, opts = undefined) => emit(msg, { variant: 'info',    ...opts }),
+  dismiss: (id = undefined)        => _dispatch?.({ type: 'REMOVE', id }),
 })
 
 // ── Icon map ─────────────────────────────────────────────────────────────────

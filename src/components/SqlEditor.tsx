@@ -301,7 +301,7 @@ export default function SqlEditor({
   }, [onDialectChange])
 
   // Schema for autocomplete — use prop if given, otherwise fetch once.
-  const [schema, setSchema] = useState(schemaProp ?? { tables: {} })
+  const [schema, setSchema] = useState<{ tables: Record<string, string[]> }>(schemaProp ?? { tables: {} })
   useEffect(() => {
     if (schemaProp) { setSchema(schemaProp); return }
     let alive = true

@@ -130,7 +130,7 @@ function CellEditor({ col, initialValue, onCommit, onCommitMove, onCancel, seed 
     }
   }, [kind, seed])
 
-  const commit = useCallback((rawOverride, move) => {
+  const commit = useCallback((rawOverride = undefined, move = undefined) => {
     const raw = rawOverride !== undefined ? rawOverride : text
     const res = coerceInput(raw, col.kind, col.nullable)
     if (!res.ok) { setErr(res.error); return }
@@ -229,7 +229,7 @@ function CellEditor({ col, initialValue, onCommit, onCommitMove, onCancel, seed 
 // Header column menu (hover dropdown)
 // ---------------------------------------------------------------------------
 
-function MenuItem({ icon: Icon, label, onClick, active }) {
+function MenuItem({ icon: Icon, label, onClick, active = false }) {
   return (
     <button
       onClick={onClick}
@@ -1034,7 +1034,9 @@ export default function EditableDataGrid({
                       {!sorted && <ChevronsUpDown size={11} className="text-muted/25 group-hover/h:text-muted/50" />}
                     </span>
                     {!editableCol && !readOnly && (
-                      <Lock size={9} className="text-muted/40 shrink-0" title={col.pk ? 'Primary key — not editable' : 'Read-only column'} />
+                      <span title={col.pk ? 'Primary key — not editable' : 'Read-only column'}>
+                        <Lock size={9} className="text-muted/40 shrink-0" />
+                      </span>
                     )}
                   </div>
 

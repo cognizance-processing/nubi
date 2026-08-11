@@ -8,6 +8,7 @@ import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/pris
 import {
   Children, cloneElement, isValidElement,
   useEffect, useId, useMemo, useState,
+  type ReactElement,
 } from 'react'
 import {
   Copy, Check, Link2, Info, Lightbulb, AlertTriangle,
@@ -158,7 +159,7 @@ function extractText(node) {
   if (node == null || typeof node === 'boolean') return ''
   if (typeof node === 'string' || typeof node === 'number') return String(node)
   if (Array.isArray(node)) return node.map(extractText).join('')
-  if (isValidElement(node)) return extractText(node.props?.children)
+  if (isValidElement(node)) return extractText((node.props as any)?.children)
   return ''
 }
 
@@ -276,7 +277,7 @@ function detectCallout(children) {
   const arr = Children.toArray(children)
   const idx = arr.findIndex(c => isValidElement(c))
   if (idx === -1) return null
-  const para = arr[idx]
+  const para = arr[idx] as ReactElement<any>
   const stripped = stripMarkerNodes(Children.toArray(para.props.children), kind)
   const body = [...arr]
   if (stripped.length === 0) {
@@ -550,7 +551,7 @@ function urlTransform(url) {
  * fewer thing to reason about for content that isn't repo-reviewed.
  */
 export default function MarkdownRenderer({ content, allowRawHtml = false }) {
-  const rehypePlugins = allowRawHtml ? [rehypeRaw, [rehypeSanitize, docsHtmlSchema]] : []
+  const rehypePlugins: any[] = allowRawHtml ? [rehypeRaw, [rehypeSanitize, docsHtmlSchema]] : []
   return (
     <article className="max-w-none">
       <ReactMarkdown

@@ -30,13 +30,13 @@ function slugify(s) {
 }
 
 /** Find the rendered dashboard DOM node to capture. */
-function dashboardNode() {
+function dashboardNode(): HTMLElement {
   return (
     document.querySelector('[data-dashboard-root]') ||
     document.querySelector('.spec-renderer') ||
     document.querySelector('[data-testid="editor-canvas"]') ||
     document.body
-  )
+  ) as HTMLElement
 }
 
 /** RFC-4180-ish CSV cell. */

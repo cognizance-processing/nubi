@@ -49,7 +49,7 @@ export default function ConnectorCombobox({
   placeholder = 'Select a connector…',
   allowEmpty = false,
   emptyLabel = '— none —',
-  id,
+  id = undefined,
   className = '',
   triggerClassName = 'max-w-[220px]',
 }) {

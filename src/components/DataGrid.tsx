@@ -58,6 +58,14 @@ import {
   flexRender,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
+
+declare module '@tanstack/react-table' {
+  interface ColumnMeta<TData, TValue> {
+    type?: string
+    align?: string
+    descriptor?: any
+  }
+}
 import {
   ChevronUp,
   ChevronDown,
@@ -484,7 +492,7 @@ export default function DataGrid({
   const totalFilteredRows = table.getFilteredRowModel().rows.filter((r) => !r.getIsGrouped()).length
 
   // Helper: pinned offset style for a header/cell
-  const pinStyle = (column) => {
+  const pinStyle = (column): Record<string, any> => {
     const pinned = column.getIsPinned()
     if (!pinned) return {}
     return {
@@ -802,7 +810,8 @@ export default function DataGrid({
                   {table.getVisibleLeafColumns().map((col) => {
                     const type = col.columnDef.meta?.type ?? 'string'
                     const ops = type === 'number' ? NUMERIC_OPS : type === 'bool' ? ['eq', 'ne'] : STRING_OPS
-                    const fv = col.getFilterValue() ?? { op: ops[0], value: '', type }
+                    const fv: { op: string; value: any; type: string } =
+                      (col.getFilterValue() as any) ?? { op: ops[0], value: '', type }
                     return (
                       <th
                         key={col.id}

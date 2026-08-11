@@ -30,13 +30,23 @@
  * Same props as Input.
  */
 
-import { forwardRef, useId } from 'react'
+import { forwardRef, useId, type ComponentPropsWithoutRef, type ReactNode } from 'react'
 
 function cx(...parts) {
   return parts.filter(Boolean).join(' ')
 }
 
 // ── Field ──────────────────────────────────────────────────────────────────
+
+interface FieldProps {
+  label?: ReactNode
+  hint?: ReactNode
+  error?: ReactNode | boolean
+  required?: boolean
+  id?: string
+  className?: string
+  children?: ReactNode | ((props: { id: string; 'aria-describedby'?: string }) => ReactNode)
+}
 
 export function Field({
   label,
@@ -46,7 +56,7 @@ export function Field({
   id: idProp,
   className,
   children,
-}) {
+}: FieldProps) {
   const autoId = useId()
   const id = idProp || autoId
   return (
@@ -77,7 +87,15 @@ export function Field({
 
 // ── Input ──────────────────────────────────────────────────────────────────
 
-const Input = forwardRef(function Input(
+interface InputProps extends Omit<ComponentPropsWithoutRef<'input'>, 'size'> {
+  size?: 'sm' | 'md' | 'lg'
+  error?: ReactNode | boolean
+  hint?: ReactNode
+  label?: ReactNode
+  required?: boolean
+}
+
+const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
   { size = 'md', error, hint, label, required, className, ...rest },
   ref
 ) {
@@ -102,7 +120,16 @@ export default Input
 
 // ── Select ──────────────────────────────────────────────────────────────────
 
-export const Select = forwardRef(function Select(
+interface SelectProps extends Omit<ComponentPropsWithoutRef<'select'>, 'size'> {
+  size?: 'sm' | 'md' | 'lg'
+  error?: ReactNode | boolean
+  hint?: ReactNode
+  label?: ReactNode
+  required?: boolean
+  options?: (string | { value: any; label: ReactNode; disabled?: boolean })[]
+}
+
+export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select(
   { size = 'md', error, hint, label, required, options = [], className, children, ...rest },
   ref
 ) {
@@ -130,7 +157,15 @@ Select.displayName = 'Select'
 
 // ── Textarea ─────────────────────────────────────────────────────────────────
 
-export const Textarea = forwardRef(function Textarea(
+interface TextareaProps extends Omit<ComponentPropsWithoutRef<'textarea'>, 'size'> {
+  size?: 'sm' | 'md' | 'lg'
+  error?: ReactNode | boolean
+  hint?: ReactNode
+  label?: ReactNode
+  required?: boolean
+}
+
+export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function Textarea(
   { size = 'md', error, hint, label, required, className, ...rest },
   ref
 ) {

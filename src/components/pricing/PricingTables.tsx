@@ -293,7 +293,7 @@ export function FxDisclosure({
   updatedAt = null,
   isFallback = false,
   compact = false,
-  className,
+  className = undefined,
 }) {
   const dateStr = fmtDate(updatedAt)
   const rateStr = rate != null ? `1 USD = R ${rate.toFixed(2)}` : null

@@ -61,7 +61,7 @@ function resolveMeta(kind, spec, board, query) {
 /** Build the canonical envelope from the in-memory spec. */
 function buildEnvelope(kind, spec, board, query) {
   const meta = resolveMeta(kind, spec, board, query)
-  const metadata = { name: meta.name }
+  const metadata: Record<string, any> = { name: meta.name }
   if (meta.id) metadata.id = meta.id
   return { kind, apiVersion: API_VERSION, metadata, spec: spec ?? {} }
 }

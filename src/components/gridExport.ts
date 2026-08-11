@@ -47,7 +47,7 @@ function csvEscape(v) {
  * @param {(row: object, col: object) => unknown} [getValue]
  * @returns {string}
  */
-export function buildCSV(rows, columns, getValue) {
+export function buildCSV(rows, columns, getValue = undefined) {
   const header = columns.map((c) => csvEscape(c.label ?? c.key)).join(',')
   const body = rows
     .map((row) =>
@@ -96,7 +96,7 @@ function xmlCell(value) {
  * @param {(row: object, col: object) => unknown} [getValue]
  * @returns {string}
  */
-export function buildExcelXML(rows, columns, sheetName = 'Sheet1', getValue) {
+export function buildExcelXML(rows, columns, sheetName = 'Sheet1', getValue = undefined) {
   const headerCells = columns
     .map((c) => `<Cell><Data ss:Type="String">${xmlEscape(c.label ?? c.key)}</Data></Cell>`)
     .join('')
@@ -144,12 +144,12 @@ function triggerDownload(blob, filename) {
   }, 100)
 }
 
-export function downloadCSV(filename, rows, columns, getValue) {
+export function downloadCSV(filename, rows, columns, getValue = undefined) {
   const csv = buildCSV(rows, columns, getValue)
   triggerDownload(new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' }), filename)
 }
 
-export function downloadExcel(filename, rows, columns, sheetName, getValue) {
+export function downloadExcel(filename, rows, columns, sheetName = undefined, getValue = undefined) {
   const xml = buildExcelXML(rows, columns, sheetName, getValue)
   triggerDownload(
     new Blob([xml], { type: 'application/vnd.ms-excel;charset=utf-8;' }),

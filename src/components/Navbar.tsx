@@ -19,7 +19,7 @@ import CurrencySelector from './CurrencySelector.jsx'
 
 const GITHUB_URL = 'https://github.com/nu-bi/nubi'
 
-const NAV_LINKS = [
+const NAV_LINKS: { label: string; to: string; authOnly?: boolean; scrollTo?: string }[] = [
   { label: 'Docs',      to: '/docs' },
   { label: 'Reporting', to: '/reporting' },
   { label: 'Compare',   to: '/compare' },

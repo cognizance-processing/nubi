@@ -39,7 +39,7 @@ import Logo from '../Logo.jsx'
 // TopbarActions — the global panel switcher (Notifications / Git / Chat).
 // ---------------------------------------------------------------------------
 
-function TopbarActions({ items }) {
+function TopbarActions({ items }: { items: { id: string; Icon: any; label: string; active?: boolean; onToggle: () => void; badge?: number; hidden?: boolean }[] }) {
   const visible = visibleRailItems(items || [])
   if (visible.length === 0) return null
 
