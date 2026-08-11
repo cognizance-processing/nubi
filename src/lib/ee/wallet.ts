@@ -181,11 +181,12 @@ export function getWallet() {
  *
  * POST /api/v1/ee/billing/wallet/topup
  *
- * @param {number} amountUsdCents   — e.g. 5000 for $50.00
- * @param {{ successUrl?: string, cancelUrl?: string }} [opts]
- * @returns {Promise<{ checkout_url: string }>}
+ * @param amountUsdCents   — e.g. 5000 for $50.00
  */
-export function manualTopup(amountUsdCents, { successUrl, cancelUrl } = {}) {
+export function manualTopup(
+  amountUsdCents: number,
+  { successUrl, cancelUrl }: { successUrl?: string; cancelUrl?: string } = {},
+): Promise<{ checkout_url: string }> {
   return post('/ee/billing/wallet/topup', {
     amount_usd_cents: amountUsdCents,
     success_url: successUrl ?? window.location.origin + '/billing?wallet=funded',

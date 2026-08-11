@@ -57,10 +57,10 @@ const BASE = '/preagg'
  *
  * GET /preagg/suggestions?min_hits=<n>
  *
- * @param {{ minHits?: number }} [opts] minimum sample_count to surface (default 3)
- * @returns {Promise<PreaggSuggestion[]>}  [] on any failure.
+ * @param opts minimum sample_count to surface (default 3)
+ * @returns [] on any failure.
  */
-export async function fetchPreaggSuggestions({ minHits } = {}) {
+export async function fetchPreaggSuggestions({ minHits }: { minHits?: number } = {}): Promise<any[]> {
   try {
     const qs = minHits != null ? `?min_hits=${encodeURIComponent(minHits)}` : ''
     const data = await get(`${BASE}/suggestions${qs}`)

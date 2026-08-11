@@ -47,7 +47,7 @@ export const CURRENCY_STORAGE_KEY = 'nubi-currency'
  * fails). ZAR matches the repo's June 2026 reference; others are approximate and
  * get overwritten by the live fetch.
  */
-export const FALLBACK_RATES = {
+export const FALLBACK_RATES: Record<string, number> = {
   USD: 1,
   ZAR: 16.26,
   EUR: 0.92,
@@ -107,12 +107,8 @@ export function detectCurrency() {
  * Convert a USD amount to `code` using `rates` (USD→X). Falls back to the
  * indicative table when a rate is missing.
  *
- * @param {number} usd
- * @param {string} code
- * @param {Record<string, number>} [rates]
- * @returns {number}
  */
-export function convertFromUsd(usd, code, rates = FALLBACK_RATES) {
+export function convertFromUsd(usd: number, code: string, rates: Record<string, number> = FALLBACK_RATES): number {
   const rate = rates?.[code] ?? FALLBACK_RATES[code] ?? 1
   return usd * rate
 }
@@ -121,12 +117,9 @@ export function convertFromUsd(usd, code, rates = FALLBACK_RATES) {
  * Format a USD amount in the given display currency as a whole-number money
  * string (prices are whole-ish; we never show cents on plan prices).
  *
- * @param {number} usd
- * @param {string} code
- * @param {Record<string, number>} [rates]
- * @returns {string} e.g. "$9", "R 150", "€8", "₹749"
+ * @returns e.g. "$9", "R 150", "€8", "₹749"
  */
-export function formatMoney(usd, code, rates = FALLBACK_RATES) {
+export function formatMoney(usd: number, code: string, rates: Record<string, number> = FALLBACK_RATES): string {
   const amount = convertFromUsd(usd, code, rates)
   try {
     return new Intl.NumberFormat(undefined, {

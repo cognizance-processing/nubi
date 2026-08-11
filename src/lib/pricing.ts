@@ -215,23 +215,22 @@ export const FALLBACK_TIERS = [
 // Static fallback: BI / Embedded Analytics competitors
 // ---------------------------------------------------------------------------
 
+export interface CompetitorModel {
+  id: string
+  name: string
+  url: string
+  note: string
+  highlight_seat_penalty: boolean
+  /** usage = { embedded_sessions, agent_runs, connectors }; seats = { editors, viewers } */
+  model: (usage?: Record<string, any>, seats?: Record<string, any>) => number | null
+  [key: string]: any
+}
+
 /**
  * Each competitor model: pricing as a pure function (usage, seats) → USD/month.
- * usage = { embedded_sessions, agent_runs, connectors }
- * seats = { editors, viewers }
- *
  * Data sourced from publicly available pricing pages, June 2026.
- *
- * @type {Array<{
- *   id: string,
- *   name: string,
- *   url: string,
- *   note: string,
- *   highlight_seat_penalty: boolean,
- *   model: (usage: object, seats: object) => number,
- * }>}
  */
-export const FALLBACK_COMPETITORS_BI = [
+export const FALLBACK_COMPETITORS_BI: CompetitorModel[] = [
   {
     id: 'metabase_pro',
     name: 'Metabase Pro',
@@ -334,23 +333,24 @@ export const FALLBACK_COMPETITORS_BI = [
 // Static fallback: Data Orchestration competitors (June 2026)
 // ---------------------------------------------------------------------------
 
+export interface OrchestrationCompetitorModel {
+  id: string
+  name: string
+  url: string
+  note: string
+  model_type: 'per-run' | 'per-seat' | 'flat' | 'infra' | 'per-action'
+  model: (orchestration?: Record<string, any>) => number
+  [key: string]: any
+}
+
 /**
  * Orchestration competitors.  The usage object here uses different keys:
  * { flow_runs_per_month, workers, seats }
  * to match orchestration pricing units (runs, workers, seats/users).
  *
  * Data sources: research artifact (orchestration-pricing-research).
- *
- * @type {Array<{
- *   id: string,
- *   name: string,
- *   url: string,
- *   note: string,
- *   model_type: 'per-run'|'per-seat'|'flat'|'infra'|'per-action',
- *   model: (orchestration: object) => number,
- * }>}
  */
-export const FALLBACK_COMPETITORS_ORCHESTRATION = [
+export const FALLBACK_COMPETITORS_ORCHESTRATION: OrchestrationCompetitorModel[] = [
   {
     id: 'prefect_team',
     name: 'Prefect Cloud Team',
@@ -582,12 +582,13 @@ function estimateAiTokenOverageZar(tokensOver, rate) {
 /**
  * Recommend a Nubi tier for the given usage and compute total ZAR cost.
  *
- * @param {{ embedded_sessions, ai_tokens, agent_runs, connectors, flow_runs_per_month }} usage
- * @param {number|null} fxRate
- * @param {{ minTierId?: string }} [opts]  minTierId floors the recommendation
- * @returns {{ tier, base_zar, overage_zar, total_zar, overages, is_exact_fit }}
+ * @param opts  minTierId floors the recommendation
  */
-export function recommendNubi(usage, fxRate, opts = {}) {
+export function recommendNubi(
+  usage: Record<string, any>,
+  fxRate: number | null,
+  opts: { minTierId?: string } = {},
+) {
   const rate = fxRate ?? 16.26
   const minIdx = opts.minTierId
     ? Math.max(NUBI_TIERS_CALC.findIndex((t) => t.id === opts.minTierId), 0)

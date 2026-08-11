@@ -28,22 +28,25 @@ const BASE = '/flows'
  * dependency chain, executes all upstream cells first, then the target cell
  * against sampled data (preview_limit rows, default 500).
  *
- * @param {object} spec — full FlowSpec/NotebookSpec dict (unsaved edits included)
- * @param {string} cellKey — key of the target cell to run
- * @param {{ params?: object, previewLimit?: number }} [opts]
- * @returns {Promise<{
- *   rows: object[],
- *   columns: string[],
- *   row_count: number,
- *   total_row_count?: number,
- *   elapsed_ms: number,
- *   error?: string,
- * }>}
+ * @param spec — full FlowSpec/NotebookSpec dict (unsaved edits included)
+ * @param cellKey — key of the target cell to run
  */
-export async function previewCell(spec, cellKey, opts = {}) {
+export async function previewCell(
+  spec: Record<string, any>,
+  cellKey: string,
+  opts: { params?: Record<string, any>; previewLimit?: number } = {},
+): Promise<{
+  rows: Record<string, any>[]
+  columns: string[]
+  row_count: number
+  total_row_count?: number
+  elapsed_ms: number
+  error?: string
+}> {
   const started = Date.now()
   try {
-    const body = { spec, cell_key: cellKey }
+    const body: { spec: Record<string, any>; cell_key: string; params?: Record<string, any>; preview_limit?: number } =
+      { spec, cell_key: cellKey }
     if (opts.params && Object.keys(opts.params).length > 0) {
       body.params = opts.params
     }
@@ -162,9 +165,9 @@ export function specToNotebook(spec) {
  * @param {object} notebook
  * @returns {object}  FlowSpec
  */
-export function notebookToSpec(notebook) {
+export function notebookToSpec(notebook: Record<string, any>): Record<string, any> {
   if (!notebook) return { version: 1, name: 'untitled', params: [], tasks: [] }
-  // eslint-disable-next-line no-unused-vars
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { view, ...rest } = notebook
   return rest
 }

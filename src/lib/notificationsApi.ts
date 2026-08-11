@@ -33,10 +33,11 @@ import { get, post } from './api.js'
 
 /**
  * List the feed for the active org/user.
- * @param {{ unread?: boolean, limit?: number }} [opts]
- * @returns {Promise<Array<object>>}  [] on any failure.
+ * @returns [] on any failure.
  */
-export async function listNotifications({ unread = false, limit } = {}) {
+export async function listNotifications(
+  { unread = false, limit }: { unread?: boolean; limit?: number } = {},
+): Promise<Record<string, any>[]> {
   const params = new URLSearchParams()
   if (unread) params.set('unread', '1')
   if (limit) params.set('limit', String(limit))

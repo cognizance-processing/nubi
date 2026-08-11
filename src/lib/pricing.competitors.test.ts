@@ -42,12 +42,15 @@ const ORCH_USAGE = {
 // ---------------------------------------------------------------------------
 
 test('wallet overage rates have no storage, compute-unit, or flat per-call AI dimension', () => {
-  assert.equal(WALLET_OVERAGE_RATES.storage_zar_per_gb, undefined)
-  assert.equal(WALLET_OVERAGE_RATES.compute_zar_per_1000_cu, undefined)
+  // Cast loosely: the assertions below are a regression guard that these keys
+  // were deliberately REMOVED from the real (now-narrower) type.
+  const rates = WALLET_OVERAGE_RATES as Record<string, any>
+  assert.equal(rates.storage_zar_per_gb, undefined)
+  assert.equal(rates.compute_zar_per_1000_cu, undefined)
   // The old flat per-call rate is retired — AI is now real-time token pass-through.
-  assert.equal(WALLET_OVERAGE_RATES.ai_call_zar_per_call, undefined)
-  assert.equal(WALLET_OVERAGE_RATES.ai_token_markup_pct, 7.5, 'must mirror backend NUBI_TOKEN_MARKUP_PCT')
-  assert.ok(WALLET_OVERAGE_RATES.ai_token_reference_usd_per_1m > 0)
+  assert.equal(rates.ai_call_zar_per_call, undefined)
+  assert.equal(rates.ai_token_markup_pct, 7.5, 'must mirror backend NUBI_TOKEN_MARKUP_PCT')
+  assert.ok(rates.ai_token_reference_usd_per_1m > 0)
 })
 
 test('AI_TOKEN_ALLOWANCE mirrors backend tiers.py max_ai_tokens_per_month', () => {

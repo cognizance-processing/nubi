@@ -137,7 +137,7 @@ export async function clearAiKey(orgId, provider) {
       payload?.error?.message ??
       payload?.detail ??
       `Request failed: ${response.status} ${response.statusText}`
-    const err = new Error(message)
+    const err: Error & { status?: number; payload?: any } = new Error(message)
     err.status = response.status
     err.payload = payload
     throw err

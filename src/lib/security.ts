@@ -61,7 +61,7 @@ async function _patch(path, body) {
       payload?.error?.message ??
       payload?.detail ??
       `Request failed: ${response.status} ${response.statusText}`
-    const err = new Error(message)
+    const err: Error & { status?: number; payload?: any } = new Error(message)
     err.status = response.status
     err.payload = payload
     throw err
@@ -90,7 +90,7 @@ async function _post(path, body) {
       payload?.error?.message ??
       payload?.detail ??
       `Request failed: ${response.status} ${response.statusText}`
-    const err = new Error(message)
+    const err: Error & { status?: number; payload?: any } = new Error(message)
     err.status = response.status
     err.payload = payload
     throw err
@@ -117,7 +117,7 @@ async function _del(path) {
       payload?.error?.message ??
       payload?.detail ??
       `Request failed: ${response.status} ${response.statusText}`
-    const err = new Error(message)
+    const err: Error & { status?: number; payload?: any } = new Error(message)
     err.status = response.status
     err.payload = payload
     throw err

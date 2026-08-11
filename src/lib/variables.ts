@@ -152,11 +152,13 @@ export async function getVariable(name) {
  * Create or update (upsert) a variable. The value is coerced to the JSON shape
  * implied by `type` before it is persisted.
  *
- * @param {{ name: string, value: any, type?: 'string'|'number'|'boolean'|'json' }} params
- * @returns {Promise<{ name: string, key: string, value: any, type: string }>}
- *   Throws on failure so the caller can surface it.
+ * @returns Throws on failure so the caller can surface it.
  */
-export async function setVariable({ name, value, type } = {}) {
+export async function setVariable({ name, value, type }: {
+  name: string
+  value: any
+  type?: 'string' | 'number' | 'boolean' | 'json'
+}): Promise<{ name: string; key: string; value: any; type: string }> {
   if (!name) throw new Error('Variable name is required.')
   const coerced = coerceValue(value, type)
   try {

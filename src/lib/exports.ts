@@ -92,13 +92,15 @@ export function downloadCSV(filename, csv) {
  *   - The `chartRef` stored inside a parent component, OR
  *   - `echarts.getInstanceByDom(containerDomElement)`
  *
- * @param {object} echartsInstance  A live ECharts chart instance (not disposed).
- * @param {string} filename         Suggested filename (e.g. 'chart.png').
- * @param {object} [opts]           Optional ECharts getDataURL options.
- * @param {number} [opts.pixelRatio=2]    Device-pixel ratio for the exported image.
- * @param {string} [opts.backgroundColor='#ffffff']  Background fill colour.
+ * @param echartsInstance  A live ECharts chart instance (not disposed).
+ * @param filename         Suggested filename (e.g. 'chart.png').
+ * @param opts             Optional ECharts getDataURL options.
  */
-export function chartToPNG(echartsInstance, filename = 'chart.png', opts = {}) {
+export function chartToPNG(
+  echartsInstance: any,
+  filename = 'chart.png',
+  opts: { pixelRatio?: number; backgroundColor?: string; excludeComponents?: string[] } = {},
+) {
   if (!echartsInstance || typeof echartsInstance.getDataURL !== 'function') {
     throw new Error('chartToPNG: first argument must be a live ECharts instance.')
   }

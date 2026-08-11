@@ -120,13 +120,14 @@ export async function listVersions(kind, resourceId) {
  *
  * POST /versions/{kind}/{resourceId} { message?, env_key? }
  *
- * @param {'flow'|'board'|'query'} kind
- * @param {string} resourceId
- * @param {{ message?: string, env_key?: string }} [body]
- * @returns {Promise<{ id: string, version: number, config_hash: string,
- *   message: string|null, deduped?: boolean }>} Throws on failure.
+ * @param kind 'flow'|'board'|'query'
+ * @returns Throws on failure.
  */
-export function checkpoint(kind, resourceId, { message, env_key = 'dev' } = {}) {
+export function checkpoint(
+  kind: string,
+  resourceId: string,
+  { message, env_key = 'dev' }: { message?: string; env_key?: string } = {},
+): Promise<{ id: string; version: number; config_hash: string; message: string | null; deduped?: boolean }> {
   return post(`/versions/${kind}/${resourceId}`, { message, env_key })
 }
 
@@ -135,12 +136,9 @@ export function checkpoint(kind, resourceId, { message, env_key = 'dev' } = {}) 
  *
  * GET /versions/{kind}/{resourceId}/{version}
  *
- * @param {'flow'|'board'|'query'} kind
- * @param {string} resourceId
- * @param {number} version
- * @returns {Promise<Object | null>} null on failure.
+ * @returns null on failure.
  */
-export async function getVersion(kind, resourceId, version) {
+export async function getVersion(kind: string, resourceId: string, version: number): Promise<any | null> {
   try {
     return await get(`/versions/${kind}/${resourceId}/${version}`)
   } catch (cause) {
@@ -154,12 +152,9 @@ export async function getVersion(kind, resourceId, version) {
  *
  * POST /versions/{kind}/{resourceId}/{version}/restore
  *
- * @param {'flow'|'board'|'query'} kind
- * @param {string} resourceId
- * @param {number} version
- * @returns {Promise<Object>} the updated draft row. Throws on failure.
+ * @returns the updated draft row. Throws on failure.
  */
-export function restoreVersion(kind, resourceId, version) {
+export function restoreVersion(kind: string, resourceId: string, version: number): Promise<any> {
   return post(`/versions/${kind}/${resourceId}/${version}/restore`)
 }
 
@@ -170,15 +165,14 @@ export function restoreVersion(kind, resourceId, version) {
  *
  * POST /environments/promote
  *
- * @param {{
- *   kind: 'flow'|'board'|'query',
- *   resource_id: string,
- *   from_env: string,
- *   to_env: string,
- *   include_dependencies?: boolean,
- * }} body
- * @returns {Promise<{ promoted: Array<Object> }>} Throws on failure.
+ * @returns Throws on failure.
  */
-export function promote({ kind, resource_id, from_env, to_env, include_dependencies = true }) {
+export function promote({ kind, resource_id, from_env, to_env, include_dependencies = true }: {
+  kind: string
+  resource_id: string
+  from_env: string
+  to_env: string
+  include_dependencies?: boolean
+}): Promise<{ promoted: any[] }> {
   return post('/environments/promote', { kind, resource_id, from_env, to_env, include_dependencies })
 }

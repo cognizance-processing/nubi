@@ -33,12 +33,12 @@ export {
  * promoted without them would go live pointing at query definitions its viewers
  * can't resolve in that env.
  *
- * @param {string} boardId
- * @param {{ message?: string, environments?: Array<object>|null }} [opts]
- * @returns {Promise<{ version: number|null, deduped: boolean, promoted: number }>}
- *   Throws on failure (both calls throw; the caller surfaces the message).
+ * @returns Throws on failure (both calls throw; the caller surfaces the message).
  */
-export async function pushToLive(boardId, { message, environments = null } = {}) {
+export async function pushToLive(
+  boardId: string,
+  { message, environments = null }: { message?: string; environments?: any[] | null } = {},
+): Promise<{ version: number | null; deduped: boolean; promoted: number }> {
   const from_env = resolveDraftEnvKey(environments)
   const to_env = resolveLiveEnvKey(environments)
 

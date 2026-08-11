@@ -32,12 +32,20 @@ import { getBlob } from './api.js'
  */
 const MAX_CONCURRENT = 2
 
+interface ThumbnailJob {
+  run: () => Promise<any>
+  resolve: (value: any) => void
+  reject: (reason?: any) => void
+  signal?: AbortSignal
+}
+
 let _active = 0
-const _queue = []
+const _queue: ThumbnailJob[] = []
 
 function _pump() {
   while (_active < MAX_CONCURRENT && _queue.length > 0) {
     const job = _queue.shift()
+    if (!job) continue
     if (job.signal?.aborted) continue   // scrolled away before we got to it
     _active += 1
     job
@@ -51,7 +59,7 @@ function _pump() {
 }
 
 /** Run `fn` when a slot frees up. Aborted jobs are dropped from the queue. */
-function _gate(fn, signal) {
+function _gate<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
     _queue.push({ run: fn, resolve, reject, signal })
     _pump()
@@ -61,13 +69,14 @@ function _gate(fn, signal) {
 /**
  * Fetch a board's rendered thumbnail as an object URL.
  *
- * @param {string} boardId
- * @param {{ signal?: AbortSignal, theme?: 'light'|'dark' }} [opts]
- * @returns {Promise<string|null>} an object URL, or null when the server has no
- *   render to give (503 when Node is unavailable) — the caller should keep its
- *   placeholder rather than show a broken image.
+ * @returns an object URL, or null when the server has no render to give (503
+ *   when Node is unavailable) — the caller should keep its placeholder rather
+ *   than show a broken image.
  */
-export async function fetchBoardThumbnail(boardId, { signal, theme = 'light' } = {}) {
+export async function fetchBoardThumbnail(
+  boardId: string,
+  { signal, theme = 'light' }: { signal?: AbortSignal; theme?: 'light' | 'dark' } = {},
+): Promise<string | null> {
   return _gate(async () => {
     if (signal?.aborted) return null
     try {

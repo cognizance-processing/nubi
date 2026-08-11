@@ -114,12 +114,13 @@ export async function deleteMetric(id) {
  * Re-throws on failure (governance violations are a structured 400) so the
  * caller can surface the message.
  *
- * @param {string} id
- * @param {{ dimensions?: string[], time_grain?: string|null,
- *   filters?: Array<{field:string,op:string,value:any}>, limit?: number }} [query]
- * @returns {Promise<{ sql: string, params: Record<string, any> }>}
  */
-export function compileMetricSql(id, query = {}) {
+export function compileMetricSql(id: string, query: {
+  dimensions?: string[]
+  time_grain?: string | null
+  filters?: Array<{ field: string; op: string; value: any }>
+  limit?: number
+} = {}): Promise<{ sql: string; params: Record<string, any> }> {
   return post(`${BASE}/${encodeURIComponent(id)}/sql`, {
     dimensions: Array.isArray(query.dimensions) ? query.dimensions : [],
     time_grain: query.time_grain ?? null,

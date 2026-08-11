@@ -5,24 +5,24 @@ import { Type } from 'apache-arrow'
 
 // Duck-typed table double: the util only touches schema.fields, numRows and
 // getChild, and vectors only need get/length — no real Arrow buffers needed.
-function fakeVec(values) {
+function fakeVec(values: any[]) {
   return {
     length: values.length,
-    get: (i) => values[i],
+    get: (i: number) => values[i],
     toArray: () => values.slice(),
   }
 }
 
-function fakeTable(fields, cols) {
+function fakeTable(fields: any[], cols: Record<string, any[]>) {
   return {
     numRows: Object.values(cols)[0]?.length ?? 0,
     schema: { fields },
-    getChild: (name) => (name in cols ? fakeVec(cols[name]) : null),
+    getChild: (name: string) => (name in cols ? fakeVec(cols[name]) : null),
   }
 }
 
-const decimalField = (name, scale) => ({ name, type: { typeId: Type.Decimal, scale } })
-const intField = (name) => ({ name, type: { typeId: Type.Int } })
+const decimalField = (name: string, scale: number) => ({ name, type: { typeId: Type.Decimal, scale } })
+const intField = (name: string) => ({ name, type: { typeId: Type.Int } })
 
 test('table without decimal columns is returned unchanged', () => {
   const t = fakeTable([intField('a')], { a: [1, 2] })

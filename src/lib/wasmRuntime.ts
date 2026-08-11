@@ -91,12 +91,15 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? ''
  * `cacheStatus: 'ERROR'` with a structured `error` (see `queryFailure`) and the
  * widgets render an error state instead of a body.
  */
+// apache-arrow's TS types for tableFromArrays() only advertise raw-array
+// inputs, but its actual implementation also accepts pre-built Vectors (as
+// used here) — cast past the overly narrow declaration.
 export const SAMPLE_TABLE = arrow.tableFromArrays({
   id:    arrow.vectorFromArray([1, 2, 3, 4, 5], new arrow.Int32()),
   name:  arrow.vectorFromArray(['alpha', 'beta', 'gamma', 'delta', 'epsilon']),
   value: arrow.vectorFromArray([10.5, 22.3, 7.8, 99.1, 45.0], new arrow.Float64()),
   active: arrow.vectorFromArray([true, false, true, true, false]),
-})
+} as any)
 
 // ---------------------------------------------------------------------------
 // Query failure result
@@ -238,7 +241,7 @@ export async function runArrowQuery(sql, onBatch, opts) {
 
   const t0 = performance.now()
 
-  const reqBody = { sql }
+  const reqBody: { sql: any; datastore_id?: any } = { sql }
   if (datastoreId) reqBody.datastore_id = datastoreId
 
   let response
@@ -399,7 +402,7 @@ export async function runArrowQueryById(queryId, opts) {
   const t0 = performance.now()
 
   // Build request body — only include named_params when provided
-  const reqBody = { query_id: queryId }
+  const reqBody: { query_id: any; named_params?: any; datastore_id?: any } = { query_id: queryId }
   if (namedParams && typeof namedParams === 'object' && Object.keys(namedParams).length > 0) {
     reqBody.named_params = namedParams
   }
@@ -504,13 +507,13 @@ export async function runPythonCell(code, inputs) {
   // Scope to the workspace on screen, not the user's default org.
   Object.assign(headers, tenantHeaders())
 
-  const body = { code }
+  const body: { code: any; input_query_id?: any; inputs?: Record<string, string> } = { code }
   if (typeof inputs === 'string') {
     // Legacy single-input shorthand → inputs['input'].
     if (inputs) body.input_query_id = inputs
   } else if (inputs && typeof inputs === 'object') {
     // Named-inputs map: drop empty names/query_ids before sending.
-    const named = {}
+    const named: Record<string, string> = {}
     for (const [name, queryId] of Object.entries(inputs)) {
       const n = String(name).trim()
       const q = String(queryId ?? '').trim()

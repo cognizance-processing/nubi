@@ -31,14 +31,17 @@ import { get, post } from './api.js'
  *
  * POST /environments/{envId}/git/push { message? }
  *
- * @param {string} envId
- * @param {{ message?: string }} [body]
- * @returns {Promise<{
- *   branch: string, sha: string|null, committed: boolean, files: number,
- *   pushed: boolean, last_synced_sha: string|null, warnings: string[]
- * }>} Throws on failure.
+ * @returns Throws on failure.
  */
-export function pushEnvironment(envId, { message } = {}) {
+export function pushEnvironment(envId: string, { message }: { message?: string } = {}): Promise<{
+  branch: string
+  sha: string | null
+  committed: boolean
+  files: number
+  pushed: boolean
+  last_synced_sha: string | null
+  warnings: string[]
+}> {
   return post(`/environments/${envId}/git/push`, { message })
 }
 
@@ -54,13 +57,14 @@ export function pushEnvironment(envId, { message } = {}) {
  *     err.payload === { diverged: true, files, env_sha, branch_sha }
  *   - no repo / branch      → { pulled: false, warning }
  *
- * @param {string} envId
- * @param {{ strategy?: 'take_branch'|'take_env' }} [body]
- *   'take_branch' imports the branch state into the env; 'take_env'
- *   overwrites the branch from the env's pinned state (force-with-lease).
- * @returns {Promise<Object>} Throws on failure (incl. 409 divergence).
+ * 'take_branch' imports the branch state into the env; 'take_env'
+ * overwrites the branch from the env's pinned state (force-with-lease).
+ * @returns Throws on failure (incl. 409 divergence).
  */
-export function pullEnvironment(envId, { strategy } = {}) {
+export function pullEnvironment(
+  envId: string,
+  { strategy }: { strategy?: 'take_branch' | 'take_env' } = {},
+): Promise<any> {
   return post(`/environments/${envId}/git/pull`, strategy ? { strategy } : {})
 }
 

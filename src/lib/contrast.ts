@@ -112,12 +112,12 @@ export function readableInk(bg, muted = false) {
  * color is not a plain hex (gradients, css vars, currentColor — the caller's
  * own concern), or when it already clears `minRatio`.
  *
- * @param {string|undefined} color  author-specified text color
- * @param {string|undefined} bg     tile background
- * @param {{minRatio?: number, muted?: boolean}} [opts]
- * @returns {string|undefined}
  */
-export function ensureReadable(color, bg, opts = {}) {
+export function ensureReadable(
+  color: string | undefined,
+  bg: string | undefined,
+  opts: { minRatio?: number; muted?: boolean } = {},
+): string | undefined {
   const { minRatio = 3, muted = false } = opts
   if (!parseHex(bg)) return color
   if (!parseHex(color)) return color ?? readableInk(bg, muted)

@@ -74,7 +74,7 @@ export async function streamChat({ chatId, boardId, model, message, signal, onEv
   if (!response.ok || !response.body) {
     let payload
     try { payload = await response.json() } catch { payload = null }
-    const err = new Error(
+    const err: Error & { status?: number; payload?: any } = new Error(
       payload?.error?.message ?? payload?.detail ??
       `Chat request failed: ${response.status} ${response.statusText}`,
     )

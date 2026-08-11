@@ -123,15 +123,14 @@ export async function validateFlow(spec) {
 
 /**
  * Trigger a synchronous run of a flow.
- * @param {string} id
- * @param {object} [params]  — runtime param overrides
- * @param {string} [env]     — trigger-time environment override (dev/prod/custom).
- *                             Omitted ⇒ backend resolves the project's default env.
- * @returns {Promise<object|null>}  flow_run + { task_runs: [...] }
+ * @param params  — runtime param overrides
+ * @param env     — trigger-time environment override (dev/prod/custom).
+ *                  Omitted ⇒ backend resolves the project's default env.
+ * @returns flow_run + { task_runs: [...] }
  */
-export async function runFlow(id, params = {}, env) {
+export async function runFlow(id: string, params: Record<string, any> = {}, env?: string): Promise<any> {
   try {
-    const body = { params }
+    const body: { params: Record<string, any>; env?: string } = { params }
     if (env) body.env = env
     return await post(`${BASE}/${id}/run`, body)
   } catch (err) {

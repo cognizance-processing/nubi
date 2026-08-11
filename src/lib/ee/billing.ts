@@ -325,11 +325,11 @@ export async function fetchFxRate() {
  * Create a Paystack checkout session for the given tier.
  * The caller should navigate to the returned URL.
  *
- * @param {string} tierId
- * @param {{ successUrl?: string, cancelUrl?: string }} [opts]
- * @returns {Promise<{ checkout_url: string }>}
  */
-export function createCheckout(tierId, { successUrl, cancelUrl } = {}) {
+export function createCheckout(
+  tierId: string,
+  { successUrl, cancelUrl }: { successUrl?: string; cancelUrl?: string } = {},
+): Promise<{ checkout_url: string }> {
   return post('/ee/billing/checkout', {
     tier_id: tierId,
     success_url: successUrl ?? window.location.origin + '/billing?status=success',

@@ -31,27 +31,26 @@ import { getAccessToken, tenantHeaders } from './api.js'
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? ''
 
-/**
- * Run a governed metric query server-side and return its result table.
- *
- * @param {{
- *   metric_id: string,
- *   dimensions?: string[],
- *   time_grain?: string | null,
- *   filters?: Array<{ field: string, op: string, value: unknown }>,
- *   limit?: number,
- * }} metric  — the widget's `metric` binding.
- * @param {{ signal?: AbortSignal }} [opts]
- * @returns {Promise<{ table: import('apache-arrow').Table, cacheStatus: string }>}
- */
-export async function runMetricQuery(metric, { signal } = {}) {
+export interface MetricBinding {
+  metric_id: string
+  dimensions?: string[]
+  time_grain?: string | null
+  filters?: Array<{ field: string; op: string; value: unknown }>
+  limit?: number
+}
+
+/** Run a governed metric query server-side and return its result table. */
+export async function runMetricQuery(
+  metric: MetricBinding,
+  { signal }: { signal?: AbortSignal } = {},
+): Promise<{ table: import('apache-arrow').Table; cacheStatus: string }> {
   if (!metric || !metric.metric_id) {
     throw new Error('runMetricQuery: metric.metric_id is required')
   }
 
   const url = `${BACKEND_URL}/api/v1/metrics/${encodeURIComponent(metric.metric_id)}/query`
 
-  const headers = {
+  const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Accept': 'application/vnd.apache.arrow.stream',
   }
@@ -65,7 +64,7 @@ export async function runMetricQuery(metric, { signal } = {}) {
 
   // Build the request body from the metric binding. Always send the governed
   // shape the backend expects; default optional fields so the body is stable.
-  const reqBody = {
+  const reqBody: { dimensions: string[]; time_grain: string | null; filters: any[]; limit?: number } = {
     dimensions: Array.isArray(metric.dimensions) ? metric.dimensions : [],
     time_grain: metric.time_grain ?? null,
     filters: Array.isArray(metric.filters) ? metric.filters : [],
@@ -87,7 +86,7 @@ export async function runMetricQuery(metric, { signal } = {}) {
       payload?.error?.message ??
       payload?.detail ??
       `Metric query failed: ${response.status} ${response.statusText}`
-    const err = new Error(message)
+    const err: Error & { status?: number; payload?: any } = new Error(message)
     err.status = response.status
     throw err
   }

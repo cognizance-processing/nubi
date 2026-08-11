@@ -105,8 +105,8 @@ export function setActiveProjectId(projectId) {
  *
  * @returns {Record<string, string>} headers to merge into a manual request
  */
-export function tenantHeaders() {
-  const headers = {}
+export function tenantHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {}
   if (_activeOrgId) headers['X-Org-Id'] = _activeOrgId
   if (_activeProjectId) headers['X-Project-Id'] = _activeProjectId
   return headers
@@ -118,12 +118,10 @@ export function tenantHeaders() {
 
 /**
  * Internal fetch helper.
- * @param {string} path   — path relative to BASE, must start with "/"
- * @param {RequestInit} options
- * @param {boolean} [_isRetry] — true when replaying after a token refresh
- * @returns {Promise<any>}
+ * @param path   — path relative to BASE, must start with "/"
+ * @param _isRetry — true when replaying after a token refresh
  */
-async function request(path, options = {}, _isRetry = false) {
+async function request(path: string, options: RequestInit = {}, _isRetry = false): Promise<any> {
   const headers = new Headers(options.headers ?? {})
 
   if (!headers.has('Content-Type') && options.body !== undefined) {
@@ -162,7 +160,7 @@ async function request(path, options = {}, _isRetry = false) {
     } catch {
       setAccessToken(null)
       // surface a consistent error
-      const err = new Error('Session expired. Please log in again.')
+      const err: Error & { status?: number; payload?: any } = new Error('Session expired. Please log in again.')
       err.status = 401
       throw err
     }
@@ -185,7 +183,7 @@ async function request(path, options = {}, _isRetry = false) {
       errPayload?.error?.message ??
       errPayload?.detail ??
       `Request failed: ${response.status} ${response.statusText}`
-    const err = new Error(message)
+    const err: Error & { status?: number; payload?: any } = new Error(message)
     err.status = response.status
     err.payload = errPayload
     throw err
@@ -202,7 +200,7 @@ async function request(path, options = {}, _isRetry = false) {
 // ---------------------------------------------------------------------------
 
 /** GET /path */
-export function get(path) {
+export function get(path: string) {
   return request(path, { method: 'GET' })
 }
 
@@ -217,7 +215,7 @@ export function get(path) {
  * @param {string} path
  * @returns {Promise<Blob>}
  */
-export async function getBlob(path) {
+export async function getBlob(path: string): Promise<Blob> {
   const headers = new Headers()
   if (_accessToken) headers.set('Authorization', `Bearer ${_accessToken}`)
   if (_activeOrgId) headers.set('X-Org-Id', _activeOrgId)
@@ -225,7 +223,7 @@ export async function getBlob(path) {
 
   const response = await fetch(`${BASE}${path}`, { method: 'GET', headers, credentials: 'include' })
   if (!response.ok) {
-    const err = new Error(`Download failed: ${response.status} ${response.statusText}`)
+    const err: Error & { status?: number; payload?: any } = new Error(`Download failed: ${response.status} ${response.statusText}`)
     err.status = response.status
     throw err
   }
@@ -233,22 +231,22 @@ export async function getBlob(path) {
 }
 
 /** POST /path with JSON body */
-export function post(path, body) {
+export function post(path: string, body?: any) {
   return request(path, { method: 'POST', body: body !== undefined ? JSON.stringify(body) : undefined })
 }
 
 /** PUT /path with JSON body */
-export function put(path, body) {
+export function put(path: string, body?: any) {
   return request(path, { method: 'PUT', body: body !== undefined ? JSON.stringify(body) : undefined })
 }
 
 /** PATCH /path with JSON body */
-export function patch(path, body) {
+export function patch(path: string, body?: any) {
   return request(path, { method: 'PATCH', body: body !== undefined ? JSON.stringify(body) : undefined })
 }
 
 /** DELETE /path (named 'del' to avoid reserved-word clash) */
-export function del(path) {
+export function del(path: string) {
   return request(path, { method: 'DELETE' })
 }
 
@@ -260,13 +258,13 @@ export function del(path) {
  * retry as `request()`. Resolves when the stream closes; rejects on transport
  * or HTTP errors. Pass an AbortSignal to cancel.
  *
- * @param {string} path
- * @param {any} body
- * @param {{ onEvent?: (ev: any) => void, signal?: AbortSignal }} [opts]
- * @param {boolean} [_isRetry]
- * @returns {Promise<void>}
  */
-export async function postStream(path, body, { onEvent, signal } = {}, _isRetry = false) {
+export async function postStream(
+  path: string,
+  body: any,
+  { onEvent, signal }: { onEvent?: (ev: any) => void; signal?: AbortSignal } = {},
+  _isRetry = false,
+): Promise<void> {
   const headers = new Headers({
     'Content-Type': 'application/json',
     Accept: 'text/event-stream',
@@ -290,7 +288,7 @@ export async function postStream(path, body, { onEvent, signal } = {}, _isRetry 
       setAccessToken(data.access_token)
     } catch {
       setAccessToken(null)
-      const err = new Error('Session expired. Please log in again.')
+      const err: Error & { status?: number; payload?: any } = new Error('Session expired. Please log in again.')
       err.status = 401
       throw err
     }
@@ -300,7 +298,7 @@ export async function postStream(path, body, { onEvent, signal } = {}, _isRetry 
   if (!response.ok || !response.body) {
     let payload
     try { payload = await response.json() } catch { payload = null }
-    const err = new Error(
+    const err: Error & { status?: number; payload?: any } = new Error(
       payload?.error?.message ?? payload?.detail ??
       `Request failed: ${response.status} ${response.statusText}`,
     )
@@ -496,14 +494,17 @@ export async function listRegisteredQueries() {
  * Never throws: a failed chunk is skipped, so validation degrading only means
  * fewer badges, never a broken list.
  *
- * @param {string[]} ids
- * @param {{ onChunk?: (partial: Record<string, {valid: boolean, error?: string}>) => void,
- *           chunkSize?: number, signal?: AbortSignal }} [opts]
- * @returns {Promise<Record<string, { valid: boolean, error?: string }>>}
  */
-export async function validateRegisteredQueries(ids, opts = {}) {
+export async function validateRegisteredQueries(
+  ids: string[],
+  opts: {
+    onChunk?: (partial: Record<string, { valid: boolean; error?: string }>) => void
+    chunkSize?: number
+    signal?: AbortSignal
+  } = {},
+): Promise<Record<string, { valid: boolean; error?: string }>> {
   const { onChunk, chunkSize = 250, signal } = opts
-  const all = {}
+  const all: Record<string, { valid: boolean; error?: string }> = {}
   const list = (ids ?? []).filter(Boolean)
   for (let i = 0; i < list.length; i += chunkSize) {
     if (signal?.aborted) break
@@ -1028,7 +1029,7 @@ export async function fetchProviderData(boardId, providerId, params = {}) {
       setAccessToken(data.access_token)
     } catch {
       setAccessToken(null)
-      const err = new Error('Session expired. Please log in again.')
+      const err: Error & { status?: number; payload?: any } = new Error('Session expired. Please log in again.')
       err.status = 401
       throw err
     }
@@ -1042,7 +1043,7 @@ export async function fetchProviderData(boardId, providerId, params = {}) {
       errPayload?.error?.message ??
       errPayload?.detail ??
       `Provider fetch failed: ${response.status} ${response.statusText}`
-    const err = new Error(message)
+    const err: Error & { status?: number; payload?: any } = new Error(message)
     err.status = response.status
     throw err
   }
