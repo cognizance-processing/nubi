@@ -35,6 +35,7 @@ import { QueryPicker } from './QueryPicker.jsx'
 import QueryStatusLink from './QueryStatusLink.jsx'
 import { useQuerySample } from './useInspectorData.js'
 import { FieldLabel } from './inspectorPrimitives.jsx'
+import { titleText, withTitleText } from './titleValue.js'
 
 // Widget types that read from a query — they get the data rail.
 const DATA_WIDGETS = ['kpi', 'metric', 'table', 'pivot', 'chart']
@@ -84,9 +85,11 @@ function DataRail({ widget, onChange, extraQueryIds }) {
   const setQueryId = (qid) => {
     const next = { ...widget, query_id: qid }
     // Mirror ConfigPanel: pre-fill an empty chart title from the query name once.
-    if (widget.type === 'chart' && !widget.config?.title) {
+    if (widget.type === 'chart' && !titleText(widget.config?.title)) {
       const match = extraQueryIds.find(q => q?.id === qid)
-      if (match?.name) next.config = { ...(widget.config ?? {}), title: match.name }
+      if (match?.name) {
+        next.config = { ...(widget.config ?? {}), title: withTitleText(widget.config?.title, match.name) }
+      }
     }
     onChange(next)
   }

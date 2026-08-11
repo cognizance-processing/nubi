@@ -24,6 +24,7 @@ import {
 } from './inspectorPrimitives.jsx'
 import { useColumnIntrospection } from './useInspectorData.js'
 import { CHART_TYPES, SERIES_TYPES } from './constants.js'
+import { titleText, withTitleText } from './titleValue.js'
 import { registeredMaps } from '../../lib/maps.js'
 
 // Lucide icon map for the chart-type picker grid
@@ -428,8 +429,8 @@ export function ChartConfig({ widget, onChange }) {
             type="text"
             className={inputCls}
             placeholder="Optional chart title"
-            value={cfg.title ?? ''}
-            onChange={e => setConfig('title', e.target.value || undefined)}
+            value={titleText(cfg.title)}
+            onChange={e => setConfig('title', withTitleText(cfg.title, e.target.value))}
           />
         </div>
 

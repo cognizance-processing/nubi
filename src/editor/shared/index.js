@@ -8,6 +8,7 @@
 export * from './constants.js'
 export * from './inspectorPrimitives.jsx'
 export { toSwatchHex, resolveSwatchHex, rgbToHex } from './colorValue.js'
+export { titleText, withTitleText } from './titleValue.js'
 export * from './useInspectorData.js'
 export { QueryPicker } from './QueryPicker.jsx'
 export { default as QueryStatusLink } from './QueryStatusLink.jsx'

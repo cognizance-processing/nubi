@@ -127,6 +127,7 @@ import {
   ChartConfig, KpiConfig, IconPicker,
   TableConfig, ColumnFormatsEditor, ConditionalRulesEditor,
   FilterConfig, TextConfig, PlacementControl, effectivePlacement,
+  titleText, withTitleText,
   DEMO_QUERY_IDS, CHART_TYPES, SERIES_TYPES, FILTER_SUBTYPES, VARIABLE_TYPES,
   FORMAT_OPS, COLUMN_FORMAT_TYPES, BACKGROUND_TYPES, PIVOT_AGGS,
 } from './shared/index.js'
@@ -1034,9 +1035,11 @@ function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec, activeBr
     const next = { ...widget, query_id: qid }
     // One-time convenience: pre-fill an empty chart title from the query's
     // display name. Once the user has their own title, leave it alone.
-    if (widget.type === 'chart' && !widget.config?.title) {
+    if (widget.type === 'chart' && !titleText(widget.config?.title)) {
       const match = extraQueryIds.find(q => q.id === qid)
-      if (match?.name) next.config = { ...(widget.config ?? {}), title: match.name }
+      if (match?.name) {
+        next.config = { ...(widget.config ?? {}), title: withTitleText(widget.config?.title, match.name) }
+      }
     }
     onChange(next)
   }
@@ -1133,7 +1136,11 @@ function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec, activeBr
  * to whatever the widget already calls itself.
  */
 function SaveToLibrarySection({ widget, onSaved }) {
-  const suggested = widget.config?.title || widget.props?.label || widget.title || `${widget.type} widget`
+  // `config.title` may be an ECharts title OBJECT on imported boards, and a
+  // legacy `props.label` is not guaranteed to be a string either — titleText
+  // coerces both to text so the input below always holds a string.
+  const suggested = titleText(widget.config?.title) || titleText(widget.props?.label)
+    || titleText(widget.title) || `${widget.type} widget`
   const [name, setName] = useState(suggested)
   const [saving, setSaving] = useState(false)
 
