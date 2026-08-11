@@ -52,10 +52,10 @@ const MONACO_OPTIONS = {
   insertSpaces: true,
   cursorSmoothCaretAnimation: 'on',
   smoothScrolling: true,
-}
+} as const
 
 /** Slugify a title the same way portability.slug_for_envelope does. */
-function slugify(s) {
+function slugify(s: string) {
   return (
     (s || 'dashboard')
       .toLowerCase()

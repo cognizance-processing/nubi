@@ -16,7 +16,7 @@
  *   ColorField      React component  (swatch + free-text colour input)
  */
 
-import { useMemo } from 'react'
+import { useMemo, type ReactNode, type ComponentType } from 'react'
 import { resolveSwatchHex } from './colorValue.js'
 
 // Shared control styling. Targets a consistent ~32px control height across
@@ -57,9 +57,14 @@ export function SectionLabel({ children }) {
 
 /**
  * A collapsible <details> section with a consistent header.
- * Props: title, icon (optional Lucide component), defaultOpen, right (optional node)
  */
-export function Section({ title, icon: Icon, children, defaultOpen = true, right = null }) {
+export function Section({ title, icon: Icon, children, defaultOpen = true, right = null }: {
+  title: ReactNode
+  icon?: ComponentType<{ size?: number; className?: string }>
+  children: ReactNode
+  defaultOpen?: boolean
+  right?: ReactNode
+}) {
   return (
     <details
       open={defaultOpen}
@@ -87,11 +92,13 @@ export function Section({ title, icon: Icon, children, defaultOpen = true, right
   )
 }
 
-/**
- * A labelled toggle switch row.
- * Props: label, checked, onChange(bool), hint (optional sub-label)
- */
-export function ToggleRow({ label, checked, onChange, hint }) {
+/** A labelled toggle switch row. */
+export function ToggleRow({ label, checked, onChange, hint }: {
+  label: ReactNode
+  checked: boolean
+  onChange: (checked: boolean) => void
+  hint?: ReactNode
+}) {
   return (
     <label className="flex items-center justify-between gap-3 cursor-pointer py-0.5 group/toggle">
       <span className="text-xs font-medium text-fg leading-snug">

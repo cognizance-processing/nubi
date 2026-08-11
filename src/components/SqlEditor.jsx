@@ -277,15 +277,15 @@ function TemplatesMenu({ onInsert }) {
 
 export default function SqlEditor({
   value,
-  onChange,
+  onChange = undefined,
   readOnly = false,
   height = '200px',
-  onRun,
+  onRun = undefined,
   toolbar = true,
-  dialect: dialectProp,
-  onDialectChange,
-  dialectHint,
-  schema: schemaProp,
+  dialect: dialectProp = undefined,
+  onDialectChange = undefined,
+  dialectHint = undefined,
+  schema: schemaProp = undefined,
 }) {
   // Theme — null-safe read so this renders outside a ThemeProvider without a
   // conditional hook call; degrades to 'light'.

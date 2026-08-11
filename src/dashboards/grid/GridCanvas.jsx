@@ -88,7 +88,7 @@ export default function GridCanvas({
   onInteractionEnd,
   onLayoutCommit,
   className = '',
-  style,
+  style = undefined,
 }) {
   const pad = useMemo(() => normalizePadding(padding), [padding])
 

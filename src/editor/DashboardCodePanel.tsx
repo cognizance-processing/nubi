@@ -59,9 +59,9 @@ function slugify(s) {
   )
 }
 
-function buildEnvelope(kind, spec, board) {
+function buildEnvelope(kind: string, spec: Record<string, any>, board?: string) {
   const name = spec?.title || 'Untitled dashboard'
-  const metadata = { name }
+  const metadata: { name: string; id?: string } = { name }
   if (board) metadata.id = board
   return { kind, apiVersion: API_VERSION, metadata, spec: spec ?? {} }
 }

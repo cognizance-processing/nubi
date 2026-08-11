@@ -389,7 +389,7 @@ function makeSectionWidget(pos) {
   }
 }
 
-function makeWidget(type, pos) {
+function makeWidget(type: string, pos: Record<string, any>): Record<string, any> {
   if (type === 'kpi') return makeKpiWidget(pos)
   if (type === 'metric') return makeMetricWidget(pos)
   if (type === 'table') return makeTableWidget(pos)
@@ -430,7 +430,7 @@ function MetricBindingSection({ widget, onChange }) {
       onChange({ ...widget, metric: next })
     } else {
       // Clearing the metric → drop the binding so query_id takes over again.
-      const { metric, ...rest } = widget // eslint-disable-line no-unused-vars
+      const { metric, ...rest } = widget // eslint-disable-line @typescript-eslint/no-unused-vars
       onChange(rest)
     }
   }
@@ -1010,7 +1010,7 @@ function DashboardPanel({ spec, onSpecChange }) {
  * shell already provides: the header (shell header), the remove button (shell
  * header) and the query picker (shell data rail).
  */
-function ConfigPanel({ widget, onChange, onRemove, extraQueryIds, spec, activeBreakpoint = 'lg', onLayoutCommit, onMoveToTab, onLibrarySaved, variant = 'panel' }) {
+function ConfigPanel({ widget, onChange, onRemove = undefined, extraQueryIds, spec, activeBreakpoint = 'lg', onLayoutCommit, onMoveToTab, onLibrarySaved, variant = 'panel' }) {
   const focus = variant === 'focus'
 
   if (!widget) {
@@ -1317,7 +1317,7 @@ function AddPanel({ onAdd, onAddFromLibrary, library, libraryLoading, onDeleteLi
  * Normalise a raw spec widget into the shape expected by each widget component.
  * (Mirrors SpecRenderer's normalizeWidget.)
  */
-function normalizeWidget(raw) {
+function normalizeWidget(raw: Record<string, any>): Record<string, any> {
   const existing = raw.props ?? {}
   const merged = {
     subtype:     raw.subtype     ?? existing.subtype,
@@ -1335,7 +1335,7 @@ function normalizeWidget(raw) {
  * Memoised on a stable `cacheKey` that is only `query_id + JSON(encoding)`.
  * Position changes (x/y/w/h) do NOT trigger a re-render.
  */
-const WidgetPreview = memo(function WidgetPreview({ widget }) {
+const WidgetPreview = memo(function WidgetPreview({ widget }: { widget: Record<string, any> }) {
   const w = useMemo(() => normalizeWidget(widget), [widget])
 
   // Wrap in VariableProvider so hooks inside widgets don't throw.
@@ -1911,14 +1911,14 @@ function ToolbarPopover({ icon: Icon, label, title, testId, active, children }) 
 // DashboardEditor — main export
 // ---------------------------------------------------------------------------
 
-/**
- * @param {{
- *   boardId?: string|null,
- *   onSaved?: (board: object) => void,
- *   onSpecChange?: (spec: object) => void,
- * }} props
- */
-export default function DashboardEditor({ boardId = null, onSaved, onSpecChange, onSetSpec, onDirtyChange, onSetSave }) {
+export default function DashboardEditor({ boardId = null, onSaved, onSpecChange, onSetSpec, onDirtyChange, onSetSave }: {
+  boardId?: string | null
+  onSaved?: (board: Record<string, any>) => void
+  onSpecChange?: (spec: Record<string, any>) => void
+  onSetSpec?: (commitSpec: (spec: Record<string, any>) => void) => void
+  onDirtyChange?: (dirty: boolean) => void
+  onSetSave?: (save: () => Promise<Record<string, any>>) => void
+}) {
   // ── History state ─────────────────────────────────────────────────────────
   const [hist, setHist] = useState(() => createHistory(DEFAULT_SPEC))
   const spec = hist.present
@@ -2067,7 +2067,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   // zoom (`'fit'` auto-scales to the available width; a number is an explicit
   // zoom set by the buttons or a pinch gesture).
   const [deviceWidths, setDeviceWidths] = useState({ tablet: DEVICE_WIDTHS.tablet, mobile: DEVICE_WIDTHS.mobile })
-  const [zoomMode, setZoomMode] = useState('fit')
+  const [zoomMode, setZoomMode] = useState<'fit' | number>('fit')
   // Mirror into a ref so the (passive-free) pinch handler can read/update it
   // without re-binding the listener every render.
   const zoomModeRef = useRef(zoomMode)

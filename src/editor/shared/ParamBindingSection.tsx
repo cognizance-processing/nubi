@@ -11,13 +11,17 @@
 
 import { inputCls, selectCls, SectionLabel } from './inspectorPrimitives.jsx'
 
-export function ParamBindingSection({ widget, onChange, specVariables }) {
-  const params = widget.params ?? {}
+export function ParamBindingSection({ widget, onChange, specVariables }: {
+  widget: Record<string, any>
+  onChange: (widget: Record<string, any>) => void
+  specVariables?: Array<{ name: string }>
+}) {
+  const params: Record<string, any> = widget.params ?? {}
   const varNames = (specVariables ?? []).map(v => v.name)
 
-  const setParam = (paramName, value) =>
+  const setParam = (paramName: string, value: any) =>
     onChange({ ...widget, params: { ...params, [paramName]: value } })
-  const removeParam = (paramName) => {
+  const removeParam = (paramName: string) => {
     const next = { ...params }
     delete next[paramName]
     onChange({ ...widget, params: next })

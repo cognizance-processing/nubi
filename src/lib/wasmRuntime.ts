@@ -327,12 +327,22 @@ export async function runArrowQuery(sql, onBatch, opts) {
  * DuckDB-WASM read_parquet(<demo url>) — zero POST /api/v1/query calls.
  * All non-demo queries continue to the server path exactly as before.
  *
- * @param {string} queryId  — Registered query id (e.g. "demo_all").
- * @param {{ namedParams?: Record<string, unknown>, onBatch?: (rowsSoFar: number) => void, isDemo?: boolean, datastoreId?: string }} [opts]
- * @returns {Promise<{ table: arrow.Table|null, cacheStatus: string, elapsedMs: number,
- *                      error?: {status?: number, code?: string, message: string} }>}
+ * @param queryId  — Registered query id (e.g. "demo_all").
  */
-export async function runArrowQueryById(queryId, opts) {
+export async function runArrowQueryById(
+  queryId: string,
+  opts?: {
+    namedParams?: Record<string, unknown>
+    onBatch?: (rowsSoFar: number) => void
+    isDemo?: boolean
+    datastoreId?: string
+  } | ((rowsSoFar: number) => void),
+): Promise<{
+  table: any
+  cacheStatus: string
+  elapsedMs: number
+  error?: { status?: number; code?: string; message: string }
+}> {
   // Support legacy positional (queryId, onBatch) as well as new (queryId, { namedParams, datastoreId, onBatch, isDemo })
   let namedParams
   let onBatch

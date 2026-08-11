@@ -31,7 +31,7 @@
  * shared <ToolCard>. The streaming/data flow is unchanged from the prior version.
  */
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, type KeyboardEvent } from 'react'
 import {
   Sparkles, History, Plus, Send, Square, ChevronDown, Check, AlertCircle,
 } from 'lucide-react'
@@ -283,7 +283,7 @@ export default function ChatPanel({ boardId = null, spec = null, onApplySpec }) 
   }, [])
 
   // --- send a message -----------------------------------------------------
-  const send = useCallback(async (override) => {
+  const send = useCallback(async (override?: string) => {
     const text = (override ?? input).trim()
     if (!text || streaming || !model) return
 
@@ -406,7 +406,7 @@ export default function ChatPanel({ boardId = null, spec = null, onApplySpec }) 
     }
   }, [streaming])
 
-  const onKeyDown = useCallback((e) => {
+  const onKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       send()
@@ -514,7 +514,7 @@ export default function ChatPanel({ boardId = null, spec = null, onApplySpec }) 
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={onKeyDown}
-            onInput={e => { e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 128) + 'px' }}
+            onInput={e => { e.currentTarget.style.height = 'auto'; e.currentTarget.style.height = Math.min(e.currentTarget.scrollHeight, 128) + 'px' }}
             placeholder={streaming ? 'Streaming…' : 'Ask Nubi to change this dashboard…'}
             aria-label="Chat input"
             className="flex-1 resize-none bg-transparent text-[13px] text-fg leading-relaxed placeholder:text-muted focus:outline-none min-h-[22px] max-h-32 py-0.5"

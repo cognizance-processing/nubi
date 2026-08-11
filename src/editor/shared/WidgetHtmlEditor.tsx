@@ -33,7 +33,7 @@ const MONACO_OPTIONS = {
   quickSuggestions: false,
   renderLineHighlight: 'line',
   scrollbar: { vertical: 'auto', horizontal: 'auto', verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
-}
+} as const
 
 // Insertable data tokens (label → snippet). Clicking inserts at the cursor.
 const TOKENS = [

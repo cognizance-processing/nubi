@@ -31,7 +31,7 @@ export default function Spinner({
   size = 'md',
   accent = false,
   label = 'Loading',
-  className,
+  className = undefined,
   ...rest
 }) {
   return (
