@@ -26,6 +26,53 @@
 import { get, post, del } from './api.js'
 
 // ---------------------------------------------------------------------------
+// Agent install snippet
+// ---------------------------------------------------------------------------
+
+/**
+ * Best-effort WebSocket control-plane URL for the bridge agent snippet.
+ *
+ * Prefers `VITE_BACKEND_URL` (the absolute API origin — same source api.js
+ * uses to build request URLs) since the agent runs as a standalone process
+ * and can't rely on the browser-only `/api/v1` dev proxy. Falls back to the
+ * page's own origin, which is only correct when the frontend and backend
+ * share a host (true for most self-hosted single-box setups, not for a
+ * split frontend/API deploy) — the snippet is copy-editable, so a wrong
+ * guess just means the customer edits one line.
+ */
+export function controlPlaneUrl() {
+  const backend = import.meta.env.VITE_BACKEND_URL
+  const origin = backend && backend.length > 0 ? backend : window.location.origin
+  return origin.replace(/^http/, 'ws') + '/api/v1'
+}
+
+/**
+ * Build the install/run snippet for the query-traffic bridge agent.
+ *
+ * IMPORTANT: this is `python -m app.bridges.agent` (backend/app/bridges/agent.py),
+ * NOT `nubi bridge start` (the CLI's `cli/nubi_cli/bridge_agent.py`). The two
+ * are easy to confuse because both authenticate with the same `nubi_br_…`
+ * token, but they serve different traffic:
+ *   - `python -m app.bridges.agent` — the binary TCP-mux tunnel that proxies
+ *     database connector queries (`network_mode: "bridge"`). This is what a
+ *     connector needs.
+ *   - `nubi bridge start` — the CLI's file-ingest control channel only. Its
+ *     WebSocket reader explicitly discards binary tunnel frames
+ *     (`WebsocketControlChannel.recv` in bridge_agent.py), so running it for
+ *     a database connector leaves the bridge showing "online" while every
+ *     query through it hangs ~10s and fails with `bridge_not_connected` /
+ *     a proxy timeout — a confusing, silent failure. See docs/bridges.md.
+ */
+export function agentInstallSnippet(bridgeId, token) {
+  return [
+    `BRIDGE_ID=${bridgeId} \\`,
+    `BRIDGE_TOKEN=${token} \\`,
+    `CONTROL_PLANE_URL=${controlPlaneUrl()} \\`,
+    `  python -m app.bridges.agent`,
+  ].join('\n')
+}
+
+// ---------------------------------------------------------------------------
 // Bridge CRUD
 // ---------------------------------------------------------------------------
 

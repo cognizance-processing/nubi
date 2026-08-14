@@ -17,9 +17,15 @@
  *     options?, help?, width?, showIf? }
  *     group   — 'config' (default) | 'secret'   (secret keys are encrypted)
  *     type    — text | number | password | url | select | textarea
- *               | segmented | sa_json
+ *               | segmented | sa_json | bridge_select
  *     width   — 'full' (default) | 'half' | 'third'
  *     showIf  — (config) => boolean   (conditional visibility)
+ *
+ *   'bridge_select' (connectorForms.jsx → <BridgeSelect>) renders a live
+ *   dropdown of the org's Bridge v2 agents (fetched from GET /bridges) plus a
+ *   "connect a local/private database" quick-start that creates a bridge,
+ *   mints its token, and shows the one-line agent install command inline —
+ *   see docs/bridges.md and src/components/app/BridgeQuickConnect.jsx.
  */
 
 export interface ConnectorFieldOption {
@@ -31,7 +37,7 @@ export interface ConnectorFieldOption {
 export interface ConnectorField {
   key: string
   label: string
-  type: 'text' | 'number' | 'password' | 'url' | 'select' | 'textarea' | 'segmented' | 'sa_json'
+  type: 'text' | 'number' | 'password' | 'url' | 'select' | 'textarea' | 'segmented' | 'sa_json' | 'bridge_select'
   group?: 'config' | 'secret'
   default?: unknown
   placeholder?: string
@@ -128,6 +134,15 @@ const NETWORK_FIELD: ConnectorField = {
   help: 'Use "bridge" if Nubi reaches your database through a private-network agent.',
 }
 
+const BRIDGE_ID_FIELD: ConnectorField = {
+  key: 'bridge_id',
+  label: 'Bridge',
+  type: 'bridge_select',
+  width: 'full',
+  showIf: (cfg) => cfg.network_mode === 'bridge',
+  help: 'Which bridge agent routes this connection — including one running on your own machine.',
+}
+
 const SSL_FIELD: ConnectorField = {
   key: 'sslmode',
   label: 'SSL mode',
@@ -163,7 +178,7 @@ function sqlFields({
     { key: 'password', label: 'Password', type: 'password', group: 'secret', width: 'full' },
   ]
   if (ssl) fields.push(SSL_FIELD)
-  if (network) fields.push(NETWORK_FIELD)
+  if (network) fields.push(NETWORK_FIELD, BRIDGE_ID_FIELD)
   return fields
 }
 
@@ -257,6 +272,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
       { key: 'user', label: 'User', type: 'text', width: 'half' },
       { key: 'password', label: 'Password', type: 'password', group: 'secret', width: 'full' },
       NETWORK_FIELD,
+      BRIDGE_ID_FIELD,
     ],
     summary: hostSummary,
   },

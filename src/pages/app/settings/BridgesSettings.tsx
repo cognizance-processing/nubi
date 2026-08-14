@@ -1,13 +1,18 @@
 /**
  * BridgesSettings — create and manage Bridge v2 agents (Settings → Bridges).
  *
- * A *bridge* is a lightweight agent (`nubi bridge start`) you run inside your
- * VPC / on-prem network so Nubi can reach databases it can't connect to
- * directly. This page lets an owner/admin:
+ * A *bridge* is a lightweight agent (`python -m app.bridges.agent` — see
+ * docs/bridges.md) you run inside your VPC / on-prem network, or on your own
+ * machine, so Nubi can reach databases it can't connect to directly. This
+ * page lets an owner/admin:
  *   - create a bridge (just a name),
  *   - mint a bridge token (shown ONCE) with the exact install snippet,
  *   - rotate / revoke tokens,
  *   - delete a bridge.
+ *
+ * NOT `nubi bridge start` — that CLI command serves a different, file-ingest-
+ * only control channel and explicitly discards the binary tunnel frames a
+ * database connector's queries need (see agentInstallSnippet in lib/bridges.js).
  *
  * Mirrors backend/app/routes/bridges.py + app/auth/bridge_tokens.py. Token
  * management is owner/admin-only on the backend; viewers see a read-only hint.
@@ -39,6 +44,7 @@ import {
   mintBridgeToken,
   rotateBridgeToken,
   revokeBridgeToken,
+  agentInstallSnippet,
 } from '../../../lib/bridges.js'
 import {
   SettingsPageHeader,
@@ -88,7 +94,7 @@ function tokenState(t) {
 /** One-time raw-token reveal box with copy + install snippet. */
 function TokenReveal({ token, bridgeId, onDismiss }) {
   const [copied, setCopied] = useState(null)
-  const installSnippet = `pip install 'nubi[bridge]'\nnubi bridge start --token ${token} --bridge-id ${bridgeId}`
+  const installSnippet = agentInstallSnippet(bridgeId, token)
 
   function copy(text, key) {
     try {
@@ -435,7 +441,7 @@ export default function BridgesSettings() {
     <div className="space-y-6">
       <SettingsPageHeader
         title="Bridges"
-        description="Run a bridge agent inside your VPC or on-prem network so Nubi can reach databases it can't connect to directly."
+        description="Run a bridge agent inside your VPC, on-prem network, or on your own machine so Nubi can reach databases it can't connect to directly."
       />
 
       {err && (

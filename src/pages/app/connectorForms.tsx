@@ -14,7 +14,13 @@
  *     onChange(group, key, value) — group: 'config' | 'secret'
  */
 
+import { useEffect, useState } from 'react'
 import { getTypeInfo } from '../../data/connectors.js'
+import { listBridges } from '../../lib/bridges.js'
+import { useOrg } from '../../contexts/OrgContext.jsx'
+import BridgeQuickConnect from '../../components/app/BridgeQuickConnect.jsx'
+
+const MANAGE_ROLES = ['owner', 'admin']
 
 // ---------------------------------------------------------------------------
 // Shared field primitives
@@ -125,6 +131,74 @@ function SaJson({ field, value, onChange }) {
   )
 }
 
+/**
+ * BridgeSelect — live dropdown of the org's Bridge v2 agents plus a
+ * "connect a local/private database" quick-start (BridgeQuickConnect). See
+ * the 'bridge_select' field type doc in src/data/connectors.js.
+ */
+function BridgeSelect({ value, onChange }) {
+  const { activeOrg } = useOrg()
+  const canManage = MANAGE_ROLES.includes(activeOrg?.role)
+  const [bridges, setBridges] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [quickConnect, setQuickConnect] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    listBridges().then((rows) => {
+      if (cancelled) return
+      setBridges(rows)
+      setLoading(false)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  function handleConnected(bridgeId) {
+    onChange(bridgeId)
+    setQuickConnect(false)
+    listBridges().then(setBridges) // pick up the just-created bridge
+  }
+
+  if (quickConnect) {
+    return (
+      <BridgeQuickConnect
+        canManage={canManage}
+        onConnected={handleConnected}
+        onCancel={() => setQuickConnect(false)}
+      />
+    )
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <select
+        value={value ?? ''}
+        onChange={(e) => onChange(e.target.value || undefined)}
+        className={inputCls}
+      >
+        <option value="">{loading ? 'Loading bridges…' : '— select a bridge —'}</option>
+        {bridges.map((b) => (
+          <option key={b.id} value={b.id}>
+            {b.name} · {b.status === 'online' ? 'online' : 'offline'}
+          </option>
+        ))}
+      </select>
+      {!loading && bridges.length === 0 && (
+        <p className="text-[11px] text-muted">No bridges yet — connect one below.</p>
+      )}
+      <button
+        type="button"
+        onClick={() => setQuickConnect(true)}
+        className="text-[11px] text-primary hover:underline underline-offset-2"
+      >
+        + Connect a local or private database
+      </button>
+    </div>
+  )
+}
+
 function FieldControl({ field, value, onChange }) {
   const id = `f-${field.key}`
   const isSecret = (field.group ?? 'config') === 'secret'
@@ -134,6 +208,8 @@ function FieldControl({ field, value, onChange }) {
       return <Segmented field={field} value={value} onChange={onChange} />
     case 'sa_json':
       return <SaJson field={field} value={value} onChange={onChange} />
+    case 'bridge_select':
+      return <BridgeSelect value={value} onChange={onChange} />
     case 'select':
       return (
         <select

@@ -255,8 +255,12 @@ async def mint_bridge_token(
     """Mint a new bridge token for *bridge_id* (owner/admin, org-scoped).
 
     The raw ``nubi_br_…`` token is returned EXACTLY ONCE here and never again —
-    only its SHA-256 hash is stored. Hand it to the agent
-    (``nubi bridge start --token …``).
+    only its SHA-256 hash is stored. Hand it to the query-tunnel agent
+    (``python -m app.bridges.agent``, env ``BRIDGE_TOKEN=...`` — see
+    docs/bridges.md). NOT ``nubi bridge start``: that CLI command is a
+    different, file-ingest-only agent that discards this token's binary
+    tunnel frames, so it cannot serve a connector's ``network_mode: "bridge"``
+    queries.
     """
     org_id = await _get_user_org(str(user["id"]), repo)
     await _require_owner_or_admin(str(user["id"]), org_id, repo)
