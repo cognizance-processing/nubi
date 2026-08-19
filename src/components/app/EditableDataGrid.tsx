@@ -582,7 +582,7 @@ function InsertRowForm({ columns, onSubmit, onCancel, busy }) {
 // ---------------------------------------------------------------------------
 
 export default function EditableDataGrid({
-  datastoreId, table, meta, rows, total, loading, error,
+  datastoreId, table, schema, meta, rows, total, loading, error,
   onRetry, onRefresh, onRowsChange, onTotalChange,
 }) {
   const allColumns = useMemo(() => meta?.columns ?? [], [meta])
@@ -872,7 +872,12 @@ export default function EditableDataGrid({
       <div className="shrink-0 flex items-center gap-2 px-4 h-12 border-b border-border bg-surface">
         <div className="flex items-center gap-2 min-w-0">
           <Database size={15} className="text-primary shrink-0" />
-          <h2 className="text-sm font-semibold font-mono text-fg truncate">{table}</h2>
+          <h2 className="text-sm font-semibold font-mono text-fg truncate">
+            {/* Dataset prefix: dimmed so the table name stays the focus, but
+                present because the same name can exist in several datasets. */}
+            {schema && <span className="text-muted font-normal">{schema}.</span>}
+            {table}
+          </h2>
           {!loading && (
             <span className="text-[11px] text-muted shrink-0 tabular-nums">
               {(total ?? shown).toLocaleString()} {(total ?? shown) === 1 ? 'row' : 'rows'}

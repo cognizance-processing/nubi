@@ -26,7 +26,7 @@
  * effect body) per the repo's react-hooks rules.
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   Database,
@@ -67,12 +67,13 @@ async function fetchTables(datastoreId) {
 // Table list item
 // ---------------------------------------------------------------------------
 
-function TableItem({ name, active, onClick }) {
+function TableItem({ name, active, onClick, indented = false }) {
   return (
     <button
       onClick={onClick}
       className={[
-        'w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[13px] font-mono text-left transition-colors duration-100',
+        'w-full flex items-center gap-2 py-1.5 rounded-lg text-[13px] font-mono text-left transition-colors duration-100',
+        indented ? 'pl-5 pr-2.5' : 'px-2.5',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         active
           ? 'bg-primary/10 text-primary'
@@ -81,6 +82,34 @@ function TableItem({ name, active, onClick }) {
     >
       <Table2 size={13} className={active ? 'text-primary shrink-0' : 'text-muted/70 shrink-0'} />
       <span className="truncate">{name}</span>
+    </button>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Dataset (schema) group header in the table rail
+// ---------------------------------------------------------------------------
+//
+// A connector can expose many datasets — "dataset" here is whatever the engine
+// calls the container a table lives in: a MySQL/Postgres schema, a BigQuery
+// dataset. Without these headers the rail is a flat list in which a table's
+// dataset is invisible and same-named tables in different datasets (three
+// `orders`s, say) are indistinguishable.
+
+function DatasetGroupHeader({ schema, count, collapsed, onToggle }) {
+  return (
+    <button
+      onClick={onToggle}
+      aria-expanded={!collapsed}
+      className="w-full flex items-center gap-1 px-1.5 py-1 mt-1 first:mt-0 rounded-lg text-left text-muted hover:bg-surface-2 hover:text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      {collapsed
+        ? <ChevronRight size={11} className="shrink-0" />
+        : <ChevronDown size={11} className="shrink-0" />}
+      <span className="truncate text-[10px] font-semibold uppercase tracking-wide" title={schema}>
+        {schema}
+      </span>
+      <span className="ml-auto shrink-0 text-[10px] tabular-nums text-muted/70">{count}</span>
     </button>
   )
 }
@@ -192,6 +221,8 @@ export default function DataExplorerPage() {
   // several schemas; without this the server falls back to the connection's
   // default schema and opens the wrong table (or none).
   const [selectedSchema, setSelectedSchema] = useState(null)
+  // Datasets the user has collapsed in the rail, keyed by schema name.
+  const [collapsedDatasets, setCollapsedDatasets] = useState(() => new Set())
 
   // Per-table data + meta (loaded here, passed to EditableDataGrid).
   const [meta, setMeta] = useState(null)
@@ -243,6 +274,7 @@ export default function DataExplorerPage() {
     let cancelled = false
     setSelectedTable(null)
     setSelectedSchema(null)
+    setCollapsedDatasets(new Set())
     setMeta(null)
     setRows([])
     setTotal(null)
@@ -341,8 +373,38 @@ export default function DataExplorerPage() {
   }, [setSearchParams])
 
   // ── Filtered tables ───────────────────────────────────────────────────────
+  // Search matches the dataset name too, so typing "sales" narrows the rail to
+  // that dataset — filtering by dataset without a separate control.
+  const search = tableSearch.trim().toLowerCase()
   const filteredTables = tables.filter((t) =>
-    t.name.toLowerCase().includes(tableSearch.toLowerCase())
+    t.name.toLowerCase().includes(search) ||
+    String(t.schema ?? '').toLowerCase().includes(search)
+  )
+
+  // ── Group tables by dataset (schema) ──────────────────────────────────────
+  // Ordered by table count descending: a connector's primary dataset is the one
+  // the user almost always wants, and alphabetical order buries it (an 84-table
+  // schema sorting below a 1-table one).
+  const tableGroups = useMemo(() => {
+    const by = new Map()
+    for (const t of filteredTables) {
+      const key = String(t.schema ?? '')
+      if (!by.has(key)) by.set(key, [])
+      by.get(key).push(t)
+    }
+    return [...by.entries()]
+      .map(([schema, items]) => ({ schema, tables: items }))
+      .sort((a, b) => b.tables.length - a.tables.length || a.schema.localeCompare(b.schema))
+  }, [filteredTables])
+
+  // Only worth showing dataset headers when the CONNECTOR exposes more than one
+  // — deliberately computed from the unfiltered list, so headers don't vanish
+  // when a search happens to match a single dataset (the result would other-
+  // wise not say which dataset it came from). Single-schema connectors (the
+  // demo set, a local DuckDB file) stay a plain flat list.
+  const showDatasetGroups = useMemo(
+    () => new Set(tables.map((t) => String(t.schema ?? ''))).size > 1,
+    [tables],
   )
 
   // ── Selected connector label ──────────────────────────────────────────────
@@ -370,7 +432,10 @@ export default function DataExplorerPage() {
         >
           <SlidersHorizontal size={14} className="text-muted shrink-0" />
           {selectedTable ? (
-            <span className="font-mono truncate max-w-[50vw]">{selectedTable}</span>
+            <span className="font-mono truncate max-w-[50vw]">
+              {selectedSchema && <span className="text-muted">{selectedSchema}.</span>}
+              {selectedTable}
+            </span>
           ) : (
             <span className="text-muted">Select table</span>
           )}
@@ -416,10 +481,10 @@ export default function DataExplorerPage() {
             <input
               type="text"
               className="w-full h-7 pl-6 pr-2 text-xs bg-surface-2 border border-border rounded-lg text-fg placeholder:text-muted/50 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent"
-              placeholder="Search tables…"
+              placeholder="Search tables or datasets…"
               value={tableSearch}
               onChange={(e) => setTableSearch(e.target.value)}
-              aria-label="Search tables"
+              aria-label="Search tables or datasets"
             />
           </div>
         </div>
@@ -452,14 +517,37 @@ export default function DataExplorerPage() {
             </p>
           ) : (
             <div className="space-y-0.5">
-              {filteredTables.map((t) => (
-                <TableItem
-                  key={`${t.schema ?? ''}.${t.name}`}
-                  name={t.name}
-                  active={selectedTable === t.name}
-                  onClick={() => handleSelectTable(t.name, t.schema)}
-                />
-              ))}
+              {tableGroups.map(({ schema, tables: groupTables }) => {
+                // While searching, always reveal matches — a collapsed dataset
+                // must not hide a table the user just searched for.
+                const collapsed = showDatasetGroups && !search && collapsedDatasets.has(schema)
+                return (
+                  <div key={schema || '__default__'}>
+                    {showDatasetGroups && (
+                      <DatasetGroupHeader
+                        schema={schema || 'default'}
+                        count={groupTables.length}
+                        collapsed={collapsed}
+                        onToggle={() => setCollapsedDatasets((prev) => {
+                          const next = new Set(prev)
+                          if (next.has(schema)) next.delete(schema)
+                          else next.add(schema)
+                          return next
+                        })}
+                      />
+                    )}
+                    {!collapsed && groupTables.map((t) => (
+                      <TableItem
+                        key={`${t.schema ?? ''}.${t.name}`}
+                        name={t.name}
+                        indented={showDatasetGroups}
+                        active={selectedTable === t.name && (selectedSchema ?? null) === (t.schema ?? null)}
+                        onClick={() => handleSelectTable(t.name, t.schema)}
+                      />
+                    ))}
+                  </div>
+                )
+              })}
             </div>
           )}
         </div>
@@ -538,6 +626,7 @@ export default function DataExplorerPage() {
                   key={`${selectedConnectorId ?? 'demo'}:${selectedSchema ?? ''}.${selectedTable}`}
                   datastoreId={selectedConnectorId}
                   table={selectedTable}
+                  schema={selectedSchema}
                   meta={meta}
                   rows={rows}
                   total={total}
