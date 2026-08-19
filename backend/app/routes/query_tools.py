@@ -460,10 +460,16 @@ async def schema(
 # Execution reuses the same connector + planner path as POST /query.
 # ---------------------------------------------------------------------------
 
+import asyncio
+import logging
 import re as _re
 
-from fastapi import Path
+from fastapi import Path, Request
 
+from app.connectors.introspect import (
+    introspect_tables as _introspect_tables_shared,
+    resolve_table_ref as _resolve_table_ref,
+)
 from app.connectors.plan import PhysicalPlan
 from app.errors import AppError
 
@@ -474,6 +480,14 @@ _PREVIEW_MAX_LIMIT = 200
 # introspection SQL.  Tables are *also* validated against the introspected
 # allowlist; this is belt-and-braces.
 _SAFE_IDENT_RE = _re.compile(r"^[A-Za-z_][A-Za-z0-9_.$]*$")
+
+
+log = logging.getLogger(__name__)
+
+# Row counts cost one round trip EACH, so only the first N tables get one; the
+# rest report rows=None. Without this a 124-table connector issued 124
+# sequential COUNT(*) queries just to render a table list.
+_COUNT_BUDGET = 50
 
 
 def _safe_ident(name: str) -> bool:
@@ -518,6 +532,7 @@ class PreviewOut(BaseModel):
 async def _resolve_datastore_connector(
     datastore_id: str,
     user: dict[str, Any],
+    request: Request,
 ) -> Any:
     """Resolve an org-scoped datastore and build a (DuckDB) connector for it.
 
@@ -539,10 +554,13 @@ async def _resolve_datastore_connector(
         return _get_demo_connector()
 
     from app.repos.provider import get_repo
-    from app.routes.resources import get_user_org
+    from app.routes._org import resolve_org_id
 
     repo = get_repo()
-    org_id = await get_user_org(str(user["id"]), repo)
+    # resolve_org_id (not get_user_org): the latter ignores X-Org-Id and returns
+    # the user's FIRST org, so a datastore in any other org 404s even though the
+    # caller is looking straight at it.
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
     ds = await repo.get("datastores", org_id, datastore_id)
     if ds is None:
         raise AppError("not_found", f"Datastore {datastore_id!r} not found.", 404)
@@ -567,26 +585,16 @@ async def _resolve_datastore_connector(
 
 
 def _introspect_tables(connector: Any) -> list[dict[str, Any]]:
-    """Return [{name, schema}] for user tables; [] if introspection fails."""
-    sql = (
-        "SELECT table_schema, table_name FROM information_schema.tables "
-        "WHERE table_schema NOT IN ('information_schema', 'pg_catalog') "
-        "ORDER BY table_schema, table_name"
-    )
-    plan = PhysicalPlan(sql=sql, params=[], cache_key="", rls_claims={})
-    try:
-        d = connector.execute(plan).to_pydict()
-        schemas = d.get("table_schema", [])
-        names = d.get("table_name", [])
-        return [{"name": n, "schema": s} for s, n in zip(schemas, names)]
-    except Exception:  # noqa: BLE001 — fall back to SHOW TABLES
-        try:
-            plan2 = PhysicalPlan(sql="SHOW TABLES", params=[], cache_key="", rls_claims={})
-            d2 = connector.execute(plan2).to_pydict()
-            col = next((k for k in d2 if k.lower() == "name"), None)
-            return [{"name": n, "schema": "main"} for n in (d2.get(col, []) if col else [])]
-        except Exception:  # noqa: BLE001 — connector can't introspect
-            return []
+    """Return [{name, schema}] for user tables via the shared introspector.
+
+    Delegates to :mod:`app.connectors.introspect` — this used to be a private
+    second copy that read ``information_schema`` labels case-sensitively, so it
+    returned [] on engines that upper-case them.
+    """
+    return [
+        {"name": t["name"], "schema": t.get("schema")}
+        for t in _introspect_tables_shared(connector)
+    ]
 
 
 def _count_rows(connector: Any, table: str) -> int | None:
@@ -606,25 +614,44 @@ def _count_rows(connector: Any, table: str) -> int | None:
 
 @router.get("/datastores/{datastore_id}/tables", response_model=TablesOut)
 async def list_datastore_tables(
+    request: Request,
     datastore_id: str = Path(...),
     user: dict[str, Any] = Depends(current_user),
 ) -> TablesOut:
     """List a datastore's tables (with cheap row counts) for the data browser.
 
     Org-scoped + authed.  Introspects via ``information_schema`` and adds a
-    ``COUNT(*)`` per table.  Returns an empty list (never 500) when the
-    connector cannot be introspected.
+    ``COUNT(*)`` per table for the first :data:`_COUNT_BUDGET` tables.
+
+    The counts are budgeted because they are one round trip EACH: a connector
+    with a few hundred tables turned a table list into a few hundred sequential
+    ``COUNT(*)`` queries. Tables past the budget report ``rows=None``, which the
+    UI already renders as "unknown".
     """
-    connector = await _resolve_datastore_connector(datastore_id, user)
-    tables = _introspect_tables(connector)
-    out: list[TableInfo] = []
-    for t in tables:
-        out.append(
+    connector = await _resolve_datastore_connector(datastore_id, user, request)
+    # Blocking driver calls run off the event loop — see the note in
+    # app.connectors.introspect.introspect_tables.
+    tables = await asyncio.to_thread(_introspect_tables, connector)
+
+    def _collect() -> list[TableInfo]:
+        return [
             TableInfo(
                 name=t["name"],
                 schema=t.get("schema"),
-                rows=_count_rows(connector, t["name"]),
+                rows=(
+                    _count_rows(connector, _resolve_table_ref(t["name"], tables, t.get("schema")))
+                    if i < _COUNT_BUDGET
+                    else None
+                ),
             )
+            for i, t in enumerate(tables)
+        ]
+
+    out = await asyncio.to_thread(_collect)
+    if len(tables) > _COUNT_BUDGET:
+        log.info(
+            "row counts limited to the first %d of %d tables for datastore %s",
+            _COUNT_BUDGET, len(tables), datastore_id,
         )
     return TablesOut(tables=out, datastore_id=datastore_id)
 
@@ -634,9 +661,11 @@ async def list_datastore_tables(
     response_model=PreviewOut,
 )
 async def preview_datastore_table(
+    request: Request,
     datastore_id: str = Path(...),
     table: str = Path(...),
     limit: int = 50,
+    schema: str | None = None,
     user: dict[str, Any] = Depends(current_user),
 ) -> PreviewOut:
     """Return the first *limit* rows of *table* as plain JSON (columns + rows).
@@ -648,8 +677,8 @@ async def preview_datastore_table(
     """
     limit = max(1, min(int(limit or 50), _PREVIEW_MAX_LIMIT))
 
-    connector = await _resolve_datastore_connector(datastore_id, user)
-    tables = _introspect_tables(connector)
+    connector = await _resolve_datastore_connector(datastore_id, user, request)
+    tables = await asyncio.to_thread(_introspect_tables, connector)
     known = {t["name"] for t in tables}
     if table not in known or not _safe_ident(table):
         raise AppError(
@@ -658,13 +687,16 @@ async def preview_datastore_table(
             404,
         )
 
+    # Qualify with the owning schema: a bare name resolves against the
+    # connection's default schema and misses when the table lives elsewhere.
+    ref = _resolve_table_ref(table, tables, schema)
     plan = PhysicalPlan(
-        sql=f"SELECT * FROM {table} LIMIT {limit}",
+        sql=f"SELECT * FROM {ref} LIMIT {limit}",
         params=[],
         cache_key="",
         rls_claims={},
     )
-    arrow_table = connector.execute(plan)
+    arrow_table = await asyncio.to_thread(connector.execute, plan)
 
     columns = [
         PreviewColumn(name=str(f.name), type=str(f.type))
@@ -677,7 +709,7 @@ async def preview_datastore_table(
     for i in range(n):
         rows.append([_jsonable(data[c][i]) for c in col_names])
 
-    total = _count_rows(connector, table)
+    total = await asyncio.to_thread(_count_rows, connector, ref)
     return PreviewOut(
         table=table,
         columns=columns,

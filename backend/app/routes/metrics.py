@@ -425,12 +425,15 @@ async def _persist_metric(
     try:
         from app.db import execute, fetchrow
         from app.routes._org import (
-            get_user_org,
+            resolve_org_id,
             resolve_project_id_for_create,
         )
 
         repo = get_repo()
-        org_id = await get_user_org(identity.user_id, repo)
+        # resolve_org_id, not get_user_org: `request` is right here (the
+        # next line uses it) and get_user_org would pin the user's FIRST
+        # org, persisting this record into the wrong tenant.
+        org_id = await resolve_org_id(identity.user_id, repo, request)
         project_id = await resolve_project_id_for_create(org_id, request)
 
         # UPSERT by (org_id, config.metric.slug): update an existing backing

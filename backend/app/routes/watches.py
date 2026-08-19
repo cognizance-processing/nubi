@@ -112,11 +112,16 @@ def _slugify(value: str) -> str:
     return slug.strip("_") or "watch"
 
 
-async def _caller_org(identity: VerifiedIdentity) -> str:
-    """Resolve the caller's org id (used to tenant-scope every watch operation)."""
-    from app.routes._org import get_user_org  # noqa: PLC0415
+async def _caller_org(identity: VerifiedIdentity, request: Request) -> str:
+    """Resolve the caller's org id (used to tenant-scope every watch operation).
 
-    return await get_user_org(identity.user_id, get_repo())
+    Uses ``resolve_org_id`` so the active org (``X-Org-Id``) is honoured;
+    ``get_user_org`` would pin the user's FIRST org and make every watch in any
+    other org invisible.
+    """
+    from app.routes._org import resolve_org_id  # noqa: PLC0415
+
+    return await resolve_org_id(identity.user_id, get_repo(), request)
 
 
 # ---------------------------------------------------------------------------
@@ -135,10 +140,13 @@ async def _persist_watch(
 
     try:
         from app.db import execute, fetchrow
-        from app.routes._org import get_user_org, resolve_project_id_for_create
+        from app.routes._org import resolve_org_id, resolve_project_id_for_create
 
         repo = get_repo()
-        org_id = await get_user_org(identity.user_id, repo)
+        # resolve_org_id, not get_user_org: `request` is right here (the
+        # next line uses it) and get_user_org would pin the user's FIRST
+        # org, persisting this record into the wrong tenant.
+        org_id = await resolve_org_id(identity.user_id, repo, request)
         project_id = await resolve_project_id_for_create(org_id, request)
         # Stamp the resolved org onto the in-process record so every later
         # registry read/write can be tenant-scoped (closes a cross-org IDOR).
@@ -332,6 +340,7 @@ def _record_view(record: dict[str, Any]) -> dict[str, Any]:
 
 @api_router.get("/watches")
 async def list_watches(
+    request: Request,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict:
     """List the caller's org watches (auth mirrors GET /metrics).
@@ -341,7 +350,7 @@ async def list_watches(
     org's watches.
     """
     _require_read_scope(identity)
-    org_id = await _caller_org(identity)
+    org_id = await _caller_org(identity, request)
     visible = [
         r for r in _registry_all() if str(r.get("org_id")) == str(org_id)
     ]
@@ -355,12 +364,13 @@ async def list_watches(
 
 @api_router.get("/watches/{watch_id}")
 async def get_watch(
+    request: Request,
     watch_id: str,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict:
     """Return a single watch's full record (tenant-scoped → 404 cross-org)."""
     _require_read_scope(identity)
-    org_id = await _caller_org(identity)
+    org_id = await _caller_org(identity, request)
     record = await _resolve_watch(watch_id, org_id)
     return _record_view(record)
 
@@ -378,7 +388,7 @@ async def create_watch(
 ) -> dict:
     """Create + register a watch. First-party only."""
     _require_first_party_write(identity)
-    org_id = await _caller_org(identity)
+    org_id = await _caller_org(identity, request)
 
     data = body.model_dump()
     provisional_id = _slugify(str(data.get("name") or ""))
@@ -409,7 +419,7 @@ async def update_watch(
 ) -> dict:
     """Update a watch: re-validate, re-register, re-persist (tenant-scoped)."""
     _require_first_party_write(identity)
-    org_id = await _caller_org(identity)
+    org_id = await _caller_org(identity, request)
 
     # Tenant guard: if a watch with this id exists for ANOTHER org, it is
     # invisible to this caller → 404 (never silently overwrite a foreign watch).
@@ -445,12 +455,13 @@ async def update_watch(
 
 @api_router.delete("/watches/{watch_id}")
 async def delete_watch(
+    request: Request,
     watch_id: str,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict:
     """Unregister the watch and delete its persisted row (tenant-scoped)."""
     _require_first_party_write(identity)
-    org_id = await _caller_org(identity)
+    org_id = await _caller_org(identity, request)
 
     # Tenant guard: 404 if the watch belongs to another org (no cross-org delete).
     await _resolve_watch(watch_id, org_id)
@@ -548,6 +559,7 @@ async def _resolve_metric_for_watch(metric_id: str, org_id: str | None = None):
 
 @api_router.post("/watches/{watch_id}/evaluate")
 async def evaluate_watch_now(
+    request: Request,
     watch_id: str,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict:
@@ -558,7 +570,7 @@ async def evaluate_watch_now(
     alert. Returns ``{breached, value, state, explanation?, sent, result}``.
     """
     _require_read_scope(identity)
-    org_id = await _caller_org(identity)
+    org_id = await _caller_org(identity, request)
     record = await _resolve_watch(watch_id, org_id)
     watch = _watch_from_record(record)
     metric = await _resolve_metric_for_watch(watch.metric_id, org_id)

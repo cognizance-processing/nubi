@@ -14,7 +14,7 @@ DELETE /access-grants/{id}                         Delete a grant (admin/owner).
 Security
 --------
 * Every operation is scoped to the caller's org (resolved server-side via
-  ``get_user_org`` — NEVER from the request body).
+  ``resolve_org_id`` — NEVER from the request body).
 * Writes (POST/DELETE) are gated to approver roles (owner/admin) via
   ``require_approver_default``, mirroring routes/admin.py's gating model.
 * A grant id that belongs to another org (or does not exist) returns 404 (not
@@ -26,7 +26,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, field_validator
 
 from app.access.grants_store import VALID_SUBJECT_TYPES, get_grants_store
@@ -35,7 +35,7 @@ from app.auth.roles import require_approver_default
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
-from app.routes._org import get_user_org
+from app.routes._org import resolve_org_id
 
 router = APIRouter(prefix="/access-grants", tags=["access-grants"])
 
@@ -73,6 +73,7 @@ class GrantCreateIn(BaseModel):
 
 @router.get("")
 async def list_grants(
+    request: Request,
     subject_type: str | None = Query(None, description="user | role | embed_sub"),
     subject_id: str | None = Query(None, description="subject identifier"),
     user: dict[str, Any] = Depends(current_user),
@@ -89,7 +90,7 @@ async def list_grants(
     -------
     200 {grants: [{id, subject_type, subject_id, dimension, value, expires_at, ...}]}
     """
-    org_id = await get_user_org(str(user["id"]), repo)
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
     store = get_grants_store()
     if subject_type or subject_id:
         # Filtering by subject requires BOTH and a valid type.
@@ -114,6 +115,7 @@ async def list_grants(
 @router.post("", status_code=201, dependencies=[Depends(require_approver_default)])
 async def create_grant(
     body: GrantCreateIn,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -123,7 +125,7 @@ async def create_grant(
     -------
     201 {grant: {...}}
     """
-    org_id = await get_user_org(str(user["id"]), repo)
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
 
     expires_at = body.expires_at
     if expires_at is not None and expires_at.tzinfo is None:
@@ -148,6 +150,7 @@ async def create_grant(
 )
 async def delete_grant(
     grant_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> None:
@@ -156,7 +159,7 @@ async def delete_grant(
     A grant belonging to another org (or absent) returns 404 — never 403 — so
     cross-tenant existence is not enumerable.
     """
-    org_id = await get_user_org(str(user["id"]), repo)
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
     deleted = await get_grants_store().delete(grant_id, org_id)
     if not deleted:
         raise AppError("not_found", "Grant not found.", 404)

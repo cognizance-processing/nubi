@@ -40,6 +40,12 @@ from app.auth.deps import current_user
 from app.auth.roles import require_writer_default
 from app.connectors.arrow_io import ipc_stream_from_bytes, table_to_ipc_bytes
 from app.connectors.duckdb_conn import DuckDBConnector, open_duckdb_readonly, setup_s3_httpfs
+from app.connectors.introspect import (
+    SYSTEM_SCHEMAS as _SYSTEM_SCHEMAS,
+    introspect_tables as _introspect_tables_shared,
+    pick_col as _pick_col,
+    resolve_table_ref as _resolve_table_ref,
+)
 from app.connectors.plan import PhysicalPlan
 from app.errors import AppError
 from app.repos.provider import get_repo, Repo
@@ -259,149 +265,14 @@ def _safe_identifier(name: str) -> bool:
     return bool(_SAFE_IDENTIFIER_RE.match(name)) and len(name) <= 256
 
 
-def _resolve_table_ref(
-    table: str,
-    tables: list[dict[str, Any]],
-    schema: str | None = None,
-) -> str:
-    """Return the SQL reference to use for *table* — bare or ``schema.table``.
-
-    A connector can expose many schemas (the MySQL bridge connectors reach
-    seven), but the browse URLs carry only a bare table name.  An unqualified
-    ``SELECT * FROM projects`` then resolves against the connection's DEFAULT
-    schema, which fails outright when the table lives elsewhere ("Table
-    'inventory_analytics.projects' doesn't exist") — so a listed table could not
-    be opened.
-
-    Resolution order:
-
-    1. Explicit *schema* that matches a listed table → qualify with it.
-    2. The name is unique across schemas → qualify with its own schema, so a
-       table outside the default schema still opens.
-    3. The name is ambiguous → stay unqualified and let the engine's default
-       schema win, which is the historical behaviour and the least surprising
-       reading of a bare name.
-
-    Both parts are re-validated with :func:`_safe_identifier`; a schema that
-    fails validation is ignored rather than interpolated.
-    """
-    if schema and _safe_identifier(schema):
-        if any(t["name"] == table and t["schema"] == schema for t in tables):
-            return f"{schema}.{table}"
-    owners = {t["schema"] for t in tables if t["name"] == table}
-    if len(owners) == 1:
-        only = next(iter(owners))
-        if only and _safe_identifier(str(only)):
-            return f"{only}.{table}"
-    return table
-
-
-# Schemas that are engine plumbing, never user data.  Compared case-folded so
-# the same list covers DuckDB/Postgres (lower-case) and MySQL (which reports
-# 'mysql' / 'sys' verbatim but uppercases the *column labels*, see _pick_col).
-_SYSTEM_SCHEMAS = frozenset(
-    {
-        "information_schema",
-        "pg_catalog",
-        "pg_toast",
-        "mysql",
-        "performance_schema",
-        "sys",
-    }
-)
-
-
-def _pick_col(d: dict[str, Any], *candidates: str) -> list[Any]:
-    """Case-insensitively pull a column out of a ``to_pydict()`` result.
-
-    Engines disagree on the case of ``information_schema`` result *labels*:
-    DuckDB and Postgres return them lower-case, while MySQL, Snowflake and
-    Oracle return them UPPER-CASE.  A plain ``d.get("table_name")`` therefore
-    silently returns ``[]`` on those engines — and because the surrounding
-    ``zip()`` then yields nothing, the browser renders an empty table list with
-    no error at all.  That exact miss is why MySQL connectors showed no tables.
-
-    Tries each candidate exactly first (cheap, and respects a genuine
-    case-sensitive collision), then case-folded.  Returns ``[]`` when nothing
-    matches, so callers keep their existing empty-result behaviour.
-    """
-    for c in candidates:
-        if c in d:
-            return d[c]
-    folded = {k.lower(): v for k, v in d.items()}
-    for c in candidates:
-        v = folded.get(c.lower())
-        if v is not None:
-            return v
-    return []
-
-
 def _introspect_tables_duckdb(connector: DuckDBConnector) -> list[dict[str, Any]]:
-    """Return [{schema, name}] for all user tables reachable through *connector*.
+    """Return [{schema, name}] for every user table reachable through *connector*.
 
-    Engine-agnostic despite the name: every SQL connector Nubi resolves exposes
-    ``information_schema.tables``.  System schemas are filtered client-side (not
-    in the WHERE clause) so one query works across engines whose system-schema
-    names differ.
-
-    Raises when BOTH introspection attempts fail — an unreachable database is a
-    real error, not an empty schema.  Swallowing it renders a blank, silent
-    table list that looks like "this connector has no tables" (the failure mode
-    that made a downed MySQL sim indistinguishable from an empty one).
+    Thin alias for :func:`app.connectors.introspect.introspect_tables` — the
+    single shared implementation. Kept as a module-local name because the write
+    paths and tests already reference it.
     """
-    first_error: Exception | None = None
-    plan = _make_plan(
-        "SELECT table_schema, table_name FROM information_schema.tables "
-        "ORDER BY table_schema, table_name"
-    )
-    try:
-        tbl = connector.execute(plan)
-        rows = tbl.to_pydict()
-        schemas = _pick_col(rows, "table_schema")
-        names = _pick_col(rows, "table_name")
-        out = [
-            {"schema": s, "name": n}
-            for s, n in zip(schemas, names)
-            if str(s).lower() not in _SYSTEM_SCHEMAS
-        ]
-        if out:
-            return out
-        # A successful query that yielded nothing usable falls through to the
-        # SHOW TABLES fallback rather than reporting "no tables".
-        log.warning(
-            "information_schema.tables returned no usable rows "
-            "(labels=%s); falling back to SHOW TABLES",
-            list(rows)[:8],
-        )
-    except Exception as exc:  # noqa: BLE001 — retried via SHOW TABLES below
-        first_error = exc
-        log.warning("information_schema introspection failed", exc_info=True)
-
-    # Fallback: SHOW TABLES (DuckDB in-memory with registered Arrow views)
-    plan2 = _make_plan("SHOW TABLES")
-    try:
-        tbl2 = connector.execute(plan2)
-        d = tbl2.to_pydict()
-        # Column may be 'name'/'Name' (DuckDB) or 'Tables_in_<db>' (MySQL).
-        col = next(
-            (k for k in d if k.lower() == "name" or k.lower().startswith("tables_in_")),
-            None,
-        )
-        names_list = d.get(col, []) if col else []
-        return [{"schema": "main", "name": n} for n in names_list]
-    except Exception as exc:  # noqa: BLE001 — classified below
-        log.warning("SHOW TABLES fallback failed", exc_info=True)
-        # Both paths failed. If information_schema failed too, the connector is
-        # broken (unreachable host, bad credentials, dead tunnel) — surface that
-        # instead of an empty list the UI would render as "no tables".
-        err = first_error or exc
-        if isinstance(err, AppError):
-            raise err
-        raise AppError(
-            "introspection_failed",
-            f"Could not list tables for this connector: {err}",
-            502,
-        ) from err
+    return _introspect_tables_shared(connector)
 
 
 def _introspect_columns_duckdb(

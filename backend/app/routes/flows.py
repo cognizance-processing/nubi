@@ -402,7 +402,7 @@ from app.flows.spec import flow_spec_is_valid, validate_flow_spec
 from app.flows.store import get_flow_store
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
-from app.routes._org import get_user_org as _get_user_org
+from app.routes._org import resolve_org_id as _resolve_org_id
 
 # ---------------------------------------------------------------------------
 # Sub-router
@@ -911,6 +911,7 @@ async def list_ingest_templates_route(
 
 @router.post("/scheduled-query", status_code=201, dependencies=[Depends(require_writer_default)])
 async def create_scheduled_query(
+    request: Request,
     body: ScheduledQueryIn,
     user: dict[str, Any] = Depends(current_user),
     identity: VerifiedIdentity = Depends(verified_identity),
@@ -926,7 +927,7 @@ async def create_scheduled_query(
 
     Returns the created flow in the same shape as ``POST /flows`` (201).
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     # Build a 1-task flow spec: a single `query` task referencing query_id.
     task_config: dict[str, Any] = {"query_id": body.query_id}
@@ -980,6 +981,7 @@ async def create_scheduled_query(
 
 @router.post("/blend", status_code=201, dependencies=[Depends(require_writer_default)])
 async def create_blend(
+    request: Request,
     body: CreateBlendIn,
     user: dict[str, Any] = Depends(current_user),
     identity: VerifiedIdentity = Depends(verified_identity),
@@ -1015,7 +1017,7 @@ async def create_blend(
         build_blend_spec,
     )
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     project_id = await _resolve_project_id(org_id, x_project_id)
 
     if not body.sources:
@@ -1199,6 +1201,7 @@ async def flows_tick(
 
 @router.get("/runs/{run_id}", status_code=200)
 async def get_flow_run_by_id(
+    request: Request,
     run_id: str,
     include_results: int = Query(default=0, ge=0, le=1),
     task_runs_limit: int = Query(default=0, ge=0),
@@ -1234,7 +1237,7 @@ async def get_flow_run_by_id(
     Each task_run's ``logs`` field is also capped via the existing
     ``_cap_task_logs`` helper.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_flow_store()
     run = await store.get_flow_run(run_id)
     if run is None or str(run["org_id"]) != str(org_id):
@@ -1275,6 +1278,7 @@ async def get_flow_run_by_id(
 
 @router.get("/runs/{run_id}/tasks/{task_key}/logs", status_code=200)
 async def get_task_run_logs(
+    request: Request,
     run_id: str,
     task_key: str,
     user: dict[str, Any] = Depends(current_user),
@@ -1286,7 +1290,7 @@ async def get_task_run_logs(
     for the most recent task_run with the given task_key within this flow_run.
     Returns 404 if the run or task does not exist or belongs to a different org.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_flow_store()
     run = await store.get_flow_run(run_id)
     if run is None or str(run["org_id"]) != str(org_id):
@@ -1597,6 +1601,7 @@ async def compile_code(
 
 @router.post("/preview", status_code=200, dependencies=[Depends(require_writer_default)])
 async def preview_cell(
+    request: Request,
     body: PreviewCellIn,
     user: dict[str, Any] = Depends(current_user),
     identity: VerifiedIdentity = Depends(verified_identity),
@@ -1634,7 +1639,7 @@ async def preview_cell(
     from app.flows.executor import TaskContext, execute_task  # noqa: PLC0415
     from app.flows.runtime import _resolve_secrets  # noqa: PLC0415
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     # ── 1. Resolve the spec ────────────────────────────────────────────────
     spec_data: dict[str, Any] | None = None
@@ -1789,6 +1794,7 @@ async def preview_cell(
 
 @router.post("/run-cell", status_code=200, dependencies=[Depends(require_writer_default)])
 async def run_cell(
+    request: Request,
     body: RunCellIn,
     user: dict[str, Any] = Depends(current_user),
     identity: VerifiedIdentity = Depends(verified_identity),
@@ -1811,7 +1817,7 @@ async def run_cell(
     """
     from app.flows.spec import validate_flow_spec, flow_spec_is_valid  # noqa: PLC0415
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     # ── 1. Resolve spec ────────────────────────────────────────────────────
     spec_data: dict[str, Any] | None = None
@@ -1945,6 +1951,7 @@ async def run_cell(
 
 @router.post("/notebooks", status_code=201, dependencies=[Depends(require_writer_default)])
 async def save_notebook(
+    request: Request,
     body: NotebookSaveIn,
     user: dict[str, Any] = Depends(current_user),
     identity: VerifiedIdentity = Depends(verified_identity),
@@ -1964,7 +1971,7 @@ async def save_notebook(
     """
     from app.flows.notebook import NotebookSpec, notebook_to_flow  # noqa: PLC0415
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     # Parse the NotebookSpec.
     try:
@@ -2028,6 +2035,7 @@ async def save_notebook(
 
 @router.get("/notebooks/{flow_id}", status_code=200)
 async def get_notebook(
+    request: Request,
     flow_id: str,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
@@ -2043,7 +2051,7 @@ async def get_notebook(
     from app.flows.notebook import flow_to_notebook  # noqa: PLC0415
     from app.flows.spec import validate_flow_spec  # noqa: PLC0415
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_flow_store()
     flow = await _require_flow_in_org(flow_id, org_id, store)
 
@@ -2062,6 +2070,7 @@ async def get_notebook(
 
 @router.post("", status_code=201, dependencies=[Depends(require_writer_default)])
 async def create_flow(
+    request: Request,
     body: CreateFlowIn,
     user: dict[str, Any] = Depends(current_user),
     identity: VerifiedIdentity = Depends(verified_identity),
@@ -2076,7 +2085,7 @@ async def create_flow(
     The flow is scoped to the project named by ``X-Project-Id`` when valid for
     the org, else the org's default project.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     spec, issues = validate_flow_spec(body.spec)
     if not flow_spec_is_valid(issues):
@@ -2131,7 +2140,7 @@ async def list_flows(
     """
     from app.routes._org import resolve_project_filter  # noqa: PLC0415
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     project_id = await resolve_project_filter(org_id, request)
     store = get_flow_store()
     flows = await store.list_flows(org_id, project_id)
@@ -2145,6 +2154,7 @@ async def list_flows(
 
 @router.get("/{flow_id}", status_code=200)
 async def get_flow(
+    request: Request,
     flow_id: str,
     env: str | None = None,
     user: dict[str, Any] = Depends(current_user),
@@ -2159,7 +2169,7 @@ async def get_flow(
 
     Returns 404 if the flow does not exist or belongs to a different org.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_flow_store()
     flow = await _require_flow_in_org(flow_id, org_id, store)
     result = _serialize_flow(flow)
@@ -2178,6 +2188,7 @@ async def get_flow(
 
 @router.put("/{flow_id}", status_code=200, dependencies=[Depends(require_writer_default)])
 async def update_flow(
+    request: Request,
     flow_id: str,
     body: UpdateFlowIn,
     user: dict[str, Any] = Depends(current_user),
@@ -2193,7 +2204,7 @@ async def update_flow(
     policy snapshot stashed on the spec, so scheduled runs always row-filter
     under the policies of whoever last persisted the flow.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_flow_store()
     existing = await _require_flow_in_org(flow_id, org_id, store)
 
@@ -2248,6 +2259,7 @@ async def update_flow(
 
 @router.delete("/{flow_id}", status_code=204, dependencies=[Depends(require_writer_default)])
 async def delete_flow(
+    request: Request,
     flow_id: str,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
@@ -2256,7 +2268,7 @@ async def delete_flow(
 
     Returns 204 on success; 404 if the flow does not exist or is cross-org.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_flow_store()
     await _require_flow_in_org(flow_id, org_id, store)
     await store.delete_flow(flow_id)
@@ -2274,6 +2286,7 @@ async def delete_flow(
 
 @router.post("/{flow_id}/run", status_code=200, dependencies=[Depends(require_writer_default)])
 async def run_flow(
+    request: Request,
     flow_id: str,
     body: RunFlowIn = RunFlowIn(),
     user: dict[str, Any] = Depends(current_user),
@@ -2292,7 +2305,7 @@ async def run_flow(
 
     Returns 404 if the flow does not exist or belongs to a different org.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_flow_store()
     flow = await _require_flow_in_org(flow_id, org_id, store)
 
@@ -2352,6 +2365,7 @@ async def run_flow(
 
 @router.get("/{flow_id}/runs", status_code=200)
 async def list_flow_runs(
+    request: Request,
     flow_id: str,
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -2366,7 +2380,7 @@ async def list_flow_runs(
 
     Returns 404 if the flow does not exist or belongs to a different org.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_flow_store()
     await _require_flow_in_org(flow_id, org_id, store)
     runs = await store.list_flow_runs(flow_id, limit=limit, offset=offset)
@@ -2375,6 +2389,7 @@ async def list_flow_runs(
 
 @router.post("/{flow_id}/codegen", status_code=200)
 async def codegen_flow(
+    request: Request,
     flow_id: str,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
@@ -2394,7 +2409,7 @@ async def codegen_flow(
     """
     from app.flows.codegen import flow_spec_to_sdk  # noqa: PLC0415
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_flow_store()
     flow = await _require_flow_in_org(flow_id, org_id, store)
 
@@ -2554,6 +2569,7 @@ class FireEventIn(BaseModel):
 
 @router.post("/{flow_id}/sweep", status_code=200, dependencies=[Depends(require_writer_default)])
 async def sweep_flow(
+    request: Request,
     flow_id: str,
     body: SweepIn,
     user: dict[str, Any] = Depends(current_user),
@@ -2568,7 +2584,7 @@ async def sweep_flow(
     """
     from app.flows.sweep import run_sweep  # noqa: PLC0415
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_flow_store()
     flow = await _require_flow_in_org(flow_id, org_id, store)
 
@@ -2681,6 +2697,7 @@ def _parse_iso_dt(value: str, field_name: str) -> datetime:
 
 @router.post("/{flow_id}/backfill", status_code=200, dependencies=[Depends(require_writer_default)])
 async def backfill_flow(
+    request: Request,
     flow_id: str,
     body: BackfillIn,
     user: dict[str, Any] = Depends(current_user),
@@ -2695,7 +2712,7 @@ async def backfill_flow(
     """
     from app.flows.sweep import run_backfill  # noqa: PLC0415
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_flow_store()
     flow = await _require_flow_in_org(flow_id, org_id, store)
 
@@ -2785,6 +2802,7 @@ async def backfill_flow(
 
 @router.post("/triggers", status_code=201, dependencies=[Depends(require_writer_default)])
 async def create_trigger(
+    request: Request,
     body: RegisterTriggerIn,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
@@ -2799,7 +2817,7 @@ async def create_trigger(
     """
     from app.flows.triggers import register_trigger  # noqa: PLC0415
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_flow_store()
 
     if body.kind not in ("event", "webhook", "downstream"):
@@ -2835,13 +2853,14 @@ async def create_trigger(
 
 @router.get("/triggers", status_code=200)
 async def list_triggers(
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> list[dict[str, Any]]:
     """List all flow triggers for the caller's org."""
     from app.flows.triggers import get_trigger_registry  # noqa: PLC0415
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     registry = get_trigger_registry()
     triggers = await registry.list_all(org_id)
 
@@ -2861,6 +2880,7 @@ async def list_triggers(
 
 @router.post("/triggers/fire", status_code=200, dependencies=[Depends(require_writer_default)])
 async def fire_trigger_event(
+    request: Request,
     body: FireEventIn,
     user: dict[str, Any] = Depends(current_user),
     identity: VerifiedIdentity = Depends(verified_identity),
@@ -2876,7 +2896,7 @@ async def fire_trigger_event(
     """
     from app.flows.triggers import fire_event  # noqa: PLC0415
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_flow_store()
 
     claims: dict[str, Any] = {
@@ -2912,6 +2932,7 @@ async def fire_trigger_event(
 
 @router.get("/{flow_id}/runs/history", status_code=200)
 async def get_flow_run_history(
+    request: Request,
     flow_id: str,
     limit: int = Query(default=50, ge=1, le=500),
     user: dict[str, Any] = Depends(current_user),
@@ -2929,7 +2950,7 @@ async def get_flow_run_history(
     """
     from app.flows.triggers import flag_sla_breach  # noqa: PLC0415
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_flow_store()
     flow = await _require_flow_in_org(flow_id, org_id, store)
 
@@ -2994,6 +3015,7 @@ async def get_flow_run_history(
 
 @router.get("/{flow_id}/environments", status_code=200)
 async def list_flow_environments(
+    request: Request,
     flow_id: str,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
@@ -3003,7 +3025,7 @@ async def list_flow_environments(
     Returns {environments: [{key, env_id, watermarks: {model_key: wm}}]}
     Org-scoped. Any authenticated user can read (viewer-friendly).
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_flow_store()
     await _require_flow_in_org(flow_id, org_id, store)
 
@@ -3027,6 +3049,7 @@ async def list_flow_environments(
 
 @router.get("/{flow_id}/versions", status_code=200)
 async def list_flow_versions(
+    request: Request,
     flow_id: str,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
@@ -3038,7 +3061,7 @@ async def list_flow_versions(
     Specs are excluded from the list for compactness; fetch a specific version
     to get the spec.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_flow_store()
     await _require_flow_in_org(flow_id, org_id, store)
 
@@ -3060,6 +3083,7 @@ async def list_flow_versions(
 
 @router.get("/{flow_id}/versions/{version_num}", status_code=200)
 async def get_flow_version(
+    request: Request,
     flow_id: str,
     version_num: int,
     user: dict[str, Any] = Depends(current_user),
@@ -3070,7 +3094,7 @@ async def get_flow_version(
     Returns {id, flow_id, org_id, version, spec, created_by, created_at}.
     Org-scoped. Any authenticated user can read.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_flow_store()
     await _require_flow_in_org(flow_id, org_id, store)
 
@@ -3091,6 +3115,7 @@ async def get_flow_version(
 
 @router.post("/{flow_id}/revert/{version_num}", status_code=200, dependencies=[Depends(require_writer_default)])
 async def revert_flow_to_version(
+    request: Request,
     flow_id: str,
     version_num: int,
     user: dict[str, Any] = Depends(current_user),
@@ -3106,7 +3131,7 @@ async def revert_flow_to_version(
     Writer-gated + org-scoped.
     Returns the updated flow.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_flow_store()
     flow = await _require_flow_in_org(flow_id, org_id, store)
 

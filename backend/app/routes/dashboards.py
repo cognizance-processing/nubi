@@ -280,7 +280,7 @@ async def get_provider_data(
         resolve_provider_data,
         tables_to_multi_ipc_stream,
     )
-    from app.routes._org import get_user_org  # noqa: PLC0415
+    from app.routes._org import resolve_org_id  # noqa: PLC0415
 
     # ── Scope gate (mirrors embed.py) ─────────────────────────────────────────
     _scopes = identity.scope
@@ -301,7 +301,10 @@ async def get_provider_data(
     if _is_embed and identity.org:
         org_id = identity.org
     else:
-        org_id = await get_user_org(identity.user_id, repo)
+        # resolve_org_id, not get_user_org: the latter ignores X-Org-Id and
+        # pins the user's FIRST org, so a board in any other org resolves
+        # against the wrong tenant's data.
+        org_id = await resolve_org_id(identity.user_id, repo, request)
 
     # ── Build claims (RLS from verified token only) ───────────────────────────
     claims: dict[str, Any] = {
