@@ -188,6 +188,10 @@ export default function DataExplorerPage() {
   const [tablesReloadKey, setTablesReloadKey] = useState(0)
   const [tableSearch, setTableSearch] = useState('')
   const [selectedTable, setSelectedTable] = useState(null)
+  // Schema owning `selectedTable`. A connector can expose the same table name in
+  // several schemas; without this the server falls back to the connection's
+  // default schema and opens the wrong table (or none).
+  const [selectedSchema, setSelectedSchema] = useState(null)
 
   // Per-table data + meta (loaded here, passed to EditableDataGrid).
   const [meta, setMeta] = useState(null)
@@ -238,6 +242,7 @@ export default function DataExplorerPage() {
   useEffect(() => {
     let cancelled = false
     setSelectedTable(null)
+    setSelectedSchema(null)
     setMeta(null)
     setRows([])
     setTotal(null)
@@ -281,8 +286,13 @@ export default function DataExplorerPage() {
     ;(async () => {
       try {
         const [rawMeta, rowData] = await Promise.all([
-          api.fetchDataColumns(selectedConnectorId, selectedTable).catch(() => ({})),
-          api.fetchDataRows(selectedConnectorId, selectedTable, { limit: ROW_LIMIT }),
+          api
+            .fetchDataColumns(selectedConnectorId, selectedTable, { schema: selectedSchema })
+            .catch(() => ({})),
+          api.fetchDataRows(selectedConnectorId, selectedTable, {
+            limit: ROW_LIMIT,
+            schema: selectedSchema,
+          }),
         ])
         if (token !== loadToken.current) return
         setMeta(normalizeColumnMeta(rawMeta))
@@ -298,11 +308,12 @@ export default function DataExplorerPage() {
         if (token === loadToken.current) setDataLoading(false)
       }
     })()
-  }, [selectedConnectorId, selectedTable, reloadKey])
+  }, [selectedConnectorId, selectedTable, selectedSchema, reloadKey])
 
   // ── Handlers ──────────────────────────────────────────────────────────────
-  const handleSelectTable = useCallback((name) => {
+  const handleSelectTable = useCallback((name, schema = null) => {
     setSelectedTable(name)
+    setSelectedSchema(schema ?? null)
     setMainTab('data')
     setRailOpen(false)
   }, [])
@@ -443,10 +454,10 @@ export default function DataExplorerPage() {
             <div className="space-y-0.5">
               {filteredTables.map((t) => (
                 <TableItem
-                  key={t.name}
+                  key={`${t.schema ?? ''}.${t.name}`}
                   name={t.name}
                   active={selectedTable === t.name}
-                  onClick={() => handleSelectTable(t.name)}
+                  onClick={() => handleSelectTable(t.name, t.schema)}
                 />
               ))}
             </div>
@@ -475,8 +486,8 @@ export default function DataExplorerPage() {
                 <div className="flex flex-wrap gap-2 justify-center max-w-sm">
                   {tables.slice(0, 6).map((t) => (
                     <button
-                      key={t.name}
-                      onClick={() => handleSelectTable(t.name)}
+                      key={`${t.schema ?? ''}.${t.name}`}
+                      onClick={() => handleSelectTable(t.name, t.schema)}
                       className="px-3 py-1.5 text-xs font-mono rounded-lg border border-border bg-surface-2 hover:border-primary/40 hover:text-primary transition-colors text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       {t.name}
@@ -524,7 +535,7 @@ export default function DataExplorerPage() {
             <div className="flex-1 min-h-0 overflow-hidden">
               {mainTab === 'data' ? (
                 <EditableDataGrid
-                  key={`${selectedConnectorId ?? 'demo'}:${selectedTable}`}
+                  key={`${selectedConnectorId ?? 'demo'}:${selectedSchema ?? ''}.${selectedTable}`}
                   datastoreId={selectedConnectorId}
                   table={selectedTable}
                   meta={meta}

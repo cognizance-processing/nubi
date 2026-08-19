@@ -690,6 +690,17 @@ function dataTablePath(datastoreId, table) {
 }
 
 /**
+ * Build the `?schema=` suffix used to disambiguate a table name.
+ *
+ * A connector can expose the same table name in several schemas (MySQL bridge
+ * connectors routinely do). Without this the server falls back to the
+ * connection's default schema, which is the wrong table — or none at all.
+ */
+function schemaParam(schema) {
+  return schema ? `&schema=${encodeURIComponent(schema)}` : ''
+}
+
+/**
  * Fetch a table's column metadata (with the write contract).
  *
  * GET /api/v1/data[/{id}]/tables/{table}/columns
@@ -700,10 +711,12 @@ function dataTablePath(datastoreId, table) {
  *
  * @param {string|null} datastoreId
  * @param {string} table
+ * @param {{schema?: string|null}} [opts]
  * @returns {Promise<object>}
  */
-export function fetchDataColumns(datastoreId, table) {
-  return get(`${dataTablePath(datastoreId, table)}/columns`)
+export function fetchDataColumns(datastoreId, table, { schema = null } = {}) {
+  const qs = schema ? `?schema=${encodeURIComponent(schema)}` : ''
+  return get(`${dataTablePath(datastoreId, table)}/columns${qs}`)
 }
 
 /**
@@ -719,11 +732,15 @@ export function fetchDataColumns(datastoreId, table) {
  *
  * @param {string|null} datastoreId
  * @param {string} table
- * @param {{limit?: number, offset?: number}} [opts]
+ * @param {{limit?: number, offset?: number, schema?: string|null}} [opts]
  * @returns {Promise<{ rows: Array<Record<string,*>>, total: number|null }>}
  */
-export async function fetchDataRows(datastoreId, table, { limit = 100, offset = 0 } = {}) {
-  const qs = `?limit=${limit}&offset=${offset}&format=json`
+export async function fetchDataRows(
+  datastoreId,
+  table,
+  { limit = 100, offset = 0, schema = null } = {},
+) {
+  const qs = `?limit=${limit}&offset=${offset}&format=json${schemaParam(schema)}`
   const data = await get(`${dataTablePath(datastoreId, table)}/rows${qs}`)
 
   // Array of objects.
