@@ -101,6 +101,27 @@ async def bridges_client(bridges_app, fake_db):
         yield ac, alice_id, alice_org_id, repo
 
 
+@pytest_asyncio.fixture
+async def bridges_client_multi_org(bridges_app, fake_db):
+    """A single user who belongs to TWO orgs — the shape that exposes the bug."""
+    app, repo = bridges_app
+
+    user_id = str(uuid.uuid4())
+    default_org_id = str(uuid.uuid4())   # seeded FIRST -> the account's default org
+    other_org_id = str(uuid.uuid4())     # seeded SECOND -> reached only via X-Org-Id
+    fake_db.users[user_id] = _make_user(user_id=user_id)
+    repo.seed_org_member(org_id=default_org_id, user_id=user_id)
+    repo.seed_org_member(org_id=other_org_id, user_id=user_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        follow_redirects=False,
+    ) as ac:
+        yield ac, user_id, default_org_id, other_org_id, repo
+
+
 # ---------------------------------------------------------------------------
 # (1) POST /bridges → 201 with the created row
 # ---------------------------------------------------------------------------
@@ -247,6 +268,88 @@ async def test_heartbeat_updates_status_and_last_seen(bridges_client):
     assert updated["status"] == "online", f"Expected 'online', got {updated['status']!r}"
     assert updated["last_seen_at"] is not None, "last_seen_at should be set after heartbeat"
     assert updated["id"] == bridge_id
+
+
+# ---------------------------------------------------------------------------
+# (5b) A real offline<->online transition writes an in-app notification;
+#      a repeated heartbeat at the same status does not (no spam).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_transition_writes_notification_once(bridges_client):
+    from app.notify.notifications import (
+        InMemoryNotificationStore,
+        set_notification_store_for_tests,
+    )
+
+    client, user_id, org_id, repo = bridges_client
+    store = InMemoryNotificationStore()
+    set_notification_store_for_tests(store)
+    try:
+        create_resp = await client.post(
+            "/api/v1/bridges",
+            json={"name": "Notify Bridge"},
+            headers=_auth_headers(user_id),
+        )
+        bridge_id = create_resp.json()["id"]
+
+        # First heartbeat: offline -> online, a real transition.
+        resp1 = await client.post(
+            f"/api/v1/bridges/{bridge_id}/heartbeat", headers=_auth_headers(user_id),
+        )
+        assert resp1.status_code == 200
+
+        items = await store.list_for_user(org_id, user_id)
+        assert len(items) == 1, "expected exactly one notification for the transition"
+        assert items[0]["type"] == "bridge_status"
+        assert items[0]["severity"] == "success"
+        assert "online" in items[0]["title"].lower()
+
+        # Second heartbeat: already online -> online, no new transition, no spam.
+        resp2 = await client.post(
+            f"/api/v1/bridges/{bridge_id}/heartbeat", headers=_auth_headers(user_id),
+        )
+        assert resp2.status_code == 200
+
+        items_after = await store.list_for_user(org_id, user_id)
+        assert len(items_after) == 1, "a repeated heartbeat must not write a second notification"
+    finally:
+        set_notification_store_for_tests(None)
+
+
+# ---------------------------------------------------------------------------
+# (5c) X-Org-Id header switches which org's bridges are visible — a
+# multi-org user's DEFAULT org must not silently win over the workspace
+# they're actually viewing (the exact bug this test pins: GET /bridges used
+# to ignore X-Org-Id entirely and always resolve the caller's first/default
+# org membership).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_bridges_honours_x_org_id_for_a_switched_org(bridges_client_multi_org):
+    client, user_id, default_org_id, other_org_id, repo = bridges_client_multi_org
+
+    # A bridge created while VIEWING other_org_id lands there, not the default.
+    create_resp = await client.post(
+        "/api/v1/bridges",
+        json={"name": "Other-org bridge"},
+        headers={**_auth_headers(user_id), "X-Org-Id": other_org_id},
+    )
+    assert create_resp.status_code == 201
+    assert create_resp.json()["org_id"] == other_org_id
+    bridge_id = create_resp.json()["id"]
+
+    # Listing with NO header (falls back to default org) must NOT show it.
+    default_list = await client.get("/api/v1/bridges", headers=_auth_headers(user_id))
+    assert bridge_id not in [b["id"] for b in default_list.json()]
+
+    # Listing WITH X-Org-Id: other_org_id must show it — this is the fix.
+    switched_list = await client.get(
+        "/api/v1/bridges", headers={**_auth_headers(user_id), "X-Org-Id": other_org_id},
+    )
+    assert bridge_id in [b["id"] for b in switched_list.json()]
 
 
 # ---------------------------------------------------------------------------

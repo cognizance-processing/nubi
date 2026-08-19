@@ -145,6 +145,7 @@ function BridgeSelect({ value, onChange }) {
 
   useEffect(() => {
     let cancelled = false
+    setLoading(true)
     listBridges().then((rows) => {
       if (cancelled) return
       setBridges(rows)
@@ -153,7 +154,9 @@ function BridgeSelect({ value, onChange }) {
     return () => {
       cancelled = true
     }
-  }, [])
+    // Re-fetch if the org switches while this picker is mounted, not just on
+    // first mount — same "stale org" gap as BridgesSettings.tsx.
+  }, [activeOrg?.id])
 
   function handleConnected(bridgeId) {
     onChange(bridgeId)

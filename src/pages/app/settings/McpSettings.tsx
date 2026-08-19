@@ -13,7 +13,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { Cpu, Plus, Loader2, Trash2, X, Check, AlertTriangle } from 'lucide-react'
+import { Cpu, Plus, Loader2, Trash2, X, Check, AlertTriangle, Zap } from 'lucide-react'
 import { get, post, put, del } from '../../../lib/api.js'
 import { useCanWrite } from '../../../contexts/OrgContext.jsx'
 import {
@@ -23,6 +23,24 @@ import {
   inputCls,
 } from './SettingsUI.jsx'
 import { toast } from '../../../components/ui/Toast.jsx'
+import ConnectionStatusBadge from '../../../components/ui/ConnectionStatusBadge.jsx'
+
+// last_test_ok is a tri-state (true/false/null) -> the shared status vocabulary.
+function mcpStatusState(server) {
+  if (server.last_test_ok === true) return 'online'
+  if (server.last_test_ok === false) return 'offline'
+  return 'unknown'
+}
+
+function mcpStatusDetail(server) {
+  if (server.last_test_ok === true) {
+    return `${server.last_test_tool_count ?? 0} tool(s) available`
+  }
+  if (server.last_test_ok === false) {
+    return server.last_test_error || 'Last test failed'
+  }
+  return 'Not tested yet'
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -158,10 +176,27 @@ function AddServerForm({ onSaved, onCancel }) {
 // ---------------------------------------------------------------------------
 
 function ServerRow({ server, canWrite, onChanged, onDeleted }) {
-  const [busy, setBusy] = useState(null) // 'toggle' | 'delete' | null
+  const [busy, setBusy] = useState(null) // 'toggle' | 'delete' | 'test' | null
   const [confirmDelete, setConfirmDelete] = useState(false)
 
   const enabled = server.enabled !== false
+
+  const handleTest = useCallback(async () => {
+    setBusy('test')
+    try {
+      const result = await post(`/mcp/servers/${server.id}/test`, {})
+      if (result?.server) onChanged?.(result.server)
+      if (result?.ok) {
+        toast.success(`Connected — ${result.tool_count ?? 0} tool(s) available`)
+      } else {
+        toast.error(result?.error ? `Test failed: ${result.error}` : 'Test failed.')
+      }
+    } catch (err) {
+      toast.error(err?.message || 'Failed to test server.')
+    } finally {
+      setBusy(null)
+    }
+  }, [server, onChanged])
 
   const handleToggle = useCallback(async () => {
     setBusy('toggle')
@@ -199,6 +234,7 @@ function ServerRow({ server, canWrite, onChanged, onDeleted }) {
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <p className="text-sm font-semibold text-fg truncate">{server.name}</p>
+              <ConnectionStatusBadge state={mcpStatusState(server)} detail={mcpStatusDetail(server)} />
               {server.transport && (
                 <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-surface-2 text-muted border border-border">
                   {server.transport}
@@ -218,6 +254,16 @@ function ServerRow({ server, canWrite, onChanged, onDeleted }) {
 
         {canWrite && (
           <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              onClick={handleTest}
+              disabled={busy !== null}
+              title="Test connection"
+              aria-label="Test connection"
+              className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs font-medium border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              {busy === 'test' ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} strokeWidth={2.2} />}
+              {busy === 'test' ? 'Testing…' : 'Test'}
+            </button>
             <button
               onClick={handleToggle}
               disabled={busy !== null}

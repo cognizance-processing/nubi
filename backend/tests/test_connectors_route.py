@@ -1100,6 +1100,135 @@ class TestConnectorTest:
 
 
 # ---------------------------------------------------------------------------
+# Tests: live connection status — the whole point being GET /connectors
+# shows something true about each connector without a separate trip to
+# Settings -> Bridges, and without re-clicking Test every time.
+# ---------------------------------------------------------------------------
+
+
+class TestConnectorStatus:
+
+    @pytest.mark.asyncio
+    async def test_direct_connector_status_unknown_before_first_test(self, connectors_client):
+        client, alice_id, org_id, repo = connectors_client
+
+        create_resp = await client.post(
+            "/api/v1/connectors",
+            json={
+                "name": "never-tested",
+                "type": "postgres",
+                "config": {"host": "h", "port": 5432, "database": "d", "user": "u"},
+                "secret": {"password": "pw"},
+            },
+            headers=_auth_headers(alice_id),
+        )
+        row_id = create_resp.json()["id"]
+
+        list_resp = await client.get("/api/v1/connectors", headers=_auth_headers(alice_id))
+        row = next(r for r in list_resp.json() if r["id"] == row_id)
+        assert row["status"]["kind"] == "direct"
+        assert row["status"]["state"] == "unknown"
+
+    @pytest.mark.asyncio
+    async def test_direct_connector_status_reflects_last_test_and_notifies_on_transition(
+        self, connectors_client,
+    ):
+        from app.notify.notifications import (
+            InMemoryNotificationStore,
+            set_notification_store_for_tests,
+        )
+
+        client, alice_id, org_id, repo = connectors_client
+        store = InMemoryNotificationStore()
+        set_notification_store_for_tests(store)
+        try:
+            create_resp = await client.post(
+                "/api/v1/connectors",
+                json={
+                    "name": "flaky-db",
+                    "type": "postgres",
+                    "config": {"host": "h", "port": 5432, "database": "d", "user": "u"},
+                    "secret": {"password": "pw"},
+                },
+                headers=_auth_headers(alice_id),
+            )
+            row_id = create_resp.json()["id"]
+
+            # First test ever: ok -> persisted, but no transition to notify about.
+            r1 = await client.post(f"/api/v1/connectors/{row_id}/test", headers=_auth_headers(alice_id))
+            assert r1.json()["ok"] is True
+            assert (await store.list_for_user(org_id, alice_id)) == []
+
+            list_resp = await client.get("/api/v1/connectors", headers=_auth_headers(alice_id))
+            row = next(r for r in list_resp.json() if r["id"] == row_id)
+            assert row["status"]["kind"] == "direct"
+            assert row["status"]["state"] == "online"
+            assert row["status"]["checked_at"]
+
+            # Simulate the secret going missing -> second test fails -> REAL
+            # transition (ok -> not ok) -> exactly one notification.
+            _secret_store.reset()
+            r2 = await client.post(f"/api/v1/connectors/{row_id}/test", headers=_auth_headers(alice_id))
+            assert r2.json()["ok"] is False
+
+            items = await store.list_for_user(org_id, alice_id)
+            assert len(items) == 1
+            assert items[0]["type"] == "connector_health"
+            assert items[0]["severity"] == "warning"
+
+            list_resp2 = await client.get("/api/v1/connectors", headers=_auth_headers(alice_id))
+            row2 = next(r for r in list_resp2.json() if r["id"] == row_id)
+            assert row2["status"]["state"] == "offline"
+        finally:
+            set_notification_store_for_tests(None)
+
+    @pytest.mark.asyncio
+    async def test_bridge_connector_status_derives_from_bridge_table(self, connectors_client):
+        from app.bridges.store import (
+            InMemoryBridgeStore,
+            set_bridge_store_for_tests,
+        )
+
+        client, alice_id, org_id, repo = connectors_client
+        bridge_store = InMemoryBridgeStore()
+        set_bridge_store_for_tests(bridge_store)
+        try:
+            bridge = await bridge_store.create(org_id, alice_id, "my-vpc-bridge", {})
+            bridge_id = bridge["id"]
+
+            create_resp = await client.post(
+                "/api/v1/connectors",
+                json={
+                    "name": "bridged-mysql",
+                    "type": "mysql",
+                    "config": {
+                        "host": "h", "port": 3306, "database": "d", "user": "u",
+                        "network_mode": "bridge", "bridge_id": bridge_id,
+                    },
+                    "secret": {"password": "pw"},
+                },
+                headers=_auth_headers(alice_id),
+            )
+            row_id = create_resp.json()["id"]
+
+            # Bridge starts offline -> connector reflects that, no test needed.
+            list_resp = await client.get("/api/v1/connectors", headers=_auth_headers(alice_id))
+            row = next(r for r in list_resp.json() if r["id"] == row_id)
+            assert row["status"]["kind"] == "bridge"
+            assert row["status"]["state"] == "offline"
+
+            # Bridge comes online -> connector reflects that live, no /test call.
+            await bridge_store.set_status(bridge_id, "online", touch_last_seen=True)
+            list_resp2 = await client.get("/api/v1/connectors", headers=_auth_headers(alice_id))
+            row2 = next(r for r in list_resp2.json() if r["id"] == row_id)
+            assert row2["status"]["kind"] == "bridge"
+            assert row2["status"]["state"] == "online"
+            assert row2["status"]["checked_at"]
+        finally:
+            set_bridge_store_for_tests(None)
+
+
+# ---------------------------------------------------------------------------
 # Tests: demo-seeded connector (seed="demo" option)
 # ---------------------------------------------------------------------------
 

@@ -173,6 +173,81 @@ async def update_mcp_server(
     return _strip_secrets(row)
 
 
+@mcp_router.post("/servers/{server_id}/test")
+async def test_mcp_server(
+    server_id: str,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Actually connect to a registered MCP server and report what happened.
+
+    Unlike the connector "test" (structural only), this is a REAL check —
+    it runs the same MCP handshake + ``tools/list`` call the agent's tool
+    loop uses to discover this server's tools (``app.ai.mcp``), not a bespoke
+    HTTP ping. Persists the result (``last_tested_at``/``last_test_ok``/
+    ``last_test_tool_count``/``last_test_error``) so ``GET /mcp/servers``
+    shows it at rest, and fires a notification on a real ok<->fail
+    transition — same shape as the bridge and connector status stories.
+
+    Returns
+    -------
+    dict
+        ``{ok: bool, tool_count: int | None, error: str | None,
+           server_id: str}``
+    """
+    from app.ai.mcp import MCPServer, test_connection_async  # noqa: PLC0415
+    from app.mcp.store import get_mcp_store  # noqa: PLC0415
+
+    org_id = await _get_user_org(user["id"], repo)
+    store = get_mcp_store()
+    row = await store.get_with_secret(server_id, org_id)
+    if row is None:
+        raise AppError("mcp_server_not_found", "MCP server not found.", 404)
+
+    server = MCPServer(
+        name=row["name"], url=row["url"], transport=row.get("transport") or "http",
+        auth_token=row.get("auth_token"),
+    )
+    tools, error = await test_connection_async(server)
+    ok = error is None
+    tool_count = len(tools) if ok else None
+
+    # Read the PRE-test row (public, has last_test_ok) for transition detection.
+    before = await store.get_by_id(server_id, org_id)
+    updated = await store.record_test_result(server_id, org_id, ok=ok, tool_count=tool_count, error=error)
+
+    was_ok = before.get("last_test_ok") if before else None
+    if was_ok is not None and was_ok != ok:
+        try:
+            from app.notify.notifications import get_notification_store  # noqa: PLC0415
+
+            name = row.get("name") or "MCP server"
+            if ok:
+                severity, title, body = (
+                    "success", f"{name} is reachable again",
+                    f"Reconnected — {tool_count} tool(s) available.",
+                )
+            else:
+                severity, title, body = (
+                    "warning", f"{name} failed its connection test",
+                    error or "The last connection test failed.",
+                )
+            await get_notification_store().create(
+                str(org_id), type="mcp_server_health", severity=severity, title=title, body=body,
+                link="/settings/mcp", metadata={"server_id": server_id},
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("mcp: health-change notification failed for %s", server_id)
+
+    return {
+        "ok": ok,
+        "tool_count": tool_count,
+        "error": error,
+        "server_id": server_id,
+        "server": _strip_secrets(updated) if updated else None,
+    }
+
+
 @mcp_router.delete("/servers/{server_id}", status_code=204, dependencies=[Depends(require_writer_default)])
 async def delete_mcp_server(
     server_id: str,

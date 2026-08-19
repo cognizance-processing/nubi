@@ -332,6 +332,40 @@ async def _call_tool_async(
 
 
 # ---------------------------------------------------------------------------
+# Public async API — connection testing
+# ---------------------------------------------------------------------------
+
+
+async def test_connection_async(
+    server: MCPServer, *, timeout: float = 10.0,
+) -> tuple[list[MCPToolDef], str | None]:
+    """Run the real MCP handshake against *server* and report what happened.
+
+    Unlike ``list_tools_sync`` (used by the agent's tool loop, which only
+    needs "give me the tools, empty list on any failure"), a connection TEST
+    needs to tell "connected, zero tools" apart from "couldn't connect at
+    all" — so this surfaces the actual error instead of swallowing it.
+
+    Returns
+    -------
+    (tools, error)
+        ``error`` is ``None`` on success. On failure ``tools`` is ``[]`` and
+        ``error`` is a short, safe-to-display message (SSRF guard rejection,
+        connection failure, or protocol error).
+    """
+    try:
+        guard_url(server.url)
+    except Exception as exc:  # noqa: BLE001
+        return [], str(exc)
+
+    try:
+        tools = await _list_tools_async(server, timeout)
+        return tools, None
+    except Exception as exc:  # noqa: BLE001
+        return [], str(exc)[:500]
+
+
+# ---------------------------------------------------------------------------
 # Public synchronous API
 # ---------------------------------------------------------------------------
 

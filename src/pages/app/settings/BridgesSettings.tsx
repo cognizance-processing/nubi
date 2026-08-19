@@ -56,6 +56,7 @@ import {
   inputCls,
 } from './SettingsUI.jsx'
 import { toast } from '../../../components/ui/Toast.jsx'
+import ConnectionStatusBadge from '../../../components/ui/ConnectionStatusBadge.jsx'
 
 const MANAGE_ROLES = ['owner', 'admin']
 
@@ -63,17 +64,11 @@ const MANAGE_ROLES = ['owner', 'admin']
 // Small presentational helpers
 // ---------------------------------------------------------------------------
 
+// Thin adapter over the shared status badge (Connectors + MCP servers use
+// the same one) — kept as StatusDot so existing call sites in this file are
+// unchanged; the visual language now lives in one place, not three.
 function StatusDot({ status }) {
-  const online = status === 'online'
-  return (
-    <span className="inline-flex items-center gap-1.5 text-xs text-muted">
-      <span
-        className={`w-2 h-2 rounded-full ${online ? 'bg-emerald-500' : 'bg-muted/40'}`}
-        aria-hidden
-      />
-      {online ? 'Online' : 'Offline'}
-    </span>
-  )
+  return <ConnectionStatusBadge state={status === 'online' ? 'online' : 'offline'} />
 }
 
 function fmtDate(iso) {
@@ -409,10 +404,14 @@ export default function BridgesSettings() {
     setLoading(false)
   }, [])
 
+  // Re-fetch on org switch, not just on mount — otherwise flipping the org
+  // switcher leaves the PREVIOUS org's bridges on screen until a hard reload
+  // (the backend now correctly scopes GET /bridges to X-Org-Id; this page
+  // has to actually ask again when that header's target changes).
   useEffect(() => {
     const t = setTimeout(load, 0)
     return () => clearTimeout(t)
-  }, [load])
+  }, [load, activeOrg?.id])
 
   async function handleCreate(e) {
     e.preventDefault()

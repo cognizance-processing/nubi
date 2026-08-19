@@ -41,7 +41,10 @@ automatically.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Literal
+
+logger = logging.getLogger("nubi.connectors")
 
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, model_validator
@@ -369,6 +372,87 @@ async def _shape_row(row: dict[str, Any], org_id: str, repo: Repo) -> dict[str, 
     return _sanitise(row)
 
 
+# ── Live connection status — the whole point being: don't make the user dig
+#    through a separate Bridges settings page to find out if THIS connector
+#    is actually reachable right now ──────────────────────────────────────────
+
+
+def demo_connector_status() -> dict[str, Any]:
+    """Status block for the virtual demo connector — always ready, in-process."""
+    return {"kind": "demo", "state": "online", "detail": "Always ready", "checked_at": None}
+
+
+async def _attach_connector_status(
+    rows: list[dict[str, Any]], org_id: str,
+) -> list[dict[str, Any]]:
+    """Attach a computed ``status`` block to each (already-sanitised) row.
+
+    - **Bridge-mode** connectors derive LIVE status from the ``bridges`` table
+      — the same status the WS tunnel handler / heartbeat endpoint maintain
+      (see routes/bridges.py). This is the real signal; a bridge-mode
+      connector has no connection of its own to probe.
+    - **Direct-mode** connectors have no persistent connection to observe, so
+      status reflects the last ``POST /connectors/{id}/test`` result,
+      persisted into ``config.health`` by that route. ``state: "unknown"``
+      until the first test.
+
+    ``status`` shape: ``{kind, state: 'online'|'offline'|'unknown',
+    detail, checked_at}``.
+    """
+    from app.bridges.store import get_bridge_store  # noqa: PLC0415
+
+    bridge_ids: set[str] = set()
+    for row in rows:
+        cfg = row.get("config")
+        if isinstance(cfg, dict) and cfg.get("network_mode") == "bridge" and cfg.get("bridge_id"):
+            bridge_ids.add(str(cfg["bridge_id"]))
+
+    bridges_by_id: dict[str, dict[str, Any]] = {}
+    if bridge_ids:
+        for bridge in await get_bridge_store().list(org_id):
+            bid = str(bridge.get("id"))
+            if bid in bridge_ids:
+                bridges_by_id[bid] = bridge
+
+    for row in rows:
+        cfg = row.get("config") if isinstance(row.get("config"), dict) else {}
+        if cfg.get("network_mode") == "bridge":
+            bridge = bridges_by_id.get(str(cfg.get("bridge_id") or ""))
+            if bridge is None:
+                row["status"] = {
+                    "kind": "bridge", "state": "unknown",
+                    "detail": "Linked bridge not found", "checked_at": None,
+                }
+            else:
+                online = bridge.get("status") == "online"
+                row["status"] = {
+                    "kind": "bridge",
+                    "state": "online" if online else "offline",
+                    "detail": (
+                        f"Bridge “{bridge.get('name')}” online"
+                        if online
+                        else f"Bridge “{bridge.get('name')}” offline"
+                    ),
+                    "checked_at": bridge.get("last_seen_at"),
+                }
+        else:
+            health = cfg.get("health")
+            if not isinstance(health, dict):
+                row["status"] = {
+                    "kind": "direct", "state": "unknown",
+                    "detail": "Not tested yet", "checked_at": None,
+                }
+            else:
+                ok = bool(health.get("ok"))
+                row["status"] = {
+                    "kind": "direct",
+                    "state": "online" if ok else "offline",
+                    "detail": "Config verified" if ok else (health.get("error") or "Config check failed"),
+                    "checked_at": health.get("checked_at"),
+                }
+    return rows
+
+
 # ── Connector-type label for datastores.config ───────────────────────────────
 
 
@@ -537,6 +621,7 @@ async def list_connectors(
         )
     ]
     result = [await _shape_row(row, org_id, repo) for row in connectors]
+    result = await _attach_connector_status(result, org_id)
 
     # Inject the virtual (read-only) demo connector ONLY in the org's
     # demo/default project, unless the org removed it OR the active project
@@ -549,7 +634,9 @@ async def list_connectors(
         and not await _demo_is_hidden(org_id, repo)
         and not await _has_editable_demo(org_id, repo, active_project)
     ):
-        result.insert(0, _sanitise(_demo_connector_row(org_id)))
+        demo_row = _sanitise(_demo_connector_row(org_id))
+        demo_row["status"] = demo_connector_status()
+        result.insert(0, demo_row)
 
     return result
 
@@ -598,14 +685,18 @@ async def get_connector(
     if connector_id == DEMO_CONNECTOR_ID:
         if await _demo_is_hidden(org_id, repo):
             raise AppError("not_found", "Connector not found.", 404)
-        return _sanitise(_demo_connector_row(org_id))
+        demo_row = _sanitise(_demo_connector_row(org_id))
+        demo_row["status"] = demo_connector_status()
+        return demo_row
 
     row = await repo.get("datastores", org_id, connector_id)
     if row is None:
         raise AppError("not_found", "Connector not found.", 404)
     if not isinstance(row.get("config"), dict) or "connector_type" not in row["config"]:
         raise AppError("not_found", "Connector not found.", 404)
-    return await _shape_row(row, org_id, repo)
+    shaped = await _shape_row(row, org_id, repo)
+    (await _attach_connector_status([shaped], org_id))
+    return shaped
 
 
 @router.put("/{connector_id}", dependencies=[Depends(require_writer)])
@@ -751,6 +842,16 @@ async def test_connector(
     1. The datastore row exists and is accessible (config layer).
     2. The encrypted secret can be retrieved from the SecretStore (secret layer).
 
+    For a **direct**-mode connector, the result is persisted into
+    ``config.health`` so it shows up at rest in ``GET /connectors`` (see
+    ``_attach_connector_status``) instead of only existing for the instant
+    this response is on screen — the whole point being a connector card can
+    say something true about itself without the user having to click Test
+    every time they look. A **bridge**-mode connector's real status comes
+    from the bridge itself (routes/bridges.py); this check still runs (it's
+    still useful — config/secret can be broken independently of the bridge)
+    but isn't persisted as the connector's headline status.
+
     Returns
     -------
     dict
@@ -786,6 +887,8 @@ async def test_connector(
             "layers": {"config": False, "secret": False},
         }
 
+    is_bridge_mode = row["config"].get("network_mode") == "bridge"  # type: ignore[union-attr]
+
     # Verify the secret layer resolves. ``get`` returns the decrypted dict when a
     # secret exists (proves the key works), or ``None`` when the connector simply
     # has no secret — both are valid. A secret-less connector includes any
@@ -802,6 +905,10 @@ async def test_connector(
     connector_type = row["config"].get("connector_type", "unknown")  # type: ignore[union-attr]
 
     if not secret_ok:
+        if not is_bridge_mode:
+            await _persist_and_notify_connector_health(
+                row, org_id, connector_id, ok=False, error="secret layer missing or decryption failed",
+            )
         return {
             "ok": False,
             "checked": "secret layer missing or decryption failed",
@@ -810,6 +917,8 @@ async def test_connector(
             "layers": {"config": True, "secret": False},
         }
 
+    if not is_bridge_mode:
+        await _persist_and_notify_connector_health(row, org_id, connector_id, ok=True, error=None)
     return {
         "ok": True,
         "checked": "config+secret resolved",
@@ -817,6 +926,52 @@ async def test_connector(
         "type": connector_type,
         "layers": {"config": True, "secret": True},
     }
+
+
+async def _persist_and_notify_connector_health(
+    row: dict[str, Any], org_id: str, connector_id: str, *, ok: bool, error: str | None,
+) -> None:
+    """Persist a direct-mode connector's test result into ``config.health``.
+
+    Fires an in-app notification only on a REAL ok<->fail transition (never
+    on the first-ever test, and never when consecutive tests agree) — same
+    "don't spam the bell" rule as the bridge status notifications.
+    """
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    existing_config = dict(row.get("config") or {})
+    previous_health = existing_config.get("health")
+    was_ok = previous_health.get("ok") if isinstance(previous_health, dict) else None
+
+    checked_at = datetime.now(timezone.utc).isoformat()
+    existing_config["health"] = {"ok": ok, "checked_at": checked_at, "error": error}
+    try:
+        await get_repo().update("datastores", org_id, connector_id, {"config": existing_config})
+    except Exception:  # noqa: BLE001 — persisting health must never break the test response
+        logger.warning("connectors: failed to persist health for %s", connector_id)
+        return
+
+    if was_ok is None or was_ok == ok:
+        return  # first-ever test, or no real transition — no notification
+    try:
+        from app.notify.notifications import get_notification_store  # noqa: PLC0415
+
+        name = row.get("name") or "Connector"
+        if ok:
+            severity, title, body = (
+                "success", f"{name} is reachable again", "The last connection test passed.",
+            )
+        else:
+            severity, title, body = (
+                "warning", f"{name} failed its connection test",
+                error or "The last connection test failed.",
+            )
+        await get_notification_store().create(
+            str(org_id), type="connector_health", severity=severity, title=title, body=body,
+            link="/connectors", metadata={"connector_id": connector_id},
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("connectors: health-change notification failed for %s", connector_id)
 
 
 # ── Register on the shared api_router ─────────────────────────────────────────

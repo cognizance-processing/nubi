@@ -46,6 +46,7 @@ import {
 import * as api from '../../lib/api.js'
 import Button from '../../components/ui/Button.jsx'
 import Badge from '../../components/ui/Badge.jsx'
+import ConnectionStatusBadge from '../../components/ui/ConnectionStatusBadge.jsx'
 import { CardGrid, ErrorState } from '../../components/app/PageShell.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
@@ -140,6 +141,12 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
             <h3 className="font-semibold text-fg text-sm truncate max-w-full">{connector.name}</h3>
             <TypeBadge type={cfg.connector_type} />
             <DialectBadge dialect={dialectFor(cfg.connector_type)} />
+            {connector.status && (
+              <ConnectionStatusBadge
+                state={connector.status.state}
+                detail={connector.status.detail}
+              />
+            )}
             {isSystem && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-accent/10 text-accent border border-accent/20">
                 <Lock size={9} strokeWidth={2.4} />
@@ -842,6 +849,10 @@ export default function ConnectorsPage() {
       } else {
         toast.error(`Test failed: ${result.checked}`)
       }
+      // Direct-mode connectors persist this result server-side (config.health) —
+      // reload so the status badge in the header reflects it, not just this
+      // transient pill (which disappears on refresh; the badge doesn't).
+      reloadConnectors()
     } catch (err) {
       setTestResults(prev => ({
         ...prev,
