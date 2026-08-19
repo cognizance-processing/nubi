@@ -47,6 +47,19 @@ logger = logging.getLogger("nubi.bridges")
 #: revoke / lapsed rotation grace drops the tunnel promptly (§7).
 _BRIDGE_TOKEN_REVALIDATE_SECONDS = 30.0
 
+#: How often a connected tunnel refreshes ``last_seen_at``.
+#:
+#: ``status`` alone is edge-triggered — written once on connect and once on
+#: disconnect — so a row can read ``online`` with a ``last_seen_at`` from hours
+#: ago, and nothing distinguishes "connected and healthy" from "the disconnect
+#: handler never ran" (SIGKILL, host lost, worker died). Refreshing on an
+#: interval makes ``last_seen_at`` a real liveness signal that callers can age
+#: out. POST /bridges/{id}/heartbeat documents this contract for agents, but it
+#: authenticates with a *user* token, which an agent does not have — so the
+#: server does it here, where the agent is already authenticated by its bridge
+#: token.
+_BRIDGE_LIVENESS_TOUCH_SECONDS = 30.0
+
 from fastapi import APIRouter, Depends, Request, Response, WebSocket
 from pydantic import BaseModel
 
@@ -545,7 +558,27 @@ async def bridge_connect(
                     pass
                 return
 
+    async def _liveness_loop() -> None:
+        """Refresh ``last_seen_at`` for as long as the tunnel is up.
+
+        Never touches ``status`` semantics beyond re-asserting ``online``: the
+        connect/disconnect handlers still own the transitions. A failed write is
+        logged and retried on the next tick rather than dropping a healthy
+        tunnel over a transient DB blip.
+        """
+        while True:
+            await asyncio.sleep(_BRIDGE_LIVENESS_TOUCH_SECONDS)
+            try:
+                await get_bridge_store().set_status(
+                    bridge_id, "online", touch_last_seen=True
+                )
+            except Exception:  # noqa: BLE001 — liveness must not kill the tunnel
+                logger.warning(
+                    "bridge %s: liveness touch failed", bridge_id, exc_info=True
+                )
+
     revalidator = asyncio.ensure_future(_revalidate_loop())
+    liveness = asyncio.ensure_future(_liveness_loop())
     try:
         # The broker's reader loop (started by register()) owns the only
         # recv() on this WebSocket — it demultiplexes DATA/READY/ERROR/CLOSE
@@ -556,11 +589,12 @@ async def bridge_connect(
         # to exit instead, which happens on agent disconnect or socket error.
         await conn.wait_closed()
     finally:
-        revalidator.cancel()
-        try:
-            await revalidator
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
-            pass
+        for _task in (revalidator, liveness):
+            _task.cancel()
+            try:
+                await _task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         await broker.unregister(bridge_id)
         # Explicit offline-on-disconnect: conn.wait_closed() returning means
         # the agent disconnected or the socket errored. Previously this left
