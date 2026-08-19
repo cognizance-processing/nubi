@@ -72,6 +72,31 @@ export async function streamChatMessage({ messages, model, board_id, onEvent, si
   return postStream('/ai/chat/stream', body, { onEvent, signal })
 }
 
+export interface ChatAsyncAck {
+  job_id: string
+  status: string
+}
+
+/**
+ * Background variant — POST /api/v1/ai/chat/async. Returns immediately with
+ * a job id; the agent turn keeps running server-side after this resolves.
+ *
+ * If the turn produces a dashboard, the backend persists it (there's no user
+ * left to click "apply") and writes an in-app notification linking to the
+ * saved board — the existing notification bell picks it up on its own next
+ * poll, no further wiring needed here.
+ */
+export async function sendChatMessageAsync({ messages, model, board_id }: {
+  messages: ChatMessage[]
+  model?: string
+  board_id?: string
+}): Promise<ChatAsyncAck> {
+  const body: Record<string, any> = { messages }
+  if (model) body.model = model
+  if (board_id) body.board_id = board_id
+  return post('/ai/chat/async', body)
+}
+
 export interface PinAnswerBody {
   title: string
   source: { query_id?: string; metric_id?: string }

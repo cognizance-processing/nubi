@@ -16,13 +16,13 @@
 
 import { useState, useRef, useEffect, useCallback, type KeyboardEvent } from 'react'
 import {
-  X, Sparkles, Send, Square, AlertCircle,
+  X, Sparkles, Send, Square, AlertCircle, Clock,
   Check, Loader2, Bot, Pin, ExternalLink,
 } from 'lucide-react'
 import MarkdownRenderer from '../components/MarkdownRenderer.jsx'
 import ToolCard from './ToolCard.jsx'
 import { toolLabel } from './toolMeta.js'
-import { streamChatMessage, pinAnswer } from './chatApi.js'
+import { streamChatMessage, sendChatMessageAsync, pinAnswer } from './chatApi.js'
 import ModelPicker, { MODEL_DEFAULT_VALUE } from '../components/ai/ModelPicker.jsx'
 
 // ---------------------------------------------------------------------------
@@ -285,6 +285,7 @@ export function ChatPanel({ onClose }: { onClose: () => void }) {
   const [messages, setMessages]   = useState<ChatUiMessage[]>([])
   const [draft, setDraft]         = useState('')
   const [loading, setLoading]     = useState(false)
+  const [queuing, setQueuing]     = useState(false)
   const [selectedModel, setModel] = useState(loadStoredModel)
 
   const listRef     = useRef<HTMLDivElement>(null)
@@ -393,6 +394,35 @@ export function ChatPanel({ onClose }: { onClose: () => void }) {
     }
   }, [draft, loading, messages, selectedModel, updateLast])
 
+  // Long-running builds (e.g. "read this spec and build the dashboard") don't
+  // need you watching the stream — queue the same agent turn server-side and
+  // move on. It finishes in the notification bell, not this panel.
+  const sendMessageBackground = useCallback(async () => {
+    const trimmed = draft.trim()
+    if (!trimmed || loading || queuing) return
+
+    const userMsg: ChatUiMessage = { role: 'user', content: trimmed }
+    const history = [...messages, userMsg]
+    setMessages([...history, {
+      role: 'assistant',
+      content: "Building this in the background — I'll notify you (bell, top right) when it's ready. Keep going in the meantime.",
+      actions: [], streaming: false, status: null, error: null,
+    }])
+    setDraft('')
+    setQueuing(true)
+    try {
+      await sendChatMessageAsync({
+        messages: history.map(m => ({ role: m.role, content: m.content })),
+        model: selectedModel === MODEL_DEFAULT_VALUE ? undefined : selectedModel,
+      })
+    } catch (err: any) {
+      updateLast(m => ({ ...m, error: err?.message ?? 'Could not queue the background build.' }))
+    } finally {
+      setQueuing(false)
+      requestAnimationFrame(() => textareaRef.current?.focus())
+    }
+  }, [draft, loading, queuing, messages, selectedModel, updateLast])
+
   const stopStreaming = useCallback(() => {
     abortRef.current?.abort()
   }, [])
@@ -477,18 +507,29 @@ export function ChatPanel({ onClose }: { onClose: () => void }) {
                 <Square size={12} className="fill-current" />
               </button>
             ) : (
-              <button
-                onClick={() => sendMessage()}
-                disabled={!draft.trim()}
-                aria-label="Send message"
-                className="flex items-center justify-center w-7 h-7 rounded-lg shrink-0 bg-primary text-primary-fg hover:opacity-90 active:scale-95 disabled:opacity-35 disabled:cursor-not-allowed transition-all focus:outline-none focus:ring-2 focus:ring-ring"
-              >
-                <Send size={13} />
-              </button>
+              <>
+                <button
+                  onClick={sendMessageBackground}
+                  disabled={!draft.trim() || queuing}
+                  title="Build in the background — I'll notify you when it's ready"
+                  aria-label="Build in background"
+                  className="flex items-center justify-center w-7 h-7 rounded-lg shrink-0 bg-surface border border-border text-fg hover:bg-surface-2 active:scale-95 disabled:opacity-35 disabled:cursor-not-allowed transition-all focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                  {queuing ? <Loader2 size={13} className="animate-spin" /> : <Clock size={13} />}
+                </button>
+                <button
+                  onClick={() => sendMessage()}
+                  disabled={!draft.trim()}
+                  aria-label="Send message"
+                  className="flex items-center justify-center w-7 h-7 rounded-lg shrink-0 bg-primary text-primary-fg hover:opacity-90 active:scale-95 disabled:opacity-35 disabled:cursor-not-allowed transition-all focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                  <Send size={13} />
+                </button>
+              </>
             )}
           </div>
           <p className="text-[10px] text-muted/60 text-center mt-1.5 leading-none">
-            {loading ? 'Streaming — click ◼ to stop' : 'Shift+Enter for newline'}
+            {loading ? 'Streaming — click ◼ to stop' : <>Shift+Enter for newline · <Clock size={9} className="inline -mt-0.5" /> builds in the background</>}
           </p>
         </div>
       </div>

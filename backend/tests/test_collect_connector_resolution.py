@@ -126,7 +126,7 @@ class TestSecretInjection:
             "connector_type": "mysql",
             "host": "db.internal",
             "port": 3306,
-            "database": "fieldforce",
+            "database": "inventory",
             "user": "root",
         })
         store = InMemorySecretStore()
@@ -289,7 +289,7 @@ class TestBridgeFetchFallback:
             "connector_type": "mysql",
             "host": "db.internal",
             "port": 3306,
-            "database": "fieldforce",
+            "database": "inventory",
             "user": "root",
             "network_mode": "direct",
             "bridge_id": "bbbbbbbb-0000-0000-0000-000000000001",

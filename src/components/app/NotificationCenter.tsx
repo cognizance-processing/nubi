@@ -43,6 +43,7 @@ import {
   markAllRead,
   unreadCount as fetchUnreadCount,
 } from '../../lib/notificationsApi.js'
+import { toast } from '../ui/Toast.jsx'
 import {
   pushSupported,
   isSubscribed,
@@ -366,6 +367,15 @@ export default function NotificationCenter({ open, onClose, onCount, embedded = 
   }, [onCount])
 
   // ---- Unread-count polling (paused while the tab is hidden) -------------
+  // Also surfaces a toast the moment the unread count RISES — this is what
+  // makes an async background job (e.g. an AI chat build) feel like it
+  // "notifies you": you don't have to have the bell panel open to see it
+  // land. The first tick only seeds the baseline (pre-existing unread items
+  // must never toast on page load); `seenRef` guards against re-toasting the
+  // same row if it's still unread on a later poll.
+  const lastUnreadRef = useRef(0)
+  const seenRef = useRef(new Set())
+  const initializedRef = useRef(false)
   useEffect(() => {
     let timer = null
 
@@ -374,6 +384,32 @@ export default function NotificationCenter({ open, onClose, onCount, embedded = 
       try {
         const n = await fetchUnreadCount()
         onCountRef.current?.(n)
+
+        if (!initializedRef.current) {
+          initializedRef.current = true
+          lastUnreadRef.current = n
+          return
+        }
+        if (n > lastUnreadRef.current) {
+          try {
+            const fresh = await listNotifications({ unread: true, limit: Math.min(n, 10) })
+            for (const item of fresh) {
+              if (!item?.id || seenRef.current.has(item.id)) continue
+              seenRef.current.add(item.id)
+              const variant = ['success', 'error', 'warning', 'info'].includes(item.severity)
+                ? item.severity
+                : 'info'
+              toast(item.body || item.title || 'New notification', {
+                variant,
+                title: item.title,
+                action: item.link ? { label: 'Open', onClick: () => navigate(item.link) } : undefined,
+              })
+            }
+          } catch {
+            // Best-effort — the badge already reflects the new count either way.
+          }
+        }
+        lastUnreadRef.current = n
       } catch {
         // Transient (e.g. the poll racing auth on a hard reload) — ignore;
         // the next tick recovers. Never let a badge poll throw unhandled.
