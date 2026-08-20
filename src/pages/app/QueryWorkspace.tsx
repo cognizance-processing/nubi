@@ -928,7 +928,7 @@ function ConnectorPicker({ datastores, value, onChange }) {
 
 const MIN_EDITOR_H = 120
 const MAX_EDITOR_H = 600
-const DEFAULT_EDITOR_H = 220
+const DEFAULT_EDITOR_H = 280
 
 function useResizableHeight(initial = DEFAULT_EDITOR_H) {
   const [editorH, setEditorH] = useState(initial)
@@ -1007,7 +1007,7 @@ function AddCellDivider({ onAddSql, onAddPython }) {
 // CellRunStatus — compact run state chip shown in cell header
 // ---------------------------------------------------------------------------
 
-function CellRunStatus({ running, result, error, cellName }) {
+function CellRunStatus({ running, result, error }) {
   if (running) {
     return (
       <span className="inline-flex items-center gap-1 text-[10px] text-muted font-mono">
@@ -1036,11 +1036,9 @@ function CellRunStatus({ running, result, error, cellName }) {
       </span>
     )
   }
-  return (
-    <span className="text-[10px] text-muted/50 font-mono shrink-0">
-      {cellName ? `→ ref as ${cellName}` : 'ready'}
-    </span>
-  )
+  // Not run yet. The cell's reference name already has one home — the
+  // CellNameBadge next to it — so there's nothing useful to say here.
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -1160,7 +1158,7 @@ function ScratchSqlCell({
         </span>
 
         {/* Run status */}
-        <CellRunStatus running={running} result={result} error={runError} cellName={cellRef} />
+        <CellRunStatus running={running} result={result} error={runError} />
 
         {result?.cacheStatus && !running && (
           <CacheBadge status={result.cacheStatus} />
@@ -1214,14 +1212,10 @@ function ScratchSqlCell({
               dialect={dialect}
             />
             {isEmpty && (
-              <p className="mt-1.5 text-[11px] text-muted flex items-center gap-1 flex-wrap">
+              <p className="mt-1.5 text-[11px] text-muted flex items-center gap-1.5 flex-wrap">
                 <FileCode2 size={11} className="text-primary/60 shrink-0" />
-                <span>Reference earlier results as</span>
-                <code className="font-mono text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 px-1 rounded">cell_1</code>
-                <span>— e.g.</span>
+                <span>Tip: earlier results are queryable here, e.g.</span>
                 <code className="font-mono text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 px-1 rounded">SELECT * FROM cell_1</code>
-                <span>or</span>
-                <code className="font-mono text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 px-1 rounded">SELECT count(*) AS n FROM cell_1</code>
               </p>
             )}
             <div className="mt-2 flex items-center gap-2 flex-wrap">
@@ -1923,10 +1917,11 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
   const isRegistered = Boolean(query?.id) && !isNew
   const rowCount = result?.table?.numRows ?? 0
   const isEmptyPrimary = !sql.trim()
-  const selectedDatastore = datastores.find(d => d.id === datastoreId)
-  const dialectHint = datastoreId
-    ? (selectedDatastore?.name ?? 'connector')
-    : 'Demo data'
+  // Has the primary query been run (or attempted) at least once? Drives
+  // whether the results/preview row claims real vertical space or steps
+  // aside so the SQL editor stays the dominant thing on screen — the same
+  // "editor first, results once they exist" shape as Hex/Mode/Snowsight.
+  const hasRun = Boolean(result || running || runError)
 
   return (
     <div className="flex flex-col h-full overflow-hidden relative">
@@ -2156,7 +2151,10 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
               {/* Cell_1 badge */}
               <CellNameBadge name="cell_1" />
 
-              <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-primary bg-primary/10 border border-primary/20 rounded px-1.5 py-0.5 shrink-0">
+              <span
+                className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-primary bg-primary/10 border border-primary/20 rounded px-1.5 py-0.5 shrink-0"
+                title="This is the query that Save persists to the registry."
+              >
                 <Star size={9} /> Primary query
               </span>
 
@@ -2164,17 +2162,11 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                 running={running}
                 result={result}
                 error={runError}
-                cellName="cell_1"
               />
 
               {result?.cacheStatus && !running && (
                 <CacheBadge status={result.cacheStatus} />
               )}
-
-              <span className="hidden lg:inline text-[10px] text-muted/70 shrink-0">
-                saved · downstream cells reference it as{' '}
-                <code className="font-mono text-indigo-600 dark:text-indigo-400">cell_1</code>
-              </span>
 
               <div className="flex-1" />
 
@@ -2283,7 +2275,6 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                 height={`${editorH}px`}
                 dialect={dialect}
                 onDialectChange={setDialect}
-                dialectHint={dialectHint}
                 readOnly={viewing}
               />
               {!viewing && isEmptyPrimary && (
@@ -2311,43 +2302,50 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                 stacks to one column below lg. ── */}
             <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] border-t border-border">
 
-              {/* Results */}
+              {/* Results — collapses to a slim prompt until the query has
+                  actually run, so the SQL editor above (not an empty grid)
+                  is what dominates the screen on first load. */}
               <div className="min-w-0 lg:border-r lg:border-border">
-                <div className="flex items-center gap-2 px-3 py-2 flex-wrap">
-                  <span className="text-[11px] font-semibold text-muted uppercase tracking-wider">Results</span>
-                  {result && !running && (
-                    <>
-                      <span className="text-[11px] font-mono text-fg">
-                        {rowCount.toLocaleString()} row{rowCount !== 1 ? 's' : ''}
-                      </span>
-                      {result.elapsedMs != null && (
-                        <span className="inline-flex items-center gap-1 text-[10px] text-muted">
-                          <Clock size={9} /> {result.elapsedMs}ms
+                {hasRun ? (
+                  <>
+                    <div className="flex items-center gap-2 px-3 py-2 flex-wrap">
+                      <span className="text-[11px] font-semibold text-muted uppercase tracking-wider">Results</span>
+                      {result && !running && (
+                        <>
+                          <span className="text-[11px] font-mono text-fg">
+                            {rowCount.toLocaleString()} row{rowCount !== 1 ? 's' : ''}
+                          </span>
+                          {result.elapsedMs != null && (
+                            <span className="inline-flex items-center gap-1 text-[10px] text-muted">
+                              <Clock size={9} /> {result.elapsedMs}ms
+                            </span>
+                          )}
+                          <CacheBadge status={result.cacheStatus} />
+                        </>
+                      )}
+                      {running && (
+                        <span className="inline-flex items-center gap-1.5 text-[11px] text-muted">
+                          <Loader2 size={11} className="animate-spin" /> Streaming…
                         </span>
                       )}
-                      <CacheBadge status={result.cacheStatus} />
-                      <span className="text-[10px] text-muted/60 ml-auto shrink-0">
-                        registered as{' '}
-                        <code className="font-mono text-indigo-600 dark:text-indigo-400">cell_1</code>
-                      </span>
-                    </>
-                  )}
-                  {running && (
-                    <span className="inline-flex items-center gap-1.5 text-[11px] text-muted">
-                      <Loader2 size={11} className="animate-spin" /> Streaming…
-                    </span>
-                  )}
-                </div>
-                <div style={{ height: 360 }} className="px-3 pb-3">
-                  <DataTable
-                    arrow={result?.table ?? undefined}
-                    loading={running}
-                    error={runError}
-                    meta={result ? { cacheStatus: result.cacheStatus, elapsedMs: result.elapsedMs } : undefined}
-                    toolbar={Boolean(result?.table)}
-                    pageSize={50}
-                  />
-                </div>
+                    </div>
+                    <div style={{ height: 360 }} className="px-3 pb-3">
+                      <DataTable
+                        arrow={result?.table ?? undefined}
+                        loading={running}
+                        error={runError}
+                        meta={result ? { cacheStatus: result.cacheStatus, elapsedMs: result.elapsedMs } : undefined}
+                        toolbar={Boolean(result?.table)}
+                        pageSize={50}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <div className="px-4 py-8 flex flex-col items-center justify-center gap-1.5 text-center">
+                    <span className="text-[11px] font-semibold text-muted uppercase tracking-wider">Results</span>
+                    <p className="text-xs text-muted">Run the query to see results here.</p>
+                  </div>
+                )}
               </div>
 
               {/* Preview / Connected Widgets — persistent, switched by a small

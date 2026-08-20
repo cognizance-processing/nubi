@@ -68,6 +68,9 @@ import { useUi } from '../../contexts/UiContext.jsx'
 import QueryWorkspace from './QueryWorkspace.jsx'
 import PreaggregationsPanel from './PreaggregationsPanel.jsx'
 
+// Remembers whether the right-hand Queries rail is open, across visits.
+const QUERIES_PANEL_STORAGE_KEY = 'nubi:queries-panel-open'
+
 // ---------------------------------------------------------------------------
 // New ad-hoc query template
 // ---------------------------------------------------------------------------
@@ -138,11 +141,12 @@ function QueryListItem({ query, isActive, onClick, onHistory = undefined, strict
             <p className="text-xs font-medium truncate leading-tight">
               {query.name ?? query.id}
             </p>
-            {query.id && (
-              <p className="text-[10px] font-mono text-muted truncate mt-0.5">
-                {query.id}
-              </p>
-            )}
+            {/* Every row gets the same second line — the id for a saved
+                query, or a plain-language status for a draft — so rows don't
+                jump around depending on which metadata happens to apply. */}
+            <p className="text-[10px] font-mono text-muted truncate mt-0.5">
+              {query.id ?? 'not saved yet'}
+            </p>
             {(hasParams || broken || query.isNew || (!query.isNew && strictEnv && Array.isArray(query.pinned_envs) && !query.pinned_envs.includes(strictEnv))) && (
               <div className="flex flex-wrap items-center gap-1 mt-1.5">
                 {query.isNew && (
@@ -557,9 +561,27 @@ export default function QueriesPage() {
   // ~300–340px) they are MUTUALLY EXCLUSIVE — opening one closes the other, so
   // the user can flip between them like tabs without either destroying the
   // other's state (the query list lives in this page; toggling never resets it).
-  const [queriesPanelOpen, setQueriesPanelOpen] = useState(
-    () => typeof window !== 'undefined' && window.innerWidth >= 1024
-  )
+  //
+  // Open/collapsed is remembered across visits (localStorage) so a user who
+  // collapses the rail to give the editor more room doesn't have to redo
+  // that every time they come back to /queries. The width fallback below only
+  // applies the very first time (no stored preference yet): open at md+
+  // (matches the "Tablet: open by default" / "Desktop: static panel"
+  // behaviour docs above), closed below that where the CSS hides it anyway.
+  const [queriesPanelOpen, setQueriesPanelOpen] = useState(() => {
+    if (typeof window === 'undefined') return false
+    try {
+      const stored = window.localStorage.getItem(QUERIES_PANEL_STORAGE_KEY)
+      if (stored === '1' || stored === '0') return stored === '1'
+    } catch { /* localStorage unavailable (privacy mode etc.) — fall through */ }
+    return window.innerWidth >= 768
+  })
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(QUERIES_PANEL_STORAGE_KEY, queriesPanelOpen ? '1' : '0')
+    } catch { /* best-effort persistence only */ }
+  }, [queriesPanelOpen])
 
   // Queries panel only actually occupies the RHS when chat isn't open.
   const queriesPanelVisible = queriesPanelOpen && !chatOpen
