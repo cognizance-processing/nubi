@@ -24,6 +24,38 @@ POST /boards/{board_id}/providers/{provider_id}/data
     * Cached by ``(provider_id, params, rls_hash)`` using the Wave-2 base-scan
       cache (TTL 5 minutes).
 
+GET /widgets/{widget_id}/usage
+    "Used by N" for a widget-LIBRARY row (``backend/app/routes/resources.py``,
+    resource ``widgets``): scans every board in the caller's org for spec
+    widgets whose ``ref`` equals *widget_id* and returns the boards + widget
+    instance ids referencing it. Org-scoped via ``resolve_org_id`` — never
+    leaks another org's boards. See ``app.dashboards.widget_refs`` for the
+    reference model this counts.
+
+GET /queries/{query_id}/usage
+    Same shape as the widget-usage endpoint, but for a registered query id:
+    every spec widget (including ``metric``/query bindings nested under a
+    ``stepper``'s ``props.steps[].widget``) whose ``query_id`` equals
+    *query_id*. Reuses ``app.dashboards.collect.widget_query_targets`` — the
+    same helper board export/thumbnail code already uses to find a query's
+    data targets on one board — across every board in the org.
+
+Response shape for GET /widgets/{id}/usage and GET /queries/{id}/usage
+-------------------------------------------------------------------------
+::
+
+    {
+        "widget_id" | "query_id": "<id>",
+        "count": 3,
+        "boards": [
+            {"board_id": "...", "board_name": "...", "widget_ids": ["w1", "w4"]},
+            ...
+        ]
+    }
+
+``count`` is the total number of referencing widget instances (not boards);
+``boards`` omits any board with zero matches.
+
 Response shape for /boards/{id}/providers/{pid}/data
 ------------------------------------------------------
 ``Content-Type: application/vnd.apache.arrow.stream``
@@ -354,3 +386,134 @@ async def get_provider_data(
             "X-Result-Count": str(len(tables)),
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /widgets/{widget_id}/usage, GET /queries/{query_id}/usage
+# ---------------------------------------------------------------------------
+
+
+async def _usage_by_board(
+    org_id: str,
+    repo: Repo,
+    match: Any,
+) -> tuple[int, list[dict[str, Any]]]:
+    """Shared board-scan for the two usage endpoints below.
+
+    Lists every board in *org_id*, parses its stored spec (best-effort — a
+    board with no structured spec contributes an empty widgets list, never an
+    error), and calls ``match(spec_dict) -> list[{"widget_id": ...}]`` per
+    board. Boards with zero matches are omitted from the result so the
+    response only lists boards actually using the thing being looked up.
+
+    Returns
+    -------
+    tuple[int, list[dict]]
+        ``(total_count, boards)`` — ``total_count`` sums widget instances
+        across all boards; each ``boards`` entry is
+        ``{board_id, board_name, widget_ids}``.
+    """
+    from app.dashboards.collect import spec_from_board  # noqa: PLC0415
+
+    boards_rows = await repo.list("boards", org_id)
+    total = 0
+    usage: list[dict[str, Any]] = []
+    for board in boards_rows:
+        spec_dict = spec_from_board(board)
+        targets = match(spec_dict)
+        if not targets:
+            continue
+        widget_ids = [t["widget_id"] for t in targets]
+        total += len(widget_ids)
+        usage.append(
+            {
+                "board_id": str(board.get("id")),
+                "board_name": board.get("name"),
+                "widget_ids": widget_ids,
+            }
+        )
+    return total, usage
+
+
+@api_router.get("/widgets/{widget_id}/usage", tags=["dashboards"])
+async def get_widget_usage(
+    widget_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Return every board/widget instance referencing library widget *widget_id*.
+
+    Scans the caller's org (never another org's boards — resolved via
+    ``resolve_org_id``, which honours ``X-Org-Id``) for spec widgets whose
+    ``ref`` equals *widget_id*, using
+    ``app.dashboards.widget_refs.widget_ref_usage`` per board. Does NOT check
+    that *widget_id* itself still exists in the ``widgets`` library — a
+    dangling ref is exactly the case this endpoint helps a caller find before
+    deleting (or after deleting) a library entry.
+
+    Parameters
+    ----------
+    widget_id:
+        The ``widgets`` library row id to look up.
+    request:
+        Used by ``resolve_org_id`` to honour ``X-Org-Id``.
+    user:
+        Injected by ``current_user``; ensures the endpoint requires auth.
+    repo:
+        Active repository implementation.
+
+    Returns
+    -------
+    dict
+        ``{widget_id, count, boards: [{board_id, board_name, widget_ids}]}``.
+    """
+    from app.dashboards.widget_refs import widget_ref_usage  # noqa: PLC0415
+    from app.routes._org import resolve_org_id  # noqa: PLC0415
+
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    count, boards = await _usage_by_board(
+        org_id, repo, lambda spec_dict: widget_ref_usage(spec_dict, widget_id)
+    )
+    return {"widget_id": widget_id, "count": count, "boards": boards}
+
+
+@api_router.get("/queries/{query_id}/usage", tags=["dashboards"])
+async def get_query_usage(
+    query_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> dict[str, Any]:
+    """Return every board/widget instance binding to query *query_id*.
+
+    Scans the caller's org (org-scoped via ``resolve_org_id``) for spec
+    widgets whose ``query_id`` equals *query_id* — reusing
+    ``app.dashboards.collect.widget_query_targets``, the same helper the
+    board-export / thumbnail pipeline already uses to find a query's data
+    targets on one board, across every board in the org.
+
+    Parameters
+    ----------
+    query_id:
+        The registered query id to look up.
+    request:
+        Used by ``resolve_org_id`` to honour ``X-Org-Id``.
+    user:
+        Injected by ``current_user``; ensures the endpoint requires auth.
+    repo:
+        Active repository implementation.
+
+    Returns
+    -------
+    dict
+        ``{query_id, count, boards: [{board_id, board_name, widget_ids}]}``.
+    """
+    from app.dashboards.collect import widget_query_targets  # noqa: PLC0415
+    from app.routes._org import resolve_org_id  # noqa: PLC0415
+
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    count, boards = await _usage_by_board(
+        org_id, repo, lambda spec_dict: widget_query_targets(spec_dict, query_id)
+    )
+    return {"query_id": query_id, "count": count, "boards": boards}

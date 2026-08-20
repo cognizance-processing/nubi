@@ -15,6 +15,16 @@ collect_board_data(board_id, org_id, claims, repo, only_query_id=None)
     datastore cannot be resolved in this environment) is returned with an
     ``error`` key instead of failing the whole collection.
 
+resolve_board_spec(board, org_id, repo) -> dict  [async]
+    Like ``spec_from_board(board)`` but with widget REFERENCES (``ref`` /
+    ``overrides`` — see ``app.dashboards.widget_refs``) resolved to their
+    effective config. This is the shared entry point every OUTPUT consumer
+    (this module's own ``collect_board_data``, SVG/PDF render, embed
+    snapshots, CSV/JSON export) should use instead of ``spec_from_board``
+    directly, so a ref never reaches a consumer unresolved. The board READ
+    endpoint (``GET /boards/{id}``) is the deliberate exception — it must
+    keep serving refs untouched so the editor can show/edit them.
+
 Security model (unchanged from the exports)
 -------------------------------------------
 * The board is resolved **org-scoped** via the repo by id — never cross-org.
@@ -263,6 +273,114 @@ def spec_from_board(board: dict[str, Any]) -> dict[str, Any]:
     if isinstance(spec, dict):
         return spec
     return {"widgets": []}
+
+
+async def resolve_spec_refs(
+    spec_dict: dict[str, Any], org_id: str, repo: Repo, *, log_label: str = "",
+) -> dict[str, Any]:
+    """Return *spec_dict* with widget REFERENCES resolved to their effective config.
+
+    The dict-level counterpart of :func:`resolve_board_spec`, for call sites
+    that already hold an extracted spec dict (not the board row) —
+    ``warm_board_thumbnails`` is the motivating case: its caller extracts
+    ``spec_dict`` once (for its own reasons — the pre-resolve hash, etc.) and
+    passes it down, so there is no board row left to re-derive it from.
+
+    See :func:`resolve_board_spec` for the fast-path / best-effort / logging
+    behaviour — identical here, just parameterised on the dict directly rather
+    than a board row.
+
+    Parameters
+    ----------
+    spec_dict:
+        A raw spec dict (e.g. from ``spec_from_board``).
+    org_id:
+        The caller's resolved org id — library rows are fetched scoped to it.
+    repo:
+        Active repository implementation.
+    log_label:
+        Optional identifier (e.g. a board id) interpolated into warning logs
+        so a dangling ref is traceable back to its board.
+
+    Returns
+    -------
+    dict
+        *spec_dict* with refs resolved (or unchanged, on the fast path / on a
+        parse failure).
+    """
+    widgets = spec_dict.get("widgets")
+    if not isinstance(widgets, list) or not any(
+        isinstance(w, dict) and w.get("ref") for w in widgets
+    ):
+        return spec_dict
+
+    from app.dashboards.spec import DashboardSpec  # noqa: PLC0415
+    from app.dashboards.widget_refs import (  # noqa: PLC0415
+        load_library_rows,
+        resolve_widget_refs,
+    )
+
+    try:
+        parsed = DashboardSpec.model_validate(spec_dict)
+    except Exception as exc:  # noqa: BLE001 — degrade to the unresolved dict
+        logger.warning(
+            "resolve_spec_refs: board %s spec failed to parse for ref "
+            "resolution (%s) — serving widgets with refs unresolved.",
+            log_label, exc,
+        )
+        return spec_dict
+
+    library_rows = await load_library_rows(org_id, repo)
+    resolved, issues = resolve_widget_refs(parsed, library_rows)
+    for issue in issues:
+        logger.warning("resolve_spec_refs: board %s: %s", log_label, issue)
+    return resolved.model_dump()
+
+
+async def resolve_board_spec(
+    board: dict[str, Any], org_id: str, repo: Repo
+) -> dict[str, Any]:
+    """Return ``spec_from_board(board)`` with widget REFERENCES resolved.
+
+    Thin wrapper around ``spec_from_board`` + :func:`resolve_spec_refs`: every
+    widget with a ``ref`` is replaced by its effective (merged) config, or a
+    visible broken placeholder if the ref cannot be resolved — see
+    ``resolve_widget_refs`` for the exact semantics. Use this instead of bare
+    ``spec_from_board`` at any call site that turns a spec into OUTPUT (query
+    collection, SVG/PDF render, embed snapshot, CSV/JSON export). The board
+    READ endpoint (``GET /boards/{id}``) must NOT call this — the editor needs
+    ``ref``/``overrides`` intact.
+
+    Fast path: a board with no reference widgets never touches the ``widgets``
+    library table — ``spec_from_board(board)`` is returned UNCHANGED (the same
+    dict, no copy, no extra DB round-trip), so this is a true no-op for every
+    board that doesn't use references, which today is all of them.
+
+    Best-effort, like the rest of this module: a spec that fails to parse as a
+    ``DashboardSpec`` degrades to the unresolved dict (never raises) — that
+    board already has other problems predating this feature, and ref
+    resolution must not be what takes its export/render down. Any resolver
+    issue (most commonly a dangling ref) is logged as a warning so it is
+    diagnosable in production rather than only visible as a silent
+    placeholder.
+
+    Parameters
+    ----------
+    board:
+        The board row (as returned by ``repo.get("boards", org_id, id)``).
+    org_id:
+        The caller's resolved org id — library rows are fetched scoped to it.
+    repo:
+        Active repository implementation.
+
+    Returns
+    -------
+    dict
+        The spec dict, ref-resolved (or unchanged, on the fast path / on a
+        parse failure).
+    """
+    spec_dict = spec_from_board(board)
+    return await resolve_spec_refs(spec_dict, org_id, repo, log_label=str(board.get("id")))
 
 
 def widget_query_targets(
@@ -661,7 +779,11 @@ async def collect_board_data(
     if board is None:
         raise AppError("board_not_found", f"Board {board_id!r} not found.", 404)
 
-    spec = spec_from_board(board)
+    # resolve_board_spec, not spec_from_board: a widget with a `ref` carries no
+    # query_id of its own — its data source only appears after resolving
+    # against the widgets library, so an unresolved ref would silently
+    # collect no data for that widget.
+    spec = await resolve_board_spec(board, org_id, repo)
     targets = widget_query_targets(spec, only_query_id)
 
     # Cap the number of widgets to prevent excessive resource consumption.

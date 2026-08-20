@@ -85,6 +85,17 @@ implemented in a LATER wave:
 
   SpecRenderer: groups widgets by ``widget.source.provider``, fetches each
                 provider once, then fans results to the bound widgets.
+
+Widget library references (reference-based widget reuse)
+----------------------------------------------------------
+A widget may be a REFERENCE (``Widget.ref`` set) instead of fully inline —
+see the ``Widget`` docstring and ``validate_spec`` steps 13-15 for the model
+and static-validation rules. Resolving a reference against the actual
+``widgets`` library rows (deep-merging ``overrides``, forcing board-local
+fields, degrading missing refs to a broken placeholder) is implemented in
+``app/dashboards/widget_refs.py`` (``resolve_widget_refs``) — kept out of this
+module because that resolver needs the caller's org-scoped library rows,
+which this file has no DB access to fetch.
 """
 
 from __future__ import annotations
@@ -562,7 +573,9 @@ class Widget(BaseModel):
         a tab declared in ``spec.tabs`` (hard error otherwise).
     type:
         Widget kind — ``'kpi'``, ``'table'``, ``'chart'``, ``'filter'``,
-        or ``'text'``.
+        or ``'text'``.  ``None`` is only valid for a **reference** widget
+        (``ref`` set) — a plain inline widget must set ``type``
+        (``validate_spec`` step 13 enforces this).
     query_id:
         Registered query id that backs this widget (must exist in the
         registry).  Required for ``kpi``, ``table``, ``chart`` — UNLESS the
@@ -625,18 +638,51 @@ class Widget(BaseModel):
         Named parameter bindings for this widget.  Each value is either a
         ``{ref: '<varName>'}`` reference or a literal scalar.  Ref names must
         resolve to declared ``variables`` on the spec.
+    ref:
+        Id of a row in the org-scoped ``widgets`` library table (see
+        ``backend/app/routes/resources.py``).  When set, this widget is a
+        **reference** instance rather than a fully-inline widget: its
+        effective config is ``deep_merge(library_row.config, overrides)``
+        with the BOARD-LOCAL fields (``id``, ``pos``, ``tab_id``,
+        ``placement``, ``order``, ``drawer``, ``drawer_group``) always taken
+        from THIS spec entry, never from the library row. See
+        ``app.dashboards.widget_refs.resolve_widget_refs`` for the resolver.
+        ``ref`` and any non-board-local inline field (``type``, ``query_id``,
+        ``metric``, ``chart_type``, ``encoding``, ``props``, ``style``,
+        ``subtype``, ``options_query_id``, ``target_var``, ``content``,
+        ``params``, ``source``) are mutually exclusive — setting both is a
+        hard validation error (``validate_spec`` step 14). A ``ref`` that
+        does not resolve to a live library row is a soft WARNING (mirrors the
+        ``query_id`` forward-ref rule) — the resolver degrades to a visible
+        broken placeholder rather than crashing.
+    overrides:
+        Sparse instance-level overrides merged onto the library row's config
+        when ``ref`` is set (ignored — and a soft WARNING — when ``ref`` is
+        ``None``).  Only keys present in ``overrides`` win; dict-valued keys
+        (e.g. ``encoding``, ``props``, ``style``, ``params``) are merged
+        key-by-key (recursively), and list values REPLACE the library value
+        wholesale rather than concatenating.
     """
 
     id: str = Field(min_length=1)
-    type: Literal[
-        "kpi", "table", "chart", "filter", "text",
-        # Extended widget types (rendered by the frontend SpecRenderer):
-        "metric", "pivot", "section", "html",
-        # Container: shows one child widget at a time in a single tile, with a
-        # step bar. Children are full widget specs under props.steps[].widget
-        # and carry no pos of their own.
-        "stepper",
-    ]
+    type: (
+        Literal[
+            "kpi", "table", "chart", "filter", "text",
+            # Extended widget types (rendered by the frontend SpecRenderer):
+            "metric", "pivot", "section", "html",
+            # Container: shows one child widget at a time in a single tile, with a
+            # step bar. Children are full widget specs under props.steps[].widget
+            # and carry no pos of their own.
+            "stepper",
+        ]
+        | None
+    ) = Field(
+        default=None,
+        description=(
+            "Widget kind. Required for an inline widget; None is only valid "
+            "for a reference widget (ref set) — see validate_spec step 13."
+        ),
+    )
     tab_id: str | None = Field(
         default=None,
         description=(
@@ -760,6 +806,29 @@ class Widget(BaseModel):
             "DataProvider binding (BET-3). When set, this widget's data comes "
             "from the referenced provider result instead of query_id / metric. "
             "A widget may set at most one of: non-empty query_id, metric, source."
+        ),
+    )
+    # ── Library reference (widget reuse with instance-level overrides) ────────
+    # A widget may be EITHER inline (as today) OR a reference: ref + overrides
+    # replace every other inline field. See app.dashboards.widget_refs for the
+    # resolver and validate_spec steps 13-15 for the validation rules.
+    ref: str | None = Field(
+        default=None,
+        description=(
+            "Id of a `widgets` library row (backend/app/routes/resources.py). "
+            "When set, this widget's effective config is resolved from the "
+            "library row + overrides — see app.dashboards.widget_refs. "
+            "Mutually exclusive with the inline widget fields (validate_spec "
+            "step 14)."
+        ),
+    )
+    overrides: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Sparse instance-level overrides merged onto the library row's "
+            "config when ref is set (deep_merge: only keys present here win, "
+            "nested dicts merge key-by-key, lists replace wholesale). Ignored "
+            "— and a soft warning — when ref is None."
         ),
     )
 
@@ -1088,6 +1157,23 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
     12. Provider / result existence check (BET-3 hard error): ``widget.source``
         must reference a declared ``spec.data[*].id`` and a valid result name
         within that provider.
+    13. Reference widgets (hard error): a widget must set either ``type``
+        (inline) or ``ref`` (library reference) — a widget with neither is
+        ambiguous.
+    14. Reference / inline mutual exclusivity (hard error): a widget with
+        ``ref`` set must not also set any non-board-local inline field
+        (``type``, ``query_id``, ``metric``, ``chart_type``, ``encoding``,
+        ``props``, ``style``, ``subtype``, ``options_query_id``,
+        ``target_var``, ``content``, ``params``, ``source``).
+    15. Dangling ``overrides`` (soft warning): a widget with a non-empty
+        ``overrides`` but no ``ref`` has nothing to override — the field is
+        silently ignored by the resolver, so this is flagged.
+
+    NOTE: whether a ``ref`` actually resolves to a live ``widgets`` library
+    row is NOT checked here — this parser has no org/DB context. That check
+    (soft WARNING on a miss, mirroring the ``query_id`` forward-ref rule) is
+    performed by the resolver, ``app.dashboards.widget_refs.resolve_widget_refs``,
+    which is given the caller's actual library rows.
 
     Parameters
     ----------
@@ -1326,6 +1412,72 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
                 f"Widget {widget.id!r}: source.result {rname!r} is not declared "
                 f"in provider {pid!r}. Declared results: "
                 f"{sorted(provider_map[pid]) or '[]'}."
+            )
+
+    # ── Step 13: a widget must be inline (type) or a reference (ref) ─────────
+    # `type` is optional at the Pydantic level ONLY so that a bare
+    # {id, ref, overrides, pos, tab_id} reference widget parses. A widget with
+    # neither is ambiguous — hard error (same severity as a missing chart
+    # encoding).
+    for widget in spec.widgets:
+        if widget.type is None and widget.ref is None:
+            issues.append(
+                f"Widget {widget.id!r}: must set either 'type' (inline widget) "
+                "or 'ref' (library reference widget)."
+            )
+
+    # ── Step 14: ref / inline mutual exclusivity (hard error) ────────────────
+    # A widget may be EITHER inline OR a reference, never both. Board-local
+    # fields (id, pos, tab_id, placement, order, drawer, drawer_group) are
+    # exempt — they describe WHERE the widget sits, which a reference widget
+    # still needs. Every other inline field must be left at its default.
+    for widget in spec.widgets:
+        if widget.ref is None:
+            continue
+        conflicts: list[str] = []
+        if widget.type is not None:
+            conflicts.append("type")
+        if widget.query_id:
+            conflicts.append("query_id")
+        if widget.metric is not None:
+            conflicts.append("metric")
+        if widget.chart_type is not None:
+            conflicts.append("chart_type")
+        if widget.encoding:
+            conflicts.append("encoding")
+        if widget.props:
+            conflicts.append("props")
+        if widget.style:
+            conflicts.append("style")
+        if widget.subtype is not None:
+            conflicts.append("subtype")
+        if widget.options_query_id:
+            conflicts.append("options_query_id")
+        if widget.target_var:
+            conflicts.append("target_var")
+        if widget.content:
+            conflicts.append("content")
+        if widget.params:
+            conflicts.append("params")
+        if widget.source is not None:
+            conflicts.append("source")
+        if conflicts:
+            issues.append(
+                f"Widget {widget.id!r}: 'ref' is set, so inline field(s) "
+                f"{conflicts!r} must not be — a widget is either inline or a "
+                "reference, never both. Put instance-level changes in "
+                "'overrides' instead."
+            )
+
+    # ── Step 15: dangling overrides (soft warning) ────────────────────────────
+    # overrides is only meaningful alongside ref; without ref the resolver never
+    # looks at it, so it is silently dead weight — flag it (not a hard error,
+    # mirrors the soft forward-ref style).
+    for widget in spec.widgets:
+        if widget.ref is None and widget.overrides:
+            issues.append(
+                f"[warn] Widget {widget.id!r}: 'overrides' is set but 'ref' is "
+                "not — overrides has no effect without a library reference."
             )
 
     return spec, issues

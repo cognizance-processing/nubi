@@ -790,17 +790,21 @@ async def render_board_svg_from_data(
     str
         Composed page SVG string.
     """
-    from app.dashboards.collect import collect_board_data  # noqa: PLC0415
+    from app.dashboards.collect import collect_board_data, resolve_board_spec  # noqa: PLC0415
 
     board = await repo.get("boards", org_id, board_id)
     if board is None:
         raise AppError("board_not_found", f"Board {board_id!r} not found.", 404)
 
     # Parse spec (best-effort — fall back to empty spec on parse failure).
+    # resolve_board_spec, not a bare config.spec read: a widget with `ref` has
+    # no `type`/`chart_type`/`encoding` of its own — those only exist once
+    # resolved against the widgets library, and _widget_to_payload below reads
+    # them straight off the parsed Widget (an unresolved ref would render with
+    # type=None instead of a picture).
     from app.dashboards.spec import DashboardSpec, validate_spec  # noqa: PLC0415
 
-    config = board.get("config") or {}
-    spec_dict = config.get("spec") or {}
+    spec_dict = await resolve_board_spec(board, org_id, repo)
     parsed_spec, _ = validate_spec(spec_dict)
     if parsed_spec is None:
         # Unparseable spec — render a blank page.

@@ -79,6 +79,8 @@ from app.auth.deps import current_user
 from app.config import get_settings
 from app.dashboards.collect import (
     collect_board_data,
+    resolve_board_spec,
+    resolve_spec_refs,
     run_query_rows,
     spec_from_board,
     widget_query_targets,
@@ -178,7 +180,10 @@ async def export_board_csv(
     if board is None:
         raise AppError("board_not_found", f"Board {board_id!r} not found.", 404)
 
-    spec = spec_from_board(board)
+    # resolve_board_spec, not spec_from_board: a ref widget carries no query_id
+    # of its own, so its export target only appears once resolved against the
+    # widgets library (see app.dashboards.collect.resolve_board_spec).
+    spec = await resolve_board_spec(board, org_id, repo)
     targets = widget_query_targets(spec, query_id)
     policies: dict[str, Any] = {}
 
@@ -250,7 +255,12 @@ async def export_board_pdf(
     from app.embedding.render_pdf import render_board_pdf, svg_page_size_px  # noqa: PLC0415
 
     board = await _load_board(board_id, str(user["id"]), repo, request)
-    spec_dict = spec_from_board(board)
+    # Resolved up front (rather than only before collect_board_data, as
+    # before) because spec_dict/validated_spec below must ALSO see widget refs
+    # resolved — a ref widget's real type/chart_type/encoding only exist after
+    # resolving against the widgets library.
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    spec_dict = await resolve_board_spec(board, org_id, repo)
     # Same leniency as the thumbnail: a filter board's `variables` cannot affect
     # the exported picture, so they must not be able to blank the export either.
     validated_spec = spec_for_render(spec_dict, fallback_title=board.get("name"))
@@ -265,8 +275,6 @@ async def export_board_pdf(
     export_cfg["page_size"] = resolved_page_size
 
     # Collect widget data (first-party = no RLS, full editor view).
-    from app.routes._org import resolve_org_id as _resolve  # noqa: PLC0415
-    org_id = await _resolve(str(user["id"]), repo, request)
     widget_data = await collect_board_data(
         board_id, org_id, claims=_collect_claims(user), repo=repo
     )
@@ -476,6 +484,15 @@ async def warm_board_thumbnails(
 
     if not renderer_available():
         return 0
+
+    # Resolve widget refs before anything else touches spec_dict: the fast
+    # path (no ref widgets) returns it unchanged, so spec_hash below is
+    # byte-identical to before for every board that doesn't use references.
+    # For a board that DOES, hashing the resolved form is correct — a change
+    # to the underlying library widget must invalidate every board's stored
+    # thumbnail that references it, not just the board where it was edited.
+    spec_dict = await resolve_spec_refs(spec_dict, org_id, repo, log_label=board_id)
+
     validated_spec = spec_for_render(spec_dict, fallback_title=board_name)
     if validated_spec is None:
         return 0
@@ -560,7 +577,14 @@ async def board_thumbnail_svg(
     )
 
     board = await _load_board(board_id, str(user["id"]), repo, request)
-    spec_dict = spec_from_board(board)
+    # Resolved up front (rather than only right before collect_board_data, as
+    # before) because spec_dict/validated_spec/the cache key below must ALSO
+    # see widget refs resolved — a ref widget's real type/chart_type/encoding
+    # only exist after resolving against the widgets library, and the cache
+    # key must reflect the picture actually rendered (see warm_board_thumbnails
+    # for why hashing the resolved form is correct, not just convenient).
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    spec_dict = await resolve_board_spec(board, org_id, repo)
 
     claims = _collect_claims(user)
     # A board has no intrinsic colour — its widgets are styled with CSS theme
@@ -621,9 +645,6 @@ async def board_thumbnail_svg(
             "Board spec cannot be parsed for rendering.",
             503,
         )
-
-    from app.routes._org import resolve_org_id as _resolve  # noqa: PLC0415
-    org_id = await _resolve(str(user["id"]), repo, request)
 
     # Per-widget query errors are reported inline rather than raised, so a board
     # with one broken query still gets a thumbnail of everything else.
