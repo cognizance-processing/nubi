@@ -7,12 +7,13 @@
  *   useQuerySample(queryId, limit)  → { columns, rows, rowCount, loading, error }
  *   useMetricsList()                → MetricRow[]
  *   useWidgetLibrary()              → { rows, loading, reload }
+ *   useWidgetUsage(id)              → { count, boards } | null | undefined
  */
 
 import { useState, useEffect, useCallback } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { listMetrics } from '../../lib/metrics.js'
-import { listLibraryWidgets } from '../../lib/widgetLibrary.js'
+import { listLibraryWidgets, getWidgetUsage } from '../../lib/widgetLibrary.js'
 
 /**
  * Run a query by ID and return its schema column names.
@@ -109,6 +110,47 @@ export function useWidgetLibrary() {
   useEffect(() => { reload() }, [reload])
 
   return { rows, loading, reload }
+}
+
+// ---------------------------------------------------------------------------
+// "Used by N" — module-level cache so the palette (one row per entry) and the
+// inspector banner (the selected entry) never issue duplicate requests for
+// the same library widget id within a session. A `null` result IS a real
+// answer ("route unavailable / errored, hide the count" — see
+// `getWidgetUsage`'s contract) and is cached too, so a 404'ing endpoint
+// doesn't get hammered every render; call `invalidateWidgetUsage` after an
+// action that changes usage (add/detach/delete a reference) to force a
+// fresh count next render.
+const _usageCache = new Map()
+
+/** Drop a cached usage count so the next render re-fetches it. */
+export function invalidateWidgetUsage(id) {
+  if (id) _usageCache.delete(id)
+}
+
+/**
+ * "Used by N boards" for a library widget id. Returns `undefined` while
+ * loading, `null` when unknown (endpoint unavailable / errored — callers
+ * must hide the count, never treat this as zero), or `{ count, boards }`
+ * once resolved.
+ * @param {string|null|undefined} id — a library row id, or nullish to skip
+ */
+export function useWidgetUsage(id) {
+  const [usage, setUsage] = useState(() => (id && _usageCache.has(id)) ? _usageCache.get(id) : undefined)
+
+  useEffect(() => {
+    if (!id) { setUsage(undefined); return }
+    if (_usageCache.has(id)) { setUsage(_usageCache.get(id)); return }
+    let cancelled = false
+    getWidgetUsage(id).then(result => {
+      if (cancelled) return
+      _usageCache.set(id, result)
+      setUsage(result)
+    })
+    return () => { cancelled = true }
+  }, [id])
+
+  return usage
 }
 
 /**

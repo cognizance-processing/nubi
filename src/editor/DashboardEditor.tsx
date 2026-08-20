@@ -47,8 +47,13 @@ import {
   Monitor, Tablet, Smartphone, ChevronDown, Settings, LayoutGrid, MessageSquare,
   ZoomIn, ZoomOut, Maximize2, Menu, ChevronUp, Sigma, FileCode2, LayoutDashboard,
   Undo2, Redo2, Eye, Pencil, Save, Loader2, CheckCircle2, BookmarkPlus, Library,
+  Link2, Copy, Unlink, Users,
 } from 'lucide-react'
-import { saveWidgetToLibrary, deleteLibraryWidget, fromLibraryRow } from '../lib/widgetLibrary.js'
+import {
+  saveWidgetToLibrary, deleteLibraryWidget, updateLibraryWidget, fromLibraryRow,
+  resolveWidgetRef, isRefWidget, applyWidgetEdit,
+  flattenOverridePaths, removeOverridePath, humanizeOverridePath,
+} from '../lib/widgetLibrary.js'
 import Button from '../components/ui/Button.jsx'
 import Spinner from '../components/ui/Spinner.jsx'
 import { toast } from '../components/ui/Toast.jsx'
@@ -121,7 +126,7 @@ import {
 import {
   inputCls, selectCls, FieldLabel, SectionLabel, Section, ToggleRow, ChipRow, ColumnSelect,
   ColorField, ColorSwatch,
-  useColumnIntrospection, useMetricsList, useWidgetLibrary,
+  useColumnIntrospection, useMetricsList, useWidgetLibrary, useWidgetUsage, invalidateWidgetUsage,
   QueryPicker, BackgroundEditor, ParamBindingSection,
   QueryStatusLink,
   ChartConfig, KpiConfig, IconPicker,
@@ -1010,7 +1015,13 @@ function DashboardPanel({ spec, onSpecChange }) {
  * shell already provides: the header (shell header), the remove button (shell
  * header) and the query picker (shell data rail).
  */
-function ConfigPanel({ widget, onChange, onRemove = undefined, extraQueryIds, spec, activeBreakpoint = 'lg', onLayoutCommit, onMoveToTab, onLibrarySaved, variant = 'panel' }) {
+function ConfigPanel({
+  widget, onChange, onRemove = undefined, extraQueryIds, spec, activeBreakpoint = 'lg',
+  onLayoutCommit, onMoveToTab, onLibrarySaved, variant = 'panel',
+  // Reference-based reuse (ref widgets only — all optional/no-op for inline widgets).
+  libraryById, onDetachRequest, onEditScopeRequest, onResetOverride,
+  sharedEditRefId, onSaveSharedDefinition, onCancelSharedEdit, savingShared,
+}) {
   const focus = variant === 'focus'
 
   if (!widget) {
@@ -1030,7 +1041,12 @@ function ConfigPanel({ widget, onChange, onRemove = undefined, extraQueryIds, sp
     )
   }
 
-  const isDataWidget = ['kpi', 'metric', 'table', 'pivot', 'chart'].includes(widget.type)
+  const isRef = isRefWidget(widget)
+  // A broken reference resolves to a `text` placeholder with `props.broken_ref`
+  // set (see `resolveWidgetRef`) — detect it so we skip rendering the normal
+  // per-type config sections against a fabricated placeholder shape.
+  const isBrokenRef = isRef && widget.props?.broken_ref === true
+  const isDataWidget = !isBrokenRef && ['kpi', 'metric', 'table', 'pivot', 'chart'].includes(widget.type)
   const setQueryId = qid => {
     const next = { ...widget, query_id: qid }
     // One-time convenience: pre-fill an empty chart title from the query's
@@ -1068,6 +1084,21 @@ function ConfigPanel({ widget, onChange, onRemove = undefined, extraQueryIds, sp
         </div>
       )}
 
+      {isRef && (
+        <RefWidgetBanner
+          widget={widget}
+          libraryRow={libraryById?.get(widget.ref)}
+          isBroken={isBrokenRef}
+          isSharedEditing={sharedEditRefId === widget.ref}
+          savingShared={savingShared}
+          onDetach={() => onDetachRequest?.(widget)}
+          onEditScope={() => onEditScopeRequest?.(widget)}
+          onResetOverride={(path) => onResetOverride?.(widget.id, path)}
+          onSaveShared={() => onSaveSharedDefinition?.(widget.id)}
+          onCancelSharedEdit={onCancelSharedEdit}
+        />
+      )}
+
       {Array.isArray(spec?.tabs) && spec.tabs.length > 0 && onMoveToTab && (
         <div>
           <FieldLabel className="flex items-center gap-1.5"><LayoutGrid size={12} /> Move to tab</FieldLabel>
@@ -1092,38 +1123,168 @@ function ConfigPanel({ widget, onChange, onRemove = undefined, extraQueryIds, sp
         </div>
       )}
 
-      {isDataWidget && (
-        <Section title="Metric binding" defaultOpen={Boolean(widget.metric?.metric_id)} icon={Sigma}>
-          <MetricBindingSection widget={widget} onChange={onChange} />
-        </Section>
-      )}
+      {isBrokenRef ? (
+        <p className="text-xs text-muted/70 leading-relaxed rounded-lg border border-dashed border-border bg-surface-2/30 p-3">
+          Nothing to configure for a broken reference — detach it (to keep this
+          instance) or remove it, or re-add the widget from the library once
+          the entry exists again.
+        </p>
+      ) : (
+        <>
+          {isDataWidget && (
+            <Section title="Metric binding" defaultOpen={Boolean(widget.metric?.metric_id)} icon={Sigma}>
+              <MetricBindingSection widget={widget} onChange={onChange} />
+            </Section>
+          )}
 
-      {widget.type === 'chart' && <ChartConfig widget={widget} onChange={onChange} />}
-      {(widget.type === 'kpi' || widget.type === 'metric') && <KpiConfig widget={widget} onChange={onChange} />}
-      {widget.type === 'table' && <TableConfig widget={widget} onChange={onChange} />}
-      {widget.type === 'pivot' && <PivotConfig widget={widget} onChange={onChange} />}
-      {widget.type === 'filter' && <FilterConfig widget={widget} onChange={onChange} spec={spec} />}
-      {widget.type === 'text' && <TextConfig widget={widget} onChange={onChange} />}
-      {widget.type === 'section' && <SectionConfig widget={widget} onChange={onChange} />}
+          {widget.type === 'chart' && <ChartConfig widget={widget} onChange={onChange} />}
+          {(widget.type === 'kpi' || widget.type === 'metric') && <KpiConfig widget={widget} onChange={onChange} />}
+          {widget.type === 'table' && <TableConfig widget={widget} onChange={onChange} />}
+          {widget.type === 'pivot' && <PivotConfig widget={widget} onChange={onChange} />}
+          {widget.type === 'filter' && <FilterConfig widget={widget} onChange={onChange} spec={spec} />}
+          {widget.type === 'text' && <TextConfig widget={widget} onChange={onChange} />}
+          {widget.type === 'section' && <SectionConfig widget={widget} onChange={onChange} />}
 
-      {widget.type === 'chart' && <DrilldownSection widget={widget} onChange={onChange} />}
+          {widget.type === 'chart' && <DrilldownSection widget={widget} onChange={onChange} />}
 
-      {isDataWidget && (
-        <Section title="Parameters" defaultOpen={false} icon={SlidersHorizontal}>
-          <ParamBindingSection widget={widget} onChange={onChange} specVariables={spec?.variables} />
-        </Section>
+          {isDataWidget && (
+            <Section title="Parameters" defaultOpen={false} icon={SlidersHorizontal}>
+              <ParamBindingSection widget={widget} onChange={onChange} specVariables={spec?.variables} />
+            </Section>
+          )}
+        </>
       )}
 
       <WidgetLayoutSection widget={widget} onChange={onChange} spec={spec}
         activeBreakpoint={activeBreakpoint} onLayoutCommit={onLayoutCommit} />
 
-      <WidgetAppearanceSection widget={widget} onChange={onChange} />
+      {!isBrokenRef && <WidgetAppearanceSection widget={widget} onChange={onChange} />}
 
-      <Section title="Save to library" defaultOpen={false} icon={BookmarkPlus}>
-        <SaveToLibrarySection widget={widget} onSaved={onLibrarySaved} />
-      </Section>
+      {!isRef && (
+        <Section title="Save to library" defaultOpen={false} icon={BookmarkPlus}>
+          <SaveToLibrarySection widget={widget} onSaved={onLibrarySaved} />
+        </Section>
+      )}
 
       <p className="text-[10px] text-muted/50 pt-1 font-mono">{widget.id}</p>
+    </div>
+  )
+}
+
+/**
+ * RefWidgetBanner — shown at the top of ConfigPanel whenever the selected
+ * widget is a REFERENCE (`widget.ref` set). Makes override state visible
+ * BEFORE editing (per-field "overridden here" + reset-to-library-value),
+ * surfaces "used by N boards", and hosts the three-tier actions: Detach,
+ * and the "used by N boards" edit-scope prompt (Edit for all / Duplicate &
+ * edit just this one). A dangling ref (library row deleted/missing) renders
+ * a distinct broken-reference notice instead of the normal banner body.
+ */
+function RefWidgetBanner({
+  widget, libraryRow, isBroken, isSharedEditing, savingShared,
+  onDetach, onEditScope, onResetOverride, onSaveShared, onCancelSharedEdit,
+}) {
+  const overriddenFields = flattenOverridePaths(widget.overrides)
+  const libraryName = libraryRow?.name
+
+  if (isSharedEditing) {
+    return (
+      <div className="rounded-xl border border-primary/40 bg-primary/5 p-3 space-y-2" data-testid="ref-widget-shared-editing">
+        <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
+          <Users size={13} /> Editing shared definition
+        </div>
+        <p className="text-[11px] text-muted/80 leading-relaxed">
+          Changes you make below will be saved to “{libraryName ?? 'this library entry'}”
+          for every board that uses it, once you save.
+        </p>
+        <div className="flex gap-2 pt-1">
+          <button
+            type="button"
+            onClick={onSaveShared}
+            disabled={savingShared}
+            data-testid="ref-widget-save-shared"
+            className="flex-1 h-8 inline-flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 transition-opacity disabled:opacity-50 disabled:pointer-events-none focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            {savingShared ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+            {savingShared ? 'Saving…' : 'Save shared changes'}
+          </button>
+          <button
+            type="button"
+            onClick={onCancelSharedEdit}
+            data-testid="ref-widget-cancel-shared"
+            className="h-8 px-3 text-xs font-medium rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-xl border border-border bg-surface-2/40 p-3 space-y-2" data-testid="ref-widget-banner">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 min-w-0 text-xs font-semibold text-fg">
+          <Link2 size={13} className={isBroken ? 'text-red-500 shrink-0' : 'text-primary shrink-0'} />
+          <span className="truncate">
+            {isBroken ? 'Broken reference' : `Linked to “${libraryName ?? widget.ref}”`}
+          </span>
+        </div>
+        {!isBroken && <LibraryUsageBadge libraryId={widget.ref} />}
+      </div>
+
+      {isBroken ? (
+        <p className="text-[11px] text-red-500 leading-relaxed" data-testid="ref-widget-broken-notice">
+          The library entry this widget points to (id {widget.ref}) no longer
+          exists. This widget renders a broken placeholder everywhere it's
+          used — detach it to keep this instance, or remove it.
+        </p>
+      ) : (
+        <p className="text-[11px] text-muted/70 leading-relaxed">
+          Editing fields below stays local to this board. To change every
+          board using this widget, edit its shared definition instead.
+        </p>
+      )}
+
+      {overriddenFields.length > 0 && (
+        <div className="space-y-1 pt-1.5 border-t border-border/60">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted/60 pt-1">Overridden here</p>
+          {overriddenFields.map(({ path }) => (
+            <div key={path} className="flex items-center justify-between gap-2 text-[11px]">
+              <span className="text-fg/80 truncate">{humanizeOverridePath(path)}</span>
+              <button
+                type="button"
+                onClick={() => onResetOverride(path)}
+                data-testid={`ref-widget-reset-${path}`}
+                className="shrink-0 text-[10px] font-medium text-muted/70 hover:text-primary underline-offset-2 hover:underline transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 rounded"
+              >
+                Reset to library value
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex gap-2 pt-1">
+        {!isBroken && (
+          <button
+            type="button"
+            onClick={onEditScope}
+            data-testid="ref-widget-edit-scope"
+            className="flex-1 h-8 inline-flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg border border-border text-fg hover:border-primary/60 hover:text-primary transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            <Users size={12} /> Edit shared definition…
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onDetach}
+          data-testid="ref-widget-detach"
+          className="flex-1 h-8 inline-flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg border border-border text-fg hover:border-amber-500/60 hover:text-amber-600 dark:hover:text-amber-400 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+        >
+          <Unlink size={12} /> Detach
+        </button>
+      </div>
     </div>
   )
 }
@@ -1218,7 +1379,7 @@ const PALETTE_ITEMS = [
  * Clicking an item appends the widget via addWidget(type) and (because
  * addWidget selects the new widget) the parent switches to the config tab.
  */
-function AddPanel({ onAdd, onAddFromLibrary, library, libraryLoading, onDeleteLibraryEntry }) {
+function AddPanel({ onAdd, onAddReference, onAddDetachedCopy, library, libraryLoading, onDeleteLibraryEntry }) {
   return (
     <div className="p-3 space-y-3 overflow-y-auto h-full">
       <p className="text-xs text-muted/70 leading-relaxed px-0.5">
@@ -1259,8 +1420,10 @@ function AddPanel({ onAdd, onAddFromLibrary, library, libraryLoading, onDeleteLi
       </div>
 
       {/* ── From library ──
-          Reusable widgets saved from any board in this org/project. Adding one
-          inlines a DETACHED copy, so the board spec stays self-contained. */}
+          Reusable widgets saved from any board in this org/project. Adding
+          one creates a REFERENCE by default — fix the shared entry once and
+          every board using it updates. "Add a detached copy" is the explicit
+          opt-in for a fully independent inline copy. */}
       <div className="pt-1 space-y-1.5">
         <SectionLabel>From library</SectionLabel>
 
@@ -1277,35 +1440,70 @@ function AddPanel({ onAdd, onAddFromLibrary, library, libraryLoading, onDeleteLi
         {library.map(row => (
           <div
             key={row.id}
-            className="w-full flex items-center gap-2 px-2.5 py-2 rounded-xl border border-border bg-surface hover:border-primary/60 transition-all duration-150 group"
+            className="w-full flex flex-col gap-1.5 px-2.5 py-2 rounded-xl border border-border bg-surface hover:border-primary/60 transition-all duration-150 group"
           >
-            <button
-              onClick={() => onAddFromLibrary(row)}
-              data-testid={`library-add-${row.id}`}
-              title={`Add a copy of “${row.name}”`}
-              className="flex items-center gap-2.5 min-w-0 flex-1 text-left focus:outline-none"
-            >
-              <span className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg bg-surface-2 text-muted group-hover:text-primary group-hover:bg-primary/10 transition-all">
-                {(() => { const I = WIDGET_ICONS[row.config?.type] ?? Library; return <I size={14} /> })()}
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium text-fg group-hover:text-primary transition-colors leading-tight truncate">{row.name}</p>
-                <p className="text-[11px] text-muted/80 truncate mt-0.5">{row.config?.type ?? 'widget'}</p>
-              </div>
-            </button>
-            <button
-              onClick={() => onDeleteLibraryEntry(row)}
-              title={`Remove “${row.name}” from the library`}
-              aria-label={`Remove ${row.name} from the library`}
-              data-testid={`library-delete-${row.id}`}
-              className="w-6 h-6 shrink-0 flex items-center justify-center rounded-md text-muted/50 hover:text-red-500 hover:bg-red-50/80 transition-colors dark:hover:bg-red-950/40"
-            >
-              <Trash2 size={12} />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => onAddReference(row)}
+                data-testid={`library-add-${row.id}`}
+                title={`Add a reference to “${row.name}” — edits stay local, "Edit for all" updates every board`}
+                className="flex items-center gap-2.5 min-w-0 flex-1 text-left focus:outline-none"
+              >
+                <span className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg bg-surface-2 text-muted group-hover:text-primary group-hover:bg-primary/10 transition-all">
+                  {(() => { const I = WIDGET_ICONS[row.config?.type] ?? Library; return <I size={14} /> })()}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-fg group-hover:text-primary transition-colors leading-tight truncate">{row.name}</p>
+                  <p className="text-[11px] text-muted/80 truncate mt-0.5">{row.config?.type ?? 'widget'}</p>
+                </div>
+              </button>
+              <button
+                onClick={() => onDeleteLibraryEntry(row)}
+                title={`Remove “${row.name}” from the library`}
+                aria-label={`Remove ${row.name} from the library`}
+                data-testid={`library-delete-${row.id}`}
+                className="w-6 h-6 shrink-0 flex items-center justify-center rounded-md text-muted/50 hover:text-red-500 hover:bg-red-50/80 transition-colors dark:hover:bg-red-950/40"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+            <div className="flex items-center justify-between gap-2 pl-9">
+              <LibraryUsageBadge libraryId={row.id} />
+              <button
+                onClick={() => onAddDetachedCopy(row)}
+                data-testid={`library-add-copy-${row.id}`}
+                title={`Add a detached copy of “${row.name}” — independent, won't update with the library entry`}
+                className="shrink-0 inline-flex items-center gap-1 text-[10px] font-medium text-muted/70 hover:text-primary rounded-md px-1.5 py-0.5 -mr-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+              >
+                <Copy size={10} /> Detached copy
+              </button>
+            </div>
           </div>
         ))}
       </div>
     </div>
+  )
+}
+
+/**
+ * LibraryUsageBadge — "used by N" for a library entry, shown on the palette
+ * row (and reused in the ConfigPanel banner for the currently-selected `ref`
+ * widget). Degrades to nothing while loading or when the usage endpoint is
+ * unavailable — never shows a wrong or misleading count.
+ */
+function LibraryUsageBadge({ libraryId, className = '' }) {
+  const usage = useWidgetUsage(libraryId)
+  if (usage == null) return null // undefined (loading) or null (unknown) — say nothing
+  const { count } = usage
+  return (
+    <span
+      data-testid={`library-usage-${libraryId}`}
+      title={count === 0 ? 'Not used on any other board yet' : `Referenced by ${count} widget instance${count === 1 ? '' : 's'} across boards`}
+      className={`inline-flex items-center gap-1 text-[10px] font-medium text-muted/70 ${className}`}
+    >
+      <Users size={10} />
+      {count === 0 ? 'Not used elsewhere' : `Used by ${count}`}
+    </span>
   )
 }
 
@@ -1704,6 +1902,107 @@ function DeleteTabDialog({ tab, tabs, widgetCount, onMove, onDeleteWidgets, onCa
   )
 }
 
+/**
+ * NamePromptDialog — generic "name this thing, then confirm" modal. Used by
+ * both Detach (name the new independent copy so its origin — `meta.detachedFrom`
+ * — stays traceable) and "Duplicate & edit just this one" (name the forked
+ * library entry). Detach is deliberately NOT the path of least resistance —
+ * it requires this explicit naming step rather than a single click, mirroring
+ * why the legacy estate ended up with ~zero widget reuse (copy-on-edit was
+ * frictionless; linking should be the easy path instead).
+ */
+function NamePromptDialog({ title, description, defaultName, confirmLabel, testidPrefix, onConfirm, onCancel }) {
+  const [name, setName] = useState(defaultName || '')
+  const trimmed = name.trim()
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" data-testid={`${testidPrefix}-dialog`}>
+      <div className="absolute inset-0 bg-black/40" onClick={onCancel} />
+      <div className="relative w-full max-w-sm rounded-2xl border border-border bg-surface shadow-2xl p-5 space-y-4">
+        <div>
+          <h3 className="text-sm font-semibold text-fg">{title}</h3>
+          <p className="text-xs text-muted mt-1 leading-relaxed">{description}</p>
+        </div>
+        <div>
+          <FieldLabel>Name</FieldLabel>
+          <input
+            type="text"
+            className={inputCls}
+            value={name}
+            onChange={e => setName(e.target.value)}
+            autoFocus
+            data-testid={`${testidPrefix}-name`}
+            onKeyDown={e => { if (e.key === 'Enter' && trimmed) onConfirm(trimmed) }}
+          />
+        </div>
+        <div className="flex flex-col gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => trimmed && onConfirm(trimmed)}
+            disabled={!trimmed}
+            data-testid={`${testidPrefix}-confirm`}
+            className="w-full h-9 text-sm font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 transition-opacity disabled:opacity-50 disabled:pointer-events-none">
+            {confirmLabel}
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="w-full h-9 text-sm font-medium rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * EditScopeDialog — "This widget is used by N boards." Fires when a user
+ * asks to edit a referenced widget's SHARED definition (as opposed to the
+ * default, silent, instance-local override every normal field edit already
+ * gets). Exact three-button contract: Edit for all / Duplicate & edit just
+ * this one / Cancel.
+ */
+function EditScopeDialog({ count, onEditForAll, onDuplicate, onCancel }) {
+  const n = count ?? 0
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" data-testid="edit-scope-dialog">
+      <div className="absolute inset-0 bg-black/40" onClick={onCancel} />
+      <div className="relative w-full max-w-sm rounded-2xl border border-border bg-surface shadow-2xl p-5 space-y-4">
+        <div>
+          <h3 className="text-sm font-semibold text-fg">
+            This widget is used by {n} board{n === 1 ? '' : 's'}.
+          </h3>
+          <p className="text-xs text-muted mt-1 leading-relaxed">
+            Choose how your change should apply.
+          </p>
+        </div>
+        <div className="flex flex-col gap-2 pt-1">
+          <button
+            type="button"
+            onClick={onEditForAll}
+            data-testid="edit-scope-all"
+            className="w-full h-9 text-sm font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 transition-opacity">
+            Edit for all
+          </button>
+          <button
+            type="button"
+            onClick={onDuplicate}
+            data-testid="edit-scope-duplicate"
+            className="w-full h-9 text-sm font-medium rounded-lg border border-border text-fg hover:border-primary/60 hover:text-primary transition-colors">
+            Duplicate &amp; edit just this one
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="w-full h-9 text-sm font-medium rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // TabsPanel — inspector: tab-bar tokens + per-tab style/background overrides
 // ---------------------------------------------------------------------------
@@ -2004,6 +2303,37 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   const [preview, setPreview] = useState(false)
   // Reusable library widgets for the Add palette's "From library" section.
   const { rows: library, loading: libraryLoading, reload: reloadLibrary } = useWidgetLibrary()
+  // Library rows keyed by id, for resolving `ref` spec widgets. Passing this
+  // (rather than a fresh lookup per widget) keeps resolution O(1) per widget.
+  const libraryById = useMemo(() => new Map(library.map(row => [row.id, row])), [library])
+  // Resolve one spec widget (inline widgets pass through unchanged) against the
+  // currently-loaded library. Used everywhere the editor DISPLAYS or EDITS a
+  // widget — the underlying spec.widgets entries stay unresolved (ref +
+  // sparse overrides) so history/save persist the reference, not a snapshot.
+  const resolveEntry = useCallback((w) => {
+    if (!w || !isRefWidget(w)) return w
+    return resolveWidgetRef(w, libraryById.get(w.ref)).widget
+  }, [libraryById])
+  // Widget id whose SHARED library definition is being edited (see the
+  // "This widget is used by N boards" dialog). Non-null only while the ref
+  // widget's ConfigPanel banner is in "editing shared definition" mode.
+  const [sharedEditRefId, setSharedEditRefId] = useState(null)
+  const [savingShared, setSavingShared] = useState(false)
+  // Confirmation dialogs (widget id + context) for Detach and the edit-scope
+  // ("used by N boards") prompt. null = closed.
+  const [detachTarget, setDetachTarget] = useState(null)
+  const [editScopeTarget, setEditScopeTarget] = useState(null)
+  const [forkTarget, setForkTarget] = useState(null)
+  // Usage count backing the open EditScopeDialog's "used by N boards" headline.
+  // useWidgetUsage tolerates a null/undefined id (returns undefined) so this is
+  // safe to call unconditionally even when no dialog is open.
+  const editScopeUsage = useWidgetUsage(editScopeTarget?.ref)
+  const requestDetach = useCallback((w) => {
+    setDetachTarget({ id: w.id, ref: w.ref, name: libraryById.get(w.ref)?.name ?? '' })
+  }, [libraryById])
+  const requestEditScope = useCallback((w) => {
+    setEditScopeTarget({ id: w.id, ref: w.ref, name: libraryById.get(w.ref)?.name ?? '' })
+  }, [libraryById])
   // VS Code-style full-pane "Code" view (third mode alongside edit + preview).
   // When on, the canvas is replaced by DashboardCodeView (dashboard.json editor).
   const [codeView, setCodeView] = useState(false)
@@ -2306,8 +2636,14 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   }, [boardId])
 
   // ── Derived state ─────────────────────────────────────────────────────────
-  const selectedWidget = spec.widgets.find(w => w.id === selectedId) ?? null
-  const focusedWidget = focusId ? (spec.widgets.find(w => w.id === focusId) ?? null) : null
+  // The RAW (possibly-ref) spec entries — needed by mutation handlers (detach,
+  // edit-scope, "used by") which must know whether a widget IS a reference.
+  const selectedWidgetRaw = spec.widgets.find(w => w.id === selectedId) ?? null
+  const focusedWidgetRaw = focusId ? (spec.widgets.find(w => w.id === focusId) ?? null) : null
+  // The RESOLVED (effective) widgets — what the inspector displays/edits and
+  // what the live preview renders. Inline widgets resolve to themselves.
+  const selectedWidget = useMemo(() => resolveEntry(selectedWidgetRaw), [selectedWidgetRaw, resolveEntry])
+  const focusedWidget = useMemo(() => resolveEntry(focusedWidgetRaw), [focusedWidgetRaw, resolveEntry])
 
   // Tabs (T5). When spec.tabs is empty this is the full widget list (today's
   // behavior); otherwise the canvas only shows the active tab's widgets — exactly
@@ -2414,12 +2750,44 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   }, [])
 
   /**
+   * Add a REFERENCE to a library widget — the default "From library" action.
+   * The board spec entry is just `{ id, ref, overrides: {}, pos, tab_id }`;
+   * `resolveWidgetRef` fills in the rest at render/edit time from the library
+   * row. Editing this instance writes to `overrides` (never the library row),
+   * and every board with a `ref` to this row picks up a shared-definition
+   * edit — see the inspector's "used by N" banner.
+   */
+  const addLibraryReference = useCallback((row) => {
+    const type = row?.config?.type
+    if (!type) { toast.error('That library entry is missing a widget type.'); return }
+
+    setHist(h => {
+      const prev = h.present
+      const cols = prev.layout?.cols ?? 12
+      const tab = resolveActiveTab(prev, activeTabIdRaw)
+      const peers = tab ? widgetsForTab(prev, tab) : prev.widgets
+      const size = row.config?.size ?? WIDGET_SIZES[type] ?? WIDGET_SIZES.chart
+      const pos = findFreeSpot(peers, size.w, size.h, cols)
+      const widget: Record<string, any> = { id: genId(type), ref: row.id, overrides: {}, pos: { ...size, ...pos } }
+      if (tab) widget.tab_id = tab
+      setTimeout(() => setSelectedId(widget.id), 0)
+      return historyPush(h, { ...prev, widgets: [...prev.widgets, widget] })
+    })
+    invalidateWidgetUsage(row.id)
+    setPreview(false)
+    toast.success(`Added a reference to “${row.name}” — edits here stay local to this board.`)
+  }, [activeTabIdRaw])
+
+  /**
    * Add a DETACHED copy of a library widget to the active tab. "Detached"
    * means the copy carries no reference back to the library row: later edits to
    * the entry never mutate boards already using it, and the board spec stays
-   * self-contained for embedding.
+   * self-contained for embedding. This is the explicit opt-in for the cases a
+   * linked reference is actively wrong for — `addLibraryReference` above is
+   * the default because copy-on-add is exactly how the legacy estate ended up
+   * with ~zero widget reuse across 21k widgets.
    */
-  const addLibraryWidget = useCallback((row) => {
+  const addDetachedLibraryCopy = useCallback((row) => {
     const { widget: body, size: savedSize } = fromLibraryRow(row)
     if (!body?.type) { toast.error('That library entry is missing a widget type.'); return }
 
@@ -2436,19 +2804,113 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
       return historyPush(h, { ...prev, widgets: [...prev.widgets, widget] })
     })
     setPreview(false)
-    toast.success(`Added a copy of “${row.name}”`)
+    toast.success(`Added a detached copy of “${row.name}” — independent from the library entry.`)
   }, [activeTabIdRaw])
 
-  /** Delete a library entry. Boards that already copied it are unaffected. */
+  /**
+   * Delete a library entry. Boards holding a DETACHED copy are unaffected, as
+   * always. Boards with a `ref` to this row are NOT silently changed — they
+   * will render a visible broken-reference placeholder next resolve (see
+   * `resolveWidgetRef`) rather than lose the widget outright or crash.
+   */
   const removeLibraryEntry = useCallback(async (row) => {
     try {
       await deleteLibraryWidget(row.id)
+      invalidateWidgetUsage(row.id)
       await reloadLibrary()
       toast.success(`Removed “${row.name}” from the library`)
     } catch (err) {
       toast.error(`Could not remove entry: ${err.message}`)
     }
   }, [reloadLibrary])
+
+  /**
+   * Detach a `ref` widget: inline its current resolved shape and drop `ref`.
+   * Records its origin (`meta.detachedFrom` / `detachedAt`) so drift from the
+   * library entry stays traceable later. Explicit action only — see the
+   * inspector's "Detach" button + DetachWidgetDialog naming prompt.
+   */
+  const detachWidget = useCallback((id, name) => {
+    const raw = spec.widgets.find(w => w.id === id)
+    if (!raw || !isRefWidget(raw)) return
+    const refId = raw.ref
+    const effective = resolveEntry(raw)
+    setHist(h => {
+      const prev = h.present
+      const current = prev.widgets.find(w => w.id === id)
+      if (!current || !isRefWidget(current)) return h
+      const detached = { ...effective }
+      delete detached.ref
+      delete detached.overrides
+      detached.id = current.id
+      detached.pos = current.pos
+      detached.tab_id = current.tab_id
+      detached.meta = { ...(detached.meta ?? {}), detachedFrom: name, detachedAt: new Date().toISOString() }
+      return historyPush(h, { ...prev, widgets: prev.widgets.map(w => (w.id === id ? detached : w)) })
+    })
+    invalidateWidgetUsage(refId)
+    setDetachTarget(null)
+    toast.success(`Detached “${name}” — this instance is now independent.`)
+  }, [spec.widgets, resolveEntry])
+
+  /**
+   * "Edit for all" — promote this instance's CURRENT effective config (library
+   * base + its own overrides) to be the library row's new shared config. Every
+   * board with a `ref` to this row picks the change up next resolve; a board
+   * that had its OWN different overrides keeps them (they still apply on top
+   * of the new base). This instance's overrides are cleared afterward since
+   * they're now redundant with the (updated) base.
+   */
+  const saveSharedDefinition = useCallback(async (id) => {
+    const raw = spec.widgets.find(w => w.id === id)
+    if (!raw || !isRefWidget(raw)) return
+    const refId = raw.ref
+    const effective = resolveEntry(raw)
+    setSavingShared(true)
+    try {
+      await updateLibraryWidget(refId, effective)
+      setSpec(prev => ({
+        ...prev,
+        widgets: prev.widgets.map(w => (w.id === id ? { ...w, overrides: {} } : w)),
+      }))
+      invalidateWidgetUsage(refId)
+      await reloadLibrary()
+      toast.success('Updated the shared widget — every board using it will pick this up.')
+      setSharedEditRefId(null)
+    } catch (err) {
+      toast.error(`Could not update the shared widget: ${err.message}`)
+    } finally {
+      setSavingShared(false)
+    }
+  }, [spec.widgets, resolveEntry, reloadLibrary, setSpec])
+
+  /**
+   * "Duplicate & edit just this one" — fork the library row: save this
+   * instance's current effective config as a NEW library entry, then repoint
+   * just this instance's `ref` to it (clearing overrides, now redundant).
+   * Unlike Detach, the instance stays reference-based — just against a
+   * library entry of its own instead of the shared one.
+   */
+  const forkSharedDefinition = useCallback(async (id, name) => {
+    const raw = spec.widgets.find(w => w.id === id)
+    if (!raw || !isRefWidget(raw)) return
+    const oldRefId = raw.ref
+    const effective = resolveEntry(raw)
+    try {
+      const newRow = await saveWidgetToLibrary(name, effective)
+      setSpec(prev => ({
+        ...prev,
+        widgets: prev.widgets.map(w => (w.id === id ? { ...w, ref: newRow.id, overrides: {} } : w)),
+      }))
+      invalidateWidgetUsage(oldRefId)
+      invalidateWidgetUsage(newRow.id)
+      await reloadLibrary()
+      setForkTarget(null)
+      toast.success(`Duplicated into “${name}” — only this instance uses it now.`)
+    } catch (err) {
+      toast.error(`Could not duplicate the shared widget: ${err.message}`)
+    }
+  }, [spec.widgets, resolveEntry, reloadLibrary, setSpec])
 
   /**
    * Open a widget in focus mode. Focus follows selection so that closing the
@@ -2481,9 +2943,40 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
     })
   }, [])
 
+  /**
+   * Apply an inspector edit. `updated` is the FULL resolved (effective) widget
+   * an onChange handler produced (a copy of what ConfigPanel/WidgetFocusShell
+   * was given, with one field changed) — for an inline widget that's already
+   * the correct next spec entry (today's behavior, unchanged). For a `ref`
+   * widget it is folded into `overrides` via `applyWidgetEdit`, so the edit
+   * stays instance-local and the library row is never touched by a normal
+   * field edit — only the explicit "Edit for all" / "Duplicate & edit" actions
+   * (saveSharedDefinition / forkSharedDefinition) reach the library row.
+   */
   const updateWidget = useCallback((updated) => {
-    setSpec(prev => ({ ...prev, widgets: prev.widgets.map(w => w.id === updated.id ? updated : w) }))
-  }, [])
+    setSpec(prev => ({
+      ...prev,
+      widgets: prev.widgets.map(w => {
+        if (w.id !== updated.id) return w
+        return isRefWidget(w) ? applyWidgetEdit(w, updated, libraryById.get(w.ref)) : updated
+      }),
+    }))
+  }, [libraryById])
+
+  /**
+   * "Reset to library value" for one overridden leaf field (per-field, from
+   * RefWidgetBanner's flattened override list) — removes just that leaf from
+   * `overrides`, pruning now-empty parent objects, so the field inherits the
+   * library's value again on next resolve. A no-op for inline widgets.
+   */
+  const resetOverrideField = useCallback((id, path) => {
+    setSpec(prev => ({
+      ...prev,
+      widgets: prev.widgets.map(w => (
+        w.id === id && isRefWidget(w) ? { ...w, overrides: removeOverridePath(w.overrides, path) } : w
+      )),
+    }))
+  }, [setSpec])
 
   // ── Tab mutations (T5) ─────────────────────────────────────────────────────
   // All route through setHist so undo/redo + dirty tracking work.
@@ -2738,7 +3231,8 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
     if (rightPanel === 'add') return (
       <AddPanel
         onAdd={addWidget}
-        onAddFromLibrary={addLibraryWidget}
+        onAddReference={addLibraryReference}
+        onAddDetachedCopy={addDetachedLibraryCopy}
         library={library}
         libraryLoading={libraryLoading}
         onDeleteLibraryEntry={removeLibraryEntry}
@@ -2758,6 +3252,14 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         onLayoutCommit={(item) => commitLayout([item])}
         onMoveToTab={moveWidgetToTab}
         onLibrarySaved={reloadLibrary}
+        libraryById={libraryById}
+        onDetachRequest={requestDetach}
+        onEditScopeRequest={requestEditScope}
+        onResetOverride={resetOverrideField}
+        sharedEditRefId={sharedEditRefId}
+        onSaveSharedDefinition={saveSharedDefinition}
+        onCancelSharedEdit={() => setSharedEditRefId(null)}
+        savingShared={savingShared}
       />
     )
   }
@@ -3077,7 +3579,8 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
     if (mobileSheet === 'palette') return (
       <AddPanel
         onAdd={(t) => { addWidget(t); setMobileSheet(null) }}
-        onAddFromLibrary={(row) => { addLibraryWidget(row); setMobileSheet(null) }}
+        onAddReference={(row) => { addLibraryReference(row); setMobileSheet(null) }}
+        onAddDetachedCopy={(row) => { addDetachedLibraryCopy(row); setMobileSheet(null) }}
         library={library}
         libraryLoading={libraryLoading}
         onDeleteLibraryEntry={removeLibraryEntry}
@@ -3097,6 +3600,14 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         onLayoutCommit={(item) => commitLayout([item])}
         onMoveToTab={moveWidgetToTab}
         onLibrarySaved={reloadLibrary}
+        libraryById={libraryById}
+        onDetachRequest={requestDetach}
+        onEditScopeRequest={requestEditScope}
+        onResetOverride={resetOverrideField}
+        sharedEditRefId={sharedEditRefId}
+        onSaveSharedDefinition={saveSharedDefinition}
+        onCancelSharedEdit={() => setSharedEditRefId(null)}
+        savingShared={savingShared}
       />
     )
     return null
@@ -3343,8 +3854,12 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                   onInteractionEnd={handleInteractionEnd}
                   onLayoutCommit={commitLayout}
                   renderItem={(item) => {
-                    const widget = spec.widgets.find(w => w.id === item.i)
-                    if (!widget) return null
+                    const raw = spec.widgets.find(w => w.id === item.i)
+                    if (!raw) return null
+                    // Resolved so a `ref` widget's live preview, drag-handle label
+                    // and icon reflect the library config + overrides, not a bare
+                    // {id, ref, overrides, pos} entry with no type/props of its own.
+                    const widget = resolveEntry(raw)
                     const isSelected = selectedId === widget.id
                     const isHovered = hoveredId === widget.id
                     const reorder = gridMode === 'reorder'
@@ -3399,6 +3914,16 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                           </svg>
                           {WidgetIcon && (
                             <WidgetIcon size={11} className={isSelected ? 'text-primary/70' : 'text-muted/50'} />
+                          )}
+                          {isRefWidget(raw) && (
+                            <span
+                              className="shrink-0 inline-flex"
+                              title="Referenced from the widget library"
+                              aria-label="Referenced from the widget library"
+                              data-testid={`widget-ref-badge-${raw.id}`}
+                            >
+                              <Link2 size={10} className={isSelected ? 'text-primary/70' : 'text-muted/50'} />
+                            </span>
                           )}
                           <span className={[
                             'text-[11px] font-medium truncate flex-1 capitalize',
@@ -3492,6 +4017,14 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
               onLayoutCommit={(item) => commitLayout([item])}
               onMoveToTab={moveWidgetToTab}
               onLibrarySaved={reloadLibrary}
+              libraryById={libraryById}
+              onDetachRequest={requestDetach}
+              onEditScopeRequest={requestEditScope}
+              onResetOverride={resetOverrideField}
+              sharedEditRefId={sharedEditRefId}
+              onSaveSharedDefinition={saveSharedDefinition}
+              onCancelSharedEdit={() => setSharedEditRefId(null)}
+              savingShared={savingShared}
             />
           }
         />
@@ -3589,6 +4122,47 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
           onMove={(targetId) => { deleteTab(deletingTab.id, 'move', targetId); setDeletingTab(null) }}
           onDeleteWidgets={() => { deleteTab(deletingTab.id, 'delete'); setDeletingTab(null) }}
           onCancel={() => setDeletingTab(null)}
+        />
+      )}
+
+      {/* ── Reference-based reuse dialogs ──
+          Detach (name + confirm), the "used by N boards" edit-scope prompt
+          (Edit for all / Duplicate & edit just this one / Cancel), and the
+          fork-naming prompt for "Duplicate & edit". All routed through
+          setHist/setSpec so undo + the board Save button stay authoritative;
+          only saveSharedDefinition/forkSharedDefinition write to the library
+          resource directly (that's the point — a normal field edit never
+          does). */}
+      {detachTarget && (
+        <NamePromptDialog
+          title="Detach this widget?"
+          description={`It becomes an independent copy on this board only — future edits to “${detachTarget.name || 'the library entry'}” will no longer reach it. Name the detached copy so its origin stays traceable.`}
+          defaultName={detachTarget.name}
+          confirmLabel="Detach"
+          testidPrefix="detach-widget"
+          onConfirm={(name) => detachWidget(detachTarget.id, name)}
+          onCancel={() => setDetachTarget(null)}
+        />
+      )}
+
+      {editScopeTarget && (
+        <EditScopeDialog
+          count={editScopeUsage?.count ?? 0}
+          onEditForAll={() => { setSharedEditRefId(editScopeTarget.ref); setEditScopeTarget(null) }}
+          onDuplicate={() => { setForkTarget(editScopeTarget); setEditScopeTarget(null) }}
+          onCancel={() => setEditScopeTarget(null)}
+        />
+      )}
+
+      {forkTarget && (
+        <NamePromptDialog
+          title="Duplicate & edit just this one"
+          description="Creates a new library entry from this widget's current values and points only this instance at it. Every other board keeps using the original shared definition, untouched."
+          defaultName={forkTarget.name ? `${forkTarget.name} (copy)` : ''}
+          confirmLabel="Duplicate"
+          testidPrefix="fork-widget"
+          onConfirm={(name) => forkSharedDefinition(forkTarget.id, name)}
+          onCancel={() => setForkTarget(null)}
         />
       )}
 
