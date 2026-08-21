@@ -30,36 +30,22 @@ _server_map_for_org(org_id) -> dict[str, MCPServer]
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
 from app.ai.mcp import MCPServer, MCPToolDef, call_tool_sync, list_tools_sync
+from app.ai.tools import _run_sync  # noqa: PLC2701 — shared, pool-loop-aware bridge (see tools.py)
 from app.ai.tools import execute_tool as _builtin_execute_tool
 from app.ai.tools import tool_schemas as _builtin_tool_schemas
 
 logger = logging.getLogger("nubi.ai.mcp_tools")
 
 # ---------------------------------------------------------------------------
-# Sync→async bridge (same pattern as tools.py and mcp.py)
+# Sync→async bridge — reuses app.ai.tools._run_sync (this module used to carry
+# its own copy that always spun up a throwaway ``asyncio.run()`` loop, which
+# corrupts the shared asyncpg pool when the coroutine hits the DB — see the
+# docstring on tools._run_sync for the failure mode this avoids).
 # ---------------------------------------------------------------------------
-
-
-def _run_sync(coro):
-    """Run *coro* to completion from synchronous code."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop is not None and loop.is_running():
-        import concurrent.futures  # noqa: PLC0415
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, coro)
-            return future.result()
-
-    return asyncio.run(coro)
 
 
 # ---------------------------------------------------------------------------

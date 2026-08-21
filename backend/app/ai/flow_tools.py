@@ -30,22 +30,48 @@ _T = TypeVar("_T")
 # stay sync (the agent calls them directly) and bridge to the async layer.
 #
 # ``_run_sync`` runs a coroutine to completion from sync code:
-#  - If no event loop is running in this thread → use ``asyncio.run``.
-#  - If a loop IS already running (e.g. the tool was invoked inside FastAPI's
-#    event loop), run the coroutine in a fresh loop on a worker thread so we
-#    never try to nest loops.  In FastAPI the route layer dispatches sync route
-#    handlers / threadpool work, and the streaming agent iterates the generator
-#    in a threadpool, so this path stays off the main loop in practice.
+#  - If the shared DB pool's owning loop is known and alive, marshal the
+#    coroutine onto THAT loop via ``run_coroutine_threadsafe``. The flow store
+#    is DB-backed; asyncpg Pools/Connections are bound to the loop they were
+#    created on, and awaiting one from a different, throwaway loop (the old
+#    unconditional ``asyncio.run()`` below) corrupts the connection it acquires
+#    for every LATER caller — surfacing much later, confusingly, as
+#    ``another operation is in progress`` / ``ConnectionDoesNotExistError``
+#    (this is what made ``list_flows`` fail intermittently for every caller,
+#    not just the one that happened to trip it).
+#  - Otherwise (pool not initialised — e.g. unit tests with no DB), fall back
+#    to running the coroutine in its own loop: on a fresh worker thread if a
+#    loop is already running in this thread, else via ``asyncio.run`` directly.
 
 
 def _run_sync(coro: Awaitable[_T]) -> _T:
     """Run *coro* to completion from synchronous code and return its result."""
     try:
-        loop = asyncio.get_running_loop()
+        current_loop = asyncio.get_running_loop()
     except RuntimeError:
-        loop = None
+        current_loop = None
 
-    if loop is not None and loop.is_running():
+    try:
+        from app.db import get_pool_loop  # noqa: PLC0415
+
+        pool_loop = get_pool_loop()
+    except Exception:  # noqa: BLE001 — db module unavailable in some test doubles
+        pool_loop = None
+
+    if pool_loop is not None and pool_loop.is_running():
+        # SAFETY: see app.ai.tools._run_sync's matching guard — future.result()
+        # deadlocks if the calling thread IS the pool loop's own thread.
+        if current_loop is pool_loop:
+            raise RuntimeError(
+                "_run_sync() was called synchronously from the DB pool's own "
+                "event loop thread — this would deadlock. Callers already "
+                "running on that loop must `await` the coroutine directly "
+                "instead of routing it through _run_sync()."
+            )
+        future = asyncio.run_coroutine_threadsafe(coro, pool_loop)  # type: ignore[arg-type]
+        return future.result()
+
+    if current_loop is not None and current_loop.is_running():
         import concurrent.futures  # noqa: PLC0415
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:

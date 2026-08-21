@@ -41,21 +41,56 @@ _T = TypeVar("_T")
 #
 # The AI agent loop (app/ai/agent.py → app/ai/tools.execute_tool) is fully
 # SYNCHRONOUS, but some governance checks (e.g. the org-ownership gate on a
-# metric slug) are ``async def``.  ``_run_sync`` runs such a coroutine to
-# completion from sync code:
-#  - If no event loop is running in this thread → use ``asyncio.run``.
-#  - If a loop IS already running (the tool was invoked inside FastAPI's loop),
-#    run the coroutine in a fresh loop on a worker thread so we never nest loops.
+# metric slug) are ``async def`` and touch the shared asyncpg pool.  ``_run_sync``
+# runs such a coroutine to completion from sync code:
+#  - If the shared DB pool's owning loop is known and alive (the normal FastAPI
+#    case — ``execute_tool`` runs on a worker thread via ``asyncio.to_thread``),
+#    marshal the coroutine onto THAT loop via ``run_coroutine_threadsafe``.
+#    asyncpg Pools/Connections are bound to the loop they were created on;
+#    awaiting one from a different, throwaway loop corrupts the connection it
+#    acquires for every LATER caller, surfacing much later as
+#    ``another operation is in progress`` / ``ConnectionDoesNotExistError`` —
+#    this bit both ``run_query``'s new datastore-connector path and the
+#    pre-existing ``metric_belongs_to_org`` gate, which silently failed closed
+#    on the corruption instead of raising it.
+#  - Otherwise (pool not initialised — e.g. unit tests with no DB), fall back
+#    to running the coroutine in its own loop: on a fresh worker thread if a
+#    loop is already running in this thread, else via ``asyncio.run`` directly.
 
 
 def _run_sync(coro: Awaitable[_T]) -> _T:
     """Run *coro* to completion from synchronous code and return its result."""
     try:
-        loop = asyncio.get_running_loop()
+        current_loop = asyncio.get_running_loop()
     except RuntimeError:
-        loop = None
+        current_loop = None
 
-    if loop is not None and loop.is_running():
+    try:
+        from app.db import get_pool_loop  # noqa: PLC0415
+
+        pool_loop = get_pool_loop()
+    except Exception:  # noqa: BLE001 — db module unavailable in some test doubles
+        pool_loop = None
+
+    if pool_loop is not None and pool_loop.is_running():
+        # SAFETY: run_coroutine_threadsafe()'s future.result() blocks the
+        # calling thread until the loop processes the callback — which
+        # deadlocks forever if the calling thread IS the pool loop's own
+        # thread (nothing else can ever advance that loop to run it). This
+        # bridge exists for sync code on a DIFFERENT thread (the normal case:
+        # execute_tool() invoked via asyncio.to_thread from the FastAPI
+        # handler) — fail fast with a clear diagnostic instead of hanging.
+        if current_loop is pool_loop:
+            raise RuntimeError(
+                "_run_sync() was called synchronously from the DB pool's own "
+                "event loop thread — this would deadlock. Callers already "
+                "running on that loop must `await` the coroutine directly "
+                "instead of routing it through _run_sync()."
+            )
+        future = asyncio.run_coroutine_threadsafe(coro, pool_loop)  # type: ignore[arg-type]
+        return future.result()
+
+    if current_loop is not None and current_loop.is_running():
         import concurrent.futures  # noqa: PLC0415
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -215,6 +250,7 @@ def _tool_run_query(
     query_id: str | None = None,
     sql: str | None = None,
     named_params: dict[str, Any] | None = None,
+    datastore_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute a query and return the result rows.
 
@@ -222,6 +258,14 @@ def _tool_run_query(
     provided.  The caller's *claims* are passed to the planner — RLS policies
     in ``claims["policies"]`` are injected as AST-level WHERE predicates.  This
     ensures the tool NEVER returns data outside the caller's scope.
+
+    The EFFECTIVE datastore is resolved exactly like ``POST /query``
+    (``app.routes.query._resolve_effective_datastore_id``): an explicit
+    *datastore_id* argument wins, else a registered query's own binding is
+    used. Only when neither is present does this fall back to the built-in
+    demo DuckDB dataset — previously this tool ALWAYS used the demo dataset,
+    silently ignoring every real (BYO-connector) datastore, including a
+    registered query's own ``datastore_id`` binding.
 
     Parameters
     ----------
@@ -231,6 +275,9 @@ def _tool_run_query(
         Ad-hoc SELECT SQL (used only if *query_id* is None).
     named_params:
         Named parameter values for ``{{name}}`` placeholders in registry SQL.
+    datastore_id:
+        Optional explicit datastore id, for ad-hoc SQL or to override a
+        registered query's default binding (mirrors ``QueryIn.datastore_id``).
     claims:
         Caller's auth claims (RLS enforced via the planner).
 
@@ -247,6 +294,7 @@ def _tool_run_query(
     # ── Resolve SQL ──────────────────────────────────────────────────────────
     resolved_sql: str
     positional_params: list[Any] = []
+    registered_datastore_id: str | None = None
 
     if query_id is not None:
         registry = get_query_registry()
@@ -254,6 +302,7 @@ def _tool_run_query(
         if rq is None:
             raise AppError("query_not_found", f"No registered query with id {query_id!r}.", 404)
         resolved_sql = rq.sql
+        registered_datastore_id = rq.datastore_id
         # Resolve named params → positional if the query has placeholders.
         if named_params and rq.params:
             # Build the resolved dict (apply defaults for missing optional params).
@@ -289,13 +338,32 @@ def _tool_run_query(
     else:
         raise AppError("invalid_tool_input", "Either query_id or sql must be provided.", 400)
 
-    # ── Plan + execute via DuckDB (deterministic demo engine) ────────────────
+    # ── Plan ─────────────────────────────────────────────────────────────────
     physical_plan = plan(resolved_sql, claims=claims, params=positional_params)
-    connector = DuckDBConnector()
-    # Seed the demo table for queries that reference it.
-    _seed_demo_table(connector)
 
-    arrow_table = connector.execute(physical_plan)
+    # ── Resolve the effective datastore (explicit arg wins, else the query's
+    #    own binding) and build the matching connector — same resolution order
+    #    as POST /query's _resolve_effective_datastore_id.
+    effective_datastore_id = datastore_id or registered_datastore_id
+
+    if effective_datastore_id is not None:
+        from app.connectors.resolve import resolve_datastore_connector  # noqa: PLC0415
+        from app.repos.provider import get_repo  # noqa: PLC0415
+
+        org_id = claims.get("org")
+        repo = get_repo()
+        connector, _conn_kind, net_cleanup = _run_sync(
+            resolve_datastore_connector(physical_plan, effective_datastore_id, org_id, repo)
+        )
+        try:
+            arrow_table = connector.execute(physical_plan)
+        finally:
+            net_cleanup()
+    else:
+        connector = DuckDBConnector()
+        # Seed the demo table for queries that reference it.
+        _seed_demo_table(connector)
+        arrow_table = connector.execute(physical_plan)
 
     # Convert to JSON-serialisable rows.
     columns = arrow_table.schema.names
@@ -449,13 +517,29 @@ def _tool_query_metric(
     # ── Resolve {{name}} placeholders → positional params (planner helper) ──
     effective_sql, positional_params = resolve_named_params(sql, named_params)
 
-    # ── Plan + execute via DuckDB — the SAME path run_query uses, so the ──
-    #    caller's claims drive RLS predicate injection in the planner.
+    # ── Plan + execute — the SAME path run_query uses, so the caller's claims
+    #    drive RLS predicate injection in the planner, AND the metric's own
+    #    ``datastore_id`` binding (like a registered query's) routes to its
+    #    real datastore instead of always landing on the demo dataset.
     physical_plan = plan(effective_sql, claims=claims, params=positional_params)
-    connector = DuckDBConnector()
-    _seed_demo_table(connector)
 
-    arrow_table = connector.execute(physical_plan)
+    if metric.datastore_id is not None:
+        from app.connectors.resolve import resolve_datastore_connector  # noqa: PLC0415
+        from app.repos.provider import get_repo  # noqa: PLC0415
+
+        repo = get_repo()
+        connector, _conn_kind, net_cleanup = _run_sync(
+            resolve_datastore_connector(physical_plan, metric.datastore_id, org_id, repo)
+        )
+        try:
+            arrow_table = connector.execute(physical_plan)
+        finally:
+            net_cleanup()
+    else:
+        connector = DuckDBConnector()
+        _seed_demo_table(connector)
+        arrow_table = connector.execute(physical_plan)
+
     columns = arrow_table.schema.names
     rows = arrow_table.to_pylist()
     return {"columns": columns, "rows": rows, "row_count": len(rows)}
@@ -601,6 +685,126 @@ def _tool_edit_dashboard(
     return {"spec": working_spec, "valid": False, "issues": issues}
 
 
+def _tool_save_dashboard(
+    spec: dict[str, Any],
+    name: str,
+    claims: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist *spec* as a new board — the missing link ``create_dashboard`` /
+    ``edit_dashboard`` don't provide (those two only build/mutate a spec in
+    memory; neither one writes it to the database).
+
+    Saves via the SAME path ``POST /{resource}`` (``app.routes.resources``)
+    uses for ``resource="boards"`` — ``repo.create(resource="boards", ...,
+    config={"spec": ...})`` — so the result is a real board, listable via
+    ``GET /boards`` and openable in the app exactly like one created through
+    the UI. Does NOT go through ``require_writer`` (the route-level
+    editor/owner role gate) since the tool layer has no role in *claims* to
+    check — mirrors ``create_query``'s existing lack of a role gate; the
+    embed-token exclusion below is the security-relevant boundary here (a
+    read-only third-party embed session must never persist a board).
+
+    Returns
+    -------
+    dict
+        ``{id, name, org_id, saved: True}`` on success, or
+        ``{error: {code, message}}`` / ``{valid: False, issues: [...]}
+        without saving anything if *spec* fails validation.
+    """
+    from app.dashboards.spec import validate_spec  # noqa: PLC0415
+    from app.errors import AppError  # noqa: PLC0415
+
+    tool_kind: str = claims.get("kind", "access")
+    if tool_kind != "access":
+        raise AppError(
+            "insufficient_scope",
+            "Embed/restricted tokens cannot save dashboards via the AI tool path.",
+            403,
+        )
+    org_id = claims.get("org")
+    user_id = claims.get("sub")
+    if not org_id or not user_id:
+        raise AppError("invalid_tool_input", "Caller claims are missing org/user id.", 400)
+
+    result_spec, issues = validate_spec(spec)
+    if result_spec is None:
+        return {"valid": False, "issues": issues, "saved": False}
+
+    from app.repos.provider import get_repo  # noqa: PLC0415
+
+    repo = get_repo()
+    row = _run_sync(
+        repo.create(
+            resource="boards",
+            org_id=str(org_id),
+            created_by=str(user_id),
+            name=name,
+            config={"spec": result_spec.model_dump()},
+        )
+    )
+    return {"id": row["id"], "name": row.get("name"), "org_id": str(org_id), "saved": True}
+
+
+def _tool_upload_image(
+    claims: dict[str, Any],
+    data_base64: str | None = None,
+    content_type: str | None = None,
+    url: str | None = None,
+) -> dict[str, Any]:
+    """Store an image (base64 bytes OR a URL) and return a servable URL.
+
+    Exactly one of *data_base64* or *url* must be given. For *data_base64*
+    the content-type is sniffed from magic bytes when *content_type* is
+    omitted; fetching by *url* is SSRF-guarded (DNS-rebind-safe pinned fetch —
+    see ``app.dashboards.images.fetch_image_from_url``).
+
+    Returns ``{id, url, content_type, size}`` — *url* is a relative
+    ``/api/v1/images/{id}`` path this app's own backend serves (embed it
+    directly in an ``html`` widget's ``<img src="...">`` — there is no
+    dedicated "image" widget type, see ``Widget.type`` in
+    ``app.dashboards.spec``). Raises ``AppError("invalid_image", 400)`` for
+    an unsupported/unsniffable content-type or an oversized payload, or
+    ``AppError("ssrf_blocked", 400)`` for a disallowed *url* target.
+    """
+    import base64  # noqa: PLC0415
+
+    from app.dashboards.images import (  # noqa: PLC0415
+        fetch_image_from_url,
+        save_image_bytes,
+        sniff_content_type,
+    )
+    from app.errors import AppError  # noqa: PLC0415
+
+    if bool(data_base64) == bool(url):
+        raise AppError(
+            "invalid_tool_input", "Provide exactly one of data_base64 or url.", 400
+        )
+
+    if url is not None:
+        result = fetch_image_from_url(url)
+    else:
+        try:
+            data = base64.b64decode(data_base64, validate=True)  # type: ignore[arg-type]
+        except Exception as exc:  # noqa: BLE001
+            raise AppError("invalid_tool_input", f"data_base64 is not valid base64: {exc}", 400) from exc
+        ctype = content_type or sniff_content_type(data)
+        if ctype is None:
+            raise AppError(
+                "invalid_image",
+                "Could not determine the image's content-type from its bytes; "
+                "pass content_type explicitly (image/png, image/jpeg, image/gif, image/webp).",
+                400,
+            )
+        result = save_image_bytes(data, ctype)
+
+    return {
+        "id": result["id"],
+        "url": f"/api/v1/images/{result['id']}",
+        "content_type": result["content_type"],
+        "size": result["size"],
+    }
+
+
 # ---------------------------------------------------------------------------
 # JSON Schemas for each tool
 # ---------------------------------------------------------------------------
@@ -683,6 +887,14 @@ _SCHEMA_RUN_QUERY: dict[str, Any] = {
             "type": "object",
             "description": "Named parameter values for {{name}} placeholders.",
             "additionalProperties": True,
+        },
+        "datastore_id": {
+            "type": "string",
+            "description": (
+                "Optional datastore id to run against (overrides a registered "
+                "query's own binding; required for ad-hoc SQL against a non-demo "
+                "datastore)."
+            ),
         },
     },
     "additionalProperties": False,
@@ -775,6 +987,44 @@ _SCHEMA_EDIT_DASHBOARD: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+_SCHEMA_SAVE_DASHBOARD: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "spec": {
+            "type": "object",
+            "description": "The DashboardSpec dict to persist (from create_dashboard/edit_dashboard).",
+        },
+        "name": {
+            "type": "string",
+            "description": "Name for the saved board.",
+        },
+    },
+    "required": ["spec", "name"],
+    "additionalProperties": False,
+}
+
+_SCHEMA_UPLOAD_IMAGE: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "data_base64": {
+            "type": "string",
+            "description": "Base64-encoded image bytes (provide this OR url, not both).",
+        },
+        "content_type": {
+            "type": "string",
+            "description": (
+                "MIME type of data_base64 (image/png, image/jpeg, image/gif, image/webp). "
+                "Optional — sniffed from magic bytes if omitted."
+            ),
+        },
+        "url": {
+            "type": "string",
+            "description": "URL to fetch the image from (provide this OR data_base64, not both).",
+        },
+    },
+    "additionalProperties": False,
+}
+
 
 # ---------------------------------------------------------------------------
 # Registry
@@ -812,9 +1062,16 @@ def _make_registry() -> dict[str, ToolDef]:
         query_id: str | None = None,
         sql: str | None = None,
         named_params: dict[str, Any] | None = None,
+        datastore_id: str | None = None,
         **_kw: Any,
     ) -> dict[str, Any]:
-        return _tool_run_query(claims, query_id=query_id, sql=sql, named_params=named_params)
+        return _tool_run_query(
+            claims,
+            query_id=query_id,
+            sql=sql,
+            named_params=named_params,
+            datastore_id=datastore_id,
+        )
 
     def _wrap_list_metrics(claims: dict[str, Any], **_kw: Any) -> dict[str, Any]:
         return _tool_list_metrics(claims)
@@ -851,6 +1108,25 @@ def _make_registry() -> dict[str, ToolDef]:
         **_kw: Any,
     ) -> dict[str, Any]:
         return _tool_edit_dashboard(spec, op, claims)
+
+    def _wrap_save_dashboard(
+        claims: dict[str, Any],
+        spec: dict[str, Any],
+        name: str,
+        **_kw: Any,
+    ) -> dict[str, Any]:
+        return _tool_save_dashboard(spec, name, claims)
+
+    def _wrap_upload_image(
+        claims: dict[str, Any],
+        data_base64: str | None = None,
+        content_type: str | None = None,
+        url: str | None = None,
+        **_kw: Any,
+    ) -> dict[str, Any]:
+        return _tool_upload_image(
+            claims, data_base64=data_base64, content_type=content_type, url=url
+        )
 
     from app.ai.flow_tools import make_flow_tool_defs  # noqa: PLC0415
 
@@ -921,6 +1197,24 @@ def _make_registry() -> dict[str, ToolDef]:
             ),
             json_schema=_SCHEMA_EDIT_DASHBOARD,
             fn=_wrap_edit_dashboard,
+        ),
+        ToolDef(
+            name="save_dashboard",
+            description=(
+                "Persist a DashboardSpec as a real, listable board (create_dashboard/"
+                "edit_dashboard only build/mutate a spec in memory — this is the save step)."
+            ),
+            json_schema=_SCHEMA_SAVE_DASHBOARD,
+            fn=_wrap_save_dashboard,
+        ),
+        ToolDef(
+            name="upload_image",
+            description=(
+                "Store an image (base64 bytes from a local file, or fetched from a URL) and "
+                "return a servable /api/v1/images/{id} URL to use in a dashboard's html widget."
+            ),
+            json_schema=_SCHEMA_UPLOAD_IMAGE,
+            fn=_wrap_upload_image,
         ),
     ]
     # Append flow orchestrator tools.

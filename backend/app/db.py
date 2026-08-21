@@ -14,6 +14,7 @@ execute()        — run an INSERT / UPDATE / DELETE, return status string.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -24,6 +25,17 @@ from app.config import get_settings
 
 _pool: Pool | None = None
 
+# The event loop ``init_db()`` created the pool on (always the main uvicorn
+# loop, via the FastAPI lifespan). asyncpg Pools/Connections are bound to the
+# loop they were created on: awaiting one from a DIFFERENT loop (e.g. a
+# throwaway loop spun up by ``asyncio.run()`` on a worker thread) corrupts the
+# connection it happens to acquire for every subsequent caller, surfacing much
+# later and confusingly as ``another operation is in progress`` /
+# ``ConnectionDoesNotExistError``. Sync→async bridges that must call pool-
+# touching coroutines from a worker thread (see ``app.ai.tools._run_sync``)
+# use this to marshal the coroutine onto the pool's real loop instead.
+_pool_loop: asyncio.AbstractEventLoop | None = None
+
 
 async def init_db() -> None:
     """Create the asyncpg connection pool.
@@ -32,7 +44,7 @@ async def init_db() -> None:
     includes ``?sslmode=require`` (or equivalent).  This function is
     idempotent — calling it a second time is a no-op.
     """
-    global _pool
+    global _pool, _pool_loop
     if _pool is not None:
         return
 
@@ -45,6 +57,7 @@ async def init_db() -> None:
         timeout=10.0,   # abort TCP handshake after 10 s; surfaces clear error instead of hanging
                         # (asyncpg's connect() param is `timeout`, not `connect_timeout`)
     )
+    _pool_loop = asyncio.get_running_loop()
 
 
 async def close_db() -> None:
@@ -52,10 +65,20 @@ async def close_db() -> None:
 
     Safe to call even if the pool was never initialised.
     """
-    global _pool
+    global _pool, _pool_loop
     if _pool is not None:
         await _pool.close()
         _pool = None
+        _pool_loop = None
+
+
+def get_pool_loop() -> "asyncio.AbstractEventLoop | None":
+    """Return the event loop the active pool was created on, or ``None``.
+
+    ``None`` means either the pool isn't initialised yet, or (test doubles)
+    it was created without going through ``init_db()``.
+    """
+    return _pool_loop
 
 
 def get_pool() -> Pool:
