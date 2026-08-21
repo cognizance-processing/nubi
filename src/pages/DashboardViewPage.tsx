@@ -739,7 +739,20 @@ export default function DashboardViewPage({ edit = false }) {
   const isEdit = mode === 'edit' && canEdit
 
   return (
-    <div className="flex flex-col min-h-screen" data-testid="dashboard-view-page" data-mode={isEdit ? 'edit' : 'live'}>
+    <div
+      // Live mode is a normal page — min-h-screen just keeps a short board
+      // from looking cramped, and the page scrolls with its content. Edit
+      // mode wants the opposite: a hard-capped viewport (h-screen, clipped)
+      // so DashboardEditor's own "fixed shell, only the canvas/side panels
+      // scroll" layout has a real bounded ancestor — without it, its
+      // `flex-1 min-h-0` classes are inert (nothing capping this root's
+      // height), the editor renders at its full natural content height, and
+      // the WHOLE PAGE scrolls as one block instead of the editor's internal
+      // regions doing so independently.
+      className={`flex flex-col ${isEdit ? 'h-screen overflow-hidden' : 'min-h-screen'}`}
+      data-testid="dashboard-view-page"
+      data-mode={isEdit ? 'edit' : 'live'}
+    >
       {!isEmbedView && (
         <ViewToolbar
           backTo={backTo}

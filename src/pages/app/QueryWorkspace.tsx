@@ -37,7 +37,6 @@ import {
   Play,
   Save,
   Sparkles,
-  MessageSquare,
   Plus,
   Trash2,
   ChevronDown,
@@ -65,9 +64,11 @@ import {
   Hash,
   ArrowLeftRight,
   MoreHorizontal,
+  Wand2,
 } from 'lucide-react'
 
 import SqlEditor from '../../components/SqlEditor.jsx'
+import ChatPanel from '../../editor/ChatPanel.jsx'
 import MetricExposePanel from '../../components/app/MetricExposePanel.jsx'
 import ConnectorCombobox from '../../components/app/ConnectorCombobox.jsx'
 import { metricToDraft, draftToMetricBlock } from './metricBlock.logic.js'
@@ -75,12 +76,14 @@ import QueryCodeView from './QueryCodeView.jsx'
 import DataTable from '../../components/DataTable.jsx'
 import PythonCell from '../../components/PythonCell.jsx'
 import { runArrowQueryById, runArrowQuery, registerArrowTable, runLocalSqlForCell } from '../../lib/wasmRuntime.js'
-import { get, post, registerQuery, listConnectors, listQueryWidgetUsages } from '../../lib/api.js'
+import { get, post, registerQuery, listConnectors, listQueryWidgetUsages, fetchSchema } from '../../lib/api.js'
+import VisualQueryBuilder from '../../components/VisualQueryBuilder.jsx'
 import TableWidget from '../../dashboards/widgets/TableWidget.jsx'
 import ChartWidget from '../../dashboards/widgets/ChartWidget.jsx'
 import KpiWidget from '../../dashboards/widgets/KpiWidget.jsx'
 import { VariableProvider } from '../../dashboards/VariableStore.jsx'
 import { checkpoint, restoreVersion } from '../../lib/versions.js'
+import { loadSqlHistory, pushSqlHistory, clearSqlHistory } from '../../lib/sqlHistory.js'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
 import { useCanWrite, useOrg } from '../../contexts/OrgContext.jsx'
@@ -636,91 +639,6 @@ function ScheduleDialog({ query, params, onConfirm, onCancel, scheduling, status
 }
 
 // ---------------------------------------------------------------------------
-// AiAssistBar
-// ---------------------------------------------------------------------------
-
-function AiAssistBar({ onResult, onClose }) {
-  const { openChat } = useUi()
-  const [question, setQuestion] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
-  const inputRef = useRef(null)
-
-  useEffect(() => { inputRef.current?.focus() }, [])
-
-  const handleGenerate = useCallback(async () => {
-    if (!question.trim()) return
-    setLoading(true)
-    setError(null)
-    try {
-      const data = await post('/ai/ask', { question: question.trim() })
-      const sql = data?.suggestion ?? data?.sql ?? ''
-      if (sql) {
-        onResult(sql)
-        onClose()
-      } else {
-        setError('No SQL was generated — try rephrasing your question.')
-      }
-    } catch (err) {
-      setError(err.message ?? 'AI generation failed.')
-    } finally {
-      setLoading(false)
-    }
-  }, [question, onResult, onClose])
-
-  return (
-    <div className="flex flex-col gap-3 px-4 py-3 bg-surface-2/80 border-b border-border">
-      <div className="flex items-center gap-2">
-        <Sparkles size={14} className="text-primary shrink-0" />
-        <span className="text-xs font-semibold text-fg">Generate SQL with AI</span>
-        <div className="flex-1" />
-        <button
-          onClick={() => { openChat(); onClose() }}
-          className="text-[11px] text-muted hover:text-fg flex items-center gap-1 transition-colors"
-          title="Open full AI chat"
-        >
-          <MessageSquare size={11} />
-          Open chat
-        </button>
-        <button
-          onClick={onClose}
-          aria-label="Close AI assist"
-          className="text-[11px] text-muted hover:text-fg transition-colors ml-1"
-        >
-          ✕
-        </button>
-      </div>
-      <div className="flex items-center gap-2">
-        <input
-          ref={inputRef}
-          type="text"
-          aria-label="Describe the SQL you want to generate"
-          value={question}
-          onChange={e => setQuestion(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleGenerate() } }}
-          placeholder="e.g. Show total sales by region for last 30 days…"
-          className="flex-1 h-8 px-3 text-xs bg-surface border border-border rounded-lg text-fg placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-ring"
-          disabled={loading}
-        />
-        <button
-          onClick={handleGenerate}
-          disabled={loading || !question.trim()}
-          className="h-8 px-3 flex items-center gap-1.5 text-xs font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity shrink-0"
-        >
-          {loading ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
-          Generate
-        </button>
-      </div>
-      {error && (
-        <p className="text-[11px] text-danger flex items-center gap-1">
-          <AlertCircle size={10} /> {error}
-        </p>
-      )}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // CacheBadge
 // ---------------------------------------------------------------------------
 
@@ -880,6 +798,90 @@ function ConnectedWidgetsTab({ queryId }) {
         </li>
       ))}
     </ul>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// QueryHistoryTab — SQL-Lab-style scratch run history (browser-local, see
+// lib/sqlHistory.js). Distinct from the formal, server-persisted version
+// history (the History toolbar button / VersionHistoryDialog) — this logs
+// every Run, not just checkpoints, and never leaves the browser.
+// ---------------------------------------------------------------------------
+
+function relativeTime(ts) {
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000))
+  if (s < 5) return 'just now'
+  if (s < 60) return `${s}s ago`
+  const m = Math.round(s / 60)
+  if (m < 60) return `${m}m ago`
+  const h = Math.round(m / 60)
+  if (h < 24) return `${h}h ago`
+  return `${Math.round(h / 24)}d ago`
+}
+
+function QueryHistoryTab({ entries, onRestore, onClear }) {
+  const [copiedId, setCopiedId] = useState(null)
+
+  const copy = useCallback(async (entry) => {
+    try {
+      await navigator.clipboard.writeText(entry.sql)
+      setCopiedId(entry.id)
+      setTimeout(() => setCopiedId(id => (id === entry.id ? null : id)), 1200)
+    } catch { /* clipboard unavailable — silently no-op */ }
+  }, [])
+
+  if (entries.length === 0) {
+    return (
+      <p className="text-[11px] text-muted text-center py-10 px-4 leading-relaxed">
+        Nothing run yet in this browser. Every query you Run here is kept locally
+        (up to 50), so you can get back to an earlier attempt without saving a version.
+      </p>
+    )
+  }
+
+  return (
+    <div className="px-3 pb-3">
+      <div className="flex items-center justify-between py-2">
+        <span className="text-[10px] text-muted">{entries.length} run{entries.length !== 1 ? 's' : ''} · this browser only</span>
+        <button
+          onClick={onClear}
+          className="text-[11px] text-muted hover:text-danger transition-colors"
+        >
+          Clear
+        </button>
+      </div>
+      <ul className="space-y-1.5">
+        {entries.map(entry => (
+          <li key={entry.id} className="rounded-lg border border-border bg-surface-2/30 p-2.5">
+            <div className="flex items-center gap-1.5 mb-1">
+              {entry.ok
+                ? <CheckCircle2 size={10} className="text-success shrink-0" />
+                : <AlertCircle size={10} className="text-danger shrink-0" />}
+              <span className="text-[10px] text-muted font-mono">{relativeTime(entry.ranAt)}</span>
+              {entry.ok && entry.rowCount != null && (
+                <span className="text-[10px] text-muted">· {entry.rowCount.toLocaleString()} row{entry.rowCount !== 1 ? 's' : ''}</span>
+              )}
+              {entry.ok && entry.elapsedMs != null && (
+                <span className="text-[10px] text-muted/80">· {entry.elapsedMs}ms</span>
+              )}
+              <div className="flex-1" />
+              <button onClick={() => copy(entry)} title="Copy SQL" className="text-muted hover:text-fg transition-colors">
+                {copiedId === entry.id ? <Check size={11} /> : <Copy size={11} />}
+              </button>
+              <button onClick={() => onRestore(entry.sql)} title="Restore into editor" className="text-muted hover:text-primary transition-colors">
+                <ArrowLeftRight size={11} />
+              </button>
+            </div>
+            <pre className="text-[10.5px] font-mono text-fg whitespace-pre-wrap break-words leading-snug max-h-24 overflow-hidden">
+              {entry.sql.length > 240 ? `${entry.sql.slice(0, 240)}…` : entry.sql}
+            </pre>
+            {!entry.ok && entry.error && (
+              <p className="text-[10px] text-danger mt-1 line-clamp-2">{entry.error}</p>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
 
@@ -1522,7 +1524,16 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState(null)
   const [runError, setRunError] = useState(null)
-  const [rightPanelTab, setRightPanelTab] = useState('preview') // 'preview' | 'widgets' — the persistent right column
+  const [rightPanelTab, setRightPanelTab] = useState('preview') // 'preview' | 'widgets' | 'ai' | 'history' — the persistent right column
+  const [sqlHistory, setSqlHistory] = useState(() => loadSqlHistory())
+  const [builderOpen, setBuilderOpen] = useState(false)
+  const [builderSchema, setBuilderSchema] = useState(null)
+  useEffect(() => {
+    if (!builderOpen || builderSchema) return
+    let cancelled = false
+    fetchSchema().then(s => { if (!cancelled) setBuilderSchema(s) })
+    return () => { cancelled = true }
+  }, [builderOpen, builderSchema])
 
   // ── Save state ──────────────────────────────────────────────────────────
   const [showSaveDialog, setShowSaveDialog] = useState(false)
@@ -1671,9 +1682,14 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
       if (res?.error) {
         setRunError(res.error.message)
         setResult(null)
+        setSqlHistory(pushSqlHistory({ sql, queryName: query?.name, ok: false, error: res.error.message }))
         return
       }
       setResult(res)
+      setSqlHistory(pushSqlHistory({
+        sql, queryName: query?.name, ok: true,
+        rowCount: res?.table?.numRows ?? null, elapsedMs: res?.elapsedMs ?? null,
+      }))
 
       // Register primary cell result as "cell_1" in DuckDB-WASM for cross-cell flow
       if (res?.table) {
@@ -1691,6 +1707,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
       }
     } catch (err) {
       setRunError(err?.message ?? 'Query failed')
+      setSqlHistory(pushSqlHistory({ sql, queryName: query?.name, ok: false, error: err?.message ?? 'Query failed' }))
     } finally {
       setRunning(false)
     }
@@ -2170,6 +2187,19 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
 
               <div className="flex-1" />
 
+              {!viewing && (
+                <button
+                  onClick={() => setBuilderOpen(o => !o)}
+                  className={`inline-flex items-center gap-1.5 h-7 px-2.5 text-xs font-medium rounded-md border transition-colors ${
+                    builderOpen ? 'bg-primary/10 border-primary text-primary' : 'border-border bg-surface text-muted hover:text-fg hover:bg-surface-2'
+                  }`}
+                  title="Build a query without writing SQL"
+                >
+                  <Wand2 size={12} className={builderOpen ? 'text-primary' : 'text-primary/70'} />
+                  Build
+                </button>
+              )}
+
               <ConnectorPicker
                 datastores={datastores}
                 value={datastoreId}
@@ -2265,6 +2295,16 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
               </div>
             )}
 
+            {!viewing && builderOpen && (
+              <div className="px-3 pt-3">
+                <VisualQueryBuilder
+                  schema={builderSchema}
+                  onGenerate={(generatedSql) => { handleSqlChange(generatedSql); setBuilderOpen(false) }}
+                  onClose={() => setBuilderOpen(false)}
+                />
+              </div>
+            )}
+
             {/* SQL editor — shows the viewed version's SQL read-only while a
                 version view is active; the draft SQL state is untouched. */}
             <div className="px-3 pt-3">
@@ -2348,29 +2388,53 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                 )}
               </div>
 
-              {/* Preview / Connected Widgets — persistent, switched by a small
-                  local toggle (unlike results-vs-preview, these two don't need
-                  to be visible simultaneously). */}
+              {/* Preview / Connected / Ask AI — persistent, switched by a small
+                  local toggle (these three don't need to be visible simultaneously). */}
               <div className="min-w-0 border-t lg:border-t-0 border-border flex flex-col">
-                <div className="flex items-center gap-1 px-3 py-2 shrink-0">
+                <div className="flex items-center flex-wrap gap-1 px-3 py-2 shrink-0">
                   {[
                     { value: 'preview', label: 'Preview' },
                     { value: 'widgets', label: 'Connected' },
+                    { value: 'ai', label: 'Ask AI', icon: Sparkles },
+                    { value: 'history', label: 'History', icon: History },
                   ].map(t => (
                     <button
                       key={t.value}
                       onClick={() => setRightPanelTab(t.value)}
-                      className={`text-[11px] font-semibold uppercase tracking-wider px-2 py-1 rounded-md transition-colors ${
+                      className={`flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider px-2 py-1 rounded-md transition-colors ${
                         rightPanelTab === t.value ? 'bg-primary/10 text-primary' : 'text-muted hover:text-fg'
                       }`}
                     >
+                      {t.icon && <t.icon size={11} />}
                       {t.label}
                     </button>
                   ))}
                 </div>
-                <div className="flex-1 overflow-auto">
+                <div className={rightPanelTab === 'ai' ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1 overflow-auto'}>
                   {rightPanelTab === 'preview' && <QueryPreviewTab table={result?.table} />}
                   {rightPanelTab === 'widgets' && <ConnectedWidgetsTab queryId={query?.id} />}
+                  {rightPanelTab === 'ai' && (
+                    <ChatPanel
+                      title="Ask AI"
+                      tagline="Ask about this query, request changes, or generate SQL from a description — watch each tool run live."
+                      placeholder="Ask about this query, or describe SQL to generate…"
+                      suggestions={[
+                        'Explain what this query does',
+                        'Add a date-range filter',
+                        'Optimise this query',
+                        'Write a query for total sales by region',
+                      ]}
+                      system={`The user is editing a SQL query${query?.name ? ` named "${query.name}"` : ''} in the ${dialect} dialect. Current SQL:\n\`\`\`sql\n${sql || '(empty)'}\n\`\`\`\nWhen asked to write or modify SQL, prefer the generate_sql tool and keep results in the ${dialect} dialect. Do not propose a dashboard spec here — this is the query editor, not the dashboard editor.`}
+                      onInsertSql={handleSqlChange}
+                    />
+                  )}
+                  {rightPanelTab === 'history' && (
+                    <QueryHistoryTab
+                      entries={sqlHistory}
+                      onRestore={handleSqlChange}
+                      onClear={() => setSqlHistory(clearSqlHistory())}
+                    />
+                  )}
                 </div>
               </div>
             </div>

@@ -33,10 +33,11 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo, type KeyboardEvent } from 'react'
 import {
-  Sparkles, History, Plus, Send, Square, ChevronDown, Check, AlertCircle,
+  Sparkles, History, Plus, Send, Square, ChevronDown, Check, AlertCircle, ArrowDownToLine,
 } from 'lucide-react'
 import MarkdownRenderer from '../components/MarkdownRenderer.jsx'
 import ToolCard from '../chat/ToolCard.jsx'
+import { coerce } from '../chat/toolMeta.js'
 import {
   streamChat,
   listChatModels,
@@ -46,8 +47,9 @@ import {
 
 const MODEL_STORAGE_KEY = 'nubi.chat.model'
 const PROPOSE_SPEC_TOOL = 'propose_dashboard_spec'
+const GENERATE_SQL_TOOL = 'generate_sql'
 
-const SUGGESTIONS = [
+const DEFAULT_SUGGESTIONS = [
   'Add a revenue-by-month bar chart',
   'Summarise what this dashboard shows',
   'Add a KPI for total orders',
@@ -105,7 +107,22 @@ function TypingDots() {
 // MessageBubble — renders one user/assistant turn (text + interleaved tools)
 // ---------------------------------------------------------------------------
 
-function MessageBubble({ message }) {
+function InsertSqlButton({ sql, onInsertSql }) {
+  const [inserted, setInserted] = useState(false)
+  if (!sql) return null
+  return (
+    <button
+      type="button"
+      onClick={() => { onInsertSql(sql); setInserted(true); setTimeout(() => setInserted(false), 1500) }}
+      className="mt-1.5 flex items-center gap-1.5 text-[11px] font-medium text-primary hover:text-primary/80 transition-colors"
+    >
+      {inserted ? <Check size={12} /> : <ArrowDownToLine size={12} />}
+      {inserted ? 'Inserted' : 'Insert into editor'}
+    </button>
+  )
+}
+
+function MessageBubble({ message, onInsertSql }) {
   if (message.role === 'user') {
     return (
       <div className="flex justify-end">
@@ -125,18 +142,23 @@ function MessageBubble({ message }) {
       <div className="flex-1 min-w-0 space-y-2">
         {tools.length > 0 && (
           <div className="space-y-1.5">
-            {tools.map(t => (
-              <ToolCard
-                key={t.id}
-                action={{
-                  id: t.id,
-                  tool: t.name,
-                  args: t.input,
-                  result: t.output,
-                  status: t.output === undefined ? 'running' : 'done',
-                }}
-              />
-            ))}
+            {tools.map(t => {
+              const isSql = onInsertSql && t.name === GENERATE_SQL_TOOL
+              const sqlValue = isSql ? (coerce(t.output) as any)?.sql : null
+              return (
+                <ToolCard
+                  key={t.id}
+                  action={{
+                    id: t.id,
+                    tool: t.name,
+                    args: t.input,
+                    result: t.output,
+                    status: t.output === undefined ? 'running' : 'done',
+                  }}
+                  footer={isSql ? <InsertSqlButton sql={sqlValue} onInsertSql={onInsertSql} /> : null}
+                />
+              )
+            })}
           </div>
         )}
 
@@ -215,7 +237,12 @@ function SuggestionChip({ text, onClick, disabled }) {
 // ChatPanel — main export
 // ---------------------------------------------------------------------------
 
-export default function ChatPanel({ boardId = null, spec = null, onApplySpec }) {
+export default function ChatPanel({
+  boardId = null, spec = null, onApplySpec = null,
+  title = 'Nubi AI', tagline = "Describe a change and I'll inspect your data, propose a dashboard spec, and apply it — watch each tool run live.",
+  suggestions = DEFAULT_SUGGESTIONS, placeholder = 'Ask Nubi to change this dashboard…',
+  system = null, onInsertSql = null,
+}) {
   // --- model picker -------------------------------------------------------
   const [models, setModels] = useState([])
   const [model, setModel] = useState(() => {
@@ -347,17 +374,21 @@ export default function ChatPanel({ boardId = null, spec = null, onApplySpec }) 
         boardId,
         model,
         message: text,
+        system,
         signal: controller.signal,
         onEvent,
       })
 
       // Final-message fallback: if no tool proposed a spec, look for one in
-      // the assistant's final text content.
-      if (!proposedSpec) proposedSpec = extractSpec(accumulated)
-
-      if (proposedSpec && onApplySpec) {
-        onApplySpec(proposedSpec, 'replace')
-        updateAssistant(assistantId, m => ({ ...m, applied: true }))
+      // the assistant's final text content. Only relevant when the host wired
+      // onApplySpec (the dashboard-editor caller) — the query-editor caller
+      // wires onInsertSql instead and has no use for a proposed spec.
+      if (onApplySpec) {
+        if (!proposedSpec) proposedSpec = extractSpec(accumulated)
+        if (proposedSpec) {
+          onApplySpec(proposedSpec, 'replace')
+          updateAssistant(assistantId, m => ({ ...m, applied: true }))
+        }
       }
     } catch (err) {
       if (err?.name !== 'AbortError') setError(err.message ?? 'Chat failed.')
@@ -367,7 +398,7 @@ export default function ChatPanel({ boardId = null, spec = null, onApplySpec }) 
       abortRef.current = null
       refreshConversations()
     }
-  }, [input, streaming, chatId, boardId, model, onApplySpec, updateAssistant, refreshConversations])
+  }, [input, streaming, chatId, boardId, model, system, onApplySpec, updateAssistant, refreshConversations])
 
   // --- stop the in-flight stream -----------------------------------------
   const stop = useCallback(() => {
@@ -426,7 +457,7 @@ export default function ChatPanel({ boardId = null, spec = null, onApplySpec }) 
         <div className="flex items-center justify-center w-7 h-7 rounded-lg shrink-0 bg-brand-gradient">
           <Sparkles size={13} className="text-white" />
         </div>
-        <span className="font-display font-semibold text-sm text-fg leading-none">Nubi AI</span>
+        <span className="font-display font-semibold text-sm text-fg leading-none">{title}</span>
         <div className="flex-1" />
         <button
           type="button"
@@ -471,19 +502,19 @@ export default function ChatPanel({ boardId = null, spec = null, onApplySpec }) 
               <Sparkles size={24} className="text-white" />
             </div>
             <div>
-              <p className="font-display font-semibold text-fg text-[14px] mb-1">Build with Nubi AI</p>
+              <p className="font-display font-semibold text-fg text-[14px] mb-1">{title}</p>
               <p className="text-[12px] text-muted leading-relaxed max-w-[230px]">
-                Describe a change and I&apos;ll inspect your data, propose a dashboard spec, and apply it — watch each tool run live.
+                {tagline}
               </p>
             </div>
             <div className="flex flex-wrap gap-2 justify-center">
-              {SUGGESTIONS.map(s => (
+              {suggestions.map(s => (
                 <SuggestionChip key={s} text={s} onClick={send} disabled={streaming || !model} />
               ))}
             </div>
           </div>
         )}
-        {messages.map(m => <MessageBubble key={m.id} message={m} />)}
+        {messages.map(m => <MessageBubble key={m.id} message={m} onInsertSql={onInsertSql} />)}
       </div>
 
       {/* ── Error banner with retry ── */}
@@ -515,7 +546,7 @@ export default function ChatPanel({ boardId = null, spec = null, onApplySpec }) 
             onChange={e => setInput(e.target.value)}
             onKeyDown={onKeyDown}
             onInput={e => { e.currentTarget.style.height = 'auto'; e.currentTarget.style.height = Math.min(e.currentTarget.scrollHeight, 128) + 'px' }}
-            placeholder={streaming ? 'Streaming…' : 'Ask Nubi to change this dashboard…'}
+            placeholder={streaming ? 'Streaming…' : placeholder}
             aria-label="Chat input"
             className="flex-1 resize-none bg-transparent text-[13px] text-fg leading-relaxed placeholder:text-muted focus:outline-none min-h-[22px] max-h-32 py-0.5"
             style={{ overflowY: input.split('\n').length > 4 ? 'auto' : 'hidden' }}

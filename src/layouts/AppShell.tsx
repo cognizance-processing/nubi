@@ -145,9 +145,18 @@ export default function AppShell() {
 
         {/* Content + the shared RHS sidebar, side by side */}
         <div className="flex flex-1 min-h-0 overflow-hidden">
-          {/* Page content */}
+          {/* Page content. `flex flex-col` matters here: it's what makes a
+              page's `flex-1 min-h-0` root (the dashboard/query editors'
+              "fixed shell, only inner regions scroll" layout) actually take
+              effect as a flex item — without it those classes are inert (no
+              flex container to be an item OF), the editor renders at its
+              natural content height instead of being clipped, and THIS
+              overflow-y-auto ends up scrolling the whole editor as one block
+              instead of its own internal panels/canvas doing so. Normal pages
+              that don't opt into a fixed-height layout are unaffected — a
+              flex column with one child still just scrolls its content. */}
           <main
-            className="flex-1 overflow-y-auto bg-bg"
+            className="flex-1 min-h-0 flex flex-col overflow-y-auto bg-bg"
             id="main-content"
           >
             <Outlet />

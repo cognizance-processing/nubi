@@ -37,12 +37,13 @@ const BASE = (import.meta.env.DEV || !_backendUrl) ? '/api/v1' : _backendUrl + '
  *   boardId?: string | null,
  *   model: string,
  *   message: string,
+ *   system?: string | null,
  *   signal?: AbortSignal,
  *   onEvent: (evt: any) => void,
  * }} args
  * @returns {Promise<void>}
  */
-export async function streamChat({ chatId, boardId, model, message, signal, onEvent }) {
+export async function streamChat({ chatId, boardId, model, message, system, signal, onEvent }) {
   const headers = new Headers({
     'Content-Type': 'application/json',
     Accept: 'text/event-stream',
@@ -55,6 +56,7 @@ export async function streamChat({ chatId, boardId, model, message, signal, onEv
     board_id: boardId ?? undefined,
     model,
     message,
+    system: system ?? undefined,
   })
 
   let response

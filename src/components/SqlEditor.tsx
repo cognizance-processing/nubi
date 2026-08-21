@@ -38,10 +38,10 @@
 
 import { useRef, useCallback, useState, useEffect, useContext } from 'react'
 import Editor from '@monaco-editor/react'
-import { FileCode2, ChevronDown, HelpCircle, Braces, Database } from 'lucide-react'
+import { FileCode2, ChevronDown, HelpCircle, Braces, Database, Sparkles } from 'lucide-react'
 
 import { ThemeContext } from '../contexts/ThemeContext.jsx'
-import { validateSql, fetchSchema } from '../lib/api.js'
+import { validateSql, fetchSchema, completeSql } from '../lib/api.js'
 
 // ---------------------------------------------------------------------------
 // Static data: dialects, keywords, query templates
@@ -118,6 +118,33 @@ function templateParams(sql) {
     if (!seen.has(m[1])) { seen.add(m[1]); out.push(m[1]) }
   }
   return out
+}
+
+/**
+ * Table names already referenced in FROM/JOIN clauses (bare name or the part
+ * after the last `.` for `schema.table`), lowercased. Used to rank columns
+ * belonging to tables already in the query above columns from unrelated
+ * tables — a lightweight, no-backend-change stand-in for real join-graph
+ * awareness (the schema catalog has no FK metadata to do this properly).
+ */
+function referencedTables(sql) {
+  const re = /\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_.]*)/gi
+  const out = new Set()
+  let m
+  while ((m = re.exec(sql)) !== null) {
+    const bare = m[1].split('.').pop()
+    if (bare) out.add(bare.toLowerCase())
+  }
+  return out
+}
+
+/** Render a `{tables: {name: [cols]}}` schema as compact text for the LLM prompt. */
+function schemaToPromptText(schema: { tables?: Record<string, string[]> } | null | undefined) {
+  const tables: Record<string, string[]> = schema?.tables ?? {}
+  return Object.entries(tables)
+    .slice(0, 40)
+    .map(([t, cols]) => `${t}(${(cols || []).slice(0, 30).join(', ')})`)
+    .join('\n')
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +417,11 @@ export default function SqlEditor({
           }
           const tables = schemaRef.current?.tables ?? {}
           const suggestions = []
+          // Tables already in this query's FROM/JOIN clauses — their columns
+          // are far more likely to be what the user wants next, so rank them
+          // first. (No FK/relationship metadata is available from the schema
+          // catalog, so this is text-proximity, not a real join graph.)
+          const inScope = referencedTables(model.getValue())
 
           // Keywords
           for (const kw of SQL_KEYWORDS) {
@@ -397,6 +429,7 @@ export default function SqlEditor({
               label: kw,
               kind: monaco.languages.CompletionItemKind.Keyword,
               insertText: kw,
+              sortText: `3_${kw}`,
               range,
             })
           }
@@ -407,12 +440,15 @@ export default function SqlEditor({
               kind: monaco.languages.CompletionItemKind.Struct,
               insertText: t,
               detail: 'table',
+              sortText: `1_${t}`,
               range,
             })
           }
-          // Columns (deduped, with owning-table detail)
+          // Columns (deduped, with owning-table detail) — columns of a table
+          // already referenced in the query sort ahead of everything else.
           const seen = new Set()
           for (const [t, cols] of Object.entries(tables)) {
+            const referenced = inScope.has(t.toLowerCase())
             for (const c of cols ?? []) {
               const key = `${c}`
               if (seen.has(key)) continue
@@ -422,12 +458,45 @@ export default function SqlEditor({
                 kind: monaco.languages.CompletionItemKind.Field,
                 insertText: c,
                 detail: `column · ${t}`,
+                sortText: `${referenced ? '0' : '2'}_${c}`,
                 range,
               })
             }
           }
           return { suggestions }
         },
+      })
+    }
+
+    // Register an AI inline-completion ("ghost text") provider ONCE per monaco
+    // instance. POST /query/complete has no cost ceiling/quota check on the
+    // backend (unlike the chat endpoints), so this only ever fires on an
+    // EXPLICIT trigger (Alt+\, or the toolbar button below) — never
+    // automatically as the user types, which would call the LLM on every
+    // pause with no budget guard.
+    if (!monaco.__nubiSqlInlineCompletionRegistered) {
+      monaco.__nubiSqlInlineCompletionRegistered = true
+      monaco.languages.registerInlineCompletionsProvider('sql', {
+        provideInlineCompletions: async (model, position, context) => {
+          if (context.triggerKind !== monaco.languages.InlineCompletionTriggerKind.Explicit) {
+            return { items: [] }
+          }
+          const value = model.getValue()
+          if (!value.trim()) return { items: [] }
+          const { suggestion } = await completeSql({
+            sql: value,
+            cursor: model.getOffsetAt(position),
+            schema: schemaToPromptText(schemaRef.current),
+          })
+          if (!suggestion) return { items: [] }
+          return {
+            items: [{
+              insertText: suggestion,
+              range: new monaco.Range(position.lineNumber, position.column, position.lineNumber, position.column),
+            }],
+          }
+        },
+        freeInlineCompletions: () => {},
       })
     }
 
@@ -455,6 +524,18 @@ export default function SqlEditor({
       {toolbar && (
         <div className="flex items-center gap-2 flex-wrap">
           <TemplatesMenu onInsert={insertTemplate} />
+          <button
+            type="button"
+            onClick={() => {
+              editorRef.current?.focus()
+              editorRef.current?.trigger('nubi', 'editor.action.inlineSuggest.trigger', {})
+            }}
+            title="Suggest what comes next, from your schema (Alt+\)"
+            className="inline-flex items-center gap-1.5 h-7 px-2.5 text-xs font-medium rounded-md border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+          >
+            <Sparkles size={12} className="text-primary/70" />
+            AI suggest
+          </button>
 
           <div className="flex-1" />
 
