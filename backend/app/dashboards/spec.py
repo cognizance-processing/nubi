@@ -669,7 +669,7 @@ class Widget(BaseModel):
         Literal[
             "kpi", "table", "chart", "filter", "text",
             # Extended widget types (rendered by the frontend SpecRenderer):
-            "metric", "pivot", "section", "html",
+            "metric", "pivot", "section", "html", "image",
             # Container: shows one child widget at a time in a single tile, with a
             # step bar. Children are full widget specs under props.steps[].widget
             # and carry no pos of their own.
@@ -1257,6 +1257,16 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
                 issues.append(
                     f"Widget {widget.id!r} (text): 'content' is required "
                     "for text widgets."
+                )
+
+    # ── Step 5b: Image widget requirements ───────────────────────────────
+    for widget in spec.widgets:
+        if widget.type == "image":
+            if not widget.props.get("url"):
+                issues.append(
+                    f"Widget {widget.id!r} (image): props.url is required "
+                    "for image widgets — upload via POST /images (or the "
+                    "upload_image AI/MCP tool) and use the returned url."
                 )
 
     # ── Step 6: Widget params ref validation (hard error) ─────────────────

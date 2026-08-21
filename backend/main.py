@@ -273,6 +273,13 @@ import app.routes.mcp  # noqa: F401, E402
 # /{resource} catch-all in resources.py.  Auth-gated: owner/admin only.
 import app.routes.audit  # noqa: F401, E402
 
+# Import dashboard-image serving route (GET /images/{image_id}) BEFORE
+# resources so it registers ahead of the generic GET /{resource}/{id}
+# catch-all in resources.py (same reason as mcp/audit above — "images" is
+# not a registered resource, so an import-order mistake here would shadow
+# every image request with a 404 "Unknown resource: 'images'").
+import app.routes.images  # noqa: F401, E402
+
 # Import resources route so it registers itself on api_router at import time.
 import app.routes.resources  # noqa: F401, E402
 
