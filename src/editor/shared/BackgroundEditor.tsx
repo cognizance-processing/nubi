@@ -17,11 +17,17 @@ export function BackgroundEditor({ value, onChange }) {
   const set = (patch) => onChange({ ...bg, ...patch })
   return (
     <div className="space-y-2">
-      <div className="grid grid-cols-5 gap-1">
+      {/* flex-wrap, not a fixed grid: "transparent"/"gradient" don't fit an
+          equal 1/5-1/6 column at readable size, so match the STYLE preset
+          chips above — natural width per chip, extras wrap to the next row
+          instead of getting clipped mid-word. */}
+      <div className="flex flex-wrap gap-1.5">
         {BACKGROUND_TYPES.map(t => (
-          <button key={t} onClick={() => set({ type: t === 'none' ? undefined : t })}
-            className={`h-7 px-1.5 text-[11px] font-medium rounded-lg border capitalize transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
-              (type === t || (t === 'none' && !bg.type)) ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-muted border-border hover:border-primary hover:text-primary'
+          <button key={t} type="button" onClick={() => set({ type: t === 'none' ? undefined : t })}
+            className={`px-3 py-1.5 text-xs font-medium rounded-lg border capitalize transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 ${
+              (type === t || (t === 'none' && !bg.type))
+                ? 'bg-primary text-primary-fg border-primary shadow-sm'
+                : 'bg-surface text-muted border-border hover:border-primary/60 hover:text-fg hover:bg-surface-2'
             }`}>{t}</button>
         ))}
       </div>

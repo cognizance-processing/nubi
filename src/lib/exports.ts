@@ -33,6 +33,30 @@
 import Papa from 'papaparse'
 
 // ---------------------------------------------------------------------------
+// csvCell / widgetToCsv — serialise one GET /boards/:id/export.json entry
+// ({ widget_id, query_id, columns, rows, error }) to CSV. Shared by the
+// whole-dashboard export menu and per-widget export.
+// ---------------------------------------------------------------------------
+
+/** RFC-4180-ish CSV cell. */
+export function csvCell(v) {
+  if (v == null) return ''
+  const s = String(v)
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+
+/** Serialise one export-entry to CSV rows (header + data, no wrapping comment). */
+export function widgetToCsv(w) {
+  if (w.error) return `# error: ${w.error}`
+  const cols = w.columns ?? []
+  const parts = [cols.map(csvCell).join(',')]
+  for (const row of w.rows ?? []) {
+    parts.push((Array.isArray(row) ? row : cols.map(c => row[c])).map(csvCell).join(','))
+  }
+  return parts.join('\n')
+}
+
+// ---------------------------------------------------------------------------
 // arrowTableToCSV — pure function (no DOM, no browser APIs)
 // ---------------------------------------------------------------------------
 
@@ -134,9 +158,11 @@ export function chartToPNG(
  *
  * @param {HTMLElement} domEl     The root DOM element to capture.
  * @param {string}      filename  Suggested filename (e.g. 'dashboard.pdf').
+ * @param {object}      [canvasOpts]  Extra html2canvas options (e.g. `ignoreElements`
+ *                      to exclude overlay chrome like a hover toolbar from the capture).
  * @returns {Promise<void>}
  */
-export async function elementToPDF(domEl, filename = 'dashboard.pdf') {
+export async function elementToPDF(domEl, filename = 'dashboard.pdf', canvasOpts = {}) {
   const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
     import('html2canvas'),
     import('jspdf'),
@@ -146,6 +172,7 @@ export async function elementToPDF(domEl, filename = 'dashboard.pdf') {
     scale: 2,
     useCORS: true,
     logging: false,
+    ...canvasOpts,
   })
 
   const imgData = canvas.toDataURL('image/png')

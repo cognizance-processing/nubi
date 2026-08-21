@@ -20,6 +20,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Download, Share2, Image, FileText, Table, Link2, ShieldCheck, X, Copy, Check } from 'lucide-react'
 import { get, post } from '../lib/api.js'
+import { widgetToCsv } from '../lib/exports.js'
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -39,23 +40,11 @@ function dashboardNode(): HTMLElement {
   ) as HTMLElement
 }
 
-/** RFC-4180-ish CSV cell. */
-function csvCell(v) {
-  if (v == null) return ''
-  const s = String(v)
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-}
-
 function widgetsToCsv(widgets) {
   const parts = []
   for (const w of widgets) {
     parts.push(`# widget: ${w.widget_id ?? w.query_id ?? ''}`)
-    if (w.error) { parts.push(`# error: ${w.error}`); parts.push(''); continue }
-    const cols = w.columns ?? []
-    parts.push(cols.map(csvCell).join(','))
-    for (const row of w.rows ?? []) {
-      parts.push((Array.isArray(row) ? row : cols.map(c => row[c])).map(csvCell).join(','))
-    }
+    parts.push(widgetToCsv(w))
     parts.push('')
   }
   return parts.join('\n')
