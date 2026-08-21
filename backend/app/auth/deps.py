@@ -297,6 +297,40 @@ async def verified_identity(
     if credentials is None:
         raise AppError("unauthorized", "Authentication required.", 401)
 
+    # ── API-key bearer path (CLI / CI / MCP long-lived tokens) ──────────────
+    # An opaque ``nubi_ak_…`` credential is NOT a JWT — verify_token_async
+    # would reject it at the JOSE-header-parse step before it ever gets to
+    # look at the algorithm. Resolve it against the api_keys store instead,
+    # mirroring the same branch in ``current_user`` above, and synthesize a
+    # VerifiedIdentity equivalent to a normal first-party login session
+    # (kind="access", default scopes, no RLS policy claim — same as a token
+    # minted by /auth/login with no explicit policies).
+    from app.auth.api_keys import get_api_key_store, looks_like_api_key
+
+    raw_credential: str = credentials.credentials
+    if looks_like_api_key(raw_credential):
+        key_row = await get_api_key_store().resolve(raw_credential)
+        if key_row is None:
+            raise AppError("unauthorized", "Authentication required.", 401)
+
+        from app.auth.verify import _FIRST_PARTY_SCOPES  # noqa: PLC0415
+        from app.routes._org import api_key_org_pin  # noqa: PLC0415
+
+        org_id = str(key_row["org_id"])
+        api_key_org_pin.set(org_id)
+        return VerifiedIdentity(
+            kind="access",
+            user_id=str(key_row["user_id"]),
+            org=org_id,
+            project=None,
+            roles=[],
+            policies={},
+            scope=list(_FIRST_PARTY_SCOPES),
+            embed_origin=None,
+            datastore=None,
+            raw_claims={},
+        )
+
     # Pass the request Origin header so verify_token can enforce embed_origin
     # pinning without any additional logic here.
     expected_origin: str | None = request.headers.get("origin")

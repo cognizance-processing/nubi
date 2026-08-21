@@ -105,6 +105,7 @@ const AiProvidersSettings = lazy(() => import('./pages/app/settings/AiProvidersS
 const BridgesSettings = lazy(() => import('./pages/app/settings/BridgesSettings.jsx'))
 const UsageSettings = lazy(() => import('./pages/app/settings/UsageSettings.jsx'))
 const McpSettings = lazy(() => import('./pages/app/settings/McpSettings.jsx'))
+const ConnectionsSettings = lazy(() => import('./pages/app/settings/ConnectionsSettings.jsx'))
 const AccessGrantsSettings = lazy(() => import('./pages/app/settings/AccessGrantsSettings.jsx'))
 const DataExplorerPage = lazy(() => import('./pages/app/DataExplorerPage.jsx'))
 
@@ -368,6 +369,7 @@ export default function App() {
             <Route path="project" element={<ProjectSettings />} />
             <Route path="security" element={<SecuritySettings />} />
             <Route path="mcp" element={<McpSettings />} />
+            <Route path="connections" element={<ConnectionsSettings />} />
             <Route path="access-grants" element={<AccessGrantsSettings />} />
           </Route>
           {/* Admin portal — superadmin only (non-admins see a 404-style view) */}

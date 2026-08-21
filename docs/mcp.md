@@ -143,12 +143,18 @@ server. The endpoint speaks JSON-RPC 2.0 over a single HTTP POST.
 ### Auth
 
 ```
-Authorization: Bearer <first-party JWT>
+Authorization: Bearer <first-party JWT or nubi_ak_… API key>
 ```
 
 Same `current_user` + `verified_identity` dependencies as `/api/v1/ai/chat`.
 The token's org and scope are read from the verified identity; they are never
 taken from the request body.
+
+For an external client that stays connected across sessions (Claude Desktop,
+Claude Code), use a long-lived **API key** (`nubi_ak_…`, minted from
+Settings → Connections in the app, or `POST /auth/api-keys`) rather than the
+15-minute session JWT — `verified_identity` resolves either credential to the
+same normalised identity (`app/auth/deps.py`).
 
 ### Protocol version
 
@@ -290,7 +296,21 @@ via the MCP path.
 
 ---
 
-## Quick start — Claude Desktop
+## Quick start — connect your own Claude
+
+In the app, go to **Settings → Connections** and generate a connection key
+(an API key, `nubi_ak_…`, scoped to your org). The page shows the raw key
+exactly once, plus ready-to-paste snippets for both clients below —
+copy/paste is all that's needed; the steps here are what those snippets do.
+
+### Claude Code
+
+```bash
+claude mcp add --transport http nubi http://localhost:8000/api/v1/mcp \
+  --header "Authorization: Bearer <your-nubi_ak_-key>"
+```
+
+### Claude Desktop
 
 Add to `claude_desktop_config.json`:
 
@@ -301,7 +321,7 @@ Add to `claude_desktop_config.json`:
       "url": "http://localhost:8000/api/v1/mcp",
       "transport": { "type": "http" },
       "headers": {
-        "Authorization": "Bearer <your-first-party-JWT>"
+        "Authorization": "Bearer <your-nubi_ak_-key>"
       }
     }
   }

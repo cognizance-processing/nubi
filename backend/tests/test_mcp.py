@@ -18,6 +18,9 @@ Coverage
 14. Nubi-as-MCP-server — POST /mcp tools/call executes a tool (get_schema).
 15. Nubi-as-MCP-server — unknown method returns JSON-RPC -32601.
 16. Nubi-as-MCP-server — unauthenticated request returns 401.
+17. Nubi-as-MCP-server — a long-lived API key (nubi_ak_...) authenticates
+    POST /mcp end-to-end (regression: verified_identity used to reject
+    API keys outright since they aren't JWTs).
 """
 
 from __future__ import annotations
@@ -230,6 +233,7 @@ async def mcp_client(app, fake_db):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as c:
         c.headers["Authorization"] = f"Bearer {token}"
         c._test_org_id = org_id
+        c._test_user_id = user_id
         yield c
 
     set_repo(None)
@@ -309,6 +313,40 @@ async def test_mcp_nubi_server_unknown_method(mcp_client):
     data = resp.json()
     assert "error" in data
     assert data["error"]["code"] == -32601
+
+
+@pytest.mark.asyncio
+async def test_mcp_nubi_server_api_key_auth(mcp_client):
+    """POST /api/v1/mcp authenticates with a minted nubi_ak_... API key.
+
+    Regression for the bug where ``verified_identity`` unconditionally tried
+    to parse the bearer token as a JWT header, 401-ing every API-key-bearing
+    request before ``current_user`` even got a chance to resolve it — even
+    though API keys are the documented long-lived credential for exactly
+    this "connect an external MCP client" use case.
+    """
+    from app.auth.api_keys import get_api_key_store
+
+    org_id = mcp_client._test_org_id
+    # mcp_client's Authorization header carries a JWT for the seeded user;
+    # mint an API key for that same user/org and swap the header to it.
+    user_id = mcp_client._test_user_id
+    raw_key, _row = await get_api_key_store().create(user_id, org_id, "claude-desktop")
+
+    mcp_client.headers["Authorization"] = f"Bearer {raw_key}"
+
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    resp = await mcp_client.post("/api/v1/mcp", json=payload)
+    assert resp.status_code == 200, resp.text
+    result = resp.json()["result"]
+    assert result["serverInfo"]["name"] == "nubi"
+
+    # tools/list and tools/call must also work — proves claims (org/scope)
+    # were built correctly, not just that auth didn't 401.
+    list_payload = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+    list_resp = await mcp_client.post("/api/v1/mcp", json=list_payload)
+    assert list_resp.status_code == 200
+    assert len(list_resp.json()["result"]["tools"]) > 0
 
 
 @pytest.mark.asyncio

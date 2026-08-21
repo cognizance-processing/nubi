@@ -17,6 +17,7 @@
  *     /settings/security       → SecuritySettings   (org-level: embed JWT trust)
  *     /settings/usage          → UsageSettings      (open-core usage metering)
  *     /settings/mcp            → McpSettings        (MCP servers)
+ *     /settings/connections    → ConnectionsSettings (connect your own Claude via MCP)
  *     /billing                 → EE billing page (link-out; only when the
  *                                 billing feature is enabled)
  *
@@ -42,6 +43,7 @@ import {
   Cpu,
   Key,
   Bot,
+  Sparkles,
 } from 'lucide-react'
 import { useOrg } from '../../../contexts/OrgContext.jsx'
 import { useProject } from '../../../contexts/ProjectContext.jsx'
@@ -136,6 +138,7 @@ export default function SettingsLayout() {
         <SettingsNavItem to="/settings/members"      label="Members"      Icon={Users} />
         <SettingsNavItem to="/settings/integrations" label="Integrations" Icon={Plug} />
         <SettingsNavItem to="/settings/ai-providers" label="AI providers" Icon={Bot} />
+        <SettingsNavItem to="/settings/connections"  label="Connections"  Icon={Sparkles} />
         <SettingsNavItem to="/settings/mcp"          label="MCP servers"  Icon={Cpu} />
         <SettingsNavItem to="/settings/bridges"      label="Bridges"      Icon={Network} />
         <SettingsNavItem to="/settings/security"     label="Security"     Icon={ShieldCheck} />
