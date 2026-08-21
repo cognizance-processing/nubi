@@ -77,13 +77,14 @@ const WIDTH_PRESETS = [390, 412, 768, 834, 1024]
 const WIDGET_ICONS = {
   kpi: Hash, metric: TrendingUp, chart: BarChart3, table: Table2,
   pivot: Grid3x3, filter: FilterIcon, text: Type, section: Heading,
+  image: ImageIcon,
 }
 const CHART_ICONS = {
   line: LineChart, bar: BarChart3, hbar: BarChartHorizontal, scatter: ScatterChart,
   area: AreaChart, pie: PieChart, donut: PieChart, heatmap: Grid3x3, gauge: Gauge,
 }
 import { GridCanvas } from '../dashboards/grid/index.js'
-import { get, post, put, listRegisteredQueries } from '../lib/api.js'
+import { get, post, put, listRegisteredQueries, uploadImage, uploadImageFromUrl, resolveImageUrl } from '../lib/api.js'
 import { elementToPDF, widgetToCsv } from '../lib/exports.js'
 import ChartWidget from '../dashboards/widgets/ChartWidget.jsx'
 import KpiWidget from '../dashboards/widgets/KpiWidget.jsx'
@@ -95,6 +96,7 @@ import MetricWidget from '../dashboards/widgets/MetricWidget.jsx'
 import MetricPicker from '../components/app/MetricPicker.jsx'
 import PivotWidget from '../dashboards/widgets/PivotWidget.jsx'
 import SectionWidget from '../dashboards/widgets/SectionWidget.jsx'
+import ImageWidget from '../dashboards/widgets/ImageWidget.jsx'
 import StepperWidget from '../dashboards/widgets/StepperWidget.jsx'
 import ExportShareMenu from '../components/ExportShareMenu.jsx'
 import DashboardCodeView from './DashboardCodeView.jsx'
@@ -358,6 +360,7 @@ const WIDGET_SIZES = {
   filter:  { w: 3, h: 2 },
   text:    { w: 6, h: 3 },
   section: { w: 12, h: 1 },
+  image:   { w: 4, h: 4 },
   stepper: { w: 6, h: 6 },
 }
 
@@ -419,6 +422,13 @@ function makeSectionWidget(pos) {
     pos: { ...WIDGET_SIZES.section, ...pos },
   }
 }
+function makeImageWidget(pos) {
+  return {
+    id: genId('image'), type: 'image', query_id: null,
+    props: { url: '', alt: '', fit: 'contain', align: 'center' },
+    pos: { ...WIDGET_SIZES.image, ...pos },
+  }
+}
 function makeStepperWidget(pos) {
   return {
     id: genId('stepper'), type: 'stepper', query_id: null,
@@ -443,6 +453,7 @@ function makeWidget(type: string, pos: Record<string, any>): Record<string, any>
   if (type === 'filter') return makeFilterWidget(pos)
   if (type === 'text') return makeTextWidget(pos)
   if (type === 'section') return makeSectionWidget(pos)
+  if (type === 'image') return makeImageWidget(pos)
   if (type === 'stepper') return makeStepperWidget(pos)
   return makeChartWidget(pos)
 }
@@ -565,6 +576,112 @@ function SectionConfig({ widget, onChange }) {
         </div>
       </div>
       <ToggleRow label="Show divider line" checked={props.divider !== false} onChange={v => setProps('divider', v)} />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ImageConfig — upload a file, or fetch by URL, for an `image` widget
+// ---------------------------------------------------------------------------
+
+function ImageConfig({ widget, onChange }) {
+  const props = widget.props ?? {}
+  const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
+  const [urlInput, setUrlInput] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const fileInputRef = useRef(null)
+
+  const handleFile = async (file) => {
+    if (!file) return
+    setBusy(true)
+    setError('')
+    try {
+      const result = await uploadImage(file)
+      setProps('url', result.url)
+    } catch (err) {
+      setError(err?.message ?? 'Upload failed.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleFetchUrl = async () => {
+    const url = urlInput.trim()
+    if (!url) return
+    setBusy(true)
+    setError('')
+    try {
+      const result = await uploadImageFromUrl(url)
+      setProps('url', result.url)
+      setUrlInput('')
+    } catch (err) {
+      setError(err?.message ?? 'Could not fetch that URL.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <FieldLabel>Image</FieldLabel>
+        {props.url ? (
+          <div className="rounded-lg border border-border bg-surface-2 p-2 flex items-center justify-center h-28 mb-2">
+            <img src={resolveImageUrl(props.url)} alt="" className="max-h-full max-w-full object-contain" />
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-border bg-surface-2 flex items-center justify-center h-28 mb-2 text-xs text-muted">
+            No image yet
+          </div>
+        )}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          className="hidden"
+          onChange={e => handleFile(e.target.files?.[0])}
+        />
+        <Button variant="secondary" size="sm" className="w-full" disabled={busy}
+          onClick={() => fileInputRef.current?.click()}>
+          {busy ? 'Uploading…' : 'Upload from computer'}
+        </Button>
+      </div>
+      <div>
+        <FieldLabel>Or paste an image URL</FieldLabel>
+        <div className="flex gap-2">
+          <input type="text" className={inputCls} placeholder="https://…" value={urlInput}
+            onChange={e => setUrlInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleFetchUrl() }} />
+          <Button variant="secondary" size="sm" disabled={busy || !urlInput.trim()} onClick={handleFetchUrl}>
+            Fetch
+          </Button>
+        </div>
+      </div>
+      {error && <p className="text-xs text-danger">{error}</p>}
+      <div>
+        <FieldLabel>Alt text</FieldLabel>
+        <input type="text" className={inputCls} value={props.alt ?? ''} placeholder="Description for accessibility"
+          onChange={e => setProps('alt', e.target.value)} />
+      </div>
+      <div>
+        <FieldLabel>Fit</FieldLabel>
+        <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+          {['contain', 'cover'].map(f => (
+            <button key={f} onClick={() => setProps('fit', f)}
+              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.fit ?? 'contain') === f ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{f}</button>
+          ))}
+        </div>
+      </div>
+      <div>
+        <FieldLabel>Alignment</FieldLabel>
+        <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+          {['left', 'center', 'right'].map(a => (
+            <button key={a} onClick={() => setProps('align', a)}
+              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.align ?? 'center') === a ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{a}</button>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }
@@ -1415,6 +1532,7 @@ function ConfigPanel({
           )}
           {widget.type === 'text' && <TextConfig widget={widget} onChange={onChange} />}
           {widget.type === 'section' && <SectionConfig widget={widget} onChange={onChange} />}
+          {widget.type === 'image' && <ImageConfig widget={widget} onChange={onChange} />}
           {widget.type === 'stepper' && <StepperConfig widget={widget} onChange={onChange} />}
 
           {widget.type === 'chart' && <DrilldownSection widget={widget} onChange={onChange} />}
@@ -1647,6 +1765,7 @@ const PALETTE_ITEMS = [
   { type: 'filter',  label: 'Filter',  icon: FilterIcon,  desc: 'Select / date / text filter' },
   { type: 'text',    label: 'Text',    icon: Type,        desc: 'Markdown content block' },
   { type: 'section', label: 'Section', icon: Heading,     desc: 'Section header / divider' },
+  { type: 'image',   label: 'Image',   icon: ImageIcon,   desc: 'Logo, header art, or branding image' },
   { type: 'stepper', label: 'Stepper', icon: Layers,      desc: 'In-tile drill-down, one step at a time' },
 ]
 
@@ -1865,13 +1984,14 @@ const WidgetPreview = memo(function WidgetPreview({ widget }: { widget: Record<s
               {w.type === 'filter'  && <FilterWidget  widget={w} options={[]} />}
               {w.type === 'text'    && <TextWidget    widget={w} />}
               {w.type === 'section' && <SectionWidget widget={w} />}
+              {w.type === 'image'   && <ImageWidget   widget={w} />}
               {w.type === 'stepper' && (
                 <StepperWidget
                   widget={w}
                   renderChild={(child) => <WidgetPreview widget={child} />}
                 />
               )}
-              {!['chart','kpi','metric','table','pivot','filter','text','section','stepper'].includes(w.type) && (
+              {!['chart','kpi','metric','table','pivot','filter','text','section','image','stepper'].includes(w.type) && (
                 <div className="h-full w-full bg-surface flex items-center justify-center text-xs text-muted">
                   Unrecognised widget type: <span className="font-mono ml-1">{w.type}</span>
                 </div>

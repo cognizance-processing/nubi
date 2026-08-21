@@ -250,6 +250,71 @@ export function del(path: string) {
   return request(path, { method: 'DELETE' })
 }
 
+// ---------------------------------------------------------------------------
+// Image upload (dashboard "image" widgets / branding)
+// ---------------------------------------------------------------------------
+
+/**
+ * Upload an image file (multipart) for use in a dashboard's `image` widget.
+ *
+ * Bypasses `request()` — a FormData body must NOT get the JSON Content-Type
+ * `request()` defaults to whenever `options.body !== undefined`; the browser
+ * needs to set its own `multipart/form-data; boundary=...` header instead.
+ *
+ * @param {File} file
+ * @returns {Promise<{id: string, url: string, content_type: string, size: number}>}
+ */
+export async function uploadImage(file) {
+  const headers = new Headers()
+  if (_accessToken) headers.set('Authorization', `Bearer ${_accessToken}`)
+  if (_activeOrgId) headers.set('X-Org-Id', _activeOrgId)
+  if (_activeProjectId) headers.set('X-Project-Id', _activeProjectId)
+
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await fetch(`${BASE}/images`, {
+    method: 'POST',
+    headers,
+    credentials: 'include',
+    body: formData,
+  })
+  if (!response.ok) {
+    let errPayload
+    try { errPayload = await response.json() } catch { errPayload = null }
+    const message = errPayload?.error?.message ?? `Upload failed: ${response.status} ${response.statusText}`
+    const err: Error & { status?: number } = new Error(message)
+    err.status = response.status
+    throw err
+  }
+  return response.json()
+}
+
+/**
+ * Fetch a remote image by URL server-side (SSRF-guarded) and store it, for a
+ * dashboard's `image` widget. Same response shape as `uploadImage`.
+ * @param {string} url
+ */
+export function uploadImageFromUrl(url) {
+  return post('/images/from-url', { url })
+}
+
+/**
+ * Resolve a stored image's backend-relative `url` (e.g. "/api/v1/images/{id}",
+ * as returned by `uploadImage`/`uploadImageFromUrl`/the `upload_image` AI tool)
+ * to an absolute `<img src>` for the CURRENT deployment. Needed because `BASE`
+ * already carries `/api/v1` — naively concatenating would double that prefix
+ * once `VITE_BACKEND_URL` points at a different origin than the frontend.
+ * @param {string} relativeUrl
+ * @returns {string}
+ */
+export function resolveImageUrl(relativeUrl) {
+  if (!relativeUrl) return ''
+  if (/^https?:\/\//i.test(relativeUrl)) return relativeUrl
+  const withoutApiPrefix = relativeUrl.replace(/^\/api\/v1/, '')
+  return `${BASE}${withoutApiPrefix}`
+}
+
 /**
  * POST a JSON body and consume a Server-Sent Events (text/event-stream)
  * response, invoking `onEvent` with each parsed JSON event as it arrives.

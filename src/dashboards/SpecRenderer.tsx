@@ -43,6 +43,7 @@ import HtmlWidget from './widgets/HtmlWidget.jsx'
 import MetricWidget from './widgets/MetricWidget.jsx'
 import PivotWidget from './widgets/PivotWidget.jsx'
 import SectionWidget from './widgets/SectionWidget.jsx'
+import ImageWidget from './widgets/ImageWidget.jsx'
 import StepperWidget from './widgets/StepperWidget.jsx'
 import { VariableProvider, useSetVariable, useResolvedParams } from './VariableStore.jsx'
 import { CrossFilterProvider } from './CrossFilterContext.jsx'
@@ -219,6 +220,7 @@ function WidgetComponent({ widget, onOpenDrawer = undefined, editMode = false, p
     // fetch (no wasm needed in the editor canvas).
     case 'filter':  return <FilterWidgetLoader widget={w} editMode={editMode} />
     case 'text':    return <TextWidget   widget={w} />
+    case 'image':   return <ImageWidget  widget={w} />
     case 'section': return <SectionWidget widget={w} />
     // A stepper shows one child widget at a time in a single tile (the legacy
     // in-tile drill-down). It renders its children back through this same
