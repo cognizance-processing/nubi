@@ -34,11 +34,13 @@ async function createBoardViaEditor(page, titleSuffix = '') {
   await page.getByTestId('palette-add-kpi').click()
   await expect(page.locator('[data-testid^="widget-kpi_"]').first()).toBeVisible({ timeout: 10_000 })
 
-  // Save
+  // Save — a new board saves into /d/:id/edit (the unified live/edit surface;
+  // /editor/:id is a legacy route that just redirects here, see App.tsx's
+  // LegacyEditorRedirect).
   await page.getByTestId('editor-save-btn').click()
-  await page.waitForURL(/\/editor\/.+/, { timeout: 20_000 })
+  await page.waitForURL(/\/d\/.+\/edit/, { timeout: 20_000 })
 
-  const boardId = page.url().split('/editor/')[1]
+  const boardId = page.url().split('/d/')[1].split('/edit')[0]
   return { boardId, title }
 }
 
@@ -88,8 +90,9 @@ test.describe('Dashboard View Page', () => {
     await expect(page.getByTestId('dashboard-view-page')).toBeVisible({ timeout: 20_000 })
     await expect(page.getByTestId('dashboard-spec-renderer')).toBeVisible({ timeout: 20_000 })
 
-    // Edit link pointing back to /editor/:id should be visible
-    await expect(page.getByRole('link', { name: /edit in editor/i })).toBeVisible({ timeout: 10_000 })
+    // The board lives at one URL with a Live/Edit mode switch (ModeSwitch in
+    // DashboardViewPage.tsx) — there's no separate "edit in editor" link anymore.
+    await expect(page.getByTestId('dashboard-mode-edit')).toBeVisible({ timeout: 10_000 })
   })
 
   // ---------------------------------------------------------------------------
@@ -126,8 +129,9 @@ test.describe('Dashboard View Page', () => {
     await page.goto(`/d/${boardId}`)
     await expect(page.getByTestId('dashboard-spec-renderer')).toBeVisible({ timeout: 20_000 })
 
-    // Click the "Edit in editor →" link
-    await page.getByRole('link', { name: /edit in editor/i }).click()
-    await expect(page).toHaveURL(new RegExp(`/editor/${boardId}`), { timeout: 15_000 })
+    // Switch to Edit mode via the Live/Edit ModeSwitch — this navigates
+    // /d/:id → /d/:id/edit in place (no separate editor page/route anymore).
+    await page.getByTestId('dashboard-mode-edit').click()
+    await expect(page).toHaveURL(new RegExp(`/d/${boardId}/edit`), { timeout: 15_000 })
   })
 })

@@ -7,7 +7,9 @@
  *   3. Add a chart widget via the palette.
  *   4. Add a filter widget via the palette.
  *   5. Edit the dashboard title.
- *   6. Save → backend creates the board and the URL becomes /editor/:id.
+ *   6. Save → backend creates the board and the URL becomes /d/:id/edit
+ *      (the unified live/edit surface — /editor/:id is a legacy route that
+ *      just redirects here, see App.tsx's LegacyEditorRedirect).
  *   7. Reload the page → title and widgets persist.
  *
  * Stable selectors:
@@ -46,7 +48,7 @@ test.describe('Dashboard Editor', () => {
 
   // ---------------------------------------------------------------------------
 
-  test('add KPI + chart + filter, set title, save → URL becomes /editor/:id', async ({ page }) => {
+  test('add KPI + chart + filter, set title, save → URL becomes /d/:id/edit', async ({ page }) => {
     await page.goto('/editor')
 
     // Wait for editor to be ready
@@ -79,9 +81,9 @@ test.describe('Dashboard Editor', () => {
     await saveBtn.click()
 
     // Button shows "Saving…" briefly then "Save" (id now set)
-    // Wait for URL to become /editor/<uuid>
-    await page.waitForURL(/\/editor\/.+/, { timeout: 20_000 })
-    const boardId = page.url().split('/editor/')[1]
+    // Wait for URL to become /d/<uuid>/edit
+    await page.waitForURL(/\/d\/.+\/edit/, { timeout: 20_000 })
+    const boardId = page.url().split('/d/')[1].split('/edit')[0]
     expect(boardId).toBeTruthy()
 
     // ── 6. Reload and verify persistence ──

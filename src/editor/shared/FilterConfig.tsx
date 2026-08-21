@@ -22,11 +22,14 @@
  *   onChange  (w)=>void
  */
 
-import { LayoutGrid, Link2 } from 'lucide-react'
-import { inputCls, selectCls, FieldLabel, ToggleRow, Section, ColorField } from './inspectorPrimitives.jsx'
+import { LayoutGrid, Link2, BarChart3, Table2, Gauge, Grid3x3, Layers, Check } from 'lucide-react'
+import { inputCls, selectCls, FieldLabel, ToggleRow, Section, ColorField, SectionLabel } from './inspectorPrimitives.jsx'
 import { QueryPicker } from './QueryPicker.jsx'
 import { FILTER_SUBTYPES } from './constants.js'
 import { effectivePlacement, applyPlacement } from './placementHelpers.js'
+import { useQueryParamsIndex } from './useInspectorData.js'
+import { titleText } from './titleValue.js'
+import { wiringRows, connectedCount, bindParam, unbindVar, varNameFromLabel } from '../../dashboards/paramWiring.js'
 
 const SUBTYPE_LABELS = {
   select: 'Dropdown (single)',
@@ -75,7 +78,153 @@ export function PlacementControl({ widget, onChange }) {
   )
 }
 
-export function FilterConfig({ widget, onChange, spec }) {
+// ---------------------------------------------------------------------------
+// ConnectedWidgets — "what does this filter actually control?"
+// ---------------------------------------------------------------------------
+
+const TYPE_ICON = {
+  chart: BarChart3, table: Table2, kpi: Gauge, metric: Gauge,
+  pivot: Grid3x3, stepper: Layers,
+}
+
+/** Why a widget can't be connected, in words the author can act on. */
+const BLOCKED_REASON = {
+  'no-param': 'its query takes no parameters',
+  unknown: 'no query bound yet',
+}
+
+/**
+ * The list of widgets this filter drives, with a switch on each one.
+ *
+ * This replaces the instructions that used to live here ("go to that chart's
+ * param bindings and add…"). Everything it needs is already known: the board
+ * spec lists the widgets, the registry lists each query's declared params, and
+ * a name match tells us which param a variable belongs in. Ticking a row writes
+ * that binding onto the other widget; unticking removes it.
+ */
+function ConnectedWidgets({ widget, spec, varName, onPatchWidget, resolveWidget }) {
+  const { paramsById, loaded } = useQueryParamsIndex()
+
+  if (!varName) {
+    return (
+      <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2 leading-relaxed">
+        Name this filter’s variable above and the widgets it can control appear here.
+      </p>
+    )
+  }
+
+  const rows = wiringRows({
+    widgets: (spec?.widgets ?? []).filter(w => w.id !== widget.id),
+    varName,
+    paramsByQueryId: paramsById,
+    resolve: resolveWidget,
+    // Name each row the way the widget names itself on the canvas — the same
+    // fallback chain the library-save dialog uses. A list of widget ids is not
+    // something anyone can pick their chart out of.
+    labelFor: w => titleText(w.config?.title) || titleText(w.props?.label)
+      || titleText(w.title) || `Untitled ${w.type}`,
+  })
+
+  if (rows.length === 0) {
+    return (
+      <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2 text-center">
+        No charts, tables or KPIs on this board yet.
+      </p>
+    )
+  }
+
+  const connected = connectedCount(rows)
+  const connectable = rows.filter(r => r.state === 'available')
+
+  const connect = (row, paramName) => {
+    if (!paramName) return
+    onPatchWidget(row.id, w => ({ ...w, params: bindParam(w.params, paramName, varName) }))
+  }
+  const disconnect = (row) => {
+    onPatchWidget(row.id, w => ({ ...w, params: unbindVar(w.params, varName) }))
+  }
+
+  return (
+    <div className="space-y-2" data-testid="filter-connections">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] text-muted">
+          <span className="font-medium text-fg">{connected}</span> of {rows.length} connected
+        </span>
+        {connectable.length > 0 && (
+          <button
+            data-testid="filter-connect-all"
+            onClick={() => connectable.forEach(r => connect(r, r.paramName))}
+            className="text-[11px] font-medium px-2 h-6 rounded-lg border border-dashed border-border hover:border-primary text-muted hover:text-primary transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
+            Connect {connectable.length === 1 ? 'the other one' : `all ${connectable.length}`}
+          </button>
+        )}
+      </div>
+
+      <ul className="space-y-1">
+        {rows.map(row => {
+          const Icon = TYPE_ICON[row.type] ?? BarChart3
+          const isOn = row.state === 'connected'
+          const canToggle = isOn || row.state === 'available'
+          const blocked = BLOCKED_REASON[row.state]
+          return (
+            <li key={row.id}
+              data-testid={`filter-connection-${row.id}`}
+              className={`rounded-lg border px-2 py-1.5 transition-colors ${
+                isOn ? 'border-primary/40 bg-primary/5' : 'border-border bg-surface'
+              }`}>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={isOn}
+                  aria-label={`${isOn ? 'Disconnect' : 'Connect'} ${row.label}`}
+                  disabled={!canToggle}
+                  onClick={() => (isOn ? disconnect(row) : connect(row, row.paramName))}
+                  className={`w-4 h-4 flex-none rounded border flex items-center justify-center transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50 ${
+                    isOn ? 'bg-primary border-primary text-primary-fg'
+                    : canToggle ? 'border-border hover:border-primary bg-surface'
+                    : 'border-border/60 bg-surface-2 cursor-not-allowed'
+                  }`}>
+                  {isOn && <Check size={11} strokeWidth={3} />}
+                </button>
+                <Icon size={12} className={`flex-none ${isOn ? 'text-primary' : 'text-muted/70'}`} />
+                <span className={`flex-1 text-xs truncate ${canToggle ? 'text-fg' : 'text-muted/70'}`} title={row.label}>
+                  {row.label}
+                </span>
+              </div>
+
+              {isOn && (
+                <p className="text-[10px] text-muted/80 mt-0.5 pl-6 font-mono truncate">→ {row.paramName}</p>
+              )}
+              {row.state === 'available' && (
+                <p className="text-[10px] text-muted/60 mt-0.5 pl-6 font-mono truncate">{row.paramName}</p>
+              )}
+              {row.state === 'choose' && (
+                <div className="pl-6 mt-1">
+                  <select
+                    className={selectCls}
+                    defaultValue=""
+                    aria-label={`Choose which parameter of ${row.label} this filter fills`}
+                    onChange={e => connect(row, e.target.value)}>
+                    <option value="" disabled>Which parameter?</option>
+                    {row.options.map(o => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </div>
+              )}
+              {blocked && (
+                <p className="text-[10px] text-muted/60 mt-0.5 pl-6">
+                  {loaded || row.state === 'no-param' ? blocked : 'reading parameters…'}
+                </p>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
+export function FilterConfig({ widget, onChange, spec, onPatchWidget = undefined, onCreateVariable = undefined, resolveWidget = undefined }) {
   const setField = (key, val) => onChange({ ...widget, [key]: val })
   const props = widget.props ?? {}
   const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
@@ -85,13 +234,29 @@ export function FilterConfig({ widget, onChange, spec }) {
   const varName = widget.target_var ?? ''
   const knownVar = !varName || varNames.includes(varName)
 
+  // The variable follows the label — "Store group" writes `store_group` — until
+  // someone edits the name directly, at which point it stops following. That is
+  // detected by comparing against what the PREVIOUS label would have produced,
+  // so a hand-picked name is never overwritten by a later label edit.
+  const setLabel = (label) => {
+    const next: Record<string, any> = { ...widget, props: { ...props, label } }
+    const followed = !varName || varName === varNameFromLabel(props.label ?? '')
+    if (followed) {
+      const derived = varNameFromLabel(label)
+      if (derived) next.target_var = derived
+    }
+    onChange(next)
+  }
+
   return (
     <div className="space-y-3">
       <PlacementControl widget={widget} onChange={onChange} />
       <div>
         <FieldLabel>Label</FieldLabel>
         <input type="text" className={inputCls} value={props.label ?? ''} placeholder="e.g. Region"
-          onChange={e => setProps('label', e.target.value)} />
+          data-testid="filter-label"
+          onChange={e => setLabel(e.target.value)}
+          onBlur={() => { const v = (widget.target_var ?? '').trim(); if (v && !varNames.includes(v)) onCreateVariable?.(v) }} />
       </div>
       <div>
         <FieldLabel>Type</FieldLabel>
@@ -100,25 +265,42 @@ export function FilterConfig({ widget, onChange, spec }) {
         </select>
       </div>
 
-      {/* ── Connect to widgets ── */}
-      <div>
-        <FieldLabel className="flex items-center gap-1.5"><Link2 size={12} /> Target variable</FieldLabel>
+      {/* ── What this filter controls ────────────────────────────────────── */}
+      <div className="space-y-1.5">
+        <FieldLabel className="flex items-center gap-1.5"><Link2 size={12} /> Controls these widgets</FieldLabel>
+        <ConnectedWidgets
+          widget={widget}
+          spec={spec}
+          varName={varName}
+          onPatchWidget={onPatchWidget ?? (() => {})}
+          resolveWidget={resolveWidget}
+        />
+        <p className="text-[10px] text-muted/70 leading-relaxed">
+          A widget can be connected once its query declares a matching
+          <span className="font-mono text-muted"> {'{{'}{varName || 'name'}{'}}'} </span>
+          parameter.
+        </p>
+      </div>
+
+      {/* ── Variable name (advanced — derived from the label by default) ──── */}
+      <Section title="Variable name" defaultOpen={!varName || !knownVar}>
         <input type="text" list="filter-var-list" placeholder="e.g. region" className={inputCls}
-          value={varName} onChange={e => setField('target_var', e.target.value)} />
+          data-testid="filter-target-var"
+          value={varName}
+          onChange={e => setField('target_var', e.target.value)}
+          onBlur={e => { const v = e.target.value.trim(); if (v && !varNames.includes(v)) onCreateVariable?.(v) }} />
         {varNames.length > 0 && (
           <datalist id="filter-var-list">
             {varNames.map(v => <option key={v} value={v} />)}
           </datalist>
         )}
         <p className="text-[10px] text-muted/70 mt-1 leading-relaxed">
-          This filter writes its value to <span className="font-mono text-muted">{varName || 'a variable'}</span>.
-          To make a chart react: in that chart&apos;s <b>Param bindings</b> add a param bound to this variable, and use
-          <span className="font-mono text-muted"> {'{{'}{varName || 'region'}{'}}'}</span> in its query SQL.
+          The name this filter’s value travels under — written into queries as
+          <span className="font-mono text-muted"> {'{{'}{varName || 'region'}{'}}'}</span>, and into a
+          shareable link as <span className="font-mono text-muted">?{varName || 'region'}=…</span>.
+          It follows the label unless you change it here.
         </p>
-        {varName && !knownVar && (
-          <p className="text-[10px] text-warning mt-1">Tip: also add “{varName}” under Dashboard → Variables so it has a default.</p>
-        )}
-      </div>
+      </Section>
 
       {isChoice && (
         <div>

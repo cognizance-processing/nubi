@@ -8,12 +8,14 @@
  *   useMetricsList()                → MetricRow[]
  *   useWidgetLibrary()              → { rows, loading, reload }
  *   useWidgetUsage(id)              → { count, boards } | null | undefined
+ *   useQueryParamsIndex()           → { paramsById, nameById, loaded }
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useSyncExternalStore } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { listMetrics } from '../../lib/metrics.js'
 import { listLibraryWidgets, getWidgetUsage } from '../../lib/widgetLibrary.js'
+import { listRegisteredQueries } from '../../lib/api.js'
 
 /**
  * Run a query by ID and return its schema column names.
@@ -164,4 +166,81 @@ export function useMetricsList() {
     return () => { cancelled = true }
   }, [])
   return metrics
+}
+
+// ---------------------------------------------------------------------------
+// Query params index — "which params does each registered query declare?"
+//
+// The inspector needs this on every widget it shows (to offer real param names
+// instead of asking the author to type them) and the filter panel needs it for
+// every widget on the board at once. That is one shared answer, so it lives in
+// a module-level store rather than a fetch per component: the registry list is
+// already loaded for the query picker, and re-reading it per selection would
+// mean a request every time someone clicks a different widget.
+//
+// The store is filled once per session and refreshed on demand — call
+// `refreshQueryParamsIndex()` after saving a query, since its params may have
+// changed.
+// ---------------------------------------------------------------------------
+
+/** @type {{ paramsById: Map<string, any[]>, nameById: Map<string, string>, loaded: boolean }} */
+let _paramsIndex: { paramsById: Map<string, any[]>, nameById: Map<string, string>, loaded: boolean } = { paramsById: new Map(), nameById: new Map(), loaded: false }
+let _paramsPromise: Promise<void> | null = null
+const _paramsListeners = new Set<() => void>()
+
+function _emitParamsIndex(next) {
+  _paramsIndex = next
+  for (const listener of _paramsListeners) listener()
+}
+
+function _loadParamsIndex() {
+  if (_paramsPromise) return _paramsPromise
+  _paramsPromise = listRegisteredQueries()
+    .then(rows => {
+      const paramsById = new Map()
+      const nameById = new Map()
+      for (const row of Array.isArray(rows) ? rows : []) {
+        if (!row?.id) continue
+        paramsById.set(row.id, Array.isArray(row.params) ? row.params : [])
+        if (row.name) nameById.set(row.id, row.name)
+      }
+      _emitParamsIndex({ paramsById, nameById, loaded: true })
+    })
+    .catch(() => {
+      // A registry read that fails must not break the inspector: an empty index
+      // reads as "params unknown", which every consumer already handles by
+      // falling back to manual entry.
+      _emitParamsIndex({ ..._paramsIndex, loaded: true })
+    })
+  return _paramsPromise
+}
+
+/** Re-read the registry (after a query's params were edited elsewhere). */
+export function refreshQueryParamsIndex() {
+  _paramsPromise = null
+  return _loadParamsIndex()
+}
+
+function _subscribeParamsIndex(listener) {
+  _paramsListeners.add(listener)
+  return () => { _paramsListeners.delete(listener) }
+}
+
+/**
+ * Declared params for every registered query, keyed by query id.
+ *
+ * `paramsById.get(id)` returns `undefined` while the registry is still loading
+ * or for a query the caller cannot see — which callers must treat as "unknown",
+ * NOT as "no params", or a slow network would look like a query with nothing to
+ * bind. `loaded` distinguishes the two.
+ */
+export function useQueryParamsIndex() {
+  useEffect(() => { _loadParamsIndex() }, [])
+  return useSyncExternalStore(_subscribeParamsIndex, () => _paramsIndex, () => _paramsIndex)
+}
+
+/** Declared params for one query id (`undefined` until the index has loaded). */
+export function useQueryParams(queryId) {
+  const { paramsById, loaded } = useQueryParamsIndex()
+  return { params: queryId ? paramsById.get(queryId) : undefined, loaded }
 }

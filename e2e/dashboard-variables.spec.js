@@ -33,8 +33,23 @@ async function apiLogin(request) {
   return body.access_token
 }
 
+/**
+ * The workspace the app lands in by default: the first org GET /orgs returns.
+ * The account belongs to several, and a board created in a different one
+ * renders "Board not found in this workspace" instead of the dashboard.
+ */
+async function firstOrgId(request, token) {
+  const res = await request.get(`${BACKEND}/api/v1/orgs`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  expect(res.ok()).toBeTruthy()
+  const body = await res.json()
+  const rows = Array.isArray(body) ? body : (body.orgs ?? [])
+  return rows[0]?.id ?? null
+}
+
 /** Create a test board via the API and return its id. */
-async function createVariableBoard(request, token) {
+async function createVariableBoard(request, token, orgId) {
   const spec = {
     version: 1,
     title: 'E2E Variable Test',
@@ -66,7 +81,10 @@ async function createVariableBoard(request, token) {
   }
 
   const res = await request.post(`${BACKEND}/api/v1/boards`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(orgId ? { 'X-Org-Id': orgId } : {}),
+    },
     data: { name: 'E2E Variable Test', config: { spec } },
   })
   expect(res.ok(), `Board creation failed: ${res.status()} ${await res.text()}`).toBeTruthy()
@@ -77,23 +95,29 @@ async function createVariableBoard(request, token) {
 /** Log in through the browser UI so the front-end has a valid session. */
 async function browserLogin(page) {
   await page.goto('/login')
-  await page.getByLabel('Email').fill(ADMIN_EMAIL)
-  await page.getByLabel('Password').fill(ADMIN_PASSWORD)
-  await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+  // Target the inputs by type, not label: the password field now sits next to a
+  // "Show password" toggle that also carries the Password label.
+  await page.locator('input[type="email"]').fill(ADMIN_EMAIL)
+  await page.locator('input[type="password"]').fill(ADMIN_PASSWORD)
+  await page.locator('button[type="submit"]').click()
   await page.waitForURL(url => !url.pathname.startsWith('/login'), { timeout: 20_000 })
 }
 
 test.describe('Dashboard variable routing', () => {
   let token
+  let orgId
   let boardId
 
   test.beforeAll(async ({ request }) => {
     token = await apiLogin(request)
-    boardId = await createVariableBoard(request, token)
+    orgId = await firstOrgId(request, token)
+    boardId = await createVariableBoard(request, token, orgId)
   })
 
   test('URL param seeds filter + re-queries data widget', async ({ page }) => {
     await browserLogin(page)
+    // Pin the browser to the workspace the board was created in.
+    await page.evaluate(id => { if (id) localStorage.setItem('nubi-active-org-id', id) }, orgId)
 
     // Collect all /query requests for inspection.
     const queryRequests = []

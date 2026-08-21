@@ -47,7 +47,7 @@ import {
   Monitor, Tablet, Smartphone, ChevronDown, Settings, LayoutGrid, MessageSquare,
   ZoomIn, ZoomOut, Maximize2, Menu, ChevronUp, Sigma, FileCode2, LayoutDashboard,
   Undo2, Redo2, Eye, Pencil, Save, Loader2, CheckCircle2, BookmarkPlus, Library,
-  Link2, Copy, Unlink, Users,
+  Link2, Copy, Unlink, Users, Layers, Download, Image as ImageIcon, FileText, Search,
 } from 'lucide-react'
 import {
   saveWidgetToLibrary, deleteLibraryWidget, updateLibraryWidget, fromLibraryRow,
@@ -84,6 +84,7 @@ const CHART_ICONS = {
 }
 import { GridCanvas } from '../dashboards/grid/index.js'
 import { get, post, put, listRegisteredQueries } from '../lib/api.js'
+import { elementToPDF, widgetToCsv } from '../lib/exports.js'
 import ChartWidget from '../dashboards/widgets/ChartWidget.jsx'
 import KpiWidget from '../dashboards/widgets/KpiWidget.jsx'
 import TableWidget from '../dashboards/widgets/TableWidget.jsx'
@@ -94,6 +95,7 @@ import MetricWidget from '../dashboards/widgets/MetricWidget.jsx'
 import MetricPicker from '../components/app/MetricPicker.jsx'
 import PivotWidget from '../dashboards/widgets/PivotWidget.jsx'
 import SectionWidget from '../dashboards/widgets/SectionWidget.jsx'
+import StepperWidget from '../dashboards/widgets/StepperWidget.jsx'
 import ExportShareMenu from '../components/ExportShareMenu.jsx'
 import DashboardCodeView from './DashboardCodeView.jsx'
 import { VariableProvider } from '../dashboards/VariableStore.jsx'
@@ -133,9 +135,11 @@ import {
   TableConfig, ColumnFormatsEditor, ConditionalRulesEditor,
   FilterConfig, TextConfig, PlacementControl, effectivePlacement,
   titleText, withTitleText,
+  useQueryParamsIndex,
   DEMO_QUERY_IDS, CHART_TYPES, SERIES_TYPES, FILTER_SUBTYPES, VARIABLE_TYPES,
   FORMAT_OPS, COLUMN_FORMAT_TYPES, BACKGROUND_TYPES, PIVOT_AGGS,
 } from './shared/index.js'
+import { autoBindParams } from '../dashboards/paramWiring.js'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -144,6 +148,14 @@ import {
 // NOTE: DEMO_QUERY_IDS, CHART_TYPES, SERIES_TYPES, FILTER_SUBTYPES, VARIABLE_TYPES,
 // FORMAT_OPS, COLUMN_FORMAT_TYPES, BACKGROUND_TYPES, PIVOT_AGGS are now imported
 // from ./shared/constants.js (via ./shared/index.js above).
+// A filter's subtype decides what kind of value its variable holds, so a
+// variable declared on the filter's behalf starts with the right type instead
+// of defaulting to text and mis-typing every date range.
+const VARIABLE_TYPE_FOR_FILTER = {
+  select: 'select', multiselect: 'multiselect', list: 'select',
+  daterange: 'daterange', text: 'text',
+}
+
 // react-grid-layout compaction modes exposed in the Dashboard panel.
 const COMPACTION_MODES = [
   { id: 'free',       label: 'Free place', hint: 'Keep widgets exactly where placed' },
@@ -259,20 +271,33 @@ function widgetsForTab(spec, activeTabId) {
 // placement (columns are 1fr) — we use it only to compute the desktop design width
 // and the auto-fit zoom.
 function useElementWidth(initialWidth = 900) {
-  const containerRef = useRef(null)
   const [width, setWidth] = useState(initialWidth)
-  useEffect(() => {
-    const el = containerRef.current
+  const observerRef = useRef(null)
+  // A CALLBACK ref, not a plain useRef + `useEffect(..., [])`: the plain-ref
+  // version only ever tried to attach the ResizeObserver once, right after
+  // the component's FIRST render — if the ref'd element didn't exist yet at
+  // that instant (e.g. the editor was still showing its `loading` spinner,
+  // so the canvas div hadn't mounted), the effect's `if (!el) return` bailed
+  // permanently and NOTHING ever retried, leaving `width` stuck at
+  // `initialWidth` forever regardless of how the container actually
+  // resized. A callback ref fires exactly when the DOM node appears
+  // (whichever render that happens on) and again on unmount, so the
+  // observer always ends up attached to the real, current element.
+  const containerRef = useCallback((el) => {
+    if (observerRef.current) {
+      observerRef.current.disconnect()
+      observerRef.current = null
+    }
     if (!el || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(entries => {
       const w = entries[0]?.contentRect?.width
       if (w && w > 0) setWidth(w)
     })
     ro.observe(el)
+    observerRef.current = ro
     // Seed immediately so the first paint isn't stuck on the initial value.
     const w0 = el.getBoundingClientRect().width
     if (w0 > 0) setWidth(w0)
-    return () => ro.disconnect()
   }, [])
   return { width, containerRef }
 }
@@ -333,6 +358,7 @@ const WIDGET_SIZES = {
   filter:  { w: 3, h: 2 },
   text:    { w: 6, h: 3 },
   section: { w: 12, h: 1 },
+  stepper: { w: 6, h: 6 },
 }
 
 function makeKpiWidget(pos) {
@@ -393,6 +419,21 @@ function makeSectionWidget(pos) {
     pos: { ...WIDGET_SIZES.section, ...pos },
   }
 }
+function makeStepperWidget(pos) {
+  return {
+    id: genId('stepper'), type: 'stepper', query_id: null,
+    props: {
+      title: 'Drill-down',
+      orientation: 'horizontal',
+      variant: 'labels',
+      steps: [
+        { id: 'step-1', label: 'Step 1', widget: makeKpiWidget({ x: 0, y: 0 }) },
+        { id: 'step-2', label: 'Step 2', widget: makeKpiWidget({ x: 0, y: 0 }) },
+      ],
+    },
+    pos: { ...WIDGET_SIZES.stepper, ...pos },
+  }
+}
 
 function makeWidget(type: string, pos: Record<string, any>): Record<string, any> {
   if (type === 'kpi') return makeKpiWidget(pos)
@@ -402,6 +443,7 @@ function makeWidget(type: string, pos: Record<string, any>): Record<string, any>
   if (type === 'filter') return makeFilterWidget(pos)
   if (type === 'text') return makeTextWidget(pos)
   if (type === 'section') return makeSectionWidget(pos)
+  if (type === 'stepper') return makeStepperWidget(pos)
   return makeChartWidget(pos)
 }
 
@@ -523,6 +565,132 @@ function SectionConfig({ widget, onChange }) {
         </div>
       </div>
       <ToggleRow label="Show divider line" checked={props.divider !== false} onChange={v => setProps('divider', v)} />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// StepperConfig — manage the steps of an in-tile drill-down widget
+// ---------------------------------------------------------------------------
+
+// Child types a step can hold, and how to build a fresh default of each.
+// Reuses the same factories the palette uses so a step's child is a normal,
+// independently-typed widget spec — StepperWidget just renders it in place.
+const STEP_CHILD_MAKERS = {
+  kpi:    makeKpiWidget,
+  metric: makeMetricWidget,
+  chart:  makeChartWidget,
+  table:  makeTableWidget,
+  text:   makeTextWidget,
+}
+const STEP_CHILD_LABELS = { kpi: 'KPI', metric: 'Metric', chart: 'Chart', table: 'Table', text: 'Text' }
+
+function StepperConfig({ widget, onChange }) {
+  const props = widget.props ?? {}
+  const steps = Array.isArray(props.steps) ? props.steps : []
+  const setProps = (patch) => onChange({ ...widget, props: { ...props, ...patch } })
+  const setSteps = (next) => setProps({ steps: next })
+
+  const updateStep = (i, patch) => {
+    setSteps(steps.map((s, idx) => idx === i ? { ...s, ...patch } : s))
+  }
+  const setStepChildType = (i, type) => {
+    const make = STEP_CHILD_MAKERS[type] ?? makeKpiWidget
+    updateStep(i, { widget: make({ x: 0, y: 0 }) })
+  }
+  const setStepChildField = (i, field, value) => {
+    const step = steps[i]
+    updateStep(i, { widget: { ...step.widget, [field]: value } })
+  }
+  const addStep = () => {
+    const n = steps.length + 1
+    setSteps([...steps, { id: `step-${Date.now()}`, label: `Step ${n}`, widget: makeKpiWidget({ x: 0, y: 0 }) }])
+  }
+  const removeStep = (i) => setSteps(steps.filter((_, idx) => idx !== i))
+  const moveStep = (i, dir) => {
+    const j = i + dir
+    if (j < 0 || j >= steps.length) return
+    const next = [...steps]
+    ;[next[i], next[j]] = [next[j], next[i]]
+    setSteps(next)
+  }
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <FieldLabel>Title</FieldLabel>
+        <input type="text" className={inputCls} value={props.title ?? ''} placeholder="Drill-down"
+          onChange={e => setProps({ title: e.target.value })} />
+      </div>
+      <div>
+        <FieldLabel>Orientation</FieldLabel>
+        <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+          {['horizontal', 'vertical'].map(o => (
+            <button key={o} onClick={() => setProps({ orientation: o })}
+              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.orientation ?? 'horizontal') === o ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{o}</button>
+          ))}
+        </div>
+      </div>
+      <div>
+        <FieldLabel>Step indicator</FieldLabel>
+        <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+          {['labels', 'dots'].map(v => (
+            <button key={v} onClick={() => setProps({ variant: v })}
+              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.variant ?? 'labels') === v ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{v}</button>
+          ))}
+        </div>
+      </div>
+
+      <div className="pt-1 border-t border-border/60">
+        <div className="flex items-center justify-between mb-2 mt-2">
+          <FieldLabel className="!mb-0">Steps ({steps.length})</FieldLabel>
+          <button onClick={addStep}
+            className="flex items-center gap-1 text-[11px] font-medium text-primary hover:text-primary/80 transition-colors">
+            <Plus size={12} /> Add step
+          </button>
+        </div>
+
+        {steps.length === 0 && (
+          <p className="text-[11px] text-muted/70 leading-relaxed">No steps yet — add one to get started.</p>
+        )}
+
+        <div className="space-y-2">
+          {steps.map((step, i) => {
+            const child = step.widget ?? {}
+            const childType = STEP_CHILD_MAKERS[child.type] ? child.type : 'kpi'
+            const isDataChild = childType !== 'text'
+            return (
+              <div key={step.id ?? i} className="rounded-lg border border-border bg-surface-2/30 p-2.5 space-y-2">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-mono text-muted/70 w-4 shrink-0">{i + 1}</span>
+                  <input type="text" className={inputCls + ' flex-1'} value={step.label ?? ''}
+                    placeholder={`Step ${i + 1}`} onChange={e => updateStep(i, { label: e.target.value })} />
+                  <button onClick={() => moveStep(i, -1)} disabled={i === 0}
+                    className="p-1 rounded text-muted hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed" title="Move up">
+                    <ChevronUp size={13} />
+                  </button>
+                  <button onClick={() => moveStep(i, 1)} disabled={i === steps.length - 1}
+                    className="p-1 rounded text-muted hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed" title="Move down">
+                    <ChevronDown size={13} />
+                  </button>
+                  <button onClick={() => removeStep(i)} className="p-1 rounded text-muted hover:text-red-500" title="Remove step">
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <select className={selectCls + ' flex-1'} value={childType}
+                    onChange={e => setStepChildType(i, e.target.value)}>
+                    {Object.keys(STEP_CHILD_MAKERS).map(t => <option key={t} value={t}>{STEP_CHILD_LABELS[t]}</option>)}
+                  </select>
+                </div>
+                {isDataChild && (
+                  <QueryPicker value={child.query_id ?? ''} onChange={id => setStepChildField(i, 'query_id', id)} />
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
     </div>
   )
 }
@@ -1021,8 +1189,24 @@ function ConfigPanel({
   // Reference-based reuse (ref widgets only — all optional/no-op for inline widgets).
   libraryById, onDetachRequest, onEditScopeRequest, onResetOverride,
   sharedEditRefId, onSaveSharedDefinition, onCancelSharedEdit, savingShared,
+  // Filter wiring: reach other widgets on the board, and declare variables.
+  onPatchWidget, onCreateVariable, resolveWidget,
 }) {
   const focus = variant === 'focus'
+  // Declared params for every registered query — shared, cached, so binding a
+  // query can wire it up without a round trip per selection.
+  const { paramsById } = useQueryParamsIndex()
+  // What the last query pick connected on its own, so the panel can say so
+  // rather than changing the widget silently. Keyed by widget id: selecting a
+  // different widget must not inherit the previous one's note.
+  const [autoBound, setAutoBound] = useState(null)
+  // Config sections are grouped into tabs (Data/Widget/Style/Layout) so a
+  // widget with a lot of surface area — a chart has ~11 sections — doesn't
+  // force one long scroll. `prevWidgetId` is the "reset state when a prop
+  // changes" pattern: switching the selected widget snaps back to the
+  // default tab instead of possibly landing on one that's now hidden.
+  const [activeTab, setActiveTab] = useState('widget')
+  const [prevWidgetId, setPrevWidgetId] = useState(widget?.id)
 
   if (!widget) {
     return (
@@ -1057,33 +1241,88 @@ function ConfigPanel({
         next.config = { ...(widget.config ?? {}), title: withTitleText(widget.config?.title, match.name) }
       }
     }
+    // Connect the query's params to the board's filters by name. Only exact,
+    // unambiguous matches are taken and nothing already bound is touched, so
+    // this can add wiring but never change wiring someone chose. What it did is
+    // reported under the picker — the widget must not change in silence.
+    const { params, added } = autoBindParams(
+      widget.params,
+      paramsById.get(qid),
+      (spec?.variables ?? []).map(v => v.name),
+    )
+    if (added.length > 0) next.params = params
+    setAutoBound(added.length > 0 ? { widgetId: widget.id, added } : null)
     onChange(next)
   }
 
+  const tabDefs = [
+    { id: 'data',   label: 'Data',   icon: Database,                       show: !isBrokenRef && isDataWidget },
+    { id: 'widget', label: 'Widget', icon: WIDGET_ICONS[widget.type] ?? Settings2, show: !isBrokenRef },
+    { id: 'style',  label: 'Style',  icon: Palette,                        show: !isBrokenRef },
+    // Layout & size still applies to a broken ref (it still occupies grid
+    // space and can be moved/resized/removed), so this tab always shows.
+    { id: 'layout', label: 'Layout', icon: LayoutGrid,                     show: true },
+  ].filter(t => t.show)
+
+  if (widget.id !== prevWidgetId) {
+    setPrevWidgetId(widget.id)
+    setActiveTab(isBrokenRef ? 'layout' : 'widget')
+  }
+  const effectiveTab = tabDefs.some(t => t.id === activeTab) ? activeTab : tabDefs[0]?.id
+
+  // Pinned above the scrollable body: widget identity + the tab strip. A
+  // chart widget's Widget tab alone has ~5 sections — without this, switching
+  // tabs mid-scroll means scrolling back to the top first.
+  const hasPinned = !focus || tabDefs.length > 1
+
   return (
-    <div className="p-3 space-y-4 overflow-y-auto h-full">
-      {/* Widget header */}
-      {!focus && (
-        <div className="flex items-center justify-between gap-2 pb-1 border-b border-border/60">
-          <h3 className="flex items-center gap-2 text-sm font-semibold text-fg capitalize">
-            {(() => { const I = WIDGET_ICONS[widget.type]; return I ? <I size={14} className="text-primary" /> : null })()}
-            {widget.type} widget
-          </h3>
-          <button
-            onClick={onRemove}
-            title="Remove widget"
-            className={[
-              'flex items-center gap-1 text-xs px-2 h-7 rounded-lg border border-transparent',
-              'text-muted hover:text-red-500 hover:border-red-200 hover:bg-red-50/80',
-              'transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400/60',
-              'dark:hover:bg-red-950/40',
-            ].join(' ')}
-          >
-            <Trash2 size={12} /> Remove
-          </button>
+    <div className="flex flex-col h-full min-h-0">
+      {hasPinned && (
+        <div className="shrink-0 p-3 pb-0">
+          {/* Widget header */}
+          {!focus && (
+            <div className="flex items-center justify-between gap-2 pb-3 border-b border-border/60">
+              <h3 className="flex items-center gap-2 text-sm font-semibold text-fg capitalize">
+                {(() => { const I = WIDGET_ICONS[widget.type]; return I ? <I size={14} className="text-primary" /> : null })()}
+                {widget.type} widget
+              </h3>
+              <button
+                onClick={onRemove}
+                title="Remove widget"
+                className={[
+                  'flex items-center gap-1 text-xs px-2 h-7 rounded-lg border border-transparent',
+                  'text-muted hover:text-red-500 hover:border-red-200 hover:bg-red-50/80',
+                  'transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400/60',
+                  'dark:hover:bg-red-950/40',
+                ].join(' ')}
+              >
+                <Trash2 size={12} /> Remove
+              </button>
+            </div>
+          )}
+
+          {tabDefs.length > 1 && (
+            <div className="flex items-center gap-1 border-b border-border/60 py-2" data-testid="config-tabs">
+              {tabDefs.map(t => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setActiveTab(t.id)}
+                  data-testid={`config-tab-${t.id}`}
+                  className={`flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider px-2 py-1 rounded-md transition-colors ${
+                    effectiveTab === t.id ? 'bg-primary/10 text-primary' : 'text-muted hover:text-fg'
+                  }`}
+                >
+                  <t.icon size={11} />
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
+      <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-4">
       {isRef && (
         <RefWidgetBanner
           widget={widget}
@@ -1113,60 +1352,96 @@ function ConfigPanel({
         </div>
       )}
 
-      {isDataWidget && !focus && (
-        <div className="space-y-1.5">
-          <FieldLabel className="flex items-center gap-1.5"><Database size={12} /> Query</FieldLabel>
-          <QueryPicker value={widget.query_id} onChange={setQueryId} extraIds={extraQueryIds} />
-          {/* Live status + jump into the query editor — without this the only
-              relationship between a widget and its data was a typed id. */}
-          <QueryStatusLink queryId={widget.query_id} />
-        </div>
-      )}
-
-      {isBrokenRef ? (
+      {isBrokenRef && (
         <p className="text-xs text-muted/70 leading-relaxed rounded-lg border border-dashed border-border bg-surface-2/30 p-3">
           Nothing to configure for a broken reference — detach it (to keep this
           instance) or remove it, or re-add the widget from the library once
           the entry exists again.
         </p>
-      ) : (
-        <>
-          {isDataWidget && (
-            <Section title="Metric binding" defaultOpen={Boolean(widget.metric?.metric_id)} icon={Sigma}>
-              <MetricBindingSection widget={widget} onChange={onChange} />
-            </Section>
+      )}
+
+      {effectiveTab === 'data' && (
+        <div className="space-y-4">
+          {!focus && (
+            <div className="space-y-1.5">
+              <FieldLabel className="flex items-center gap-1.5"><Database size={12} /> Query</FieldLabel>
+              <QueryPicker value={widget.query_id} onChange={setQueryId} extraIds={extraQueryIds} />
+              {/* Live status + jump into the query editor — without this the only
+                  relationship between a widget and its data was a typed id. */}
+              <QueryStatusLink queryId={widget.query_id} />
+              {autoBound?.widgetId === widget.id && (
+                <p className="text-[10px] text-primary/90 flex items-start gap-1 leading-relaxed"
+                  data-testid="param-autobind-note">
+                  <Link2 size={11} className="mt-px flex-none" />
+                  <span>
+                    Connected to the{' '}
+                    {autoBound.added.map((a, i) => (
+                      <span key={a.param}>
+                        {i > 0 && (i === autoBound.added.length - 1 ? ' and ' : ', ')}
+                        <span className="font-mono">{a.variable}</span>
+                      </span>
+                    ))}{' '}
+                    filter{autoBound.added.length > 1 ? 's' : ''}. Change this under Parameters.
+                  </span>
+                </p>
+              )}
+            </div>
           )}
 
+          <Section title="Metric binding" defaultOpen={Boolean(widget.metric?.metric_id)} icon={Sigma}>
+            <MetricBindingSection widget={widget} onChange={onChange} />
+          </Section>
+
+          <Section title="Parameters" defaultOpen={false} icon={SlidersHorizontal}>
+            <ParamBindingSection widget={widget} onChange={onChange} specVariables={spec?.variables}
+              onCreateVariable={onCreateVariable} />
+          </Section>
+        </div>
+      )}
+
+      {effectiveTab === 'widget' && (
+        <div className="space-y-4">
           {widget.type === 'chart' && <ChartConfig widget={widget} onChange={onChange} />}
           {(widget.type === 'kpi' || widget.type === 'metric') && <KpiConfig widget={widget} onChange={onChange} />}
           {widget.type === 'table' && <TableConfig widget={widget} onChange={onChange} />}
           {widget.type === 'pivot' && <PivotConfig widget={widget} onChange={onChange} />}
-          {widget.type === 'filter' && <FilterConfig widget={widget} onChange={onChange} spec={spec} />}
+          {widget.type === 'filter' && (
+            <FilterConfig
+              widget={widget} onChange={onChange} spec={spec}
+              onPatchWidget={onPatchWidget}
+              onCreateVariable={name => onCreateVariable?.(name, VARIABLE_TYPE_FOR_FILTER[widget.subtype ?? 'select'] ?? 'text')}
+              resolveWidget={resolveWidget}
+            />
+          )}
           {widget.type === 'text' && <TextConfig widget={widget} onChange={onChange} />}
           {widget.type === 'section' && <SectionConfig widget={widget} onChange={onChange} />}
+          {widget.type === 'stepper' && <StepperConfig widget={widget} onChange={onChange} />}
 
           {widget.type === 'chart' && <DrilldownSection widget={widget} onChange={onChange} />}
-
-          {isDataWidget && (
-            <Section title="Parameters" defaultOpen={false} icon={SlidersHorizontal}>
-              <ParamBindingSection widget={widget} onChange={onChange} specVariables={spec?.variables} />
-            </Section>
-          )}
-        </>
+        </div>
       )}
 
-      <WidgetLayoutSection widget={widget} onChange={onChange} spec={spec}
-        activeBreakpoint={activeBreakpoint} onLayoutCommit={onLayoutCommit} />
+      {effectiveTab === 'style' && (
+        <div className="space-y-4">
+          <WidgetAppearanceSection widget={widget} onChange={onChange} />
+        </div>
+      )}
 
-      {!isBrokenRef && <WidgetAppearanceSection widget={widget} onChange={onChange} />}
+      {effectiveTab === 'layout' && (
+        <div className="space-y-4">
+          <WidgetLayoutSection widget={widget} onChange={onChange} spec={spec}
+            activeBreakpoint={activeBreakpoint} onLayoutCommit={onLayoutCommit} />
 
-      {!isRef && (
-        <Section title="Save to library" defaultOpen={false} icon={BookmarkPlus}>
-          <SaveToLibrarySection widget={widget} onSaved={onLibrarySaved} />
-        </Section>
+          {!isRef && (
+            <Section title="Save to library" defaultOpen={false} icon={BookmarkPlus}>
+              <SaveToLibrarySection widget={widget} onSaved={onLibrarySaved} />
+            </Section>
+          )}
+        </div>
       )}
 
       <p className="text-[10px] text-muted/50 pt-1 font-mono">{widget.id}</p>
+      </div>
     </div>
   )
 }
@@ -1372,6 +1647,7 @@ const PALETTE_ITEMS = [
   { type: 'filter',  label: 'Filter',  icon: FilterIcon,  desc: 'Select / date / text filter' },
   { type: 'text',    label: 'Text',    icon: Type,        desc: 'Markdown content block' },
   { type: 'section', label: 'Section', icon: Heading,     desc: 'Section header / divider' },
+  { type: 'stepper', label: 'Stepper', icon: Layers,      desc: 'In-tile drill-down, one step at a time' },
 ]
 
 /**
@@ -1380,13 +1656,47 @@ const PALETTE_ITEMS = [
  * addWidget selects the new widget) the parent switches to the config tab.
  */
 function AddPanel({ onAdd, onAddReference, onAddDetachedCopy, library, libraryLoading, onDeleteLibraryEntry }) {
+  const [q, setQ] = useState('')
+  const needle = q.trim().toLowerCase()
+  const filteredPalette = needle
+    ? PALETTE_ITEMS.filter(item => `${item.label} ${item.desc}`.toLowerCase().includes(needle))
+    : PALETTE_ITEMS
+  const filteredLibrary = needle
+    ? library.filter(row => (row.name ?? '').toLowerCase().includes(needle))
+    : library
+  const noMatches = needle.length > 0 && filteredPalette.length === 0 && filteredLibrary.length === 0
+
   return (
-    <div className="p-3 space-y-3 overflow-y-auto h-full">
-      <p className="text-xs text-muted/70 leading-relaxed px-0.5">
-        Pick a widget type to add it to the canvas.
-      </p>
+    <div className="flex flex-col h-full min-h-0">
+      {/* Pinned so the search box stays reachable while the list below
+          scrolls — otherwise a long palette/library list pushes it out of
+          view and there's no way to search without scrolling back up. */}
+      <div className="p-3 pb-2.5 space-y-2.5 shrink-0 border-b border-border/60">
+        <p className="text-xs text-muted/70 leading-relaxed px-0.5">
+          Pick a widget type to add it to the canvas.
+        </p>
+        <div className="relative">
+          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted/50 pointer-events-none" />
+          <input
+            type="text"
+            value={q}
+            onChange={e => setQ(e.target.value)}
+            placeholder="Search widgets…"
+            data-testid="add-panel-search"
+            className={`${inputCls} pl-8`}
+          />
+        </div>
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
+      {noMatches && (
+        <p className="text-[11px] text-muted/60 leading-relaxed px-0.5">
+          No widgets match “{q}”.
+        </p>
+      )}
+
       <div className="space-y-1.5">
-        {PALETTE_ITEMS.map(item => {
+        {filteredPalette.map(item => {
           const Icon = item.icon
           return (
             <button
@@ -1424,12 +1734,13 @@ function AddPanel({ onAdd, onAddReference, onAddDetachedCopy, library, libraryLo
           one creates a REFERENCE by default — fix the shared entry once and
           every board using it updates. "Add a detached copy" is the explicit
           opt-in for a fully independent inline copy. */}
+      {(!needle || filteredLibrary.length > 0) && (
       <div className="pt-1 space-y-1.5">
         <SectionLabel>From library</SectionLabel>
 
         {libraryLoading && <p className="text-[11px] text-muted/60 px-0.5">Loading…</p>}
 
-        {!libraryLoading && library.length === 0 && (
+        {!libraryLoading && filteredLibrary.length === 0 && (
           <p className="text-[11px] text-muted/60 leading-relaxed px-0.5">
             No saved widgets yet. Configure a widget, then use{' '}
             <span className="text-fg/70 font-medium">Save to library</span> in its
@@ -1437,7 +1748,7 @@ function AddPanel({ onAdd, onAddReference, onAddDetachedCopy, library, libraryLo
           </p>
         )}
 
-        {library.map(row => (
+        {filteredLibrary.map(row => (
           <div
             key={row.id}
             className="w-full flex flex-col gap-1.5 px-2.5 py-2 rounded-xl border border-border bg-surface hover:border-primary/60 transition-all duration-150 group"
@@ -1480,6 +1791,8 @@ function AddPanel({ onAdd, onAddReference, onAddDetachedCopy, library, libraryLo
             </div>
           </div>
         ))}
+      </div>
+      )}
       </div>
     </div>
   )
@@ -1552,8 +1865,16 @@ const WidgetPreview = memo(function WidgetPreview({ widget }: { widget: Record<s
               {w.type === 'filter'  && <FilterWidget  widget={w} options={[]} />}
               {w.type === 'text'    && <TextWidget    widget={w} />}
               {w.type === 'section' && <SectionWidget widget={w} />}
-              {!['chart','kpi','metric','table','pivot','filter','text','section'].includes(w.type) && (
-                <div className="flex items-center justify-center h-full text-xs text-muted">{w.type}</div>
+              {w.type === 'stepper' && (
+                <StepperWidget
+                  widget={w}
+                  renderChild={(child) => <WidgetPreview widget={child} />}
+                />
+              )}
+              {!['chart','kpi','metric','table','pivot','filter','text','section','stepper'].includes(w.type) && (
+                <div className="h-full w-full bg-surface flex items-center justify-center text-xs text-muted">
+                  Unrecognised widget type: <span className="font-mono ml-1">{w.type}</span>
+                </div>
               )}
             </>
           )}
@@ -1614,12 +1935,127 @@ function WidgetCardFallback({ widget }) {
 }
 
 // ---------------------------------------------------------------------------
+// WidgetExportButton — per-widget export (PNG / PDF capture the rendered
+// tile; CSV pulls this widget's rows from the same GET /boards/:id/export.json
+// the whole-dashboard ExportShareMenu already uses, filtered to one entry).
+// ---------------------------------------------------------------------------
+
+function widgetExportName(widget) {
+  const raw = widget.props?.label || widget.props?.title || widget.type || 'widget'
+  return String(raw).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'widget'
+}
+
+function _downloadBlob(filename, blob) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.style.display = 'none'
+  document.body.appendChild(a)
+  a.click()
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove() }, 100)
+}
+
+function WidgetExportButton({ widget, boardId }) {
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(null)
+  const [error, setError] = useState(null)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
+  }, [open])
+
+  function node() {
+    return document.querySelector(`[data-widget-export-root="${widget.id}"]`) as HTMLElement | null
+  }
+
+  async function exportPng() {
+    setBusy('png'); setError(null)
+    try {
+      const el = node()
+      if (!el) throw new Error('Nothing to capture yet.')
+      const { default: html2canvas } = await import('html2canvas')
+      const canvas = await html2canvas(el, {
+        backgroundColor: null, scale: 2, useCORS: true, logging: false,
+        ignoreElements: (n) => Boolean(n.closest?.('[data-widget-toolbar]')),
+      })
+      canvas.toBlob(blob => blob && _downloadBlob(`${widgetExportName(widget)}.png`, blob))
+    } catch (e) { setError(e.message || 'PNG export failed.') } finally { setBusy(null) }
+  }
+
+  async function exportPdf() {
+    setBusy('pdf'); setError(null)
+    try {
+      const el = node()
+      if (!el) throw new Error('Nothing to capture yet.')
+      await elementToPDF(el, `${widgetExportName(widget)}.pdf`, {
+        ignoreElements: (n) => Boolean(n.closest?.('[data-widget-toolbar]')),
+      })
+    } catch (e) { setError(e.message || 'PDF export failed.') } finally { setBusy(null) }
+  }
+
+  async function exportCsv() {
+    if (!boardId) { setError('Save the dashboard first to export data.'); return }
+    setBusy('csv'); setError(null)
+    try {
+      const qs = widget.query_id ? `?query_id=${encodeURIComponent(widget.query_id)}` : ''
+      const data = await get(`/boards/${boardId}/export.json${qs}`)
+      const widgets = Array.isArray(data) ? data : (data?.widgets ?? [])
+      const entry = widgets.find(w => w.widget_id === widget.id) ?? widgets.find(w => w.query_id === widget.query_id) ?? widgets[0]
+      if (!entry) throw new Error('No data for this widget yet.')
+      _downloadBlob(`${widgetExportName(widget)}.csv`, new Blob([widgetToCsv(entry)], { type: 'text/csv;charset=utf-8;' }))
+    } catch (e) { setError(e.message || 'CSV export failed.') } finally { setBusy(null) }
+  }
+
+  const itemCls = 'w-full flex items-center gap-2 px-2.5 py-1.5 text-[11px] text-fg rounded-md hover:bg-surface-2 disabled:opacity-50 transition-colors text-left'
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        title="Export this widget"
+        onMouseDown={e => { e.stopPropagation(); e.preventDefault() }}
+        onClick={e => { e.stopPropagation(); setOpen(o => !o) }}
+        className="w-6 h-6 flex items-center justify-center rounded-md bg-surface border border-border hover:border-primary hover:text-primary text-muted shadow-sm transition-all"
+        data-testid={`widget-export-${widget.id}`}
+      >
+        <Download size={11} />
+      </button>
+      {open && (
+        <div
+          onClick={e => e.stopPropagation()}
+          onMouseDown={e => e.stopPropagation()}
+          className="absolute right-0 top-full mt-1 z-30 w-40 bg-surface border border-border rounded-lg shadow-xl p-1"
+        >
+          <button onClick={exportPng} disabled={busy === 'png'} className={itemCls}>
+            <ImageIcon size={12} className="text-muted" /> {busy === 'png' ? 'Rendering…' : 'PNG'}
+          </button>
+          <button onClick={exportPdf} disabled={busy === 'pdf'} className={itemCls}>
+            <FileText size={12} className="text-muted" /> {busy === 'pdf' ? 'Rendering…' : 'PDF'}
+          </button>
+          <button onClick={exportCsv} disabled={busy === 'csv'} className={itemCls}>
+            <Table2 size={12} className="text-muted" /> {busy === 'csv' ? 'Fetching…' : 'CSV data'}
+          </button>
+          {error && <p className="px-2 pt-1 text-[10px] leading-snug" style={{ color: '#dc2626' }}>{error}</p>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // WidgetHoverToolbar — top-right actions: duplicate + delete
 // ---------------------------------------------------------------------------
 
-function WidgetHoverToolbar({ widget, onDuplicate, onDelete, onFocus, visible, reorder = false, onHeightStep }) {
+function WidgetHoverToolbar({ widget, boardId, onDuplicate, onDelete, onFocus, visible, reorder = false, onHeightStep }) {
   return (
     <div
+      data-widget-toolbar="true"
       className={`absolute top-1 right-1 flex items-center gap-1 z-10 transition-opacity ${visible ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
       style={{ transition: 'opacity 0.15s' }}
     >
@@ -1655,6 +2091,7 @@ function WidgetHoverToolbar({ widget, onDuplicate, onDelete, onFocus, visible, r
           <Maximize2 size={11} />
         </button>
       )}
+      {!reorder && <WidgetExportButton widget={widget} boardId={boardId} />}
       <button
         title="Duplicate widget (⌘D)"
         onMouseDown={e => { e.stopPropagation(); e.preventDefault() }}
@@ -2343,7 +2780,11 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   const [loadError, setLoadError] = useState(null)
   const [savedBoardId, setSavedBoardId] = useState(boardId)
   // rightPanel ∈ {'add','config','chat','board'} — drives the single RHS panel.
-  const [rightPanel, setRightPanel] = useState('add')
+  // Defaults to 'config' (shows the "Nothing selected" placeholder): 'add' now
+  // lives permanently in the left widget-library rail on desktop, and 'add' as
+  // the RHS default used to make the "Add widget" toolbar toggle look collapsed
+  // on first load.
+  const [rightPanel, setRightPanel] = useState('config')
   // Start collapsed on tablet (md) so the panel doesn't immediately overlay the
   // canvas; on lg+ the panel is always in-flow so we default to open.
   const [rightCollapsed, setRightCollapsed] = useState(
@@ -2723,24 +3164,26 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   // ── Mutations ─────────────────────────────────────────────────────────────
 
   const addWidget = useCallback((type) => {
-    setHist(h => {
-      const prev = h.present
-      const cols = prev.layout?.cols ?? 12
-      // New widgets are placed within (and tagged for) the ACTIVE tab, so the
-      // free-spot scan only considers that tab's occupancy. With no tabs this is
-      // the full widget list and tab_id stays absent (today's behavior).
-      const tab = resolveActiveTab(prev, activeTabIdRaw)
-      const peers = tab ? widgetsForTab(prev, tab) : prev.widgets
-      const size = WIDGET_SIZES[type] ?? WIDGET_SIZES.chart
-      const pos = findFreeSpot(peers, size.w, size.h, cols)
-      const widget = makeWidget(type, pos)
-      if (tab) widget.tab_id = tab
-      const newSpec = { ...prev, widgets: [...prev.widgets, widget] }
-      setTimeout(() => setSelectedId(widget.id), 0)
-      return historyPush(h, newSpec)
-    })
+    const prev = spec
+    const cols = prev.layout?.cols ?? 12
+    // New widgets are placed within (and tagged for) the ACTIVE tab, so the
+    // free-spot scan only considers that tab's occupancy. With no tabs this is
+    // the full widget list and tab_id stays absent (today's behavior).
+    const tab = resolveActiveTab(prev, activeTabIdRaw)
+    const peers = tab ? widgetsForTab(prev, tab) : prev.widgets
+    const size = WIDGET_SIZES[type] ?? WIDGET_SIZES.chart
+    const pos = findFreeSpot(peers, size.w, size.h, cols)
+    const widget = makeWidget(type, pos)
+    if (tab) widget.tab_id = tab
+    // Build the widget from the current spec rather than inside the history
+    // updater, so its id is known here and selection is a plain state write.
+    // Deferring selection into the updater (a setTimeout from inside it) meant
+    // a freshly added widget sometimes landed on the canvas with the inspector
+    // still showing "Nothing selected" — you had to go and click it.
+    setSpec({ ...prev, widgets: [...prev.widgets, widget] })
+    setSelectedId(widget.id)
     setPreview(false)
-  }, [activeTabIdRaw])
+  }, [spec, activeTabIdRaw, setSpec])
 
   const removeWidget = useCallback((id) => {
     setHist(h => historyPush(h, { ...h.present, widgets: h.present.widgets.filter(w => w.id !== id) }))
@@ -2962,6 +3405,42 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
       }),
     }))
   }, [libraryById])
+
+  /**
+   * Patch ANY widget on the board by id, not just the selected one — what the
+   * filter panel needs to tick a chart on or off. The updater is handed the
+   * RESOLVED widget and its result goes back through the same reference-aware
+   * path as `updateWidget`, so editing a library-backed instance still writes a
+   * sparse override rather than flattening it into a copy.
+   */
+  const patchWidgetById = useCallback((id, updater) => {
+    setSpec(prev => ({
+      ...prev,
+      widgets: prev.widgets.map(w => {
+        if (w.id !== id) return w
+        const def = isRefWidget(w) ? libraryById.get(w.ref) : null
+        const resolved = isRefWidget(w) ? resolveWidgetRef(w, def).widget : w
+        const updated = updater(resolved)
+        return isRefWidget(w) ? applyWidgetEdit(w, updated, def) : updated
+      }),
+    }))
+  }, [libraryById, setSpec])
+
+  /**
+   * Declare a board variable if it isn't declared already — called when a
+   * filter is named, so `spec.variables` keeps up with the filters that write
+   * to it instead of the author having to mirror every name by hand. Existing
+   * variables (and their defaults) are never touched.
+   */
+  const createVariable = useCallback((name, type = 'text') => {
+    const varName = String(name ?? '').trim()
+    if (!varName) return
+    setSpec(prev => {
+      const vars = prev.variables ?? []
+      if (vars.some(v => v?.name === varName)) return prev   // === prev: no history entry
+      return { ...prev, variables: [...vars, { name: varName, type, default: null }] }
+    })
+  }, [setSpec])
 
   /**
    * "Reset to library value" for one overridden leaf field (per-field, from
@@ -3260,6 +3739,9 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         onSaveSharedDefinition={saveSharedDefinition}
         onCancelSharedEdit={() => setSharedEditRefId(null)}
         savingShared={savingShared}
+        onPatchWidget={patchWidgetById}
+        onCreateVariable={createVariable}
+        resolveWidget={resolveEntry}
       />
     )
   }
@@ -3348,7 +3830,11 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   // Panel toggle icon buttons — Add / Configure / Layout / Chat. Shared by the top
   // bar (md+) and the mobile slide-out. `compact` stacks them as full-width rows.
   const PANEL_SEGMENTS = [
-    { id: 'add',    Icon: Plus,         mobileSheet: 'palette', label: 'Add widget', title: 'Add widget',                ariaLabel: 'Add widget panel' },
+    // 'add' is redundant on lg+ (the permanent left widget-library rail covers
+    // it there) but still the only way to add widgets on md/mobile, which have
+    // no room for a second permanent rail — so the toggle stays, just hidden
+    // at lg+ via hideOnLg.
+    { id: 'add',    Icon: Plus,         mobileSheet: 'palette', label: 'Add widget', title: 'Add widget',                ariaLabel: 'Add widget panel', hideOnLg: true },
     { id: 'config', Icon: Settings2,    mobileSheet: 'config',  label: 'Configure',  title: 'Configure selected widget', ariaLabel: 'Configure panel' },
     { id: 'board',  Icon: LayoutGrid,   mobileSheet: 'board',   label: 'Dashboard',  title: 'Dashboard background, grid & variables', ariaLabel: 'Dashboard panel' },
     { id: 'tabs',   Icon: Heading,      mobileSheet: 'tabs',    label: 'Tabs',       title: 'Tab bar & per-tab style',   ariaLabel: 'Tabs panel' },
@@ -3382,6 +3868,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
             }}
             className={`
               ${compact ? 'w-full h-9 justify-start gap-2 px-3' : 'w-9 h-8 justify-center'}
+              ${seg.hideOnLg && !compact ? 'lg:hidden' : ''}
               flex items-center rounded-lg border
               transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-ring/60
               ${(isActiveDesktop || isActiveMobile)
@@ -3608,6 +4095,9 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         onSaveSharedDefinition={saveSharedDefinition}
         onCancelSharedEdit={() => setSharedEditRefId(null)}
         savingShared={savingShared}
+        onPatchWidget={patchWidgetById}
+        onCreateVariable={createVariable}
+        resolveWidget={resolveEntry}
       />
     )
     return null
@@ -3674,6 +4164,35 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
 
           <div className="flex flex-1 min-h-0 overflow-hidden relative">
 
+          {/* ── Left widget-library rail ──
+              Desktop only (lg+): the widget palette + "From library" list live
+              here permanently instead of behind the "Add widget" toggle, so
+              picking a widget type never costs a trip through the RHS panel
+              switcher. md/mobile have no room for a second permanent rail —
+              they keep using the "Add widget" toggle (slide-over / bottom
+              sheet), which is why that toggle stays visible below lg
+              (PANEL_SEGMENTS' hideOnLg). */}
+          <aside className="hidden lg:flex lg:w-60 lg:shrink-0 border-r border-border bg-surface flex-col overflow-hidden">
+            <div className="flex items-center px-3 h-10 border-b border-border shrink-0 bg-surface-2/30">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted/80">
+                Widget library
+              </span>
+            </div>
+            {/* No overflow-y-auto here — AddPanel pins its own search box and
+                scrolls its own body, so this wrapper just needs to be bounded
+                (min-h-0), not a second competing scroll container. */}
+            <div className="flex-1 min-h-0 flex flex-col">
+              <AddPanel
+                onAdd={addWidget}
+                onAddReference={addLibraryReference}
+                onAddDetachedCopy={addDetachedLibraryCopy}
+                library={library}
+                libraryLoading={libraryLoading}
+                onDeleteLibraryEntry={removeLibraryEntry}
+              />
+            </div>
+          </aside>
+
           {/* ── Tablet slide-over backdrop (md only, not on lg+) ── */}
           {!rightCollapsed && (
             <div
@@ -3688,7 +4207,19 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
             ref={mainRef}
             className="flex-1 min-w-0 overflow-auto p-3 sm:p-4 bg-bg"
             data-testid="editor-canvas"
-            style={{ ...backgroundToCss(canvasBackground, adaptCtx), touchAction: 'pan-x pan-y' }}
+            style={{
+              ...backgroundToCss(canvasBackground, adaptCtx),
+              touchAction: 'pan-x pan-y',
+              // Reserve the vertical scrollbar's width up front (rather than
+              // only once content grows past the viewport) so the fit-zoom
+              // width measurement below is stable — without this, a board
+              // that's initially short enough to skip the scrollbar gets
+              // measured as ~15-17px wider than it ends up being once a
+              // widget is added and the scrollbar appears, and the canvas
+              // then genuinely needs to horizontally scroll to show the last
+              // column of widgets.
+              scrollbarGutter: 'stable',
+            }}
             onClick={(e) => {
               // Click on empty canvas → deselect
               if (e.target === e.currentTarget) setSelectedId(null)
@@ -3869,6 +4400,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                       // and must not be clipped. Inner areas handle their own overflow.
                       <div
                         data-testid={`widget-${widget.id}`}
+                        data-widget-export-root={widget.id}
                         onClick={(e) => { e.stopPropagation(); setSelectedId(widget.id); setRightCollapsed(false); setRightPanel(p => p === 'chat' ? p : 'config'); setMobileSheet('config') }}
                         onMouseEnter={() => setHoveredId(widget.id)}
                         onMouseLeave={() => setHoveredId(null)}
@@ -3883,6 +4415,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                         {/* Hover toolbar: duplicate + delete (+ height stepper on mobile). */}
                         <WidgetHoverToolbar
                           widget={widget}
+                          boardId={savedBoardId}
                           onDuplicate={duplicateWidget}
                           onDelete={removeWidget}
                           onFocus={openFocus}
@@ -3980,8 +4513,13 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                   <PanelRightClose size={15} />
                 </button>
               </div>
-              {/* Body scrolls WITHIN the fixed-width sidebar */}
-              <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
+              {/* Body scrolls WITHIN the fixed-width sidebar. No overflow-y-auto
+                  on this wrapper — each panel (ConfigPanel/AddPanel/etc.)
+                  pins its own header/tabs and scrolls its own body; a second
+                  overflow-auto here would compete with that and win, dragging
+                  the pinned part along with the scroll instead of the panel's
+                  own inner region. */}
+              <div className="flex-1 min-h-0 flex flex-col">
                 {renderRightPanelBody()}
               </div>
               {((rightPanel === 'config' && selectedWidget) || rightPanel === 'board') && renderSaveFooter()}
@@ -4025,6 +4563,9 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
               onSaveSharedDefinition={saveSharedDefinition}
               onCancelSharedEdit={() => setSharedEditRefId(null)}
               savingShared={savingShared}
+              onPatchWidget={patchWidgetById}
+              onCreateVariable={createVariable}
+              resolveWidget={resolveEntry}
             />
           }
         />
@@ -4102,8 +4643,10 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                 <X size={16} />
               </button>
             </div>
-            {/* Sheet body — scrollable */}
-            <div className="flex-1 min-h-0 overflow-y-auto">
+            {/* Sheet body — each panel pins its own header/tabs and scrolls
+                its own content, so no overflow-y-auto here (see the desktop
+                sidebar's identical note above). */}
+            <div className="flex-1 min-h-0 flex flex-col">
               {renderSheetBody()}
             </div>
             {((mobileSheet === 'config' && selectedWidget) || mobileSheet === 'board') && renderSaveFooter()}
