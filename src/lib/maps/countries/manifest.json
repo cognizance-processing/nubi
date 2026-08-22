@@ -1,0 +1,1262 @@
+[
+ {
+  "slug": "afghanistan",
+  "label": "Afghanistan",
+  "features": 34
+ },
+ {
+  "slug": "akrotiri-sovereign-base-area",
+  "label": "Akrotiri Sovereign Base Area",
+  "features": 1
+ },
+ {
+  "slug": "aland",
+  "label": "Aland",
+  "features": 11
+ },
+ {
+  "slug": "albania",
+  "label": "Albania",
+  "features": 12
+ },
+ {
+  "slug": "algeria",
+  "label": "Algeria",
+  "features": 48
+ },
+ {
+  "slug": "american-samoa",
+  "label": "American Samoa",
+  "features": 5
+ },
+ {
+  "slug": "andorra",
+  "label": "Andorra",
+  "features": 7
+ },
+ {
+  "slug": "angola",
+  "label": "Angola",
+  "features": 18
+ },
+ {
+  "slug": "anguilla",
+  "label": "Anguilla",
+  "features": 14
+ },
+ {
+  "slug": "antarctica",
+  "label": "Antarctica",
+  "features": 1
+ },
+ {
+  "slug": "antigua-and-barbuda",
+  "label": "Antigua and Barbuda",
+  "features": 8
+ },
+ {
+  "slug": "argentina",
+  "label": "Argentina",
+  "features": 24
+ },
+ {
+  "slug": "armenia",
+  "label": "Armenia",
+  "features": 11
+ },
+ {
+  "slug": "aruba",
+  "label": "Aruba",
+  "features": 1
+ },
+ {
+  "slug": "ashmore-and-cartier-islands",
+  "label": "Ashmore and Cartier Islands",
+  "features": 1
+ },
+ {
+  "slug": "australia",
+  "label": "Australia",
+  "features": 11
+ },
+ {
+  "slug": "austria",
+  "label": "Austria",
+  "features": 9
+ },
+ {
+  "slug": "azerbaijan",
+  "label": "Azerbaijan",
+  "features": 78
+ },
+ {
+  "slug": "bahrain",
+  "label": "Bahrain",
+  "features": 5
+ },
+ {
+  "slug": "bangladesh",
+  "label": "Bangladesh",
+  "features": 7
+ },
+ {
+  "slug": "barbados",
+  "label": "Barbados",
+  "features": 11
+ },
+ {
+  "slug": "baykonur-cosmodrome",
+  "label": "Baykonur Cosmodrome",
+  "features": 1
+ },
+ {
+  "slug": "belarus",
+  "label": "Belarus",
+  "features": 7
+ },
+ {
+  "slug": "belgium",
+  "label": "Belgium",
+  "features": 11
+ },
+ {
+  "slug": "belize",
+  "label": "Belize",
+  "features": 6
+ },
+ {
+  "slug": "benin",
+  "label": "Benin",
+  "features": 12
+ },
+ {
+  "slug": "bermuda",
+  "label": "Bermuda",
+  "features": 11
+ },
+ {
+  "slug": "bhutan",
+  "label": "Bhutan",
+  "features": 20
+ },
+ {
+  "slug": "bolivia",
+  "label": "Bolivia",
+  "features": 9
+ },
+ {
+  "slug": "bosnia-and-herzegovina",
+  "label": "Bosnia and Herzegovina",
+  "features": 18
+ },
+ {
+  "slug": "botswana",
+  "label": "Botswana",
+  "features": 15
+ },
+ {
+  "slug": "brazil",
+  "label": "Brazil",
+  "features": 27
+ },
+ {
+  "slug": "british-indian-ocean-territory",
+  "label": "British Indian Ocean Territory",
+  "features": 1
+ },
+ {
+  "slug": "british-virgin-islands",
+  "label": "British Virgin Islands",
+  "features": 1
+ },
+ {
+  "slug": "brunei",
+  "label": "Brunei",
+  "features": 4
+ },
+ {
+  "slug": "bulgaria",
+  "label": "Bulgaria",
+  "features": 28
+ },
+ {
+  "slug": "burkina-faso",
+  "label": "Burkina Faso",
+  "features": 45
+ },
+ {
+  "slug": "burundi",
+  "label": "Burundi",
+  "features": 17
+ },
+ {
+  "slug": "cambodia",
+  "label": "Cambodia",
+  "features": 24
+ },
+ {
+  "slug": "cameroon",
+  "label": "Cameroon",
+  "features": 10
+ },
+ {
+  "slug": "canada",
+  "label": "Canada",
+  "features": 13
+ },
+ {
+  "slug": "cape-verde",
+  "label": "Cape Verde",
+  "features": 22
+ },
+ {
+  "slug": "caribbean-netherlands",
+  "label": "Caribbean Netherlands",
+  "features": 1
+ },
+ {
+  "slug": "cayman-islands",
+  "label": "Cayman Islands",
+  "features": 1
+ },
+ {
+  "slug": "central-african-republic",
+  "label": "Central African Republic",
+  "features": 17
+ },
+ {
+  "slug": "chad",
+  "label": "Chad",
+  "features": 22
+ },
+ {
+  "slug": "chile",
+  "label": "Chile",
+  "features": 16
+ },
+ {
+  "slug": "china",
+  "label": "China",
+  "features": 32
+ },
+ {
+  "slug": "clipperton-island",
+  "label": "Clipperton Island",
+  "features": 1
+ },
+ {
+  "slug": "colombia",
+  "label": "Colombia",
+  "features": 33
+ },
+ {
+  "slug": "comoros",
+  "label": "Comoros",
+  "features": 3
+ },
+ {
+  "slug": "cook-islands",
+  "label": "Cook Islands",
+  "features": 11
+ },
+ {
+  "slug": "coral-sea-islands",
+  "label": "Coral Sea Islands",
+  "features": 1
+ },
+ {
+  "slug": "costa-rica",
+  "label": "Costa Rica",
+  "features": 7
+ },
+ {
+  "slug": "croatia",
+  "label": "Croatia",
+  "features": 21
+ },
+ {
+  "slug": "cuba",
+  "label": "Cuba",
+  "features": 16
+ },
+ {
+  "slug": "cura-ao",
+  "label": "Cura\u00e7ao",
+  "features": 1
+ },
+ {
+  "slug": "cyprus",
+  "label": "Cyprus",
+  "features": 5
+ },
+ {
+  "slug": "czech-republic",
+  "label": "Czech Republic",
+  "features": 14
+ },
+ {
+  "slug": "democratic-republic-of-the-congo",
+  "label": "Democratic Republic of the Congo",
+  "features": 11
+ },
+ {
+  "slug": "denmark",
+  "label": "Denmark",
+  "features": 5
+ },
+ {
+  "slug": "dhekelia-sovereign-base-area",
+  "label": "Dhekelia Sovereign Base Area",
+  "features": 1
+ },
+ {
+  "slug": "djibouti",
+  "label": "Djibouti",
+  "features": 6
+ },
+ {
+  "slug": "dominica",
+  "label": "Dominica",
+  "features": 10
+ },
+ {
+  "slug": "dominican-republic",
+  "label": "Dominican Republic",
+  "features": 32
+ },
+ {
+  "slug": "east-timor",
+  "label": "East Timor",
+  "features": 13
+ },
+ {
+  "slug": "ecuador",
+  "label": "Ecuador",
+  "features": 24
+ },
+ {
+  "slug": "egypt",
+  "label": "Egypt",
+  "features": 27
+ },
+ {
+  "slug": "el-salvador",
+  "label": "El Salvador",
+  "features": 14
+ },
+ {
+  "slug": "equatorial-guinea",
+  "label": "Equatorial Guinea",
+  "features": 7
+ },
+ {
+  "slug": "eritrea",
+  "label": "Eritrea",
+  "features": 6
+ },
+ {
+  "slug": "estonia",
+  "label": "Estonia",
+  "features": 15
+ },
+ {
+  "slug": "ethiopia",
+  "label": "Ethiopia",
+  "features": 11
+ },
+ {
+  "slug": "falkland-islands",
+  "label": "Falkland Islands",
+  "features": 1
+ },
+ {
+  "slug": "faroe-islands",
+  "label": "Faroe Islands",
+  "features": 1
+ },
+ {
+  "slug": "federated-states-of-micronesia",
+  "label": "Federated States of Micronesia",
+  "features": 4
+ },
+ {
+  "slug": "fiji",
+  "label": "Fiji",
+  "features": 5
+ },
+ {
+  "slug": "finland",
+  "label": "Finland",
+  "features": 18
+ },
+ {
+  "slug": "france",
+  "label": "France",
+  "features": 101
+ },
+ {
+  "slug": "french-polynesia",
+  "label": "French Polynesia",
+  "features": 5
+ },
+ {
+  "slug": "french-southern-and-antarctic-lands",
+  "label": "French Southern and Antarctic Lands",
+  "features": 4
+ },
+ {
+  "slug": "gabon",
+  "label": "Gabon",
+  "features": 9
+ },
+ {
+  "slug": "gambia",
+  "label": "Gambia",
+  "features": 6
+ },
+ {
+  "slug": "gaza-strip",
+  "label": "Gaza Strip",
+  "features": 1
+ },
+ {
+  "slug": "georgia",
+  "label": "Georgia",
+  "features": 12
+ },
+ {
+  "slug": "germany",
+  "label": "Germany",
+  "features": 16
+ },
+ {
+  "slug": "ghana",
+  "label": "Ghana",
+  "features": 10
+ },
+ {
+  "slug": "gibraltar",
+  "label": "Gibraltar",
+  "features": 1
+ },
+ {
+  "slug": "greece",
+  "label": "Greece",
+  "features": 14
+ },
+ {
+  "slug": "greenland",
+  "label": "Greenland",
+  "features": 6
+ },
+ {
+  "slug": "grenada",
+  "label": "Grenada",
+  "features": 7
+ },
+ {
+  "slug": "guam",
+  "label": "Guam",
+  "features": 1
+ },
+ {
+  "slug": "guatemala",
+  "label": "Guatemala",
+  "features": 22
+ },
+ {
+  "slug": "guernsey",
+  "label": "Guernsey",
+  "features": 1
+ },
+ {
+  "slug": "guinea",
+  "label": "Guinea",
+  "features": 34
+ },
+ {
+  "slug": "guinea-bissau",
+  "label": "Guinea Bissau",
+  "features": 9
+ },
+ {
+  "slug": "guyana",
+  "label": "Guyana",
+  "features": 10
+ },
+ {
+  "slug": "haiti",
+  "label": "Haiti",
+  "features": 10
+ },
+ {
+  "slug": "heard-island-and-mcdonald-islands",
+  "label": "Heard Island and McDonald Islands",
+  "features": 1
+ },
+ {
+  "slug": "honduras",
+  "label": "Honduras",
+  "features": 18
+ },
+ {
+  "slug": "hong-kong-s-a-r",
+  "label": "Hong Kong S.A.R.",
+  "features": 18
+ },
+ {
+  "slug": "hungary",
+  "label": "Hungary",
+  "features": 43
+ },
+ {
+  "slug": "iceland",
+  "label": "Iceland",
+  "features": 9
+ },
+ {
+  "slug": "india",
+  "label": "India",
+  "features": 36
+ },
+ {
+  "slug": "indian-ocean-territories",
+  "label": "Indian Ocean Territories",
+  "features": 2
+ },
+ {
+  "slug": "indonesia",
+  "label": "Indonesia",
+  "features": 33
+ },
+ {
+  "slug": "iran",
+  "label": "Iran",
+  "features": 31
+ },
+ {
+  "slug": "iraq",
+  "label": "Iraq",
+  "features": 18
+ },
+ {
+  "slug": "ireland",
+  "label": "Ireland",
+  "features": 34
+ },
+ {
+  "slug": "isle-of-man",
+  "label": "Isle of Man",
+  "features": 1
+ },
+ {
+  "slug": "israel",
+  "label": "Israel",
+  "features": 6
+ },
+ {
+  "slug": "italy",
+  "label": "Italy",
+  "features": 110
+ },
+ {
+  "slug": "ivory-coast",
+  "label": "Ivory Coast",
+  "features": 19
+ },
+ {
+  "slug": "jamaica",
+  "label": "Jamaica",
+  "features": 14
+ },
+ {
+  "slug": "japan",
+  "label": "Japan",
+  "features": 47
+ },
+ {
+  "slug": "jersey",
+  "label": "Jersey",
+  "features": 1
+ },
+ {
+  "slug": "jordan",
+  "label": "Jordan",
+  "features": 12
+ },
+ {
+  "slug": "kazakhstan",
+  "label": "Kazakhstan",
+  "features": 16
+ },
+ {
+  "slug": "kenya",
+  "label": "Kenya",
+  "features": 8
+ },
+ {
+  "slug": "kiribati",
+  "label": "Kiribati",
+  "features": 1
+ },
+ {
+  "slug": "kosovo",
+  "label": "Kosovo",
+  "features": 30
+ },
+ {
+  "slug": "kuwait",
+  "label": "Kuwait",
+  "features": 6
+ },
+ {
+  "slug": "kyrgyzstan",
+  "label": "Kyrgyzstan",
+  "features": 8
+ },
+ {
+  "slug": "laos",
+  "label": "Laos",
+  "features": 17
+ },
+ {
+  "slug": "latvia",
+  "label": "Latvia",
+  "features": 119
+ },
+ {
+  "slug": "lebanon",
+  "label": "Lebanon",
+  "features": 6
+ },
+ {
+  "slug": "lesotho",
+  "label": "Lesotho",
+  "features": 10
+ },
+ {
+  "slug": "liberia",
+  "label": "Liberia",
+  "features": 15
+ },
+ {
+  "slug": "libya",
+  "label": "Libya",
+  "features": 22
+ },
+ {
+  "slug": "liechtenstein",
+  "label": "Liechtenstein",
+  "features": 11
+ },
+ {
+  "slug": "lithuania",
+  "label": "Lithuania",
+  "features": 10
+ },
+ {
+  "slug": "luxembourg",
+  "label": "Luxembourg",
+  "features": 3
+ },
+ {
+  "slug": "macau-s-a-r",
+  "label": "Macau S.A.R",
+  "features": 1
+ },
+ {
+  "slug": "macedonia",
+  "label": "Macedonia",
+  "features": 84
+ },
+ {
+  "slug": "madagascar",
+  "label": "Madagascar",
+  "features": 22
+ },
+ {
+  "slug": "malawi",
+  "label": "Malawi",
+  "features": 28
+ },
+ {
+  "slug": "malaysia",
+  "label": "Malaysia",
+  "features": 16
+ },
+ {
+  "slug": "maldives",
+  "label": "Maldives",
+  "features": 21
+ },
+ {
+  "slug": "mali",
+  "label": "Mali",
+  "features": 9
+ },
+ {
+  "slug": "malta",
+  "label": "Malta",
+  "features": 68
+ },
+ {
+  "slug": "marshall-islands",
+  "label": "Marshall Islands",
+  "features": 2
+ },
+ {
+  "slug": "mauritania",
+  "label": "Mauritania",
+  "features": 13
+ },
+ {
+  "slug": "mauritius",
+  "label": "Mauritius",
+  "features": 16
+ },
+ {
+  "slug": "mexico",
+  "label": "Mexico",
+  "features": 32
+ },
+ {
+  "slug": "moldova",
+  "label": "Moldova",
+  "features": 40
+ },
+ {
+  "slug": "monaco",
+  "label": "Monaco",
+  "features": 1
+ },
+ {
+  "slug": "mongolia",
+  "label": "Mongolia",
+  "features": 22
+ },
+ {
+  "slug": "montenegro",
+  "label": "Montenegro",
+  "features": 21
+ },
+ {
+  "slug": "montserrat",
+  "label": "Montserrat",
+  "features": 3
+ },
+ {
+  "slug": "morocco",
+  "label": "Morocco",
+  "features": 16
+ },
+ {
+  "slug": "mozambique",
+  "label": "Mozambique",
+  "features": 11
+ },
+ {
+  "slug": "myanmar",
+  "label": "Myanmar",
+  "features": 14
+ },
+ {
+  "slug": "namibia",
+  "label": "Namibia",
+  "features": 13
+ },
+ {
+  "slug": "nauru",
+  "label": "Nauru",
+  "features": 14
+ },
+ {
+  "slug": "nepal",
+  "label": "Nepal",
+  "features": 14
+ },
+ {
+  "slug": "netherlands",
+  "label": "Netherlands",
+  "features": 14
+ },
+ {
+  "slug": "new-caledonia",
+  "label": "New Caledonia",
+  "features": 3
+ },
+ {
+  "slug": "new-zealand",
+  "label": "New Zealand",
+  "features": 24
+ },
+ {
+  "slug": "nicaragua",
+  "label": "Nicaragua",
+  "features": 17
+ },
+ {
+  "slug": "niger",
+  "label": "Niger",
+  "features": 8
+ },
+ {
+  "slug": "nigeria",
+  "label": "Nigeria",
+  "features": 37
+ },
+ {
+  "slug": "niue",
+  "label": "Niue",
+  "features": 1
+ },
+ {
+  "slug": "norfolk-island",
+  "label": "Norfolk Island",
+  "features": 1
+ },
+ {
+  "slug": "north-korea",
+  "label": "North Korea",
+  "features": 11
+ },
+ {
+  "slug": "northern-cyprus",
+  "label": "Northern Cyprus",
+  "features": 1
+ },
+ {
+  "slug": "northern-mariana-islands",
+  "label": "Northern Mariana Islands",
+  "features": 4
+ },
+ {
+  "slug": "norway",
+  "label": "Norway",
+  "features": 21
+ },
+ {
+  "slug": "oman",
+  "label": "Oman",
+  "features": 11
+ },
+ {
+  "slug": "pakistan",
+  "label": "Pakistan",
+  "features": 8
+ },
+ {
+  "slug": "palau",
+  "label": "Palau",
+  "features": 16
+ },
+ {
+  "slug": "panama",
+  "label": "Panama",
+  "features": 12
+ },
+ {
+  "slug": "papua-new-guinea",
+  "label": "Papua New Guinea",
+  "features": 20
+ },
+ {
+  "slug": "paraguay",
+  "label": "Paraguay",
+  "features": 18
+ },
+ {
+  "slug": "peru",
+  "label": "Peru",
+  "features": 26
+ },
+ {
+  "slug": "philippines",
+  "label": "Philippines",
+  "features": 118
+ },
+ {
+  "slug": "pitcairn-islands",
+  "label": "Pitcairn Islands",
+  "features": 1
+ },
+ {
+  "slug": "poland",
+  "label": "Poland",
+  "features": 16
+ },
+ {
+  "slug": "portugal",
+  "label": "Portugal",
+  "features": 20
+ },
+ {
+  "slug": "puerto-rico",
+  "label": "Puerto Rico",
+  "features": 1
+ },
+ {
+  "slug": "qatar",
+  "label": "Qatar",
+  "features": 7
+ },
+ {
+  "slug": "republic-of-serbia",
+  "label": "Republic of Serbia",
+  "features": 25
+ },
+ {
+  "slug": "republic-of-the-congo",
+  "label": "Republic of the Congo",
+  "features": 12
+ },
+ {
+  "slug": "romania",
+  "label": "Romania",
+  "features": 42
+ },
+ {
+  "slug": "russia",
+  "label": "Russia",
+  "features": 85
+ },
+ {
+  "slug": "rwanda",
+  "label": "Rwanda",
+  "features": 5
+ },
+ {
+  "slug": "s-sudan",
+  "label": "S. Sudan",
+  "features": 10
+ },
+ {
+  "slug": "saint-barthelemy",
+  "label": "Saint Barthelemy",
+  "features": 1
+ },
+ {
+  "slug": "saint-helena",
+  "label": "Saint Helena",
+  "features": 3
+ },
+ {
+  "slug": "saint-kitts-and-nevis",
+  "label": "Saint Kitts and Nevis",
+  "features": 14
+ },
+ {
+  "slug": "saint-lucia",
+  "label": "Saint Lucia",
+  "features": 11
+ },
+ {
+  "slug": "saint-martin",
+  "label": "Saint Martin",
+  "features": 1
+ },
+ {
+  "slug": "saint-pierre-and-miquelon",
+  "label": "Saint Pierre and Miquelon",
+  "features": 2
+ },
+ {
+  "slug": "saint-vincent-and-the-grenadines",
+  "label": "Saint Vincent and the Grenadines",
+  "features": 6
+ },
+ {
+  "slug": "samoa",
+  "label": "Samoa",
+  "features": 11
+ },
+ {
+  "slug": "san-marino",
+  "label": "San Marino",
+  "features": 9
+ },
+ {
+  "slug": "sao-tome-and-principe",
+  "label": "Sao Tome and Principe",
+  "features": 2
+ },
+ {
+  "slug": "saudi-arabia",
+  "label": "Saudi Arabia",
+  "features": 13
+ },
+ {
+  "slug": "senegal",
+  "label": "Senegal",
+  "features": 14
+ },
+ {
+  "slug": "seychelles",
+  "label": "Seychelles",
+  "features": 26
+ },
+ {
+  "slug": "siachen-glacier",
+  "label": "Siachen Glacier",
+  "features": 1
+ },
+ {
+  "slug": "sierra-leone",
+  "label": "Sierra Leone",
+  "features": 4
+ },
+ {
+  "slug": "singapore",
+  "label": "Singapore",
+  "features": 5
+ },
+ {
+  "slug": "sint-maarten",
+  "label": "Sint Maarten",
+  "features": 1
+ },
+ {
+  "slug": "slovakia",
+  "label": "Slovakia",
+  "features": 8
+ },
+ {
+  "slug": "slovenia",
+  "label": "Slovenia",
+  "features": 193
+ },
+ {
+  "slug": "solomon-islands",
+  "label": "Solomon Islands",
+  "features": 10
+ },
+ {
+  "slug": "somalia",
+  "label": "Somalia",
+  "features": 13
+ },
+ {
+  "slug": "somaliland",
+  "label": "Somaliland",
+  "features": 1
+ },
+ {
+  "slug": "south-georgia-and-the-islands",
+  "label": "South Georgia and the Islands",
+  "features": 1
+ },
+ {
+  "slug": "south-korea",
+  "label": "South Korea",
+  "features": 17
+ },
+ {
+  "slug": "spain",
+  "label": "Spain",
+  "features": 52
+ },
+ {
+  "slug": "spratly-is",
+  "label": "Spratly Is.",
+  "features": 1
+ },
+ {
+  "slug": "sri-lanka",
+  "label": "Sri Lanka",
+  "features": 25
+ },
+ {
+  "slug": "sudan",
+  "label": "Sudan",
+  "features": 17
+ },
+ {
+  "slug": "suriname",
+  "label": "Suriname",
+  "features": 10
+ },
+ {
+  "slug": "swaziland",
+  "label": "Swaziland",
+  "features": 4
+ },
+ {
+  "slug": "sweden",
+  "label": "Sweden",
+  "features": 21
+ },
+ {
+  "slug": "switzerland",
+  "label": "Switzerland",
+  "features": 26
+ },
+ {
+  "slug": "syria",
+  "label": "Syria",
+  "features": 15
+ },
+ {
+  "slug": "taiwan",
+  "label": "Taiwan",
+  "features": 21
+ },
+ {
+  "slug": "tajikistan",
+  "label": "Tajikistan",
+  "features": 5
+ },
+ {
+  "slug": "thailand",
+  "label": "Thailand",
+  "features": 77
+ },
+ {
+  "slug": "the-bahamas",
+  "label": "The Bahamas",
+  "features": 30
+ },
+ {
+  "slug": "togo",
+  "label": "Togo",
+  "features": 5
+ },
+ {
+  "slug": "tonga",
+  "label": "Tonga",
+  "features": 5
+ },
+ {
+  "slug": "trinidad-and-tobago",
+  "label": "Trinidad and Tobago",
+  "features": 16
+ },
+ {
+  "slug": "tunisia",
+  "label": "Tunisia",
+  "features": 23
+ },
+ {
+  "slug": "turkey",
+  "label": "Turkey",
+  "features": 81
+ },
+ {
+  "slug": "turkmenistan",
+  "label": "Turkmenistan",
+  "features": 5
+ },
+ {
+  "slug": "turks-and-caicos-islands",
+  "label": "Turks and Caicos Islands",
+  "features": 6
+ },
+ {
+  "slug": "tuvalu",
+  "label": "Tuvalu",
+  "features": 1
+ },
+ {
+  "slug": "us-naval-base-guantanamo-bay",
+  "label": "US Naval Base Guantanamo Bay",
+  "features": 1
+ },
+ {
+  "slug": "uganda",
+  "label": "Uganda",
+  "features": 112
+ },
+ {
+  "slug": "ukraine",
+  "label": "Ukraine",
+  "features": 25
+ },
+ {
+  "slug": "united-arab-emirates",
+  "label": "United Arab Emirates",
+  "features": 9
+ },
+ {
+  "slug": "united-kingdom",
+  "label": "United Kingdom",
+  "features": 232
+ },
+ {
+  "slug": "united-republic-of-tanzania",
+  "label": "United Republic of Tanzania",
+  "features": 30
+ },
+ {
+  "slug": "united-states-minor-outlying-islands",
+  "label": "United States Minor Outlying Islands",
+  "features": 8
+ },
+ {
+  "slug": "united-states-virgin-islands",
+  "label": "United States Virgin Islands",
+  "features": 3
+ },
+ {
+  "slug": "united-states-of-america",
+  "label": "United States of America",
+  "features": 51
+ },
+ {
+  "slug": "uruguay",
+  "label": "Uruguay",
+  "features": 19
+ },
+ {
+  "slug": "uzbekistan",
+  "label": "Uzbekistan",
+  "features": 14
+ },
+ {
+  "slug": "vanuatu",
+  "label": "Vanuatu",
+  "features": 6
+ },
+ {
+  "slug": "vatican",
+  "label": "Vatican",
+  "features": 1
+ },
+ {
+  "slug": "venezuela",
+  "label": "Venezuela",
+  "features": 25
+ },
+ {
+  "slug": "vietnam",
+  "label": "Vietnam",
+  "features": 63
+ },
+ {
+  "slug": "wallis-and-futuna",
+  "label": "Wallis and Futuna",
+  "features": 3
+ },
+ {
+  "slug": "west-bank",
+  "label": "West Bank",
+  "features": 1
+ },
+ {
+  "slug": "western-sahara",
+  "label": "Western Sahara",
+  "features": 1
+ },
+ {
+  "slug": "yemen",
+  "label": "Yemen",
+  "features": 21
+ },
+ {
+  "slug": "zambia",
+  "label": "Zambia",
+  "features": 10
+ },
+ {
+  "slug": "zimbabwe",
+  "label": "Zimbabwe",
+  "features": 10
+ }
+]

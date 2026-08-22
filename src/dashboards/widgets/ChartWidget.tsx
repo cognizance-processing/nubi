@@ -54,6 +54,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { runMetricQuery } from '../../lib/metricRuntime.js'
 import { buildChartOption } from '../../lib/chartOptionShared.js'
+import { hasMap, ensureMapRegistered } from '../../lib/maps.js'
 import { resolveSpaTheme } from '../../lib/spaTheme.js'
 import EChart from '../../viz/EChart.jsx'
 import { useResolvedParams, useSetVariable } from '../VariableStore.jsx'
@@ -146,6 +147,22 @@ export default function ChartWidget({ widget, providerTable = null }) {
   // Bumped by the error state's Retry button to re-run the fetch effect.
   const [retryEpoch, setRetryEpoch] = useState(0)
 
+  // Choropleth (chart_type: 'map') geometry may be registered lazily (see
+  // lib/maps.js) — bump this once loading finishes so the option memo below
+  // recomputes and picks up the now-registered map.
+  // Falls back to 'world' to mirror buildMap()'s own default (chart-options.js)
+  // — a map widget with no geography picked yet still needs something registered.
+  const mapName = chart_type === 'map' ? (widget.config?.map || 'world') : undefined
+  const [mapReadyEpoch, setMapReadyEpoch] = useState(0)
+  useEffect(() => {
+    if (!mapName || hasMap(mapName)) return
+    let cancelled = false
+    ensureMapRegistered(mapName).then(() => {
+      if (!cancelled) setMapReadyEpoch(e => e + 1)
+    })
+    return () => { cancelled = true }
+  }, [mapName])
+
   // BET-3: DataProvider path — use the shared table directly
   useEffect(() => {
     if (providerTable !== null) {
@@ -237,6 +254,9 @@ export default function ChartWidget({ widget, providerTable = null }) {
   // Build ECharts option via the shared builder
   const option = useMemo(() => {
     if (!table) return null
+    // Wait for lazily-loaded map geometry before building a choropleth option
+    // — ECharts silently no-ops a series referencing an unregistered map name.
+    if (mapName && !hasMap(mapName)) return null
     const encoding = resolveEncoding(widget)
     const config = resolveConfig(widget)
     let theme = resolveSpaTheme(isDark, Array.isArray(config.palette) ? config.palette : null)
@@ -275,7 +295,7 @@ export default function ChartWidget({ widget, providerTable = null }) {
     })
     return opt
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [table, chart_type, JSON.stringify(widget.encoding), JSON.stringify(widget.config), JSON.stringify(widget.props), widget.style?.color, widget.style?.background, widget.style?.themeAdapt, isDark])
+  }, [table, chart_type, JSON.stringify(widget.encoding), JSON.stringify(widget.config), JSON.stringify(widget.props), widget.style?.color, widget.style?.background, widget.style?.themeAdapt, isDark, mapName, mapReadyEpoch])
 
   if (loading) {
     return (

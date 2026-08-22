@@ -25,7 +25,7 @@ import {
 import { useColumnIntrospection } from './useInspectorData.js'
 import { CHART_TYPES, SERIES_TYPES } from './constants.js'
 import { titleText, withTitleText } from './titleValue.js'
-import { registeredMaps } from '../../lib/maps.js'
+import { registeredMaps, mapLabel, mapCategory } from '../../lib/maps.js'
 
 // Lucide icon map for the chart-type picker grid
 import {
@@ -211,6 +211,13 @@ export function ChartConfig({ widget, onChange }) {
   const isGauge = baseType === 'gauge'
   const isMap = baseType === 'map'
   const availableMaps = registeredMaps()
+    .map(m => ({ value: m, label: mapLabel(m), category: mapCategory(m) }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+  const MAP_CATEGORY_LABELS = { world: 'World', continent: 'Continents', country: 'Countries', other: 'Other' }
+  const MAP_CATEGORY_ORDER = ['world', 'continent', 'country', 'other']
+  const mapGroups = MAP_CATEGORY_ORDER
+    .map(cat => ({ cat, label: MAP_CATEGORY_LABELS[cat], options: availableMaps.filter(m => m.category === cat) }))
+    .filter(g => g.options.length > 0)
 
   // Reference lines state helpers
   const refLines = Array.isArray(cfg.referenceLines) ? cfg.referenceLines : []
@@ -339,12 +346,16 @@ export function ChartConfig({ widget, onChange }) {
               onChange={e => setConfig('map', e.target.value || undefined)}
             >
               <option value="">— select a registered map —</option>
-              {availableMaps.map(m => <option key={m} value={m}>{m}</option>)}
+              {mapGroups.map(g => (
+                <optgroup key={g.cat} label={g.label}>
+                  {g.options.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </optgroup>
+              ))}
             </select>
             {availableMaps.length === 0 && (
               <p className="text-[10px] text-muted/70 mt-1">
                 No GeoJSON is registered yet — a developer needs to add one via
-                registerMapGeoJson() in src/lib/maps/index.js.
+                registerMapGeoJson() / registerLazyMap() in src/lib/maps/index.js.
               </p>
             )}
           </div>
