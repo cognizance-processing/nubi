@@ -15,6 +15,7 @@ import assert from 'node:assert/strict'
 import {
   normMulti,
   isExclude,
+  isFilterApplied,
   valuesOf,
   modeOf,
   makeMulti,
@@ -240,4 +241,34 @@ test('every default preset has a human label', () => {
     assert.equal(typeof PRESET_LABELS[key], 'string')
     assert.ok(PRESET_LABELS[key].length > 0)
   }
+})
+
+// ── isFilterApplied ─────────────────────────────────────────────────────────
+// "Has a value" and "is filtering" differ: an untouched multiselect is [],
+// a cleared range is {from:'',to:''}. Only the second question is worth
+// putting on a badge.
+
+test('isFilterApplied: unset shapes are not applied', () => {
+  for (const v of [null, undefined, '', [], {}, { from: '', to: '' }, { mode: 'all', values: [] }]) {
+    assert.equal(isFilterApplied(v), false, `expected ${JSON.stringify(v)} to be unapplied`)
+  }
+})
+
+test('isFilterApplied: multiselect with selections is applied', () => {
+  assert.equal(isFilterApplied(['Gauteng']), true)
+  assert.equal(isFilterApplied({ mode: 'include', values: ['a'] }), true)
+  assert.equal(isFilterApplied({ mode: 'exclude', values: ['a'] }), true)
+})
+
+test('isFilterApplied: date range applied when either end or a preset is set', () => {
+  assert.equal(isFilterApplied({ from: '2024-01-01', to: '' }), true)
+  assert.equal(isFilterApplied({ from: '', to: '2024-01-01' }), true)
+  assert.equal(isFilterApplied({ preset: 'last_30d' }), true)
+  assert.equal(isFilterApplied({ preset: '' }), false)
+})
+
+test('isFilterApplied: scalars', () => {
+  assert.equal(isFilterApplied('Gauteng'), true)
+  assert.equal(isFilterApplied(0), true)
+  assert.equal(isFilterApplied(false), true)
 })

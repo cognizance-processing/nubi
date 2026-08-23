@@ -54,6 +54,37 @@ export function isExclude(value: unknown): boolean {
   return normMulti(value).mode === 'exclude'
 }
 
+/**
+ * True when a filter value is actually narrowing the data.
+ *
+ * "Has a value" and "is filtering" are not the same thing, and the difference
+ * is what a filter count should report: an untouched multiselect is `[]`, a
+ * cleared date range is `{from:'', to:''}`, and an unset dropdown is `''` —
+ * all of them present, none of them filtering anything. Counting filter
+ * WIDGETS instead tells the reader how many controls exist, which they can
+ * already see; counting applied ones tells them whether what they are looking
+ * at is the whole picture.
+ *
+ * Handles every value shape the filter widgets emit: multiselect arrays and
+ * `{mode, values}` objects, date ranges as `{from, to}` or `{preset}`, and
+ * plain scalars from single-select / text.
+ */
+export function isFilterApplied(value: unknown): boolean {
+  if (value == null || value === '') return false
+  if (Array.isArray(value)) return value.length > 0
+  if (typeof value === 'object') {
+    const v = value as Record<string, any>
+    // Date range: applied when either end is set, or a preset is chosen.
+    if ('from' in v || 'to' in v || 'preset' in v) {
+      return Boolean(v.preset) || Boolean(v.from) || Boolean(v.to)
+    }
+    // Multiselect object form — 'all' means unfiltered even with a mode set.
+    if ('values' in v || 'mode' in v) return normMulti(value).mode !== 'all'
+    return Object.values(v).some(x => x != null && x !== '')
+  }
+  return true
+}
+
 /** The selected values array (strings) regardless of include/exclude. */
 export function valuesOf(value: unknown): string[] {
   return normMulti(value).values

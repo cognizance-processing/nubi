@@ -45,7 +45,8 @@ import PivotWidget from './widgets/PivotWidget.jsx'
 import SectionWidget from './widgets/SectionWidget.jsx'
 import ImageWidget from './widgets/ImageWidget.jsx'
 import StepperWidget from './widgets/StepperWidget.jsx'
-import { VariableProvider, useSetVariable, useResolvedParams } from './VariableStore.jsx'
+import { VariableProvider, useSetVariable, useResolvedParams, useVariableValues } from './VariableStore.jsx'
+import { isFilterApplied } from './inputs/helpers.js'
 import { CrossFilterProvider } from './CrossFilterContext.jsx'
 import { RefreshContext } from './RefreshContext.jsx'
 import { useAutoRefresh } from './useAutoRefresh.js'
@@ -463,6 +464,28 @@ function SpecRendererBody({
   const [openDrawer, setOpenDrawer] = useState(null)
   const hasFilters = (drawerGroups.filters?.length ?? 0) > 0
 
+  // Is the header filter bar showing? Filters are worth space while you are
+  // using them and in the way once you have, so the bar collapses — and says
+  // how many filters are still applied while hidden, since a filter you
+  // cannot see is exactly the one that misleads you about what you are
+  // looking at.
+  const [headerFiltersOpen, setHeaderFiltersOpen] = useState(true)
+
+  // How many filters are NARROWING the data right now — not how many filter
+  // widgets exist, which the reader can already see — a count of controls
+  // tells you nothing you cannot see by looking at them.
+  const variableValues = useVariableValues()
+  const appliedCountFor = useCallback((list) => {
+    let n = 0
+    for (const w of list ?? []) {
+      const v = w?.target_var ?? w?.props?.target_var
+      if (v && isFilterApplied(variableValues[v])) n += 1
+    }
+    return n
+  }, [variableValues])
+
+  const drawerApplied = appliedCountFor(drawerGroups.filters)
+
   // -------------------------------------------------------------------------
   // Tabs (SHARED CONTRACT)
   // -------------------------------------------------------------------------
@@ -671,11 +694,25 @@ function SpecRendererBody({
               size="sm"
               onClick={() => setOpenDrawer('filters')}
               className="shrink-0"
-              aria-label={`Open ${spec.drawer?.title || 'Filters'} panel`}
+              aria-label={
+                drawerApplied > 0
+                  ? `Open ${spec.drawer?.title || 'Filters'} panel — ${drawerApplied} applied`
+                  : `Open ${spec.drawer?.title || 'Filters'} panel`
+              }
             >
               <span aria-hidden="true" className="text-xs">⚲</span>
               {spec.drawer?.title || 'Filters'}
-              <span className="text-xs opacity-60">({drawerGroups.filters.length})</span>
+              {/* Count what is APPLIED, not how many controls exist. A badge
+                  only when something is actually narrowing the data, so it
+                  reads as state rather than decoration. */}
+              {drawerApplied > 0 && (
+                <span
+                  className="ml-0.5 inline-flex items-center justify-center min-w-[1.15rem] h-[1.15rem] px-1 rounded-full bg-primary text-primary-fg text-[10px] font-semibold tabular-nums"
+                  aria-hidden="true"
+                >
+                  {drawerApplied}
+                </span>
+              )}
             </Button>
           )}
         </div>
@@ -691,15 +728,44 @@ function SpecRendererBody({
         </div>
       )}
       {tabbedHeaderWidgets.length > 0 && (
-        <div className="nubi-filter-bar flex flex-wrap items-end gap-3 px-1 pb-4 mb-4 border-b border-border">
-          {tabbedHeaderWidgets.map((w) => (
-            <div
-              key={w.id}
-              className="min-w-[10rem] max-w-xs overflow-visible"
+        <div className="nubi-filter-bar px-1 pb-4 mb-4 border-b border-border">
+          {/* Collapse control. The bar is the one placement with no way to get
+              it out of the way, and on a board with several filters it can eat
+              a third of the first screen. Hidden filters still report how many
+              are applied — never let the board look unfiltered when it is not.
+              In the editor the bar always stays open: a collapsed bar would
+              hide the very widgets the author is arranging. */}
+          {!editMode && (
+            <button
+              type="button"
+              onClick={() => setHeaderFiltersOpen(o => !o)}
+              aria-expanded={headerFiltersOpen}
+              className="inline-flex items-center gap-1.5 mb-2 text-[11px] font-medium text-muted hover:text-fg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 rounded"
             >
-              <WidgetComponent widget={w} onOpenDrawer={setOpenDrawer} editMode={editMode} />
+              <span aria-hidden="true" className="text-[9px]">{headerFiltersOpen ? '▾' : '▸'}</span>
+              Filters
+              {(() => {
+                const n = appliedCountFor(tabbedHeaderWidgets)
+                return n > 0 ? (
+                  <span className="inline-flex items-center justify-center min-w-[1.15rem] h-[1.15rem] px-1 rounded-full bg-primary text-primary-fg text-[10px] font-semibold tabular-nums">
+                    {n}
+                  </span>
+                ) : null
+              })()}
+            </button>
+          )}
+          {(headerFiltersOpen || editMode) && (
+            <div className="flex flex-wrap items-end gap-3">
+              {tabbedHeaderWidgets.map((w) => (
+                <div
+                  key={w.id}
+                  className="min-w-[10rem] max-w-xs overflow-visible"
+                >
+                  <WidgetComponent widget={w} onOpenDrawer={setOpenDrawer} editMode={editMode} />
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
       )}
       {tabbedWidgets.length === 0 ? (

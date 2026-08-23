@@ -339,6 +339,23 @@ export function useVariable(name) {
 }
 
 /**
+ * Read the whole variable map at once.
+ *
+ * For code that has to reason across every variable rather than watch one —
+ * counting how many filters are actually applied, for instance. Prefer
+ * `useVariable(name)` when a single value will do: this subscribes to every
+ * change on the board, so a component using it re-renders whenever ANY
+ * filter moves.
+ *
+ * @returns {Record<string, unknown>}
+ */
+export function useVariableValues() {
+  const variables = useContext(VariableValuesContext)
+  if (!variables) throw new Error('useVariableValues must be used inside <VariableProvider>')
+  return variables
+}
+
+/**
  * Returns the stable `(name, value) => void` setter.
  * Components that only SET variables won't re-render when variable values change.
  *
