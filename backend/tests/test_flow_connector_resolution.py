@@ -1,4 +1,4 @@
-"""Tests for the keystone fix: _handle_query BYO-warehouse connector resolution.
+"""Tests for _handle_query BYO-warehouse connector resolution.
 
 Coverage
 --------

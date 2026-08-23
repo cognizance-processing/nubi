@@ -560,7 +560,7 @@ def widgets_for_tab(spec: DashboardSpec, tab_id: str | None = None) -> list[Any]
 
     Why this exists: ``render_board_svg`` used to iterate ``spec.widgets``
     wholesale, so a tabbed board rendered EVERY tab stacked on top of itself.
-    Tabs reuse the same grid coordinates, so on the real 5-tab MacMobile board
+    Tabs reuse the same grid coordinates, so on a real 5-tab board
     that meant 31 widgets fighting for the 9 widgets' worth of space a viewer
     actually sees — five different widgets all at grid cell (1,1). It looked
     like a layout engine bug; it was a missing partition. This affected the PDF

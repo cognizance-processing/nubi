@@ -10,7 +10,7 @@
  *
  * That ordering is the whole design. The real render costs a board-wide query
  * run plus a Node/ECharts subprocess (~7-10s cold, ~25ms cached), so making a
- * card WAIT for it would give a gallery of grey boxes. Keystone's equivalent
+ * card WAIT for it would give a gallery of grey boxes. Other BI tools'
  * cards simply go blank when they have no snapshot; showing the true layout
  * immediately and upgrading to the true picture is strictly better.
  *

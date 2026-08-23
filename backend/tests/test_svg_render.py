@@ -462,7 +462,7 @@ def _tabbed_spec() -> DashboardSpec:
 class TestTabPartition:
     """render_board_svg must draw ONE tab, not every tab stacked.
 
-    Regression: it iterated spec.widgets wholesale. On the real 5-tab MacMobile
+    Regression: it iterated spec.widgets wholesale. On a real 5-tab
     board that put 31 widgets into the 9 widgets' worth of space a viewer sees —
     five different widgets all at grid cell (1,1) — which read as a broken layout
     engine but was a missing partition. Hit the PDF export too, not just

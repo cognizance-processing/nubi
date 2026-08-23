@@ -121,7 +121,7 @@ class TestSecretInjection:
         _set_single_key()
         ds_id = "aaaaaaaa-0000-0000-0000-000000000001"
         # A UI-created datastore: connector_type, and NO password (it lives in
-        # the secret store) — exactly the real MacMobile bridge-MySQL shape.
+        # the secret store) — exactly the real bridge-MySQL shape.
         await _make_ds(repo, ds_id, {
             "connector_type": "mysql",
             "host": "db.internal",
@@ -271,7 +271,7 @@ class TestBridgeFetchFallback:
     tuple referenced an unbound name — and an except tuple is only evaluated
     once something is raised inside the try. The bridge fetch failing therefore
     turned a soft fallback into `NameError`, on exactly the bridge-backed path
-    the MacMobile board uses.
+    a bridge-backed board uses.
     """
 
     @pytest.mark.asyncio

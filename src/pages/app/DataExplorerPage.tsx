@@ -94,7 +94,7 @@ function TableItem({ name, active, onClick, indented = false }) {
 // calls the container a table lives in: a MySQL/Postgres schema, a BigQuery
 // dataset. Without these headers the rail is a flat list in which a table's
 // dataset is invisible and same-named tables in different datasets (three
-// `orders`s, say) are indistinguishable.
+// `orders` tables, say) are indistinguishable.
 
 function DatasetGroupHeader({ schema, count, collapsed, onToggle }) {
   return (
