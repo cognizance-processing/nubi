@@ -88,6 +88,44 @@ async function browserLogin(page) {
   await page.waitForURL(url => !url.pathname.startsWith('/login'), { timeout: 20_000 })
 }
 
+/**
+ * A board with a filter ALREADY declared (variable + widget) but its data
+ * widget has NO query bound yet — the mirror image of createUnwiredBoard,
+ * exercising the OTHER auto-bind entry point: picking a query for a widget
+ * that already reaches a matching board variable (DashboardEditor's
+ * `setQueryId` → `autoBindParams`), rather than connecting a pre-existing
+ * widget from the filter's own panel.
+ */
+async function createBoardWithFilterOnly(request, token, orgId) {
+  const spec = {
+    version: 1,
+    title: 'E2E Auto-bind-on-pick',
+    layout: { cols: 12, row_height: 60 },
+    variables: [{ name: 'region', type: 'select', default: null }],
+    widgets: [
+      {
+        id: 'w_filter', type: 'filter', target_var: 'region',
+        props: { label: 'Region', subtype: 'select' },
+        pos: { x: 1, y: 1, w: 4, h: 2 },
+      },
+      {
+        id: 'w_table', type: 'table', query_id: '', params: {},
+        config: { title: 'Demo rows' },
+        pos: { x: 1, y: 3, w: 8, h: 6 },
+      },
+    ],
+  }
+  const res = await request.post(`${BACKEND}/api/v1/boards`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(orgId ? { 'X-Org-Id': orgId } : {}),
+    },
+    data: { name: 'E2E Auto-bind-on-pick', config: { spec } },
+  })
+  expect(res.ok(), `Board creation failed: ${res.status()} ${await res.text()}`).toBeTruthy()
+  return (await res.json()).id
+}
+
 test.describe('Filter wiring', () => {
   let token
 
@@ -163,5 +201,75 @@ test.describe('Filter wiring', () => {
     // And the filter itself points at that variable.
     const filter = spec.widgets.find(w => w.type === 'filter')
     expect(filter.target_var).toBe('region')
+  })
+
+  test('picking a query auto-binds an existing filter, and the wired variable actually changes rendered data', async ({ page, request }) => {
+    test.setTimeout(120_000)
+    await browserLogin(page)
+    const orgId = await firstOrgId(request, token)
+    await page.evaluate(id => { if (id) localStorage.setItem('nubi-active-org-id', id) }, orgId)
+    const boardId = await createBoardWithFilterOnly(request, token, orgId)
+    await page.goto(`/d/${boardId}/edit`)
+    await expect(page.getByTestId('editor-shell')).toBeVisible({ timeout: 30_000 })
+    await page.waitForTimeout(3000)
+
+    // ── Select the table widget and pick its query ──────────────────────────
+    // GridCanvas keeps an off-breakpoint layout in the DOM (hidden via CSS),
+    // so more than one node can carry the same data-grid-id — the draggable
+    // wrapper (role="button") is the one actually visible/interactive.
+    await page.locator('[role="button"][data-grid-id="w_table"]:visible').first().click()
+    await page.waitForTimeout(500)
+    // ConfigPanel opens on the "Widget" tab by default — the query picker
+    // lives under "Data".
+    await page.getByRole('button', { name: 'Data', exact: true }).click()
+    await page.waitForTimeout(500)
+
+    const queryTrigger = page.locator('button[aria-label="Query"]:visible').first()
+    await expect(queryTrigger).toBeVisible({ timeout: 10_000 })
+    await queryTrigger.click()
+    await page.locator('#query-picker-list-opt-demo_by_region').click()
+    await page.waitForTimeout(1000)
+
+    // ── The pick auto-bound the widget to the pre-existing "region" filter,
+    //    and said so — the widget must not change in silence. ──────────────
+    await expect(page.getByTestId('param-autobind-note')).toContainText('region')
+
+    // ── Save and check what actually persisted ───────────────────────────────
+    await page.locator('[data-testid="editor-save-btn"]:visible').first().click()
+    await page.waitForTimeout(4000)
+
+    const res = await request.get(`${BACKEND}/api/v1/boards/${boardId}`, {
+      headers: { Authorization: `Bearer ${token}`, ...(orgId ? { 'X-Org-Id': orgId } : {}) },
+    })
+    expect(res.ok()).toBeTruthy()
+    const spec = (await res.json()).config.spec
+    const table = spec.widgets.find(w => w.id === 'w_table')
+    expect(table.query_id).toBe('demo_by_region')
+    expect(table.params).toEqual({ region: { ref: 'region' } })
+
+    // ── The wiring is REAL, not just a config-panel artifact: drive the
+    //    variable via the URL (the same mechanism a filter click uses under
+    //    the hood — VariableProvider syncs both ways) and confirm the live
+    //    board's table actually renders different rows. ─────────────────────
+    // Scoped to the table itself — with the filter set, the filter's OWN
+    // trigger also displays "alpha" (the current selection), so an
+    // unscoped page-wide text search is ambiguous.
+    const tableRows = page.getByRole('table')
+    await page.goto(`/d/${boardId}`)
+    await expect(tableRows.getByText('alpha', { exact: true })).toBeVisible({ timeout: 15_000 })
+    await expect(tableRows.getByText('beta', { exact: true })).toBeVisible()
+
+    await page.goto(`/d/${boardId}?region=alpha`)
+    await expect(tableRows.getByText('alpha', { exact: true })).toBeVisible({ timeout: 15_000 })
+    await expect(tableRows.getByText('beta', { exact: true })).not.toBeVisible()
+
+    // ── The filter's rendered trigger is clickable anywhere on its body, not
+    //    just the caret glyph — click near the LEFT edge (not the caret,
+    //    which sits at the far right) and confirm the popover still opens. ──
+    const trigger = page.locator('[data-grid-id="w_filter"] button[aria-haspopup]').first()
+    await expect(trigger).toBeVisible({ timeout: 10_000 })
+    const box = await trigger.boundingBox()
+    await page.mouse.click(box.x + box.width * 0.15, box.y + box.height / 2)
+    await expect(page.locator('[role="listbox"]')).toBeVisible({ timeout: 5000 })
   })
 })
