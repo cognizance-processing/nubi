@@ -34,9 +34,19 @@
  *
  * Theme: follows the app's ThemeContext (dark → vs-dark, light → light),
  * degrading to 'light' when ThemeContext is unavailable.
+ *
+ * Imperative handle (via ref)
+ * ---------------------------
+ *   insertSnippetAtCursor(text) — inserts `text` at the current cursor or
+ *     selection (same mechanism the Templates menu uses). If `text` contains
+ *     one or more literal `<column>` placeholders, every occurrence becomes
+ *     a multi-cursor selection afterward, so typing a real column name once
+ *     replaces all of them — used by the "Add filter parameter" affordance
+ *     in the query editor to drop a guarded {% if %} snippet without the
+ *     presenter hand-typing Jinja.
  */
 
-import { useRef, useCallback, useState, useEffect, useContext } from 'react'
+import { useRef, useCallback, useState, useEffect, useContext, forwardRef, useImperativeHandle } from 'react'
 import Editor from '@monaco-editor/react'
 import { FileCode2, ChevronDown, HelpCircle, Braces, Database, Sparkles } from 'lucide-react'
 
@@ -302,7 +312,7 @@ function TemplatesMenu({ onInsert }) {
 // SqlEditor
 // ---------------------------------------------------------------------------
 
-export default function SqlEditor({
+function SqlEditor({
   value,
   onChange = undefined,
   readOnly = false,
@@ -313,7 +323,7 @@ export default function SqlEditor({
   onDialectChange = undefined,
   dialectHint = undefined,
   schema: schemaProp = undefined,
-}) {
+}, ref) {
   // Theme — null-safe read so this renders outside a ThemeProvider without a
   // conditional hook call; degrades to 'light'.
   const theme = useContext(ThemeContext)?.theme ?? 'light'
@@ -519,6 +529,39 @@ export default function SqlEditor({
     editor.focus()
   }, [onChange])
 
+  // ── Imperative handle: insert a snippet at the cursor, multi-selecting
+  //    every `<column>` placeholder it contains ───────────────────────────
+  useImperativeHandle(ref, () => ({
+    insertSnippetAtCursor(text) {
+      const editor = editorRef.current
+      const monaco = monacoRef.current
+      if (!editor) { onChange?.(text); return }
+
+      const selection = editor.getSelection()
+      const startLine = selection.startLineNumber
+      const startCol = selection.startColumn
+      editor.executeEdits('insert-filter-param', [{ range: selection, text, forceMoveMarkers: true }])
+      editor.focus()
+
+      if (!monaco) return
+      const model = editor.getModel()
+      if (!model) return
+      const insertStartOffset = model.getOffsetAt({ lineNumber: startLine, column: startCol })
+      const placeholderRe = /<column>/g
+      const selections = []
+      let m
+      while ((m = placeholderRe.exec(text)) !== null) {
+        const from = model.getPositionAt(insertStartOffset + m.index)
+        const to = model.getPositionAt(insertStartOffset + m.index + m[0].length)
+        selections.push(new monaco.Selection(from.lineNumber, from.column, to.lineNumber, to.column))
+      }
+      if (selections.length > 0) {
+        editor.setSelections(selections)
+        editor.revealRangeInCenter(selections[0])
+      }
+    },
+  }), [onChange])
+
   return (
     <div className="flex flex-col gap-1.5">
       {toolbar && (
@@ -600,3 +643,7 @@ export default function SqlEditor({
     </div>
   )
 }
+
+const ForwardedSqlEditor = forwardRef(SqlEditor)
+ForwardedSqlEditor.displayName = 'SqlEditor'
+export default ForwardedSqlEditor

@@ -603,6 +603,66 @@ export function registerQuery(body) {
 }
 
 /**
+ * Render a query's final SQL — WITHOUT executing it.
+ *
+ * POST /api/v1/query/render
+ *
+ * Resolves the SAME plan as POST /query (auth/scope/allowlist gates,
+ * named-param binding, RLS predicate injection) but never touches a
+ * connector, the cache, or usage metering. Lets the editor show exactly
+ * what will run: bound values stay placeholders (`$1`) in the SQL text,
+ * never interpolated — and RLS predicates are visible in the preview too.
+ *
+ * @param {{ query_id?: string, sql?: string, named_params?: object, datastore_id?: string }} body
+ * @returns {Promise<{ sql: string, params: Array }>}
+ */
+export function renderQueryTemplate(body) {
+  return post('/query/render', body)
+}
+
+/**
+ * Columns of a registered query a dashboard filter could be attached to.
+ *
+ * GET /api/v1/queries/{id}/filterable-columns
+ *
+ * Includes columns that live only inside subqueries — a query that rolls up
+ * `region` before its output still has it available deeper down, which is
+ * exactly where a filter has to go to mean anything. Each entry carries
+ * `in_output` so the UI can say which ones the widget actually displays.
+ *
+ * @param {string} queryId
+ * @returns {Promise<Array<{name: string, expr: string, in_output: boolean}>>}
+ */
+export async function listFilterableColumns(queryId) {
+  try {
+    const res = await get(`/queries/${encodeURIComponent(queryId)}/filterable-columns`)
+    return Array.isArray(res?.columns) ? res.columns : []
+  } catch (cause) {
+    console.warn('[api] listFilterableColumns failed; returning []:', cause.message)
+    return []
+  }
+}
+
+/**
+ * Make a query filterable: inject a guarded filter on `column` bound to a new
+ * `param`, so a dashboard filter variable of that name can drive it.
+ *
+ * POST /api/v1/queries/{id}/parameterize
+ *
+ * The server injects at the innermost scope exposing the column (so it
+ * filters before any roll-up) and VERIFIES the rewrite by re-running the
+ * query with the filter unset — it must return exactly the original result,
+ * or the change is refused rather than saved. Pass `apply: false` to preview.
+ *
+ * @param {string} queryId
+ * @param {{param: string, column: string, subtype?: string, apply?: boolean}} body
+ * @returns {Promise<{ok: boolean, verified: boolean, applied: boolean, sql?: string, column_expr?: string, reason?: string}>}
+ */
+export function parameterizeQuery(queryId, body) {
+  return post(`/queries/${encodeURIComponent(queryId)}/parameterize`, body)
+}
+
+/**
  * Fetch a single registered query by id — the deep-link path into the editor.
  *
  * GET /api/v1/query/registry/{queryId}

@@ -65,6 +65,8 @@ import {
   ArrowLeftRight,
   MoreHorizontal,
   Wand2,
+  Eye,
+  EyeOff,
 } from 'lucide-react'
 
 import SqlEditor from '../../components/SqlEditor.jsx'
@@ -72,11 +74,17 @@ import ChatPanel from '../../editor/ChatPanel.jsx'
 import MetricExposePanel from '../../components/app/MetricExposePanel.jsx'
 import ConnectorCombobox from '../../components/app/ConnectorCombobox.jsx'
 import { metricToDraft, draftToMetricBlock } from './metricBlock.logic.js'
+import {
+  reconcileAutoParams,
+  buildFilterParamSnippet,
+  validateNewParamName,
+  FILTER_PARAM_TYPES,
+} from './queryParams.logic.js'
 import QueryCodeView from './QueryCodeView.jsx'
 import DataTable from '../../components/DataTable.jsx'
 import PythonCell from '../../components/PythonCell.jsx'
 import { runArrowQueryById, runArrowQuery, registerArrowTable, runLocalSqlForCell } from '../../lib/wasmRuntime.js'
-import { get, post, registerQuery, listConnectors, listQueryWidgetUsages, fetchSchema } from '../../lib/api.js'
+import { get, post, registerQuery, renderQueryTemplate, listConnectors, listQueryWidgetUsages, fetchSchema } from '../../lib/api.js'
 import VisualQueryBuilder from '../../components/VisualQueryBuilder.jsx'
 import TableWidget from '../../dashboards/widgets/TableWidget.jsx'
 import ChartWidget from '../../dashboards/widgets/ChartWidget.jsx'
@@ -127,18 +135,10 @@ function dialectForDatastore(datastores, datastoreId) {
 const DEMO_DATASTORE_ID = '__demo__'
 
 // ---------------------------------------------------------------------------
-// Extract {{name}} placeholders from SQL text
+// Param panel logic (SQL placeholder extraction, auto-param reconciliation,
+// "Add filter parameter" snippet builder) — pure, unit-tested separately.
+// See queryParams.logic.js.
 // ---------------------------------------------------------------------------
-
-function extractPlaceholders(sql) {
-  const re = /\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}/g
-  const found = new Set()
-  let m
-  while ((m = re.exec(sql)) !== null) {
-    found.add(m[1])
-  }
-  return Array.from(found)
-}
 
 /** Generate a stable unique scratch-cell id. */
 function makeCellId() {
@@ -278,6 +278,135 @@ function ParamInputRow({ param, value, onChange }) {
           placeholder={param.default != null ? `default: ${param.default}` : param.required ? 'required' : 'optional'}
           className="h-8 px-2.5 text-xs bg-surface border border-border rounded-lg text-fg placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
         />
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// AddFilterParamPopover — drop a guarded {% if %} filter snippet at the
+// cursor without hand-typing Jinja. See queryParams.logic.js for the
+// snippet grammar; this component is just the form + open/close chrome.
+// ---------------------------------------------------------------------------
+
+function AddFilterParamPopover({ existingNames, onAdd }) {
+  const [open, setOpen] = useState(false)
+  const [name, setName] = useState('')
+  const [uiType, setUiType] = useState('multiselect')
+  const ref = useRef(null)
+  const nameInputRef = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    nameInputRef.current?.focus()
+    function onDocClick(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
+    }
+    function onKey(e) { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDocClick)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDocClick)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const error = name.trim() ? validateNewParamName(name, existingNames) : null
+
+  const handleSubmit = (e) => {
+    e.preventDefault()
+    const trimmed = name.trim()
+    if (validateNewParamName(trimmed, existingNames)) return
+    onAdd({ name: trimmed, uiType })
+    setName('')
+    setUiType('multiselect')
+    setOpen(false)
+  }
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        className={[
+          'inline-flex items-center gap-1.5 h-7 px-2.5 text-xs font-medium rounded-md border transition-colors',
+          open
+            ? 'bg-surface-2 border-border text-fg'
+            : 'bg-surface border-border text-muted hover:text-fg hover:bg-surface-2',
+        ].join(' ')}
+        title="Add a filter parameter — drops a guarded snippet at your cursor"
+      >
+        <ArrowLeftRight size={12} className="text-primary/70" />
+        Add filter parameter
+      </button>
+
+      {open && (
+        <form
+          onSubmit={handleSubmit}
+          role="dialog"
+          aria-label="Add filter parameter"
+          className="absolute left-0 top-full mt-1.5 z-30 w-72 rounded-lg border border-border bg-surface shadow-xl p-3 flex flex-col gap-2.5"
+        >
+          <div>
+            <p className="text-xs font-semibold text-fg">Add filter parameter</p>
+            <p className="text-[11px] text-muted mt-0.5 leading-snug">
+              Inserts a guarded snippet at your cursor and selects{' '}
+              <code className="px-1 py-0.5 rounded bg-surface-2 font-mono text-[10px]">{'<column>'}</code>{' '}
+              so you just type the column name.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label htmlFor="new-param-name" className="text-[10px] font-semibold text-muted uppercase tracking-wide">
+              Name
+            </label>
+            <input
+              id="new-param-name"
+              ref={nameInputRef}
+              type="text"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="region"
+              className="h-8 px-2.5 text-xs bg-surface border border-border rounded-lg text-fg font-mono placeholder:text-muted/40 placeholder:font-sans focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+            {error && <p className="text-[10px] text-danger">{error}</p>}
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label htmlFor="new-param-type" className="text-[10px] font-semibold text-muted uppercase tracking-wide">
+              Type
+            </label>
+            <select
+              id="new-param-type"
+              value={uiType}
+              onChange={e => setUiType(e.target.value)}
+              className="h-8 px-2.5 text-xs bg-surface border border-border rounded-lg text-fg focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer"
+            >
+              {FILTER_PARAM_TYPES.map(t => (
+                <option key={t.value} value={t.value}>{t.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center gap-2 justify-end pt-0.5">
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="h-7 px-2.5 text-xs text-muted hover:text-fg border border-border rounded-lg bg-surface hover:bg-surface-2 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={!name.trim() || Boolean(error)}
+              className="h-7 px-3 text-xs font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+            >
+              Insert
+            </button>
+          </div>
+        </form>
       )}
     </div>
   )
@@ -1441,6 +1570,14 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
   const [sql, setSql] = useState(query?.sql ?? '')
   const [params, setParams] = useState(() => query?.params ?? [])
   const [paramValues, setParamValues] = useState(() => initialParamValues(query?.params))
+  // Imperative handle onto the primary SqlEditor — lets "Add filter
+  // parameter" drop a snippet at the cursor instead of appending blindly.
+  const sqlEditorRef = useRef(null)
+  // "Show rendered SQL" preview panel (POST /query/render — never executes).
+  const [showRendered, setShowRendered] = useState(false)
+  const [renderedPreview, setRenderedPreview] = useState(null)
+  const [renderedLoading, setRenderedLoading] = useState(false)
+  const [renderedError, setRenderedError] = useState(null)
 
   // ── "Expose as metric" panel draft (config.metric block) ─────────────────
   const [metricDraft, setMetricDraft] = useState(() =>
@@ -1461,19 +1598,19 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
     setRightPanelTab('preview')
   }, [query?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-sync params list from SQL {{placeholders}}.
+  // Auto-sync params list from SQL {{placeholders}} / {% if %} guards.
+  //
+  // Reconciles both directions, not just additions:
+  //   - a new name in the SQL that isn't declared yet → added, flagged `auto`
+  //   - a declared param whose placeholder disappeared → removed, but ONLY
+  //     if it still carries the `auto` flag from when this effect created it.
+  //     A param the presenter added by hand (the "Add filter parameter"
+  //     affordance, or by typing in the panel) is never auto-removed, even
+  //     if they later delete its placeholder from the SQL — provenance is
+  //     tracked on the param itself so this effect can tell the difference
+  //     without guessing. See queryParams.logic.js for the pure rule.
   useEffect(() => {
-    const found = extractPlaceholders(sql)
-    if (found.length === 0) return
-    setParams(prev => {
-      const existing = new Set(prev.map(p => p.name))
-      const newOnes = found.filter(n => !existing.has(n))
-      if (newOnes.length === 0) return prev
-      return [
-        ...prev,
-        ...newOnes.map(n => ({ name: n, type: 'text', default: null, required: false })),
-      ]
-    })
+    setParams(prev => reconcileAutoParams(prev, sql))
   }, [sql])
 
   // ── Connector (datastore) picker ─────────────────────────────────────────
@@ -1676,6 +1813,16 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
           datastoreId: datastoreId || undefined,
         })
       } else {
+        // Ad-hoc (unsaved) SQL cannot bind {{name}}-style named params — only
+        // a REGISTERED query can (the backend's ad-hoc path only resolves
+        // {{ vars.* }} org variables, nothing else). Running unfiltered here
+        // would silently ignore a value the presenter just set, which reads
+        // as "the filter doesn't work" — tell them plainly instead.
+        const hasActiveParamValue = Object.values(paramValues).some(v => !isBlankParamValue(v))
+        if (hasActiveParamValue && params.length > 0) {
+          setRunError('Save this query to test its filter parameters — an unsaved query can’t bind named params yet. Save, then Run.')
+          return
+        }
         res = await runArrowQuery(sql, undefined, { datastoreId: datastoreId || undefined })
       }
       // Surface a failed query as the run error rather than an empty grid.
@@ -1737,6 +1884,51 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
     setSql(val)
     onQueryChange?.({ ...query, sql: val, params })
   }, [query, params, onQueryChange])
+
+  // ── Add filter parameter — drop a guarded {% if %} snippet at the cursor,
+  //    multi-select every <column> placeholder, and declare the param. The
+  //    SQL update itself round-trips through SqlEditor's own onChange (same
+  //    as the Templates menu) — insertSnippetAtCursor edits the model, Monaco
+  //    fires onChange, which calls handleSqlChange for us.
+  const handleAddFilterParam = useCallback(({ name, uiType }) => {
+    const { snippet, param } = buildFilterParamSnippet({ name, uiType })
+    sqlEditorRef.current?.insertSnippetAtCursor(snippet)
+    setParams(prev => (prev.some(p => p.name === name) ? prev : [...prev, param]))
+  }, [])
+
+  // ── Show rendered SQL — POST /query/render, never executes. Only
+  //    meaningful for a SAVED query (query_id resolves declared params +
+  //    RLS the same way execution would); an unsaved query can't render
+  //    named params either, for the same reason it can't run them. Fetching
+  //    itself is the effect below, keyed on showRendered so it also covers
+  //    "keep the preview live while a param value changes".
+  const handleToggleRendered = useCallback(() => {
+    setShowRendered(v => !v)
+  }, [])
+
+  // Keep the preview live while the panel is open — a param value tweak
+  // should update the rendered SQL without a manual re-toggle.
+  useEffect(() => {
+    if (!showRendered || !query?.id || isNew) return
+    let cancelled = false
+    const namedParams = {}
+    Object.entries(paramValues).forEach(([k, v]) => {
+      if (isBlankParamValue(v)) return
+      namedParams[k] = v
+    })
+    setRenderedLoading(true)
+    setRenderedError(null)
+    renderQueryTemplate({
+      query_id: query.id,
+      named_params: Object.keys(namedParams).length > 0 ? namedParams : undefined,
+      datastore_id: datastoreId || undefined,
+    })
+      .then(preview => { if (!cancelled) setRenderedPreview(preview) })
+      .catch(err => { if (!cancelled) setRenderedError(err?.message ?? 'Could not render this query.') })
+      .finally(() => { if (!cancelled) setRenderedLoading(false) })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showRendered, query?.id, JSON.stringify(paramValues), datastoreId])
 
   // ── Save ─────────────────────────────────────────────────────────────────
   const handleSaveClick = useCallback(() => {
@@ -2200,6 +2392,26 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                 </button>
               )}
 
+              {!viewing && (
+                <AddFilterParamPopover
+                  existingNames={params.map(p => p.name)}
+                  onAdd={handleAddFilterParam}
+                />
+              )}
+
+              {!viewing && query?.id && !isNew && (
+                <button
+                  onClick={handleToggleRendered}
+                  className={`inline-flex items-center gap-1.5 h-7 px-2.5 text-xs font-medium rounded-md border transition-colors ${
+                    showRendered ? 'bg-primary/10 border-primary text-primary' : 'border-border bg-surface text-muted hover:text-fg hover:bg-surface-2'
+                  }`}
+                  title="Preview the SQL that will actually run — values stay bound placeholders, never text"
+                >
+                  {showRendered ? <EyeOff size={12} /> : <Eye size={12} className="text-primary/70" />}
+                  Rendered SQL
+                </button>
+              )}
+
               <ConnectorPicker
                 datastores={datastores}
                 value={datastoreId}
@@ -2309,6 +2521,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                 version view is active; the draft SQL state is untouched. */}
             <div className="px-3 pt-3">
               <SqlEditor
+                ref={sqlEditorRef}
                 value={viewing ? (typeof viewCfg.sql === 'string' ? viewCfg.sql : '') : sql}
                 onChange={viewing ? () => {} : handleSqlChange}
                 onRun={viewing ? undefined : handleRun}
@@ -2325,6 +2538,47 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                 </p>
               )}
             </div>
+
+            {/* Rendered SQL preview — POST /query/render, never executes.
+                Shows the presenter exactly what will run: bound values stay
+                placeholders in the SQL text, RLS predicates are visible too. */}
+            {!viewing && showRendered && query?.id && !isNew && (
+              <div className="px-3 pb-3">
+                <div className="rounded-lg border border-border bg-surface-2/40 overflow-hidden">
+                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-border bg-surface-2/60">
+                    <Eye size={11} className="text-primary/70" />
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">
+                      Rendered SQL — what will actually run
+                    </span>
+                    {renderedLoading && <Loader2 size={10} className="animate-spin text-muted ml-1" />}
+                  </div>
+                  {renderedError ? (
+                    <p className="px-2.5 py-2 text-[11px] text-danger">{renderedError}</p>
+                  ) : renderedPreview ? (
+                    <div className="px-2.5 py-2 flex flex-col gap-1.5">
+                      <pre className="text-[11px] font-mono text-fg whitespace-pre-wrap break-words leading-relaxed">
+                        {renderedPreview.sql}
+                      </pre>
+                      {Array.isArray(renderedPreview.params) && renderedPreview.params.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1 pt-1 border-t border-border/60">
+                          <span className="text-[10px] text-muted uppercase tracking-wide">Bound values:</span>
+                          {renderedPreview.params.map((v, i) => (
+                            <code
+                              key={i}
+                              className="px-1.5 py-0.5 rounded bg-surface border border-border font-mono text-[10px] text-primary/90"
+                            >
+                              {'$' + (i + 1)} = {JSON.stringify(v)}
+                            </code>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="px-2.5 py-2 text-[11px] text-muted">Loading…</p>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Drag handle */}
             <div
