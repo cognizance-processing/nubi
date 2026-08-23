@@ -403,27 +403,36 @@ def _pick_best_query(
         # Last resort — should never happen if the registry is seeded.
         chosen_id = "demo_all"
 
-    # Resolve the columns for this query from the catalog's tables.
-    relevant_columns: list[str] = []
-    # Try relevant_columns from grounding first.
-    for col_ref in grounding.get("relevant_columns", []):
-        col = col_ref.get("column", "")
-        if col and col not in relevant_columns:
-            relevant_columns.append(col)
+    # ── Columns MUST belong to the chosen query ──────────────────────────────
+    # The catalog records each query's real output columns. Use those first.
+    #
+    # Previously the columns below were gathered from whatever tables the
+    # QUESTION's keywords matched — entirely independently of `chosen_id` —
+    # so the two halves of the result could (and did) disagree: asking for
+    # "route efficiency by region" picked query `demo_all` (columns
+    # id/name/value/active, via the registry-order fallback) but paired it
+    # with columns scavenged from unrelated tables elsewhere in the catalog
+    # that merely matched the word "region". Every widget
+    # built from that pair referenced a column its own query does not emit.
+    for q in catalog.get("queries", []):
+        if q.get("id") == chosen_id:
+            own_outputs = [c for c in (q.get("outputs") or []) if c]
+            if own_outputs:
+                return chosen_id, own_outputs
+            break
 
-    # Also pull from catalog tables that overlap with the grounding.
+    # Fallback: the chosen query declares no output columns in the catalog
+    # (e.g. unparseable SQL). Fall back to the tables IT touches — still
+    # scoped to the query, never to unrelated keyword matches.
     tables = catalog.get("tables", {})
-    for tbl in grounding.get("relevant_tables", []):
-        for col in tables.get(tbl, []):
-            if col not in relevant_columns:
-                relevant_columns.append(col)
-
-    # Always ensure we have at least some columns from the catalog if empty.
-    if not relevant_columns:
-        for cols in tables.values():
-            relevant_columns.extend(cols)
-            if len(relevant_columns) >= 4:
-                break
+    relevant_columns: list[str] = []
+    for q in catalog.get("queries", []):
+        if q.get("id") == chosen_id:
+            for tbl in q.get("tables") or []:
+                for col in tables.get(tbl, []):
+                    if col not in relevant_columns:
+                        relevant_columns.append(col)
+            break
 
     return chosen_id, relevant_columns
 

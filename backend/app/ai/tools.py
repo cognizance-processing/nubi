@@ -100,6 +100,35 @@ def _run_sync(coro: Awaitable[_T]) -> _T:
     return asyncio.run(coro)  # type: ignore[arg-type]
 
 
+def _json_safe_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Coerce a connector's ``to_pylist()`` output to JSON-serialisable values.
+
+    ``arrow_table.to_pylist()`` converts Arrow scalars to native Python
+    objects, but "native" still includes types ``json.dumps`` (used by the
+    MCP JSON-RPC transport) chokes on — most commonly ``decimal.Decimal``
+    from a MySQL SUM/ROUND on a DECIMAL column (a `/query` REST caller never
+    hits this: that path streams Arrow IPC bytes and the client's own Arrow
+    library decodes Decimal natively). ``date``/``datetime``/``time`` are
+    included for the same reason. Recurses into list/dict values so a nested
+    struct or array column is covered too.
+    """
+    import datetime as _dt
+    from decimal import Decimal as _Decimal
+
+    def _coerce(value: Any) -> Any:
+        if isinstance(value, _Decimal):
+            return float(value)
+        if isinstance(value, (_dt.datetime, _dt.date, _dt.time)):
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {k: _coerce(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_coerce(v) for v in value]
+        return value
+
+    return [{k: _coerce(v) for k, v in row.items()} for row in rows]
+
+
 # ---------------------------------------------------------------------------
 # ToolDef
 # ---------------------------------------------------------------------------
@@ -134,16 +163,85 @@ class ToolDef:
 # ---------------------------------------------------------------------------
 
 
-def _tool_get_schema(claims: dict[str, Any]) -> dict[str, Any]:
+#: Default cap on queries returned by a narrowed get_schema call.
+_GET_SCHEMA_DEFAULT_LIMIT = 30
+#: Hard response-size ceiling (chars of the JSON body) — narrowed results can
+#: still be large if a table_pattern matches many queries with big
+#: output_schema/params lists; this is the last-resort backstop.
+_GET_SCHEMA_MAX_CHARS = 60_000
+
+
+def _tool_get_schema(
+    claims: dict[str, Any],
+    table_pattern: str | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
     """Return the catalog schema (tables + columns) visible to the caller.
 
     The catalog is built from the live query registry and the query graph.
     No filtering by claims is applied here — the catalog only exposes
     registered (already allowlisted) metadata, not raw data.
+
+    With no *table_pattern*, returns a COMPACT summary — table names and
+    column counts only, no per-query detail — so an agent can list the
+    catalog without spending its whole context on one call (the full catalog
+    on a busy org can be several hundred KB: every registered query's
+    params/output_schema, for every query in the process, not just the ones
+    relevant to the question). Pass *table_pattern* (a case-insensitive
+    substring of the table name) to get full columns for matching tables
+    plus the queries that touch them, capped at *limit* (default 30) with a
+    truncation notice if there are more.
     """
     from app.ai.grounding import build_catalog  # noqa: PLC0415
 
-    return build_catalog()
+    catalog = build_catalog()
+    tables: dict[str, list[str]] = catalog["tables"]
+    queries: list[dict[str, Any]] = catalog["queries"]
+
+    if not table_pattern:
+        return {
+            "tables": {name: len(cols) for name, cols in tables.items()},
+            "table_count": len(tables),
+            "query_count": len(queries),
+            "note": (
+                "Compact summary (table name -> column count). Call again "
+                "with table_pattern set to a table name (or a substring of "
+                "one) to get its full columns and the queries that use it."
+            ),
+        }
+
+    needle = table_pattern.strip().lower()
+    matched_tables = {name: cols for name, cols in tables.items() if needle in name.lower()}
+    matched_names = set(matched_tables)
+    matched_queries = [q for q in queries if matched_names & set(q.get("tables") or [])]
+
+    cap = limit if isinstance(limit, int) and limit > 0 else _GET_SCHEMA_DEFAULT_LIMIT
+    result: dict[str, Any] = {
+        "tables": matched_tables,
+        "queries": matched_queries[:cap],
+        "matched_query_count": len(matched_queries),
+    }
+    if len(matched_queries) > cap:
+        result["truncated"] = True
+        result["note"] = (
+            f"Showing {cap} of {len(matched_queries)} matching queries. "
+            "Narrow table_pattern further, or pass a higher limit."
+        )
+
+    # Last-resort size backstop: a narrow-but-verbose match (many queries with
+    # large output_schema/params) can still blow the budget. Drop queries
+    # until the body fits rather than returning something too big to read.
+    import json  # noqa: PLC0415
+
+    while len(json.dumps(result)) > _GET_SCHEMA_MAX_CHARS and result["queries"]:
+        result["queries"] = result["queries"][: max(1, len(result["queries"]) // 2)]
+        result["truncated"] = True
+        result["note"] = (
+            f"Response was too large and was cut down to {len(result['queries'])} "
+            f"of {len(matched_queries)} matching queries. Narrow table_pattern further."
+        )
+
+    return result
 
 
 def _tool_list_queries(claims: dict[str, Any]) -> dict[str, Any]:
@@ -199,21 +297,38 @@ def _tool_generate_sql(
 
 
 def _tool_create_query(
-    id: str,
     sql: str,
     claims: dict[str, Any],
+    id: str | None = None,
+    name: str | None = None,
     params: list[dict[str, Any]] | None = None,
+    datastore_id: str | None = None,
 ) -> dict[str, Any]:
-    """Register a query in the query registry under the given *id*.
+    """Register a query in the query registry, mirroring ``POST
+    /query/registry``'s id/persistence contract (previously this tool
+    reimplemented only the in-memory half of that contract, and never
+    accepted a datastore binding at all — every MCP-registered query silently
+    ran against the demo dataset no matter what real tables the SQL named).
 
     Parameters
     ----------
-    id:
-        Stable, URL-safe identifier.
     sql:
         The SELECT SQL string to register.
+    id:
+        Optional stable, URL-safe identifier. Row primary keys in the
+        ``queries`` table are real UUIDs, so a caller-chosen slug id can only
+        ever be a registry-only (in-memory, this-process-lifetime)
+        registration — it is NOT persisted, matching ``POST
+        /query/registry``'s documented behaviour for a non-UUID explicit id.
+        Omit *id* to get BOTH a generated UUID id AND real persistence (the
+        query survives a backend restart and can be referenced by a saved
+        dashboard widget) — best-effort: falls back to the same
+        registry-only registration if persistence is unavailable.
     params:
         Optional list of ``{name, type, required?, default?}`` param descriptors.
+    datastore_id:
+        Optional datastore/connector id this query runs against. Omitted =
+        the built-in demo dataset. Required to target a real (BYO) connector.
 
     Returns
     -------
@@ -235,14 +350,247 @@ def _tool_create_query(
                 )
             )
 
+    org_id = claims.get("org")
+    explicit_id = (id or "").strip() or None
+    display_name = (name or "").strip() or (explicit_id or "query").replace("_", " ").replace("-", " ").strip().title()
+
+    registry_id = explicit_id
+    if registry_id is None and org_id:
+        try:
+            from app.repos.provider import get_repo  # noqa: PLC0415
+            from app.routes._org import resolve_org_default_project_id  # noqa: PLC0415
+
+            repo = get_repo()
+            project_id = _run_sync(resolve_org_default_project_id(str(org_id)))
+            config = {
+                "sql": sql,
+                "name": display_name,
+                "datastore_id": datastore_id,
+                "params": [
+                    {
+                        "name": p.name,
+                        "type": p.type,
+                        "default": p.default,
+                        "required": p.required,
+                        "options_query_id": p.options_query_id,
+                    }
+                    for p in param_objs
+                ],
+            }
+            row = _run_sync(
+                repo.create(
+                    "queries",
+                    str(org_id),
+                    str(claims.get("sub") or ""),
+                    display_name,
+                    config,
+                    project_id=project_id,
+                )
+            )
+            registry_id = row["id"]
+        except Exception:  # noqa: BLE001 — best-effort, same contract as POST /query/registry
+            registry_id = None
+
+    if registry_id is None:
+        # Persistence unavailable (or no org) — fall back to a name-derived
+        # slug, matching the legacy memory-only registration.
+        import re as _re  # noqa: PLC0415
+
+        registry_id = _re.sub(r"[^a-z0-9_]", "", display_name.lower().replace(" ", "_")) or "query"
+
     registry = get_query_registry()
     rq = registry.register(
-        id=id,
+        id=registry_id,
         sql=sql,
-        name=id.replace("_", " ").title(),
+        name=display_name,
         params=param_objs if param_objs else None,
+        datastore_id=datastore_id,
+        owner_org_id=str(org_id) if org_id else None,
     )
     return {"id": rq.id, "name": rq.name, "registered": True}
+
+
+def _resolve_query_row(query_id: str, claims: dict[str, Any]) -> tuple[dict, str]:
+    """Fetch a persisted query row, org-scoped. Raises AppError when absent."""
+    from app.errors import AppError  # noqa: PLC0415
+    from app.repos.provider import get_repo  # noqa: PLC0415
+
+    org_id = claims.get("org")
+    if not org_id:
+        raise AppError("forbidden", "No organisation resolved for this caller.", 403)
+    row = _run_sync(get_repo().get("queries", str(org_id), query_id))
+    if row is None:
+        raise AppError("query_not_found", f"No query found for id={query_id!r}.", 404)
+    return row, str(org_id)
+
+
+def _tool_list_filterable_columns(query_id: str, claims: dict[str, Any]) -> dict[str, Any]:
+    """Columns of *query_id* a dashboard filter could attach to.
+
+    Includes columns that live only inside subqueries — a query that rolls up
+    ``region`` before its output still has ``region`` available deep down,
+    which is precisely where a filter has to go for it to mean anything.
+    """
+    from app.queries.parameterize import filterable_columns  # noqa: PLC0415
+
+    row, _ = _resolve_query_row(query_id, claims)
+    cfg = row.get("config") or {}
+    dialect = _dialect_for_datastore(cfg.get("datastore_id"), claims)
+    return {"columns": filterable_columns(cfg.get("sql") or "", dialect=dialect)}
+
+
+def _dialect_for_datastore(datastore_id: str | None, claims: dict[str, Any]) -> str:
+    """Best-effort sqlglot dialect for a datastore id (defaults to mysql).
+
+    The rewrite only needs the dialect to parse and to render the predicate's
+    column expression, so an imperfect guess degrades to a refusal (unparsed
+    SQL) rather than a bad rewrite.
+    """
+    from app.routes.connectors import DEMO_CONNECTOR_ID  # noqa: PLC0415
+
+    # No datastore, or the demo sentinel → the built-in DuckDB dataset.
+    if not datastore_id or datastore_id == DEMO_CONNECTOR_ID:
+        return "duckdb"
+    try:
+        from app.connectors.dialects import dialect_for  # noqa: PLC0415
+        from app.repos.provider import get_repo  # noqa: PLC0415
+
+        org_id = claims.get("org")
+        if not org_id:
+            return "mysql"
+        ds = _run_sync(get_repo().get("datastores", str(org_id), datastore_id))
+        cfg = (ds or {}).get("config") or {}
+        return dialect_for(cfg.get("connector_type") or cfg.get("type") or "")
+    except Exception:  # noqa: BLE001
+        return "mysql"
+
+
+def _tool_add_filter_param(
+    query_id: str,
+    param: str,
+    column: str,
+    claims: dict[str, Any],
+    subtype: str = "multiselect",
+    apply: bool = False,
+) -> dict[str, Any]:
+    """Make a registered query filterable by *param* on *column*.
+
+    Mirrors ``POST /queries/{id}/parameterize`` — same rewrite, same
+    verification gate — so the MCP path and the dashboard editor cannot drift
+    into different behaviour. The rewrite is executed with the filter unset
+    and compared against the original result; anything other than an exact
+    match is refused rather than saved, because the failure this guards
+    against is a query that still runs but quietly returns different numbers.
+    """
+    from app.connectors.planner import plan as _plan, resolve_named_params  # noqa: PLC0415
+    from app.queries.parameterize import parameterize_sql  # noqa: PLC0415
+    from app.repos.provider import get_repo  # noqa: PLC0415
+
+    from app.routes.connectors import DEMO_CONNECTOR_ID  # noqa: PLC0415
+
+    row, org_id = _resolve_query_row(query_id, claims)
+    cfg = dict(row.get("config") or {})
+    original_sql = cfg.get("sql") or ""
+    existing = list(cfg.get("params") or [])
+    # See the REST parameterize route: the demo sentinel must collapse to None
+    # before any code treats it as a UUID to look up.
+    _raw_ds = cfg.get("datastore_id")
+    datastore_id = None if _raw_ds == DEMO_CONNECTOR_ID else _raw_ds
+
+    if any((p or {}).get("name") == param for p in existing):
+        return {"ok": False, "applied": False, "reason": f"This query already declares a {param!r} parameter."}
+
+    dialect = _dialect_for_datastore(datastore_id, claims)
+    result = parameterize_sql(original_sql, param=param, column=column, dialect=dialect, subtype=subtype)
+    if not result.ok or not result.sql:
+        return {"ok": False, "applied": False, "verified": False, "reason": result.reason}
+
+    def _exec(sql_text: str, named: dict[str, Any]):
+        rendered, positional = resolve_named_params(sql_text, {**named, "vars": {}})
+        physical = _plan(rendered, claims=claims, params=positional)
+        if datastore_id:
+            from app.connectors.resolve import resolve_datastore_connector  # noqa: PLC0415
+
+            connector, _kind, cleanup = _run_sync(
+                resolve_datastore_connector(physical, datastore_id, org_id, get_repo())
+            )
+            try:
+                return connector.execute(physical)
+            finally:
+                cleanup()
+        from app.routes.query import _get_demo_connector  # noqa: PLC0415
+
+        return _get_demo_connector().execute(physical)
+
+    unset: Any = [] if subtype in ("multiselect", "list") else None
+    try:
+        before = _exec(original_sql, {})
+        after = _exec(result.sql, {param: unset})
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "applied": False,
+            "verified": False,
+            "sql": result.sql,
+            "reason": f"The modified query could not be executed, so it was not saved: {exc}",
+        }
+
+    from app.routes.query import _same_result  # noqa: PLC0415
+
+    if not _same_result(before, after):
+        return {
+            "ok": False,
+            "applied": False,
+            "verified": False,
+            "sql": result.sql,
+            "reason": (
+                "Adding this filter changed the query's results even with the filter "
+                "unset, so it was NOT saved."
+            ),
+        }
+
+    if not apply:
+        return {
+            "ok": True,
+            "verified": True,
+            "applied": False,
+            "sql": result.sql,
+            "column_expr": result.column_expr,
+        }
+
+    cfg["sql"] = result.sql
+    cfg["params"] = existing + [
+        {
+            "name": param,
+            "type": subtype,
+            "default": [] if subtype in ("multiselect", "list") else None,
+            "required": False,
+            "options_query_id": None,
+        }
+    ]
+    _run_sync(get_repo().update("queries", org_id, query_id, {"config": cfg}))
+    from app.queries.registry import (  # noqa: PLC0415
+        ensure_persisted_query,
+        get_query_registry,
+    )
+
+    # Evict AND reload — see the REST parameterize route. A bare unregister
+    # drops the query out of GET /query/registry (which lists the in-memory
+    # registry), and the dashboard editor builds its param index from that
+    # listing, so every other widget on this query would report "no query
+    # bound yet" until something re-executed it.
+    get_query_registry().unregister(query_id)
+    try:
+        _run_sync(ensure_persisted_query(query_id, org_id))
+    except Exception:  # noqa: BLE001 — the row is saved; a miss self-heals on next use
+        pass
+    return {
+        "ok": True,
+        "verified": True,
+        "applied": True,
+        "sql": result.sql,
+        "column_expr": result.column_expr,
+    }
 
 
 def _tool_run_query(
@@ -286,10 +634,9 @@ def _tool_run_query(
     dict
         ``{rows: list[dict], row_count: int, columns: list[str]}``
     """
-    from app.connectors.duckdb_conn import DuckDBConnector  # noqa: PLC0415
     from app.connectors.planner import plan, resolve_named_params  # noqa: PLC0415
     from app.errors import AppError  # noqa: PLC0415
-    from app.queries.registry import get_query_registry  # noqa: PLC0415
+    from app.queries.registry import resolve_registered_query  # noqa: PLC0415
 
     # ── Resolve SQL ──────────────────────────────────────────────────────────
     resolved_sql: str
@@ -297,19 +644,34 @@ def _tool_run_query(
     registered_datastore_id: str | None = None
 
     if query_id is not None:
-        registry = get_query_registry()
-        rq = registry.get(query_id)
+        # Use the org-scoped choke point, NOT a bare registry.get(): the
+        # in-memory registry is populated at startup and evicted on every
+        # query update, so a direct lookup misses any query created since
+        # boot or modified since it was last read (e.g. by add_filter_param,
+        # which unregisters to force a reload) and reports it as
+        # "not registered". resolve_registered_query lazily reloads the row
+        # from the DB and re-checks org ownership on a cache hit.
+        rq = _run_sync(resolve_registered_query(query_id, claims.get("org")))
         if rq is None:
             raise AppError("query_not_found", f"No registered query with id {query_id!r}.", 404)
         resolved_sql = rq.sql
         registered_datastore_id = rq.datastore_id
-        # Resolve named params → positional if the query has placeholders.
-        if named_params and rq.params:
+        # Resolve named params → positional if the query declares ANY params
+        # — not gated on named_params being non-empty. A query's {% if %}
+        # guards need rendering even when every param is left at its default
+        # (e.g. an unfiltered "give me everything" call, or a dashboard
+        # widget's first render before any filter is touched) — otherwise
+        # the literal Jinja text reaches the SQL parser and fails outright.
+        # Mirrors POST /query's _resolve_request_plan, which renders whenever
+        # `registered.params` is non-empty, never conditioned on the caller
+        # having supplied named_params at all.
+        if rq.params:
             # Build the resolved dict (apply defaults for missing optional params).
+            _named_params = named_params or {}
             resolved: dict[str, Any] = {}
             for p in rq.params:
-                if p.name in named_params:
-                    resolved[p.name] = named_params[p.name]
+                if p.name in _named_params:
+                    resolved[p.name] = _named_params[p.name]
                 elif p.default is not None:
                     resolved[p.name] = p.default
                 elif p.required:
@@ -343,8 +705,16 @@ def _tool_run_query(
 
     # ── Resolve the effective datastore (explicit arg wins, else the query's
     #    own binding) and build the matching connector — same resolution order
-    #    as POST /query's _resolve_effective_datastore_id.
+    #    as POST /query's _resolve_effective_datastore_id, INCLUDING the
+    #    __demo__ sentinel collapsing to None. Without this collapse, an
+    #    explicit datastore_id="__demo__" (the id every "Demo data" connector
+    #    listing returns) fell through to resolve_datastore_connector, which
+    #    tried to cast it to a UUID for a DB lookup and 500'd.
+    from app.routes.connectors import DEMO_CONNECTOR_ID  # noqa: PLC0415
+
     effective_datastore_id = datastore_id or registered_datastore_id
+    if effective_datastore_id == DEMO_CONNECTOR_ID:
+        effective_datastore_id = None
 
     if effective_datastore_id is not None:
         from app.connectors.resolve import resolve_datastore_connector  # noqa: PLC0415
@@ -360,14 +730,19 @@ def _tool_run_query(
         finally:
             net_cleanup()
     else:
-        connector = DuckDBConnector()
-        # Seed the demo table for queries that reference it.
-        _seed_demo_table(connector)
+        # The SAME hardened, parquet-backed demo connector POST /query uses
+        # (17 demo tables + the legacy 5-row `demo` table, external file
+        # access disabled) — not a bare in-memory DuckDB seeded with only
+        # `demo`, which would 500 on every other demo table and wouldn't be
+        # hardened against read_csv_auto('/etc/passwd') either.
+        from app.routes.query import _get_demo_connector  # noqa: PLC0415
+
+        connector = _get_demo_connector()
         arrow_table = connector.execute(physical_plan)
 
     # Convert to JSON-serialisable rows.
     columns = arrow_table.schema.names
-    rows = arrow_table.to_pylist()
+    rows = _json_safe_rows(arrow_table.to_pylist())
     return {"rows": rows, "row_count": len(rows), "columns": columns}
 
 
@@ -541,7 +916,7 @@ def _tool_query_metric(
         arrow_table = connector.execute(physical_plan)
 
     columns = arrow_table.schema.names
-    rows = arrow_table.to_pylist()
+    rows = _json_safe_rows(arrow_table.to_pylist())
     return {"columns": columns, "rows": rows, "row_count": len(rows)}
 
 
@@ -552,9 +927,19 @@ def _tool_create_dashboard(
     """Generate a canonical DashboardSpec for *question*.
 
     Reuses ``app.ai.dashboard.generate_dashboard_spec`` (M8).  With NullProvider
-    the result is fully deterministic.
+    the result is a deterministic generic TEMPLATE that does not actually
+    interpret *question* beyond using it as the title.
 
-    Returns ``{spec: dict, html: str}``.
+    Returns ``{spec, html, generated_by, ai_generated, valid, issues, note?}``.
+
+    ``generated_by`` / ``ai_generated`` exist because the caller previously had
+    no way to tell an LLM-authored spec from the no-LLM fallback template: both
+    came back looking identical, and ``valid`` (which is ONLY an HTML/XSS
+    safety check on the rendered output — never a statement about whether the
+    spec's queries and columns make sense together) read as blanket success. An
+    agent asking for "revenue by region" with no API key configured therefore
+    got a generic template back and no signal that its question had been
+    ignored.
     """
     from app.ai.dashboard import generate_dashboard_spec, validate_dashboard_html  # noqa: PLC0415
     from app.ai.grounding import build_catalog  # noqa: PLC0415
@@ -566,12 +951,27 @@ def _tool_create_dashboard(
     spec = generate_dashboard_spec(question, catalog, provider)
     html_out = spec_to_html(spec)
     ok, issues = validate_dashboard_html(html_out)
-    return {
+
+    generated_by = getattr(spec, "generated_by", "unknown")
+    result: dict[str, Any] = {
         "spec": spec.model_dump(),
         "html": html_out,
+        "generated_by": generated_by,
+        "ai_generated": generated_by == "llm",
+        # NOTE: `valid` is an HTML-safety result, NOT a semantic one.
         "valid": ok,
         "issues": issues,
     }
+    if generated_by == "null_template":
+        result["note"] = (
+            "No LLM provider is configured, so this is a generic starter "
+            "template — the question was used only as the title and was NOT "
+            "interpreted. Widgets point at an arbitrary registered query. To "
+            "build a dashboard that answers a real question without an LLM, "
+            "use get_schema + create_query + run_query to author the queries "
+            "yourself, then save_dashboard with a spec you construct."
+        )
+    return result
 
 
 def _tool_edit_dashboard(
@@ -811,7 +1211,20 @@ def _tool_upload_image(
 
 _SCHEMA_GET_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "properties": {},
+    "properties": {
+        "table_pattern": {
+            "type": "string",
+            "description": (
+                "Substring to match against table names (case-insensitive). "
+                "When given, returns full columns for matching tables plus the "
+                "queries that touch them. Omit for a compact table listing."
+            ),
+        },
+        "limit": {
+            "type": "integer",
+            "description": "Max queries to return when table_pattern narrows the result (default 30).",
+        },
+    },
     "additionalProperties": False,
 }
 
@@ -842,11 +1255,34 @@ _SCHEMA_CREATE_QUERY: dict[str, Any] = {
     "properties": {
         "id": {
             "type": "string",
-            "description": "Stable URL-safe identifier for the query.",
+            "description": (
+                "Optional stable URL-safe identifier. Omit this to get a "
+                "generated id AND have the query persisted (survives a "
+                "backend restart, referenceable by a saved dashboard widget) "
+                "— an explicit id registers in-memory only for this session."
+            ),
         },
         "sql": {
             "type": "string",
             "description": "The SELECT SQL string to register.",
+        },
+        "name": {
+            "type": "string",
+            "description": (
+                "Human-readable display name shown in the Queries list. "
+                "Defaults to a title-cased version of id when omitted — "
+                "which is a poor name when id is also omitted, so pass this "
+                "explicitly for anything meant to be recognisable later."
+            ),
+        },
+        "datastore_id": {
+            "type": "string",
+            "description": (
+                "Optional datastore/connector id to bind this query to. Omit "
+                "for the built-in demo dataset. REQUIRED to target a real "
+                "(BYO) connector — without it the query always runs against "
+                "the demo dataset regardless of what tables the SQL names."
+            ),
         },
         "params": {
             "type": "array",
@@ -868,7 +1304,42 @@ _SCHEMA_CREATE_QUERY: dict[str, Any] = {
             "description": "Optional named parameter descriptors.",
         },
     },
-    "required": ["id", "sql"],
+    "required": ["sql"],
+    "additionalProperties": False,
+}
+
+_SCHEMA_LIST_FILTERABLE_COLUMNS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query_id": {"type": "string", "description": "Id of the registered query."},
+    },
+    "required": ["query_id"],
+    "additionalProperties": False,
+}
+
+_SCHEMA_ADD_FILTER_PARAM: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query_id": {"type": "string", "description": "Id of the registered query to modify."},
+        "param": {
+            "type": "string",
+            "description": "New parameter name. A dashboard filter variable of the same name can then drive this query.",
+        },
+        "column": {
+            "type": "string",
+            "description": "Column to filter on — use a name from list_filterable_columns.",
+        },
+        "subtype": {
+            "type": "string",
+            "enum": ["multiselect", "select", "daterange"],
+            "description": "Filter shape (default multiselect).",
+        },
+        "apply": {
+            "type": "boolean",
+            "description": "False (default) previews the rewrite without saving; true saves it once verified.",
+        },
+    },
+    "required": ["query_id", "param", "column"],
     "additionalProperties": False,
 }
 
@@ -1034,8 +1505,13 @@ _SCHEMA_UPLOAD_IMAGE: dict[str, Any] = {
 def _make_registry() -> dict[str, ToolDef]:
     """Build and return the module-level tool registry."""
 
-    def _wrap_get_schema(claims: dict[str, Any], **_kw: Any) -> dict[str, Any]:
-        return _tool_get_schema(claims)
+    def _wrap_get_schema(
+        claims: dict[str, Any],
+        table_pattern: str | None = None,
+        limit: int | None = None,
+        **_kw: Any,
+    ) -> dict[str, Any]:
+        return _tool_get_schema(claims, table_pattern=table_pattern, limit=limit)
 
     def _wrap_list_queries(claims: dict[str, Any], **_kw: Any) -> dict[str, Any]:
         return _tool_list_queries(claims)
@@ -1050,12 +1526,32 @@ def _make_registry() -> dict[str, ToolDef]:
 
     def _wrap_create_query(
         claims: dict[str, Any],
-        id: str,
         sql: str,
+        id: str | None = None,
+        name: str | None = None,
         params: list[dict[str, Any]] | None = None,
+        datastore_id: str | None = None,
         **_kw: Any,
     ) -> dict[str, Any]:
-        return _tool_create_query(id, sql, claims, params=params)
+        return _tool_create_query(sql, claims, id=id, name=name, params=params, datastore_id=datastore_id)
+
+    def _wrap_list_filterable_columns(
+        claims: dict[str, Any], query_id: str, **_kw: Any
+    ) -> dict[str, Any]:
+        return _tool_list_filterable_columns(query_id, claims)
+
+    def _wrap_add_filter_param(
+        claims: dict[str, Any],
+        query_id: str,
+        param: str,
+        column: str,
+        subtype: str = "multiselect",
+        apply: bool = False,
+        **_kw: Any,
+    ) -> dict[str, Any]:
+        return _tool_add_filter_param(
+            query_id, param, column, claims, subtype=subtype, apply=apply
+        )
 
     def _wrap_run_query(
         claims: dict[str, Any],
@@ -1133,7 +1629,14 @@ def _make_registry() -> dict[str, ToolDef]:
     tools = [
         ToolDef(
             name="get_schema",
-            description="Return the catalog schema (tables and columns) from the query registry.",
+            description=(
+                "Return the catalog schema from the query registry. With no "
+                "arguments, returns a COMPACT table listing (name + column "
+                "count) — call again with table_pattern (a substring of the "
+                "table name) to get full columns and the queries that touch "
+                "those tables. List, then narrow — don't expect full detail "
+                "on the first call."
+            ),
             json_schema=_SCHEMA_GET_SCHEMA,
             fn=_wrap_get_schema,
         ),
@@ -1154,6 +1657,32 @@ def _make_registry() -> dict[str, ToolDef]:
             description="Register a SQL query in the query registry under a given id.",
             json_schema=_SCHEMA_CREATE_QUERY,
             fn=_wrap_create_query,
+        ),
+        ToolDef(
+            name="list_filterable_columns",
+            description=(
+                "List the columns of a registered query that a dashboard "
+                "filter could be attached to — including columns inside "
+                "subqueries that the query aggregates away before its output. "
+                "Call this before add_filter_param to pick a real column."
+            ),
+            json_schema=_SCHEMA_LIST_FILTERABLE_COLUMNS,
+            fn=_wrap_list_filterable_columns,
+        ),
+        ToolDef(
+            name="add_filter_param",
+            description=(
+                "Make a registered query filterable: inject a guarded filter "
+                "on `column` bound to a new `param`, so a dashboard filter "
+                "variable of that name can drive it. The rewrite is injected "
+                "at the innermost scope exposing the column (so it filters "
+                "before any roll-up) and is VERIFIED before saving — the "
+                "query is re-run with the filter unset and must return "
+                "exactly the original result, otherwise the change is "
+                "refused. Use list_filterable_columns first."
+            ),
+            json_schema=_SCHEMA_ADD_FILTER_PARAM,
+            fn=_wrap_add_filter_param,
         ),
         ToolDef(
             name="run_query",

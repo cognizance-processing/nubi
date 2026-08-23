@@ -179,19 +179,49 @@ class TestToolRegistry:
 
 
 class TestGetSchemaTool:
-    def test_get_schema_returns_catalog_shape(self):
+    """With no arguments get_schema returns a COMPACT summary (table name ->
+    column count, no per-query detail) — a busy org's full catalog can run to
+    several hundred KB, which blows an agent's context on one call. Passing
+    table_pattern narrows to full columns + the queries that touch them."""
+
+    def test_get_schema_default_is_compact(self):
         result = execute_tool("get_schema", {}, _empty_claims())
         assert isinstance(result, dict)
         assert "tables" in result
-        assert "queries" in result
+        assert "queries" not in result
+        assert "table_count" in result
+        assert "query_count" in result
 
-    def test_get_schema_tables_is_dict(self):
+    def test_get_schema_default_tables_is_name_to_count(self):
         result = execute_tool("get_schema", {}, _empty_claims())
         assert isinstance(result["tables"], dict)
+        for name, count in result["tables"].items():
+            assert isinstance(name, str)
+            assert isinstance(count, int)
 
-    def test_get_schema_queries_is_list(self):
-        result = execute_tool("get_schema", {}, _empty_claims())
+    def test_get_schema_with_table_pattern_returns_full_columns_and_queries(self):
+        result = execute_tool("get_schema", {"table_pattern": "demo"}, _empty_claims())
+        assert isinstance(result, dict)
+        assert "demo" in result["tables"]
+        assert isinstance(result["tables"]["demo"], list)
+        assert "queries" in result
         assert isinstance(result["queries"], list)
+        assert "matched_query_count" in result
+
+    def test_get_schema_table_pattern_matches_case_insensitively(self):
+        result = execute_tool("get_schema", {"table_pattern": "DEMO"}, _empty_claims())
+        assert "demo" in result["tables"]
+
+    def test_get_schema_table_pattern_no_match_returns_empty(self):
+        result = execute_tool("get_schema", {"table_pattern": "definitely_not_a_real_table_xyz"}, _empty_claims())
+        assert result["tables"] == {}
+        assert result["queries"] == []
+
+    def test_get_schema_limit_caps_returned_queries(self):
+        result = execute_tool("get_schema", {"table_pattern": "demo", "limit": 1}, _empty_claims())
+        assert len(result["queries"]) <= 1
+        if result.get("matched_query_count", 0) > 1:
+            assert result.get("truncated") is True
 
 
 # ---------------------------------------------------------------------------
@@ -297,12 +327,42 @@ class TestCreateQueryTool:
         assert len(rq.params) == 1
         assert rq.params[0].name == "tenant_id"
 
-    def test_create_query_missing_id_raises(self):
-        from app.errors import AppError
+    def test_create_query_id_is_optional(self):
+        """id is optional (mirrors POST /query/registry): omitting it must
+        succeed, not raise — the tool falls back to a name-derived slug when
+        persistence is unavailable (no org in claims, as here)."""
+        result = execute_tool(
+            "create_query", {"sql": "SELECT 1 AS z", "name": "no id test"}, _empty_claims()
+        )
+        assert result["registered"] is True
+        assert result["id"]
 
-        with pytest.raises(AppError) as exc_info:
-            execute_tool("create_query", {"sql": "SELECT 1"}, _empty_claims())
-        assert exc_info.value.status == 400
+    def test_create_query_without_name_falls_back_to_id_derived_name(self):
+        qid = f"test_agent_q_{uuid.uuid4().hex[:8]}"
+        result = execute_tool("create_query", {"id": qid, "sql": "SELECT 1"}, _empty_claims())
+        assert result["name"] == qid.replace("_", " ").title()
+
+    def test_create_query_explicit_name_is_used_verbatim(self):
+        qid = f"test_agent_q_{uuid.uuid4().hex[:8]}"
+        result = execute_tool(
+            "create_query",
+            {"id": qid, "sql": "SELECT 1", "name": "My Nice Query Name"},
+            _empty_claims(),
+        )
+        assert result["name"] == "My Nice Query Name"
+
+    def test_create_query_datastore_id_is_bound_on_the_registered_query(self):
+        from app.queries.registry import get_query_registry
+
+        qid = f"test_agent_q_{uuid.uuid4().hex[:8]}"
+        execute_tool(
+            "create_query",
+            {"id": qid, "sql": "SELECT 1", "datastore_id": "some-datastore-id"},
+            _empty_claims(),
+        )
+        rq = get_query_registry().get(qid)
+        assert rq is not None
+        assert rq.datastore_id == "some-datastore-id"
 
     def test_create_query_missing_sql_raises(self):
         from app.errors import AppError
@@ -410,6 +470,136 @@ class TestRunQueryTool:
 
         with pytest.raises(AppError):
             execute_tool("run_query", {}, _empty_claims())
+
+    def test_run_query_renders_jinja_guard_without_named_params(self):
+        """A registered query with a {% if %} guard must render using each
+        param's declared default when the caller supplies no named_params at
+        all — not just when named_params is present. Previously this was
+        gated on `named_params and rq.params`, so a query with real Jinja
+        syntax and zero caller-supplied values sent the literal `{% if %}`
+        text straight to the SQL parser."""
+        qid = f"test_agent_q_{uuid.uuid4().hex[:8]}"
+        execute_tool(
+            "create_query",
+            {
+                "id": qid,
+                "sql": "SELECT * FROM demo WHERE 1=1 {% if only_active %} AND active = true {% endif %}",
+                "params": [{"name": "only_active", "type": "text", "default": False, "required": False}],
+            },
+            _empty_claims(),
+        )
+        result = execute_tool("run_query", {"query_id": qid}, _empty_claims())
+        assert result["row_count"] == 5  # unfiltered: the default (false) skips the guard
+
+
+# ---------------------------------------------------------------------------
+# 6b. _json_safe_rows — Decimal/date coercion for the MCP JSON transport
+# ---------------------------------------------------------------------------
+
+
+class TestJsonSafeRows:
+    """run_query / query_metric return rows straight off
+    arrow_table.to_pylist(), which can carry decimal.Decimal (a MySQL
+    SUM/ROUND on a DECIMAL column) or date/datetime values — both legal
+    Python objects but not JSON-serialisable, which broke json.dumps() at
+    the MCP JSON-RPC transport (a REST /query caller never hit this: that
+    path streams Arrow IPC bytes, decoded by the client's own Arrow lib)."""
+
+    def test_decimal_becomes_float(self):
+        from decimal import Decimal
+
+        from app.ai.tools import _json_safe_rows
+
+        rows = _json_safe_rows([{"total": Decimal("82.21")}])
+        assert rows == [{"total": 82.21}]
+        assert isinstance(rows[0]["total"], float)
+
+    def test_date_and_datetime_become_iso_strings(self):
+        import datetime as dt
+
+        from app.ai.tools import _json_safe_rows
+
+        rows = _json_safe_rows([{"d": dt.date(2026, 7, 13), "dt": dt.datetime(2026, 7, 13, 9, 30)}])
+        assert rows == [{"d": "2026-07-13", "dt": "2026-07-13T09:30:00"}]
+
+    def test_plain_values_pass_through_unchanged(self):
+        from app.ai.tools import _json_safe_rows
+
+        rows = _json_safe_rows([{"a": 1, "b": "x", "c": None, "d": True}])
+        assert rows == [{"a": 1, "b": "x", "c": None, "d": True}]
+
+    def test_recurses_into_nested_lists_and_dicts(self):
+        from decimal import Decimal
+
+        from app.ai.tools import _json_safe_rows
+
+        rows = _json_safe_rows([{"nested": {"v": Decimal("1.5")}, "list": [Decimal("2.5")]}])
+        assert rows == [{"nested": {"v": 1.5}, "list": [2.5]}]
+
+    def test_output_is_actually_json_serialisable(self):
+        import datetime as dt
+        import json
+        from decimal import Decimal
+
+        from app.ai.tools import _json_safe_rows
+
+        rows = _json_safe_rows([{"a": Decimal("1.1"), "b": dt.date(2026, 1, 1)}])
+        json.dumps(rows)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# 6c. create_dashboard — provenance honesty + query/column consistency
+# ---------------------------------------------------------------------------
+
+
+class TestCreateDashboardTool:
+    """Under NullProvider (no API key) create_dashboard returns a generic
+    deterministic template that does NOT interpret the question. Two things
+    must hold: the caller can TELL that happened, and the template it does
+    return must be internally consistent."""
+
+    def test_null_provider_is_flagged_as_not_ai_generated(self):
+        result = execute_tool(
+            "create_dashboard", {"question": "revenue by region"}, _empty_claims()
+        )
+        assert result["generated_by"] == "null_template"
+        assert result["ai_generated"] is False
+        assert "note" in result
+
+    def test_widget_columns_belong_to_the_widget_s_own_query(self):
+        """The regression guard. `_pick_best_query` used to source the
+        query_id and the columns from two independent places, so a widget
+        could reference a column its own query never emits (asking for
+        "route efficiency by region" produced query `demo_all` paired with
+        `region` columns scavenged from unrelated tables elsewhere in the
+        catalog)."""
+        from app.queries.registry import get_query_registry
+
+        result = execute_tool(
+            "create_dashboard",
+            {"question": "delivery efficiency by region"},
+            _empty_claims(),
+        )
+        registry = get_query_registry()
+
+        for w in result["spec"]["widgets"]:
+            qid = w.get("query_id")
+            if not qid:
+                continue
+            rq = registry.get(qid)
+            assert rq is not None, f"widget references unregistered query {qid!r}"
+
+            referenced = [v for v in (w.get("encoding") or {}).values() if isinstance(v, str)]
+            if not referenced:
+                continue
+            # Resolve the query's real output columns by running it.
+            rows = execute_tool("run_query", {"query_id": qid}, _empty_claims())
+            real_columns = set(rows["columns"])
+            for col in referenced:
+                assert col in real_columns, (
+                    f"widget {w['id']} ({w['type']}) references column {col!r} "
+                    f"which query {qid!r} does not emit (it emits {sorted(real_columns)})"
+                )
 
 
 # ---------------------------------------------------------------------------
