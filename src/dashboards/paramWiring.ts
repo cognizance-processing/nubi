@@ -161,6 +161,12 @@ export interface WiringRow {
   options: string[]
   /** True when the binding points somewhere other than this variable. */
   boundElsewhere: string | null
+  /**
+   * The widget's bound query id ('' when none). Carried so a `no-param` row
+   * can offer to ADD the parameter to that query rather than leaving the
+   * author to go hand-edit its SQL.
+   */
+  queryId: string
 }
 
 interface WiringInput {
@@ -231,6 +237,7 @@ export function wiringRows({
       paramName,
       options,
       boundElsewhere: null,
+      queryId,
     })
   }
   return rows

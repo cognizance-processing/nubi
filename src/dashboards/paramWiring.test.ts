@@ -155,6 +155,15 @@ test('wiringRows names the param that would be bound on connect', () => {
   assert.deepEqual(rows.find(r => r.id === 'w3').options, ['store', 'month'])
 })
 
+test('wiringRows carries each row\'s query id', () => {
+  // A `no-param` row needs it to offer "add this filter to its query" —
+  // without it the only way forward is hand-editing the query's SQL.
+  const rows = wiringRows({ widgets: BOARD, varName: 'region', paramsByQueryId: PARAMS })
+  assert.equal(rows.find(r => r.id === 'w4').state, 'no-param')
+  assert.equal(rows.find(r => r.id === 'w4').queryId, 'q3')
+  assert.equal(rows.find(r => r.id === 'w1').queryId, 'q1')
+})
+
 test('wiringRows accepts a plain object index as well as a Map', () => {
   const rows = wiringRows({
     widgets: [BOARD[0]], varName: 'region',

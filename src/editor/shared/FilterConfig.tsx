@@ -22,13 +22,15 @@
  *   onChange  (w)=>void
  */
 
-import { LayoutGrid, Link2, BarChart3, Table2, Gauge, Grid3x3, Layers, Check } from 'lucide-react'
+import { useState } from 'react'
+import { LayoutGrid, Link2, BarChart3, Table2, Gauge, Grid3x3, Layers, Check, Wand2, Loader2 } from 'lucide-react'
 import { inputCls, selectCls, FieldLabel, ToggleRow, Section, ColorField, SectionLabel } from './inspectorPrimitives.jsx'
 import { QueryPicker } from './QueryPicker.jsx'
 import { FILTER_SUBTYPES } from './constants.js'
 import { effectivePlacement, applyPlacement } from './placementHelpers.js'
-import { useQueryParamsIndex } from './useInspectorData.js'
+import { useQueryParamsIndex, refreshQueryParamsIndex } from './useInspectorData.js'
 import { titleText } from './titleValue.js'
+import { listFilterableColumns, parameterizeQuery } from '../../lib/api.js'
 import { wiringRows, connectedCount, bindParam, unbindVar, varNameFromLabel } from '../../dashboards/paramWiring.js'
 
 const SUBTYPE_LABELS = {
@@ -91,6 +93,124 @@ const TYPE_ICON = {
 const BLOCKED_REASON = {
   'no-param': 'its query takes no parameters',
   unknown: 'no query bound yet',
+}
+
+/**
+ * "Its query takes no parameters" used to be the end of the road: the author
+ * had to leave the editor, open the SQL, and hand-write a `{{param}}`
+ * placeholder in the right subquery — which is not something most dashboard
+ * authors can or should do. This turns that dead end into one click: pick the
+ * column, and the server rewrites the query (injecting at the innermost scope
+ * that exposes the column, so it filters before any roll-up) and verifies the
+ * rewrite is inert when the filter is unset before saving it.
+ */
+function MakeFilterable({ queryId, varName, subtype, onDone, label = 'Add this filter to its query' }) {
+  const [open, setOpen] = useState(false)
+  const [columns, setColumns] = useState(null)   // null = not loaded yet
+  const [column, setColumn] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+
+  const load = async () => {
+    setOpen(true)
+    if (columns !== null) return
+    setBusy(true)
+    const cols = await listFilterableColumns(queryId)
+    setColumns(cols)
+    // Pre-select a column matching the filter's own name when one exists —
+    // the overwhelmingly common case (a "Region" filter on a `region` column).
+    const match = cols.find(c => c.name.toLowerCase() === String(varName ?? '').toLowerCase())
+    setColumn(match ? match.name : (cols[0]?.name ?? ''))
+    setBusy(false)
+  }
+
+  const apply = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const res = await parameterizeQuery(queryId, {
+        param: varName, column, subtype: subtype ?? 'multiselect', apply: true,
+      })
+      if (!res?.ok || !res?.applied) {
+        setError(res?.reason ?? 'The query could not be made filterable.')
+        return
+      }
+      // The registry cached this query's (now stale) param list on mount.
+      await refreshQueryParamsIndex()
+      setOpen(false)
+      onDone?.(varName)
+    } catch (err) {
+      setError(err?.message ?? 'The query could not be made filterable.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={load}
+        data-testid={`make-filterable-${queryId}`}
+        className="mt-1 ml-6 inline-flex items-center gap-1 text-[10px] font-medium text-muted hover:text-primary underline underline-offset-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 rounded"
+      >
+        <Wand2 size={10} /> {label}
+      </button>
+    )
+  }
+
+  return (
+    <div className="mt-1.5 ml-6 space-y-1.5">
+      {busy && columns === null ? (
+        <p className="text-[10px] text-muted flex items-center gap-1">
+          <Loader2 size={10} className="animate-spin" /> Reading this query’s columns…
+        </p>
+      ) : (columns?.length ?? 0) === 0 ? (
+        <p className="text-[10px] text-muted/70">
+          No filterable columns found in this query.
+        </p>
+      ) : (
+        <>
+          <label className="block text-[10px] text-muted">Filter on which column?</label>
+          <select
+            className={selectCls}
+            value={column}
+            onChange={e => setColumn(e.target.value)}
+            aria-label="Column to filter on"
+          >
+            {columns.map(c => (
+              <option key={c.name} value={c.name}>
+                {c.name}{c.in_output ? '' : ' (inside the query)'}
+              </option>
+            ))}
+          </select>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={apply}
+              disabled={busy || !column}
+              className="h-6 px-2 text-[10px] font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity inline-flex items-center gap-1"
+            >
+              {busy && <Loader2 size={9} className="animate-spin" />}
+              {busy ? 'Checking…' : 'Add & connect'}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setOpen(false); setError(null) }}
+              className="h-6 px-2 text-[10px] text-muted hover:text-fg border border-border rounded-lg bg-surface hover:bg-surface-2 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+          <p className="text-[10px] text-muted/60 leading-relaxed">
+            The query is re-run with the filter unset and must return exactly its
+            current results before the change is saved.
+          </p>
+        </>
+      )}
+      {error && <p className="text-[10px] text-danger leading-relaxed">{error}</p>}
+    </div>
+  )
 }
 
 /**
@@ -200,13 +320,23 @@ function ConnectedWidgets({ widget, spec, varName, onPatchWidget, resolveWidget 
                 <p className="text-[10px] text-muted/60 mt-0.5 pl-6 font-mono truncate">{row.paramName}</p>
               )}
               {row.state === 'choose' && (
-                <div className="pl-6 mt-1">
+                <div className="pl-6 mt-1 space-y-1">
+                  <p className="text-[10px] text-muted/60 leading-relaxed">
+                    None of its parameters is called
+                    <span className="font-mono text-muted"> {varName}</span>.
+                  </p>
                   <select
                     className={selectCls}
                     defaultValue=""
                     aria-label={`Choose which parameter of ${row.label} this filter fills`}
                     onChange={e => connect(row, e.target.value)}>
-                    <option value="" disabled>Which parameter?</option>
+                    {/* Naming the action rather than asking "Which parameter?"
+                        matters: this list is every param the query happens to
+                        declare, and on a real board those are usually
+                        unrelated things (Period1, country_description). The
+                        old wording invited binding a Region filter to a date
+                        param, which type-checks and is nonsense. */}
+                    <option value="" disabled>Reuse an existing parameter…</option>
                     {row.options.map(o => <option key={o} value={o}>{o}</option>)}
                   </select>
                 </div>
@@ -215,6 +345,20 @@ function ConnectedWidgets({ widget, spec, varName, onPatchWidget, resolveWidget 
                 <p className="text-[10px] text-muted/60 mt-0.5 pl-6">
                   {loaded || row.state === 'no-param' ? blocked : 'reading parameters…'}
                 </p>
+              )}
+              {/* Not having the RIGHT parameter is the same dead end as having
+                  none at all — both used to mean "go hand-edit the SQL". Offer
+                  to add it in either case. */}
+              {(row.state === 'no-param' || row.state === 'choose') && row.queryId && (
+                <MakeFilterable
+                  queryId={row.queryId}
+                  varName={varName}
+                  subtype={widget.subtype ?? widget.props?.subtype}
+                  label={row.state === 'choose'
+                    ? `…or add a new “${varName}” filter to its query`
+                    : 'Add this filter to its query'}
+                  onDone={() => connect(row, varName)}
+                />
               )}
             </li>
           )
