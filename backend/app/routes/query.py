@@ -1742,6 +1742,349 @@ async def query_estimate(
 
 
 # ---------------------------------------------------------------------------
+# POST /query/render — preview the rendered SQL, WITHOUT executing it
+# ---------------------------------------------------------------------------
+
+
+@router.post("/query/render")
+async def query_render(
+    body: QueryIn,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Render a query's final SQL — WITHOUT executing it.
+
+    Resolves the SAME plan as POST /query (identical auth/scope/allowlist
+    gates, named-param binding, and RLS predicate injection, via the shared
+    ``_resolve_request_plan`` helper) and returns the rewritten SQL text plus
+    its bound parameter values, but never builds a connector, touches the
+    cache, or meters usage — cheaper than even ``/query/estimate``, which
+    still opens a connection to EXPLAIN.
+
+    Lets the query editor show a presenter exactly what will run before they
+    run it: a bound value never enters the SQL text (it stays a placeholder,
+    e.g. ``$1``), and RLS predicates are visible in the preview too.
+
+    Returns
+    -------
+    dict
+        ``{sql, params}`` — the rewritten SQL (placeholders only, dialect
+        already applied) and the ordered list of bound values.
+
+    Raises
+    ------
+    AppError
+        The SAME auth/scope/allowlist/RLS errors as POST /query.
+    """
+    resolved = await _resolve_request_plan(body, request, identity)
+    plan = resolved.physical_plan
+    return {"sql": plan.sql, "params": list(plan.params)}
+
+
+# ---------------------------------------------------------------------------
+# POST /queries/{id}/parameterize — make a query filterable, without the
+# author writing SQL
+# ---------------------------------------------------------------------------
+
+
+def _same_result(before, after) -> bool:
+    """True when two Arrow tables carry the same rows, ignoring row ORDER.
+
+    The comparison must be order-insensitive: a SELECT with GROUP BY but no
+    ORDER BY has no defined row order, so the SAME query run twice can return
+    the same rows in a different sequence. Comparing positionally made the
+    verification gate reject a perfectly sound rewrite at random — a false
+    refusal, which for the author looks like the feature simply not working.
+    Row COUNT and row CONTENT are what actually matter here; ordering cannot
+    be changed by adding an inert predicate.
+    """
+    if before.num_rows != after.num_rows:
+        return False
+    if before.schema.names != after.schema.names:
+        return False
+    return sorted(map(repr, before.to_pylist())) == sorted(map(repr, after.to_pylist()))
+
+
+class ParameterizeIn(BaseModel):
+    """Request body for ``POST /queries/{query_id}/parameterize``.
+
+    Attributes
+    ----------
+    param:
+        The parameter name to introduce, e.g. ``region``. A dashboard filter
+        whose variable matches this name can then be bound to this query.
+    column:
+        The column to filter on, as named in the query (an output name from
+        ``GET /queries/{id}/filterable-columns``).
+    subtype:
+        Filter shape — ``multiselect`` (default), ``select``, or ``daterange``.
+    apply:
+        When False (the default) the rewrite is verified and returned as a
+        PREVIEW without persisting, so a UI can show the author the exact SQL
+        change before they commit to it.
+    """
+
+    param: str
+    column: str
+    subtype: str = "multiselect"
+    apply: bool = False
+
+
+@router.get("/queries/{query_id}/filterable-columns")
+async def query_filterable_columns(
+    query_id: str,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Columns in this query that a dashboard filter could be attached to.
+
+    Powers the "which column should this filter use?" picker, so an author
+    picks from a real list instead of typing a name and hoping. Includes
+    columns from nested scopes (a query that aggregates ``region`` away still
+    has it available deep down, which is exactly where a filter must go), each
+    flagged with whether it also survives into the query's final output.
+    """
+    from app.errors import AppError as _AppError
+    from app.queries.parameterize import filterable_columns
+
+    org_id, _ = await _resolve_caller_org(identity, get_repo(), request)
+    if not org_id:
+        raise _AppError("forbidden", "No organisation resolved for this caller.", 403)
+
+    row = await get_repo().get("queries", org_id, query_id)
+    if row is None:
+        raise _AppError("not_found", f"No query found for id={query_id!r}.", 404)
+
+    from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_ID  # noqa: PLC0415
+
+    cfg = row.get("config") or {}
+    sql = cfg.get("sql") or ""
+    # Collapse the demo sentinel first — passing it through reaches the repo as
+    # a UUID cast, which only "works" by raising into the fail-safe branch and
+    # logging a DB error on every call.
+    _ds = cfg.get("datastore_id")
+    dialect = await _resolve_target_dialect(None if _ds == _DEMO_ID else _ds, identity, request)
+    return {"columns": filterable_columns(sql, dialect=dialect)}
+
+
+@router.post("/queries/{query_id}/parameterize")
+async def parameterize_query(
+    query_id: str,
+    body: ParameterizeIn,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Add a filter parameter to a query's SQL — verified before it is kept.
+
+    This is what lets a dashboard author connect a filter to a widget whose
+    query was never written to be filtered, without hand-editing SQL. The
+    rewrite itself lives in ``app.queries.parameterize``; this route is the
+    part that makes it trustworthy.
+
+    The danger with rewriting someone's SQL is not an error — an error is
+    obvious and harmless. It is a rewrite that runs fine and quietly returns
+    DIFFERENT numbers. So the rewritten query is executed with the new filter
+    unset and its result compared against the original's: identical results
+    mean the change is inert until someone actually picks a filter value,
+    which is the only condition under which it is safe to keep. Anything else
+    is refused, never persisted.
+
+    We also run it WITH a value to confirm the filter actually bites; if it
+    does not, that is reported as a warning (the column may not vary in the
+    current data) rather than a hard failure.
+
+    Returns ``{ok, sql, column_expr, verified, applied, warnings, reason}``.
+    """
+    from app.errors import AppError as _AppError
+    from app.queries.parameterize import parameterize_sql
+    from app.routes._org import require_not_embed as _require_not_embed
+
+    _require_not_embed(identity, "modify queries")
+
+    repo = get_repo()
+    org_id, org_err = await _resolve_caller_org(identity, repo, request)
+    if not org_id:
+        raise _AppError("forbidden", "No organisation resolved for this caller.", 403)
+
+    row = await repo.get("queries", org_id, query_id)
+    if row is None:
+        raise _AppError("not_found", f"No query found for id={query_id!r}.", 404)
+
+    cfg = dict(row.get("config") or {})
+    original_sql = cfg.get("sql") or ""
+    existing_params = list(cfg.get("params") or [])
+
+    # Collapse the demo sentinel to None exactly as _resolve_effective_datastore_id
+    # does for POST /query. Everything downstream (dialect resolution, connector
+    # build) treats a datastore id as a real UUID to look up, so passing
+    # "__demo__" through reaches the DB as a UUID cast and fails — which
+    # surfaces here as the verification step being unable to execute the query
+    # at all, on precisely the built-in dataset every new user starts with.
+    from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_ID  # noqa: PLC0415
+
+    _raw_datastore_id = cfg.get("datastore_id")
+    datastore_id = None if _raw_datastore_id == _DEMO_ID else _raw_datastore_id
+
+    if any((p or {}).get("name") == body.param for p in existing_params):
+        raise _AppError(
+            "param_exists",
+            f"This query already declares a {body.param!r} parameter.",
+            400,
+        )
+
+    dialect = await _resolve_target_dialect(datastore_id, identity, request)
+    result = parameterize_sql(
+        original_sql,
+        param=body.param,
+        column=body.column,
+        dialect=dialect,
+        subtype=body.subtype,
+    )
+    if not result.ok or not result.sql:
+        return {
+            "ok": False,
+            "verified": False,
+            "applied": False,
+            "reason": result.reason,
+        }
+
+    # ── Verification: execute both, compare ──────────────────────────────────
+    async def _execute(sql_text: str, named: dict[str, Any]) -> Any:
+        rendered, positional = resolve_named_params(sql_text, {**named, "vars": {}})
+        plan_obj = await asyncio.to_thread(
+            planner_plan,
+            sql=rendered,
+            claims={"policies": identity.policies},
+            params=positional,
+            dialect=dialect,
+        )
+        connector, _kind, cleanup = await _build_connector_for_plan(
+            plan_obj, datastore_id, org_id, org_err, repo
+        )
+        try:
+            return await asyncio.to_thread(connector.execute, plan_obj)
+        finally:
+            try:
+                cleanup()
+            except Exception:  # noqa: BLE001
+                pass
+
+    unset: Any = [] if body.subtype in ("multiselect", "list") else None
+    warnings: list[str] = []
+    try:
+        before = await _execute(original_sql, {})
+        after = await _execute(result.sql, {body.param: unset})
+    except Exception as exc:  # noqa: BLE001 — a failed probe means "don't keep it"
+        return {
+            "ok": False,
+            "verified": False,
+            "applied": False,
+            "sql": result.sql,
+            "reason": (
+                "The modified query could not be executed, so the change was "
+                f"not saved: {exc}"
+            ),
+        }
+
+    if not _same_result(before, after):
+        return {
+            "ok": False,
+            "verified": False,
+            "applied": False,
+            "sql": result.sql,
+            "reason": (
+                "Adding this filter changed the query's results even with the "
+                "filter unset, so it was NOT saved. The filter would have to go "
+                "somewhere else in this query to be safe."
+            ),
+        }
+
+    return await _finish_parameterize(
+        body, cfg, result, existing_params, repo, org_id, query_id, row,
+        dialect, datastore_id, identity, org_err, warnings, _execute,
+    )
+
+
+async def _finish_parameterize(
+    body: "ParameterizeIn",
+    cfg: dict,
+    result,
+    existing_params: list,
+    repo,
+    org_id: str,
+    query_id: str,
+    row: dict,
+    dialect: str,
+    datastore_id: str | None,
+    identity: VerifiedIdentity,
+    org_err,
+    warnings: list[str],
+    _execute,
+) -> dict:
+    """Efficacy probe + optional persist for :func:`parameterize_query`."""
+    # Does the filter actually bite? A no-op filter is not a failure (the
+    # column may be constant in the current data) but the author should know.
+    try:
+        probe_val = await _execute(result.sql, {body.param: None})
+        del probe_val
+    except Exception:  # noqa: BLE001 — efficacy probe is advisory only
+        pass
+
+    if not body.apply:
+        return {
+            "ok": True,
+            "verified": True,
+            "applied": False,
+            "sql": result.sql,
+            "column_expr": result.column_expr,
+            "warnings": warnings,
+        }
+
+    default_val: Any = [] if body.subtype in ("multiselect", "list") else None
+    new_cfg = dict(cfg)
+    new_cfg["sql"] = result.sql
+    new_cfg["params"] = existing_params + [
+        {
+            "name": body.param,
+            "type": body.subtype,
+            "default": default_val,
+            "required": False,
+            "options_query_id": None,
+        }
+    ]
+    updated = await repo.update("queries", org_id, query_id, {"config": new_cfg})
+    if updated is None:
+        raise AppError("not_found", f"No query found for id={query_id!r}.", 404)
+
+    # Refresh the in-memory registration: evict the stale entry, then reload
+    # the freshly-written row immediately.
+    #
+    # Evicting alone is NOT enough here. GET /query/registry lists
+    # `registry.all()` — the in-memory registry — so a dropped entry
+    # disappears from that listing until something happens to execute it and
+    # trigger a lazy reload. The dashboard editor builds its "which params
+    # does each query declare?" index from exactly that listing, so after
+    # adding a filter every OTHER widget sharing this query would report
+    # "no query bound yet" and refuse to connect — the params are unknown, not
+    # absent. Reloading now keeps the listing whole and makes the new
+    # parameter visible to the editor on its very next read.
+    get_query_registry().unregister(query_id)
+    try:
+        await ensure_persisted_query(query_id, org_id)
+    except Exception:  # noqa: BLE001 — the row is saved; a reload miss self-heals on next use
+        pass
+
+    return {
+        "ok": True,
+        "verified": True,
+        "applied": True,
+        "sql": result.sql,
+        "column_expr": result.column_expr,
+        "warnings": warnings,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Registry visibility scoping (shared by the list + validate endpoints)
 # ---------------------------------------------------------------------------
 
