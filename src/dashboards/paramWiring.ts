@@ -40,6 +40,37 @@ export type ParamBinding = { ref: string } | string | number | boolean | null
 
 export type ParamMap = Record<string, ParamBinding>
 
+/**
+ * A widget's column-based filter bindings: {varName: 'columnName'}.
+ *
+ * Unlike `params` (which requires the query to already declare a matching
+ * `{{param}}`), this connects a filter straight to a column — the backend
+ * planner resolves it against every scope of the query at runtime (see
+ * `app.connectors.planner.apply_dashboard_filters`), no SQL mutation
+ * required. This is the path that unblocks a query with zero declared
+ * params, which used to be a dead end short of hand-editing its SQL.
+ */
+export type FilterMap = Record<string, string>
+
+/** The column in `filters` currently bound to `varName`, or null. */
+export function boundFilterFor(filters: FilterMap | undefined, varName: string): string | null {
+  if (!filters || !varName) return null
+  const column = filters[varName]
+  return typeof column === 'string' && column ? column : null
+}
+
+/** Bind one column to a variable, leaving every other filter binding untouched. */
+export function bindFilter(filters: FilterMap | undefined, varName: string, column: string): FilterMap {
+  return { ...(filters ?? {}), [varName]: column }
+}
+
+/** Remove whichever filter binding exists for `varName` (no-op when none). */
+export function unbindFilterVar(filters: FilterMap | undefined, varName: string): FilterMap {
+  const next = { ...(filters ?? {}) }
+  delete next[varName]
+  return next
+}
+
 /** Widget types that consume a query and can therefore react to a filter. */
 export const WIRABLE_TYPES = ['chart', 'table', 'kpi', 'metric', 'pivot', 'stepper'] as const
 
@@ -167,6 +198,14 @@ export interface WiringRow {
    * author to go hand-edit its SQL.
    */
   queryId: string
+  /**
+   * Which mechanism a 'connected' row is actually wired through: a declared
+   * `{{param}}` (`params`) or a direct column binding (`filters`, no SQL
+   * mutation — see `FilterMap`). `null` for every other state.
+   */
+  boundVia: 'param' | 'filter' | null
+  /** The column this variable is bound to via `widget.filters`, or null. */
+  columnName: string | null
 }
 
 interface WiringInput {
@@ -213,12 +252,18 @@ export function wiringRows({
     const queryId = w.query_id ?? ''
     const declared = lookupParams(paramsByQueryId, queryId)
     const options = Array.isArray(declared) ? declared.map(p => p.name).filter(Boolean) : []
-    const bound = boundParamFor(w.params, varName)
+    const boundParam = boundParamFor(w.params, varName)
+    const boundColumn = boundFilterFor(w.filters, varName)
 
     let state: WiringState
-    let paramName: string | null = bound
-    if (bound) {
+    let paramName: string | null = boundParam
+    let boundVia: WiringRow['boundVia'] = null
+    if (boundParam) {
       state = 'connected'
+      boundVia = 'param'
+    } else if (boundColumn) {
+      state = 'connected'
+      boundVia = 'filter'
     } else if (!queryId || declared === undefined) {
       state = 'unknown'
     } else if (options.length === 0) {
@@ -238,6 +283,8 @@ export function wiringRows({
       options,
       boundElsewhere: null,
       queryId,
+      boundVia,
+      columnName: boundColumn,
     })
   }
   return rows

@@ -694,6 +694,8 @@ function SpecRendererBody({
               size="sm"
               onClick={() => setOpenDrawer('filters')}
               className="shrink-0"
+              // Opens a panel, so it is dead weight in an exported image.
+              data-export-hide
               aria-label={
                 drawerApplied > 0
                   ? `Open ${spec.drawer?.title || 'Filters'} panel — ${drawerApplied} applied`

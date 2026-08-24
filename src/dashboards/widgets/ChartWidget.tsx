@@ -57,7 +57,7 @@ import { buildChartOption } from '../../lib/chartOptionShared.js'
 import { hasMap, ensureMapRegistered } from '../../lib/maps.js'
 import { resolveSpaTheme } from '../../lib/spaTheme.js'
 import EChart from '../../viz/EChart.jsx'
-import { useResolvedParams, useSetVariable } from '../VariableStore.jsx'
+import { useResolvedParams, useResolvedFilters, useSetVariable } from '../VariableStore.jsx'
 import { useCrossFilter } from '../CrossFilterContext.jsx'
 import { useStepper } from '../StepperContext.jsx'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
@@ -130,6 +130,7 @@ export default function ChartWidget({ widget, providerTable = null }) {
     query_id,
     chart_type = 'scatter',
     params: widgetParams,
+    filters: widgetFilters,
     drilldown,
     onClick: onClickSpec,
     metric,
@@ -139,6 +140,7 @@ export default function ChartWidget({ widget, providerTable = null }) {
   const isDark = appTheme === 'dark'
 
   const resolvedParams = useResolvedParams(widgetParams)
+  const resolvedFilters = useResolvedFilters(widgetFilters)
   const refreshEpoch = useRefreshEpoch()
 
   const [table, setTable] = useState(null)
@@ -182,11 +184,14 @@ export default function ChartWidget({ widget, providerTable = null }) {
       setError(null)
       try {
         const hasParams = Object.keys(resolvedParams).length > 0
+        const hasFilters = resolvedFilters.length > 0
         const { table: t, error: queryError } = metric
           ? await runMetricQuery(metric)
           : await runArrowQueryById(
               query_id,
-              hasParams ? { namedParams: resolvedParams } : undefined,
+              (hasParams || hasFilters)
+                ? { namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined }
+                : undefined,
             )
         if (cancelled) return
         // A failed query surfaces its real reason and renders NO chart — never
@@ -207,7 +212,7 @@ export default function ChartWidget({ widget, providerTable = null }) {
     fetchData()
     return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query_id, JSON.stringify(metric), JSON.stringify(resolvedParams), refreshEpoch, providerTable, retryEpoch])
+  }, [query_id, JSON.stringify(metric), JSON.stringify(resolvedParams), JSON.stringify(resolvedFilters), refreshEpoch, providerTable, retryEpoch])
 
   // Fill the card by default: grid cells have a fixed height, so '100%' sizes
   // the canvas to the widget instead of leaving dead space under a fixed 260px

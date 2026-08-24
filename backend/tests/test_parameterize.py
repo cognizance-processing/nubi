@@ -14,6 +14,8 @@ from app.queries.parameterize import (
     build_filter_block,
     filterable_columns,
     neutralize_jinja,
+    options_query_for_table,
+    options_query_sql,
     parameterize_sql,
 )
 
@@ -262,3 +264,207 @@ class TestFilterableColumns:
         cols = filterable_columns(TestParameterizeNested.NESTED, dialect="mysql")
         names = [c["name"].lower() for c in cols]
         assert len(names) == len(set(names))
+
+
+# ---------------------------------------------------------------------------
+# Clause-end detection — the anchor sqlglot's token offsets cannot give us
+# ---------------------------------------------------------------------------
+
+
+class TestClauseEnd:
+    """Where the guarded block lands when the WHERE clause does not end in a
+    token sqlglot records an offset for."""
+
+    def test_steps_over_a_subquery_closing_paren(self):
+        # The `)` closing a scalar subquery carries no token offset, so the
+        # last recorded offset sits INSIDE the subquery.
+        sql = (
+            "SELECT a.account, i.plan, SUM(i.amount) AS mrr "
+            "FROM inv i JOIN acct a ON i.aid = a.id "
+            "WHERE i.month = (SELECT MAX(month) FROM inv) "
+            "GROUP BY a.account, i.plan"
+        )
+        r = parameterize_sql(sql, "plan", "plan", dialect="mysql")
+        assert r.ok, r.reason
+        assert "FROM inv) {% if plan %}" in r.sql
+        assert "GROUP BY" in r.sql.split("{% endif %}")[1]
+
+    def test_steps_over_a_paren_wrapping_the_whole_condition(self):
+        # Landing inside these parens parses and passes the inert check, then
+        # silently binds the filter to one side of the OR.
+        sql = "SELECT plan, x FROM t WHERE (a = 1 OR b = 2)"
+        r = parameterize_sql(sql, "plan", "plan", dialect="mysql")
+        assert r.ok, r.reason
+        assert r.sql.startswith("SELECT plan, x FROM t WHERE (a = 1 OR b = 2) {% if plan %}")
+
+    def test_does_not_escape_the_derived_table_being_filtered(self):
+        sql = "SELECT m, SUM(mrr) FROM (SELECT m, plan, amt AS mrr FROM inv) z GROUP BY m"
+        r = parameterize_sql(sql, "plan", "plan", dialect="mysql")
+        assert r.ok, r.reason
+        assert "{% endif %}) z" in r.sql
+
+    def test_handles_a_where_ending_in_a_bare_keyword(self):
+        # NULL is an exp.Null with no source offset at all.
+        sql = "SELECT plan, x FROM t WHERE a IS NOT NULL GROUP BY plan, x"
+        r = parameterize_sql(sql, "plan", "plan", dialect="mysql")
+        assert r.ok, r.reason
+        assert "IS NOT NULL {% if plan %}" in r.sql
+
+    def test_ignores_parens_inside_a_string_literal(self):
+        sql = "SELECT plan, n FROM s WHERE note = 'a)b('"
+        r = parameterize_sql(sql, "plan", "plan", dialect="mysql")
+        assert r.ok, r.reason
+        assert r.sql.endswith("{% endif %}")
+
+    def test_a_second_multiselect_filter_lands_after_the_first_guard(self):
+        # `IN {{ x | inclause }}` is the shape this module itself emits, so a
+        # regression here means only ONE filter can ever be added by the button.
+        sql = (
+            "SELECT plan, x FROM t WHERE 1=1 "
+            "{% if region %} AND region IN {{ region | inclause }} {% endif %} "
+            "GROUP BY plan, x"
+        )
+        r = parameterize_sql(sql, "plan", "plan", dialect="mysql")
+        assert r.ok, r.reason
+        assert r.sql.index("{% if region %}") < r.sql.index("{% if plan %}")
+        assert r.sql.index("{% endif %}") < r.sql.index("{% if plan %}")
+
+
+# ---------------------------------------------------------------------------
+# options_query_sql — where a dropdown's choices come from
+# ---------------------------------------------------------------------------
+
+
+class TestOptionsQuerySql:
+    def test_reads_distinct_values_from_the_base_table(self):
+        r = options_query_sql("SELECT month, plan, amt FROM inv", "plan", dialect="postgres")
+        assert r.ok, r.reason
+        assert "DISTINCT" in r.sql
+        assert "AS value" in r.sql and "AS label" in r.sql
+        assert "inv" in r.sql
+
+    def test_follows_the_column_back_through_ctes(self):
+        sql = (
+            "WITH base AS (SELECT plan AS tier FROM warehouse.public.inv) "
+            "SELECT tier, COUNT(*) FROM base GROUP BY tier"
+        )
+        r = options_query_sql(sql, "tier", dialect="postgres")
+        assert r.ok, r.reason
+        assert "warehouse.public.inv" in r.sql
+        assert "inv.plan" in r.sql  # renamed back to the physical column
+
+    def test_filters_on_the_underlying_column_not_the_alias(self):
+        r = options_query_sql(
+            "SELECT br.description AS Region FROM regions br", "Region", dialect="postgres"
+        )
+        assert r.ok, r.reason
+        assert "description" in r.sql
+        assert "Region" not in r.sql.replace("AS value", "").replace("AS label", "")
+
+    def test_is_identical_however_the_source_query_aliased_its_tables(self):
+        # Four widgets filtering one column must not leave four options queries.
+        a = options_query_sql("SELECT i.plan FROM inv i JOIN acct a ON a.id=i.aid", "plan")
+        b = options_query_sql("SELECT plan FROM inv GROUP BY plan", "plan")
+        assert a.ok and b.ok
+        assert a.sql == b.sql
+
+    def test_refuses_a_computed_column(self):
+        r = options_query_sql("SELECT UPPER(plan) AS p FROM inv", "p")
+        assert not r.ok
+        assert "computed" in r.reason
+
+    def test_refuses_an_ambiguous_unqualified_column_across_a_join(self):
+        r = options_query_sql("SELECT plan FROM a JOIN b ON a.id = b.id", "plan")
+        assert not r.ok
+        assert "ambiguous" in r.reason
+
+    def test_renders_native_row_limiting_per_dialect(self):
+        sql = "SELECT plan FROM inv"
+        assert "LIMIT 1000" in options_query_sql(sql, "plan", dialect="postgres").sql
+        assert "TOP 1000" in options_query_sql(sql, "plan", dialect="tsql").sql
+        assert "FETCH FIRST 1000 ROWS ONLY" in options_query_sql(
+            sql, "plan", dialect="oracle"
+        ).sql
+
+    def test_every_supported_connector_dialect_generates(self):
+        from app.connectors.dialects import CONNECTOR_DIALECT
+
+        for dialect in sorted(set(CONNECTOR_DIALECT.values())):
+            r = options_query_sql("SELECT plan FROM inv", "plan", dialect=dialect)
+            assert r.ok, f"{dialect}: {r.reason}"
+            assert "DISTINCT" in r.sql
+
+
+# ---------------------------------------------------------------------------
+# options_query_for_table — the query picker's "build one from a column" path
+# ---------------------------------------------------------------------------
+
+
+class TestOptionsQueryForTable:
+    """Building a dropdown's choices from a table/column the author picked.
+
+    The counterpart to inferring the source from an existing query, for the
+    cases inference cannot serve: a filter not yet connected to any widget, or
+    a column that is computed everywhere it appears.
+    """
+
+    def test_builds_from_a_table_and_column(self):
+        r = options_query_for_table("invoices", "plan", dialect="postgres")
+        assert r.ok, r.reason
+        assert "DISTINCT" in r.sql
+        assert "AS value" in r.sql and "AS label" in r.sql
+        assert "invoices" in r.sql
+
+    def test_qualifies_with_the_schema_when_given(self):
+        r = options_query_for_table("invoices", "plan", schema="analytics", dialect="postgres")
+        assert r.ok, r.reason
+        assert "analytics.invoices" in r.sql
+
+    def test_matches_the_inferred_generator_byte_for_byte(self):
+        # Two spellings of the same query would defeat de-duplication, leaving
+        # one options query per ENTRY POINT rather than one per column.
+        picked = options_query_for_table("inv", "plan", dialect="duckdb")
+        inferred = options_query_sql(
+            "SELECT i.plan FROM inv i JOIN acct a ON a.id = i.aid", "plan", dialect="duckdb"
+        )
+        assert picked.ok and inferred.ok
+        assert picked.sql == inferred.sql
+
+    def test_respects_the_row_cap(self):
+        r = options_query_for_table("inv", "plan", dialect="postgres", limit=25)
+        assert r.ok, r.reason
+        assert "LIMIT 25" in r.sql
+
+    def test_quotes_a_hostile_identifier_rather_than_interpolating_it(self):
+        # sqlglot renders this as ONE quoted identifier; the statement stays a
+        # single SELECT. (It then fails at execution, which the route reports.)
+        r = options_query_for_table("inv; DROP TABLE users", "plan", dialect="postgres")
+        assert r.ok, r.reason
+        assert '"inv; DROP TABLE users"' in r.sql
+        assert r.sql.count("SELECT") == 1
+        assert "DROP TABLE users;" not in r.sql
+
+    def test_refuses_an_identifier_that_does_not_round_trip(self):
+        # `inv--x` parses as `inv` plus a comment: the object queried would not
+        # be the one the author named.
+        assert not options_query_for_table("inv--x", "plan").ok
+        assert not options_query_for_table("a.b.c.d", "plan").ok
+        assert not options_query_for_table("inv", "plan--x").ok
+
+    def test_refuses_a_qualified_column(self):
+        # It would silently disagree with the table argument.
+        r = options_query_for_table("inv", "other.plan")
+        assert not r.ok
+        assert "unqualified" in r.reason
+
+    def test_refuses_empty_inputs(self):
+        assert not options_query_for_table("", "plan").ok
+        assert not options_query_for_table("inv", "  ").ok
+
+    def test_generates_for_every_supported_connector_dialect(self):
+        from app.connectors.dialects import CONNECTOR_DIALECT
+
+        for dialect in sorted(set(CONNECTOR_DIALECT.values())):
+            r = options_query_for_table("inv", "plan", dialect=dialect)
+            assert r.ok, f"{dialect}: {r.reason}"
+            assert "DISTINCT" in r.sql

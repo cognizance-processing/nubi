@@ -228,7 +228,14 @@ async def _list_tools_async(server: MCPServer, timeout: float) -> list[MCPToolDe
     called by the public entry point (list_tools_sync) for cheap pre-flight
     validation before reaching here.
     """
-    from mcp.client.streamable_http import streamablehttp_client  # noqa: PLC0415
+    # mcp >= 2.0 renamed the transport helper (streamablehttp_client ->
+    # streamable_http_client); the call signature is unchanged, so alias it.
+    try:
+        from mcp.client.streamable_http import (  # noqa: PLC0415
+            streamable_http_client as streamablehttp_client,
+        )
+    except ImportError:  # pragma: no cover - mcp 1.x
+        from mcp.client.streamable_http import streamablehttp_client  # noqa: PLC0415
     from mcp import ClientSession  # noqa: PLC0415
 
     headers = _build_headers(server.auth_token)
@@ -289,7 +296,14 @@ async def _call_tool_async(
     connects to that IP directly (no second DNS lookup).  guard_url was already
     called by call_tool_sync for cheap pre-flight validation.
     """
-    from mcp.client.streamable_http import streamablehttp_client  # noqa: PLC0415
+    # mcp >= 2.0 renamed the transport helper (streamablehttp_client ->
+    # streamable_http_client); the call signature is unchanged, so alias it.
+    try:
+        from mcp.client.streamable_http import (  # noqa: PLC0415
+            streamable_http_client as streamablehttp_client,
+        )
+    except ImportError:  # pragma: no cover - mcp 1.x
+        from mcp.client.streamable_http import streamablehttp_client  # noqa: PLC0415
     from mcp import ClientSession  # noqa: PLC0415
 
     headers = _build_headers(server.auth_token)

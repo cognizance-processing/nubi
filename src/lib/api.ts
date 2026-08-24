@@ -654,9 +654,15 @@ export async function listFilterableColumns(queryId) {
  * query with the filter unset — it must return exactly the original result,
  * or the change is refused rather than saved. Pass `apply: false` to preview.
  *
+ * For dropdown subtypes it ALSO derives the query listing the filter's choices
+ * from the same column (`with_options`, on by default) and returns it as
+ * `options_query`, reusing an identical existing one rather than piling up
+ * duplicates. Without it a filter comes back correctly wired to its data but
+ * with an empty dropdown.
+ *
  * @param {string} queryId
- * @param {{param: string, column: string, subtype?: string, apply?: boolean}} body
- * @returns {Promise<{ok: boolean, verified: boolean, applied: boolean, sql?: string, column_expr?: string, reason?: string}>}
+ * @param {{param: string, column: string, subtype?: string, apply?: boolean, with_options?: boolean}} body
+ * @returns {Promise<{ok: boolean, verified: boolean, applied: boolean, sql?: string, column_expr?: string, reason?: string, warnings?: string[], options_query?: {id?: string, name?: string, sql: string, source?: string, created?: boolean} | null}>}
  */
 export function parameterizeQuery(queryId, body) {
   return post(`/queries/${encodeURIComponent(queryId)}/parameterize`, body)
@@ -823,6 +829,43 @@ function dataTablePath(datastoreId, table) {
  */
 function schemaParam(schema) {
   return schema ? `&schema=${encodeURIComponent(schema)}` : ''
+}
+
+/**
+ * List a connector's tables for the data browser / pickers.
+ *
+ * GET /api/v1/data[/{id}]/tables   (null id → the built-in demo dataset)
+ *
+ * @param {string|null} datastoreId
+ * @returns {Promise<Array<{name: string, schema?: string|null}>>}
+ */
+export async function listDataTables(datastoreId) {
+  const path = datastoreId ? `/data/${datastoreId}/tables` : '/data/tables'
+  const data = await get(path)
+  const rows = Array.isArray(data?.tables) ? data.tables : (Array.isArray(data) ? data : [])
+  return rows.map(t => (typeof t === 'string' ? { name: t, schema: null } : t)).filter(t => t?.name)
+}
+
+/**
+ * Build — and optionally save — the query listing a dropdown filter's choices.
+ *
+ * POST /api/v1/queries/options-query
+ *
+ * The query picker can only PICK, so a filter on a column nobody had already
+ * built a lookup for was a dead end inside the editor. This generates
+ * `SELECT DISTINCT col AS value, col AS label FROM t` natively for the target
+ * connector's dialect, RUNS it, and returns the values it produced. Pass
+ * `apply: false` to see those values without saving anything; an identical
+ * existing query is reused rather than duplicated.
+ *
+ * @param {{table: string, column: string, schema?: string|null, datastore_id?: string|null,
+ *          name?: string, limit?: number, apply?: boolean}} body
+ * @returns {Promise<{ok: boolean, verified: boolean, created: boolean, sql?: string,
+ *          source?: string, sample?: Array<*>, count?: number, warnings?: string[],
+ *          id?: string, name?: string, reason?: string}>}
+ */
+export function createOptionsQuery(body) {
+  return post('/queries/options-query', body)
 }
 
 /**

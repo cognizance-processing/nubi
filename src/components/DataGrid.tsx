@@ -552,7 +552,7 @@ export default function DataGrid({
           <div className="flex-1" />
 
           {/* Global search */}
-          <div className="relative">
+          <div className="relative" data-export-hide>
             <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
             <input
               type="text"
@@ -573,6 +573,7 @@ export default function DataGrid({
 
           {/* Filter toggle */}
           <button
+            data-export-hide
             onClick={() => setShowFilters((s) => !s)}
             className={[
               'h-7 px-2 flex items-center gap-1.5 text-[11px] font-medium rounded-md border transition-colors',
@@ -592,7 +593,7 @@ export default function DataGrid({
 
           {/* Grouping menu */}
           {enableGrouping && (
-            <div className="relative">
+            <div className="relative" data-export-hide>
               <button
                 onClick={() => setOpenMenu((m) => (m === 'group' ? null : 'group'))}
                 className={[
@@ -639,7 +640,7 @@ export default function DataGrid({
           )}
 
           {/* Columns (show/hide + pin) menu */}
-          <div className="relative">
+          <div className="relative" data-export-hide>
             <button
               onClick={() => setOpenMenu((m) => (m === 'columns' ? null : 'columns'))}
               className={toolbarBtn}
@@ -687,6 +688,7 @@ export default function DataGrid({
 
           {/* Density */}
           <button
+            data-export-hide
             onClick={() =>
               setDensity((d) =>
                 d === 'compact' ? 'comfortable' : d === 'comfortable' ? 'spacious' : 'compact',
@@ -699,7 +701,7 @@ export default function DataGrid({
           </button>
 
           {/* Export menu */}
-          <div className="relative">
+          <div className="relative" data-export-hide>
             <button
               onClick={() => setOpenMenu((m) => (m === 'export' ? null : 'export'))}
               className={toolbarBtn}
@@ -777,7 +779,7 @@ export default function DataGrid({
                             title={`Sort by ${String(col.columnDef.header)}`}
                           >
                             <span className="truncate">{flexRender(col.columnDef.header, header.getContext())}</span>
-                            <span className={sortDir ? 'text-primary shrink-0' : 'text-muted/30 group-hover:text-muted/60 shrink-0'}>
+                            <span data-export-hide className={sortDir ? 'text-primary shrink-0' : 'text-muted/30 group-hover:text-muted/60 shrink-0'}>
                               {sortDir === 'asc' && <ChevronUp size={12} />}
                               {sortDir === 'desc' && <ChevronDown size={12} />}
                               {!sortDir && <ChevronsUpDown size={11} />}
@@ -974,7 +976,7 @@ export default function DataGrid({
 
         {paginateProp && (
           <>
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5" data-export-hide>
               <span className="text-[11px] text-muted">Rows:</span>
               <select
                 className="text-[11px] bg-surface border border-border rounded px-1.5 py-0.5 text-fg focus:outline-none focus:ring-1 focus:ring-ring h-6 cursor-pointer"
@@ -986,7 +988,7 @@ export default function DataGrid({
                 ))}
               </select>
             </div>
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1" data-export-hide>
               <button
                 className="h-6 w-6 flex items-center justify-center rounded border border-border text-muted hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                 onClick={() => table.previousPage()}

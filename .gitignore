@@ -20,6 +20,9 @@ dist-ssr
 
 # Claude Code workspace + local skills (kept locally, never tracked)
 .claude/
+# Local MCP server registration. Contains absolute, machine-specific paths to
+# this checkout's venv, so it is never portable to another contributor.
+.mcp.json
 skills/
 *.suo
 *.ntvs*

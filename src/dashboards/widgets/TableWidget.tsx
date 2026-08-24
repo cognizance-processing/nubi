@@ -64,7 +64,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { runMetricQuery } from '../../lib/metricRuntime.js'
 import { evalRules, formatValue } from './conditionalFormat.js'
-import { useResolvedParams, useSetVariable } from '../VariableStore.jsx'
+import { useResolvedParams, useResolvedFilters, useSetVariable } from '../VariableStore.jsx'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
 import { useCrossFilter } from '../CrossFilterContext.jsx'
 import { useStepper } from '../StepperContext.jsx'
@@ -226,6 +226,7 @@ export default function TableWidget({ widget, providerTable = null }) {
     formattingRules,
     columnFormats,
     params: widgetParams,
+    filters: widgetFilters,
     metric,
     onClick: onClickSpec,
     drilldown,
@@ -266,6 +267,7 @@ export default function TableWidget({ widget, providerTable = null }) {
 
   // Resolve widget params against the variable store — re-renders on var change.
   const resolvedParams = useResolvedParams(widgetParams)
+  const resolvedFilters = useResolvedFilters(widgetFilters)
 
   // Board-level auto-refresh epoch.
   const refreshEpoch = useRefreshEpoch()
@@ -300,11 +302,14 @@ export default function TableWidget({ widget, providerTable = null }) {
         // Governed metric path: server-side compile + RLS injection.
         // Otherwise the existing query_id path is used EXACTLY as before.
         const hasParams = Object.keys(resolvedParams).length > 0
+        const hasFilters = resolvedFilters.length > 0
         const { table, error: queryError } = metric
           ? await runMetricQuery(metric)
           : await runArrowQueryById(
               query_id,
-              hasParams ? { namedParams: resolvedParams } : undefined,
+              (hasParams || hasFilters)
+                ? { namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined }
+                : undefined,
             )
         if (cancelled) return
         // Failed query → real reason, no grid. Never substitute rows.
@@ -324,7 +329,7 @@ export default function TableWidget({ widget, providerTable = null }) {
     fetchData()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query_id, JSON.stringify(metric), limit, columnsRaw, JSON.stringify(resolvedParams), refreshEpoch, providerTable, retryEpoch])
+  }, [query_id, JSON.stringify(metric), limit, columnsRaw, JSON.stringify(resolvedParams), JSON.stringify(resolvedFilters), refreshEpoch, providerTable, retryEpoch])
 
   // ── Column descriptors with columnFormats applied via renderCell ──────────
   const gridColumns = useMemo(() => {

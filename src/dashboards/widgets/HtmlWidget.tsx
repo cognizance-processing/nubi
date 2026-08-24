@@ -14,12 +14,13 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
-import { useResolvedParams } from '../VariableStore.jsx'
+import { useResolvedParams, useResolvedFilters } from '../VariableStore.jsx'
 import { renderWidgetHtml } from '../widgetHtml.js'
 
 export default function HtmlWidget({ widget }) {
-  const { query_id, html, props: wProps = {}, encoding = {}, params: widgetParams } = widget
+  const { query_id, html, props: wProps = {}, encoding = {}, params: widgetParams, filters: widgetFilters } = widget
   const resolvedParams = useResolvedParams(widgetParams)
+  const resolvedFilters = useResolvedFilters(widgetFilters)
 
   const [table, setTable] = useState(null)
   const [error, setError] = useState(null)
@@ -30,9 +31,12 @@ export default function HtmlWidget({ widget }) {
     async function fetchData() {
       try {
         const hasParams = Object.keys(resolvedParams).length > 0
+        const hasFilters = resolvedFilters.length > 0
         const { table: t } = await runArrowQueryById(
           query_id,
-          hasParams ? { namedParams: resolvedParams } : undefined,
+          (hasParams || hasFilters)
+            ? { namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined }
+            : undefined,
         )
         if (!cancelled) setTable(t)
       } catch (err) {
@@ -42,7 +46,7 @@ export default function HtmlWidget({ widget }) {
     fetchData()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query_id, JSON.stringify(resolvedParams)])
+  }, [query_id, JSON.stringify(resolvedParams), JSON.stringify(resolvedFilters)])
 
   // Headline value for {{value}} — the configured KPI value column, first row.
   const extra = useMemo(() => {

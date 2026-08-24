@@ -31,7 +31,10 @@ import { effectivePlacement, applyPlacement } from './placementHelpers.js'
 import { useQueryParamsIndex, refreshQueryParamsIndex } from './useInspectorData.js'
 import { titleText } from './titleValue.js'
 import { listFilterableColumns, parameterizeQuery } from '../../lib/api.js'
-import { wiringRows, connectedCount, bindParam, unbindVar, varNameFromLabel } from '../../dashboards/paramWiring.js'
+import {
+  wiringRows, connectedCount, bindParam, unbindVar, varNameFromLabel,
+  bindFilter, unbindFilterVar,
+} from '../../dashboards/paramWiring.js'
 
 const SUBTYPE_LABELS = {
   select: 'Dropdown (single)',
@@ -103,8 +106,14 @@ const BLOCKED_REASON = {
  * column, and the server rewrites the query (injecting at the innermost scope
  * that exposes the column, so it filters before any roll-up) and verifies the
  * rewrite is inert when the filter is unset before saving it.
+ *
+ * The server also derives the query listing the filter's CHOICES from the same
+ * column and returns it as `options_query`. Without that, this button produced
+ * a filter correctly wired to its data but with an empty dropdown — which
+ * reads as broken, and left the author back at "go write some SQL", one step
+ * further along.
  */
-function MakeFilterable({ queryId, varName, subtype, onDone, label = 'Add this filter to its query' }) {
+function MakeFilterable({ queryId, varName, subtype, onDone, onConnectDirect, label = 'Add this filter to its query' }) {
   const [open, setOpen] = useState(false)
   const [columns, setColumns] = useState(null)   // null = not loaded yet
   const [column, setColumn] = useState('')
@@ -138,7 +147,7 @@ function MakeFilterable({ queryId, varName, subtype, onDone, label = 'Add this f
       // The registry cached this query's (now stale) param list on mount.
       await refreshQueryParamsIndex()
       setOpen(false)
-      onDone?.(varName)
+      onDone?.(varName, res.options_query ?? null)
     } catch (err) {
       setError(err?.message ?? 'The query could not be made filterable.')
     } finally {
@@ -184,12 +193,27 @@ function MakeFilterable({ queryId, varName, subtype, onDone, label = 'Add this f
               </option>
             ))}
           </select>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {onConnectDirect && (
+              <button
+                type="button"
+                onClick={() => onConnectDirect(column)}
+                disabled={!column}
+                data-testid={`connect-direct-${queryId}`}
+                className="h-6 px-2 text-[10px] font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
+              >
+                Connect directly
+              </button>
+            )}
             <button
               type="button"
               onClick={apply}
               disabled={busy || !column}
-              className="h-6 px-2 text-[10px] font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity inline-flex items-center gap-1"
+              className={`h-6 px-2 text-[10px] font-medium rounded-lg transition-colors inline-flex items-center gap-1 disabled:opacity-50 ${
+                onConnectDirect
+                  ? 'border border-border hover:border-primary text-muted hover:text-primary bg-surface'
+                  : 'bg-primary text-primary-fg hover:opacity-90 transition-opacity'
+              }`}
             >
               {busy && <Loader2 size={9} className="animate-spin" />}
               {busy ? 'Checking…' : 'Add & connect'}
@@ -203,8 +227,17 @@ function MakeFilterable({ queryId, varName, subtype, onDone, label = 'Add this f
             </button>
           </div>
           <p className="text-[10px] text-muted/60 leading-relaxed">
-            The query is re-run with the filter unset and must return exactly its
-            current results before the change is saved.
+            {onConnectDirect
+              ? <>
+                  <strong className="text-muted/80">Connect directly</strong> applies the
+                  filter at read time — no SQL change, nothing to verify.{' '}
+                  <strong className="text-muted/80">Add & connect</strong> instead declares
+                  a real parameter on the query's SQL, re-running it with the filter unset
+                  to confirm the change is safe first — useful if this query is also used
+                  outside dashboards (MCP, the API).
+                </>
+              : 'The query is re-run with the filter unset and must return exactly its '
+                + 'current results before the change is saved.'}
           </p>
         </>
       )}
@@ -222,7 +255,7 @@ function MakeFilterable({ queryId, varName, subtype, onDone, label = 'Add this f
  * a name match tells us which param a variable belongs in. Ticking a row writes
  * that binding onto the other widget; unticking removes it.
  */
-function ConnectedWidgets({ widget, spec, varName, onPatchWidget, resolveWidget }) {
+function ConnectedWidgets({ widget, spec, varName, onPatchWidget, resolveWidget, onOptionsQuery = undefined }) {
   const { paramsById, loaded } = useQueryParamsIndex()
 
   if (!varName) {
@@ -260,8 +293,19 @@ function ConnectedWidgets({ widget, spec, varName, onPatchWidget, resolveWidget 
     if (!paramName) return
     onPatchWidget(row.id, w => ({ ...w, params: bindParam(w.params, paramName, varName) }))
   }
+  // The no-{{param}}-required path (Layer 3): binds the variable straight to
+  // a column via widget.filters, applied at read time by the backend planner
+  // — no SQL mutation, so nothing to verify before it takes effect.
+  const connectDirect = (row, column) => {
+    if (!column) return
+    onPatchWidget(row.id, w => ({ ...w, filters: bindFilter(w.filters, varName, column) }))
+  }
   const disconnect = (row) => {
-    onPatchWidget(row.id, w => ({ ...w, params: unbindVar(w.params, varName) }))
+    onPatchWidget(row.id, w => ({
+      ...w,
+      params: unbindVar(w.params, varName),
+      filters: unbindFilterVar(w.filters, varName),
+    }))
   }
 
   return (
@@ -314,7 +358,12 @@ function ConnectedWidgets({ widget, spec, varName, onPatchWidget, resolveWidget 
               </div>
 
               {isOn && (
-                <p className="text-[10px] text-muted/80 mt-0.5 pl-6 font-mono truncate">→ {row.paramName}</p>
+                <p className="text-[10px] text-muted/80 mt-0.5 pl-6 font-mono truncate">
+                  → {row.boundVia === 'filter' ? row.columnName : row.paramName}
+                  {row.boundVia === 'filter' && (
+                    <span className="font-sans text-muted/60"> (direct, no {'{{param}}'})</span>
+                  )}
+                </p>
               )}
               {row.state === 'available' && (
                 <p className="text-[10px] text-muted/60 mt-0.5 pl-6 font-mono truncate">{row.paramName}</p>
@@ -357,7 +406,11 @@ function ConnectedWidgets({ widget, spec, varName, onPatchWidget, resolveWidget 
                   label={row.state === 'choose'
                     ? `…or add a new “${varName}” filter to its query`
                     : 'Add this filter to its query'}
-                  onDone={() => connect(row, varName)}
+                  onDone={(_name, optionsQuery) => {
+                    connect(row, varName)
+                    onOptionsQuery?.(optionsQuery)
+                  }}
+                  onConnectDirect={(column) => connectDirect(row, column)}
                 />
               )}
             </li>
@@ -369,11 +422,27 @@ function ConnectedWidgets({ widget, spec, varName, onPatchWidget, resolveWidget 
 }
 
 export function FilterConfig({ widget, onChange, spec, onPatchWidget = undefined, onCreateVariable = undefined, resolveWidget = undefined }) {
+  const { datastoreById } = useQueryParamsIndex()
   const setField = (key, val) => onChange({ ...widget, [key]: val })
   const props = widget.props ?? {}
   const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
   const subtype = widget.subtype ?? 'select'
   const isChoice = subtype === 'select' || subtype === 'multiselect' || subtype === 'list'
+  // Set when connecting a widget also derived the dropdown's choices, so the
+  // author can see what was created rather than finding a new query later and
+  // wondering where it came from.
+  const [derivedOptions, setDerivedOptions] = useState(null)
+
+  // Which connector should the options builder start on? The one this board's
+  // data already comes from. Defaulting everyone to the demo dataset would make
+  // the first thing an author sees be the wrong answer on any real board.
+  const boardDatastoreId = (() => {
+    for (const w of spec?.widgets ?? []) {
+      const ds = w?.query_id ? datastoreById?.get(w.query_id) : null
+      if (ds) return ds
+    }
+    return null
+  })()
   const varNames = (spec?.variables ?? []).map(v => v.name).filter(Boolean)
   const varName = widget.target_var ?? ''
   const knownVar = !varName || varNames.includes(varName)
@@ -418,6 +487,12 @@ export function FilterConfig({ widget, onChange, spec, onPatchWidget = undefined
           varName={varName}
           onPatchWidget={onPatchWidget ?? (() => {})}
           resolveWidget={resolveWidget}
+          onOptionsQuery={(oq) => {
+            if (!oq?.id) return
+            setDerivedOptions(oq)
+            // Never overwrite a source the author chose deliberately.
+            if (!widget.options_query_id) setField('options_query_id', oq.id)
+          }}
         />
         <p className="text-[10px] text-muted/70 leading-relaxed">
           A widget can be connected once its query declares a matching
@@ -449,8 +524,34 @@ export function FilterConfig({ widget, onChange, spec, onPatchWidget = undefined
       {isChoice && (
         <div>
           <FieldLabel>Options query</FieldLabel>
-          <QueryPicker value={widget.options_query_id ?? ''} onChange={v => setField('options_query_id', v)} />
-          <p className="text-[10px] text-muted/70 mt-1">A query returning the choices (first column = value, second = label).</p>
+          <QueryPicker
+            value={widget.options_query_id ?? ''}
+            onChange={v => setField('options_query_id', v)}
+            allowCreate
+            createDatastoreId={boardDatastoreId}
+            // The filter's own variable is the likeliest column name — a
+            // "Region" filter almost always wants a `region` column.
+            createSuggestion={varName ? { column: varName } : null}
+            onCreated={row => setDerivedOptions({ ...row, created: row.created !== false })}
+          />
+          {derivedOptions?.id && widget.options_query_id === derivedOptions.id ? (
+            <p className="text-[10px] text-muted/70 mt-1 leading-relaxed" data-testid="filter-options-derived">
+              {derivedOptions.created === false ? 'Reused ' : 'Built '}
+              <span className="text-fg font-medium">“{derivedOptions.name ?? 'options'}”</span>
+              {derivedOptions.source ? <> from <span className="font-mono">{String(derivedOptions.source).split(' AS ')[0]}</span></> : null}
+              {typeof derivedOptions.count === 'number'
+                ? ` — ${derivedOptions.count} ${derivedOptions.count === 1 ? 'choice' : 'choices'}.`
+                : ' — the distinct values of this column.'}
+            </p>
+          ) : (
+            <p className="text-[10px] text-muted/70 mt-1">A query returning the choices (first column = value, second = label).</p>
+          )}
+          {!widget.options_query_id && (
+            <p className="text-[10px] text-warning/90 mt-1 leading-relaxed" data-testid="filter-options-missing">
+              This dropdown has no list of choices yet, so it will render empty.
+              Connecting it to a widget above builds one from that widget’s column.
+            </p>
+          )}
         </div>
       )}
 

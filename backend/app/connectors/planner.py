@@ -458,6 +458,151 @@ def resolve_named_params(
 
 
 # ---------------------------------------------------------------------------
+# Dashboard filter injection (M-filters) — scope-aware, unlike RLS above
+# ---------------------------------------------------------------------------
+#
+# ``_make_rls_predicates`` (above) always lands on the OUTERMOST select via a
+# plain ``tree.where(...)``. That is correct for RLS on an ordinary
+# single-scope query, but it breaks on an aggregate-only query with no
+# top-level FROM at all — e.g. a headline-metrics widget built entirely from
+# scalar subqueries (``SELECT (SELECT SUM(amount) FROM t) AS total, ...``)
+# has nothing at the top level to attach a predicate to; the engine raises
+# "column not found because the FROM clause is missing".
+#
+# A dashboard filter has the same shape problem, so it needs the same fix
+# `app.queries.parameterize` already applies at author-time: find the scope
+# that actually exposes the column and inject there. The difference here is
+# there can be SEVERAL independent scopes exposing the same column with no
+# data relationship between them (four sibling KPI subqueries each reading a
+# different table that happens to have a ``month`` column) — a dashboard
+# filter means "filter all of them", so this injects into every scope
+# ``find_all_filter_targets`` finds, not just the first.
+
+
+def _filter_lhs(column_expr: str, dialect: str) -> exp.Expression:
+    """Parse *column_expr* (``"amount"`` or a qualified ``"b.month"``) as a
+    predicate's left-hand side.
+
+    Unlike the RLS builders' plain ``exp.Column(Identifier(column))``, a
+    dashboard filter's column may be qualified with a join alias (needed when
+    the target scope joins more than one source) — parsing it as a real
+    expression handles both forms uniformly.
+    """
+    parsed = sqlglot.parse_one(f"SELECT {column_expr}", dialect=dialect)
+    return parsed.expressions[0]
+
+
+def _make_filter_predicates(lhs: exp.Expression, value: Any) -> list[exp.Expression]:
+    """Same scalar/list/range-dict dispatch as :func:`_make_rls_predicates`,
+    parameterised on an already-parsed *lhs* expression instead of a bare
+    column-name string (see :func:`_filter_lhs`), plus an ``{"in": [...]}`` /
+    ``{"not_in": [...]}`` dict shape RLS has no need for: a dashboard
+    multiselect filter can be in "exclude" mode (VariableStore.tsx's
+    ``{mode: 'exclude', values: [...]}``), which is a real, distinct
+    predicate (NOT IN) rather than an approximation — silently treating an
+    exclude-mode filter as an include list would show the wrong rows.
+    """
+    if isinstance(value, list):
+        if not value:
+            return [exp.EQ(this=exp.Literal.number(1), expression=exp.Literal.number(0))]
+        return [exp.In(this=lhs.copy(), expressions=[_make_literal(v) for v in value])]
+    if isinstance(value, dict):
+        if "in" in value or "not_in" in value:
+            preds: list[exp.Expression] = []
+            in_values = value.get("in")
+            if in_values is not None:
+                if not in_values:
+                    preds.append(exp.EQ(this=exp.Literal.number(1), expression=exp.Literal.number(0)))
+                else:
+                    preds.append(
+                        exp.In(this=lhs.copy(), expressions=[_make_literal(v) for v in in_values])
+                    )
+            not_in_values = value.get("not_in")
+            if not_in_values:
+                # Empty not_in excludes nothing — no predicate needed at all
+                # (unlike an empty `in`, which must fail closed to 1=0).
+                preds.append(
+                    exp.Not(
+                        this=exp.In(
+                            this=lhs.copy(),
+                            expressions=[_make_literal(v) for v in not_in_values],
+                        )
+                    )
+                )
+            return preds
+        ops = {"eq": exp.EQ, "gte": exp.GTE, "gt": exp.GT, "lte": exp.LTE, "lt": exp.LT}
+        preds = []
+        for key, val in value.items():
+            node_cls = ops.get(key)
+            if node_cls is not None:
+                preds.append(node_cls(this=lhs.copy(), expression=_make_literal(val)))
+        return preds
+    return [exp.EQ(this=lhs.copy(), expression=_make_literal(value))]
+
+
+def apply_dashboard_filters(
+    tree: exp.Expression,
+    filters: list[dict[str, Any]],
+    dialect: str,
+    table_columns: dict[str, list[str]] | None = None,
+) -> tuple[exp.Expression, list[str], list[str]]:
+    """Inject dashboard filter values into every scope exposing each column.
+
+    Parameters
+    ----------
+    tree:
+        The parsed query, mutated in place (each matched scope's own WHERE
+        is extended via ``copy=False``).
+    filters:
+        ``[{"column": str, "value": Any}, ...]``. *value* follows the same
+        convention as an RLS policy value: scalar -> equality, list -> IN
+        (empty list -> impossible predicate, fail-closed), dict -> inequality
+        band (``gte``/``gt``/``lte``/``lt``/``eq`` keys). A filter whose
+        value is ``None`` or ``[]`` is skipped entirely — that is "nothing
+        picked", which must mean "do not touch this query", not "match
+        nothing".
+    table_columns:
+        Estate-wide ``{table: [col, ...]}`` catalog (see
+        ``app.ai.grounding.build_catalog``) used to find scopes where the
+        column exists on a base table but is never itself referenced by this
+        query. Without it, only columns the query's own SQL already mentions
+        are matched (projection or existing predicate/group-by reference).
+
+    Returns
+    -------
+    (tree, predicate_strings, unresolved_columns)
+        *predicate_strings* are the injected predicates, for the same
+        observability use as ``PhysicalPlan.predicates``. *unresolved_columns*
+        lists filters whose column no scope could expose — the caller should
+        surface this (a widget silently ignoring a filter it claims to honour
+        is the exact failure mode this whole mechanism exists to avoid), not
+        swallow it.
+    """
+    from app.queries.scope_resolve import find_all_filter_targets  # noqa: PLC0415
+
+    predicate_strings: list[str] = []
+    unresolved: list[str] = []
+    for f in filters:
+        column = f.get("column")
+        value = f.get("value")
+        if not column:
+            continue
+        if value is None or value == []:
+            continue
+        targets = find_all_filter_targets(tree, column, dialect=dialect, table_columns=table_columns)
+        if not targets:
+            unresolved.append(column)
+            continue
+        for target in targets:
+            lhs = _filter_lhs(target.column_expr, dialect)
+            for pred_node in _make_filter_predicates(lhs, value):
+                target.select.where(pred_node, copy=False)
+                predicate_strings.append(pred_node.sql(dialect=dialect))
+
+    return tree, predicate_strings, unresolved
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -470,6 +615,8 @@ def plan(
     params: list[Any] | None = None,
     limit: int | None = None,
     predicates: list[Any] | None = None,
+    filters: list[dict[str, Any]] | None = None,
+    filter_table_columns: dict[str, list[str]] | None = None,
 ) -> PhysicalPlan:
     """Compile a logical SQL query and optional claims into a ``PhysicalPlan``.
 
@@ -499,6 +646,20 @@ def plan(
         Each element may be a ``(col, op, value)`` tuple, a single-key ``{col:
         value}`` dict, or a raw SQL string (trusted; not user-supplied).
         ``None`` means no extra predicates are pushed (M1-compatible path).
+    filters:
+        Optional dashboard filters, injected AFTER RLS: ``[{"column": str,
+        "value": Any}, ...]``. Unlike *predicates* and RLS (always the
+        outermost scope), each filter is injected into EVERY scope that
+        exposes its column — see ``apply_dashboard_filters`` for why an
+        aggregate-only query needs that. A filter whose value is ``None`` or
+        ``[]`` is skipped ("nothing picked" must mean "don't touch this
+        query"). Columns no scope can expose are reported on the returned
+        plan's ``unresolved_filters``, never silently dropped.
+    filter_table_columns:
+        Estate-wide ``{table: [col, ...]}`` catalog (see
+        ``app.ai.grounding.build_catalog``) letting *filters* match a column
+        that exists on a base table but isn't itself referenced anywhere in
+        *sql*. Ignored when *filters* is not supplied.
 
     Returns
     -------
@@ -564,27 +725,39 @@ def plan(
             tree = tree.where(pred_node)
             injected_predicates.append(pred_node.sql(dialect=dialect))
 
-    # ── 6. Push LIMIT (M2-A; no-op when None) ───────────────────────────────
+    # ── 6. Inject dashboard filters (AST-level, scope-aware; see
+    #      apply_dashboard_filters for why this differs from RLS above) ──────
+    filter_predicates: list[str] = []
+    unresolved_filters: list[str] = []
+    if filters:
+        tree, filter_predicates, unresolved_filters = apply_dashboard_filters(
+            tree, filters, dialect=dialect, table_columns=filter_table_columns
+        )
+
+    # ── 7. Push LIMIT (M2-A; no-op when None) ───────────────────────────────
     if limit is not None:
         tree = push_limit(tree, limit)
 
-    # ── 7. Collect all predicates (original + extra + injected) ─────────────
+    # ── 8. Collect all predicates (original + extra + injected) ─────────────
+    # Dashboard filters may live in nested scopes the top-level WHERE walk
+    # cannot see, so their strings (already collected while injecting) are
+    # appended rather than re-derived from tree.args["where"].
     where_node = tree.args.get("where")
     all_predicates = _collect_predicates(
         where_node.this if where_node else None, dialect=dialect
-    )
+    ) + filter_predicates
 
-    # ── 8. Re-generate SQL ───────────────────────────────────────────────────
+    # ── 9. Re-generate SQL ───────────────────────────────────────────────────
     rewritten_sql: str = tree.sql(dialect=dialect)
 
-    # ── 9. Compute cache key from the FINAL SQL + params + RLS claims ────────
+    # ── 10. Compute cache key from the FINAL SQL + params + RLS claims ───────
     cache_key = compute_cache_key(
         sql=rewritten_sql,
         params=params,
         rls_claims=claims,
     )
 
-    # ── 10. Build and return the plan ────────────────────────────────────────
+    # ── 11. Build and return the plan ────────────────────────────────────────
     return PhysicalPlan(
         dialect=dialect,
         sql=rewritten_sql,
@@ -592,6 +765,7 @@ def plan(
         projection=projection,
         predicates=all_predicates,
         rls_claims=claims,
+        unresolved_filters=unresolved_filters,
         cache_key=cache_key,
     )
 

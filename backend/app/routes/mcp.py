@@ -369,7 +369,7 @@ async def mcp_endpoint(
             return _jsonrpc_result(
                 rpc_id,
                 {
-                    "content": [{"type": "text", "text": json.dumps(result)}],
+                    "content": [{"type": "text", "text": _encode_tool_result(result)}],
                     "isError": False,
                 },
             )
@@ -385,6 +385,76 @@ async def mcp_endpoint(
 
     # ── Unknown method ────────────────────────────────────────────────────────
     return _jsonrpc_error(rpc_id, -32601, "Method not found")
+
+
+# ---------------------------------------------------------------------------
+# Response size guard
+# ---------------------------------------------------------------------------
+#
+# An MCP client consumes a tool result as text in a context window, so an
+# oversized payload is a denial-of-service against the caller rather than
+# against us.  Individual tools cap their own output (see run_query's `limit`),
+# but this is the backstop that holds for EVERY tool, including ones added
+# later that forget to.
+#
+# Truncating serialised JSON mid-string would hand the client invalid JSON, so
+# instead we shrink the payload structurally: drop the biggest list-valued key
+# down to a sample and say so in-band, and only fall back to hard text
+# truncation when there is no list to shrink.
+
+_MAX_TOOL_RESULT_BYTES = 100_000
+
+
+def _encode_tool_result(result: Any) -> str:
+    """Serialise *result* to JSON, shrinking it if it exceeds the size guard."""
+    text = json.dumps(result)
+    if len(text) <= _MAX_TOOL_RESULT_BYTES:
+        return text
+
+    if isinstance(result, dict):
+        # Find the list-valued key contributing the most bytes and sample it.
+        list_keys = [k for k, v in result.items() if isinstance(v, list) and v]
+        if list_keys:
+            biggest = max(list_keys, key=lambda k: len(json.dumps(result[k])))
+            items = result[biggest]
+            # Binary-search the largest prefix that fits.
+            lo, hi = 0, len(items)
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                trial = dict(result)
+                trial[biggest] = items[:mid]
+                if len(json.dumps(trial)) <= _MAX_TOOL_RESULT_BYTES:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            shrunk = dict(result)
+            shrunk[biggest] = items[:lo]
+            shrunk["_truncated"] = {
+                "key": biggest,
+                "returned": lo,
+                "total": len(items),
+                "reason": (
+                    f"Result exceeded the {_MAX_TOOL_RESULT_BYTES}-byte MCP "
+                    f"response guard. Narrow the request (filter, aggregate, "
+                    f"or pass a smaller limit) to see the rest."
+                ),
+            }
+            return json.dumps(shrunk)
+
+    # No list to shrink — hard-truncate the text and stay valid JSON by
+    # wrapping it in an envelope.
+    return json.dumps(
+        {
+            "_truncated": {
+                "reason": (
+                    f"Result exceeded the {_MAX_TOOL_RESULT_BYTES}-byte MCP "
+                    f"response guard and had no list field to sample."
+                ),
+                "total_bytes": len(text),
+            },
+            "preview": text[:_MAX_TOOL_RESULT_BYTES],
+        }
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -321,6 +321,13 @@ export async function runArrowQuery(sql: string, onBatch?: (rowsSoFar: number) =
  * dict of named parameter values to pass as `named_params` in the request body.
  * When absent, `named_params` is omitted from the body (backward-compatible).
  *
+ * `filters` (Layer 3): an optional `[{column, value}, ...]` list sent as the
+ * request's `filters` field — unlike `namedParams`, these apply WITHOUT the
+ * query needing to declare a matching `{{param}}` (see
+ * `app.connectors.planner.apply_dashboard_filters`). A filter column no scope
+ * of the query could expose comes back on `unresolvedFilters` rather than
+ * silently doing nothing.
+ *
  * D2 — Demo routing (free wedge):
  * When `opts.isDemo === true` OR when the queryId is found in the demo query
  * map (fetched lazily), the query is executed entirely in the browser via
@@ -333,6 +340,7 @@ export async function runArrowQueryById(
   queryId: string,
   opts?: {
     namedParams?: Record<string, unknown>
+    filters?: Array<{ column: string; value: unknown }>
     onBatch?: (rowsSoFar: number) => void
     isDemo?: boolean
     datastoreId?: string
@@ -341,10 +349,12 @@ export async function runArrowQueryById(
   table: any
   cacheStatus: string
   elapsedMs: number
+  unresolvedFilters?: string[]
   error?: { status?: number; code?: string; message: string }
 }> {
-  // Support legacy positional (queryId, onBatch) as well as new (queryId, { namedParams, datastoreId, onBatch, isDemo })
+  // Support legacy positional (queryId, onBatch) as well as new (queryId, { namedParams, filters, datastoreId, onBatch, isDemo })
   let namedParams
+  let filters
   let onBatch
   let datastoreId
   let isDemo
@@ -352,6 +362,7 @@ export async function runArrowQueryById(
     onBatch = opts
   } else if (opts && typeof opts === 'object') {
     namedParams = opts.namedParams
+    filters = opts.filters
     onBatch = opts.onBatch
     datastoreId = opts.datastoreId
     isDemo = opts.isDemo
@@ -360,10 +371,12 @@ export async function runArrowQueryById(
   // ── D2: Demo routing — check if this query should run in the browser ────────
   // Gate 1: explicit isDemo flag passed by the caller (e.g. SpecRenderer).
   // Gate 2: transparent — check the lazy query map (one JSON fetch, then cached).
-  // Only apply when no namedParams are present (parameterised demo queries still
-  // go to the server so RLS/template resolution works correctly).
+  // Only apply when no namedParams/filters are present (parameterised demo
+  // queries still go to the server so RLS/template/filter resolution works
+  // correctly — the local DuckDB-WASM path has no equivalent of any of them).
   const hasParams = namedParams && Object.keys(namedParams).length > 0
-  if (!hasParams && queryId) {
+  const hasFilters = Array.isArray(filters) && filters.length > 0
+  if (!hasParams && !hasFilters && queryId) {
     const shouldUseDemoLocal =
       isDemo === true ||
       (await (async () => {
@@ -411,11 +424,12 @@ export async function runArrowQueryById(
 
   const t0 = performance.now()
 
-  // Build request body — only include named_params when provided
-  const reqBody: { query_id: any; named_params?: any; datastore_id?: any } = { query_id: queryId }
+  // Build request body — only include named_params/filters when provided
+  const reqBody: { query_id: any; named_params?: any; filters?: any; datastore_id?: any } = { query_id: queryId }
   if (namedParams && typeof namedParams === 'object' && Object.keys(namedParams).length > 0) {
     reqBody.named_params = namedParams
   }
+  if (hasFilters) reqBody.filters = filters
   if (datastoreId) reqBody.datastore_id = datastoreId
 
   let response
@@ -441,6 +455,11 @@ export async function runArrowQueryById(
   }
 
   const cacheStatus = response.headers.get('X-Nubi-Cache') ?? 'MISS'
+  const unresolvedFiltersHeader = response.headers.get('X-Nubi-Unresolved-Filters')
+  const unresolvedFilters = unresolvedFiltersHeader ? unresolvedFiltersHeader.split(',') : undefined
+  if (unresolvedFilters) {
+    console.warn(`[wasmRuntime] runArrowQueryById ${queryId}: filter column(s) not applied (no scope exposes them):`, unresolvedFilters)
+  }
 
   try {
     const reader = await arrow.RecordBatchReader.from(response)
@@ -458,10 +477,10 @@ export async function runArrowQueryById(
     const elapsedMs = Math.round(performance.now() - t0)
 
     if (batches.length === 0) {
-      return { table: new arrow.Table(reader.schema, []), cacheStatus, elapsedMs }
+      return { table: new arrow.Table(reader.schema, []), cacheStatus, elapsedMs, unresolvedFilters }
     }
 
-    return { table: descaleDecimalTable(new arrow.Table(batches)), cacheStatus, elapsedMs }
+    return { table: descaleDecimalTable(new arrow.Table(batches)), cacheStatus, elapsedMs, unresolvedFilters }
   } catch (cause) {
     console.warn('[wasmRuntime] runArrowQueryById stream parse failed:', cause.message)
     return queryFailure({ message: `Could not read the result stream: ${cause.message}` }, t0)

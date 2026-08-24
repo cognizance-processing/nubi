@@ -7,8 +7,9 @@
  * spec  {object}       The current DashboardSpec (used for filenames / fallback).
  *
  * Export
- *   - PNG / PDF: client-side capture of the rendered dashboard DOM via
- *     html2canvas + jspdf (both lazily imported).
+ *   - PNG / PDF: client-side capture of the rendered dashboard DOM. Both go
+ *     through lib/domCapture, which snapshots charts at export resolution and
+ *     leaves interactive chrome out of the shot; PDF adds pagination on top.
  *   - CSV: per-widget data from GET /boards/:id/export.json, built client-side.
  * Share
  *   - POST /boards/:id/share → embed url + snippet + the RLS/auth model.
@@ -20,7 +21,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Download, Share2, Image, FileText, Table, Link2, ShieldCheck, X, Copy, Check } from 'lucide-react'
 import { get, post } from '../lib/api.js'
-import { widgetToCsv } from '../lib/exports.js'
+import { widgetToCsv, elementToPNG, elementToPDF } from '../lib/exports.js'
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -86,29 +87,17 @@ export default function ExportShareMenu({ board, spec }) {
     return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey) }
   }, [open])
 
-  async function capture() {
-    const { default: html2canvas } = await import('html2canvas')
-    return html2canvas(dashboardNode(), { backgroundColor: null, scale: 2, useCORS: true, logging: false })
-  }
-
   async function exportPng() {
     setBusy('png'); setError(null)
     try {
-      const canvas = await capture()
-      canvas.toBlob((blob) => blob && download(`${name}.png`, blob, 'image/png'))
+      await elementToPNG(dashboardNode(), `${name}.png`)
     } catch (e) { setError(e.message || 'PNG export failed.') } finally { setBusy(null) }
   }
 
   async function exportPdf() {
     setBusy('pdf'); setError(null)
     try {
-      const canvas = await capture()
-      const { jsPDF } = await import('jspdf')
-      const img = canvas.toDataURL('image/png')
-      const orientation = canvas.width >= canvas.height ? 'landscape' : 'portrait'
-      const pdf = new jsPDF({ orientation, unit: 'pt', format: [canvas.width, canvas.height] })
-      pdf.addImage(img, 'PNG', 0, 0, canvas.width, canvas.height)
-      pdf.save(`${name}.pdf`)
+      await elementToPDF(dashboardNode(), `${name}.pdf`, { title: spec?.title || 'Dashboard' })
     } catch (e) { setError(e.message || 'PDF export failed.') } finally { setBusy(null) }
   }
 

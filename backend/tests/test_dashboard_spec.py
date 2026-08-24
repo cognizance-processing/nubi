@@ -908,6 +908,57 @@ class TestM14WidgetParams:
         )
 
 
+class TestWidgetFilters:
+    """Column-based filter bindings (widget.filters) — the no-{{param}}-needed
+    alternative to widget.params, added alongside it (step 6c mirrors step 6)."""
+
+    def test_filters_ref_to_declared_var_passes(self):
+        data = _make_variable_spec()
+        data["widgets"][2]["filters"] = {"region": "region_code"}
+        spec, issues = validate_spec(data)
+        hard_issues = [
+            i for i in issues
+            if "not in the registered" not in i and "forward reference" not in i
+        ]
+        assert spec is not None
+        assert hard_issues == [], f"Unexpected hard issues: {hard_issues}"
+        widget = next(w for w in spec.widgets if w.id == spec.widgets[2].id)
+        assert widget.filters == {"region": "region_code"}
+
+    def test_filters_ref_to_undeclared_var_fails(self):
+        data = _make_variable_spec()
+        data["widgets"][2]["filters"] = {"country": "country_code"}
+        spec, issues = validate_spec(data)
+        assert any("country" in i and "not declared" in i for i in issues), (
+            f"Expected undeclared var issue, got: {issues}"
+        )
+
+    def test_empty_filters_is_valid(self):
+        data = _make_variable_spec()
+        data["widgets"][2]["filters"] = {}
+        spec, issues = validate_spec(data)
+        hard_issues = [
+            i for i in issues
+            if "not in the registered" not in i and "forward reference" not in i
+        ]
+        assert spec is not None
+        assert hard_issues == []
+
+    def test_filters_conflicts_with_ref_widget(self):
+        """A reference widget (ref set) may not also carry inline filters —
+        mirrors the existing params/ref mutual-exclusivity rule (step 14)."""
+        data = _make_variable_spec()
+        data["widgets"][2] = {
+            "id": data["widgets"][2]["id"],
+            "ref": "some-library-row-id",
+            "filters": {"region": "region_code"},
+        }
+        spec, issues = validate_spec(data)
+        assert any("filters" in i and "ref" in i for i in issues), (
+            f"Expected a ref/filters conflict issue, got: {issues}"
+        )
+
+
 class TestM14SpecToHtmlNewWidgets:
     """M14-A: spec_to_html emits <nubi-filter> and <nubi-text> elements."""
 

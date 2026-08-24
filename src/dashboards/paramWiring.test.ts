@@ -5,6 +5,7 @@ import {
   normalizeName, isRef, boundParamFor, referencedVars, candidateParam,
   bindParam, unbindParam, unbindVar, autoBindParams, wiringRows,
   connectedCount, unfilledParams,
+  boundFilterFor, bindFilter, unbindFilterVar,
 } from './paramWiring.js'
 
 const P = (...names) => names.map(name => ({ name, type: 'text' }))
@@ -196,6 +197,49 @@ test('wiringRows falls back to the widget id when it has no title', () => {
 test('connectedCount counts only live connections', () => {
   const rows = wiringRows({ widgets: BOARD, varName: 'region', paramsByQueryId: PARAMS })
   assert.equal(connectedCount(rows), 1)
+})
+
+// ── column-based filter binding (widget.filters — no {{param}} required) ────
+
+test('boundFilterFor finds the column bound to a variable', () => {
+  assert.equal(boundFilterFor({ month: 'order_month' }, 'month'), 'order_month')
+  assert.equal(boundFilterFor({ month: 'order_month' }, 'region'), null)
+  assert.equal(boundFilterFor(undefined, 'month'), null)
+})
+
+test('bindFilter adds a binding without disturbing others', () => {
+  const next = bindFilter({ region: 'region_col' }, 'month', 'order_month')
+  assert.deepEqual(next, { region: 'region_col', month: 'order_month' })
+})
+
+test('unbindFilterVar removes only the named binding', () => {
+  const next = unbindFilterVar({ region: 'region_col', month: 'order_month' }, 'month')
+  assert.deepEqual(next, { region: 'region_col' })
+})
+
+test('wiringRows reports a column-bound widget as connected via filter', () => {
+  const widgets = [
+    { id: 'w8', type: 'kpi', title: 'Total billed', query_id: 'q_no_params', filters: { month: 'month' } },
+  ]
+  const rows = wiringRows({
+    widgets, varName: 'month',
+    paramsByQueryId: new Map([['q_no_params', []]]),
+  })
+  assert.equal(rows[0].state, 'connected')
+  assert.equal(rows[0].boundVia, 'filter')
+  assert.equal(rows[0].columnName, 'month')
+  assert.equal(rows[0].paramName, null)
+})
+
+test('wiringRows reports a param-bound widget\'s boundVia as "param"', () => {
+  const rows = wiringRows({ widgets: BOARD, varName: 'region', paramsByQueryId: PARAMS })
+  assert.equal(rows.find(r => r.id === 'w1').boundVia, 'param')
+  assert.equal(rows.find(r => r.id === 'w1').columnName, null)
+})
+
+test('a widget with neither params nor filters bound has boundVia null', () => {
+  const rows = wiringRows({ widgets: BOARD, varName: 'region', paramsByQueryId: PARAMS })
+  assert.equal(rows.find(r => r.id === 'w4').boundVia, null)
 })
 
 // ── dangling params ──────────────────────────────────────────────────────────

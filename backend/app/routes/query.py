@@ -515,6 +515,19 @@ class QueryIn(BaseModel):
         Optional datastore identifier.  When provided together with a
         configured ``DATABASE_URL``, routes the query to the Postgres
         connector instead of the built-in DuckDB demo dataset.
+    filters:
+        Optional dashboard filters, applied WITHOUT requiring the query to
+        declare a matching ``{{param}}`` — unlike ``named_params``, which only
+        works when the registered query already has that parameter.  Each
+        entry is ``{"column": str, "value": Any}``; *value* follows the same
+        convention as an RLS policy value (scalar → equality, list → IN, dict
+        → inequality band). The planner (``app.connectors.planner.plan``)
+        resolves *column* against every scope of the query — including
+        aggregate subqueries the query's own SQL never mentions the column in
+        — via the estate-wide catalog (``app.ai.grounding.build_catalog``).
+        A filter whose column no scope can expose is reported on the
+        ``X-Nubi-Unresolved-Filters`` response header rather than silently
+        doing nothing.
     """
 
     sql: str = ""
@@ -523,6 +536,7 @@ class QueryIn(BaseModel):
     named_params: dict | None = None
     claims: dict | None = None
     datastore_id: str | None = None
+    filters: list[dict] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -888,6 +902,16 @@ async def _resolve_request_plan(
     )
     target_dialect = await _resolve_target_dialect(effective_datastore_id, identity, request)
 
+    # ── Dashboard filters (scope-aware, catalog-backed) ──────────────────────
+    # Resolved here rather than deferred into the thread below: build_catalog()
+    # touches the in-process query registry, which is simplest to call from
+    # the event loop (same place effective_sql/claims are already assembled).
+    filter_table_columns: dict[str, list[str]] | None = None
+    if body.filters:
+        from app.ai.grounding import build_catalog  # noqa: PLC0415
+
+        filter_table_columns = build_catalog()["tables"]
+
     # ── Plan (RLS predicates injected at the AST level) ──────────────────────
     # [LOW event-loop] planner_plan() is pure-Python (sqlglot parse + RLS AST
     # rewrite); offload to a worker thread so the event loop is never blocked.
@@ -898,6 +922,8 @@ async def _resolve_request_plan(
         claims=claims,
         params=effective_params,
         dialect=target_dialect,
+        filters=body.filters,
+        filter_table_columns=filter_table_columns,
     )
 
     # ── Conservative rollup routing (RLS preserved through the rewrite) ──────
@@ -1118,10 +1144,13 @@ async def query(
 
     if cached_bytes is not None:
         # Cache HIT: stream the pre-serialised bytes directly.
+        _hit_headers = {"X-Nubi-Cache": "HIT"}
+        if physical_plan.unresolved_filters:
+            _hit_headers["X-Nubi-Unresolved-Filters"] = ",".join(physical_plan.unresolved_filters)
         return StreamingResponse(
             ipc_stream_from_bytes(cached_bytes),
             media_type=_ARROW_STREAM_MEDIA_TYPE,
-            headers={"X-Nubi-Cache": "HIT"},
+            headers=_hit_headers,
         )
 
     # NOTE: Base-scan fusion (BET 2b) is DISABLED.
@@ -1620,6 +1649,8 @@ async def query(
     _resp_headers = {"X-Nubi-Cache": "MISS"}
     if not _schema_ok:
         _resp_headers["X-Nubi-Schema"] = "MISMATCH"
+    if physical_plan.unresolved_filters:
+        _resp_headers["X-Nubi-Unresolved-Filters"] = ",".join(physical_plan.unresolved_filters)
     return StreamingResponse(
         ipc_stream_from_bytes(full_bytes),
         media_type=_ARROW_STREAM_MEDIA_TYPE,
@@ -1768,8 +1799,10 @@ async def query_render(
     Returns
     -------
     dict
-        ``{sql, params}`` — the rewritten SQL (placeholders only, dialect
-        already applied) and the ordered list of bound values.
+        ``{sql, params, unresolved_filters}`` — the rewritten SQL (placeholders
+        only, dialect already applied), the ordered list of bound values, and
+        any ``body.filters`` columns no scope of the query could expose (see
+        ``QueryIn.filters``).
 
     Raises
     ------
@@ -1778,7 +1811,11 @@ async def query_render(
     """
     resolved = await _resolve_request_plan(body, request, identity)
     plan = resolved.physical_plan
-    return {"sql": plan.sql, "params": list(plan.params)}
+    return {
+        "sql": plan.sql,
+        "params": list(plan.params),
+        "unresolved_filters": list(plan.unresolved_filters),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1822,12 +1859,18 @@ class ParameterizeIn(BaseModel):
         When False (the default) the rewrite is verified and returned as a
         PREVIEW without persisting, so a UI can show the author the exact SQL
         change before they commit to it.
+    with_options:
+        For dropdown subtypes, also derive the query that lists the filter's
+        CHOICES and attach it. Without this a filter can end up correctly wired
+        to its data but with an empty dropdown, which reads as broken. Ignored
+        for subtypes that have no option list (``daterange``, ``text``).
     """
 
     param: str
     column: str
     subtype: str = "multiselect"
     apply: bool = False
+    with_options: bool = True
 
 
 @router.get("/queries/{query_id}/filterable-columns")
@@ -1842,8 +1885,13 @@ async def query_filterable_columns(
     picks from a real list instead of typing a name and hoping. Includes
     columns from nested scopes (a query that aggregates ``region`` away still
     has it available deep down, which is exactly where a filter must go), each
-    flagged with whether it also survives into the query's final output.
+    flagged with whether it also survives into the query's final output. Also
+    includes columns this query never references at all, but that are real
+    columns on one of its base tables per the estate-wide catalog — e.g. an
+    aggregate-only KPI query over ``fin_invoices`` can still be filtered by
+    ``month`` even though it never mentions it.
     """
+    from app.ai.grounding import build_catalog
     from app.errors import AppError as _AppError
     from app.queries.parameterize import filterable_columns
 
@@ -1864,7 +1912,8 @@ async def query_filterable_columns(
     # logging a DB error on every call.
     _ds = cfg.get("datastore_id")
     dialect = await _resolve_target_dialect(None if _ds == _DEMO_ID else _ds, identity, request)
-    return {"columns": filterable_columns(sql, dialect=dialect)}
+    table_columns = build_catalog()["tables"]
+    return {"columns": filterable_columns(sql, dialect=dialect, table_columns=table_columns)}
 
 
 @router.post("/queries/{query_id}/parameterize")
@@ -1895,6 +1944,7 @@ async def parameterize_query(
 
     Returns ``{ok, sql, column_expr, verified, applied, warnings, reason}``.
     """
+    from app.ai.grounding import build_catalog
     from app.errors import AppError as _AppError
     from app.queries.parameterize import parameterize_sql
     from app.routes._org import require_not_embed as _require_not_embed
@@ -1933,12 +1983,14 @@ async def parameterize_query(
         )
 
     dialect = await _resolve_target_dialect(datastore_id, identity, request)
+    table_columns = build_catalog()["tables"]
     result = parameterize_sql(
         original_sql,
         param=body.param,
         column=body.column,
         dialect=dialect,
         subtype=body.subtype,
+        table_columns=table_columns,
     )
     if not result.ok or not result.sql:
         return {
@@ -1950,24 +2002,10 @@ async def parameterize_query(
 
     # ── Verification: execute both, compare ──────────────────────────────────
     async def _execute(sql_text: str, named: dict[str, Any]) -> Any:
-        rendered, positional = resolve_named_params(sql_text, {**named, "vars": {}})
-        plan_obj = await asyncio.to_thread(
-            planner_plan,
-            sql=rendered,
-            claims={"policies": identity.policies},
-            params=positional,
-            dialect=dialect,
+        return await _execute_sql(
+            sql_text, named, dialect=dialect, datastore_id=datastore_id,
+            org_id=org_id, org_err=org_err, repo=repo, identity=identity,
         )
-        connector, _kind, cleanup = await _build_connector_for_plan(
-            plan_obj, datastore_id, org_id, org_err, repo
-        )
-        try:
-            return await asyncio.to_thread(connector.execute, plan_obj)
-        finally:
-            try:
-                cleanup()
-            except Exception:  # noqa: BLE001
-                pass
 
     unset: Any = [] if body.subtype in ("multiselect", "list") else None
     warnings: list[str] = []
@@ -2005,6 +2043,308 @@ async def parameterize_query(
     )
 
 
+async def _execute_sql(
+    sql_text: str,
+    named: dict[str, Any],
+    *,
+    dialect: str,
+    datastore_id: str | None,
+    org_id: str,
+    org_err,
+    repo,
+    identity: VerifiedIdentity,
+) -> Any:
+    """Plan and run *sql_text* through the normal gates, returning an Arrow table.
+
+    Same path as POST /query — named params resolved to positional binds, RLS
+    predicates injected by the planner from the caller's own policies, connector
+    resolved for the org. Author-time helpers verify their output with this so a
+    generated query is checked exactly as a user-run one would be, never with a
+    privileged shortcut.
+    """
+    rendered, positional = resolve_named_params(sql_text, {**named, "vars": {}})
+    plan_obj = await asyncio.to_thread(
+        planner_plan,
+        sql=rendered,
+        claims={"policies": identity.policies},
+        params=positional,
+        dialect=dialect,
+    )
+    connector, _kind, cleanup = await _build_connector_for_plan(
+        plan_obj, datastore_id, org_id, org_err, repo
+    )
+    try:
+        return await asyncio.to_thread(connector.execute, plan_obj)
+    finally:
+        try:
+            cleanup()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+class OptionsQueryIn(BaseModel):
+    """Request body for ``POST /queries/options-query``.
+
+    Attributes
+    ----------
+    table / schema / column:
+        The source of the choices, as picked from the connector's catalog.
+    datastore_id:
+        Which connector to read from. Omit for the built-in demo dataset.
+    name:
+        Display name for the saved query. Defaults to ``"<column> options"``.
+    limit:
+        Cap on distinct values. A dropdown listing a high-cardinality column is
+        not a usable control, and the scan behind it is not free.
+    apply:
+        When False the query is generated and RUN, returning the sample values
+        it produces, but nothing is saved — so the author can see real choices
+        before committing.
+    """
+
+    table: str
+    column: str
+    schema_name: str | None = Field(default=None, alias="schema")
+    datastore_id: str | None = None
+    name: str | None = None
+    limit: int = Field(default=1000, ge=1, le=10000)
+    apply: bool = True
+
+    model_config = {"populate_by_name": True}
+
+
+@router.post("/queries/options-query")
+async def create_options_query(
+    body: OptionsQueryIn,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Build (and optionally save) the query listing a dropdown filter's choices.
+
+    The query picker could only ever PICK. So a filter on a column nobody had
+    already built a lookup for was a dead end inside the editor: leave, write
+    ``SELECT DISTINCT col AS value, col AS label FROM t``, come back, find it,
+    bind it. This is that, as one call.
+
+    Distinct from the same generation that happens during
+    ``POST /queries/{id}/parameterize``: that one INFERS the source by tracing a
+    column back through an existing query, and cannot help when the filter is
+    not yet connected to a widget or when the column is computed everywhere it
+    appears. Here the author names the source.
+
+    The generated SQL is EXECUTED before it is saved and the values it returns
+    come back in the response. A saved query that turns out not to run is worse
+    than an error at the moment of asking, and an author who can see the real
+    choices knows immediately whether they picked the right column.
+    """
+    from app.errors import AppError as _AppError
+    from app.queries.parameterize import options_query_for_table
+    from app.routes._org import require_not_embed as _require_not_embed
+    from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_ID
+
+    _require_not_embed(identity, "create queries")
+
+    repo = get_repo()
+    org_id, org_err = await _resolve_caller_org(identity, repo, request)
+    if not org_id:
+        raise _AppError("forbidden", "No organisation resolved for this caller.", 403)
+
+    datastore_id = None if body.datastore_id == _DEMO_ID else body.datastore_id
+    dialect = await _resolve_target_dialect(datastore_id, identity, request)
+
+    built = options_query_for_table(
+        body.table,
+        body.column,
+        schema=body.schema_name,
+        dialect=dialect,
+        limit=body.limit,
+    )
+    if not built.ok or not built.sql:
+        return {"ok": False, "verified": False, "created": False, "reason": built.reason}
+
+    # ── Verify by running it ────────────────────────────────────────────────
+    try:
+        table_result = await _execute_sql(
+            built.sql, {}, dialect=dialect, datastore_id=datastore_id,
+            org_id=org_id, org_err=org_err, repo=repo, identity=identity,
+        )
+    except Exception as exc:  # noqa: BLE001 — a failed probe means "do not save"
+        return {
+            "ok": False,
+            "verified": False,
+            "created": False,
+            "sql": built.sql,
+            "reason": f"That query could not be run, so it was not saved: {exc}",
+        }
+
+    try:
+        rows = table_result.to_pylist()
+    except Exception:  # noqa: BLE001
+        rows = []
+    sample = [r.get("label", r.get("value")) for r in rows[:20]]
+    warnings: list[str] = []
+    if not rows:
+        warnings.append(
+            f"{body.column!r} has no non-null values in {body.table!r}, so this "
+            "dropdown would be empty."
+        )
+    elif len(rows) >= body.limit:
+        warnings.append(
+            f"Stopped at the {body.limit}-value cap — this column may have too "
+            "many distinct values to be a usable dropdown."
+        )
+
+    result: dict[str, Any] = {
+        "ok": True,
+        "verified": True,
+        "created": False,
+        "sql": built.sql,
+        "source": built.source,
+        "sample": sample,
+        "count": len(rows),
+        "warnings": warnings,
+    }
+    if not body.apply:
+        return result
+
+    # ── De-duplicate, then persist ──────────────────────────────────────────
+    try:
+        for existing in await repo.list("queries", org_id):
+            cfg_existing = existing.get("config") or {}
+            if (cfg_existing.get("sql") or "").strip() == built.sql.strip() and (
+                cfg_existing.get("datastore_id") == datastore_id
+            ):
+                result.update(
+                    id=str(existing["id"]), name=existing.get("name"), created=False
+                )
+                return result
+    except Exception:  # noqa: BLE001 — a failed scan just means we create a new one
+        pass
+
+    name = (body.name or "").strip() or f"{body.column.strip()} options"
+    cfg: dict[str, Any] = {"sql": built.sql, "params": []}
+    if datastore_id:
+        cfg["datastore_id"] = datastore_id
+    try:
+        created = await repo.create(
+            "queries",
+            org_id,
+            created_by=str(identity.user_id),
+            name=name,
+            config=cfg,
+            project_id=await _resolve_project_for_new_query(org_id, request),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {**result, "ok": False, "reason": f"Could not save the query: {exc}"}
+
+    # Resolvable immediately — the picker reads the in-memory registry, and a
+    # query it cannot see is one it will not offer.
+    try:
+        await ensure_persisted_query(str(created["id"]), org_id)
+    except Exception:  # noqa: BLE001 — self-heals on next use
+        pass
+
+    result.update(id=str(created["id"]), name=name, created=True)
+    return result
+
+
+async def _resolve_project_for_new_query(org_id: str, request: Request) -> str | None:
+    """The active project a newly created query should belong to, if any."""
+    try:
+        from app.routes._org import resolve_project_filter as _resolve_project_filter
+
+        return await _resolve_project_filter(org_id, request)
+    except Exception:  # noqa: BLE001 — an unscoped query is still usable
+        return None
+
+
+#: Filter subtypes that present a list of choices and therefore need options.
+_CHOICE_SUBTYPES = ("select", "multiselect", "list")
+
+
+async def _ensure_options_query(
+    body: "ParameterizeIn",
+    original_sql: str,
+    row: dict,
+    repo,
+    org_id: str,
+    identity: VerifiedIdentity,
+    dialect: str,
+    datastore_id: str | None,
+    table_columns: dict[str, list[str]] | None = None,
+) -> dict | None:
+    """Derive, de-duplicate and register the options query for a dropdown.
+
+    Returns a ``{id, name, sql, source, created}`` descriptor, or ``None`` when
+    options are not applicable or could not be derived — never raises. A filter
+    that ends up without an option list is still a working filter (the author
+    can point it at a query by hand); failing the whole parameterize call over
+    it would throw away the part that did succeed.
+    """
+    from app.queries.parameterize import options_query_sql  # noqa: PLC0415
+
+    if body.subtype not in _CHOICE_SUBTYPES:
+        return None
+
+    built = options_query_sql(original_sql, body.column, dialect=dialect, table_columns=table_columns)
+    if not built.ok or not built.sql:
+        return {"ok": False, "reason": built.reason}
+
+    # De-duplicate: adding the same filter to four widgets that share a column
+    # must not leave four identical options queries behind. Match on the exact
+    # generated SQL *and* the datastore — the same text against a different
+    # connector is a different query.
+    try:
+        for existing in await repo.list("queries", org_id):
+            cfg = existing.get("config") or {}
+            if (cfg.get("sql") or "").strip() == built.sql.strip() and cfg.get(
+                "datastore_id"
+            ) == datastore_id:
+                return {
+                    "id": str(existing["id"]),
+                    "name": existing.get("name"),
+                    "sql": built.sql,
+                    "source": built.source,
+                    "created": False,
+                    "ok": True,
+                }
+    except Exception:  # noqa: BLE001 — a failed scan just means we create a new one
+        pass
+
+    name = f"{body.param.replace('_', ' ').strip().capitalize()} options"
+    cfg: dict[str, Any] = {"sql": built.sql, "params": []}
+    if datastore_id:
+        # Choices must be read from the SAME connector as the data they filter.
+        cfg["datastore_id"] = datastore_id
+    try:
+        created = await repo.create(
+            "queries",
+            org_id,
+            created_by=str(identity.user_id),
+            name=name,
+            config=cfg,
+            project_id=row.get("project_id"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"Could not save the options query: {exc}"}
+
+    # Make it resolvable immediately — the editor reads the in-memory registry,
+    # and an options query it cannot see is one the filter cannot use.
+    try:
+        await ensure_persisted_query(str(created["id"]), org_id)
+    except Exception:  # noqa: BLE001 — self-heals on next use
+        pass
+
+    return {
+        "id": str(created["id"]),
+        "name": name,
+        "sql": built.sql,
+        "source": built.source,
+        "created": True,
+        "ok": True,
+    }
+
+
 async def _finish_parameterize(
     body: "ParameterizeIn",
     cfg: dict,
@@ -2022,6 +2362,10 @@ async def _finish_parameterize(
     _execute,
 ) -> dict:
     """Efficacy probe + optional persist for :func:`parameterize_query`."""
+    from app.ai.grounding import build_catalog  # noqa: PLC0415
+
+    table_columns = build_catalog()["tables"]
+
     # Does the filter actually bite? A no-op filter is not a failure (the
     # column may be constant in the current data) but the author should know.
     try:
@@ -2031,14 +2375,39 @@ async def _finish_parameterize(
         pass
 
     if not body.apply:
+        preview = None
+        if body.with_options and body.subtype in _CHOICE_SUBTYPES:
+            from app.queries.parameterize import options_query_sql  # noqa: PLC0415
+
+            built = options_query_sql(
+                cfg.get("sql") or "", body.column, dialect=dialect, table_columns=table_columns
+            )
+            preview = (
+                {"sql": built.sql, "source": built.source, "created": False, "ok": True}
+                if built.ok
+                else {"ok": False, "reason": built.reason}
+            )
         return {
             "ok": True,
             "verified": True,
             "applied": False,
             "sql": result.sql,
             "column_expr": result.column_expr,
+            "options_query": preview if (preview or {}).get("ok") else None,
             "warnings": warnings,
         }
+
+    options: dict | None = None
+    if body.with_options:
+        options = await _ensure_options_query(
+            body, cfg.get("sql") or "", row, repo, org_id, identity,
+            dialect, datastore_id, table_columns=table_columns,
+        )
+        if options is not None and not options.get("ok"):
+            warnings.append(
+                "The filter was added, but its list of choices could not be "
+                f"derived: {options.get('reason')}"
+            )
 
     default_val: Any = [] if body.subtype in ("multiselect", "list") else None
     new_cfg = dict(cfg)
@@ -2049,7 +2418,7 @@ async def _finish_parameterize(
             "type": body.subtype,
             "default": default_val,
             "required": False,
-            "options_query_id": None,
+            "options_query_id": (options or {}).get("id"),
         }
     ]
     updated = await repo.update("queries", org_id, query_id, {"config": new_cfg})
@@ -2080,6 +2449,7 @@ async def _finish_parameterize(
         "applied": True,
         "sql": result.sql,
         "column_expr": result.column_expr,
+        "options_query": options if (options or {}).get("ok") else None,
         "warnings": warnings,
     }
 

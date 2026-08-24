@@ -69,11 +69,22 @@ if str(_BACKEND_DIR) not in sys.path:
 # ---------------------------------------------------------------------------
 
 
-def _list_dashboards() -> list[dict[str, str]]:
-    """Return all registered queries as [{id, name}] dicts.
+def _list_dashboards(
+    name_contains: "str | None" = None,
+    limit: "int | None" = None,
+) -> list[dict[str, str]]:
+    """Return registered queries as [{id, name}] dicts, filtered and capped.
 
     Treats the query registry as the dashboard/query catalogue for MVP.
     No I/O; purely reads the in-process singleton registry.
+
+    Parameters
+    ----------
+    name_contains:
+        Case-insensitive substring matched against the id AND the display name.
+    limit:
+        Max entries to return (default 100, hard cap 1000).  A real registry
+        runs to four figures, which is far past what an agent can read.
 
     Returns
     -------
@@ -83,7 +94,19 @@ def _list_dashboards() -> list[dict[str, str]]:
     from app.queries.registry import get_query_registry
 
     registry = get_query_registry()
-    return [{"id": rq.id, "name": rq.name} for rq in registry.all()]
+    rows = list(registry.all())
+
+    if name_contains:
+        needle = name_contains.casefold()
+        rows = [
+            rq
+            for rq in rows
+            if needle in (rq.id or "").casefold() or needle in (rq.name or "").casefold()
+        ]
+
+    effective_limit = _LIST_DASHBOARDS_DEFAULT_LIMIT if limit is None else int(limit)
+    effective_limit = max(1, min(effective_limit, _LIST_DASHBOARDS_MAX_LIMIT))
+    return [{"id": rq.id, "name": rq.name} for rq in rows[:effective_limit]]
 
 
 def _run_query(query_id: str, limit: int = 100) -> dict[str, Any]:
@@ -304,7 +327,21 @@ def _author_dashboard(question: str) -> dict[str, Any]:
     }
 
 
-def _get_context(q: "str | None" = None, compact: bool = False) -> dict[str, Any]:
+# An unfiltered get_context over a real registry serialises to ~433 KB (1212
+# queries), and list_dashboards to ~101 KB — both blow the context window of
+# the very agent they exist to ground.  Cap by default; callers narrow with `q`
+# / `name_contains` or page past the cap deliberately.
+_CONTEXT_DEFAULT_LIMIT = 50
+_CONTEXT_MAX_LIMIT = 500
+_LIST_DASHBOARDS_DEFAULT_LIMIT = 100
+_LIST_DASHBOARDS_MAX_LIMIT = 1000
+
+
+def _get_context(
+    q: "str | None" = None,
+    compact: bool = False,
+    limit: "int | None" = None,
+) -> dict[str, Any]:
     """Return the single-call authoring catalog (mirrors GET /ai/context).
 
     This is the DISCOVER step of the dashboard-authoring loop: it lists every
@@ -355,6 +392,11 @@ def _get_context(q: "str | None" = None, compact: bool = False) -> dict[str, Any
     else:
         selected = all_queries
 
+    total_matched = len(selected)
+    effective_limit = _CONTEXT_DEFAULT_LIMIT if limit is None else int(limit)
+    effective_limit = max(1, min(effective_limit, _CONTEXT_MAX_LIMIT))
+    selected = selected[:effective_limit]
+
     queries = [_context_query_entry(rq, compact=compact) for rq in selected]
 
     return {
@@ -362,6 +404,9 @@ def _get_context(q: "str | None" = None, compact: bool = False) -> dict[str, Any
         "conventions": _AI_CONTEXT_CONVENTIONS,
         "compact": compact,
         "filtered_by": q,
+        "total_matched": total_matched,
+        "returned": len(queries),
+        "truncated": total_matched > len(queries),
     }
 
 
@@ -1076,12 +1121,22 @@ def _run_async(coro: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 try:
-    from mcp.server.fastmcp import FastMCP as _FastMCP
+    # mcp >= 2.0 renamed the module and the class (mcp.server.fastmcp.FastMCP
+    # -> mcp.server.mcpserver.MCPServer).  The constructor kwargs used below
+    # (name, instructions), the ``.tool(name=, description=)`` decorator and
+    # ``.run(transport="stdio")`` are unchanged across both, so aliasing the
+    # class is the whole port.
+    from mcp.server.mcpserver import MCPServer as _FastMCP
 
     _mcp_available = True
 except ImportError:  # pragma: no cover
-    _mcp_available = False
-    _FastMCP = None  # type: ignore[assignment,misc]
+    try:
+        from mcp.server.fastmcp import FastMCP as _FastMCP  # mcp 1.x
+
+        _mcp_available = True
+    except ImportError:
+        _mcp_available = False
+        _FastMCP = None  # type: ignore[assignment,misc]
 
 
 def _build_mcp_server() -> "_FastMCP":  # type: ignore[return]
@@ -1113,14 +1168,17 @@ def _build_mcp_server() -> "_FastMCP":  # type: ignore[return]
     @server.tool(
         name="list_dashboards",
         description=(
-            "List all registered dashboards and queries in the Nubi query registry. "
-            "Returns an array of {id, name} objects. "
-            "Use the returned id values with run_query."
+            "List registered dashboards and queries in the Nubi query registry. "
+            "Returns an array of {id, name} objects; use the id values with "
+            "run_query. Capped at 100 by default (a real registry holds "
+            "thousands) — narrow with name_contains rather than raising limit."
         ),
     )
-    def list_dashboards() -> list[dict[str, str]]:
+    def list_dashboards(
+        name_contains: "str | None" = None, limit: "int | None" = None
+    ) -> list[dict[str, str]]:
         """List registered dashboards/queries."""
-        return _list_dashboards()
+        return _list_dashboards(name_contains=name_contains, limit=limit)
 
     @server.tool(
         name="run_query",
@@ -1191,12 +1249,17 @@ def _build_mcp_server() -> "_FastMCP":  # type: ignore[return]
             "conventions block. Use this FIRST so you bind widgets to real "
             "query ids and real column names instead of guessing. Pass q=<intent> "
             "to rank+filter to the most relevant queries, and compact=true to "
-            "shrink the payload. Returns {queries, conventions, compact, filtered_by}."
+            "shrink the payload. Capped at 50 queries by default — check "
+            "`truncated`/`total_matched` and narrow with q rather than raising "
+            "limit. Returns {queries, conventions, compact, filtered_by, "
+            "total_matched, returned, truncated}."
         ),
     )
-    def get_context(q: "str | None" = None, compact: bool = False) -> dict[str, Any]:
+    def get_context(
+        q: "str | None" = None, compact: bool = False, limit: "int | None" = None
+    ) -> dict[str, Any]:
         """Return the /ai/context authoring catalog (queries + conventions)."""
-        return _get_context(q, compact)
+        return _get_context(q, compact, limit=limit)
 
     @server.tool(
         name="get_spec_schema",
@@ -1362,6 +1425,41 @@ def get_server() -> "_FastMCP":  # type: ignore[return]
 # ---------------------------------------------------------------------------
 
 
+def _hydrate_registries() -> None:
+    """Load persisted queries + metrics into the in-process registries.
+
+    The FastAPI app does this in its lifespan startup (see ``backend/main.py``:
+    ``init_db`` -> ``load_persisted_queries`` -> ``load_metrics_from_queries``).
+    A bare stdio process never runs that lifespan, so without this the registry
+    holds only the built-in demo seeds — ``list_dashboards`` reported exactly
+    one query against a database with 1212 of them.
+
+    Best-effort by design: this server is meant to work against a checkout with
+    no database at all, so any failure to connect leaves the demo seeds in
+    place and is reported on stderr (never stdout, which carries the JSON-RPC
+    stream) rather than raised.
+    """
+    async def _load() -> "tuple[int, int]":
+        from app.db import init_db  # noqa: PLC0415
+        from app.metrics.registry import load_metrics_from_queries  # noqa: PLC0415
+        from app.queries.registry import load_persisted_queries  # noqa: PLC0415
+
+        await init_db()
+        return await load_persisted_queries(), await load_metrics_from_queries()
+
+    try:
+        queries, metrics = _run_async(_load())
+        print(
+            f"nubi-mcp: hydrated {queries} queries, {metrics} metrics from the database.",
+            file=sys.stderr,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"nubi-mcp: no database reachable ({exc}); serving built-in demo data only.",
+            file=sys.stderr,
+        )
+
+
 def main() -> None:
     """Run the Nubi MCP server over stdio transport.
 
@@ -1372,6 +1470,7 @@ def main() -> None:
     invocation.  Claude Desktop and Claude Code both launch MCP servers this
     way and communicate over stdin/stdout.
     """
+    _hydrate_registries()
     server = get_server()
     server.run(transport="stdio")
 

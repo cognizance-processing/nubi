@@ -650,7 +650,7 @@ class Widget(BaseModel):
         ``ref`` and any non-board-local inline field (``type``, ``query_id``,
         ``metric``, ``chart_type``, ``encoding``, ``props``, ``style``,
         ``subtype``, ``options_query_id``, ``target_var``, ``content``,
-        ``params``, ``source``) are mutually exclusive — setting both is a
+        ``params``, ``filters``, ``source``) are mutually exclusive — setting both is a
         hard validation error (``validate_spec`` step 14). A ``ref`` that
         does not resolve to a live library row is a soft WARNING (mirrors the
         ``query_id`` forward-ref rule) — the resolver degrades to a visible
@@ -794,6 +794,26 @@ class Widget(BaseModel):
         default_factory=dict,
         description=(
             "Named param bindings: {paramName: {ref:'<varName>'} | <literal>}."
+        ),
+    )
+    # ── Column-based filter binding (no {{param}} declaration required) ───────
+    # `params` only works when this widget's query already declares a matching
+    # {{param}} — connecting a filter to a query that doesn't (the common case
+    # on a converted board: 0/1097 queries had params) used to be a dead end
+    # short of rewriting the query's SQL (see app.queries.parameterize). This
+    # binds a filter variable straight to a COLUMN instead: the backend planner
+    # (app.connectors.planner.apply_dashboard_filters) resolves *column* against
+    # every scope of the query at RUNTIME via an estate-wide catalog, including
+    # scopes the query's own SQL never mentions the column in (an aggregate-only
+    # KPI subquery, for instance) — no SQL mutation, no author action beyond
+    # picking the column.
+    filters: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Column-based filter bindings: {varName: 'columnName'}. When "
+            "varName's value changes, this widget's query is filtered on "
+            "columnName via runtime AST injection (POST /query's `filters`), "
+            "independent of whether the query declares a matching {{param}}."
         ),
     )
     # ── DataProvider binding (BET-3, alternative to query_id / metric) ────────
@@ -1281,6 +1301,16 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
                         f"Declared variables: {sorted(declared_var_names) or '[]'}."
                     )
 
+    # ── Step 6c: Widget filters ref validation (hard error, mirrors step 6) ─
+    for widget in spec.widgets:
+        for var_name in widget.filters:
+            if var_name not in declared_var_names:
+                issues.append(
+                    f"Widget {widget.id!r} filters: variable {var_name!r} is not "
+                    f"declared in spec 'variables'. "
+                    f"Declared variables: {sorted(declared_var_names) or '[]'}."
+                )
+
     # ── Step 6b: Tab validation (hard errors — mirror variable-ref rules) ─
     # Duplicate tab ids are a hard error; a widget.tab_id that does not match a
     # declared tab is a hard error (same severity as undeclared {ref} vars).
@@ -1469,6 +1499,8 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
             conflicts.append("content")
         if widget.params:
             conflicts.append("params")
+        if widget.filters:
+            conflicts.append("filters")
         if widget.source is not None:
             conflicts.append("source")
         if conflicts:

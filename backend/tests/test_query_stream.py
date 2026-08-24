@@ -294,6 +294,109 @@ async def test_query_hit_and_miss_produce_identical_valid_arrow(client):
     assert table_miss.equals(table_hit), "MISS and HIT tables differ"
 
 
+# ===========================================================================
+# 3b. Dashboard filters (Layer 3) — POST /query {"filters": [...]}
+# ===========================================================================
+#
+# Unlike named_params (which only works when the query already declares a
+# matching {{param}}), `filters` lets a caller filter by column name without
+# the query ever having been "made filterable" — see
+# app.connectors.planner.apply_dashboard_filters and
+# app.queries.scope_resolve.find_all_filter_targets.
+
+
+@pytest.mark.asyncio
+async def test_filters_narrows_results_without_a_declared_param(client):
+    """A raw ad-hoc query with no {{param}} anywhere is still filterable by a
+    real column, resolved via the estate-wide catalog since `SELECT *` has no
+    projection to match against."""
+    from app.connectors.cache import get_cache
+    get_cache().clear()
+
+    token = await _get_auth_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    resp = await client.post(
+        "/api/v1/query",
+        json={"sql": "SELECT * FROM demo", "filters": [{"column": "active", "value": True}]},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    table = _parse_arrow_ipc(resp.content)
+    assert table.num_rows == 3  # 3 of the 5 demo rows have active = true
+    assert all(table.column("active").to_pylist())
+    assert "x-nubi-unresolved-filters" not in resp.headers
+
+
+@pytest.mark.asyncio
+async def test_filters_with_empty_value_is_a_no_op(client):
+    """An unset filter (None / []) must not touch the query — 'nothing picked'
+    means 'do not filter', not 'match nothing'."""
+    from app.connectors.cache import get_cache
+    get_cache().clear()
+
+    token = await _get_auth_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    resp = await client.post(
+        "/api/v1/query",
+        json={"sql": "SELECT * FROM demo", "filters": [{"column": "active", "value": None}]},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    table = _parse_arrow_ipc(resp.content)
+    assert table.num_rows == 5
+
+
+@pytest.mark.asyncio
+async def test_filters_on_unresolvable_column_is_reported_not_silent(client):
+    """A filter column no scope of the query exposes is surfaced on a response
+    header rather than silently ignored — a widget that claims to honour a
+    filter but quietly doesn't is the exact failure mode this guards against."""
+    from app.connectors.cache import get_cache
+    get_cache().clear()
+
+    token = await _get_auth_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    resp = await client.post(
+        "/api/v1/query",
+        json={
+            "sql": "SELECT * FROM demo",
+            "filters": [{"column": "no_such_column_anywhere", "value": "x"}],
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    table = _parse_arrow_ipc(resp.content)
+    assert table.num_rows == 5  # untouched — the bad filter did not apply
+    assert resp.headers.get("x-nubi-unresolved-filters") == "no_such_column_anywhere"
+
+
+@pytest.mark.asyncio
+async def test_render_reports_unresolved_filters(client):
+    """POST /query/render surfaces the same unresolved-filters list as a
+    preview, without executing anything."""
+    token = await _get_auth_token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    resp = await client.post(
+        "/api/v1/query/render",
+        json={
+            "sql": "SELECT * FROM demo",
+            "filters": [
+                {"column": "active", "value": True},
+                {"column": "no_such_column_anywhere", "value": "x"},
+            ],
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "active" in body["sql"]
+    assert body["unresolved_filters"] == ["no_such_column_anywhere"]
+
+
 @pytest.mark.asyncio
 async def test_cache_stats_hits_after_hit(client):
     """GET /_cache/stats → hits >= 1 after a cache HIT."""

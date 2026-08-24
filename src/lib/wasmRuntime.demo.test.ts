@@ -10,6 +10,8 @@
  *   - A queryId absent from the demo query map → server path (POST /api/v1/query)
  *   - opts.isDemo === true → always local path (even without a query-map hit)
  *   - namedParams present → always server path (parameterised queries go to server)
+ *   - filters present → always server path (the local DuckDB-WASM path has no
+ *     equivalent of the scope-aware runtime filter injection)
  *   - Query map fetch failure → graceful fallback to server path
  *
  * These tests are self-contained (no browser / no DuckDB-WASM / no network):
@@ -33,17 +35,21 @@ import assert from 'node:assert/strict'
  * 'server' otherwise.
  *
  * @param {string} queryId
- * @param {{ namedParams?: object, isDemo?: boolean }} opts
+ * @param {{ namedParams?: object, filters?: Array, isDemo?: boolean }} opts
  * @param {Record<string, string> | null} demoQueryMap  — null = fetch failed / timed out
  * @returns {'demo_local' | 'server'}
  */
 function routingDecision(queryId, opts, demoQueryMap) {
   const namedParams = opts?.namedParams
+  const filters = opts?.filters
   const isDemo = opts?.isDemo
 
-  // Parameterised queries always go to the server for RLS / template resolution.
+  // Parameterised queries / dashboard filters always go to the server — the
+  // local DuckDB-WASM path has no RLS/template resolution and no equivalent
+  // of the scope-aware runtime filter injection.
   const hasParams = namedParams && Object.keys(namedParams).length > 0
-  if (hasParams) return 'server'
+  const hasFilters = Array.isArray(filters) && filters.length > 0
+  if (hasParams || hasFilters) return 'server'
 
   if (!queryId) return 'server'
 
@@ -99,6 +105,24 @@ test('empty namedParams ({}) does not block demo route', () => {
   const map = { 'abc-123': 'SELECT * FROM sales' }
   // An empty namedParams object has zero keys → hasParams is false → demo path allowed
   assert.equal(routingDecision('abc-123', { namedParams: {} }, map), 'demo_local')
+})
+
+test('filters present → always server route (Layer 3 dashboard filters)', () => {
+  const map = { 'abc-123': 'SELECT * FROM sales' }
+  assert.equal(
+    routingDecision('abc-123', { filters: [{ column: 'region', value: 'ZA' }], isDemo: true }, map),
+    'server',
+    'filters overrides isDemo flag',
+  )
+  assert.equal(
+    routingDecision('abc-123', { filters: [{ column: 'region', value: 'ZA' }] }, map),
+    'server',
+  )
+})
+
+test('empty filters ([]) does not block demo route', () => {
+  const map = { 'abc-123': 'SELECT * FROM sales' }
+  assert.equal(routingDecision('abc-123', { filters: [] }, map), 'demo_local')
 })
 
 test('query map fetch failure (null) → server route', () => {

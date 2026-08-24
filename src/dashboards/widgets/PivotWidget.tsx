@@ -22,7 +22,7 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
-import { useResolvedParams } from '../VariableStore.jsx'
+import { useResolvedParams, useResolvedFilters } from '../VariableStore.jsx'
 import WidgetError from '../../components/app/WidgetError.jsx'
 
 const AGGS = {
@@ -84,13 +84,14 @@ function fmtNum(v) {
 }
 
 export default function PivotWidget({ widget }) {
-  const { query_id, encoding = {}, props: wProps = {}, params: widgetParams } = widget
+  const { query_id, encoding = {}, props: wProps = {}, params: widgetParams, filters: widgetFilters } = widget
   const rowCol = encoding.rows || ''
   const colCol = encoding.cols || ''
   const valCol = encoding.value || ''
   const agg = wProps.agg || 'sum'
 
   const resolvedParams = useResolvedParams(widgetParams)
+  const resolvedFilters = useResolvedFilters(widgetFilters)
 
   const [table, setTable] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -106,9 +107,12 @@ export default function PivotWidget({ widget }) {
       setError(null)
       try {
         const hasParams = Object.keys(resolvedParams).length > 0
+        const hasFilters = resolvedFilters.length > 0
         const { table: t, error: queryError } = await runArrowQueryById(
           query_id,
-          hasParams ? { namedParams: resolvedParams } : undefined,
+          (hasParams || hasFilters)
+            ? { namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined }
+            : undefined,
         )
         if (cancelled) return
         // Failed query → real reason, no pivot. Never substitute rows.
@@ -127,7 +131,7 @@ export default function PivotWidget({ widget }) {
     fetchData()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query_id, JSON.stringify(resolvedParams), retryEpoch])
+  }, [query_id, JSON.stringify(resolvedParams), JSON.stringify(resolvedFilters), retryEpoch])
 
   const pivot = useMemo(() => {
     if (!table || !rowCol || !colCol) return null

@@ -85,7 +85,7 @@ const CHART_ICONS = {
 }
 import { GridCanvas } from '../dashboards/grid/index.js'
 import { get, post, put, listRegisteredQueries, uploadImage, uploadImageFromUrl, resolveImageUrl } from '../lib/api.js'
-import { elementToPDF, widgetToCsv } from '../lib/exports.js'
+import { elementToPDF, elementToPNG, widgetToCsv } from '../lib/exports.js'
 import ChartWidget from '../dashboards/widgets/ChartWidget.jsx'
 import KpiWidget from '../dashboards/widgets/KpiWidget.jsx'
 import TableWidget from '../dashboards/widgets/TableWidget.jsx'
@@ -2055,9 +2055,11 @@ function WidgetCardFallback({ widget }) {
 }
 
 // ---------------------------------------------------------------------------
-// WidgetExportButton — per-widget export (PNG / PDF capture the rendered
-// tile; CSV pulls this widget's rows from the same GET /boards/:id/export.json
-// the whole-dashboard ExportShareMenu already uses, filtered to one entry).
+// WidgetExportButton — per-widget export. PNG / PDF capture the rendered tile
+// through lib/domCapture (same engine as the whole-dashboard export, so charts
+// come out crisp and the hover toolbar stays out of the shot); CSV pulls this
+// widget's rows from the same GET /boards/:id/export.json the whole-dashboard
+// ExportShareMenu uses, filtered to one entry.
 // ---------------------------------------------------------------------------
 
 function widgetExportName(widget) {
@@ -2100,12 +2102,7 @@ function WidgetExportButton({ widget, boardId }) {
     try {
       const el = node()
       if (!el) throw new Error('Nothing to capture yet.')
-      const { default: html2canvas } = await import('html2canvas')
-      const canvas = await html2canvas(el, {
-        backgroundColor: null, scale: 2, useCORS: true, logging: false,
-        ignoreElements: (n) => Boolean(n.closest?.('[data-widget-toolbar]')),
-      })
-      canvas.toBlob(blob => blob && _downloadBlob(`${widgetExportName(widget)}.png`, blob))
+      await elementToPNG(el, `${widgetExportName(widget)}.png`)
     } catch (e) { setError(e.message || 'PNG export failed.') } finally { setBusy(null) }
   }
 
@@ -2115,7 +2112,7 @@ function WidgetExportButton({ widget, boardId }) {
       const el = node()
       if (!el) throw new Error('Nothing to capture yet.')
       await elementToPDF(el, `${widgetExportName(widget)}.pdf`, {
-        ignoreElements: (n) => Boolean(n.closest?.('[data-widget-toolbar]')),
+        title: widget.props?.label || widget.props?.title || widget.type,
       })
     } catch (e) { setError(e.message || 'PDF export failed.') } finally { setBusy(null) }
   }
@@ -3959,12 +3956,21 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
     { id: 'board',  Icon: LayoutGrid,   mobileSheet: 'board',   label: 'Dashboard',  title: 'Dashboard background, grid & variables', ariaLabel: 'Dashboard panel' },
     { id: 'tabs',   Icon: Heading,      mobileSheet: 'tabs',    label: 'Tabs',       title: 'Tab bar & per-tab style',   ariaLabel: 'Tabs panel' },
     { id: 'chat',   Icon: MessageSquare,mobileSheet: 'chat',    label: 'Chat',       title: 'AI Chat',                   ariaLabel: 'Chat panel' },
+    // Not a docked side panel like the others — opens the full-screen filters
+    // authoring slide-over (filtersOpen state, below). This is the ONLY entry
+    // point for it: the old route-level FILTERS button that used to dispatch
+    // `nubi:open-filters` was removed as dead chrome, and nothing else in the
+    // editor calls setFiltersOpen(true) — without this button a drawer-placed
+    // filter (common on boards with many filters, kept off the canvas on
+    // purpose) has no way to be selected and configured at all.
+    { id: 'filters', Icon: FilterIcon,  mobileSheet: null,      label: 'Filters',    title: 'Manage dashboard filters',  ariaLabel: 'Filters panel' },
   ]
   const panelToggles = (compact = false) => (
     <div className={compact ? 'flex flex-col gap-1' : 'flex items-center gap-0.5'} data-testid="editor-panel-toggles">
       {PANEL_SEGMENTS.map(seg => {
-        const isActiveDesktop = rightPanel === seg.id && !rightCollapsed
-        const isActiveMobile = mobileSheet === seg.mobileSheet
+        const isFilters = seg.id === 'filters'
+        const isActiveDesktop = isFilters ? filtersOpen : (rightPanel === seg.id && !rightCollapsed)
+        const isActiveMobile = isFilters ? filtersOpen : mobileSheet === seg.mobileSheet
         return (
           <button
             key={seg.id}
@@ -3973,6 +3979,14 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
             aria-label={seg.ariaLabel}
             aria-pressed={isActiveDesktop || isActiveMobile}
             onClick={() => {
+              // Filters is a full-screen slide-over, not a docked side panel —
+              // it doesn't participate in the rightPanel/mobileSheet toggle at all.
+              if (isFilters) {
+                setFiltersOpen(true)
+                setPreview(false)
+                if (compact) setMobileMenu(false)
+                return
+              }
               // Desktop/tablet: toggle RHS sidebar
               if (window.innerWidth >= 768) {
                 if (rightPanel === seg.id && !rightCollapsed) {

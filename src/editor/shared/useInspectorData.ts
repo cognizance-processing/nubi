@@ -183,8 +183,16 @@ export function useMetricsList() {
 // changed.
 // ---------------------------------------------------------------------------
 
-/** @type {{ paramsById: Map<string, any[]>, nameById: Map<string, string>, loaded: boolean }} */
-let _paramsIndex: { paramsById: Map<string, any[]>, nameById: Map<string, string>, loaded: boolean } = { paramsById: new Map(), nameById: new Map(), loaded: false }
+type ParamsIndex = {
+  paramsById: Map<string, any[]>
+  nameById: Map<string, string>
+  datastoreById: Map<string, string>
+  loaded: boolean
+}
+
+let _paramsIndex: ParamsIndex = {
+  paramsById: new Map(), nameById: new Map(), datastoreById: new Map(), loaded: false,
+}
 let _paramsPromise: Promise<void> | null = null
 const _paramsListeners = new Set<() => void>()
 
@@ -199,12 +207,17 @@ function _loadParamsIndex() {
     .then(rows => {
       const paramsById = new Map()
       const nameById = new Map()
+      const datastoreById = new Map()
       for (const row of Array.isArray(rows) ? rows : []) {
         if (!row?.id) continue
         paramsById.set(row.id, Array.isArray(row.params) ? row.params : [])
         if (row.name) nameById.set(row.id, row.name)
+        // Carried so a caller can answer "which connector is this board's data
+        // on?" without a second registry read — the options-query builder
+        // preselects it rather than defaulting everyone to the demo dataset.
+        if (row.datastore_id) datastoreById.set(row.id, row.datastore_id)
       }
-      _emitParamsIndex({ paramsById, nameById, loaded: true })
+      _emitParamsIndex({ paramsById, nameById, datastoreById, loaded: true })
     })
     .catch(() => {
       // A registry read that fails must not break the inspector: an empty index
@@ -228,6 +241,8 @@ function _subscribeParamsIndex(listener) {
 
 /**
  * Declared params for every registered query, keyed by query id.
+ *
+ * Also carries `nameById` and `datastoreById` for the same rows.
  *
  * `paramsById.get(id)` returns `undefined` while the registry is still loading
  * or for a query the caller cannot see — which callers must treat as "unknown",

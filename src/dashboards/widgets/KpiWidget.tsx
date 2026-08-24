@@ -46,7 +46,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { runMetricQuery } from '../../lib/metricRuntime.js'
-import { useResolvedParams } from '../VariableStore.jsx'
+import { useResolvedParams, useResolvedFilters } from '../VariableStore.jsx'
 import EChart from '../../viz/EChart.jsx'
 import { applySignal } from '../../viz/signals.js'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
@@ -148,7 +148,7 @@ function sparkOption(values) {
  * When absent the legacy query_id / metric path is used unchanged.
  */
 export default function KpiWidget({ widget, providerTable = null }) {
-  const { query_id, encoding = {}, props: wProps = {}, params: widgetParams, metric } = widget
+  const { query_id, encoding = {}, props: wProps = {}, params: widgetParams, filters: widgetFilters, metric } = widget
   const valueCol = encoding.value || encoding.y || encoding.x || ''
   const compareCol = encoding.compare || ''
   const sparkCol = encoding.spark || ''
@@ -166,6 +166,7 @@ export default function KpiWidget({ widget, providerTable = null }) {
   // Resolve widget params against the variable store. Re-renders (and re-queries)
   // whenever any referenced variable changes. Widgets with no params get {}.
   const resolvedParams = useResolvedParams(widgetParams)
+  const resolvedFilters = useResolvedFilters(widgetFilters)
 
   // Board-level refresh epoch for auto-refresh polling.
   const refreshEpoch = useRefreshEpoch()
@@ -238,11 +239,14 @@ export default function KpiWidget({ widget, providerTable = null }) {
         // Otherwise the existing query_id path is used EXACTLY as before
         // (resolved params threaded as { namedParams }; empty {} is a no-op).
         const hasParams = Object.keys(resolvedParams).length > 0
+        const hasFilters = resolvedFilters.length > 0
         const { table, error: queryError } = metric
           ? await runMetricQuery(metric)
           : await runArrowQueryById(
               query_id,
-              hasParams ? { namedParams: resolvedParams } : undefined,
+              (hasParams || hasFilters)
+                ? { namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined }
+                : undefined,
             )
         if (cancelled) return
         // Failed query → the real reason, not a headline number we invented.
@@ -264,7 +268,7 @@ export default function KpiWidget({ widget, providerTable = null }) {
   // a stable dependency so the effect only re-fires when the actual values differ.
   // refreshEpoch increments on board auto-refresh ticks.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query_id, JSON.stringify(metric), valueCol, compareCol, sparkCol, JSON.stringify(resolvedParams), refreshEpoch, providerTable, retryEpoch])
+  }, [query_id, JSON.stringify(metric), valueCol, compareCol, sparkCol, JSON.stringify(resolvedParams), JSON.stringify(resolvedFilters), refreshEpoch, providerTable, retryEpoch])
 
   const delta = useMemo(
     () => (compareCol ? computeDelta(value, compareValue, deltaFormat) : null),

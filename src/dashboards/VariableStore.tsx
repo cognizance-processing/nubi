@@ -53,7 +53,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 // Multiselect value-shape helpers from Track F — imported here so resolveParams
 // can call them directly (no re-implementation) and re-exported so callers can
 // interrogate raw variable values without importing from the inputs/ layer.
-import { isExclude, valuesOf, modeOf, normMulti } from './inputs/index.js'
+import { isExclude, valuesOf, modeOf, normMulti, resolveDateRange } from './inputs/index.js'
 export { isExclude, valuesOf, modeOf, normMulti }
 // Cascading-filter dependency graph (Wave 4 §W4-G). Used to refire dependent
 // filter-option-queries when an upstream variable changes (country → city).
@@ -381,6 +381,93 @@ export function useResolvedParams(widgetParams) {
     () => resolveParams(widgetParams, variables),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [JSON.stringify(widgetParams), variables]
+  )
+}
+
+/**
+ * Resolve a widget's column-based filter bindings (`widget.filters`) against
+ * the current variable values, into the shape POST /query's `filters` field
+ * expects: `[{column, value}, ...]`.
+ *
+ * Unlike `resolveParams` (which requires the query to already declare a
+ * matching `{{param}}`), this is the no-SQL-mutation path: the backend
+ * planner resolves *column* against every scope of the query at runtime (see
+ * `app.connectors.planner.apply_dashboard_filters`), including scopes the
+ * query's own SQL never mentions the column in.
+ *
+ * A variable with no value yet, or an "all" / empty-include multiselect
+ * value, is OMITTED entirely — "nothing picked" must mean "don't touch this
+ * query", exactly like `resolveParams`'s array pass-through. Exclude-mode
+ * produces `{not_in: [...]}` rather than being approximated as an include
+ * list, which would silently show the wrong rows.
+ *
+ * @param {Record<string, string>} widgetFilters  {varName: 'columnName'}
+ * @param {Record<string, unknown>} variables
+ * @returns {Array<{column: string, value: unknown}>}
+ */
+export function resolveFilters(
+  widgetFilters: Record<string, string> | undefined,
+  variables: Record<string, any>,
+): Array<{ column: string; value: unknown }> {
+  if (!widgetFilters || typeof widgetFilters !== 'object') return []
+  if (!variables || typeof variables !== 'object') variables = {}
+
+  const out: Array<{ column: string; value: unknown }> = []
+  for (const [varName, column] of Object.entries(widgetFilters)) {
+    if (typeof column !== 'string' || !column) continue
+    const rawValue = variables[varName]
+    if (rawValue === undefined || rawValue === null) continue
+
+    if (Array.isArray(rawValue)) {
+      if (rawValue.length === 0) continue // nothing selected — no-op, not "match nothing"
+      out.push({ column, value: rawValue })
+      continue
+    }
+    if (typeof rawValue === 'object' && ('mode' in rawValue || 'values' in rawValue)) {
+      const normed = normMulti(rawValue)
+      if (normed.mode === 'all') continue
+      if (normed.mode === 'exclude') {
+        if (normed.values.length > 0) out.push({ column, value: { not_in: normed.values } })
+        continue
+      }
+      if (normed.values.length === 0) continue
+      out.push({ column, value: normed.values })
+      continue
+    }
+    if (typeof rawValue === 'object' && ('from' in rawValue || 'to' in rawValue || 'preset' in rawValue)) {
+      // Date range: resolve a relative preset ({preset:'last_30d'}) to concrete
+      // ISO dates the SAME way the picker does, rather than sending an object
+      // the backend's range-predicate builder wouldn't recognize any key of
+      // (silently producing no predicate at all). Both bounds are INCLUSIVE —
+      // resolvePreset's `to` is the last included calendar day (e.g. "today"
+      // resolves to {from: today, to: today}), so `lte` is what matches what
+      // the picker's label promises; an exclusive `lt` would drop the last day.
+      const { from, to } = resolveDateRange(rawValue)
+      if (!from && !to) continue // unset — no-op, not "match nothing"
+      const range: Record<string, string> = {}
+      if (from) range.gte = from
+      if (to) range.lte = to
+      out.push({ column, value: range })
+      continue
+    }
+    out.push({ column, value: rawValue })
+  }
+  return out
+}
+
+/**
+ * Hook counterpart of `resolveFilters` — mirrors `useResolvedParams`.
+ *
+ * @param {Record<string, string>} widgetFilters
+ * @returns {Array<{column: string, value: unknown}>}
+ */
+export function useResolvedFilters(widgetFilters) {
+  const variables = useContext(VariableValuesContext)
+  if (!variables) throw new Error('useResolvedFilters must be used inside <VariableProvider>')
+  return useMemo(
+    () => resolveFilters(widgetFilters, variables),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(widgetFilters), variables]
   )
 }
 

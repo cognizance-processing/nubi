@@ -7,7 +7,8 @@
  *                                    Safe to unit-test in Node with no DOM.
  *   downloadCSV(filename, csv)       Browser-only: triggers a file download.
  *   chartToPNG(echartsInstance, fn)  Browser-only: ECharts getDataURL → download.
- *   elementToPDF(domEl, filename)    Browser-only: html2canvas → jsPDF → download.
+ *   elementToPNG(domEl, filename)    Browser-only: domCapture → download.
+ *   elementToPDF(domEl, filename)    Browser-only: domCapture → jsPDF → download.
  *
  * Usage (per-widget)
  * ------------------
@@ -20,14 +21,16 @@
  *   //      obtained via echarts.getInstanceByDom(domElement).
  *   chartToPNG(echartsInstance, 'chart.png')
  *
- *   // PDF: pass the widget's root DOM element (the div wrapping the whole widget card).
- *   elementToPDF(widgetDomEl, 'dashboard.pdf')
+ *   // PNG / PDF: pass the root DOM element (the div wrapping the whole widget card).
+ *   // Both route through lib/domCapture, which is where the html2canvas
+ *   // workarounds live — see that file before changing capture behaviour.
+ *   elementToPDF(widgetDomEl, 'dashboard.pdf', { title: 'My board' })
  *
  * Dependencies
  * ------------
  *   papaparse  ^5   (CSV serialisation)
- *   jspdf      ^2   (PDF generation)
- *   html2canvas ^1  (DOM → canvas rasterisation)
+ *   jspdf      ^4   (PDF generation)
+ *   lib/domCapture  (DOM → canvas rasterisation)
  */
 
 import Papa from 'papaparse'
@@ -146,50 +149,127 @@ export function chartToPNG(
 }
 
 // ---------------------------------------------------------------------------
-// elementToPDF — browser-only, html2canvas + jsPDF
+// elementToPDF / elementToPNG — browser-only, built on lib/domCapture
 // ---------------------------------------------------------------------------
 
+/** A4 in points, and the breathing room around the artwork. */
+const PAGE = { w: 595.28, h: 841.89 }
+const MARGIN = 32
+const HEADER_H = 26
+const FOOTER_H = 18
+
 /**
- * Rasterise a DOM element with html2canvas then embed it into a PDF page
- * (jsPDF, A4 landscape) and trigger a download.
+ * Decide how a capture of `imgW` x `imgH` device pixels sits on a page whose
+ * usable area is `contentW` x `contentH` points.
  *
- * The page dimensions are computed from the element's bounding box so the
- * content fills the PDF without letterboxing.
+ * Two ways to lay the artwork out: fill the page width and spill onto more
+ * pages, or shrink until the whole thing fits on one. A board only a little
+ * taller than a page reads far better whole than split across a page and a
+ * sliver, so we only paginate once fitting would shrink it past readability.
  *
- * @param {HTMLElement} domEl     The root DOM element to capture.
- * @param {string}      filename  Suggested filename (e.g. 'dashboard.pdf').
- * @param {object}      [canvasOpts]  Extra html2canvas options (e.g. `ignoreElements`
- *                      to exclude overlay chrome like a hover toolbar from the capture).
- * @returns {Promise<void>}
+ * Pure, and exported for tests.
  */
-export async function elementToPDF(domEl, filename = 'dashboard.pdf', canvasOpts = {}) {
-  const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
-    import('html2canvas'),
+export function planPdfLayout(imgW, imgH, contentW, contentH) {
+  const widthScale = contentW / imgW
+  const pageScale = Math.min(widthScale, contentH / imgH)
+  const onePage = pageScale >= widthScale * 0.6
+
+  const ptPerPx = onePage ? pageScale : widthScale
+  const sliceH = onePage ? imgH : Math.max(1, Math.floor(contentH / ptPerPx))
+  return {
+    ptPerPx,
+    sliceH,
+    pages: onePage ? 1 : Math.max(1, Math.ceil(imgH / sliceH)),
+    drawW: imgW * ptPerPx,
+  }
+}
+
+/**
+ * Capture a DOM element and download it as a PNG.
+ *
+ * @param domEl     The root DOM element to capture.
+ * @param filename  Suggested filename (e.g. 'dashboard.png').
+ * @param opts      Capture options — see lib/domCapture.
+ */
+export async function elementToPNG(domEl, filename = 'dashboard.png', opts = {}) {
+  const { captureToPngBlob } = await import('./domCapture.js')
+  _triggerDownload(await captureToPngBlob(domEl, opts), filename)
+}
+
+/**
+ * Capture a DOM element and download it as a PDF.
+ *
+ * The page is A4, oriented to match the capture's own aspect so a wide
+ * dashboard gets a wide page. A board that fits on one page — or nearly does —
+ * is scaled to fit it whole; a genuinely long one keeps full width and is
+ * sliced across further pages rather than shrunk until it is unreadable. Each
+ * page carries the dashboard title and the capture date, plus a page counter
+ * when there is more than one.
+ *
+ * @param domEl     The root DOM element to capture.
+ * @param filename  Suggested filename (e.g. 'dashboard.pdf').
+ * @param opts      `title` for the running header, plus lib/domCapture options.
+ */
+export async function elementToPDF(domEl, filename = 'dashboard.pdf', opts: any = {}) {
+  const { title, ...captureOpts } = opts
+  const [{ captureElement }, { jsPDF }] = await Promise.all([
+    import('./domCapture.js'),
     import('jspdf'),
   ])
 
-  const canvas = await html2canvas(domEl, {
-    scale: 2,
-    useCORS: true,
-    logging: false,
-    ...canvasOpts,
-  })
+  const canvas = await captureElement(domEl, captureOpts)
+  const landscape = canvas.width >= canvas.height
+  const pageW = landscape ? PAGE.h : PAGE.w
+  const pageH = landscape ? PAGE.w : PAGE.h
 
-  const imgData = canvas.toDataURL('image/png')
-  const imgW = canvas.width
-  const imgH = canvas.height
+  const contentW = pageW - MARGIN * 2
+  const contentH = pageH - MARGIN * 2 - HEADER_H - FOOTER_H
+  const { ptPerPx, sliceH, pages, drawW } = planPdfLayout(canvas.width, canvas.height, contentW, contentH)
+  // Centre it when shrinking left room on either side.
+  const drawX = MARGIN + (contentW - drawW) / 2
 
-  // Choose orientation based on aspect ratio
-  const orientation = imgW >= imgH ? 'l' : 'p'
+  const pdf = new jsPDF({ orientation: landscape ? 'l' : 'p', unit: 'pt', format: [pageW, pageH] })
+  const heading = title || filename.replace(/\.pdf$/i, '')
+  const stamp = new Date().toLocaleString()
 
-  const pdf = new jsPDF({
-    orientation,
-    unit: 'px',
-    format: [imgW / 2, imgH / 2],   // device-pixels → CSS-pixels
-    hotfixes: ['px_scaling'],
-  })
+  const slice = document.createElement('canvas')
+  const sctx = slice.getContext('2d')
 
-  pdf.addImage(imgData, 'PNG', 0, 0, imgW / 2, imgH / 2)
+  for (let i = 0; i < pages; i++) {
+    if (i > 0) pdf.addPage([pageW, pageH], landscape ? 'l' : 'p')
+
+    const srcY = i * sliceH
+    const srcH = Math.min(sliceH, canvas.height - srcY)
+    slice.width = canvas.width
+    slice.height = srcH
+    sctx.clearRect(0, 0, slice.width, slice.height)
+    sctx.drawImage(canvas, 0, srcY, canvas.width, srcH, 0, 0, canvas.width, srcH)
+
+    pdf.setFontSize(11)
+    pdf.setTextColor(31, 41, 55)
+    pdf.text(heading, MARGIN, MARGIN + 11)
+    pdf.setFontSize(8)
+    pdf.setTextColor(140, 148, 160)
+    pdf.text(stamp, pageW - MARGIN, MARGIN + 11, { align: 'right' })
+
+    pdf.addImage(
+      slice.toDataURL('image/png'),
+      'PNG',
+      drawX,
+      MARGIN + HEADER_H,
+      drawW,
+      srcH * ptPerPx,
+      undefined,
+      'FAST',
+    )
+
+    if (pages > 1) {
+      pdf.setFontSize(8)
+      pdf.setTextColor(140, 148, 160)
+      pdf.text(`${i + 1} / ${pages}`, pageW / 2, pageH - MARGIN + 4, { align: 'center' })
+    }
+  }
+
   pdf.save(filename)
 }
 

@@ -244,13 +244,46 @@ def _tool_get_schema(
     return result
 
 
-def _tool_list_queries(claims: dict[str, Any]) -> dict[str, Any]:
-    """Return all registered queries (id, name, sql summary, params)."""
+# A mature org's registry runs to four figures (MacMobile: 1212 queries, which
+# serialised to ~224 KB in one call).  Listing it whole is unusable for an
+# agent, so the tool paginates and filters; `total` and `has_more` keep the
+# caller honest about what it is NOT seeing.
+_LIST_QUERIES_DEFAULT_LIMIT = 100
+_LIST_QUERIES_MAX_LIMIT = 1000
+
+
+def _tool_list_queries(
+    claims: dict[str, Any],
+    name_contains: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Return a page of registered queries (id, name, params).
+
+    Filtered by *name_contains* (case-insensitive substring match against both
+    the query id and its display name) when given, then paginated.
+    """
     from app.queries.registry import get_query_registry  # noqa: PLC0415
 
     registry = get_query_registry()
+    all_queries = list(registry.all())
+
+    if name_contains:
+        needle = name_contains.casefold()
+        all_queries = [
+            rq
+            for rq in all_queries
+            if needle in (rq.id or "").casefold() or needle in (rq.name or "").casefold()
+        ]
+
+    total = len(all_queries)
+    effective_limit = _LIST_QUERIES_DEFAULT_LIMIT if limit is None else int(limit)
+    effective_limit = max(1, min(effective_limit, _LIST_QUERIES_MAX_LIMIT))
+    start = max(0, int(offset))
+    page = all_queries[start : start + effective_limit]
+
     queries = []
-    for rq in registry.all():
+    for rq in page:
         queries.append(
             {
                 "id": rq.id,
@@ -267,7 +300,14 @@ def _tool_list_queries(claims: dict[str, Any]) -> dict[str, Any]:
                 ],
             }
         )
-    return {"queries": queries}
+    return {
+        "queries": queries,
+        "total": total,
+        "offset": start,
+        "returned": len(queries),
+        "has_more": start + len(queries) < total,
+        **({"name_contains": name_contains} if name_contains else {}),
+    }
 
 
 def _tool_generate_sql(
@@ -430,13 +470,23 @@ def _tool_list_filterable_columns(query_id: str, claims: dict[str, Any]) -> dict
     Includes columns that live only inside subqueries — a query that rolls up
     ``region`` before its output still has ``region`` available deep down,
     which is precisely where a filter has to go for it to mean anything.
+    Also includes columns that are never referenced by this particular query
+    at all, but are real columns on one of its base tables per the
+    estate-wide catalog (e.g. an aggregate-only KPI query over ``fin_invoices``
+    can still be filtered by ``month`` even though it never mentions it).
     """
+    from app.ai.grounding import build_catalog  # noqa: PLC0415
     from app.queries.parameterize import filterable_columns  # noqa: PLC0415
 
     row, _ = _resolve_query_row(query_id, claims)
     cfg = row.get("config") or {}
     dialect = _dialect_for_datastore(cfg.get("datastore_id"), claims)
-    return {"columns": filterable_columns(cfg.get("sql") or "", dialect=dialect)}
+    table_columns = build_catalog()["tables"]
+    return {
+        "columns": filterable_columns(
+            cfg.get("sql") or "", dialect=dialect, table_columns=table_columns
+        )
+    }
 
 
 def _dialect_for_datastore(datastore_id: str | None, claims: dict[str, Any]) -> str:
@@ -482,6 +532,7 @@ def _tool_add_filter_param(
     match is refused rather than saved, because the failure this guards
     against is a query that still runs but quietly returns different numbers.
     """
+    from app.ai.grounding import build_catalog  # noqa: PLC0415
     from app.connectors.planner import plan as _plan, resolve_named_params  # noqa: PLC0415
     from app.queries.parameterize import parameterize_sql  # noqa: PLC0415
     from app.repos.provider import get_repo  # noqa: PLC0415
@@ -501,7 +552,11 @@ def _tool_add_filter_param(
         return {"ok": False, "applied": False, "reason": f"This query already declares a {param!r} parameter."}
 
     dialect = _dialect_for_datastore(datastore_id, claims)
-    result = parameterize_sql(original_sql, param=param, column=column, dialect=dialect, subtype=subtype)
+    table_columns = build_catalog()["tables"]
+    result = parameterize_sql(
+        original_sql, param=param, column=column, dialect=dialect, subtype=subtype,
+        table_columns=table_columns,
+    )
     if not result.ok or not result.sql:
         return {"ok": False, "applied": False, "verified": False, "reason": result.reason}
 
@@ -593,12 +648,23 @@ def _tool_add_filter_param(
     }
 
 
+# Row-cap for the tool path.  An agent/MCP caller consumes results as JSON in a
+# context window, so an uncapped SELECT is a denial-of-service against the
+# caller (a 10k-row demo query serialises to ~874 KB).  `rows` is capped;
+# `row_count` deliberately keeps its original meaning (rows the query
+# PRODUCED) so callers that report it stay correct, with `returned_row_count`
+# and `truncated` describing the sample.
+_RUN_QUERY_DEFAULT_LIMIT = 1000
+_RUN_QUERY_MAX_LIMIT = 10000
+
+
 def _tool_run_query(
     claims: dict[str, Any],
     query_id: str | None = None,
     sql: str | None = None,
     named_params: dict[str, Any] | None = None,
     datastore_id: str | None = None,
+    limit: int | None = None,
 ) -> dict[str, Any]:
     """Execute a query and return the result rows.
 
@@ -667,6 +733,12 @@ def _tool_run_query(
         # having supplied named_params at all.
         if rq.params:
             # Build the resolved dict (apply defaults for missing optional params).
+            # Mirrors POST /query's _resolve_request_plan exactly, INCLUDING the
+            # trailing else: an optional param with no supplied value and a
+            # default of None (the common "nothing picked yet" case) must still
+            # get an explicit None entry — omitting the key entirely leaves it
+            # completely UNDEFINED for Jinja's {% if %}, which raises rather
+            # than treating it as falsy.
             _named_params = named_params or {}
             resolved: dict[str, Any] = {}
             for p in rq.params:
@@ -680,6 +752,8 @@ def _tool_run_query(
                         f"Required param {p.name!r} was not supplied.",
                         400,
                     )
+                else:
+                    resolved[p.name] = None
             resolved_sql, positional_params = resolve_named_params(resolved_sql, resolved)
     elif sql is not None:
         # SECURITY: ad-hoc SQL requires author:sql scope — same gate as query.py.
@@ -740,10 +814,23 @@ def _tool_run_query(
         connector = _get_demo_connector()
         arrow_table = connector.execute(physical_plan)
 
-    # Convert to JSON-serialisable rows.
+    # Convert to JSON-serialisable rows, capped for the caller's context.
     columns = arrow_table.schema.names
-    rows = _json_safe_rows(arrow_table.to_pylist())
-    return {"rows": rows, "row_count": len(rows), "columns": columns}
+    all_rows = _json_safe_rows(arrow_table.to_pylist())
+    total = len(all_rows)
+
+    effective_limit = _RUN_QUERY_DEFAULT_LIMIT if limit is None else int(limit)
+    effective_limit = max(1, min(effective_limit, _RUN_QUERY_MAX_LIMIT))
+    rows = all_rows[:effective_limit]
+
+    return {
+        "rows": rows,
+        # Unchanged meaning: how many rows the query produced.
+        "row_count": total,
+        "returned_row_count": len(rows),
+        "truncated": total > len(rows),
+        "columns": columns,
+    }
 
 
 def _seed_demo_table(connector: Any) -> None:
@@ -1145,6 +1232,147 @@ def _tool_save_dashboard(
     return {"id": row["id"], "name": row.get("name"), "org_id": str(org_id), "saved": True}
 
 
+# ---------------------------------------------------------------------------
+# Board read / update
+#
+# ``save_dashboard`` could only ever CREATE.  Without these an agent can author
+# a new board but cannot see or revise the ones that already exist, which makes
+# every edit a fresh duplicate.  All three go through ``repo`` with the org
+# from *claims*, so they inherit the same org scoping ``save_dashboard`` has —
+# a caller can never read or write another org's board.
+# ---------------------------------------------------------------------------
+
+
+def _board_summary(row: dict[str, Any]) -> dict[str, Any]:
+    """Return the COMPACT listing shape for a board row (never the full spec).
+
+    A board spec runs to tens of KB; returning 47 of them would blow the
+    caller's context for what is meant to be a directory lookup.  Callers
+    follow up with ``get_dashboard`` for the one they actually want.
+    """
+    config = row.get("config") or {}
+    spec = config.get("spec") or {}
+    widgets = spec.get("widgets") or []
+    return {
+        "id": row.get("id"),
+        "name": row.get("name"),
+        "widget_count": len(widgets),
+        "title": spec.get("title") or spec.get("name"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def _tool_list_dashboards(
+    claims: dict[str, Any],
+    name_contains: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List the caller's saved boards (compact — no specs)."""
+    from app.errors import AppError  # noqa: PLC0415
+    from app.repos.provider import get_repo  # noqa: PLC0415
+
+    org_id = claims.get("org")
+    if not org_id:
+        raise AppError("invalid_tool_input", "Caller claims are missing org id.", 400)
+
+    rows = _run_sync(get_repo().list(resource="boards", org_id=str(org_id)))
+
+    if name_contains:
+        needle = name_contains.casefold()
+        rows = [r for r in rows if needle in (r.get("name") or "").casefold()]
+
+    total = len(rows)
+    effective_limit = 100 if limit is None else max(1, min(int(limit), 500))
+    start = max(0, int(offset))
+    page = rows[start : start + effective_limit]
+
+    return {
+        "dashboards": [_board_summary(r) for r in page],
+        "total": total,
+        "offset": start,
+        "returned": len(page),
+        "has_more": start + len(page) < total,
+    }
+
+
+def _tool_get_dashboard(claims: dict[str, Any], board_id: str) -> dict[str, Any]:
+    """Return one board's full DashboardSpec, org-scoped."""
+    from app.errors import AppError  # noqa: PLC0415
+    from app.repos.provider import get_repo  # noqa: PLC0415
+
+    org_id = claims.get("org")
+    if not org_id:
+        raise AppError("invalid_tool_input", "Caller claims are missing org id.", 400)
+
+    row = _run_sync(get_repo().get(resource="boards", org_id=str(org_id), id=board_id))
+    if row is None:
+        raise AppError("board_not_found", f"No board with id {board_id!r}.", 404)
+
+    config = row.get("config") or {}
+    return {
+        "id": row.get("id"),
+        "name": row.get("name"),
+        "spec": config.get("spec") or {},
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def _tool_update_dashboard(
+    claims: dict[str, Any],
+    board_id: str,
+    spec: dict[str, Any] | None = None,
+    name: str | None = None,
+) -> dict[str, Any]:
+    """Update an EXISTING board's spec and/or name, in place.
+
+    The spec is validated before the write exactly as ``save_dashboard``
+    validates: an invalid spec is refused and nothing is persisted, so a bad
+    edit can never destroy a working board.
+    """
+    from app.dashboards.spec import validate_spec  # noqa: PLC0415
+    from app.errors import AppError  # noqa: PLC0415
+    from app.repos.provider import get_repo  # noqa: PLC0415
+
+    # Same boundary as save_dashboard: a read-only embed session must never
+    # mutate a board.
+    if claims.get("kind", "access") != "access":
+        raise AppError(
+            "insufficient_scope",
+            "Embed/restricted tokens cannot update dashboards via the AI tool path.",
+            403,
+        )
+    org_id = claims.get("org")
+    if not org_id:
+        raise AppError("invalid_tool_input", "Caller claims are missing org id.", 400)
+    if spec is None and name is None:
+        raise AppError("invalid_tool_input", "Provide spec and/or name to update.", 400)
+
+    repo = get_repo()
+    existing = _run_sync(repo.get(resource="boards", org_id=str(org_id), id=board_id))
+    if existing is None:
+        raise AppError("board_not_found", f"No board with id {board_id!r}.", 404)
+
+    fields: dict[str, Any] = {}
+    if name is not None:
+        fields["name"] = name
+    if spec is not None:
+        result_spec, issues = validate_spec(spec)
+        if result_spec is None:
+            return {"valid": False, "issues": issues, "saved": False}
+        # Preserve any other keys the board's config carries.
+        config = dict(existing.get("config") or {})
+        config["spec"] = result_spec.model_dump()
+        fields["config"] = config
+
+    row = _run_sync(
+        repo.update(resource="boards", org_id=str(org_id), id=board_id, fields=fields)
+    )
+    if row is None:
+        raise AppError("board_not_found", f"No board with id {board_id!r}.", 404)
+    return {"id": row.get("id"), "name": row.get("name"), "saved": True, "valid": True}
+
+
 def _tool_upload_image(
     claims: dict[str, Any],
     data_base64: str | None = None,
@@ -1230,7 +1458,30 @@ _SCHEMA_GET_SCHEMA: dict[str, Any] = {
 
 _SCHEMA_LIST_QUERIES: dict[str, Any] = {
     "type": "object",
-    "properties": {},
+    "properties": {
+        "name_contains": {
+            "type": "string",
+            "description": (
+                "Case-insensitive substring matched against each query's id AND "
+                "display name. Use this first on a large registry — listing "
+                "every query is rarely what you want."
+            ),
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": _LIST_QUERIES_MAX_LIMIT,
+            "description": (
+                f"Max queries to return (default {_LIST_QUERIES_DEFAULT_LIMIT}, "
+                f"hard cap {_LIST_QUERIES_MAX_LIMIT})."
+            ),
+        },
+        "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Index to start from; page with `has_more` + `total`.",
+        },
+    },
     "additionalProperties": False,
 }
 
@@ -1367,7 +1618,69 @@ _SCHEMA_RUN_QUERY: dict[str, Any] = {
                 "datastore)."
             ),
         },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": _RUN_QUERY_MAX_LIMIT,
+            "description": (
+                f"Max rows to RETURN (default {_RUN_QUERY_DEFAULT_LIMIT}, hard "
+                f"cap {_RUN_QUERY_MAX_LIMIT}). `row_count` still reports how "
+                "many rows the query produced; `truncated` says whether `rows` "
+                "is a sample. Push aggregation into SQL rather than raising "
+                "this to read a whole table."
+            ),
+        },
     },
+    "additionalProperties": False,
+}
+
+_SCHEMA_LIST_DASHBOARDS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "name_contains": {
+            "type": "string",
+            "description": "Case-insensitive substring filter on the board name.",
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "description": "Max boards to return (default 100).",
+        },
+        "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Index to start from; page with `has_more` + `total`.",
+        },
+    },
+    "additionalProperties": False,
+}
+
+_SCHEMA_GET_DASHBOARD: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "board_id": {"type": "string", "description": "Id of the board to fetch."},
+    },
+    "required": ["board_id"],
+    "additionalProperties": False,
+}
+
+_SCHEMA_UPDATE_DASHBOARD: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "board_id": {"type": "string", "description": "Id of the board to update."},
+        "spec": {
+            "type": "object",
+            "description": (
+                "Replacement DashboardSpec. Validated before the write — an "
+                "invalid spec is refused and the existing board is left "
+                "untouched. Fetch the current spec with get_dashboard first."
+            ),
+            "additionalProperties": True,
+        },
+        "name": {"type": "string", "description": "New board name."},
+    },
+    "required": ["board_id"],
     "additionalProperties": False,
 }
 
@@ -1513,8 +1826,16 @@ def _make_registry() -> dict[str, ToolDef]:
     ) -> dict[str, Any]:
         return _tool_get_schema(claims, table_pattern=table_pattern, limit=limit)
 
-    def _wrap_list_queries(claims: dict[str, Any], **_kw: Any) -> dict[str, Any]:
-        return _tool_list_queries(claims)
+    def _wrap_list_queries(
+        claims: dict[str, Any],
+        name_contains: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        **_kw: Any,
+    ) -> dict[str, Any]:
+        return _tool_list_queries(
+            claims, name_contains=name_contains, limit=limit, offset=offset
+        )
 
     def _wrap_generate_sql(
         claims: dict[str, Any],
@@ -1559,6 +1880,7 @@ def _make_registry() -> dict[str, ToolDef]:
         sql: str | None = None,
         named_params: dict[str, Any] | None = None,
         datastore_id: str | None = None,
+        limit: int | None = None,
         **_kw: Any,
     ) -> dict[str, Any]:
         return _tool_run_query(
@@ -1567,6 +1889,7 @@ def _make_registry() -> dict[str, ToolDef]:
             sql=sql,
             named_params=named_params,
             datastore_id=datastore_id,
+            limit=limit,
         )
 
     def _wrap_list_metrics(claims: dict[str, Any], **_kw: Any) -> dict[str, Any]:
@@ -1613,6 +1936,31 @@ def _make_registry() -> dict[str, ToolDef]:
     ) -> dict[str, Any]:
         return _tool_save_dashboard(spec, name, claims)
 
+    def _wrap_list_dashboards(
+        claims: dict[str, Any],
+        name_contains: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        **_kw: Any,
+    ) -> dict[str, Any]:
+        return _tool_list_dashboards(
+            claims, name_contains=name_contains, limit=limit, offset=offset
+        )
+
+    def _wrap_get_dashboard(
+        claims: dict[str, Any], board_id: str, **_kw: Any
+    ) -> dict[str, Any]:
+        return _tool_get_dashboard(claims, board_id)
+
+    def _wrap_update_dashboard(
+        claims: dict[str, Any],
+        board_id: str,
+        spec: dict[str, Any] | None = None,
+        name: str | None = None,
+        **_kw: Any,
+    ) -> dict[str, Any]:
+        return _tool_update_dashboard(claims, board_id, spec=spec, name=name)
+
     def _wrap_upload_image(
         claims: dict[str, Any],
         data_base64: str | None = None,
@@ -1642,7 +1990,11 @@ def _make_registry() -> dict[str, ToolDef]:
         ),
         ToolDef(
             name="list_queries",
-            description="List all registered queries with their ids, names, and parameter descriptors.",
+            description=(
+                "List registered queries with their ids, names, and parameter "
+                "descriptors. Paginated: filter with name_contains and page "
+                "with limit/offset — check `total` and `has_more`."
+            ),
             json_schema=_SCHEMA_LIST_QUERIES,
             fn=_wrap_list_queries,
         ),
@@ -1735,6 +2087,38 @@ def _make_registry() -> dict[str, ToolDef]:
             ),
             json_schema=_SCHEMA_SAVE_DASHBOARD,
             fn=_wrap_save_dashboard,
+        ),
+        ToolDef(
+            name="list_dashboards",
+            description=(
+                "List the saved boards in the caller's org (compact: id, name, "
+                "widget_count — NOT the specs). Start here to find an existing "
+                "board instead of creating a duplicate. Paginated: filter with "
+                "name_contains, page with limit/offset."
+            ),
+            json_schema=_SCHEMA_LIST_DASHBOARDS,
+            fn=_wrap_list_dashboards,
+        ),
+        ToolDef(
+            name="get_dashboard",
+            description=(
+                "Fetch one saved board's full DashboardSpec by id. Use this "
+                "before update_dashboard so you edit the real spec rather than "
+                "rewriting it from scratch."
+            ),
+            json_schema=_SCHEMA_GET_DASHBOARD,
+            fn=_wrap_get_dashboard,
+        ),
+        ToolDef(
+            name="update_dashboard",
+            description=(
+                "Update an EXISTING board's spec and/or name in place. The spec "
+                "is validated first — an invalid spec is refused and the board "
+                "is left untouched. Use this to revise a board; save_dashboard "
+                "always creates a new one."
+            ),
+            json_schema=_SCHEMA_UPDATE_DASHBOARD,
+            fn=_wrap_update_dashboard,
         ),
         ToolDef(
             name="upload_image",

@@ -16,6 +16,12 @@ GitPython>=3.1  # git-sync push/pull (app/git/sync.py, lazily imported); require
 # Connector / query pipeline (M1)
 jinja2>=3.1  # SQL templating in app/connectors/planner.py (non-lazy import)
 sqlglot>=25.0
+# MCP SDK — used BOTH by app/ai/mcp.py (Nubi calling out to external MCP
+# servers registered per-org) and by mcp/nubi_mcp/server.py (the local
+# stdio server).  Was previously declared only in mcp/requirements.txt,
+# so the backend image shipped without it and every outbound MCP call
+# failed closed.  Both call sites support 1.x and 2.x.
+mcp>=1.0
 pyarrow>=14.0
 duckdb>=1.0
 pandas>=2.0  # DataFrame-native Python flow cells (app/flows/registry.py _handle_python)

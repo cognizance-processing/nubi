@@ -11,27 +11,51 @@
  * box still exists for power users, but it is demoted below the browser and
  * collapsed by default.
  *
- * Props (unchanged — this stays a drop-in for existing callers):
+ * Props (additive — this stays a drop-in for existing callers):
  *   value    string                                — current query_id
  *   onChange (id)=>void
  *   extraIds (string | {id, name})[]  — additional known queries to list
  *            (beyond the registry). A bare string is shown by its id; an
  *            {id, name} entry is shown by name (falling back to id).
+ *   allowCreate  bool     — offer to BUILD a query here rather than only pick
+ *            one. Off by default: a picker can only meaningfully generate a
+ *            list-of-choices query, which is what a filter's options field
+ *            wants and what a chart's data field does not.
+ *   createSuggestion {table, column, schema}|null — seed for the builder.
+ *   createDatastoreId string|null — connector to preselect in the builder.
+ *   onCreated (row)=>void — the created query, for callers that want to say
+ *            what happened. `onChange` is called with its id regardless.
  */
 
-import { useEffect, useRef, useState } from 'react'
-import { FileCode2, ChevronDown, AlertTriangle } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { FileCode2, ChevronDown, AlertTriangle, Plus } from 'lucide-react'
 import Badge from '../../components/ui/Badge.jsx'
 import { inputCls } from './inspectorPrimitives.jsx'
 import { QueryBrowser, useQueryRegistry } from './QueryBrowser.jsx'
+import { OptionsQueryBuilder } from './OptionsQueryBuilder.jsx'
 
-export function QueryPicker({ value, onChange, extraIds = [] }) {
+export function QueryPicker({
+  value, onChange, extraIds = [],
+  allowCreate = false, createSuggestion = null, createDatastoreId = null,
+  onCreated = undefined,
+}) {
   const [open, setOpen] = useState(false)
   const [rawOpen, setRawOpen] = useState(false)
+  const [building, setBuilding] = useState(false)
+  // Queries created from here during this session. The registry is read once on
+  // mount, so without these a query built seconds ago is one the picker has
+  // never heard of: it renders as a bare UUID and trips the "unresolved value"
+  // branch that force-opens the raw-id box. Feeding them back through
+  // `extraIds` names them immediately and needs no refetch.
+  const [justCreated, setJustCreated] = useState([])
   const containerRef = useRef(null)
   const triggerRef = useRef(null)
 
-  const { entries, loading, strictEnv } = useQueryRegistry(extraIds, value)
+  const knownIds = useMemo(
+    () => [...extraIds, ...justCreated],
+    [extraIds, justCreated],
+  )
+  const { entries, loading, strictEnv } = useQueryRegistry(knownIds, value)
   const currentRow = entries.find(e => e.id === value)
   // Unresolved: a value is set but nothing (registry, extraIds, or the demo
   // list) recognises it. Auto-reveal the raw-id box so the binding is still
@@ -52,6 +76,21 @@ export function QueryPicker({ value, onChange, extraIds = [] }) {
   const handleSelect = (id) => {
     onChange(id)
     setOpen(false)
+    triggerRef.current?.focus()
+  }
+
+  const startBuilding = () => {
+    setOpen(false)
+    setBuilding(true)
+  }
+
+  const handleCreated = (row) => {
+    setBuilding(false)
+    setJustCreated(prev => (
+      prev.some(r => r.id === row.id) ? prev : [...prev, { id: row.id, name: row.name }]
+    ))
+    onChange(row.id)
+    onCreated?.(row)
     triggerRef.current?.focus()
   }
 
@@ -132,16 +171,40 @@ export function QueryPicker({ value, onChange, extraIds = [] }) {
         )}
       </div>
 
+      {/* Build one instead of hunting for one that may not exist. */}
+      {allowCreate && !building && (
+        <div>
+          <button
+            type="button"
+            onClick={startBuilding}
+            data-testid="query-picker-create"
+            className="text-[10px] text-primary/90 hover:text-primary transition-colors focus-visible:outline-none focus-visible:underline inline-flex items-center gap-1"
+          >
+            <Plus size={10} /> Build one from a column
+          </button>
+        </div>
+      )}
+      {allowCreate && building && (
+        <OptionsQueryBuilder
+          datastoreId={createDatastoreId}
+          suggestion={createSuggestion}
+          onCreated={handleCreated}
+          onCancel={() => setBuilding(false)}
+        />
+      )}
+
       {/* Raw-id fallback — demoted: collapsed unless the caller opts in, or
           the current value doesn't resolve to anything the browser knows. */}
       {!rawOpen ? (
-        <button
-          type="button"
-          onClick={() => setRawOpen(true)}
-          className="text-[10px] text-muted/60 hover:text-muted transition-colors focus-visible:outline-none focus-visible:underline"
-        >
-          Enter a raw query ID instead
-        </button>
+        <div>
+          <button
+            type="button"
+            onClick={() => setRawOpen(true)}
+            className="text-[10px] text-muted/60 hover:text-muted transition-colors focus-visible:outline-none focus-visible:underline"
+          >
+            Enter a raw query ID instead
+          </button>
+        </div>
       ) : (
         <div className="flex items-center gap-1.5">
           <input

@@ -14,16 +14,22 @@
  *     - Multi-column table with mixed types
  *     - Empty table (0 rows) → header only
  *
- *   DOM-only functions (downloadCSV, chartToPNG, elementToPDF) are NOT tested
- *   here; they require a browser environment and are tested manually / via
- *   Playwright e2e.
+ *   planPdfLayout — pure page-fitting maths behind elementToPDF.
+ *     - A board that fits outright stays on one page
+ *     - A board a little too tall is shrunk to fit rather than split
+ *     - A genuinely long board keeps full width and paginates
+ *     - Slices cover the whole image with no gap
+ *
+ *   DOM-only functions (downloadCSV, chartToPNG, elementToPDF, elementToPNG)
+ *   are NOT tested here; they require a browser environment and are tested
+ *   manually / via Playwright e2e.
  */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { tableFromArrays } from 'apache-arrow'
-import { arrowTableToCSV } from './exports.js'
+import { arrowTableToCSV, planPdfLayout } from './exports.js'
 
 // ---------------------------------------------------------------------------
 // Helper: parse a CSV string back into rows for easy assertions
@@ -196,4 +202,48 @@ test('arrowTableToCSV — column names with spaces are quoted in output', () => 
     'Column name with space must appear in the header')
   const rows = parseCSV(csv)
   assert.equal(rows.length, 3, '1 header + 2 data rows')
+})
+
+// ---------------------------------------------------------------------------
+// planPdfLayout — page fitting
+// ---------------------------------------------------------------------------
+
+// A4 landscape minus the margins/header/footer elementToPDF reserves.
+const CONTENT_W = 777.89
+const CONTENT_H = 487.28
+
+test('planPdfLayout — a capture that already fits stays on one page', () => {
+  const plan = planPdfLayout(2000, 1000, CONTENT_W, CONTENT_H)
+  assert.equal(plan.pages, 1)
+  // Limited by width, so it is drawn at full content width.
+  assert.ok(Math.abs(plan.drawW - CONTENT_W) < 0.01)
+})
+
+test('planPdfLayout — a slightly-too-tall board is shrunk to fit, not split', () => {
+  // 2814x2152 is the real "Retail Sales Overview" capture: taller than one
+  // page at full width, but only just.
+  const plan = planPdfLayout(2814, 2152, CONTENT_W, CONTENT_H)
+  assert.equal(plan.pages, 1)
+  assert.ok(plan.drawW < CONTENT_W, 'shrunk below full width')
+  assert.ok(plan.sliceH * plan.ptPerPx <= CONTENT_H + 0.01, 'fits the page height')
+})
+
+test('planPdfLayout — a genuinely long board paginates at full width', () => {
+  const plan = planPdfLayout(2814, 12000, CONTENT_W, CONTENT_H)
+  assert.ok(plan.pages > 1)
+  assert.ok(Math.abs(plan.drawW - CONTENT_W) < 0.01, 'keeps full width')
+  assert.ok(plan.sliceH * plan.ptPerPx <= CONTENT_H + 0.01, 'each slice fits a page')
+})
+
+test('planPdfLayout — slices cover the whole capture with no gap', () => {
+  const height = 12000
+  const plan = planPdfLayout(2814, height, CONTENT_W, CONTENT_H)
+  assert.ok(plan.sliceH * plan.pages >= height, 'last slice reaches the bottom')
+  assert.ok(plan.sliceH * (plan.pages - 1) < height, 'no wholly-empty trailing page')
+})
+
+test('planPdfLayout — a very tall capture never asks for a zero-height slice', () => {
+  const plan = planPdfLayout(100, 1_000_000, CONTENT_W, CONTENT_H)
+  assert.ok(plan.sliceH >= 1)
+  assert.ok(Number.isFinite(plan.pages))
 })
