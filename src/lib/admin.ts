@@ -8,7 +8,7 @@
  * the admin pages can render an explicit error state instead of crashing.
  */
 
-import { get, put } from './api.js'
+import { get, post, put } from './api.js'
 
 /** Build a ?search=&limit=&offset= query string. */
 function listQs({ search = '', limit = 50, offset = 0 } = {}) {
@@ -89,6 +89,22 @@ export async function getAdminOrg(id) {
     console.warn('[admin] getAdminOrg failed:', cause.message)
     return null
   }
+}
+
+/**
+ * POST /admin/orgs/{id}/enter
+ *
+ * Grants the calling superadmin membership in this org (idempotent — a
+ * no-op if already a member) so it appears in the regular org switcher and
+ * can be opened exactly like any other org. Errors propagate (unlike the
+ * GET helpers above) so the caller can show real failure feedback rather
+ * than silently doing nothing.
+ *
+ * @param {string} id
+ * @returns {Promise<{ org_id: string, role: string, granted_membership: boolean }>}
+ */
+export async function enterAdminOrg(id) {
+  return post(`/admin/orgs/${id}/enter`)
 }
 
 /**

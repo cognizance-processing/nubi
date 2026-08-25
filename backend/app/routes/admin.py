@@ -6,6 +6,9 @@ GET /admin/overview      Platform counts + 30-day signup/login series.
 GET /admin/users         Paginated user list with last login / location / orgs.
 GET /admin/orgs          Paginated org list with member/project counts.
 GET /admin/orgs/{id}     One org with its members and projects.
+POST /admin/orgs/{id}/enter  Grant the calling superadmin membership in this
+                              org (idempotent) so they can open it like any
+                              regular member. Audit-logged.
 GET /admin/geo/summary   Login-event country rollup (lazily geolocates IPs).
 
 Security
@@ -27,6 +30,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from app import geo as geo_module
+from app.audit import record_audit
 from app.auth.superadmin import require_superadmin
 from app.db import execute, fetch, fetchrow
 from app.errors import AppError
@@ -335,6 +339,70 @@ async def admin_org_detail(
             for p in project_rows
         ],
     }
+
+
+@router.post("/orgs/{org_id}/enter")
+async def admin_enter_org(
+    org_id: str,
+    admin: dict[str, Any] = Depends(require_superadmin),
+) -> dict[str, Any]:
+    """Grant the calling superadmin membership in *org_id* so they can open
+    it in the regular app exactly like any member — the org switcher and
+    every other route in the app are strictly ``org_members``-scoped (see
+    ``GET /orgs`` in ``app/routes/orgs.py``); superadmin status alone does
+    not bypass that, by design. This is the one supported way to cross that
+    boundary, and it does so by making the crossing real (an actual
+    membership row) rather than adding a parallel bypass that every other
+    route would need to know about.
+
+    Idempotent: a superadmin who is already a member keeps their existing
+    role — this never downgrades (or upgrades) an existing membership, it
+    only fills the gap when there is none. Granted as ``member`` (not
+    ``owner``/``admin``) — full read/write access like any teammate, but
+    without owner-only powers (deleting the org, managing billing, changing
+    other members' roles).
+
+    Every call is audit-logged via ``app.audit.record_audit`` (action
+    ``admin.org_enter``), whether or not it actually inserts a row, so
+    there is a durable record of which superadmin looked at which org and
+    when — this is a real cross-tenant access grant, not a local-dev-only
+    convenience.
+    """
+    org = await fetchrow("SELECT o.id, o.name FROM orgs o WHERE o.id = $1::uuid", org_id)
+    if org is None:
+        raise AppError("not_found", "Org not found.", 404)
+
+    admin_id = str(admin["id"])
+    existing = await fetchrow(
+        "SELECT om.role FROM org_members om WHERE om.org_id = $1::uuid AND om.user_id = $2::uuid",
+        org_id, admin_id,
+    )
+    if existing is None:
+        # ON CONFLICT DO NOTHING: org_members' PK is (org_id, user_id) — a
+        # near-simultaneous double-click loses the race harmlessly instead
+        # of raising a duplicate-key error.
+        await execute(
+            "INSERT INTO org_members (org_id, user_id, role) VALUES ($1::uuid, $2::uuid, $3) "
+            "ON CONFLICT (org_id, user_id) DO NOTHING",
+            org_id, admin_id, "member",
+        )
+        granted_membership = True
+        role = "member"
+    else:
+        granted_membership = False
+        role = existing["role"]
+
+    await record_audit(
+        org_id=org_id,
+        actor_user_id=admin_id,
+        actor_kind="access",
+        action="admin.org_enter",
+        resource_type="org",
+        resource_id=org_id,
+        summary={"org_name": org["name"], "granted_membership": granted_membership, "role": role},
+    )
+
+    return {"org_id": org_id, "role": role, "granted_membership": granted_membership}
 
 
 @router.get("/geo/summary")
