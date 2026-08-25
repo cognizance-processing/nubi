@@ -103,7 +103,7 @@ from __future__ import annotations
 import html
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -692,6 +692,16 @@ class Widget(BaseModel):
         ),
     )
     query_id: str = Field(default="", description="Backing query id (empty for text widgets).")
+
+    @field_validator("query_id", mode="before")
+    @classmethod
+    def _query_id_none_to_empty(cls, v: Any) -> Any:
+        # The filter-authoring UI writes an explicit `query_id: null` on a
+        # filter widget (it binds via `options_query_id` instead) rather than
+        # omitting the key — plain-`str` rejects that at parse time, which
+        # took down `spec_for_render` (and therefore the server-rendered
+        # thumbnail/PDF pipeline) for every board with a wired-up filter.
+        return "" if v is None else v
     metric: MetricBinding | None = Field(
         default=None,
         description=(
