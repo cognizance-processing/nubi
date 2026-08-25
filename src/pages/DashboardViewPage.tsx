@@ -44,6 +44,7 @@ import { ArrowLeft, Pencil, Eye, Rocket, Sun, Moon, ChevronRight, LayoutDashboar
 import { get } from '../lib/api.js'
 import DashboardView from '../dashboards/DashboardView.jsx'
 import SpecRenderer from '../dashboards/SpecRenderer.jsx'
+import { backgroundToCss } from '../dashboards/widgetHtml.js'
 import EditorShell from '../editor/EditorShell.jsx'
 import { useUi } from '../contexts/UiContext.jsx'
 import { useEnv } from '../contexts/EnvContext.jsx'
@@ -375,6 +376,14 @@ export default function DashboardViewPage({ edit = false }) {
   // Viewers (read-only) cannot edit — hide the mode switch entirely.
   const canWrite = useCanWrite()
 
+  // Live-mode custom background (spec.background) is propagated up to this
+  // page's own chrome (not just SpecRenderer's inner box) so a board with a
+  // custom background paints edge-to-edge instead of leaving a seam of the
+  // default theme background around a padded, rounded inner card — see
+  // SpecRenderer's `flushBackground` prop, which this page sets in tandem so
+  // SpecRenderer stops drawing its own (now redundant) padded/rounded box.
+  const { theme: pageTheme } = useTheme()
+
   // The board fetch is org-scoped (api.js sends X-Org-Id from the active
   // workspace), so the load effect below must wait for the workspace to be
   // restored — see the comment there.
@@ -414,6 +423,18 @@ export default function DashboardViewPage({ edit = false }) {
 
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
+
+  // Same computation SpecRenderer uses internally for its own root box —
+  // mirrored here so the page chrome around it (outer page root + content
+  // wrapper) can paint the identical background, closing the seam. Only
+  // meaningful for renderMode === 'spec' (legacy `html` boards have no
+  // `spec.background` concept).
+  const themeAdaptOn = spec?.themeAdapt !== 'off'
+  const pageBgStyle = useMemo(
+    () => (renderMode === 'spec' ? backgroundToCss(spec?.background, themeAdaptOn ? { theme: pageTheme } : undefined) : undefined),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [renderMode, JSON.stringify(spec?.background), themeAdaptOn, pageTheme],
+  )
 
   // ── Draft vs live ─────────────────────────────────────────────────────────
   // Live mode serves the version pinned to the project's default environment.
@@ -793,7 +814,10 @@ export default function DashboardViewPage({ edit = false }) {
       {/* ── Live mode ──────────────────────────────────────────────────────
           Renders the SAVED spec, never the editor's in-memory draft — that's
           what makes "Live" an honest answer to "what do my viewers see?". */}
-      <div className={isEdit ? 'hidden' : 'max-w-[110rem] w-full mx-auto px-4 sm:px-6 lg:px-8 py-6'}>
+      <div
+        className={isEdit ? 'hidden' : 'flex-1 max-w-[110rem] w-full mx-auto px-4 sm:px-6 lg:px-8 py-6'}
+        style={!isEdit ? pageBgStyle : undefined}
+      >
 
       {/* Fallback / error notice */}
       {error && (
@@ -822,6 +846,7 @@ export default function DashboardViewPage({ edit = false }) {
             onVariableChange={handleVariableChange}
             activeTabId={activeTabId}
             onTabChange={handleTabChange}
+            flushBackground={Boolean(pageBgStyle)}
           />
         </div>
       )}

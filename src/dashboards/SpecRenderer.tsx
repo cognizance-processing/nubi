@@ -429,6 +429,7 @@ function SpecRendererBody({
   onTabChange,
   onCrossFilter,
   editMode,
+  flushBackground,
 }) {
   // Theme-adaptation ctx for styleToCss/backgroundToCss (see widgetHtml.js /
   // lib/themeColor.js). `spec.themeAdapt: 'off'` is a per-board escape hatch;
@@ -676,7 +677,7 @@ function SpecRendererBody({
       className="w-full"
       data-dashboard-root
       ref={containerRef}
-      style={bgStyle ? { ...bgStyle, padding: 16, borderRadius: 12 } : undefined}
+      style={bgStyle ? (flushBackground ? bgStyle : { ...bgStyle, padding: 16, borderRadius: 12 }) : undefined}
     >
       {(spec.title || spec.description || hasFilters) && (
         <div className="flex items-start justify-between px-1 mb-5 gap-3">
@@ -828,7 +829,7 @@ function SpecRendererBody({
 // thin wrapper below). Because the early return is gone, every hook here runs
 // unconditionally on every render, satisfying the Rules of Hooks even as `spec`
 // transitions undefined → loaded (async fetch / embed hydration).
-function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, onVariableChange, onCrossFilter, forceBreakpoint, activeTabId, onTabChange, editMode = false }) {
+function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, onVariableChange, onCrossFilter, forceBreakpoint, activeTabId, onTabChange, editMode = false, flushBackground = false }) {
   const cols = spec.layout?.cols ?? 12
   const rowHeight = spec.layout?.row_height ?? 60
   const allWidgets = spec.widgets ?? []
@@ -896,6 +897,7 @@ function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, 
         onTabChange={onTabChange}
         onCrossFilter={onCrossFilter}
         editMode={editMode}
+        flushBackground={flushBackground}
       />
     </VariableProvider>
   )
