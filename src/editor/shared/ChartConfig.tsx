@@ -31,7 +31,7 @@ import { registeredMaps, mapLabel, mapCategory } from '../../lib/maps.js'
 import {
   LineChart, BarChartHorizontal, ScatterChart, AreaChart, PieChart, Gauge,
   Grid3x3, GitCommitHorizontal, TrendingDown, Waves, Network, LayoutDashboard,
-  Radar, CandlestickChart, Wind,
+  Radar, CandlestickChart, Wind, CircleDashed,
 } from 'lucide-react'
 
 const CHART_ICONS = {
@@ -42,6 +42,8 @@ const CHART_ICONS = {
   bubble:      ScatterChart,
   pie:         PieChart,
   donut:       PieChart,
+  polar:       PieChart,
+  radialbar:   CircleDashed,
   sankey:      GitCommitHorizontal,
   funnel:      TrendingDown,
   waterfall:   Waves,
@@ -65,6 +67,8 @@ const CHART_LABELS = {
   bubble:      'Bubble',
   pie:         'Pie',
   donut:       'Donut',
+  polar:       'Polar',
+  radialbar:   'Radial bar',
   sankey:      'Sankey',
   funnel:      'Funnel',
   waterfall:   'Waterfall',
@@ -92,6 +96,8 @@ const TYPE_ENCODING = {
   bubble:      [{ key: 'x', label: 'X' }, { key: 'y', label: 'Y' }, { key: 'size', label: 'Size column', optional: true }, { key: 'color', label: 'Group / color', optional: true }],
   pie:         [{ key: 'x', label: 'Category column' }, { key: 'y', label: 'Value column' }],
   donut:       [{ key: 'x', label: 'Category column' }, { key: 'y', label: 'Value column' }],
+  polar:       [{ key: 'x', label: 'Category column' }, { key: 'y', label: 'Value column' }],
+  radialbar:   [{ key: 'x', label: 'Ring label column' }, { key: 'y', label: 'Value column' }],
   sankey:      [{ key: 'source', label: 'Source column' }, { key: 'target', label: 'Target column' }, { key: 'value', label: 'Value column' }],
   funnel:      [{ key: 'x', label: 'Stage / label column' }, { key: 'y', label: 'Value column' }],
   waterfall:   [{ key: 'x', label: 'Category column' }, { key: 'y', label: 'Delta (change) column' }],
@@ -209,6 +215,7 @@ export function ChartConfig({ widget, onChange }) {
   const isOrientable = ORIENTABLE_TYPES.has(baseType)
   const isDualAxis = DUAL_AXIS_TYPES.has(baseType)
   const isGauge = baseType === 'gauge'
+  const isRadialBar = baseType === 'radialbar'
   const isMap = baseType === 'map'
   const availableMaps = registeredMaps()
     .map(m => ({ value: m, label: mapLabel(m), category: mapCategory(m) }))
@@ -218,6 +225,16 @@ export function ChartConfig({ widget, onChange }) {
   const mapGroups = MAP_CATEGORY_ORDER
     .map(cat => ({ cat, label: MAP_CATEGORY_LABELS[cat], options: availableMaps.filter(m => m.category === cat) }))
     .filter(g => g.options.length > 0)
+
+  // `dataLabels` is `true`/`false` until the author picks a format or a
+  // placement, at which point it becomes the object form. Both are valid to the
+  // renderer; this keeps the editor able to read either.
+  const dataLabelObj = (cfg.dataLabels && typeof cfg.dataLabels === 'object') ? cfg.dataLabels : {}
+  const setDataLabel = (key, val) => {
+    const next = { ...dataLabelObj, [key]: val }
+    for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k]
+    setConfig('dataLabels', Object.keys(next).length ? next : true)
+  }
 
   // Reference lines state helpers
   const refLines = Array.isArray(cfg.referenceLines) ? cfg.referenceLines : []
@@ -322,17 +339,44 @@ export function ChartConfig({ widget, onChange }) {
           </div>
         )}
 
-        {/* Gauge max */}
+        {/* Gauge style — banded needle dial vs. minimal progress ring */}
         {isGauge && (
           <div>
-            <FieldLabel>Max (gauge range)</FieldLabel>
-            <input
-              type="number"
-              className={inputCls}
-              value={cfg.yAxis?.max ?? wProps.max ?? ''}
-              placeholder="auto"
-              onChange={e => setAxisConfig('yAxis', 'max', e.target.value === '' ? undefined : (parseFloat(e.target.value) || undefined))}
-            />
+            <FieldLabel>Gauge style</FieldLabel>
+            <select
+              className={selectCls}
+              value={cfg.gaugeStyle ?? 'needle'}
+              onChange={e => setConfig('gaugeStyle', e.target.value === 'needle' ? undefined : e.target.value)}
+            >
+              <option value="needle">Needle (banded dial)</option>
+              <option value="ring">Ring (progress arc)</option>
+            </select>
+          </div>
+        )}
+
+        {/* Radial / gauge scale — the 0..max the arc or rings are filled against */}
+        {(isGauge || isRadialBar) && (
+          <div className="flex gap-1.5">
+            <div className="flex-1">
+              <FieldLabel>Min</FieldLabel>
+              <input
+                type="number"
+                className={inputCls}
+                value={cfg.yAxis?.min ?? ''}
+                placeholder={isRadialBar ? '0' : 'auto'}
+                onChange={e => setAxisConfig('yAxis', 'min', e.target.value === '' ? undefined : parseFloat(e.target.value))}
+              />
+            </div>
+            <div className="flex-1">
+              <FieldLabel>Max</FieldLabel>
+              <input
+                type="number"
+                className={inputCls}
+                value={cfg.yAxis?.max ?? wProps.max ?? ''}
+                placeholder={isRadialBar ? '100' : 'auto'}
+                onChange={e => setAxisConfig('yAxis', 'max', e.target.value === '' ? undefined : (parseFloat(e.target.value) || undefined))}
+              />
+            </div>
           </div>
         )}
 
@@ -389,12 +433,118 @@ export function ChartConfig({ widget, onChange }) {
           </div>
         </div>
 
-        {/* Data labels */}
+        {/* Data labels — a boolean by default; picking a format or a position
+            promotes the value to the object form the renderer also accepts. */}
         <ToggleRow
           label="Data labels"
           hint="Show values on chart elements"
           checked={!!cfg.dataLabels}
-          onChange={v => setConfig('dataLabels', v || false)}
+          onChange={v => setConfig('dataLabels', v ? (dataLabelObj.format || dataLabelObj.position ? dataLabelObj : true) : false)}
+        />
+        {!!cfg.dataLabels && (
+          <div className="flex gap-1.5 pl-1">
+            <div className="flex-1">
+              <FieldLabel>Label format</FieldLabel>
+              <select
+                className={selectCls}
+                value={dataLabelObj.format ?? ''}
+                onChange={e => setDataLabel('format', e.target.value || undefined)}
+              >
+                {VALUE_FORMAT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            {(isDonutLike || baseType === 'polar') && (
+              <div className="flex-1">
+                <FieldLabel>Placement</FieldLabel>
+                <select
+                  className={selectCls}
+                  value={dataLabelObj.position ?? ''}
+                  onChange={e => setDataLabel('position', e.target.value || undefined)}
+                >
+                  <option value="">Outside (with leader)</option>
+                  <option value="inside">Inside the slice</option>
+                </select>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tooltip — on by default; the format applies to the hovered value. */}
+        <ToggleRow
+          label="Tooltip"
+          hint="Show a value readout on hover"
+          checked={cfg.tooltip !== false}
+          onChange={v => setConfig('tooltip', v ? undefined : false)}
+        />
+        {cfg.tooltip !== false && (
+          <div className="pl-1">
+            <FieldLabel>Tooltip value format</FieldLabel>
+            <select
+              className={selectCls}
+              value={(typeof cfg.tooltip === 'object' && cfg.tooltip?.valueFormat) || ''}
+              onChange={e => {
+                const v = e.target.value
+                if (!v) { setConfig('tooltip', undefined); return }
+                const prev = typeof cfg.tooltip === 'object' && cfg.tooltip ? cfg.tooltip : {}
+                setConfig('tooltip', { ...prev, valueFormat: v })
+              }}
+            >
+              {VALUE_FORMAT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+        )}
+
+        {/* Colour each bar/point separately — the legacy Apex `distributed`
+            look, where a single-series bar chart is a rainbow rather than one
+            hue. Only meaningful where there IS one series per category. */}
+        {(baseType === 'bar' || baseType === 'funnel' || baseType === 'waterfall') && (
+          <ToggleRow
+            label="Colour by category"
+            hint="Give every bar its own palette colour"
+            checked={!!cfg.colorByPoint}
+            onChange={v => setConfig('colorByPoint', v || undefined)}
+          />
+        )}
+
+        {/* Area fill opacity */}
+        {(baseType === 'area' || baseType === 'fan') && (
+          <div>
+            <FieldLabel>Area fill opacity</FieldLabel>
+            <input
+              type="range" min={0} max={1} step={0.02} className="w-full"
+              value={cfg.areaOpacity ?? 0.22}
+              onChange={e => setConfig('areaOpacity', parseFloat(e.target.value))}
+            />
+          </div>
+        )}
+
+        {/* Pan & zoom — a real feature on most migrated charts, not decoration.
+            Left as "auto" so the existing point-count heuristic still applies
+            to charts nobody has made a decision about. */}
+        {isCartesian && (
+          <div>
+            <FieldLabel>Pan &amp; zoom</FieldLabel>
+            <select
+              className={selectCls}
+              value={cfg.dataZoom === undefined ? 'auto' : (cfg.dataZoom ? 'on' : 'off')}
+              onChange={e => {
+                const v = e.target.value
+                setConfig('dataZoom', v === 'auto' ? undefined : v === 'on')
+              }}
+            >
+              <option value="auto">Auto (on for dense data)</option>
+              <option value="on">Always show the zoom slider</option>
+              <option value="off">Never</option>
+            </select>
+          </div>
+        )}
+
+        {/* Animation — worth turning off for a wallboard that never reloads,
+            and for charts captured into a report. */}
+        <ToggleRow
+          label="Animate on load"
+          checked={cfg.animation !== false}
+          onChange={v => setConfig('animation', v ? undefined : false)}
         />
 
         {/* Center label (donut / pie) */}
@@ -445,6 +595,19 @@ export function ChartConfig({ widget, onChange }) {
           />
         </div>
 
+        {/* Subtitle — only meaningful under a title, which is where the
+            renderer draws it. */}
+        <div>
+          <FieldLabel>Subtitle</FieldLabel>
+          <input
+            type="text"
+            className={inputCls}
+            placeholder="Optional line under the title"
+            value={cfg.subtitle ?? ''}
+            onChange={e => setConfig('subtitle', e.target.value || undefined)}
+          />
+        </div>
+
         {/* Height */}
         <div>
           <FieldLabel>Height (px)</FieldLabel>
@@ -484,6 +647,30 @@ export function ChartConfig({ widget, onChange }) {
               {VALUE_FORMAT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </div>
+          <div>
+            <FieldLabel>Tick label rotation</FieldLabel>
+            <select
+              className={selectCls}
+              value={cfg.xAxis?.rotate ?? ''}
+              onChange={e => setAxisConfig('xAxis', 'rotate', e.target.value === '' ? undefined : parseInt(e.target.value, 10))}
+            >
+              <option value="">Auto</option>
+              <option value="0">Horizontal</option>
+              <option value="30">30°</option>
+              <option value="45">45°</option>
+              <option value="90">Vertical</option>
+            </select>
+          </div>
+          <ToggleRow
+            label="Show X axis"
+            checked={cfg.xAxis?.show !== false}
+            onChange={v => setAxisConfig('xAxis', 'show', v ? undefined : false)}
+          />
+          <ToggleRow
+            label="X gridlines"
+            checked={cfg.xAxis?.splitLine?.show === true}
+            onChange={v => setAxisConfig('xAxis', 'splitLine', v ? { show: true } : undefined)}
+          />
 
           {/* Y axis */}
           <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-wide mt-1">Y axis</p>
@@ -534,6 +721,22 @@ export function ChartConfig({ widget, onChange }) {
               {VALUE_FORMAT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </div>
+          <ToggleRow
+            label="Show Y axis"
+            checked={cfg.yAxis?.show !== false}
+            onChange={v => setAxisConfig('yAxis', 'show', v ? undefined : false)}
+          />
+          <ToggleRow
+            label="Y gridlines"
+            checked={cfg.yAxis?.splitLine?.show !== false}
+            onChange={v => setAxisConfig('yAxis', 'splitLine', v ? undefined : { show: false })}
+          />
+          <ToggleRow
+            label="Invert scale"
+            hint="Largest value at the bottom"
+            checked={cfg.yAxis?.inverse === true}
+            onChange={v => setAxisConfig('yAxis', 'inverse', v || undefined)}
+          />
 
           {/* Secondary Y axis */}
           {isDualAxis && (

@@ -412,7 +412,7 @@ def _spec_hash(spec_dict: dict[str, Any]) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _clamp_svg_height(svg: str, max_h: int, theme: str = "light") -> str:
+def _clamp_svg_height(svg: str, max_h: int, page_bg: str = "#ffffff") -> str:
     """Crop a composed page SVG to *max_h* px by rewriting its height/viewBox.
 
     The composer emits ``width``/``height``/``viewBox`` on the root element and
@@ -435,11 +435,13 @@ def _clamp_svg_height(svg: str, max_h: int, theme: str = "light") -> str:
     svg = svg.replace(f'viewBox="0 0 {m.group(1)} {m.group(2)}"', f'viewBox="0 0 {m.group(1)} {max_h}"', 1)
     svg = re.sub(r'(<svg[^>]*?)height="[\d.]+"', rf'\1height="{max_h}"', svg, count=1)
 
-    # Fade to the page's own white, so the crop dissolves instead of slicing.
+    # Fade to the page's own colour: fading a dark (or custom-background) board
+    # to a generic white/navy default would paint a mismatched bar across its
+    # bottom edge — *page_bg* is the SAME colour render_board_svg painted the
+    # page with (see svg_render.resolve_page_bg), theme default or a board's
+    # own spec.background.
     fade_h = min(90.0, max_h * 0.16)
-    # Fade to the page's OWN colour: fading a dark board to white would paint a
-    # bright bar across its bottom edge.
-    page = "#111a2e" if theme == "dark" else "#ffffff"
+    page = page_bg
     fade = (
         f'<defs><linearGradient id="_nubiFade" x1="0" y1="0" x2="0" y2="1">'
         f'<stop offset="0%" stop-color="{page}" stop-opacity="0"/>'
@@ -479,6 +481,7 @@ async def warm_board_thumbnails(
     from app.dashboards.svg_render import (  # noqa: PLC0415
         render_board_svg,
         renderer_available,
+        resolve_page_bg,
         spec_for_render,
     )
 
@@ -519,7 +522,9 @@ async def warm_board_thumbnails(
                 page_width_px=_THUMB_WIDTH_PX,
                 theme=theme_key,
             )
-            page_svg = _clamp_svg_height(page_svg, _THUMB_MAX_HEIGHT_PX, theme=theme_key)
+            page_svg = _clamp_svg_height(
+                page_svg, _THUMB_MAX_HEIGHT_PX, page_bg=resolve_page_bg(validated_spec, theme_key),
+            )
         except Exception as exc:  # noqa: BLE001
             logger.info("thumbnail render failed (%s) for board %s: %s", theme_key, board_id, exc)
             continue
@@ -573,6 +578,7 @@ async def board_thumbnail_svg(
     from app.dashboards.svg_render import (  # noqa: PLC0415
         render_board_svg,
         renderer_available,
+        resolve_page_bg,
         spec_for_render,
     )
 
@@ -658,7 +664,9 @@ async def board_thumbnail_svg(
         page_width_px=_THUMB_WIDTH_PX,
         theme=theme_key,
     )
-    page_svg = _clamp_svg_height(page_svg, _THUMB_MAX_HEIGHT_PX, theme=theme_key)
+    page_svg = _clamp_svg_height(
+        page_svg, _THUMB_MAX_HEIGHT_PX, page_bg=resolve_page_bg(validated_spec, theme_key),
+    )
 
     _remember_thumb(board_id, cache_key, policy_fp, page_svg)
     # Persist so the next reader — after a restart, or on another worker — gets

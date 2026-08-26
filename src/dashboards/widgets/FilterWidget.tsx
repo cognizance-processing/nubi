@@ -50,6 +50,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useFilterRefire, useSetVariable, useVariable } from '../VariableStore.jsx'
+import { resolveTextColors } from '../textColors.js'
 import {
   Combobox,
   MultiSelect,
@@ -253,6 +254,24 @@ export default function FilterWidget({ widget, options = [] }) {
     if (target_var) setVariable(target_var, newValue)
   }, [target_var, setVariable])
 
+  // `auto_select_first` — land on the first option instead of on "All".
+  //
+  // A board whose widgets are all scoped to one branch/customer shows nothing
+  // useful until a selection exists, so the legacy filters these boards came
+  // from could preselect. Deliberately narrow: it fires only while the variable
+  // is genuinely unset, so it never fights a URL-seeded value, a saved default,
+  // a cascade refire, or the user clearing the filter on purpose.
+  const autoSelectedRef = useRef(false)
+  useEffect(() => {
+    if (!wProps.auto_select_first || !target_var) return
+    if (autoSelectedRef.current) return
+    if (storeValue !== undefined && storeValue !== null && storeValue !== '') return
+    const first = optionsForList[0]
+    if (!first) return
+    autoSelectedRef.current = true
+    handleChange(subtype === 'multiselect' ? [first.v] : first.v)
+  }, [wProps.auto_select_first, target_var, storeValue, optionsForList, subtype, handleChange])
+
   // CSS variables bridge per-widget style across the portal boundary (F1 caveat:
   // the portal escapes the widget subtree, so DOM inheritance won't reach it).
   // We forward any `--*` custom properties declared on widget.style.
@@ -266,6 +285,12 @@ export default function FilterWidget({ widget, options = [] }) {
     // A dark per-widget background makes the theme's muted label color
     // unreadable — derive a light label color so the label stays visible.
     const bg = s.background
+    // An authored label colour wins outright — a filter's label is the `title`
+    // text role, so Appearance → Title colour reaches it like every other
+    // widget's heading. The luminance heuristic below is only the fallback for
+    // cards that set a dark background and no colours.
+    const ink = resolveTextColors(s)
+    if (ink.title) out['--filter-label-color'] = ink.title
     if (!out['--filter-label-color'] && typeof bg === 'string' && /^#[0-9a-fA-F]{6}$/.test(bg)) {
       const r = parseInt(bg.slice(1, 3), 16), g = parseInt(bg.slice(3, 5), 16), b = parseInt(bg.slice(5, 7), 16)
       const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255

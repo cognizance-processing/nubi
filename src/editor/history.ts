@@ -32,13 +32,28 @@ export function createHistory(initialState) {
  *
  * If newState is strictly equal (===) to present, returns the same history (no-op).
  *
+ * `coalesce` REPLACES the present instead of appending to the past — for a
+ * control that emits a stream of values for one user decision (dragging in the
+ * colour spectrum, scrubbing a slider). Without it a single drag leaves dozens
+ * of undo steps and Ctrl+Z walks back through it one shade at a time; with it
+ * the whole gesture is one step. The FIRST commit of a gesture must still be a
+ * normal push, or there would be no entry to step back to — callers open the
+ * gesture, push once, then coalesce for the rest (see LiveEditProvider).
+ *
  * @template T
  * @param {{ past: T[], present: T, future: T[] }} history
  * @param {T} newState
+ * @param {{ coalesce?: boolean }} [options]
  * @returns {{ past: T[], present: T, future: T[] }}
  */
-export function push(history, newState) {
+export function push(history, newState, options: { coalesce?: boolean } = {}) {
   if (newState === history.present) return history
+
+  if (options.coalesce && history.past.length > 0) {
+    // Same past, new present. `future` is still cleared: the gesture is a new
+    // branch however many values it emitted along the way.
+    return { past: history.past, present: newState, future: [] }
+  }
 
   let nextPast = [...history.past, history.present]
   // Enforce cap: drop oldest entries beyond HISTORY_LIMIT

@@ -13,6 +13,7 @@
  */
 
 import { findKpiIcon } from '../kpiIcons.jsx'
+import { resolveTextColors } from '../textColors.js'
 
 export default function SectionWidget({ widget }) {
   const props = widget.props ?? {}
@@ -26,16 +27,16 @@ export default function SectionWidget({ widget }) {
     : align === 'right' ? 'items-end text-right'
     : 'items-start text-left'
 
-  // A widget-level text color (Appearance → Text color) is applied by the card
-  // wrapper as a CSS `color`; the theme-token classes (text-fg / text-muted)
-  // would silently override it. Mirror ChartWidget's textColorOverride contract:
-  // when a color is forced, inherit it (subtitle at reduced opacity) so section
-  // headers stay readable on boards with a style-locked palette.
-  const forcedColor = typeof widget.style?.color === 'string' && widget.style.color
-  const titleStyle = forcedColor ? { color: 'inherit' } : undefined
-  const subtitleStyle = forcedColor ? { color: 'inherit', opacity: 0.65 } : undefined
+  // Per-role text colours. The theme-token classes (text-fg / text-muted) would
+  // silently win over a colour inherited from the card wrapper, so each role is
+  // applied explicitly here. The subtitle is the `muted` role, which means it
+  // can now be coloured independently of the title instead of always being the
+  // title at 65% opacity.
+  const text = resolveTextColors(widget.style)
+  const titleStyle = text.title ? { color: text.title } : undefined
+  const subtitleStyle = text.muted ? { color: text.muted } : undefined
 
-  const ruleColor = forcedColor
+  const ruleColor = (text.title || text.body)
     ? 'color-mix(in srgb, currentColor 18%, transparent)'
     : 'var(--border)'
 
@@ -51,7 +52,7 @@ export default function SectionWidget({ widget }) {
                 size={19}
                 weight="duotone"
                 className="shrink-0"
-                style={forcedColor ? { color: 'inherit' } : { color: 'var(--primary)' }}
+                style={{ color: text.title || 'var(--primary)' }}
                 aria-hidden="true"
               />
             )}

@@ -16,8 +16,23 @@
  *   ColorField      React component  (swatch + free-text colour input)
  */
 
-import { useMemo, type ReactNode, type ComponentType } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode, type ComponentType } from 'react'
 import { resolveSwatchHex } from './colorValue.js'
+import { useLiveEdit } from '../liveEdit.jsx'
+
+/**
+ * Upstream commit interval while a colour is being dragged, in ms.
+ *
+ * The browser fires an `input` event on every pointer move inside the colour
+ * spectrum (~60/s). Each one rewrites the board spec and re-renders the canvas,
+ * so committing them all is what made the picker feel laggy. ~12 board updates
+ * a second still reads as live feedback while costing a fifth of the work — and
+ * the swatch itself keeps redrawing at full rate from local state.
+ */
+const LIVE_COMMIT_MS = 80
+
+/** Quiet period after the last pointer move that closes the drag gesture. */
+const GESTURE_SETTLE_MS = 350
 
 // Shared control styling. Targets a consistent ~32px control height across
 // inputs and selects, with calm focus rings and the app's design tokens.
@@ -167,12 +182,82 @@ export function ChipRow({ options, value, onChange, suffix = '' }) {
 export function ColorSwatch({ value, onChange, fallback = '#6366f1', title, size = 'md' }) {
   const dims = size === 'sm' ? 'h-6 w-6 rounded' : 'h-8 w-10 rounded-lg'
   const hex = useMemo(() => resolveSwatchHex(value, fallback), [value, fallback])
+
+  // `draft` is the shade under the pointer RIGHT NOW; it is what the chip shows
+  // while a drag is in flight, so the swatch tracks the spectrum at full frame
+  // rate no matter how rarely we commit upstream. null = not dragging, show the
+  // stored value.
+  const [draft, setDraft] = useState(null)
+  const live = useLiveEdit()
+
+  const pending = useRef(null)      // newest value not yet sent upstream
+  const throttle = useRef(null)     // open => a commit is already scheduled
+  const settle = useRef(null)       // fires once the pointer stops moving
+  const gesture = useRef(false)     // is a live-edit gesture currently open
+  // Synced in an effect rather than during render: handlers only ever run after
+  // the commit, so they always observe the latest value.
+  const onChangeRef = useRef(onChange)
+  const liveRef = useRef(live)
+  useEffect(() => { onChangeRef.current = onChange }, [onChange])
+  useEffect(() => { liveRef.current = live }, [live])
+
+  // Every timer must die with the component, or a commit lands on an unmounted
+  // widget after the user has selected a different one.
+  useEffect(() => () => {
+    if (throttle.current) clearTimeout(throttle.current)
+    if (settle.current) clearTimeout(settle.current)
+    if (gesture.current) liveRef.current?.end()
+  }, [])
+
+  const flush = () => {
+    if (pending.current == null) return
+    const next = pending.current
+    pending.current = null
+    onChangeRef.current(next)
+  }
+
+  const endGesture = () => {
+    if (throttle.current) { clearTimeout(throttle.current); throttle.current = null }
+    if (settle.current) { clearTimeout(settle.current); settle.current = null }
+    flush()
+    setDraft(null)
+    if (gesture.current) { gesture.current = false; liveRef.current?.end() }
+  }
+
+  const handleInput = (e) => {
+    const next = e.target.value
+    setDraft(next)
+    pending.current = next
+
+    // First value of a drag: commit immediately, so the board responds at once,
+    // and open the gesture so every LATER commit in this drag collapses into the
+    // same undo step. (The provider makes the first commit inside a gesture a
+    // real history entry regardless of ordering, so this is safe either way.)
+    if (!gesture.current) {
+      gesture.current = true
+      liveRef.current?.begin()
+      flush()
+    } else if (!throttle.current) {
+      // Mid-drag: at most one board update per LIVE_COMMIT_MS. The input event
+      // fires on every pointer move; re-rendering the whole canvas that often is
+      // what made dragging in the spectrum feel laggy.
+      throttle.current = setTimeout(() => { throttle.current = null; flush() }, LIVE_COMMIT_MS)
+    }
+
+    // A drag has no reliable end event across browsers (Chrome and Firefox
+    // disagree about when `change` fires for a colour input), so the gesture is
+    // closed by the pointer going quiet instead.
+    if (settle.current) clearTimeout(settle.current)
+    settle.current = setTimeout(endGesture, GESTURE_SETTLE_MS)
+  }
+
   return (
     <input
       type="color"
       title={title}
-      value={hex}
-      onChange={e => onChange(e.target.value)}
+      value={draft ?? hex}
+      onChange={handleInput}
+      onBlur={endGesture}
       className={`${dims} shrink-0 border border-border bg-surface cursor-pointer transition-colors hover:border-border/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60`}
     />
   )
@@ -189,6 +274,12 @@ export function ColorSwatch({ value, onChange, fallback = '#6366f1', title, size
  * Props: value, onChange(str|undefined), placeholder, fallback, clearable
  */
 export function ColorField({ value, onChange, placeholder, fallback = '#6366f1', clearable = true }) {
+  const live = useLiveEdit()
+  const typing = useRef(false)
+  // Typing a colour emits one commit per keystroke for what is one decision.
+  // Bracketing the whole edit in a gesture collapses it to a single undo step,
+  // exactly as a spectrum drag is collapsed.
+  useEffect(() => () => { if (typing.current) live?.end() }, [live])
   return (
     <div className="flex items-center gap-2">
       <ColorSwatch value={value} onChange={onChange} fallback={fallback} title="Pick a colour" />
@@ -198,6 +289,8 @@ export function ColorField({ value, onChange, placeholder, fallback = '#6366f1',
         placeholder={placeholder}
         value={value ?? ''}
         onChange={e => onChange(clearable ? (e.target.value || undefined) : e.target.value)}
+        onFocus={() => { if (!typing.current) { typing.current = true; live?.begin() } }}
+        onBlur={() => { if (typing.current) { typing.current = false; live?.end() } }}
       />
     </div>
   )

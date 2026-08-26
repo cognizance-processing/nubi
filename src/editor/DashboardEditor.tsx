@@ -48,6 +48,7 @@ import {
   ZoomIn, ZoomOut, Maximize2, Menu, ChevronUp, Sigma, FileCode2, LayoutDashboard,
   Undo2, Redo2, Eye, Pencil, Save, Loader2, CheckCircle2, BookmarkPlus, Library,
   Link2, Copy, Unlink, Users, Layers, Download, Image as ImageIcon, FileText, Search,
+  Minus, CalendarRange, ChevronsRight,
 } from 'lucide-react'
 import {
   saveWidgetToLibrary, deleteLibraryWidget, updateLibraryWidget, fromLibraryRow,
@@ -77,7 +78,8 @@ const WIDTH_PRESETS = [390, 412, 768, 834, 1024]
 const WIDGET_ICONS = {
   kpi: Hash, metric: TrendingUp, chart: BarChart3, table: Table2,
   pivot: Grid3x3, filter: FilterIcon, text: Type, section: Heading,
-  image: ImageIcon,
+  image: ImageIcon, stepper: Layers, divider: Minus,
+  datedisplay: CalendarRange, breadcrumb: ChevronsRight,
 }
 const CHART_ICONS = {
   line: LineChart, bar: BarChart3, hbar: BarChartHorizontal, scatter: ScatterChart,
@@ -98,6 +100,9 @@ import PivotWidget from '../dashboards/widgets/PivotWidget.jsx'
 import SectionWidget from '../dashboards/widgets/SectionWidget.jsx'
 import ImageWidget from '../dashboards/widgets/ImageWidget.jsx'
 import StepperWidget from '../dashboards/widgets/StepperWidget.jsx'
+import DividerWidget from '../dashboards/widgets/DividerWidget.jsx'
+import DateDisplayWidget from '../dashboards/widgets/DateDisplayWidget.jsx'
+import BreadcrumbWidget from '../dashboards/widgets/BreadcrumbWidget.jsx'
 import ExportShareMenu from '../components/ExportShareMenu.jsx'
 import DashboardCodeView from './DashboardCodeView.jsx'
 import { VariableProvider } from '../dashboards/VariableStore.jsx'
@@ -116,6 +121,7 @@ import {
   isHiddenAt,
 } from '../dashboards/responsiveLayout.js'
 import ChatPanel from './ChatPanel.jsx'
+import { LiveEditProvider } from './liveEdit.jsx'
 import WidgetHtmlEditor from './shared/WidgetHtmlEditor.jsx'
 import WidgetFocusShell from './shared/WidgetFocusShell.jsx'
 import {
@@ -362,6 +368,9 @@ const WIDGET_SIZES = {
   section: { w: 12, h: 1 },
   image:   { w: 4, h: 4 },
   stepper: { w: 6, h: 6 },
+  divider: { w: 12, h: 1 },
+  datedisplay: { w: 3, h: 2 },
+  breadcrumb:  { w: 12, h: 1 },
 }
 
 function makeKpiWidget(pos) {
@@ -429,6 +438,28 @@ function makeImageWidget(pos) {
     pos: { ...WIDGET_SIZES.image, ...pos },
   }
 }
+function makeDividerWidget(pos) {
+  return {
+    id: genId('divider'), type: 'divider', query_id: null,
+    props: { orientation: 'horizontal', thickness: 1, lineStyle: 'solid', inset: 0 },
+    pos: { ...WIDGET_SIZES.divider, ...pos },
+  }
+}
+function makeDateDisplayWidget(pos) {
+  return {
+    id: genId('datedisplay'), type: 'datedisplay', query_id: null,
+    encoding: { value: '' },
+    props: { label: 'Period', source: 'variable', variable: '', format: 'medium', align: 'left' },
+    pos: { ...WIDGET_SIZES.datedisplay, ...pos },
+  }
+}
+function makeBreadcrumbWidget(pos) {
+  return {
+    id: genId('breadcrumb'), type: 'breadcrumb', query_id: null,
+    props: { variables: [], labels: {}, homeLabel: 'All', maxSteps: 10, separator: 'arrow', chipVariant: 'filled' },
+    pos: { ...WIDGET_SIZES.breadcrumb, ...pos },
+  }
+}
 function makeStepperWidget(pos) {
   return {
     id: genId('stepper'), type: 'stepper', query_id: null,
@@ -455,6 +486,9 @@ function makeWidget(type: string, pos: Record<string, any>): Record<string, any>
   if (type === 'section') return makeSectionWidget(pos)
   if (type === 'image') return makeImageWidget(pos)
   if (type === 'stepper') return makeStepperWidget(pos)
+  if (type === 'divider') return makeDividerWidget(pos)
+  if (type === 'datedisplay') return makeDateDisplayWidget(pos)
+  if (type === 'breadcrumb') return makeBreadcrumbWidget(pos)
   return makeChartWidget(pos)
 }
 
@@ -693,6 +727,299 @@ function ImageConfig({ widget, onChange }) {
 // Child types a step can hold, and how to build a fresh default of each.
 // Reuses the same factories the palette uses so a step's child is a normal,
 // independently-typed widget spec — StepperWidget just renders it in place.
+// ---------------------------------------------------------------------------
+// DividerConfig — a standalone rule (`divider` widget)
+// ---------------------------------------------------------------------------
+
+function DividerConfig({ widget, onChange }) {
+  const props = widget.props ?? {}
+  const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
+  const orientation = props.orientation === 'vertical' ? 'vertical' : 'horizontal'
+  return (
+    <div className="space-y-3">
+      <div>
+        <FieldLabel>Orientation</FieldLabel>
+        <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+          {['horizontal', 'vertical'].map(o => (
+            <button key={o} onClick={() => setProps('orientation', o)}
+              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${orientation === o ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{o}</button>
+          ))}
+        </div>
+        <p className="text-[10px] text-muted/70 mt-1">
+          The rule fills its tile, so resize the widget to set its length.
+        </p>
+      </div>
+      <div>
+        <FieldLabel>Line style</FieldLabel>
+        <select className={selectCls} value={props.lineStyle ?? 'solid'} onChange={e => setProps('lineStyle', e.target.value)}>
+          <option value="solid">Solid</option>
+          <option value="dashed">Dashed</option>
+          <option value="dotted">Dotted</option>
+        </select>
+      </div>
+      <div className="flex gap-1.5">
+        <div className="flex-1">
+          <FieldLabel>Thickness (px)</FieldLabel>
+          <input type="number" min={1} max={24} className={inputCls}
+            value={props.thickness ?? 1}
+            onChange={e => setProps('thickness', Math.max(1, parseInt(e.target.value, 10) || 1))} />
+        </div>
+        <div className="flex-1">
+          <FieldLabel>End inset (px)</FieldLabel>
+          <input type="number" min={0} max={200} className={inputCls}
+            value={props.inset ?? 0}
+            onChange={e => setProps('inset', Math.max(0, parseInt(e.target.value, 10) || 0))} />
+        </div>
+      </div>
+      <div>
+        <FieldLabel>Colour</FieldLabel>
+        <ColorField value={props.color} onChange={v => setProps('color', v || undefined)} placeholder="var(--border)" />
+      </div>
+      <div>
+        <FieldLabel>Opacity</FieldLabel>
+        <input type="range" min={0} max={1} step={0.05} className="w-full"
+          value={props.opacity ?? 1}
+          onChange={e => setProps('opacity', parseFloat(e.target.value))} />
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// DateDisplayConfig — a live "reporting period" caption (`datedisplay` widget)
+// ---------------------------------------------------------------------------
+
+const DATE_DISPLAY_FORMATS = [
+  { value: 'medium', label: 'Medium — 1 Jan 2025' },
+  { value: 'long', label: 'Long — 1 January 2025' },
+  { value: 'short', label: 'Short — 1/1/25' },
+  { value: 'month', label: 'Month — January 2025' },
+  { value: 'iso', label: 'ISO — 2025-01-01' },
+  { value: 'raw', label: 'Raw — leave the value untouched' },
+]
+
+function DateDisplayConfig({ widget, onChange, spec }) {
+  const props = widget.props ?? {}
+  const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
+  const source = props.source ?? 'variable'
+  const specVariables = Array.isArray(spec?.variables) ? spec.variables : []
+  const { columns, introspecting } = useColumnIntrospection(source === 'query' ? widget.query_id : null)
+
+  return (
+    <div className="space-y-3">
+      <Section title="Source" icon={Database}>
+        <div>
+          <FieldLabel>Where the date comes from</FieldLabel>
+          <select className={selectCls} value={source} onChange={e => setProps('source', e.target.value)}>
+            <option value="variable">A dashboard variable (tracks a filter)</option>
+            <option value="query">A query column</option>
+            <option value="static">Fixed text</option>
+            <option value="now">Today</option>
+          </select>
+        </div>
+
+        {source === 'variable' && (
+          <div>
+            <FieldLabel>Variable</FieldLabel>
+            <select className={selectCls} value={props.variable ?? ''} onChange={e => setProps('variable', e.target.value)}>
+              <option value="">— pick a variable —</option>
+              {specVariables.map(v => <option key={v.name} value={v.name}>{v.name}</option>)}
+            </select>
+            {specVariables.length === 0 && (
+              <p className="text-[10px] text-muted/70 mt-1">
+                This board has no variables yet — add a filter widget first.
+              </p>
+            )}
+          </div>
+        )}
+
+        {source === 'query' && (
+          <>
+            <QueryPicker
+              value={widget.query_id ?? ''}
+              onChange={id => onChange({ ...widget, query_id: id })}
+            />
+            {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
+            <ColumnSelect
+              label="Date column"
+              value={widget.encoding?.value ?? ''}
+              onChange={v => onChange({ ...widget, encoding: { ...(widget.encoding ?? {}), value: v } })}
+              columns={columns}
+            />
+            <div>
+              <FieldLabel>Row index</FieldLabel>
+              <input type="number" min={0} className={inputCls}
+                value={props.row ?? 0}
+                onChange={e => setProps('row', Math.max(0, parseInt(e.target.value, 10) || 0))} />
+            </div>
+          </>
+        )}
+
+        {source === 'static' && (
+          <div>
+            <FieldLabel>Text</FieldLabel>
+            <input type="text" className={inputCls} value={props.text ?? ''}
+              placeholder="e.g. FY25 to date"
+              onChange={e => setProps('text', e.target.value)} />
+          </div>
+        )}
+      </Section>
+
+      <Section title="Display" defaultOpen={false} icon={SlidersHorizontal}>
+        <div>
+          <FieldLabel>Label</FieldLabel>
+          <input type="text" className={inputCls} value={props.label ?? ''}
+            placeholder="e.g. Period 1" onChange={e => setProps('label', e.target.value)} />
+        </div>
+        <div>
+          <FieldLabel>Date format</FieldLabel>
+          <select className={selectCls} value={props.format ?? 'medium'} onChange={e => setProps('format', e.target.value)}>
+            {DATE_DISPLAY_FORMATS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+          </select>
+        </div>
+        <div className="flex gap-1.5">
+          <div className="flex-1">
+            <FieldLabel>Prefix</FieldLabel>
+            <input type="text" className={inputCls} value={props.prefix ?? ''} onChange={e => setProps('prefix', e.target.value)} />
+          </div>
+          <div className="flex-1">
+            <FieldLabel>Suffix</FieldLabel>
+            <input type="text" className={inputCls} value={props.suffix ?? ''} onChange={e => setProps('suffix', e.target.value)} />
+          </div>
+        </div>
+        <div>
+          <FieldLabel>Range separator</FieldLabel>
+          <input type="text" className={inputCls} value={props.separator ?? '–'}
+            onChange={e => setProps('separator', e.target.value)} />
+        </div>
+        <div>
+          <FieldLabel>Alignment</FieldLabel>
+          <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+            {['left', 'center', 'right'].map(a => (
+              <button key={a} onClick={() => setProps('align', a)}
+                className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.align ?? 'left') === a ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{a}</button>
+            ))}
+          </div>
+        </div>
+      </Section>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// BreadcrumbConfig — a drill path over dashboard variables (`breadcrumb`)
+// ---------------------------------------------------------------------------
+
+function BreadcrumbConfig({ widget, onChange, spec }) {
+  const props = widget.props ?? {}
+  const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
+  const tracked = Array.isArray(props.variables) ? props.variables : []
+  const labels = props.labels ?? {}
+  const specVariables = Array.isArray(spec?.variables) ? spec.variables : []
+  const available = specVariables.filter(v => !tracked.includes(v.name))
+
+  const setTracked = (next) => setProps('variables', next)
+  const move = (i, dir) => {
+    const j = i + dir
+    if (j < 0 || j >= tracked.length) return
+    const next = tracked.slice()
+    ;[next[i], next[j]] = [next[j], next[i]]
+    setTracked(next)
+  }
+
+  return (
+    <div className="space-y-3">
+      <Section title="Drill path" icon={Database}>
+        <p className="text-[10px] text-muted/70">
+          List the filter variables in drill order — outermost first. A crumb is
+          added each time one of them takes a new value.
+        </p>
+        {tracked.length === 0 && (
+          <p className="text-xs text-muted/70 text-center rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2">
+            No variables tracked yet.
+          </p>
+        )}
+        {tracked.map((name, i) => (
+          <div key={name} className="rounded-lg border border-border p-2 space-y-1.5 bg-surface">
+            <div className="flex items-center gap-1">
+              <div className="flex flex-col">
+                <button type="button" onClick={() => move(i, -1)} disabled={i === 0}
+                  className="h-3 leading-none text-muted/60 hover:text-primary disabled:opacity-30" title="Move up">▲</button>
+                <button type="button" onClick={() => move(i, 1)} disabled={i === tracked.length - 1}
+                  className="h-3 leading-none text-muted/60 hover:text-primary disabled:opacity-30" title="Move down">▼</button>
+              </div>
+              <span className="flex-1 text-xs font-medium text-fg truncate">{name}</span>
+              <button
+                onClick={() => setTracked(tracked.filter(n => n !== name))}
+                className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-red-500 hover:bg-red-500/10 transition-colors"
+                title="Stop tracking"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+            <input
+              type="text"
+              className={inputCls}
+              placeholder={`Crumb label (default "${name}")`}
+              value={labels[name] ?? ''}
+              onChange={e => {
+                const next = { ...labels }
+                if (e.target.value) next[name] = e.target.value
+                else delete next[name]
+                setProps('labels', next)
+              }}
+            />
+          </div>
+        ))}
+        {available.length > 0 && (
+          <select className={selectCls} value="" onChange={e => { if (e.target.value) setTracked([...tracked, e.target.value]) }}>
+            <option value="">+ Track a variable…</option>
+            {available.map(v => <option key={v.name} value={v.name}>{v.name}</option>)}
+          </select>
+        )}
+        {specVariables.length === 0 && (
+          <p className="text-[10px] text-muted/70">
+            This board has no variables yet — add a filter widget first.
+          </p>
+        )}
+      </Section>
+
+      <Section title="Display" defaultOpen={false} icon={SlidersHorizontal}>
+        <div>
+          <FieldLabel>Home label</FieldLabel>
+          <input type="text" className={inputCls} value={props.homeLabel ?? 'All'}
+            onChange={e => setProps('homeLabel', e.target.value)} />
+        </div>
+        <div>
+          <FieldLabel>Separator</FieldLabel>
+          <select className={selectCls} value={props.separator ?? 'arrow'} onChange={e => setProps('separator', e.target.value)}>
+            <option value="arrow">Arrow ›</option>
+            <option value="slash">Slash /</option>
+            <option value="dot">Dot •</option>
+          </select>
+        </div>
+        <div>
+          <FieldLabel>Max steps</FieldLabel>
+          <input type="number" min={1} max={30} className={inputCls}
+            value={props.maxSteps ?? 10}
+            onChange={e => setProps('maxSteps', Math.max(1, parseInt(e.target.value, 10) || 10))} />
+        </div>
+        <div>
+          <FieldLabel>Chip style</FieldLabel>
+          <select className={selectCls} value={props.chipVariant ?? 'filled'} onChange={e => setProps('chipVariant', e.target.value)}>
+            <option value="filled">Filled</option>
+            <option value="outlined">Outlined</option>
+          </select>
+        </div>
+        <div>
+          <FieldLabel>Chip colour</FieldLabel>
+          <ColorField value={props.chipColor} onChange={v => setProps('chipColor', v || undefined)} placeholder="var(--primary)" />
+        </div>
+      </Section>
+    </div>
+  )
+}
+
 const STEP_CHILD_MAKERS = {
   kpi:    makeKpiWidget,
   metric: makeMetricWidget,
@@ -740,6 +1067,19 @@ function StepperConfig({ widget, onChange }) {
           onChange={e => setProps({ title: e.target.value })} />
       </div>
       <div>
+        <FieldLabel>Show</FieldLabel>
+        <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+          {[['one', 'One at a time'], ['all', 'All together']].map(([v, lbl]) => (
+            <button key={v} onClick={() => setProps({ display: v === 'one' ? undefined : v })}
+              className={`flex-1 text-[11px] font-medium transition-colors ${(props.display ?? 'one') === v ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{lbl}</button>
+          ))}
+        </div>
+        <p className="text-[10px] text-muted/70 mt-1">
+          “One at a time” is a drill-down with a step bar; “All together” groups
+          the same widgets side by side in one tile.
+        </p>
+      </div>
+      <div>
         <FieldLabel>Orientation</FieldLabel>
         <div className="flex h-8 rounded-lg border border-border overflow-hidden">
           {['horizontal', 'vertical'].map(o => (
@@ -748,15 +1088,17 @@ function StepperConfig({ widget, onChange }) {
           ))}
         </div>
       </div>
-      <div>
-        <FieldLabel>Step indicator</FieldLabel>
-        <div className="flex h-8 rounded-lg border border-border overflow-hidden">
-          {['labels', 'dots'].map(v => (
-            <button key={v} onClick={() => setProps({ variant: v })}
-              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.variant ?? 'labels') === v ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{v}</button>
-          ))}
+      {(props.display ?? 'one') === 'one' && (
+        <div>
+          <FieldLabel>Step indicator</FieldLabel>
+          <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+            {['labels', 'dots'].map(v => (
+              <button key={v} onClick={() => setProps({ variant: v })}
+                className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.variant ?? 'labels') === v ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{v}</button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="pt-1 border-t border-border/60">
         <div className="flex items-center justify-between mb-2 mt-2">
@@ -1078,17 +1420,49 @@ function WidgetAppearanceSection({ widget, onChange }) {
           <SectionLabel>Card background</SectionLabel>
           <BackgroundEditor value={typeof style.background === 'object' ? style.background : undefined} onChange={setBg} />
         </div>
-        <div className="space-y-1">
-          <SectionLabel>Text color</SectionLabel>
-          <ColorField
-            value={typeof style.color === 'string' ? style.color : undefined}
-            onChange={v => setStyle({ color: v })}
-            placeholder="inherit (theme default)"
-            fallback="#000000"
-          />
+        <div className="space-y-2">
+          <SectionLabel>Text colors</SectionLabel>
           <p className="text-[10px] text-muted/70">
-            Applies to the whole card (KPI number, chart title, table text, etc.) unless a widget's own styling overrides it.
+            Every piece of text on a card belongs to one of three roles, and each
+            is set here. Leave a role blank to inherit: Heading falls back to
+            Body, Secondary to a softened Body, and Body to the board theme.
           </p>
+          <div>
+            <FieldLabel>Heading</FieldLabel>
+            <ColorField
+              value={typeof style.titleColor === 'string' ? style.titleColor : undefined}
+              onChange={v => setStyle({ titleColor: v })}
+              placeholder="follows Body"
+              fallback="#000000"
+            />
+            <p className="text-[10px] text-muted/70 mt-1">
+              Chart title, section title, table header, filter label.
+            </p>
+          </div>
+          <div>
+            <FieldLabel>Body</FieldLabel>
+            <ColorField
+              value={typeof style.color === 'string' ? style.color : undefined}
+              onChange={v => setStyle({ color: v })}
+              placeholder="inherit (theme default)"
+              fallback="#000000"
+            />
+            <p className="text-[10px] text-muted/70 mt-1">
+              KPI number, table cells, text-widget body.
+            </p>
+          </div>
+          <div>
+            <FieldLabel>Secondary</FieldLabel>
+            <ColorField
+              value={typeof style.mutedColor === 'string' ? style.mutedColor : undefined}
+              onChange={v => setStyle({ mutedColor: v })}
+              placeholder="softened Body"
+              fallback="#000000"
+            />
+            <p className="text-[10px] text-muted/70 mt-1">
+              KPI caption, subtitles, chart axis and legend labels.
+            </p>
+          </div>
         </div>
         <div className="grid grid-cols-2 gap-2">
           <div>
@@ -1534,6 +1908,9 @@ function ConfigPanel({
           {widget.type === 'section' && <SectionConfig widget={widget} onChange={onChange} />}
           {widget.type === 'image' && <ImageConfig widget={widget} onChange={onChange} />}
           {widget.type === 'stepper' && <StepperConfig widget={widget} onChange={onChange} />}
+          {widget.type === 'divider' && <DividerConfig widget={widget} onChange={onChange} />}
+          {widget.type === 'datedisplay' && <DateDisplayConfig widget={widget} onChange={onChange} spec={spec} />}
+          {widget.type === 'breadcrumb' && <BreadcrumbConfig widget={widget} onChange={onChange} spec={spec} />}
 
           {widget.type === 'chart' && <DrilldownSection widget={widget} onChange={onChange} />}
         </div>
@@ -1767,6 +2144,9 @@ const PALETTE_ITEMS = [
   { type: 'section', label: 'Section', icon: Heading,     desc: 'Section header / divider' },
   { type: 'image',   label: 'Image',   icon: ImageIcon,   desc: 'Logo, header art, or branding image' },
   { type: 'stepper', label: 'Stepper', icon: Layers,      desc: 'In-tile drill-down, one step at a time' },
+  { type: 'divider', label: 'Divider', icon: Minus,       desc: 'A rule that separates regions of a board' },
+  { type: 'datedisplay', label: 'Date display', icon: CalendarRange, desc: 'Live caption for the reporting period' },
+  { type: 'breadcrumb',  label: 'Breadcrumb',   icon: ChevronsRight, desc: 'Drill path across filter variables' },
 ]
 
 /**
@@ -1985,13 +2365,16 @@ const WidgetPreview = memo(function WidgetPreview({ widget }: { widget: Record<s
               {w.type === 'text'    && <TextWidget    widget={w} />}
               {w.type === 'section' && <SectionWidget widget={w} />}
               {w.type === 'image'   && <ImageWidget   widget={w} />}
+              {w.type === 'divider' && <DividerWidget widget={w} />}
+              {w.type === 'datedisplay' && <DateDisplayWidget widget={w} />}
+              {w.type === 'breadcrumb'  && <BreadcrumbWidget  widget={w} editMode />}
               {w.type === 'stepper' && (
                 <StepperWidget
                   widget={w}
                   renderChild={(child) => <WidgetPreview widget={child} />}
                 />
               )}
-              {!['chart','kpi','metric','table','pivot','filter','text','section','image','stepper'].includes(w.type) && (
+              {!['chart','kpi','metric','table','pivot','filter','text','section','image','stepper','divider','datedisplay','breadcrumb'].includes(w.type) && (
                 <div className="h-full w-full bg-surface flex items-center justify-center text-xs text-muted">
                   Unrecognised widget type: <span className="font-mono ml-1">{w.type}</span>
                 </div>
@@ -2830,8 +3213,31 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
     return () => window.removeEventListener('nubi:open-filters', open)
   }, [])
 
+  // Tracks a control that is mid-gesture — dragging in the colour spectrum, or
+  // typing into a colour field — so the stream of values it emits for ONE user
+  // decision collapses into one undo step.
+  //
+  // A ref, not state: it must not re-render the editor, and every commit during
+  // the gesture has to observe it synchronously.
+  //
+  // `committed` is what makes this safe regardless of when a control opens its
+  // gesture relative to its first value: the FIRST commit inside a gesture is
+  // always a real push (there must be an entry holding the pre-edit state to
+  // step back to), and only the ones after it replace it.
+  const liveEditRef = useRef({ active: false, committed: false })
+  const setLiveEdit = useCallback((live) => {
+    liveEditRef.current = { active: live, committed: false }
+  }, [])
+
   const commitSpec = useCallback((newSpec) => {
-    setHist(h => historyPush(h, typeof newSpec === 'function' ? newSpec(h.present) : newSpec))
+    const gesture = liveEditRef.current
+    const coalesce = gesture.active && gesture.committed
+    if (gesture.active) gesture.committed = true
+    setHist(h => historyPush(
+      h,
+      typeof newSpec === 'function' ? newSpec(h.present) : newSpec,
+      { coalesce },
+    ))
   }, [])
 
   const setSpec = commitSpec
@@ -4246,6 +4652,10 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   }
 
   return (
+    // A control emitting a stream of values for ONE user decision (dragging in
+    // the colour spectrum) opens a gesture here, so those commits collapse into
+    // a single undo step instead of dozens.
+    <LiveEditProvider onChange={setLiveEdit}>
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden bg-bg">
 
       {/* Editor toolbar lives in the single app top bar (portaled into AppTopbar). */}
@@ -4899,5 +5309,6 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         </div>
       )}
     </div>
+    </LiveEditProvider>
   )
 }

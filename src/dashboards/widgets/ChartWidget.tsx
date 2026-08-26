@@ -65,7 +65,8 @@ import Skeleton from '../../components/ui/Skeleton.jsx'
 import EmptyState from '../../components/ui/EmptyState.jsx'
 import WidgetError from '../../components/app/WidgetError.jsx'
 import { useTheme } from '../../contexts/ThemeContext.jsx'
-import { adaptBackgroundColor, ensureReadable } from '../../lib/themeColor.js'
+import { adaptBackgroundColor } from '../../lib/themeColor.js'
+import { resolveTextColors } from '../textColors.js'
 
 /**
  * Translate a widget spec into the encoding object expected by buildChartOption.
@@ -280,15 +281,22 @@ export default function ChartWidget({ widget, providerTable = null }) {
     const effectiveBg = widget.style?.themeAdapt === false
       ? rawBg
       : (adaptBackgroundColor(rawBg, isDark ? 'dark' : 'light').hex ?? rawBg)
-    const textColorOverride = typeof widget.style?.color === 'string' && widget.style.color
-      ? ensureReadable(widget.style.color, effectiveBg)
-      : null
-    if (textColorOverride) {
+    // Per-role text colours. A chart's on-canvas text splits cleanly along the
+    // theme's own fg / fgMuted seam: the TITLE and data labels are `fg`, while
+    // axis ticks, axis names and legend entries are `fgMuted`. Feeding the two
+    // roles separately is what makes "title in brand navy, axis labels in grey"
+    // expressible — previously one override flattened both to the same colour.
+    const ink = resolveTextColors(widget.style, { background: effectiveBg })
+    if (ink.title || ink.body || ink.muted) {
       // Deliberately don't touch tooltipBg/tooltipFg here: the tooltip is a
       // floating DOM surface with its own background, not on-canvas text, so
       // it must keep the base theme's readable bg/fg pair regardless of the
-      // author's per-widget text color override.
-      theme = { ...theme, fg: textColorOverride, fgMuted: textColorOverride }
+      // author's per-widget text colour overrides.
+      theme = {
+        ...theme,
+        fg: ink.title ?? ink.body ?? theme.fg,
+        fgMuted: ink.muted ?? ink.body ?? theme.fgMuted,
+      }
     }
 
     const opt = buildChartOption({
@@ -300,7 +308,7 @@ export default function ChartWidget({ widget, providerTable = null }) {
     })
     return opt
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [table, chart_type, JSON.stringify(widget.encoding), JSON.stringify(widget.config), JSON.stringify(widget.props), widget.style?.color, widget.style?.background, widget.style?.themeAdapt, isDark, mapName, mapReadyEpoch])
+  }, [table, chart_type, JSON.stringify(widget.encoding), JSON.stringify(widget.config), JSON.stringify(widget.props), widget.style?.color, widget.style?.titleColor, widget.style?.mutedColor, widget.style?.background, widget.style?.themeAdapt, isDark, mapName, mapReadyEpoch])
 
   if (loading) {
     return (

@@ -27,11 +27,19 @@
  *   decimals? : number         // explicit fraction digits
  *   dateStyle?: string         // 'short'|'medium'|'long'|'full' (date)
  *   timeStyle?: string         // optional time portion
+ *   delta?   : boolean         // number/percent only: force a leading sign
+ *                              // (+/-) so formatValue() and the table's
+ *                              // sign-based text color stay in sync
+ *   bar?     : boolean         // number/percent only: TableWidget renders an
+ *                              // inline magnitude bar alongside the text
+ *   barMax?  : number          // explicit scale for `bar`; default is the
+ *                              // column's own max(abs(value)) across rows
  * }
  *
  * ── Exports ──────────────────────────────────────────────────────────────────
  * evalRules(rules, row, columns) → { cellStyles: {col: style}, rowStyle: style|null }
  * formatValue(value, fmt)        → string
+ * DELTA_COLORS                   → { up, down, flat } hex colors for sign-based text
  */
 
 // ---------------------------------------------------------------------------
@@ -144,6 +152,12 @@ export function evalRules(rules: Record<string, any>[], row: Record<string, any>
 }
 
 // ---------------------------------------------------------------------------
+// Shared sign-based coloring (mirrors KpiWidget's delta convention)
+// ---------------------------------------------------------------------------
+
+export const DELTA_COLORS = { up: '#10b981', down: '#ef4444', flat: '#9ca3af' }
+
+// ---------------------------------------------------------------------------
 // Value formatter
 // ---------------------------------------------------------------------------
 
@@ -176,6 +190,7 @@ export function formatValue(value: any, fmt: Record<string, any>): string {
           opts.minimumFractionDigits = fmt.decimals
           opts.maximumFractionDigits = fmt.decimals
         }
+        if (fmt.delta) opts.signDisplay = 'exceptZero'
         return new Intl.NumberFormat(locale, opts).format(Number(value))
       }
 
@@ -199,6 +214,7 @@ export function formatValue(value: any, fmt: Record<string, any>): string {
           opts.minimumFractionDigits = fmt.decimals
           opts.maximumFractionDigits = fmt.decimals
         }
+        if (fmt.delta) opts.signDisplay = 'exceptZero'
         return new Intl.NumberFormat(locale, opts).format(Number(value))
       }
 

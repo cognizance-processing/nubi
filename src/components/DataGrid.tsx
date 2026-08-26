@@ -273,6 +273,23 @@ export default function DataGrid({
   density: densityProp = 'comfortable',
   stickyFirstCol = false,
   enableGrouping = true,
+  // Initial grouping / pinning. The user can still change both from the
+  // toolbar; these only seed the state, so a board can be AUTHORED with
+  // "grouped by region, ID column pinned left" the way the legacy tables were.
+  initialGrouping = undefined,
+  initialPinning = undefined,
+  // Presentation overrides for boards that style their tables (legacy parity:
+  // headingColor / headerTextColor / rowColorEven / rowColorOdd).
+  headerStyle = undefined,
+  rowStripe = undefined,
+  // Body-cell text colour. Applied inline because the cells carry a `text-fg`
+  // class, which beats a colour merely inherited from the card wrapper — that
+  // is why an author-set text colour never reached table cells before.
+  bodyColor = undefined,
+  // A widget's `exportSettings` block — sheet name, column exclude/reorder/
+  // rename, header + cell styling, number formats, freeze panes. Applies to the
+  // Excel export only; the on-screen grid and the CSV are unaffected.
+  exportSettings = undefined,
   getRowStyle = undefined,
   getCellStyle = undefined,
   exportFileName = 'data',
@@ -289,8 +306,23 @@ export default function DataGrid({
   const [columnVisibility, setColumnVisibility] = useState({})
   const [columnOrder, setColumnOrder] = useState([])
   const [columnSizing, setColumnSizing] = useState({})
-  const [columnPinning, setColumnPinning] = useState({ left: [], right: [] })
-  const [grouping, setGrouping] = useState([])
+  const [columnPinning, setColumnPinning] = useState(() => ({
+    left: initialPinning?.left ?? [],
+    right: initialPinning?.right ?? [],
+  }))
+  const [grouping, setGrouping] = useState(() => (Array.isArray(initialGrouping) ? initialGrouping : []))
+
+  /**
+   * Explicit zebra-stripe background for a body row, or null to keep the
+   * theme's own alternating classes. `rowStripe` may set either band or both;
+   * a band left unset falls back to no inline colour for THAT band, so
+   * `{even: '#fff'}` tints only the even rows and leaves the odd ones themed.
+   */
+  const stripeFor = (index) => {
+    if (!rowStripe) return null
+    const color = index % 2 === 0 ? rowStripe.even : rowStripe.odd
+    return color ? { background: color } : null
+  }
   const [expanded, setExpanded] = useState({})
   const [showFilters, setShowFilters] = useState(false)
   const [density, setDensity] = useState(densityProp)
@@ -478,9 +510,12 @@ export default function DataGrid({
   }, [exportFileName, exportRows, exportColumns, getExportValue])
 
   const doExportExcel = useCallback(() => {
-    downloadExcel(`${exportFileName}.xls`, exportRows, exportColumns, exportFileName, getExportValue)
+    downloadExcel(
+      `${exportFileName}.xls`, exportRows, exportColumns, exportFileName,
+      getExportValue, exportSettings,
+    )
     setOpenMenu(null)
-  }, [exportFileName, exportRows, exportColumns, getExportValue])
+  }, [exportFileName, exportRows, exportColumns, getExportValue, exportSettings])
 
   // ── Density classes ───────────────────────────────────────────────────────
   const rowH = ROW_HEIGHT[density]
@@ -746,7 +781,7 @@ export default function DataGrid({
             {/* Header */}
             <thead className="sticky top-0 z-20">
               {table.getHeaderGroups().map((hg) => (
-                <tr key={hg.id} className="bg-surface-2 border-b-2 border-border">
+                <tr key={hg.id} className="bg-surface-2 border-b-2 border-border" style={headerStyle}>
                   {hg.headers.map((header) => {
                     const col = header.column
                     const type = col.columnDef.meta?.type
@@ -758,7 +793,7 @@ export default function DataGrid({
                         key={header.id}
                         colSpan={header.colSpan}
                         className="relative select-none border-r border-border/40 last:border-r-0 group bg-surface-2"
-                        style={{ width: header.getSize(), ...pinStyle(col) }}
+                        style={{ width: header.getSize(), ...pinStyle(col), ...(headerStyle ?? {}) }}
                         draggable
                         onDragStart={() => (dragColRef.current = col.id)}
                         onDragOver={(e) => e.preventDefault()}
@@ -881,10 +916,21 @@ export default function DataGrid({
                       ref={rowVirtualizer.measureElement}
                       className={[
                         'group transition-colors',
-                        isGrouped ? 'bg-surface-2 font-medium' : vr.index % 2 === 0 ? 'bg-surface' : 'bg-surface-2/40',
+                        isGrouped
+                          ? 'bg-surface-2 font-medium'
+                          // An explicit stripe colour replaces the token
+                          // classes entirely — leaving them on would win the
+                          // cascade over the inline background.
+                          : stripeFor(vr.index) ? '' : (vr.index % 2 === 0 ? 'bg-surface' : 'bg-surface-2/40'),
                         'hover:bg-primary/5',
                       ].join(' ')}
-                      style={{ height: rowH, ...(rowStyle ?? {}) }}
+                      style={{
+                        height: rowH,
+                        ...(isGrouped ? null : stripeFor(vr.index)),
+                        // Conditional formatting is authored per row and must
+                        // still beat the zebra stripe underneath it.
+                        ...(rowStyle ?? {}),
+                      }}
                     >
                       {row.getVisibleCells().map((cell) => {
                         const col = cell.column
@@ -909,7 +955,14 @@ export default function DataGrid({
                               (onCellClick || onCellDoubleClick) && !isGrouped ? 'cursor-pointer' : '',
                               col.getIsPinned() ? 'bg-surface group-hover:bg-surface-2' : '',
                             ].join(' ')}
-                            style={{ width: cell.column.getSize(), ...pinStyle(col), ...(cellStyle ?? {}) }}
+                            style={{
+                              width: cell.column.getSize(),
+                              ...pinStyle(col),
+                              ...(bodyColor ? { color: bodyColor } : null),
+                              // Conditional formatting is per cell and must win
+                              // over the card-wide body colour.
+                              ...(cellStyle ?? {}),
+                            }}
                             onClick={
                               onCellClick && !isGrouped
                                 ? () => onCellClick(cell.getValue(), row.original, col.id)

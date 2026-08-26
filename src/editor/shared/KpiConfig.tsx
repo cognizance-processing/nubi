@@ -53,8 +53,31 @@ export function KpiConfig({ widget, onChange }) {
         <div>
           <FieldLabel>Format</FieldLabel>
           <select className={selectCls} value={props.format ?? 'number'} onChange={e => setProps('format', e.target.value)}>
-            {['number', 'integer', 'percent', 'percent100', 'currency'].map(f => <option key={f} value={f}>{f}</option>)}
+            <option value="number">number — compact (1.2K, 3.4M)</option>
+            <option value="comma">comma — full digits (1,234)</option>
+            <option value="integer">integer</option>
+            <option value="percent">percent — from a 0–1 fraction</option>
+            <option value="percent100">percent100 — already 0–100</option>
+            <option value="currency">currency</option>
           </select>
+        </div>
+        <div className="flex gap-1.5">
+          <div className="flex-1">
+            <FieldLabel>Prefix</FieldLabel>
+            <input type="text" className={inputCls} placeholder="e.g. R"
+              value={props.prefix ?? ''} onChange={e => setProps('prefix', e.target.value || undefined)} />
+          </div>
+          <div className="flex-1">
+            <FieldLabel>Suffix</FieldLabel>
+            <input type="text" className={inputCls} placeholder="e.g. %"
+              value={props.suffix ?? ''} onChange={e => setProps('suffix', e.target.value || undefined)} />
+          </div>
+          <div className="w-20">
+            <FieldLabel>Decimals</FieldLabel>
+            <input type="number" min={0} max={6} className={inputCls} placeholder="auto"
+              value={props.decimals ?? ''}
+              onChange={e => setProps('decimals', e.target.value === '' ? undefined : Math.max(0, parseInt(e.target.value, 10) || 0))} />
+          </div>
         </div>
         <div>
           <FieldLabel>Label position</FieldLabel>
@@ -90,6 +113,39 @@ export function KpiConfig({ widget, onChange }) {
           </div>
         )}
         <ColumnSelect label="Sparkline column" value={enc.spark} onChange={v => setEncoding('spark', v)} columns={columns} optional />
+        {enc.spark && (
+          <>
+            <div>
+              <FieldLabel>Sparkline shape</FieldLabel>
+              <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+                {[['line', 'Line'], ['bar', 'Bars']].map(([v, lbl]) => (
+                  <button key={v} onClick={() => setProps('sparkType', v === 'line' ? undefined : v)}
+                    className={`flex-1 text-[11px] font-medium transition-colors ${(props.sparkType ?? 'line') === v ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <FieldLabel>Sparkline colour</FieldLabel>
+              <ColorField
+                value={props.sparkColor}
+                onChange={v => setProps('sparkColor', v)}
+                placeholder="follows the accent colour"
+              />
+            </div>
+            {(props.sparkType ?? 'line') === 'line' && (
+              <>
+                <ToggleRow label="Fill under the line"
+                  checked={props.sparkFilled !== false}
+                  onChange={v => setProps('sparkFilled', v ? undefined : false)} />
+                <ToggleRow label="Smooth curve"
+                  checked={props.sparkSmooth !== false}
+                  onChange={v => setProps('sparkSmooth', v ? undefined : false)} />
+              </>
+            )}
+          </>
+        )}
       </Section>
 
       <Section title="Progress & accent" defaultOpen={false} icon={Gauge}>

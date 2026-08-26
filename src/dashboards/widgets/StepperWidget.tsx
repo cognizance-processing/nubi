@@ -18,10 +18,19 @@
  *       steps: [ { label: string, widget: <widget spec> }, ... ],
  *       orientation?: 'horizontal' | 'vertical',   // default 'horizontal'
  *       variant?:     'dots' | 'labels',           // default 'labels'
+ *       display?:     'one' | 'all',               // default 'one'
  *       showTitle?:   boolean,
  *       title?:       string,
  *     }
  *   }
+ *
+ * `display: 'all'` drops the step bar and lays every child out at once, side by
+ * side (or stacked, when orientation is 'vertical'), each under its own label.
+ * That is the OTHER legacy container — a group of widgets sharing one tile,
+ * with no drill-down — and it is the same children in the same spec shape, so a
+ * board can switch between "one at a time" and "all at once" without being
+ * rebuilt. Cross-filter still works in this mode; only the stepping does not
+ * apply, so no StepperProvider is installed.
  *
  * Children are full widget specs and are rendered through `renderChild`, which
  * SpecRenderer supplies — that keeps the recursion out of this module and avoids
@@ -48,6 +57,7 @@ export default function StepperWidget({ widget, renderChild }) {
 
   const orientation = widget?.props?.orientation === 'vertical' ? 'vertical' : 'horizontal'
   const variant = widget?.props?.variant === 'dots' ? 'dots' : 'labels'
+  const showAll = widget?.props?.display === 'all'
 
   // Moving to `next`: if it is BEHIND the current step, clear the variables the
   // steps we're leaving had written, so the drill-down filter doesn't persist.
@@ -69,6 +79,32 @@ export default function StepperWidget({ widget, renderChild }) {
     return (
       <div className="flex items-center justify-center h-full px-4 text-sm text-muted">
         No steps configured.
+      </div>
+    )
+  }
+
+  // Group mode: every child at once, no step bar, no stepping context.
+  if (showAll) {
+    return (
+      <div
+        className={cx(
+          'flex w-full h-full min-h-0 gap-3',
+          orientation === 'vertical' ? 'flex-col' : 'flex-row',
+        )}
+      >
+        {steps.map((step, i) => (
+          <div
+            key={step.id ?? `${step.label ?? 'item'}-${i}`}
+            className="flex-1 min-w-0 min-h-0 flex flex-col"
+          >
+            {step.label && (
+              <p className="shrink-0 text-[11px] font-medium text-muted truncate mb-1">{step.label}</p>
+            )}
+            <div className="flex-1 min-h-0 min-w-0">
+              {renderChild ? renderChild(step.widget) : null}
+            </div>
+          </div>
+        ))}
       </div>
     )
   }

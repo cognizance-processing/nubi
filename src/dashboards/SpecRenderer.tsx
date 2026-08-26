@@ -45,6 +45,9 @@ import PivotWidget from './widgets/PivotWidget.jsx'
 import SectionWidget from './widgets/SectionWidget.jsx'
 import ImageWidget from './widgets/ImageWidget.jsx'
 import StepperWidget from './widgets/StepperWidget.jsx'
+import DividerWidget from './widgets/DividerWidget.jsx'
+import DateDisplayWidget from './widgets/DateDisplayWidget.jsx'
+import BreadcrumbWidget from './widgets/BreadcrumbWidget.jsx'
 import { VariableProvider, useSetVariable, useResolvedParams, useVariableValues } from './VariableStore.jsx'
 import { isFilterApplied } from './inputs/helpers.js'
 import { CrossFilterProvider } from './CrossFilterContext.jsx'
@@ -223,6 +226,12 @@ function WidgetComponent({ widget, onOpenDrawer = undefined, editMode = false, p
     case 'text':    return <TextWidget   widget={w} />
     case 'image':   return <ImageWidget  widget={w} />
     case 'section': return <SectionWidget widget={w} />
+    case 'divider': return <DividerWidget widget={w} />
+    case 'datedisplay': return <DateDisplayWidget widget={w} providerTable={providerTable} />
+    // A breadcrumb reads and writes dashboard variables, so it must not run its
+    // change-watcher on the editor canvas — authoring a board would otherwise
+    // accumulate drill steps nobody asked for.
+    case 'breadcrumb': return <BreadcrumbWidget widget={w} editMode={editMode} />
     // A stepper shows one child widget at a time in a single tile (the legacy
     // in-tile drill-down). It renders its children back through this same
     // dispatch, so nesting and every widget type keep working inside it.

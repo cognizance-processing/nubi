@@ -39,14 +39,21 @@ Public API
 
 from __future__ import annotations
 
+import base64
 import copy
 import json
 import os
+import re
 import subprocess
 import threading
 from typing import Any
 
-from app.dashboards.spec import DashboardSpec, get_surface_layout, validate_spec
+from app.dashboards.spec import (
+    DashboardSpec,
+    effective_placement,
+    get_surface_layout,
+    validate_spec,
+)
 from app.errors import AppError
 
 # ---------------------------------------------------------------------------
@@ -359,6 +366,39 @@ def _resolve_stepper_step(
     return child_widget, child_data
 
 
+# Matches the exact shape `POST /images` and friends hand back (see
+# app/routes/images.py) — a bare `uuid4().hex`, never a path with `..` etc.
+_LOCAL_IMAGE_URL_RE = re.compile(r"^/api/v1/images/([0-9a-fA-F]{32})$")
+
+
+def _resolve_image_data_uri(url: str) -> str | None:
+    """Inline a locally-stored branding image (logo, etc.) as a data: URI.
+
+    A rendered thumbnail/PDF is a standalone SVG with no browser origin and no
+    way to send the bearer token images.py doesn't even ask for — an
+    `<image href="/api/v1/images/...">` would resolve against nothing when the
+    SVG is viewed outside the app (or fail to resolve at all, since Node never
+    fetches it). The picture has to carry the bytes itself.
+
+    Only the app's own unauthenticated image store is handled (that ``GET`` is
+    deliberately unauthenticated — see images.py — so reading it here needs no
+    auth story either). An external absolute URL is left alone and the widget
+    falls back to its placeholder: fetching an arbitrary URL server-side would
+    need the same SSRF guard ``fetch_image_from_url`` already has, and no
+    "image" widget in the wild points anywhere but this store.
+    """
+    m = _LOCAL_IMAGE_URL_RE.match((url or "").strip())
+    if not m:
+        return None
+    try:
+        from app.dashboards.images import load_image  # noqa: PLC0415
+
+        data, content_type = load_image(m.group(1))
+    except Exception:  # noqa: BLE001 - a missing/broken image just isn't drawn
+        return None
+    return f"data:{content_type};base64,{base64.b64encode(data).decode('ascii')}"
+
+
 def _widget_to_payload(
     widget_spec: Any,
     widget_data: dict[str, Any] | None,
@@ -389,12 +429,19 @@ def _widget_to_payload(
         columns = list(widget_data.get("columns") or [])
         rows = list(widget_data.get("rows") or [])
 
+    props = dict(widget_spec.props or {})
+    if widget_spec.type == "image":
+        data_uri = _resolve_image_data_uri(props.get("url") or "")
+        if data_uri:
+            props["url"] = data_uri
+
     return {
         "id": widget_spec.id,
         "type": widget_spec.type,
         "chart_type": widget_spec.chart_type,
         "encoding": dict(widget_spec.encoding or {}),
-        "props": dict(widget_spec.props or {}),
+        "props": props,
+        "config": dict(widget_spec.config or {}),
         # The widget's own look — background, text colour, radius. Omitting this
         # was why every server render came out light: a board styled with dark
         # tiles rendered on the SSR default white, so the picture was accurate
@@ -443,6 +490,36 @@ def render_widgets_svg(
 
 
 _PAGE_BG = {"light": "#ffffff", "dark": "#111a2e"}   # mirrors --surface in src/index.css
+
+
+def resolve_page_bg(spec: DashboardSpec, theme: str) -> str:
+    """The page background a render should paint — the board's own custom
+    background when it set one, else the generic theme default.
+
+    Mirrors ``backgroundToCss`` (src/dashboards/widgetHtml.js) enough to cover
+    what boards actually use: ``solid``/``transparent`` render exactly, a
+    ``gradient`` is approximated by its ``from`` colour (a plain SVG ``fill``
+    attribute can't reference a CSS gradient without a ``<linearGradient>``
+    def the composer doesn't have), and ``image``/``css``/unset fall back to
+    the theme default rather than guess at something unsafe to inline.
+    Deliberately does NOT port the near-white/near-gray theme-adapt swap
+    (``adaptBackgroundColor``) — a board's explicitly chosen colour is used
+    as authored.
+    """
+    bg = spec.background
+    default = _PAGE_BG.get(theme, _PAGE_BG["light"])
+    if not isinstance(bg, dict):
+        return default
+    bg_type = bg.get("type")
+    if bg_type == "transparent":
+        return default
+    if bg_type == "solid":
+        color = bg.get("color")
+        return color if isinstance(color, str) and color else default
+    if bg_type == "gradient":
+        color = bg.get("from")
+        return color if isinstance(color, str) and color else default
+    return default
 
 
 def compose_page_svg(
@@ -687,6 +764,15 @@ def render_board_svg(
     widget_layout_map: dict[str, dict[str, Any]] = {}
 
     for widget in tab_widgets:
+        # A drawer/header widget can still carry a legacy `pos` (un-migrated
+        # boards keep the position a widget had before it was flagged
+        # `drawer=True`), so `layout.get(widget.id)` alone is not a reliable
+        # "is this on the grid?" check — it was letting filter chips the live
+        # app only ever shows inside the Filters drawer render inline on the
+        # grid instead (SpecRenderer.tsx's effectivePlacement does this same
+        # check before mounting a widget in the canvas).
+        if effective_placement(widget) != "grid":
+            continue
         # Only grid-placed widgets have a position in the surface layout.
         entry = layout.get(widget.id)
         if entry is None:
@@ -751,7 +837,7 @@ def render_board_svg(
         row_height_px=row_height_px,
         margin_px=margin_px,
         gap_px=gap_px,
-        page_bg=_PAGE_BG.get(theme, _PAGE_BG["light"]),
+        page_bg=resolve_page_bg(spec, theme),
         timeout=compose_timeout,
     )
     return composed["svg"]

@@ -38,11 +38,12 @@ pytestmark = pytest.mark.skipif(
     reason="Node.js / echarts not available — skipping SVG render tests",
 )
 
-from app.dashboards.spec import DashboardSpec, WidgetPos, Widget, Surfaces, SurfaceGridEntry
+from app.dashboards.spec import DashboardSpec, WidgetPos, Widget, Surfaces, SurfaceGridEntry, validate_spec
 from app.dashboards.svg_render import (
     compose_page_svg,
     render_board_svg,
     render_widgets_svg,
+    resolve_page_bg,
 )
 
 
@@ -684,3 +685,344 @@ class TestWidgetStyleAndTheme:
         for theme in ("light", "dark"):
             svg = render_board_svg(spec, data, page_width_px=600, theme=theme)
             assert "#161b22" in svg, f"{theme}: the widget's own colour must win"
+
+
+# ---------------------------------------------------------------------------
+# 6. Widget.config passthrough — deliberately exercised with data that shares
+#    nothing (no column names, no domain) with any other fixture in this
+#    file, and parametrized across several unrelated metrics, so a pass
+#    proves the mechanism generalises rather than happening to fit the
+#    region/revenue shape everything else here uses.
+# ---------------------------------------------------------------------------
+
+
+class TestWidgetConfigPassthrough:
+    """widget.config (palette/legend/stack/gaugeStyle/...) was silently
+    dropped by validate_spec the same way `style` once was, so every
+    server-side render (thumbnail, PDF) fell back to the generic default
+    palette no matter what the author configured.
+    """
+
+    def test_widget_model_keeps_config(self):
+        """Regression: config was dropped on the floor by validation."""
+        spec, errors = validate_spec({
+            "title": "configured",
+            "layout": {"cols": 12, "row_height": 60},
+            "widgets": [{
+                "id": "c1", "type": "chart", "query_id": "q1",
+                "chart_type": "bar",
+                "encoding": {"x": "sensor", "y": "temperature_c"},
+                "config": {"palette": ["#ff00aa"], "legend": True},
+                "pos": {"x": 1, "y": 1, "w": 6, "h": 3},
+            }],
+        })
+        assert spec is not None
+        assert not any("config" in e for e in errors)
+        assert spec.widgets[0].config == {"palette": ["#ff00aa"], "legend": True}
+
+    def test_config_conflicts_with_ref_like_props_and_style(self):
+        """Same mutual-exclusivity rule already enforced for props/style
+        (validate_spec step 14) now also covers config: a widget can't be
+        both a library reference and carry its own inline config."""
+        spec, errors = validate_spec({
+            "title": "conflict",
+            "layout": {"cols": 12, "row_height": 60},
+            "widgets": [{
+                "id": "c1", "ref": "lib1",
+                "config": {"palette": ["#ff00aa"]},
+                "pos": {"x": 1, "y": 1, "w": 6, "h": 3},
+            }],
+        })
+        assert any("config" in e for e in errors)
+
+    @pytest.mark.skipif(not renderer_available(), reason="Node.js / echarts not available")
+    @pytest.mark.parametrize(
+        "category_col,metric_col,custom_color",
+        [
+            ("sensor", "temperature_c", "#ff00aa"),
+            ("endpoint", "latency_ms", "#00c2ff"),
+            ("assembly_line", "defect_rate", "#7cff00"),
+            ("campaign", "signups", "#ffae00"),
+        ],
+    )
+    def test_custom_palette_is_honoured_for_any_metric(self, category_col, metric_col, custom_color):
+        """The fix can't be coupled to one dataset's shape: a board about
+        sensor temperatures, API latency, factory defects, or marketing
+        signups must all honour their own config identically — there is no
+        "one true metric" this only happens to work for.
+        """
+        spec = DashboardSpec(
+            title="Custom-palette board",
+            layout={"cols": 12, "row_height": 60},
+            widgets=[
+                Widget(
+                    id="c1", type="chart", query_id="q1", chart_type="bar",
+                    encoding={"x": category_col, "y": metric_col},
+                    config={"palette": [custom_color]},
+                    pos=WidgetPos(x=1, y=1, w=6, h=3),
+                ),
+            ],
+        )
+        data = [{
+            "widget_id": "c1", "query_id": "q1",
+            "columns": [category_col, metric_col],
+            "rows": [["A", 3], ["B", 7], ["C", 5]],
+        }]
+
+        svg = render_board_svg(spec, data)
+
+        assert custom_color in svg.lower(), (
+            f"Expected config.palette colour {custom_color} to reach the "
+            f"render for metric={metric_col!r}, got no trace of it"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 7. DashboardSpec.background passthrough — same treatment: a pure-function
+#    matrix of every background type resolve_page_bg understands, plus one
+#    render-level check with a metric/domain not used anywhere else here.
+# ---------------------------------------------------------------------------
+
+
+class TestBackgroundPassthrough:
+    """spec.background was silently dropped the same way `style` and
+    `Widget.config` once were, so a board authored on a custom canvas got a
+    plain theme-default thumbnail with no visible relation to how viewers
+    actually see it.
+    """
+
+    @pytest.mark.parametrize(
+        "background,theme,expected",
+        [
+            (None, "light", "#ffffff"),
+            (None, "dark", "#111a2e"),
+            ({"type": "transparent"}, "light", "#ffffff"),
+            ({"type": "solid", "color": "#123456"}, "light", "#123456"),
+            ({"type": "solid", "color": "#123456"}, "dark", "#123456"),
+            ({"type": "gradient", "from": "#abcdef", "to": "#000000"}, "light", "#abcdef"),
+            ({"type": "solid"}, "light", "#ffffff"),  # no colour set -> falls back
+            ({"type": "image", "imageUrl": "https://example.com/x.png"}, "dark", "#111a2e"),
+            ({"type": "css", "css": "repeating-linear-gradient(...)"}, "light", "#ffffff"),
+        ],
+    )
+    def test_resolve_page_bg_matrix(self, background, theme, expected):
+        spec = DashboardSpec(title="bg", background=background, widgets=[])
+        assert resolve_page_bg(spec, theme) == expected
+
+    @pytest.mark.skipif(not renderer_available(), reason="Node.js / echarts not available")
+    def test_custom_background_reaches_the_composed_render(self):
+        """Uses a fresh metric/category unrelated to every other fixture in
+        this file, so the assertion isn't riding on a coincidence of the
+        region/revenue shape."""
+        spec = DashboardSpec(
+            title="Custom-bg board",
+            layout={"cols": 12, "row_height": 60},
+            background={"type": "solid", "color": "#2a1f4d"},
+            widgets=[
+                Widget(
+                    id="k1", type="kpi", query_id="q1",
+                    encoding={"value": "queue_depth"},
+                    props={"label": "Queue depth"},
+                    pos=WidgetPos(x=1, y=1, w=3, h=2),
+                ),
+            ],
+        )
+        data = [{"widget_id": "k1", "query_id": "q1", "columns": ["queue_depth"], "rows": [[12]]}]
+
+        svg = render_board_svg(spec, data, theme="light")
+
+        assert "#2a1f4d" in svg.lower(), "The board's own background colour must reach the page render"
+
+
+# ---------------------------------------------------------------------------
+# Server-side chart-type coverage
+# ---------------------------------------------------------------------------
+
+
+class TestServerSideChartTypes:
+    """Every chart type must render as ITSELF server-side.
+
+    The SSR renderer keeps its own option builders (it runs as plain Node and
+    cannot import the TypeScript builder the browser uses), and its dispatch had
+    fallen behind: any type without a local case fell through to a BAR chart, so
+    a treemap or a sankey came out of a thumbnail or a PDF export as bars. These
+    assertions pin the silhouette, which is the part a fallback would get wrong.
+    """
+
+    # chart_type -> (payload fields, substring proving the right series ran)
+    CASES = {
+        "sankey": (
+            {"encoding": {"source": "s", "target": "t", "value": "v"},
+             "columns": ["s", "t", "v"], "rows": [["A", "B", 5], ["A", "C", 3]]},
+        ),
+        "funnel": (
+            {"encoding": {"x": "c", "y": "v"},
+             "columns": ["c", "v"], "rows": [["a", 10], ["b", 6]]},
+        ),
+        "waterfall": (
+            {"encoding": {"x": "c", "y": "v"},
+             "columns": ["c", "v"], "rows": [["a", 10], ["b", -6], ["c", 3]]},
+        ),
+        "heatmap": (
+            {"encoding": {"x": "x", "color": "y", "value": "v"},
+             "columns": ["x", "y", "v"],
+             "rows": [["Mon", "AM", 5], ["Mon", "PM", 8], ["Tue", "AM", 3]]},
+        ),
+        "radar": (
+            {"encoding": {"x": "c", "y": "v"},
+             "columns": ["c", "v"], "rows": [["a", 10], ["b", 6], ["c", 8]]},
+        ),
+        "treemap": (
+            {"encoding": {"x": "c", "y": "v"},
+             "columns": ["c", "v"], "rows": [["a", 10], ["b", 6]]},
+        ),
+        "boxplot": (
+            {"encoding": {"x": "c", "y": "v"},
+             "columns": ["c", "v"], "rows": [["g", 1], ["g", 5], ["g", 9], ["h", 2], ["h", 4]]},
+        ),
+        "candlestick": (
+            {"encoding": {"x": "d", "open": "o", "close": "c", "low": "l", "high": "h"},
+             "columns": ["d", "o", "c", "l", "h"],
+             "rows": [["Jan", 1, 2, 0.5, 2.5], ["Feb", 2, 1.5, 1, 2.2]]},
+        ),
+        "fan": (
+            {"encoding": {"x": "t", "y": "m", "lower": "lo", "upper": "hi"},
+             "columns": ["t", "m", "lo", "hi"],
+             "rows": [["Q1", 100, 90, 110], ["Q2", 120, 105, 135]]},
+        ),
+        "polar": (
+            {"encoding": {"x": "c", "y": "v"},
+             "columns": ["c", "v"], "rows": [["a", 10], ["b", 6]]},
+        ),
+        "radialbar": (
+            {"encoding": {"x": "c", "y": "v"},
+             "columns": ["c", "v"], "rows": [["a", 80], ["b", 60]]},
+        ),
+        "bubble": (
+            {"encoding": {"x": "x", "y": "y", "size": "s"},
+             "columns": ["x", "y", "s"], "rows": [[1, 2, 3], [2, 4, 5]]},
+        ),
+    }
+
+    @pytest.mark.skipif(not renderer_available(), reason="Node.js / echarts not available")
+    def test_every_chart_type_renders_without_error(self):
+        payloads = [
+            {
+                "id": ct,
+                "type": "chart",
+                "chart_type": ct,
+                "props": {},
+                "content": None,
+                "width": 320,
+                "height": 240,
+                **fields[0],
+            }
+            for ct, fields in self.CASES.items()
+        ]
+        results = {r["id"]: r for r in render_widgets_svg(payloads)}
+        assert set(results) == set(self.CASES)
+        for ct, r in results.items():
+            svg = r.get("svg") or ""
+            assert svg.strip().startswith("<svg"), f"{ct}: no SVG — {r.get('error')}"
+            assert not r.get("error"), f"{ct}: {r.get('error')}"
+
+    @pytest.mark.skipif(not renderer_available(), reason="Node.js / echarts not available")
+    def test_a_treemap_is_not_silently_drawn_as_bars(self):
+        """The specific regression: unlisted types fell through to buildBar."""
+        tree = {
+            "id": "t", "type": "chart", "chart_type": "treemap",
+            "encoding": {"x": "c", "y": "v"}, "props": {}, "content": None,
+            "columns": ["c", "v"], "rows": [["alpha", 10], ["beta", 6]],
+            "width": 320, "height": 240,
+        }
+        bar = {**tree, "id": "b", "chart_type": "bar"}
+        out = {r["id"]: (r.get("svg") or "") for r in render_widgets_svg([tree, bar])}
+        assert out["t"] and out["b"]
+        assert out["t"] != out["b"], "treemap rendered identically to a bar chart"
+
+    @pytest.mark.skipif(not renderer_available(), reason="Node.js / echarts not available")
+    def test_map_degrades_to_a_placeholder_not_a_wrong_chart(self):
+        """No server-side GeoJSON registry exists, so there is no map to draw."""
+        payload = {
+            "id": "m", "type": "chart", "chart_type": "map",
+            "encoding": {"name": "n", "value": "v"}, "props": {}, "content": None,
+            "columns": ["n", "v"], "rows": [["ZAF", 5]],
+            "width": 320, "height": 240,
+        }
+        svg = (render_widgets_svg([payload])[0].get("svg") or "")
+        assert svg.strip().startswith("<svg")
+        # The placeholder is a labelled chip, not an echarts render.
+        assert "[chart]" in svg or "[map]" in svg, svg[:300]
+
+
+# ---------------------------------------------------------------------------
+# Per-role text colours
+# ---------------------------------------------------------------------------
+
+
+class TestTextColorRoles:
+    """A board's authored text colours must survive into thumbnails and PDFs.
+
+    Widgets carry three text roles — `style.titleColor` (headings),
+    `style.color` (body) and `style.mutedColor` (captions, axis and legend
+    labels). The server renderer used to know only about `style.color`, so a
+    board that coloured its headings or captions came out of an export with
+    them in the default ink.
+    """
+
+    @pytest.mark.skipif(not renderer_available(), reason="Node.js / echarts not available")
+    def test_section_title_and_subtitle_take_their_own_roles(self):
+        payload = {
+            "id": "s", "type": "section",
+            "props": {"title": "Head", "subtitle": "Sub"},
+            "style": {"titleColor": "#ff0000", "mutedColor": "#0000ff"},
+            "content": None, "columns": [], "rows": [], "width": 400, "height": 80,
+        }
+        svg = render_widgets_svg([payload])[0].get("svg") or ""
+        assert "#ff0000" in svg, "heading colour missing"
+        assert "#0000ff" in svg, "subtitle colour missing"
+
+    @pytest.mark.skipif(not renderer_available(), reason="Node.js / echarts not available")
+    def test_kpi_caption_is_the_muted_role(self):
+        payload = {
+            "id": "k", "type": "kpi",
+            "encoding": {"value": "v"}, "props": {"label": "Cap"},
+            "style": {"color": "#00ff00", "mutedColor": "#0000ff"},
+            "content": None, "columns": ["v"], "rows": [[42]], "width": 300, "height": 150,
+        }
+        svg = render_widgets_svg([payload])[0].get("svg") or ""
+        assert "#00ff00" in svg, "value colour missing"
+        assert "#0000ff" in svg, "caption colour missing"
+
+    @pytest.mark.skipif(not renderer_available(), reason="Node.js / echarts not available")
+    def test_chart_title_is_rendered_and_uses_the_title_role(self):
+        """config.title was dropped outright — a titled chart exported untitled."""
+        payload = {
+            "id": "c", "type": "chart", "chart_type": "bar",
+            "encoding": {"x": "c", "y": "v"},
+            "config": {"title": "Revenue by region", "subtitle": "FY25"},
+            "style": {"titleColor": "#ff0000", "mutedColor": "#0000ff"},
+            "props": {}, "content": None,
+            "columns": ["c", "v"], "rows": [["a", 1], ["b", 2]],
+            "width": 400, "height": 300,
+        }
+        svg = render_widgets_svg([payload])[0].get("svg") or ""
+        assert "Revenue by region" in svg, "chart title not rendered"
+        assert "#ff0000" in svg, "title colour missing"
+        assert "#0000ff" in svg, "axis/legend colour missing"
+
+    @pytest.mark.skipif(not renderer_available(), reason="Node.js / echarts not available")
+    def test_a_body_colour_alone_still_drives_the_other_roles(self):
+        """Back-compat: one authored colour must not leave grey axis labels on
+        a dark tile — the roles fall back to the body colour before the theme."""
+        payload = {
+            "id": "c", "type": "chart", "chart_type": "bar",
+            "encoding": {"x": "c", "y": "v"},
+            "config": {"title": "T"},
+            "style": {"color": "#ffcc00", "background": "#101010"},
+            "props": {}, "content": None,
+            "columns": ["c", "v"], "rows": [["a", 1]],
+            "width": 400, "height": 300,
+        }
+        svg = render_widgets_svg([payload])[0].get("svg") or ""
+        assert "#ffcc00" in svg

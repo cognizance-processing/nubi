@@ -12,7 +12,7 @@ export const CHART_TYPES = [
   // Core cartesian
   'bar', 'line', 'area', 'scatter', 'bubble', 'combo',
   // Circular
-  'pie', 'donut',
+  'pie', 'donut', 'polar', 'radialbar',
   // Flow / hierarchy / distribution
   'sankey', 'funnel', 'waterfall', 'treemap',
   // Matrix / radial

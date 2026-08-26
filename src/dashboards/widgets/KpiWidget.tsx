@@ -54,31 +54,45 @@ import Skeleton from '../../components/ui/Skeleton.jsx'
 import Badge from '../../components/ui/Badge.jsx'
 import WidgetError from '../../components/app/WidgetError.jsx'
 import { findKpiIcon } from '../kpiIcons.jsx'
-import { ensureReadable, readableInk } from '../../lib/contrast.js'
+import { ensureReadable } from '../../lib/contrast.js'
+import { resolveTextColors } from '../textColors.js'
 import { adaptBackgroundColor } from '../../lib/themeColor.js'
 import { useTheme } from '../../contexts/ThemeContext.jsx'
 
-/** Format a raw value for display. */
-function formatValue(raw, format) {
+/**
+ * Format a raw value for display.
+ *
+ * `decimals` overrides each format's own default precision — a percentage
+ * board that wants whole numbers ("85%") should not have to accept "85.0%".
+ * A non-numeric value is shown verbatim rather than as NaN.
+ */
+function formatValue(raw, format, decimals) {
   if (raw == null) return '—'
   const num = Number(raw)
   if (Number.isNaN(num)) return String(raw)
+  const d = Number.isInteger(decimals) && decimals >= 0 ? decimals : null
 
   switch (format) {
     case 'integer':
-      return num.toLocaleString(undefined, { maximumFractionDigits: 0 })
+      return num.toLocaleString(undefined, { maximumFractionDigits: d ?? 0 })
     case 'percent':
-      return `${(num * 100).toFixed(1)}%`
+      return `${(num * 100).toFixed(d ?? 1)}%`
     case 'percent100':
       // value is already on a 0-100 scale (common for migrated legacy queries)
-      return `${num.toFixed(1)}%`
+      return `${num.toFixed(d ?? 1)}%`
     case 'currency':
-      return `$${num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+      return `${num.toLocaleString(undefined, { minimumFractionDigits: d ?? 2, maximumFractionDigits: d ?? 2 })}`
+    // Plain grouped digits with no K/M abbreviation — the legacy default for a
+    // KPI card, and the right choice whenever the exact figure matters.
+    case 'comma':
+      return num.toLocaleString(undefined, {
+        minimumFractionDigits: d ?? 0, maximumFractionDigits: d ?? 0,
+      })
     default:
       // 'number' or unset — smart compact formatting
-      if (Math.abs(num) >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`
-      if (Math.abs(num) >= 1_000) return `${(num / 1_000).toFixed(1)}K`
-      return num.toLocaleString(undefined, { maximumFractionDigits: 2 })
+      if (Math.abs(num) >= 1_000_000) return `${(num / 1_000_000).toFixed(d ?? 1)}M`
+      if (Math.abs(num) >= 1_000) return `${(num / 1_000).toFixed(d ?? 1)}K`
+      return num.toLocaleString(undefined, { maximumFractionDigits: d ?? 2 })
   }
 }
 
@@ -119,23 +133,43 @@ function computeDelta(value, baseline, deltaFormat) {
 
 const DELTA_COLORS = { up: '#10b981', down: '#ef4444', flat: '#9ca3af' }
 
-/** Build a minimal axis-less sparkline ECharts option from a numeric array. */
-function sparkOption(values) {
-  return {
+/**
+ * Build a minimal axis-less sparkline ECharts option from a numeric array.
+ *
+ * @param {number[]} values
+ * @param {{type?: 'line'|'bar', color?: string, filled?: boolean, smooth?: boolean}} [opts]
+ */
+function sparkOption(values, opts: {
+  type?: string, color?: string, filled?: boolean, smooth?: boolean,
+} = {}) {
+  const color = opts.color || '#6366f1'
+  const asBar = opts.type === 'bar'
+  const base = {
     backgroundColor: 'transparent',
     animation: false,
     grid: { top: 2, right: 2, bottom: 2, left: 2 },
-    xAxis: { type: 'category', show: false, boundaryGap: false,
+    xAxis: { type: 'category', show: false, boundaryGap: asBar,
       data: values.map((_, i) => i) },
-    yAxis: { type: 'value', show: false, scale: true },
+    yAxis: { type: 'value', show: false, scale: !asBar },
     tooltip: { show: false },
+  }
+  if (asBar) {
+    return {
+      ...base,
+      series: [{ type: 'bar', data: values, itemStyle: { color, borderRadius: 1 } }],
+    }
+  }
+  return {
+    ...base,
     series: [{
       type: 'line',
       data: values,
-      smooth: true,
+      smooth: opts.smooth !== false,
       symbol: 'none',
-      lineStyle: { width: 1.5, color: '#6366f1' },
-      areaStyle: { color: 'rgba(99,102,241,0.15)' },
+      lineStyle: { width: 1.5, color },
+      // A filled sparkline reads as a trend, an unfilled one as a series —
+      // both are wanted, so the fill is opt-out rather than baked in.
+      areaStyle: opts.filled === false ? undefined : { color, opacity: 0.15 },
     }],
   }
 }
@@ -276,8 +310,17 @@ export default function KpiWidget({ widget, providerTable = null }) {
   )
 
   const spark = useMemo(
-    () => (sparkValues && sparkValues.length > 1 ? sparkOption(sparkValues) : null),
-    [sparkValues],
+    () => (sparkValues && sparkValues.length > 1
+      ? sparkOption(sparkValues, {
+          type: wProps.sparkType,
+          // Default the sparkline to the card's accent so a themed KPI tile
+          // doesn't grow an unrelated indigo trend line.
+          color: wProps.sparkColor || wProps.accentColor,
+          filled: wProps.sparkFilled,
+          smooth: wProps.sparkSmooth,
+        })
+      : null),
+    [sparkValues, wProps.sparkType, wProps.sparkColor, wProps.accentColor, wProps.sparkFilled, wProps.sparkSmooth],
   )
 
   // Evaluate signal rules against the headline value for threshold coloring.
@@ -309,9 +352,16 @@ export default function KpiWidget({ widget, providerTable = null }) {
     if (widget.style?.themeAdapt === false) return rawTileBg
     return adaptBackgroundColor(rawTileBg, theme).hex ?? rawTileBg
   }, [rawTileBg, theme, widget.style?.themeAdapt])
+  // Per-role text colours (title / body / muted). The KPI's number is body and
+  // its caption is muted, so a card can now colour the two independently —
+  // previously the caption was derived from the tile and could not be set.
+  const textColors = useMemo(
+    () => resolveTextColors(widget.style, { background: tileBg }),
+    [widget.style, tileBg],
+  )
   const valueColor = signal.matched
     ? signal.color
-    : ensureReadable(widget.style?.color ?? wProps.accentColor, tileBg)
+    : (textColors.body ?? ensureReadable(wProps.accentColor, tileBg))
   const progressColor = signal.matched ? signal.color : (wProps.accentColor ?? widget.style?.color ?? '#6366f1')
 
   // Optional Phosphor icon badge (props.icon = a key from kpiIcons.jsx). The
@@ -327,7 +377,10 @@ export default function KpiWidget({ widget, providerTable = null }) {
   // colour: dark-theme muted (light grey) disappears on a pastel tile, and
   // light-theme muted on a dark one. Derive it from the tile instead; tiles
   // without a baked background keep the theme default.
-  const labelColor = useMemo(() => readableInk(tileBg, true), [tileBg])
+  // style.mutedColor wins; otherwise a softened style.color; otherwise ink
+  // derived from the tile (the historical behaviour for tiles with a baked
+  // background). resolveTextColors owns that whole chain.
+  const labelColor = textColors.muted
 
   // Optional segmented "pip" progress bar: props.progress = { segments, target }.
   // Fraction filled = value / target, clamped to [0, segments]. `target`
@@ -395,7 +448,7 @@ export default function KpiWidget({ widget, providerTable = null }) {
               className="text-3xl font-bold font-display leading-none tracking-tight"
               style={{ color: valueColor ?? undefined }}
             >
-              {formatValue(value, format)}
+              {wProps.prefix ?? ''}{formatValue(value, format, wProps.decimals)}{wProps.suffix ?? ''}
             </p>
             {signal.matched && signal.label && (
               <Badge

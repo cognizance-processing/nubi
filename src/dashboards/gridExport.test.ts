@@ -10,7 +10,9 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { buildCSV, buildExcelXML } from '../components/gridExport.js'
+import {
+  buildCSV, buildExcelXML, planExportColumns, excelNumberFormat,
+} from '../components/gridExport.js'
 
 const columns = [
   { key: 'name', label: 'Name' },
@@ -96,5 +98,120 @@ describe('buildExcelXML', () => {
       col.key === 'score' ? `pct-${row.score}` : row[col.key],
     )
     assert.ok(xml.includes('<Data ss:Type="String">pct-5</Data>'))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// exportSettings — styled workbooks (legacy parity)
+// ---------------------------------------------------------------------------
+
+describe('planExportColumns', () => {
+  const cols = [
+    { key: 'a', label: 'A' },
+    { key: 'b', label: 'B' },
+    { key: 'c', label: 'C' },
+  ]
+
+  test('no settings leaves the columns untouched', () => {
+    assert.deepEqual(planExportColumns(cols, undefined), cols)
+  })
+
+  test('excluded columns are dropped', () => {
+    const out = planExportColumns(cols, { columnExcluded: ['b'] })
+    assert.deepEqual(out.map(c => c.key), ['a', 'c'])
+  })
+
+  test('named columns lead, and unnamed ones keep their order behind them', () => {
+    // Partial orderings must not silently drop the rest — that would quietly
+    // shrink the export when someone reorders one column.
+    const out = planExportColumns(cols, { columnOrdering: ['c'] })
+    assert.deepEqual(out.map(c => c.key), ['c', 'a', 'b'])
+  })
+
+  test('an ordering entry for an excluded column is ignored', () => {
+    const out = planExportColumns(cols, { columnExcluded: ['c'], columnOrdering: ['c', 'b'] })
+    assert.deepEqual(out.map(c => c.key), ['b', 'a'])
+  })
+
+  test('renames replace the header label only', () => {
+    const out = planExportColumns(cols, { columnRenames: { a: 'Alpha' } })
+    assert.equal(out[0].label, 'Alpha')
+    assert.equal(out[0].key, 'a', 'the data key must not change')
+    assert.equal(out[1].label, 'B')
+  })
+})
+
+describe('excelNumberFormat', () => {
+  test('returns null when nothing was asked for', () => {
+    assert.equal(excelNumberFormat(null), null)
+    assert.equal(excelNumberFormat({}), null)
+  })
+
+  test('decimals, separators and a currency symbol compose', () => {
+    assert.equal(excelNumberFormat({ decimalPlaces: 2 }), '0.00')
+    assert.equal(excelNumberFormat({ thousandSeparator: true }), '#,##0')
+    assert.equal(excelNumberFormat({ decimalPlaces: 2, thousandSeparator: true }), '#,##0.00')
+    assert.equal(excelNumberFormat({ decimalPlaces: 2, currencySymbol: 'R' }), '"R"0.00')
+  })
+})
+
+describe('buildExcelXML with exportSettings', () => {
+  const rows = [{ name: 'a', score: 1 }, { name: 'b', score: 2 }]
+
+  test('an omitted settings object produces the same plain workbook as before', () => {
+    const xml = buildExcelXML(rows, columns, 'Sheet1')
+    assert.ok(!xml.includes('<Styles>'), 'no styles should be emitted')
+    assert.ok(!xml.includes('FreezePanes'))
+    assert.ok(xml.includes('ss:Name="Sheet1"'))
+  })
+
+  test('sheetName in settings wins over the positional argument', () => {
+    const xml = buildExcelXML(rows, columns, 'Positional', undefined, { sheetName: 'Revenue' })
+    assert.ok(xml.includes('ss:Name="Revenue"'))
+  })
+
+  test('header styling emits a style and tags the header cells with it', () => {
+    const xml = buildExcelXML(rows, columns, 'S', undefined, {
+      headerStyling: { fontBold: true, fontColor: '#ffffff', backgroundColor: '#123456', alignment: 'center' },
+    })
+    assert.ok(xml.includes('<Style ss:ID="hdr">'))
+    assert.ok(xml.includes('ss:Bold="1"'))
+    assert.ok(xml.includes('ss:Color="#FFFFFF"'))
+    // Excel ignores a fill colour without an explicit pattern.
+    assert.ok(xml.includes('<Interior ss:Color="#123456" ss:Pattern="Solid"/>'))
+    assert.ok(xml.includes('ss:Horizontal="Center"'))
+    assert.ok(xml.includes('<Cell ss:StyleID="hdr">'))
+  })
+
+  test('a theme token is dropped rather than written as an invalid colour', () => {
+    // `var(--surface)` means nothing inside a workbook; emitting it verbatim
+    // would make Excel reject the file.
+    const xml = buildExcelXML(rows, columns, 'S', undefined, {
+      headerStyling: { backgroundColor: 'var(--surface)', fontBold: true },
+    })
+    assert.ok(!xml.includes('var(--surface)'))
+    assert.ok(xml.includes('ss:Bold="1"'), 'the rest of the style still applies')
+  })
+
+  test('a per-column number format gets its own style', () => {
+    const xml = buildExcelXML(rows, columns, 'S', undefined, {
+      numberFormat: { decimalPlaces: 0, columns: { score: { decimalPlaces: 2, currencySymbol: '$' } } },
+    })
+    assert.ok(xml.includes('ss:Format="&quot;$&quot;0.00"'), xml)
+  })
+
+  test('freeze panes are emitted for header and first column', () => {
+    const xml = buildExcelXML(rows, columns, 'S', undefined, {
+      freezeHeader: true, freezeFirstColumn: true,
+    })
+    assert.ok(xml.includes('<FreezePanes/>'))
+    assert.ok(xml.includes('<SplitHorizontal>1</SplitHorizontal>'))
+    assert.ok(xml.includes('<SplitVertical>1</SplitVertical>'))
+  })
+
+  test('excluded columns really do not reach the workbook', () => {
+    const xml = buildExcelXML(rows, columns, 'S', undefined, { columnExcluded: ['score'] })
+    assert.ok(xml.includes('>Name<'))
+    assert.ok(!xml.includes('>Score<'))
   })
 })

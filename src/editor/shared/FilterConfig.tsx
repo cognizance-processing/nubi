@@ -599,6 +599,14 @@ export function FilterConfig({ widget, onChange, spec, onPatchWidget = undefined
           <ToggleRow label="“Select all” action" checked={props.select_all !== false}
             onChange={v => setProps('select_all', v ? undefined : false)} />
         )}
+        {(subtype === 'select' || subtype === 'multiselect') && (
+          <ToggleRow
+            label="Preselect the first option"
+            hint="For boards that show nothing useful until something is picked"
+            checked={!!props.auto_select_first}
+            onChange={v => setProps('auto_select_first', v || undefined)}
+          />
+        )}
       </Section>
     </div>
   )

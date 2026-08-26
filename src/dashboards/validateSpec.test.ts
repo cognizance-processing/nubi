@@ -129,3 +129,109 @@ test('bad variable entries are flagged', () => {
   assert.ok(issues.some(i => i.includes("'name' is required")))
   assert.ok(issues.some(i => i.includes('type must be one of')))
 })
+
+// ---------------------------------------------------------------------------
+// Widget-type coverage — this list had drifted behind the renderer and the
+// backend, so widgets the editor could create failed their own validation.
+// ---------------------------------------------------------------------------
+
+const posOf = (i) => ({ x: 1, y: i, w: 4, h: 2 })
+
+test('every type the editor palette can add is accepted', () => {
+  const types = [
+    'kpi', 'metric', 'table', 'pivot', 'filter', 'text', 'section',
+    'image', 'stepper', 'divider', 'datedisplay', 'breadcrumb',
+  ]
+  const widgets = types.map((t, i) => {
+    const w: Record<string, any> = { id: `w${i}`, type: t, pos: posOf(i + 1) }
+    // Only these three carry their own required fields.
+    if (t === 'filter') Object.assign(w, { subtype: 'select', target_var: 'region' })
+    if (t === 'text') w.content = 'hello'
+    if (t === 'datedisplay') w.props = { source: 'variable', variable: 'region' }
+    return w
+  })
+  const issues = validateDashboardSpec({ ...VALID, widgets })
+  assert.deepEqual(issues, [], `expected no issues, got:\n${issues.join('\n')}`)
+})
+
+// ---------------------------------------------------------------------------
+// Per-chart-type encoding — a flat "x and y required" rejected map / sankey /
+// gauge / heatmap / candlestick, all of which the editor can author.
+// ---------------------------------------------------------------------------
+
+test('non-cartesian chart types are validated against their OWN channels', () => {
+  const cases = [
+    { chart_type: 'sankey', encoding: { source: 's', target: 't', value: 'v' } },
+    { chart_type: 'map', encoding: { name: 'country', value: 'v' } },
+    { chart_type: 'gauge', encoding: { y: 'v' } },
+    { chart_type: 'heatmap', encoding: { x: 'x', color: 'y', value: 'v' } },
+    { chart_type: 'candlestick', encoding: { x: 'd', open: 'o', close: 'c', low: 'l', high: 'h' } },
+    { chart_type: 'combo', encoding: { x: 'x', bars: ['a'], lines: ['b'] } },
+  ]
+  const widgets = cases.map((c, i) => ({
+    id: `c${i}`, type: 'chart', query_id: 'demo_all', pos: posOf(i + 1), ...c,
+  }))
+  const issues = validateDashboardSpec({ ...VALID, widgets })
+  assert.deepEqual(issues, [], `expected no issues, got:\n${issues.join('\n')}`)
+})
+
+test('a missing channel is still reported, and names the channel', () => {
+  const spec = {
+    ...VALID,
+    widgets: [{
+      id: 'c', type: 'chart', query_id: 'demo_all', chart_type: 'sankey',
+      encoding: { source: 's' }, pos: posOf(1),
+    }],
+  }
+  const issues = validateDashboardSpec(spec)
+  assert.ok(issues.some(i => i.includes("'target'")), issues.join('\n'))
+  assert.ok(issues.some(i => i.includes("'value'")), issues.join('\n'))
+  assert.ok(!issues.some(i => i.includes("'x'")), 'sankey must not be asked for an x column')
+})
+
+test('the new polar / radial bar chart types are accepted', () => {
+  const widgets = ['polar', 'radialbar'].map((t, i) => ({
+    id: `p${i}`, type: 'chart', query_id: 'demo_all', chart_type: t,
+    encoding: { x: 'cat', y: 'val' }, pos: posOf(i + 1),
+  }))
+  assert.deepEqual(validateDashboardSpec({ ...VALID, widgets }), [])
+})
+
+// ---------------------------------------------------------------------------
+// Variable-reference checks on the new widgets
+// ---------------------------------------------------------------------------
+
+test('a breadcrumb tracking an undeclared variable is flagged', () => {
+  const spec = {
+    ...VALID,
+    widgets: [{
+      id: 'b', type: 'breadcrumb', pos: posOf(1),
+      props: { variables: ['region', 'store'] },
+    }],
+  }
+  const issues = validateDashboardSpec(spec)
+  assert.ok(issues.some(i => i.includes("'store' is not declared")), issues.join('\n'))
+  assert.ok(!issues.some(i => i.includes("'region'")), 'region IS declared')
+})
+
+test('a date display bound to an undeclared variable is flagged', () => {
+  const spec = {
+    ...VALID,
+    widgets: [{
+      id: 'd', type: 'datedisplay', pos: posOf(1),
+      props: { source: 'variable', variable: 'period' },
+    }],
+  }
+  assert.ok(validateDashboardSpec(spec).some(i => i.includes("'period' is not declared")))
+})
+
+test('a date display reading a query is not asked for a variable', () => {
+  const spec = {
+    ...VALID,
+    widgets: [{
+      id: 'd', type: 'datedisplay', query_id: 'demo_all', pos: posOf(1),
+      encoding: { value: 'day' }, props: { source: 'query' },
+    }],
+  }
+  assert.deepEqual(validateDashboardSpec(spec), [])
+})

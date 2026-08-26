@@ -81,9 +81,9 @@ const HEATMAP_ROWS = [
 // ---------------------------------------------------------------------------
 
 describe('SUPPORTED_TYPES', () => {
-  test('exports an array of 19 types', () => {
+  test('exports an array of 21 types', () => {
     assert.ok(Array.isArray(SUPPORTED_TYPES))
-    assert.equal(SUPPORTED_TYPES.length, 19)
+    assert.equal(SUPPORTED_TYPES.length, 21)
   })
 
   test('includes all expected types', () => {
@@ -91,6 +91,7 @@ describe('SUPPORTED_TYPES', () => {
       'bar', 'line', 'area', 'scatter', 'bubble', 'pie', 'donut',
       'sankey', 'funnel', 'waterfall', 'heatmap', 'radar', 'treemap',
       'boxplot', 'gauge', 'candlestick', 'fan', 'combo', 'map',
+      'polar', 'radialbar',
     ]
     for (const t of required) {
       assert.ok(SUPPORTED_TYPES.includes(t), `SUPPORTED_TYPES must include '${t}'`)
@@ -99,10 +100,10 @@ describe('SUPPORTED_TYPES', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 2. All 19 types produce a valid option without throwing
+// 2. All 21 types produce a valid option without throwing
 // ---------------------------------------------------------------------------
 
-describe('all 19 types - no throw', () => {
+describe('all 21 types - no throw', () => {
   const cases = [
     { type: 'bar',         table: CAT_NUM, encoding: { x: 'cat', y: 'val' } },
     { type: 'line',        table: XY_NUM,  encoding: { x: 'x', y: 'y' } },
@@ -122,6 +123,8 @@ describe('all 19 types - no throw', () => {
     { type: 'candlestick', table: CANDLE_ROWS,  encoding: { x: 'date', open: 'open', close: 'close', low: 'low', high: 'high' } },
     { type: 'fan',         table: FAN_ROWS, encoding: { x: 't', y: 'mid', lower: 'lo', upper: 'hi' } },
     { type: 'map',         table: CAT_NUM, encoding: { name: 'cat', value: 'val' } },
+    { type: 'polar',       table: CAT_NUM, encoding: { x: 'cat', y: 'val' } },
+    { type: 'radialbar',   table: CAT_NUM, encoding: { x: 'cat', y: 'val' } },
   ]
 
   for (const { type, table, encoding } of cases) {
@@ -691,5 +694,101 @@ describe('pie label placement', () => {
       type: 'donut', table: TWO, encoding: { x: 'k', y: 'v' }, config: { dataLabels: false },
     })
     assert.equal(opt.series[0].label.show, false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// polar — the legacy "Polar Chart" (Chart.js polarArea)
+// ---------------------------------------------------------------------------
+
+describe('polar', () => {
+  const T = [
+    { cat: 'a', val: 3 },
+    { cat: 'b', val: 7 },
+    { cat: 'c', val: 5 },
+  ]
+
+  test("renders as a rose with roseType 'area' (equal angles, radius = value)", () => {
+    // 'area' is the equal-angle mode; 'radius' is the Nightingale variant and
+    // would be the wrong shape for a Chart.js polarArea port.
+    const opt = buildChartOption({ type: 'polar', table: T, encoding: { x: 'cat', y: 'val' } })
+    const s = opt.series[0]
+    assert.equal(s.type, 'pie')
+    assert.equal(s.roseType, 'area')
+    assert.deepEqual(s.data.map(d => d.name), ['a', 'b', 'c'])
+    assert.deepEqual(s.data.map(d => d.value), [3, 7, 5])
+  })
+
+  test('legend defaults to the bottom, as for pie/donut', () => {
+    const opt = buildChartOption({ type: 'polar', table: T, encoding: { x: 'cat', y: 'val' } })
+    assert.equal(opt.legend.bottom, 4)
+  })
+
+  test('legend:false removes the legend', () => {
+    const opt = buildChartOption({
+      type: 'polar', table: T, encoding: { x: 'cat', y: 'val' }, config: { legend: false },
+    })
+    assert.equal(opt.legend, undefined)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// radialbar — the legacy "Radial Bar Chart" (ApexCharts radialBar)
+// ---------------------------------------------------------------------------
+
+describe('radialbar', () => {
+  const T = [
+    { cat: 'osa', val: 80 },
+    { cat: 'facing', val: 65 },
+    { cat: 'promo', val: 40 },
+  ]
+
+  test('builds concentric polar bars with a track ring behind them', () => {
+    const opt = buildChartOption({ type: 'radialbar', table: T, encoding: { x: 'cat', y: 'val' } })
+    assert.ok(opt.polar, 'must define a polar coordinate system')
+    assert.equal(opt.series.length, 2, 'a track series and a value series')
+    assert.equal(opt.series[0].coordinateSystem, 'polar')
+    assert.equal(opt.series[1].coordinateSystem, 'polar')
+    // The track is a full-circle bar at max on every ring.
+    assert.deepEqual(opt.series[0].data, [100, 100, 100])
+  })
+
+  test('rings run outermost-first, so the axis order is reversed', () => {
+    // ECharts stacks radius-axis categories inside-out; reversing keeps the
+    // first row of the query on the OUTSIDE, which is how Apex renders it.
+    const opt = buildChartOption({ type: 'radialbar', table: T, encoding: { x: 'cat', y: 'val' } })
+    assert.deepEqual(opt.radiusAxis.data, ['promo', 'facing', 'osa'])
+    assert.deepEqual(opt.series[1].data.map(d => d.value), [40, 65, 80])
+  })
+
+  test('scale defaults to 0..100 and honours config.yAxis min/max', () => {
+    const dflt = buildChartOption({ type: 'radialbar', table: T, encoding: { x: 'cat', y: 'val' } })
+    assert.equal(dflt.angleAxis.min, 0)
+    assert.equal(dflt.angleAxis.max, 100)
+
+    const scaled = buildChartOption({
+      type: 'radialbar', table: T, encoding: { x: 'cat', y: 'val' },
+      config: { yAxis: { min: 10, max: 250 } },
+    })
+    assert.equal(scaled.angleAxis.min, 10)
+    assert.equal(scaled.angleAxis.max, 250)
+    assert.deepEqual(scaled.series[0].data, [250, 250, 250])
+  })
+
+  test('each ring takes its own palette colour', () => {
+    const opt = buildChartOption({
+      type: 'radialbar', table: T, encoding: { x: 'cat', y: 'val' },
+      config: { palette: ['#111111', '#222222', '#333333'] },
+    })
+    // Data is reversed, and colours are indexed by the ORIGINAL row order, so
+    // the outermost ring (last in the reversed array) keeps palette[0].
+    assert.deepEqual(opt.series[1].data.map(d => d.itemStyle.color), ['#333333', '#222222', '#111111'])
+  })
+
+  test('dataLabels:false hides the in-ring value labels', () => {
+    const opt = buildChartOption({
+      type: 'radialbar', table: T, encoding: { x: 'cat', y: 'val' }, config: { dataLabels: false },
+    })
+    assert.equal(opt.series[1].label.show, false)
   })
 })

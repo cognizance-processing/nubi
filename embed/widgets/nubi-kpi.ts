@@ -217,23 +217,44 @@ const KPI_STYLES = /* css */ `
 // ---------------------------------------------------------------------------
 // Format helpers
 // ---------------------------------------------------------------------------
-function formatValue(raw, fmt) {
+/**
+ * Format a KPI value. Mirrors KpiWidget.formatValue in the SPA — the same
+ * board embedded and viewed in-app must not round or abbreviate differently.
+ *
+ * @param {*} raw
+ * @param {string} fmt   number | comma | integer | percent | percent100 | currency
+ * @param {number|null} [decimals]  overrides the format's own precision
+ */
+function formatValue(raw, fmt, decimals = null) {
   const num = Number(raw)
   if (isNaN(num)) return formatCell(raw)
+  const d = Number.isInteger(decimals) && decimals >= 0 ? decimals : null
 
   switch (fmt) {
     case 'currency':
-      return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(num)
+      return new Intl.NumberFormat(undefined, {
+        style: 'currency', currency: 'USD', maximumFractionDigits: d ?? 0,
+        ...(d == null ? null : { minimumFractionDigits: d }),
+      }).format(num)
     case 'percent':
-      return new Intl.NumberFormat(undefined, { style: 'percent', maximumFractionDigits: 1 }).format(num)
+      return new Intl.NumberFormat(undefined, { style: 'percent', maximumFractionDigits: d ?? 1 }).format(num)
+    // The value is already on a 0-100 scale — common on migrated boards, where
+    // the query does the ×100 itself.
+    case 'percent100':
+      return num.toFixed(d ?? 1) + '%'
     case 'integer':
-      return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(num)
+      return new Intl.NumberFormat(undefined, { maximumFractionDigits: d ?? 0 }).format(num)
+    // Full grouped digits, no K/M abbreviation.
+    case 'comma':
+      return new Intl.NumberFormat(undefined, {
+        minimumFractionDigits: d ?? 0, maximumFractionDigits: d ?? 0,
+      }).format(num)
     case 'number':
     default: {
       // Auto-compact: e.g. 124500 -> "124.5K"
-      if (Math.abs(num) >= 1_000_000) return (num / 1_000_000).toFixed(1) + 'M'
-      if (Math.abs(num) >= 1_000) return (num / 1_000).toFixed(1) + 'K'
-      return new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(num)
+      if (Math.abs(num) >= 1_000_000) return (num / 1_000_000).toFixed(d ?? 1) + 'M'
+      if (Math.abs(num) >= 1_000) return (num / 1_000).toFixed(d ?? 1) + 'K'
+      return new Intl.NumberFormat(undefined, { maximumFractionDigits: d ?? 2 }).format(num)
     }
   }
 }
@@ -255,7 +276,7 @@ class NubiKpi extends HTMLElement {
 
   static get observedAttributes() {
     return [
-      'query-id', 'value-col', 'label', 'format',
+      'query-id', 'value-col', 'label', 'format', 'decimals', 'prefix', 'suffix',
       'token', 'get-token', 'backend',
       'target-col', 'rag-col', 'pct-col',
       'theme', 'data', 'no-sample-fallback',
@@ -335,9 +356,16 @@ class NubiKpi extends HTMLElement {
     const label = this.getAttribute('label') || valueCol
     const fmt = this.getAttribute('format') || 'number'
 
+    const decimalsAttr = this.getAttribute('decimals')
+    const decimals = decimalsAttr == null || decimalsAttr === '' ? null : parseInt(decimalsAttr, 10)
+    const prefix = this.getAttribute('prefix') || ''
+    const suffix = this.getAttribute('suffix') || ''
+
     const colVec = table.getChild(valueCol)
     const rawVal = colVec ? colVec.get(0) : null
-    const display = rawVal !== null ? formatValue(rawVal, fmt) : '—'
+    const display = rawVal !== null
+      ? `${prefix}${formatValue(rawVal, fmt, decimals)}${suffix}`
+      : '—'
 
     this._shadow.querySelector('.kpi-label').textContent = label
     this._shadow.querySelector('.kpi-value').className = 'kpi-value'

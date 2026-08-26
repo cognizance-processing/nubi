@@ -67,6 +67,10 @@ export function widgetKind(widget) {
   if (type === 'filter') return 'filter'
   if (type === 'text') return 'text'
   if (type === 'section') return 'heading'
+  // A bare rule and a crumb trail are both thin horizontal chrome at card
+  // scale; a period caption is a short line of text.
+  if (type === 'divider' || type === 'breadcrumb') return 'heading'
+  if (type === 'datedisplay') return 'text'
 
   // type === 'chart' (or absent but chart_type present) → collapse by silhouette.
   const ct = widget?.chart_type
@@ -83,6 +87,8 @@ export function widgetKind(widget) {
     case 'donut':
     case 'gauge':
     case 'radar':
+    case 'polar':
+    case 'radialbar':
       return 'circle'
     default:
       // bar, combo, waterfall, boxplot, candlestick, sankey, funnel, treemap,

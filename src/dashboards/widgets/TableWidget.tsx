@@ -63,13 +63,14 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { runMetricQuery } from '../../lib/metricRuntime.js'
-import { evalRules, formatValue } from './conditionalFormat.js'
+import { evalRules, formatValue, DELTA_COLORS } from './conditionalFormat.js'
 import { useResolvedParams, useResolvedFilters, useSetVariable } from '../VariableStore.jsx'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
 import { useCrossFilter } from '../CrossFilterContext.jsx'
 import { useStepper } from '../StepperContext.jsx'
 import DataGrid from '../../components/DataGrid.jsx'
 import { arrowTypeToColumnType } from '../../components/dataTableUtils.js'
+import { resolveTextColors } from '../textColors.js'
 import Skeleton from '../../components/ui/Skeleton.jsx'
 import WidgetError from '../../components/app/WidgetError.jsx'
 
@@ -177,6 +178,27 @@ function DetailPanel({ parentRow, detailQueryId, detailParam, detailColumns, det
   )
 }
 
+/** columnFormats[col].delta → color the formatted text green/red/gray by sign. */
+function DeltaCell({ text, value }) {
+  const n = Number(value)
+  const color = !Number.isFinite(n) || n === 0 ? DELTA_COLORS.flat : n > 0 ? DELTA_COLORS.up : DELTA_COLORS.down
+  return <span className="font-mono tabular-nums font-medium" style={{ color }}>{text}</span>
+}
+
+/** columnFormats[col].bar → an inline magnitude bar (Excel-style data bar) beside the text. */
+function BarCell({ text, value, max }) {
+  const n = Math.abs(Number(value))
+  const pct = max > 0 && Number.isFinite(n) ? Math.min(100, (n / max) * 100) : 0
+  return (
+    <span className="flex items-center gap-1.5">
+      <span className="relative w-10 h-1.5 rounded-full bg-border/40 overflow-hidden shrink-0">
+        <span className="absolute inset-y-0 left-0 rounded-full bg-primary/50" style={{ width: `${pct}%` }} />
+      </span>
+      <span className="font-mono tabular-nums">{text}</span>
+    </span>
+  )
+}
+
 /**
  * Convert an Arrow Table to { cols:[{key,label,type}], rows:[{...}] } limited
  * to `limit` rows and (optionally) restricted/ordered by `columns`.
@@ -251,6 +273,44 @@ export default function TableWidget({ widget, providerTable = null }) {
     : null
   const detailLimit    = wProps.detailLimit    ?? 20
   const isExpandable   = !!(detailQueryId || wProps.expandable)
+
+  // ── Presentation (legacy table parity) ──────────────────────────────────
+  // Everything below was previously hard-coded in the DataGrid call, so a
+  // board could not turn pagination off, choose a density, hide the toolbar,
+  // pin or group a column up front, or restyle header/rows — all of which the
+  // legacy tables these boards came from could do.
+  const density   = ['compact', 'standard', 'comfortable'].includes(wProps.density)
+    ? wProps.density : 'compact'
+  const paginate  = wProps.pagination !== false
+  const pageSize  = Number.isFinite(wProps.pageSize) && wProps.pageSize > 0 ? wProps.pageSize : 50
+  const showToolbar = wProps.toolbar !== false
+  const asList = (v) => (Array.isArray(v) ? v : typeof v === 'string' && v
+    ? v.split(',').map(s => s.trim()).filter(Boolean) : [])
+  // Keyed on the serialised lists, not array identity: the spec object is
+  // rebuilt on every editor keystroke, and DataGrid only reads these on mount,
+  // so a fresh array each render is pure churn.
+  const groupByKey = JSON.stringify(wProps.groupBy ?? null)
+  const pinnedKey = JSON.stringify([wProps.pinnedLeft ?? null, wProps.pinnedRight ?? null])
+  const initialGrouping = useMemo(() => asList(JSON.parse(groupByKey)), [groupByKey])
+  const initialPinning = useMemo(() => {
+    const [left, right] = JSON.parse(pinnedKey)
+    return { left: asList(left), right: asList(right) }
+  }, [pinnedKey])
+  // Text roles: the header row is `title` and the body cells are `body`, so
+  // Appearance can colour them separately. props.headerColor (the table's own
+  // control) still wins over the role when it is set.
+  const ink = useMemo(() => resolveTextColors(widget.style), [widget.style])
+  const headerStyle = useMemo(() => {
+    const s: Record<string, string> = {}
+    if (wProps.headerBackground) s.background = wProps.headerBackground
+    const color = wProps.headerColor || ink.title
+    if (color) s.color = color
+    return Object.keys(s).length ? s : undefined
+  }, [wProps.headerBackground, wProps.headerColor, ink.title])
+  const rowStripe = useMemo(() => {
+    if (!wProps.rowColorEven && !wProps.rowColorOdd) return undefined
+    return { even: wProps.rowColorEven, odd: wProps.rowColorOdd }
+  }, [wProps.rowColorEven, wProps.rowColorOdd])
 
   // Track which row indices are expanded.
   const [expandedRows, setExpandedRows] = useState(new Set())
@@ -334,6 +394,20 @@ export default function TableWidget({ widget, providerTable = null }) {
   // ── Column descriptors with columnFormats applied via renderCell ──────────
   const gridColumns = useMemo(() => {
     if (!data) return []
+
+    // Per-column max(|value|) for `bar` columns that don't set an explicit barMax.
+    const barMaxByCol = {}
+    for (const col of data.cols) {
+      const fmt = fmtMap[col.key]
+      if (!fmt?.bar || fmt.barMax != null) continue
+      let max = 0
+      for (const row of data.rows) {
+        const n = Math.abs(Number(row[col.key]))
+        if (Number.isFinite(n) && n > max) max = n
+      }
+      barMaxByCol[col.key] = max
+    }
+
     const baseCols = data.cols.map((col) => {
       const fmt = fmtMap[col.key]
       const descriptor = { ...col }
@@ -341,12 +415,19 @@ export default function TableWidget({ widget, providerTable = null }) {
         // Apply column format both on-screen and on export.
         descriptor.renderCell = (val) => {
           if (val == null) return <span className="text-muted/50">—</span>
-          return formatValue(val, fmt)
+          const text = formatValue(val, fmt)
+          if (fmt.bar) return <BarCell text={text} value={val} max={fmt.barMax ?? barMaxByCol[col.key] ?? 0} />
+          if (fmt.delta) return <DeltaCell text={text} value={val} />
+          return text
         }
         descriptor.exportValue = (val) => (val == null ? '' : formatValue(val, fmt))
       }
-      // Sensible aggregation default for numeric columns when grouping is used.
+      // Sensible aggregation default for numeric columns when grouping is used;
+      // a per-column `aggregation` in columnFormats overrides it (legacy
+      // parity: enableAggregation + aggregationType were per-column settings,
+      // and a count or an average is often what a subtotal row should show).
       if (col.type === 'number') descriptor.aggregation = 'sum'
+      if (fmt?.aggregation) descriptor.aggregation = fmt.aggregation
       return descriptor
     })
 
@@ -575,8 +656,16 @@ export default function TableWidget({ widget, providerTable = null }) {
           loading={loading}
           // Transparent card so widget.style (set by SpecRenderer) shows through.
           className={error ? 'rounded-t-none' : ''}
-          pageSize={50}
-          density="compact"
+          pageSize={pageSize}
+          paginate={paginate}
+          density={density}
+          toolbar={showToolbar}
+          initialGrouping={initialGrouping}
+          initialPinning={initialPinning}
+          headerStyle={headerStyle}
+          rowStripe={rowStripe}
+          bodyColor={ink.body ?? undefined}
+          exportSettings={wProps.exportSettings}
           exportFileName={`table-${query_id ?? 'widget'}`}
           getRowStyle={getRowStyle}
           getCellStyle={getCellStyle}

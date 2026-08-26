@@ -191,3 +191,50 @@ test('full round-trip: push many, undo all, redo all', () => {
   }
   assert.equal(canRedo(h), false)
 })
+
+// ---------------------------------------------------------------------------
+// Gesture coalescing — one undo step per user decision, not per emitted value
+// ---------------------------------------------------------------------------
+
+test('coalesce replaces the present instead of growing the past', () => {
+  // A colour drag emits dozens of values for one decision. Without coalescing
+  // each one became its own undo step, so Ctrl+Z walked back through the drag
+  // one shade at a time.
+  let h = createHistory({ n: 0 })
+  h = push(h, { n: 1 })                       // gesture opens on the first value
+  h = push(h, { n: 2 }, { coalesce: true })
+  h = push(h, { n: 3 }, { coalesce: true })
+
+  assert.equal(h.past.length, 1, 'the whole gesture is one entry')
+  assert.deepEqual(h.present, { n: 3 })
+
+  const back = undo(h)
+  assert.deepEqual(back.present, { n: 0 }, 'undo lands before the gesture, not mid-drag')
+})
+
+test('a coalesced push with no history yet still records an entry', () => {
+  // Nothing to replace — dropping it would lose the state outright.
+  let h = createHistory({ n: 0 })
+  h = push(h, { n: 1 }, { coalesce: true })
+  assert.equal(h.past.length, 1)
+  assert.deepEqual(h.present, { n: 1 })
+})
+
+test('a coalesced push still clears the redo branch', () => {
+  let h = createHistory({ n: 0 })
+  h = push(h, { n: 1 })
+  h = push(h, { n: 2 })
+  h = undo(h)
+  assert.equal(h.future.length, 1, 'precondition: a redo is available')
+  h = push(h, { n: 9 }, { coalesce: true })
+  assert.equal(h.future.length, 0, 'editing after an undo abandons the redo branch')
+})
+
+test('normal pushes after a gesture start a new entry again', () => {
+  let h = createHistory({ n: 0 })
+  h = push(h, { n: 1 })
+  h = push(h, { n: 2 }, { coalesce: true })
+  h = push(h, { n: 3 })
+  assert.equal(h.past.length, 2)
+  assert.deepEqual(undo(h).present, { n: 2 }, 'the gesture result is its own step')
+})

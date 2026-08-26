@@ -26,10 +26,16 @@
  * @returns {string[]} issues — empty when the spec is structurally valid.
  */
 
+// Must stay in lockstep with the SpecRenderer dispatch AND the backend
+// `Widget.type` Literal (backend/app/dashboards/spec.py). It had drifted:
+// 'image' and 'stepper' were addable from the editor palette and accepted by
+// the backend, but this validator rejected them, so any board containing one
+// failed its own Code-panel validation.
 const WIDGET_TYPES = new Set([
   'kpi', 'table', 'chart', 'filter', 'text',
   // Extended types rendered by the frontend SpecRenderer:
-  'metric', 'pivot', 'section', 'html',
+  'metric', 'pivot', 'section', 'html', 'image', 'stepper',
+  'divider', 'datedisplay', 'breadcrumb',
 ])
 
 // Full set rendered by embed/widgets/chart-options.js (must match the editor
@@ -41,8 +47,31 @@ const WIDGET_TYPES = new Set([
 const CHART_TYPES = new Set([
   'line', 'bar', 'hbar', 'scatter', 'area', 'pie', 'donut', 'heatmap', 'gauge',
   'combo', 'bubble', 'sankey', 'funnel', 'waterfall', 'radar', 'treemap',
-  'boxplot', 'candlestick', 'fan', 'map',
+  'boxplot', 'candlestick', 'fan', 'map', 'polar', 'radialbar',
 ])
+/**
+ * The encoding channels each chart type actually needs, mirroring the editor's
+ * TYPE_ENCODING table (src/editor/shared/ChartConfig.jsx) and the per-type
+ * builders in embed/widgets/chart-options.js.
+ *
+ * This used to be a flat "every chart needs x and y", which was true when the
+ * renderer only had cartesian types. It isn't now: a sankey encodes
+ * source/target/value, a map encodes name/value, a gauge needs only a value
+ * column — so a map or sankey authored in the editor produced a spec its own
+ * validator rejected. A type absent from this table falls back to x + y.
+ */
+const CHART_REQUIRED_ENCODING = {
+  sankey: ['source', 'target', 'value'],
+  heatmap: ['x', 'color', 'value'],
+  gauge: ['y'],
+  candlestick: ['x', 'open', 'close', 'low', 'high'],
+  map: ['name', 'value'],
+  // A combo's series live in the `bars` / `lines` column-name arrays; `y` is
+  // meaningless for it (buildCombo never reads one).
+  combo: ['x'],
+}
+const DEFAULT_CHART_ENCODING = ['x', 'y']
+
 const FILTER_SUBTYPES = new Set(['select', 'multiselect', 'daterange', 'text'])
 const VARIABLE_TYPES = new Set(['text', 'number', 'date', 'daterange', 'select', 'multiselect'])
 
@@ -140,8 +169,30 @@ export function validateDashboardSpec(spec) {
         issues.push(`${label} (chart): 'chart_type' is required (${[...CHART_TYPES].join(' | ')}).`)
       }
       const enc = isPlainObject(w.encoding) ? w.encoding : {}
-      if (!enc.x) issues.push(`${label} (chart): encoding must include an 'x' column.`)
-      if (!enc.y) issues.push(`${label} (chart): encoding must include a 'y' column.`)
+      const required = CHART_REQUIRED_ENCODING[w.chart_type] ?? DEFAULT_CHART_ENCODING
+      for (const channel of required) {
+        if (!enc[channel]) {
+          issues.push(`${label} (${w.chart_type ?? 'chart'}): encoding must include a '${channel}' column.`)
+        }
+      }
+    }
+
+    // breadcrumb: the drill path is a list of DECLARED variables — a crumb
+    // pointing at a variable no filter writes can never appear.
+    if (w.type === 'breadcrumb' && Array.isArray(w.props?.variables)) {
+      for (const name of w.props.variables) {
+        if (!declaredVars.has(name)) {
+          issues.push(`${label} (breadcrumb): tracked variable '${name}' is not declared in spec 'variables'.`)
+        }
+      }
+    }
+
+    // datedisplay bound to a variable: same rule, same reason.
+    if (w.type === 'datedisplay' && (w.props?.source ?? 'variable') === 'variable') {
+      const name = w.props?.variable
+      if (name && !declaredVars.has(name)) {
+        issues.push(`${label} (datedisplay): variable '${name}' is not declared in spec 'variables'.`)
+      }
     }
 
     // filter requirements
