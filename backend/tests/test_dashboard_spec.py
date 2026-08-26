@@ -2082,6 +2082,7 @@ class TestPassThroughWidgetFields:
 
     PASS_THROUGH = {
         "columnFormats": {"net_sales": {"type": "number", "decimals": 0, "bar": True}},
+        "columnLabels": {"net_sales": "Net sales (R)", "store": ""},
         "formattingRules": [
             {"column": "csat", "op": "lt", "value": 4.15,
              "style": {"color": "#b42318"}, "scope": "cell"},

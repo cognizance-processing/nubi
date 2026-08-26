@@ -118,6 +118,49 @@ describe('buildChartOption — every chart type returns a valid option', () => {
     expect(explicit.heatColors).toBeUndefined()
   })
 
+  test('an authored y-axis label gets the same clearance as a derived one', () => {
+    // The widened nameGap used to apply only when the axis name came from the
+    // column, so an authored label sat on top of tick labels like "3,500,000".
+    const rows = Array.from({ length: 12 }, (_, i) => ({ m: `2025-${i + 1}`, v: 3_500_000 + i }))
+    const authored = buildChartOption({
+      type: 'line', table: rows, encoding: { x: 'm', y: 'v' },
+      config: { yAxis: { label: 'Net sales (R)' } },
+    })
+    const derived = buildChartOption({ type: 'line', table: rows, encoding: { x: 'm', y: 'v' } })
+    const yOf = (o: any) => Array.isArray(o.yAxis) ? o.yAxis[0] : o.yAxis
+    expect(yOf(authored).name).toBe('Net sales (R)')
+    expect(yOf(authored).nameGap).toBe(yOf(derived).nameGap)
+    expect(yOf(authored).nameGap).toBeGreaterThan(44)
+  })
+
+  test('a choropleth emits no legend, so no stray dots land on the map', () => {
+    // ECharts derives legend entries from a map series' own data — one per
+    // region — and paints each entry's symbol at that region's centroid. With
+    // the auto legend left on, every province wore a dot. The visualMap is the
+    // scale a choropleth actually needs.
+    const rows = [
+      { province: 'Gauteng', net_sales: 18_605_395 },
+      { province: 'Western Cape', net_sales: 9_868_123 },
+      { province: 'Northern Cape', net_sales: 468_804 },
+    ]
+    const opt = buildChartOption({
+      type: 'map', table: rows,
+      encoding: { name: 'province', value: 'net_sales' },
+      config: { map: 'south-africa', lowColor: '#EAF1F4', highColor: '#0E2A38' },
+    })
+    expect(opt.legend).toBeUndefined()
+    expect(opt.visualMap).toBeTruthy()
+    expect(opt.series[0].type).toBe('map')
+
+    // The map-only config keys are interpreted, not leaked into the raw
+    // ECharts passthrough as unknown top-level options.
+    for (const k of ['map', 'lowColor', 'highColor', 'roam']) {
+      expect(opt[k]).toBeUndefined()
+    }
+    expect(opt.series[0].map).toBe('south-africa')
+    expect(opt.visualMap.inRange.color).toEqual(['#EAF1F4', '#0E2A38'])
+  })
+
   test('candlestick maps OHLC into [open, close, low, high]', () => {
     const rows = [{ d: 'd1', o: 10, c: 12, l: 9, h: 13 }]
     const opt = buildChartOption({
@@ -408,7 +451,28 @@ describe('buildChartOption — dual / secondary y-axis', () => {
     expect(opt.yAxis).toHaveLength(2)
     const second = opt.series.find((s) => s.yAxisIndex === 1)
     expect(second).toBeTruthy()
-    expect(second.name).toBe('margin')
+    // A series name is read by a person, so it is humanised from the column the
+    // same way a table header is — a legend saying `kitchen_seconds` is the
+    // same defect as a column header saying it.
+    expect(second.name).toBe('Margin')
+  })
+
+  test('series and axis names are humanised from their columns', () => {
+    const rows = [
+      { m: 'Jan', kitchen_seconds: 300, handover_seconds: 150 },
+      { m: 'Feb', kitchen_seconds: 310, handover_seconds: 140 },
+    ]
+    const combo = buildChartOption({
+      type: 'combo', table: rows,
+      encoding: { x: 'm', bars: ['kitchen_seconds', 'handover_seconds'] },
+    })
+    expect(combo.series.map((s: any) => s.name)).toEqual(['Kitchen seconds', 'Handover seconds'])
+
+    const line = buildChartOption({
+      type: 'line', table: rows, encoding: { x: 'm', y: 'kitchen_seconds' },
+    })
+    const y = Array.isArray(line.yAxis) ? line.yAxis[0] : line.yAxis
+    expect(y.name).toBe('Kitchen seconds')
   })
 })
 

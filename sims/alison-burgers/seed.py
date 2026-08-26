@@ -20,6 +20,10 @@ Storylines
    grows while chain gross margin drifts 63.4% -> 60.5%.
 5. The Beetroot Boss (vegan, launched Oct 2025) is 19.7% of Western Cape
    burger units and 2.8% in the Free State.
+6. The four inland provinces are smaller, newer sites trading at roughly half
+   the volume of the coastal ones — the gap a choropleth shows at a glance and
+   a bar chart buries. Kimberley opens on 2025-11-03, inside the window, so a
+   trend chart shows a store appear rather than always having been there.
 
 Usage:  seed.py --host 127.0.0.1 --port 3307 --password <root pw>
 """
@@ -68,6 +72,12 @@ STORES = [
     (12, "EC-BAY", "Baywest Mall",          "Gqeberha",         "Eastern Cape",  "Mall",       "2020-08-14", 52,   64, 1.18, 0.94),
     (13, "EC-VIN", "Vincent Park",          "East London",      "Eastern Cape",  "Standalone", "2021-02-26", 36,   48, 1.22, 0.92),
     (14, "FS-LOC", "Loch Logan",            "Bloemfontein",     "Free State",    "Mall",       "2019-11-29", 50,   58, 1.05, 0.95),
+    # The 2024 inland expansion — newer, smaller, and still finding their feet,
+    # which is what makes a map worth looking at: the coast is not the country.
+    (15, "LP-POL", "Polokwane Mall",        "Polokwane",        "Limpopo",       "Mall",       "2024-03-18", 44,   41, 1.09, 0.91),
+    (16, "MP-MBO", "Mbombela Crossing",     "Mbombela",         "Mpumalanga",    "Mall",       "2024-06-05", 42,   38, 1.11, 0.92),
+    (17, "NW-RUS", "Rustenburg Waterfall",  "Rustenburg",       "North West",    "Standalone", "2024-09-23", 34,   33, 1.14, 0.89),
+    (18, "NC-KIM", "Kimberley Diamond",     "Kimberley",        "Northern Cape", "Kiosk",      "2025-11-03", 14,   22, 1.16, 0.87),
 ]
 
 # item_id, name, category, subcategory, price, cost, vegan, limited, launched, popularity
@@ -254,6 +264,8 @@ def generate(rng: random.Random) -> dict[str, list]:
             store_id, _, _, _, region, store_format, _, _, base_orders, _, price_index = store
             if store_id == OUTAGE_STORE and OUTAGE_START <= day <= OUTAGE_END:
                 continue                                   # storyline 2: no POS, no rows
+            if day < dt.date.fromisoformat(store[6]):
+                continue                                   # not open yet
 
             # --- rostering -------------------------------------------------
             for daypart, _, _, _ in DAYPARTS[:4]:

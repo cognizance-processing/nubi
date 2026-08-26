@@ -71,6 +71,8 @@
  * Annotation = { x, y, label, color }
  */
 
+import { humaniseColumn } from './column-labels.js'
+
 // ---------------------------------------------------------------------------
 // Supported chart types
 // ---------------------------------------------------------------------------
@@ -415,9 +417,11 @@ function buildAxis(kind, spec, theme, locale, defaults: Record<string, any> = {}
 }
 
 /**
- * nameGap for a value axis whose name is auto-derived from the column name:
- * wide tick labels (e.g. "6,000,000") need more clearance than the flat 44px
- * default, or the rotated axis name overlaps the outermost tick label.
+ * nameGap for a NAMED value axis — whether the name was auto-derived from the
+ * column or supplied by the author. Wide tick labels (e.g. "6,000,000") need
+ * more clearance than the flat 44px default, or the rotated axis name overlaps
+ * the outermost tick label. This used to run only for auto-derived names, which
+ * had it backwards: an authored label is the one more likely to be on screen.
  */
 function estimateValueAxisNameGap(values, axis) {
   if (!Array.isArray(values) || !values.length) return 44
@@ -592,9 +596,9 @@ function buildBar(table, e, config, theme, locale) {
   if (n > 12 && !horizontal) catAxis.axisLabel = { ...catAxis.axisLabel, rotate: config.xAxis?.rotate ?? 30 }
   const valAxis = buildAxis('value', config.yAxis, theme, locale)
   if (!config.yAxis?.label && e.y) {
-    valAxis.name = e.y; valAxis.nameLocation = 'middle'
-    valAxis.nameGap = estimateValueAxisNameGap(vals, valAxis)
+    valAxis.name = humaniseColumn(e.y); valAxis.nameLocation = 'middle'
   }
+  if (valAxis.name) valAxis.nameGap = estimateValueAxisNameGap(vals, valAxis)
 
   const colorRaw = e.color ? table.col(e.color) : null
   let series
@@ -620,12 +624,12 @@ function buildBar(table, e, config, theme, locale) {
     const radius = horizontal ? [0, 2, 2, 0] : [2, 2, 0, 0]
     if (config.colorByPoint) {
       series = [{
-        type: 'bar', name: e.y, barMaxWidth: 40,
+        type: 'bar', name: humaniseColumn(e.y), barMaxWidth: 40,
         data: vals.map((v, i) => ({ value: v, itemStyle: { color: theme.palette[i % theme.palette.length], borderRadius: radius } })),
       }]
     } else {
       series = [{
-        type: 'bar', name: e.y, data: vals,
+        type: 'bar', name: humaniseColumn(e.y), data: vals,
         barMaxWidth: 40,
         itemStyle: { color: theme.palette[0], borderRadius: radius },
       }]
@@ -673,14 +677,14 @@ function buildLine(table, e, config, theme, locale, { area = false } = {}) {
   const yVals = toNumbers(yRaw)
   const yAxis = buildAxis('value', config.yAxis, theme, locale)
   if (!config.yAxis?.label && e.y) {
-    yAxis.name = e.y; yAxis.nameLocation = 'middle'
-    yAxis.nameGap = estimateValueAxisNameGap(yVals, yAxis)
+    yAxis.name = humaniseColumn(e.y); yAxis.nameLocation = 'middle'
   }
+  if (yAxis.name) yAxis.nameGap = estimateValueAxisNameGap(yVals, yAxis)
   const yAxes = [yAxis]
   if (hasY2) {
     const y2 = buildAxis('value', config.y2Axis, theme, locale)
     if (!config.y2Axis?.label) {
-      y2.name = e.y2; y2.nameLocation = 'middle'
+      y2.name = humaniseColumn(e.y2); y2.nameLocation = 'middle'
       y2.nameGap = estimateValueAxisNameGap(toNumbers(table.col(e.y2) || []), y2)
     }
     yAxes.push(y2)
@@ -725,7 +729,7 @@ function buildLine(table, e, config, theme, locale, { area = false } = {}) {
     if (config.stack === 'percent' && area) applyPercentStack(series)
   } else {
     series = [{
-      type: 'line', name: e.y,
+      type: 'line', name: humaniseColumn(e.y),
       data: xIsNumeric ? toNumbers(xRaw).map((x, i) => [x, yVals[i]]) : yVals,
       smooth, sampling, showSymbol: n <= 60,
       itemStyle: { color: theme.palette[0] }, lineStyle: { color: theme.palette[0] },
@@ -734,7 +738,7 @@ function buildLine(table, e, config, theme, locale, { area = false } = {}) {
     if (hasY2) {
       const y2Vals = toNumbers(table.col(e.y2) || [])
       series.push({
-        type: 'line', name: e.y2, yAxisIndex: 1,
+        type: 'line', name: humaniseColumn(e.y2), yAxisIndex: 1,
         data: xIsNumeric ? toNumbers(xRaw).map((x, i) => [x, y2Vals[i]]) : y2Vals,
         smooth, showSymbol: n <= 60,
         itemStyle: { color: theme.palette[1] }, lineStyle: { color: theme.palette[1] },
@@ -791,7 +795,7 @@ function buildCombo(table, e, config, theme, locale) {
   // config.stack stacks the BAR series (lines are never stacked in a combo).
   const stacked = config.stack === true || config.stack === 'normal' || config.stack === 'percent'
   const barSeries = barCols.map((col, i) => ({
-    type: 'bar', name: col, yAxisIndex: 0,
+    type: 'bar', name: humaniseColumn(col), yAxisIndex: 0,
     data: toNumbers(table.col(col) || []),
     barMaxWidth: stacked ? 28 : 24,
     stack: stacked ? 'total' : undefined,
@@ -799,7 +803,7 @@ function buildCombo(table, e, config, theme, locale) {
   }))
   if (config.stack === 'percent') applyPercentStack(barSeries)
   const lineSeries = lineCols.map((col, i) => ({
-    type: 'line', name: col, yAxisIndex: 1,
+    type: 'line', name: humaniseColumn(col), yAxisIndex: 1,
     data: toNumbers(table.col(col) || []),
     smooth: config.smooth !== false,
     showSymbol: n <= 60,
@@ -835,9 +839,9 @@ function buildScatter(table, e, config, theme, locale, { bubble = false } = {}) 
   if (!config.xAxis?.label && e.x) { xAxis.name = e.x; xAxis.nameLocation = 'middle'; xAxis.nameGap = 28 }
   const yAxis = buildAxis('value', config.yAxis, theme, locale, { scale: true })
   if (!config.yAxis?.label && e.y) {
-    yAxis.name = e.y; yAxis.nameLocation = 'middle'
-    yAxis.nameGap = estimateValueAxisNameGap(yVals, yAxis)
+    yAxis.name = humaniseColumn(e.y); yAxis.nameLocation = 'middle'
   }
+  if (yAxis.name) yAxis.nameGap = estimateValueAxisNameGap(yVals, yAxis)
 
   const sizeRaw = bubble && e.size ? toNumbers(table.col(e.size) || []) : null
   let sizeScale = null
@@ -1130,7 +1134,7 @@ function buildWaterfall(table, e, config, theme, locale) {
   const xAxis = buildAxis('category', config.xAxis, theme, locale, { data: names })
   const yAxis = buildAxis('value', config.yAxis, theme, locale)
   if (!config.yAxis?.label && e.y) {
-    yAxis.name = e.y; yAxis.nameLocation = 'middle'
+    yAxis.name = humaniseColumn(e.y); yAxis.nameLocation = 'middle'
     const rendered = base.map((b, i) => b + (typeof up[i] === 'number' ? up[i] : 0))
     yAxis.nameGap = estimateValueAxisNameGap([...base, ...rendered], yAxis)
   }
@@ -1299,7 +1303,12 @@ function buildMap(table, e, config, theme, locale) {
   const highColor = config.highColor ?? palette[0]
 
   return {
-    ...baseFrame(config, theme, locale, { trigger: 'item', noGrid: true }),
+    // `singleSeries` suppresses the auto legend. A choropleth has one series
+    // and the visualMap below already IS its scale, so a legend adds nothing —
+    // and worse, ECharts derives legend entries from the series data (one per
+    // region) and paints each entry's symbol at that region's centroid, so the
+    // map came out covered in stray dots.
+    ...baseFrame(config, theme, locale, { trigger: 'item', noGrid: true, singleSeries: true }),
     tooltip: tooltipConfig(config, theme, { trigger: 'item', locale }),
     // visualMap does double duty: it IS the colour mapping as well as the
     // on-screen scale. `legend:false` must therefore only hide the control
@@ -1351,7 +1360,7 @@ function buildBoxplot(table, e, config, theme, locale) {
   const xAxis = buildAxis('category', config.xAxis, theme, locale, { data: names, boundaryGap: true })
   const yAxis = buildAxis('value', config.yAxis, theme, locale)
   if (!config.yAxis?.label && e.y) {
-    yAxis.name = e.y; yAxis.nameLocation = 'middle'
+    yAxis.name = humaniseColumn(e.y); yAxis.nameLocation = 'middle'
     yAxis.nameGap = estimateValueAxisNameGap(vals, yAxis)
   }
 
@@ -1475,7 +1484,7 @@ function buildFan(table, e, config, theme, locale) {
   if (xIsNumeric && !config.xAxis?.label && e.x) { xAxis.name = e.x; xAxis.nameLocation = 'middle'; xAxis.nameGap = 28 }
   const yAxis = buildAxis('value', config.yAxis, theme, locale, { scale: true })
   if (!config.yAxis?.label && e.y) {
-    yAxis.name = e.y; yAxis.nameLocation = 'middle'
+    yAxis.name = humaniseColumn(e.y); yAxis.nameLocation = 'middle'
     yAxis.nameGap = estimateValueAxisNameGap([...mid, ...(lower || []), ...(upper || [])], yAxis)
   }
 
@@ -1568,6 +1577,10 @@ function emptyOption(theme) {
 // ECharts passthrough that deep-merges (and wins) over our computed option.
 const INTERPRETED_KEYS = new Set([
   'title', 'subtitle', 'legend', 'tooltip', 'palette', 'heatColors', 'stack', 'orientation',
+  // map-only: the geometry name and the choropleth end-stops. Without these
+  // here they fall through to the raw-ECharts passthrough and land as unknown
+  // top-level option keys.
+  'map', 'lowColor', 'highColor', 'roam',
   'smooth', 'areaOpacity', 'dataLabels', 'animation', 'grid', 'xAxis', 'yAxis',
   'y2Axis', 'referenceLines', 'annotations', 'locale', 'echarts', 'max', 'min',
   'centerLabel',

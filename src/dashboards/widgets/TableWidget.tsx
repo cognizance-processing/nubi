@@ -12,6 +12,7 @@
  *   - props.columns        → column selection / ordering
  *   - props.limit          → row cap
  *   - widget.columnFormats → value formatting via formatValue()
+ *   - widget.columnLabels  → header text; falls back to a humanised column name
  *   - widget.formattingRules → conditional cell/row styling via evalRules()
  *
  * Master-detail (expandable rows):
@@ -53,7 +54,7 @@
  *                   Shape: { id, type, query_id, encoding,
  *                            props:{limit,columns,detailQueryId,detailParam,
  *                                   detailColumns,detailLimit,expandable},
- *                            params?, columnFormats?,
+ *                            params?, columnLabels?, columnFormats?,
  *                            formattingRules?, pos }
  *
  * The widget card background is intentionally transparent so widget.style
@@ -64,6 +65,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { runMetricQuery } from '../../lib/metricRuntime.js'
 import { evalRules, formatValue, DELTA_COLORS } from './conditionalFormat.js'
+import { columnLabel } from '../columnLabels.js'
 import { useResolvedParams, useResolvedFilters, useSetVariable } from '../VariableStore.jsx'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
 import { useCrossFilter } from '../CrossFilterContext.jsx'
@@ -84,7 +86,7 @@ import WidgetError from '../../components/app/WidgetError.jsx'
  * @param {{ parentRow: object, detailQueryId: string, detailParam: string,
  *           detailColumns: string[]|null, detailLimit: number }} props
  */
-function DetailPanel({ parentRow, detailQueryId, detailParam, detailColumns, detailLimit }) {
+function DetailPanel({ parentRow, detailQueryId, detailParam, detailColumns, detailLimit, detailLabels }) {
   const [detailData, setDetailData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
@@ -111,7 +113,7 @@ function DetailPanel({ parentRow, detailQueryId, detailParam, detailColumns, det
           : fields.map(f => f.name)
         const cols = colNames.map(name => ({
           key:   name,
-          label: name,
+          label: columnLabel(name, detailLabels),
           type:  arrowTypeToColumnType(fields.find(f => f.name === name)?.type) ?? 'string',
         }))
         const maxRows = Math.min(table.numRows, detailLimit)
@@ -135,7 +137,7 @@ function DetailPanel({ parentRow, detailQueryId, detailParam, detailColumns, det
     fetch()
     return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detailQueryId, String(paramValue), String(detailColumns), detailLimit])
+  }, [detailQueryId, String(paramValue), String(detailColumns), detailLimit, detailLabels])
 
   if (loading) {
     return (
@@ -203,7 +205,7 @@ function BarCell({ text, value, max }) {
  * Convert an Arrow Table to { cols:[{key,label,type}], rows:[{...}] } limited
  * to `limit` rows and (optionally) restricted/ordered by `columns`.
  */
-function tableToGrid(arrowTable, columns, limit) {
+function tableToGrid(arrowTable, columns, limit, labels) {
   const fields = arrowTable.schema.fields
   const typeByName = {}
   for (const f of fields) typeByName[f.name] = arrowTypeToColumnType(f.type)
@@ -213,7 +215,7 @@ function tableToGrid(arrowTable, columns, limit) {
 
   const cols = colNames.map((name) => ({
     key: name,
-    label: name,
+    label: columnLabel(name, labels),
     type: typeByName[name] ?? 'string',
   }))
 
@@ -247,6 +249,7 @@ export default function TableWidget({ widget, providerTable = null }) {
     props: wProps = {},
     formattingRules,
     columnFormats,
+    columnLabels,
     params: widgetParams,
     filters: widgetFilters,
     metric,
@@ -341,7 +344,7 @@ export default function TableWidget({ widget, providerTable = null }) {
   // BET-3: when a providerTable is supplied, use it directly — skip own fetch.
   useEffect(() => {
     if (providerTable !== null) {
-      setData(tableToGrid(providerTable, columns, limit))
+      setData(tableToGrid(providerTable, columns, limit, columnLabels))
       setLoading(false)
       setError(null)
     }
@@ -377,7 +380,7 @@ export default function TableWidget({ widget, providerTable = null }) {
           setData(null)
           setError(queryError.message)
         } else {
-          setData(tableToGrid(table, columns, limit))
+          setData(tableToGrid(table, columns, limit, columnLabels))
         }
       } catch (err) {
         if (!cancelled) setError(err.message ?? 'Query failed.')
@@ -634,6 +637,7 @@ export default function TableWidget({ widget, providerTable = null }) {
                           detailParam={detailParam}
                           detailColumns={detailColumns}
                           detailLimit={detailLimit}
+                          detailLabels={columnLabels}
                         />
                       </td>
                     </tr>

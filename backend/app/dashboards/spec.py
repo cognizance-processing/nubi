@@ -907,6 +907,16 @@ class Widget(BaseModel):
             "formatValue() in src/dashboards/widgets/conditionalFormat.js."
         ),
     )
+    columnLabels: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Per-column header text for table/pivot widgets — {column: 'Label'}. "
+            "Absent columns fall back to a humanised form of the column name "
+            "(see src/dashboards/columnLabels.js), so a board reads as a report "
+            "rather than a query result even with no authoring. An explicit "
+            "empty string blanks a header deliberately."
+        ),
+    )
     formattingRules: list[dict[str, Any]] | None = Field(
         default=None,
         description=(
