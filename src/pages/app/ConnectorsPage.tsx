@@ -98,13 +98,24 @@ function TypeBadge({ type }) {
 function TestResultPill({ result }) {
   if (!result) return null
   const ok = result.ok === true
+  // The round-trip time is the proof that a real socket was opened — a
+  // structural check has no elapsed time worth showing.
+  const took = ok && Number.isFinite(result.elapsed_ms) ? ` · ${result.elapsed_ms} ms` : ''
+  // A driver's failure text is a whole sentence ("MySQL query failed: (1045,
+  // \"Access denied for user ...\")"), not a status word, so the pill has to
+  // wrap inside the card instead of running past its edge and clipping
+  // mid-word. `title` keeps the untruncated text available on hover.
   return (
-    <Badge variant={ok ? 'success' : 'danger'} className="gap-1.5">
+    <Badge
+      variant={ok ? 'success' : 'danger'}
+      className="gap-1.5 max-w-full items-start text-left whitespace-normal break-words"
+      title={`${result.checked}${took}`}
+    >
       {ok
-        ? <CheckCircle size={12} strokeWidth={2.2} />
-        : <XCircle size={12} strokeWidth={2.2} />
+        ? <CheckCircle size={12} strokeWidth={2.2} className="mt-0.5 shrink-0" />
+        : <XCircle size={12} strokeWidth={2.2} className="mt-0.5 shrink-0" />
       }
-      {result.checked}
+      <span className="min-w-0">{result.checked}{took}</span>
     </Badge>
   )
 }
@@ -186,6 +197,12 @@ function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onT
             <span className="text-[10px] text-muted">
               config:{myResult.layers.config ? '✓' : '✗'}
               {' '}secret:{myResult.layers.secret ? '✓' : '✗'}
+              {/* Only present when the probe ran (?probe=false skips it). It is
+                  the layer that matters most — config+secret can both pass on a
+                  connector that cannot reach its database at all. */}
+              {myResult.layers.connection !== undefined && (
+                <>{' '}connection:{myResult.layers.connection ? '✓' : '✗'}</>
+              )}
             </span>
           )}
         </div>
@@ -845,7 +862,11 @@ export default function ConnectorsPage() {
       const result = await testConnector(id)
       setTestResults(prev => ({ ...prev, [id]: result }))
       if (result.ok) {
-        toast.success('Connection verified successfully')
+        toast.success(
+          Number.isFinite(result.elapsed_ms)
+            ? `Connected — the database answered in ${result.elapsed_ms} ms`
+            : 'Connection verified successfully',
+        )
       } else {
         toast.error(`Test failed: ${result.checked}`)
       }

@@ -7,7 +7,7 @@ GET    /connectors          — list connectors for the caller's org (no secrets
 GET    /connectors/{id}     — fetch a single connector (no secrets)
 PUT    /connectors/{id}     — update non-secret config and/or rotate the secret
 DELETE /connectors/{id}     — delete connector + secret blob
-POST   /connectors/{id}/test — validate config + secret are resolvable (no network)
+POST   /connectors/{id}/test — config + secret + a real SELECT 1 over the wire
 
 Security contract
 -----------------
@@ -835,12 +835,22 @@ async def test_connector(
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """Validate that the config and secret are resolvable for a connector.
+    """Check that a connector can actually reach its database.
 
-    This is a *structural* check only — no network socket is opened.  It
-    confirms that:
+    Runs three layers in order, stopping at the first failure so the error
+    names the layer that broke:
     1. The datastore row exists and is accessible (config layer).
     2. The encrypted secret can be retrieved from the SecretStore (secret layer).
+    3. A trivial ``SELECT 1`` is executed over the real connector — the same
+       resolution path ``POST /query`` uses, so it opens the same socket,
+       through the same bridge tunnel, with the same credentials
+       (connection layer). Pass ``?probe=false`` to stop after layer 2.
+
+    Layer 3 exists because the first two passing is not the question anyone is
+    asking when they press Test. A structural-only check returns a green tick
+    for a connector whose host is unreachable, whose password is wrong, or
+    whose bridge agent is not running — and every one of those only surfaces
+    later, as a failed widget on somebody's dashboard.
 
     For a **direct**-mode connector, the result is persisted into
     ``config.health`` so it shows up at rest in ``GET /connectors`` (see
@@ -855,9 +865,10 @@ async def test_connector(
     Returns
     -------
     dict
-        ``{ok: True, checked: 'config+secret resolved', connector_id: ...,
-           type: ..., layers: {config: True, secret: True}}``
-        or a structured error result if a layer is missing.
+        ``{ok, checked, connector_id, type, layers: {config, secret,
+        connection}, elapsed_ms}``. ``checked`` is ``'connected'`` on success
+        and the engine's own failure text otherwise. ``layers.connection`` is
+        absent when the probe was skipped.
     """
     org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
@@ -869,7 +880,8 @@ async def test_connector(
             "checked": "demo dataset ready" if ok else "demo connector removed",
             "connector_id": connector_id,
             "type": "demo",
-            "layers": {"config": ok, "secret": ok},
+            # In-process DuckDB — being present IS being connected.
+            "layers": {"config": ok, "secret": ok, "connection": ok},
         }
 
     row = await repo.get("datastores", org_id, connector_id)
@@ -917,15 +929,117 @@ async def test_connector(
             "layers": {"config": True, "secret": False},
         }
 
+    layers = {"config": True, "secret": True}
+
+    probe_requested = str(request.query_params.get("probe", "true")).lower() not in (
+        "false", "0", "no",
+    )
+    if not probe_requested:
+        if not is_bridge_mode:
+            await _persist_and_notify_connector_health(row, org_id, connector_id, ok=True, error=None)
+        return {
+            "ok": True,
+            "checked": "config+secret resolved",
+            "connector_id": connector_id,
+            "type": connector_type,
+            "layers": layers,
+        }
+
+    probe_ok, probe_error, elapsed_ms = await _probe_connection(
+        row, org_id, connector_id, connector_type
+    )
+    layers["connection"] = probe_ok
+
+    # Bridge-mode connectors take their headline status from the bridge itself
+    # (routes/bridges.py), so a probe result is reported but not persisted as
+    # the card's health — the same rule the secret layer already follows.
     if not is_bridge_mode:
-        await _persist_and_notify_connector_health(row, org_id, connector_id, ok=True, error=None)
+        await _persist_and_notify_connector_health(
+            row, org_id, connector_id, ok=probe_ok, error=probe_error,
+        )
     return {
-        "ok": True,
-        "checked": "config+secret resolved",
+        "ok": probe_ok,
+        "checked": "connected" if probe_ok else (probe_error or "connection failed"),
         "connector_id": connector_id,
         "type": connector_type,
-        "layers": {"config": True, "secret": True},
+        "layers": layers,
+        "elapsed_ms": elapsed_ms,
     }
+
+
+# The probe binds a parameter rather than selecting a literal, for two
+# reasons: it proves the whole parameter-binding path, and — because
+# ``MySQLConnector.execute`` routes no-params plans through connectorx and
+# parameterised ones through PyMySQL — it avoids connectorx's r2d2 pool,
+# which retries a *fatal* auth error for thirty seconds and then reports
+# "timed out waiting for connection" instead of "Access denied". PyMySQL
+# returns the engine's real message in milliseconds.
+# MySQL needs a FROM before a WHERE, and naming DUAL is not an option: the
+# planner qualifies table names, so ``FROM DUAL`` comes out as
+# ``FROM alison_pos.DUAL`` and the probe fails on a healthy connector. A
+# one-row derived table is valid on every engine that has no DUAL, and needs
+# no qualification. Oracle keeps DUAL, where it is a real table.
+_PROBE_SQL = {"oracle": "SELECT 1 FROM dual WHERE 1 = $1"}
+_PROBE_SQL_DEFAULT = "SELECT 1 FROM (SELECT 1) AS probe_src WHERE 1 = $1"
+_PROBE_TIMEOUT_SECONDS = 15
+
+
+async def _probe_connection(
+    row: dict[str, Any], org_id: str, connector_id: str, connector_type: str,
+) -> tuple[bool, str | None, int]:
+    """Open a real connection and run a trivial query. Never raises.
+
+    Uses ``resolve_datastore_connector`` — the same shared resolver
+    ``POST /query`` goes through — so a bridge-mode connector is probed
+    through its tunnel exactly as a real query would be, and the failure text
+    the user sees here is the failure text a widget would have shown.
+    """
+    import asyncio  # noqa: PLC0415
+    import time  # noqa: PLC0415
+
+    from app.connectors.dialects import dialect_for  # noqa: PLC0415
+    from app.connectors.planner import plan as planner_plan  # noqa: PLC0415
+    from app.connectors.resolve import resolve_datastore_connector  # noqa: PLC0415
+
+    dialect = dialect_for(connector_type)
+    sql = _PROBE_SQL.get(dialect, _PROBE_SQL_DEFAULT)
+    started = time.monotonic()
+    connector = cleanup = None
+    try:
+        physical_plan = await asyncio.to_thread(
+            planner_plan, sql=sql, claims={"policies": []}, params=[1], dialect=dialect,
+        )
+        connector, _kind, cleanup = await asyncio.wait_for(
+            resolve_datastore_connector(physical_plan, connector_id, org_id, get_repo(), ds=row),
+            timeout=_PROBE_TIMEOUT_SECONDS,
+        )
+        await asyncio.wait_for(
+            asyncio.to_thread(connector.execute, physical_plan),
+            timeout=_PROBE_TIMEOUT_SECONDS,
+        )
+        return True, None, int((time.monotonic() - started) * 1000)
+    except asyncio.TimeoutError:
+        return False, f"no response within {_PROBE_TIMEOUT_SECONDS}s", int(
+            (time.monotonic() - started) * 1000
+        )
+    except AppError as exc:
+        # AppError carries the deliberately-worded messages (e.g. "Bridge X has
+        # no connected agent") — surface it rather than a generic failure.
+        return False, str(getattr(exc, "message", None) or exc), int(
+            (time.monotonic() - started) * 1000
+        )
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"[:400], int(
+            (time.monotonic() - started) * 1000
+        )
+    finally:
+        for close in (getattr(connector, "close", None), cleanup):
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 async def _persist_and_notify_connector_health(

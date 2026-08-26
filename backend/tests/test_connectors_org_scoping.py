@@ -123,7 +123,9 @@ async def test_get_update_delete_test_all_follow_the_header(two_orgs):
     got = await client.get(f"/api/v1/connectors/{cid}", headers=headers)
     assert got.status_code == 200, got.text
 
-    tested = await client.post(f"/api/v1/connectors/{cid}/test", headers=headers)
+    # Structural layers only: this asserts header-scoped resolution, not that
+    # the fixture's fake host is reachable.
+    tested = await client.post(f"/api/v1/connectors/{cid}/test?probe=false", headers=headers)
     assert tested.status_code == 200, tested.text
     assert tested.json()["ok"] is True
 
@@ -225,6 +227,6 @@ async def test_secret_is_stored_against_the_viewed_org(two_orgs):
                              headers=headers)).json()["id"]
 
     # POST /{id}/test resolves BOTH layers (config + secret) in the viewed org.
-    resp = await client.post(f"/api/v1/connectors/{cid}/test", headers=headers)
+    resp = await client.post(f"/api/v1/connectors/{cid}/test?probe=false", headers=headers)
     assert resp.status_code == 200, resp.text
     assert resp.json()["layers"] == {"config": True, "secret": True}

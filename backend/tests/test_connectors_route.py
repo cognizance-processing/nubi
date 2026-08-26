@@ -1016,8 +1016,11 @@ class TestConnectorTest:
         )
         row_id = create_resp.json()["id"]
 
+        # ``probe=false`` stops after the structural layers. This test is about
+        # config + secret resolution; host "h" does not exist, and the
+        # connection probe has its own tests below.
         test_resp = await client.post(
-            f"/api/v1/connectors/{row_id}/test",
+            f"/api/v1/connectors/{row_id}/test?probe=false",
             headers=_auth_headers(alice_id),
         )
         assert test_resp.status_code == 200, test_resp.text
@@ -1025,9 +1028,54 @@ class TestConnectorTest:
         assert body["ok"] is True
         assert body["layers"]["config"] is True
         assert body["layers"]["secret"] is True
+        assert "connection" not in body["layers"]
         assert body["connector_id"] == row_id
-        # No network was opened — this is a structural check only
         _assert_no_secret_in_response(body)
+
+    @pytest.mark.asyncio
+    async def test_probe_reports_the_engines_own_failure(self, connectors_client):
+        """A connector pointed at nothing fails the connection layer, loudly.
+
+        The whole point of the probe is that config+secret passing is not the
+        question the user is asking. The message must be the engine's, not a
+        generic "test failed", so the user can act on it.
+        """
+        client, alice_id, org_id, repo = connectors_client
+
+        row_id = (await client.post(
+            "/api/v1/connectors",
+            json={
+                "name": "unreachable",
+                "type": "postgres",
+                # Port 1 is reserved and nothing listens on it.
+                "config": {"host": "127.0.0.1", "port": 1, "database": "d", "user": "u"},
+                "secret": {"password": "pw"},
+            },
+            headers=_auth_headers(alice_id),
+        )).json()["id"]
+
+        body = (await client.post(
+            f"/api/v1/connectors/{row_id}/test",
+            headers=_auth_headers(alice_id),
+        )).json()
+        assert body["ok"] is False
+        assert body["layers"]["config"] is True
+        assert body["layers"]["secret"] is True
+        assert body["layers"]["connection"] is False
+        assert body["checked"]
+        assert body["checked"] != "config+secret resolved"
+        assert isinstance(body["elapsed_ms"], int)
+        _assert_no_secret_in_response(body)
+
+    @pytest.mark.asyncio
+    async def test_demo_connector_reports_a_connection_layer(self, connectors_client):
+        """The in-process demo dataset is connected by virtue of existing."""
+        client, alice_id, org_id, repo = connectors_client
+        body = (await client.post(
+            "/api/v1/connectors/__demo__/test", headers=_auth_headers(alice_id),
+        )).json()
+        assert body["ok"] is True
+        assert body["layers"]["connection"] is True
 
     @pytest.mark.asyncio
     async def test_config_missing_returns_not_ok(self, connectors_client):
@@ -1155,7 +1203,8 @@ class TestConnectorStatus:
             row_id = create_resp.json()["id"]
 
             # First test ever: ok -> persisted, but no transition to notify about.
-            r1 = await client.post(f"/api/v1/connectors/{row_id}/test", headers=_auth_headers(alice_id))
+            r1 = await client.post(f"/api/v1/connectors/{row_id}/test?probe=false",
+                                   headers=_auth_headers(alice_id))
             assert r1.json()["ok"] is True
             assert (await store.list_for_user(org_id, alice_id)) == []
 
@@ -1168,7 +1217,8 @@ class TestConnectorStatus:
             # Simulate the secret going missing -> second test fails -> REAL
             # transition (ok -> not ok) -> exactly one notification.
             _secret_store.reset()
-            r2 = await client.post(f"/api/v1/connectors/{row_id}/test", headers=_auth_headers(alice_id))
+            r2 = await client.post(f"/api/v1/connectors/{row_id}/test?probe=false",
+                                   headers=_auth_headers(alice_id))
             assert r2.json()["ok"] is False
 
             items = await store.list_for_user(org_id, alice_id)
