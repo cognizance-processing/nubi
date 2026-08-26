@@ -331,7 +331,9 @@ describe('dual y-axis', () => {
     })
     const y2series = opt.series.find(s => s.yAxisIndex === 1)
     assert.ok(y2series, 'one series must target yAxisIndex 1')
-    assert.equal(y2series.name, 'y2')
+    // A series name is read by a person, so it is humanised from its column the
+    // same way a table header is — see embed/widgets/column-labels.js.
+    assert.equal(y2series.name, 'Y2')
   })
 
   test('y2Axis config is applied to second yAxis', () => {

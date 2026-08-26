@@ -91,6 +91,14 @@ const STYLE_WHITELIST = new Set([
   'color', 'border', 'borderColor', 'borderWidth', 'borderStyle',
   'borderRadius', 'padding', 'margin', 'boxShadow', 'opacity',
   'backdropFilter', 'WebkitBackdropFilter',
+  // Typography. A board needs a heading that is bigger than its body text and a
+  // caption that is smaller, and until now the only way to get either was to
+  // accept the theme's size. These were already authorable for the Excel export
+  // (see TableConfig's cell styles) but not for the screen, which had it exactly
+  // backwards. They inherit, so setting them on a text or section widget styles
+  // its content without needing a per-element vocabulary.
+  'fontSize', 'fontFamily', 'fontWeight', 'fontStyle',
+  'lineHeight', 'letterSpacing', 'textAlign', 'textTransform',
 ])
 
 /**
@@ -117,7 +125,12 @@ export function styleToCss(style: Record<string, any>, ctx?: { theme?: 'light' |
 
   for (const k of STYLE_WHITELIST) {
     if (k === 'background') continue // handled above (string vs. descriptor)
-    if (typeof style[k] === 'string' && style[k]) out[k] = style[k]
+    const v = style[k]
+    // Numbers are legitimate for several of these — `fontWeight: 600`,
+    // `lineHeight: 1.4`, `opacity: 0.5` — and React renders them correctly.
+    // A string-only copy dropped them silently, so an author setting a numeric
+    // weight got the theme's weight and no indication why.
+    if ((typeof v === 'string' && v) || Number.isFinite(v)) out[k] = v
   }
 
   if (ctx && typeof out.backgroundColor === 'string' && out.backgroundColor) {

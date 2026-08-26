@@ -66,3 +66,33 @@ test('backgroundToCss: with ctx, solid light-neutral becomes the surface token',
     { background: 'var(--surface)' },
   )
 })
+
+test('styleToCss: typography is authorable, and unknown properties still are not', () => {
+  // A board needs a heading bigger than its body and a caption smaller. These
+  // were authorable for the Excel export long before they were authorable on
+  // screen, which had it backwards.
+  const out = styleToCss({
+    fontSize: '28px',
+    fontFamily: 'Georgia, serif',
+    fontWeight: 600,
+    letterSpacing: '-0.02em',
+    textAlign: 'center',
+    lineHeight: 1.3,
+    textTransform: 'uppercase',
+    fontStyle: 'italic',
+  })
+  assert.equal(out.fontSize, '28px')
+  assert.equal(out.fontFamily, 'Georgia, serif')
+  assert.equal(out.fontWeight, 600)
+  assert.equal(out.letterSpacing, '-0.02em')
+  assert.equal(out.textAlign, 'center')
+  assert.equal(out.lineHeight, 1.3)
+  assert.equal(out.textTransform, 'uppercase')
+  assert.equal(out.fontStyle, 'italic')
+
+  // The whitelist is still a whitelist.
+  const blocked = styleToCss({ fontSize: '20px', position: 'fixed', zIndex: 9999 })
+  assert.equal(blocked.fontSize, '20px')
+  assert.equal(blocked.position, undefined)
+  assert.equal(blocked.zIndex, undefined)
+})
