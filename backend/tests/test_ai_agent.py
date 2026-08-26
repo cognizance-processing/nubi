@@ -1105,3 +1105,60 @@ class TestAiChatEndpoint:
         assert captured[0].get("policies") == {"org_id": "acme"}, (
             f"Expected policies={{'org_id': 'acme'}}, got {captured[0].get('policies')!r}"
         )
+
+
+class TestRegistryListingIsOrgScoped:
+    """Listing the registry must not disclose other tenants' metadata.
+
+    ``resolve_registered_query`` already stops one org RUNNING another org's
+    query. Nothing stopped it SEEING them: ``get_schema`` and ``list_queries``
+    both enumerated the process-global registry unfiltered, so an API key
+    minted in workspace A returned workspace B's query names, table names and
+    column names. Metadata, not rows — but a customer's data model and their
+    project names are exactly what a table listing gives away.
+    """
+
+    @staticmethod
+    def _register(monkeypatch, entries):
+        from app.queries.registry import QueryRegistry, RegisteredQuery
+        import app.queries.registry as registry_mod
+
+        reg = QueryRegistry()
+        for qid, name, owner, sql in entries:
+            rq = RegisteredQuery(id=qid, name=name, sql=sql, params=[])
+            object.__setattr__(rq, "owner_org_id", owner)
+            reg._store[qid] = rq  # noqa: SLF001
+        monkeypatch.setattr(registry_mod, "get_query_registry", lambda: reg)
+        return reg
+
+    ENTRIES = [
+        ("mine", "Alison sales", "org-a", "SELECT store_id FROM ab_orders"),
+        ("theirs", "Acme payroll", "org-b", "SELECT emp_id FROM acme_salaries"),
+        ("shared", "Demo rows", None, "SELECT id FROM demo"),
+    ]
+
+    def test_list_queries_hides_another_orgs_queries(self, monkeypatch):
+        from app.ai.tools import _tool_list_queries
+
+        self._register(monkeypatch, self.ENTRIES)
+        result = _tool_list_queries({"org": "org-a"})
+        names = {q["name"] for q in result["queries"]}
+        assert "Alison sales" in names
+        assert "Demo rows" in names, "unowned/system entries stay globally visible"
+        assert "Acme payroll" not in names
+        assert result["total"] == 2, "the count must not leak the hidden rows either"
+
+    def test_get_schema_hides_another_orgs_tables(self, monkeypatch):
+        from app.ai.tools import _tool_get_schema
+
+        self._register(monkeypatch, self.ENTRIES)
+        tables = _tool_get_schema({"org": "org-a"})["tables"]
+        assert "acme_salaries" not in tables
+
+    def test_no_org_in_claims_sees_only_unowned_entries(self, monkeypatch):
+        """A caller with no org resolves to the shared entries, not everything."""
+        from app.ai.tools import _tool_list_queries
+
+        self._register(monkeypatch, self.ENTRIES)
+        names = {q["name"] for q in _tool_list_queries({})["queries"]}
+        assert names == {"Demo rows"}

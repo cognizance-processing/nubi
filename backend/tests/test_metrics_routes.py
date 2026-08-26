@@ -767,3 +767,37 @@ async def test_metrics_query_offloads_cpu_work_to_thread(metering_client):
         )
     finally:
         app_.dependency_overrides.pop(verified_identity, None)
+
+
+class TestMetricListingIsOrgScoped:
+    """``list_metrics`` must not disclose other tenants' metric definitions.
+
+    The metric registry is a process-global singleton. ``GET /metrics`` had
+    scoping; the MCP ``list_metrics`` tool did not, so an API key minted in one
+    workspace listed every org's metric names, measures and dimensions. Both now
+    share ``metrics_visible_to_org``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_org_resolves_to_the_seeds_only(self):
+        """Fail closed: an org-less caller sees the tenant-free seeds, not all."""
+        from app.metrics.registry import (
+            SEED_METRIC_IDS,
+            get_metric_registry,
+            metrics_visible_to_org,
+        )
+
+        everything = list(get_metric_registry().all())
+        visible = await metrics_visible_to_org(everything, None)
+        assert {m.id for m in visible} <= set(SEED_METRIC_IDS)
+
+    @pytest.mark.asyncio
+    async def test_mcp_tool_and_rest_route_use_the_same_filter(self):
+        """The tool must not drift from the route — that is how the gap appeared."""
+        import inspect
+
+        from app.ai import tools as ai_tools
+        from app.routes import metrics as metrics_route
+
+        assert "metrics_visible_to_org" in inspect.getsource(ai_tools._tool_list_metrics)
+        assert "metrics_visible_to_org" in inspect.getsource(metrics_route.list_metrics)

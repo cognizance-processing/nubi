@@ -62,10 +62,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from app.auth.deps import current_user
+from app.repos.provider import Repo, get_repo
+from app.routes._org import resolve_org_id as _resolve_org_id
 
 router = APIRouter(tags=["query-tools"])
 
@@ -429,18 +431,36 @@ class SchemaOut(BaseModel):
 
 @router.get("/query/schema", response_model=SchemaOut)
 async def schema(
-    _user: dict[str, Any] = Depends(current_user),
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
 ) -> SchemaOut:
     """Return ``{tables: {name: [cols...]}}`` for schema-aware autocomplete.
 
     Sourced from the AI grounding catalog (registered queries + query graph),
     the single source of truth already used for text-to-SQL grounding.  Returns
     an empty mapping (never raises) when no catalog data is available.
+
+    Scoped to the caller's org, for two reasons. It is correct: the registry
+    behind the catalog is process-global, so an unscoped build offered every
+    other tenant's table and column names as autocomplete suggestions in the SQL
+    editor. And it is fast: building the estate-wide catalog parses every
+    registered query in the process (1,258 of them on this instance, ~5.8s),
+    which — because it is CPU-bound Python — blocked the event loop and left
+    every request behind it queued. The query editor issues this twice on load,
+    so its own connector-list call landed 11 seconds late and the connector
+    picker showed "No connectors yet" until it did.
+
+    The parse work runs in a thread regardless, so a large single-org catalog
+    cannot stall unrelated requests either.
     """
     try:
+        import asyncio  # noqa: PLC0415
+
         from app.ai.grounding import build_catalog
 
-        catalog = build_catalog()
+        org_id = await _resolve_org_id(str(user["id"]), repo, request)
+        catalog = await asyncio.to_thread(build_catalog, org_id)
         tables = catalog.get("tables", {}) or {}
         # Defensive copy + coerce to the declared shape.
         clean: dict[str, list[str]] = {

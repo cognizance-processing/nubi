@@ -3086,12 +3086,21 @@ async def register_query(
     org_id: str | None = None
     try:
         from app.routes._org import (  # noqa: PLC0415
-            get_user_org as _get_user_org,
+            resolve_org_id as _resolve_org_id,
             resolve_project_id_for_create as _resolve_project_id_for_create,
         )
 
         repo = get_repo()
-        org_id = await _get_user_org(identity.user_id, repo)
+        # Header-aware, like every other route in this file: the query is
+        # registered into the org the caller is VIEWING (``X-Org-Id``), falling
+        # back to their default org when the header is absent. Reading the
+        # default org unconditionally meant a caller working in any non-default
+        # workspace silently wrote the query into a different org — it vanished
+        # from the registry listing they were looking at, and every subsequent
+        # ``POST /query`` for that id came back 403 ``query_not_registered``
+        # because resolution is org-scoped. Same class of bug as the connector
+        # routes' header-awareness note at the top of routes/connectors.py.
+        org_id = await _resolve_org_id(identity.user_id, repo, request)
         # Active project (X-Project-Id / ?project_id=, else the org default):
         # persisted rows are project-scoped so the registry list can be too.
         project_id = await _resolve_project_id_for_create(org_id, request)

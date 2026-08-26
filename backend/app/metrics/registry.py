@@ -295,6 +295,51 @@ def _definition_from_query_row(row: object) -> MetricDefinition | None:
     return MetricDefinition.from_dict(data)
 
 
+async def metrics_visible_to_org(
+    metrics: "list[MetricDefinition]", org_id: str | None, project_id: str | None = None
+) -> "list[MetricDefinition]":
+    """Filter a registry listing to the metrics *org_id* may see.
+
+    The metric registry is a process-global singleton shared by every org, so
+    ``registry.all()`` spans the whole estate. Metrics are query-backed, so the
+    visible set is the slugs exposed by that org's ``queries`` rows carrying
+    ``config.metric``, plus the in-code seeds (``SEED_METRIC_IDS``) which belong
+    to no tenant.
+
+    Best-effort by design: if the DB is unavailable the input list is returned
+    unfiltered, matching the behaviour ``GET /metrics`` has always had. That is
+    a deliberate availability trade-off for a metadata listing — it is NOT a
+    substitute for the execution-time org check.
+
+    Extracted from ``routes/metrics.list_metrics`` so the MCP ``list_metrics``
+    tool cannot drift from it; that tool had no scoping at all and returned
+    every tenant's metrics.
+    """
+    if org_id is None:
+        return [m for m in metrics if m.id in SEED_METRIC_IDS]
+    try:
+        from app.db import fetch  # noqa: PLC0415
+
+        if project_id:
+            rows = await fetch(
+                "SELECT config->'metric'->>'slug' AS slug FROM queries "
+                "WHERE org_id = $1::uuid AND project_id = $2::uuid AND config ? 'metric'",
+                org_id,
+                project_id,
+            )
+        else:
+            rows = await fetch(
+                "SELECT config->'metric'->>'slug' AS slug FROM queries "
+                "WHERE org_id = $1::uuid AND config ? 'metric'",
+                org_id,
+            )
+    except Exception:  # noqa: BLE001 — scoping unavailable → unfiltered list.
+        return list(metrics)
+
+    slugs = {str(r["slug"]) for r in rows if r.get("slug")}
+    return [m for m in metrics if m.id in slugs or m.id in SEED_METRIC_IDS]
+
+
 async def load_metrics_from_queries() -> int:
     """Load metrics from queries-with-``config.metric`` into the runtime registry.
 

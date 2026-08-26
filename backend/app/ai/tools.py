@@ -194,7 +194,10 @@ def _tool_get_schema(
     """
     from app.ai.grounding import build_catalog  # noqa: PLC0415
 
-    catalog = build_catalog()
+    # Scoped to the caller's org: the registry behind this catalog is
+    # process-global, so an unscoped build hands every other tenant's table
+    # names, column names and query names to whoever holds an API key.
+    catalog = build_catalog(claims.get("org"))
     tables: dict[str, list[str]] = catalog["tables"]
     queries: list[dict[str, Any]] = catalog["queries"]
 
@@ -263,10 +266,16 @@ def _tool_list_queries(
     Filtered by *name_contains* (case-insensitive substring match against both
     the query id and its display name) when given, then paginated.
     """
-    from app.queries.registry import get_query_registry  # noqa: PLC0415
+    from app.queries.registry import (  # noqa: PLC0415
+        get_query_registry,
+        visible_to_org,
+    )
 
     registry = get_query_registry()
-    all_queries = list(registry.all())
+    # Same reason as get_schema: listing the process-global registry without
+    # this filter returns every org's query ids and names. Executing one was
+    # already blocked by resolve_registered_query — seeing them was not.
+    all_queries = visible_to_org(list(registry.all()), claims.get("org"))
 
     if name_contains:
         needle = name_contains.casefold()
@@ -866,11 +875,19 @@ def _tool_list_metrics(claims: dict[str, Any]) -> dict[str, Any]:
 
     Returns ``{metrics: list[dict]}``.
     """
-    from app.metrics.registry import get_metric_registry  # noqa: PLC0415
+    from app.metrics.registry import (  # noqa: PLC0415
+        get_metric_registry,
+        metrics_visible_to_org,
+    )
 
     registry = get_metric_registry()
+    # Scoped to the caller's org — the metric registry is a process-global
+    # singleton, so an unfiltered listing hands every other tenant's metric
+    # names, measures and dimensions to whoever holds an API key. Shares its
+    # implementation with GET /metrics so the two cannot drift.
+    visible = _run_sync(metrics_visible_to_org(list(registry.all()), claims.get("org")))
     metrics: list[dict[str, Any]] = []
-    for m in registry.all():
+    for m in visible:
         td = m.time_dimension
         metrics.append(
             {

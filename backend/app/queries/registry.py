@@ -665,6 +665,25 @@ def _owned_by(rq: RegisteredQuery, org_id: str | None) -> bool:
     return rq.owner_org_id is not None and rq.owner_org_id == org_id
 
 
+def visible_to_org(
+    queries: "list[RegisteredQuery] | tuple[RegisteredQuery, ...]", org_id: str | None
+) -> "list[RegisteredQuery]":
+    """Filter a registry listing to what *org_id* is allowed to SEE.
+
+    Applies exactly the visibility rule ``resolve_registered_query`` already
+    enforces for a single id — built-in ``system`` queries and never-persisted
+    (``owner_org_id is None``) registrations stay globally visible; anything
+    with an owner is shown only to that owner.
+
+    This exists because the process-global registry is shared by every org, so
+    any code path that enumerates ``registry.all()`` and hands the result to a
+    caller is a cross-tenant disclosure unless it filters. Fetching one query
+    by id was already safe; LISTING them was not, which is how another org's
+    query names and table/column metadata reached the MCP tools.
+    """
+    return [rq for rq in queries if rq.system or rq.owner_org_id is None or _owned_by(rq, org_id)]
+
+
 async def resolve_registered_query(
     query_id: str, org_id: str | None
 ) -> RegisteredQuery | None:

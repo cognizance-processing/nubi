@@ -648,7 +648,7 @@ class Widget(BaseModel):
         from THIS spec entry, never from the library row. See
         ``app.dashboards.widget_refs.resolve_widget_refs`` for the resolver.
         ``ref`` and any non-board-local inline field (``type``, ``query_id``,
-        ``metric``, ``chart_type``, ``encoding``, ``props``, ``style``,
+        ``metric``, ``chart_type``, ``encoding``, ``props``, ``style``, ``config``,
         ``subtype``, ``options_query_id``, ``target_var``, ``content``,
         ``params``, ``filters``, ``source``) are mutually exclusive — setting both is a
         hard validation error (``validate_spec`` step 14). A ``ref`` that
@@ -670,6 +670,10 @@ class Widget(BaseModel):
             "kpi", "table", "chart", "filter", "text",
             # Extended widget types (rendered by the frontend SpecRenderer):
             "metric", "pivot", "section", "html", "image",
+            # Presentational / navigation widgets carried over from the legacy
+            # estate: a standalone rule, a live "reporting period" caption, and
+            # a drill-path trail over dashboard variables.
+            "divider", "datedisplay", "breadcrumb",
             # Container: shows one child widget at a time in a single tile, with a
             # step bar. Children are full widget specs under props.steps[].widget
             # and carry no pos of their own.
@@ -720,6 +724,7 @@ class Widget(BaseModel):
             "line", "bar", "hbar", "scatter", "area", "pie", "donut", "heatmap",
             "gauge", "combo", "bubble", "sankey", "funnel", "waterfall", "radar",
             "treemap", "boxplot", "candlestick", "fan", "map",
+            "polar", "radialbar",
         ]
         | None
     ) = None
@@ -729,6 +734,21 @@ class Widget(BaseModel):
     # embed/widgets/chart-options.js.
     encoding: dict[str, str | list[str]] = Field(default_factory=dict)
     props: dict[str, Any] = Field(default_factory=dict)
+    config: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Chart-specific rendering options (palette, legend, stack, "
+            "gaugeStyle, min/max, …). An opaque pass-through, exactly like "
+            "`props`/`style`: the frontend chart builder "
+            "(embed/widgets/chart-options.js) owns the vocabulary. "
+            "Added because the model was silently DROPPING this field the same "
+            "way it once dropped `style`: the frontend has written "
+            "widget.config for custom palettes/legends for a long time, so "
+            "every server-side render (thumbnail, PDF) fell back to the "
+            "generic default palette and a flat single colour regardless of "
+            "what the author configured."
+        ),
+    )
     style: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -862,6 +882,84 @@ class Widget(BaseModel):
         ),
     )
 
+    # ── Presentation/behaviour fields the EDITOR writes and the RENDERER reads ──
+    #
+    # Everything below was already being authored by the editor UI and consumed
+    # by the widget components, but was never declared here — so every path that
+    # round-trips a spec through this model (``validate_spec`` →
+    # ``model_dump()``: the MCP save/update/edit tools, and the server-side
+    # thumbnail/PDF renderers) silently DISCARDED them. A board edited through
+    # MCP came back with its click-to-filter and its conditional formatting
+    # gone, reported as ``valid: true`` with no issues.
+    #
+    # This is the fourth time this exact thing has happened on this model —
+    # ``style``, ``Widget.config`` and ``DashboardSpec.background`` each had to
+    # be added back for the same reason. The rule the omissions keep breaking:
+    # if the frontend reads ``widget.<x>``, ``<x>`` belongs here, even when the
+    # backend itself never looks at it. These are opaque pass-throughs; the
+    # frontend owns each vocabulary and sanitises it, so they stay loosely
+    # typed rather than modelled here.
+    columnFormats: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Per-column value formatting for table/pivot widgets — "
+            "{column: {type, decimals, currency, bar, ...}}. Consumed by "
+            "formatValue() in src/dashboards/widgets/conditionalFormat.js."
+        ),
+    )
+    formattingRules: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Conditional cell/row styling for table widgets — a list of "
+            "{column, op, value, value2?, style, scope} rules evaluated by "
+            "evalRules(). This is what paints a failing metric red."
+        ),
+    )
+    onClick: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Click behaviour for a data widget — {setVar, valueField, setVars, "
+            "navigateTab, stepNext, trigger}. Publishes the clicked row/point "
+            "as board variables (the cross-filter bus), so one widget can drive "
+            "the rest of the board with no extra query."
+        ),
+    )
+    drilldown: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Legacy click-to-filter shape — {target_var, value_field}. Still "
+            "read by TableWidget alongside the newer `onClick`."
+        ),
+    )
+    signalRules: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Threshold colouring for KPI widgets (also accepted at "
+            "props.signalRules). Same rule vocabulary as formattingRules."
+        ),
+    )
+    hidden: list[str] | None = Field(
+        default=None,
+        description=(
+            "Breakpoint tokens ('lg' | 'md' | 'sm') at which this widget is not "
+            "rendered — see src/dashboards/responsiveLayout.js."
+        ),
+    )
+    title: str | None = Field(
+        default=None,
+        description=(
+            "Widget title. Section widgets fall back to it when props.title is "
+            "absent, and the editor uses it to label the widget in its lists."
+        ),
+    )
+    html: str | None = Field(
+        default=None,
+        description=(
+            "Custom HTML template for an `html` widget, sanitised on render "
+            "(src/dashboards/widgets/HtmlWidget.jsx)."
+        ),
+    )
+
     def effective_placement(self) -> str:
         """Resolve this widget's effective placement ('grid'|'header'|'drawer').
 
@@ -966,6 +1064,22 @@ class DashboardSpec(BaseModel):
             "a named data source that widgets can bind to via 'widget.source'. "
             "See DataProvider for the full contract and the later-wave notes on "
             f"the resolver + route. Maximum {_SPEC_MAX_DATA_PROVIDERS} entries."
+        ),
+    )
+    background: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Custom page/canvas background — {type: 'solid'|'gradient'|'image'|"
+            "'transparent'|'css'|'none', color?, from?, to?, angle?, imageUrl?, "
+            "css?}. An opaque pass-through like `widget.style`: the frontend "
+            "owns the vocabulary (src/dashboards/widgetHtml.js backgroundToCss) "
+            "and applies it to both SpecRenderer's inner box and the Live-mode "
+            "page chrome. Added because the model was silently DROPPING this "
+            "field the same way it once dropped `style` and `Widget.config`: "
+            "every server-side render (thumbnail, PDF) ignored a board's own "
+            "chosen background and always painted the generic theme default, "
+            "so a board authored on a dark custom canvas got a plain white "
+            "thumbnail with no visible relation to how viewers actually see it."
         ),
     )
 
@@ -1154,6 +1268,28 @@ def get_export_config(spec: "DashboardSpec") -> dict:
 # ---------------------------------------------------------------------------
 
 
+# The encoding channels each chart type actually needs. Mirrors
+# CHART_REQUIRED_ENCODING in src/dashboards/validateSpec.js and the per-type
+# builders in embed/widgets/chart-options.js — keep the three in lockstep.
+#
+# This was a flat "every chart needs x and y", which held while the renderer was
+# cartesian-only. It stopped holding as the type list grew: a sankey encodes
+# source/target/value, a map name/value, a gauge a single value column — so
+# those types, all authorable from the editor, produced specs that failed their
+# own validation. A type absent here falls back to x + y.
+_CHART_REQUIRED_ENCODING: dict[str, tuple[str, ...]] = {
+    "sankey": ("source", "target", "value"),
+    "heatmap": ("x", "color", "value"),
+    "gauge": ("y",),
+    "candlestick": ("x", "open", "close", "low", "high"),
+    "map": ("name", "value"),
+    # A combo's series live in the `bars` / `lines` column-name arrays; `y` is
+    # meaningless for it (buildCombo never reads one).
+    "combo": ("x",),
+}
+_DEFAULT_CHART_ENCODING: tuple[str, ...] = ("x", "y")
+
+
 def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
     """Parse and validate a raw dict as a DashboardSpec.
 
@@ -1257,14 +1393,15 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
                     f"Widget {widget.id!r} (chart): 'chart_type' is required "
                     "for chart widgets."
                 )
-            if "x" not in widget.encoding:
-                issues.append(
-                    f"Widget {widget.id!r} (chart): encoding must include 'x' column."
-                )
-            if "y" not in widget.encoding:
-                issues.append(
-                    f"Widget {widget.id!r} (chart): encoding must include 'y' column."
-                )
+            required = _CHART_REQUIRED_ENCODING.get(
+                widget.chart_type or "", _DEFAULT_CHART_ENCODING
+            )
+            for channel in required:
+                if channel not in widget.encoding:
+                    issues.append(
+                        f"Widget {widget.id!r} ({widget.chart_type or 'chart'}): "
+                        f"encoding must include {channel!r} column."
+                    )
 
     # ── Step 4: Filter widget requirements ───────────────────────────────
     for widget in spec.widgets:
@@ -1499,6 +1636,8 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
             conflicts.append("props")
         if widget.style:
             conflicts.append("style")
+        if widget.config:
+            conflicts.append("config")
         if widget.subtype is not None:
             conflicts.append("subtype")
         if widget.options_query_id:
@@ -1618,6 +1757,17 @@ def _kpi_tag(widget: Widget) -> str:
         parts.append(f' label="{_esc(label)}"')
     if fmt:
         parts.append(f' format="{_esc(fmt)}"')
+    # Presentation the SPA card already honours; without these an embedded or
+    # exported KPI drops the unit and the precision the author chose.
+    decimals = widget.props.get("decimals")
+    if isinstance(decimals, int) and decimals >= 0:
+        parts.append(f' decimals="{_esc(decimals)}"')
+    prefix = widget.props.get("prefix")
+    if prefix:
+        parts.append(f' prefix="{_esc(prefix)}"')
+    suffix = widget.props.get("suffix")
+    if suffix:
+        parts.append(f' suffix="{_esc(suffix)}"')
     parts.append("></nubi-kpi>")
     return "".join(parts)
 

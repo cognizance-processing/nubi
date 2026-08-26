@@ -1945,3 +1945,186 @@ class TestSpecInputCaps:
         spec, issues = validate_spec(_good_spec_dict())
         assert spec is not None
         assert spec.data == []
+
+
+# ---------------------------------------------------------------------------
+# Legacy-parity widget + chart types
+# ---------------------------------------------------------------------------
+
+
+class TestLegacyParityTypes:
+    """The widget/chart vocabulary carried over from the legacy BI estate.
+
+    Every entry here is authorable from the editor palette or the chart-type
+    picker, so a spec containing one must survive validation — the frontend
+    validator, this one, and the renderer have to agree on the vocabulary or a
+    board fails its own Code-panel check.
+    """
+
+    @staticmethod
+    def _spec_with(widgets: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "title": "Parity",
+            "layout": {"cols": 12, "row_height": 60},
+            "variables": [{"name": "region", "type": "select"}],
+            "widgets": widgets,
+        }
+
+    def test_presentational_widget_types_accepted(self):
+        widgets = [
+            {"id": "d1", "type": "divider", "pos": {"x": 1, "y": 1, "w": 12, "h": 1}},
+            {
+                "id": "d2",
+                "type": "datedisplay",
+                "props": {"source": "variable", "variable": "region"},
+                "pos": {"x": 1, "y": 2, "w": 3, "h": 2},
+            },
+            {
+                "id": "d3",
+                "type": "breadcrumb",
+                "props": {"variables": ["region"]},
+                "pos": {"x": 1, "y": 4, "w": 12, "h": 1},
+            },
+        ]
+        spec, issues = validate_spec(self._spec_with(widgets))
+        assert spec is not None, issues
+        assert issues == [], issues
+
+    def test_polar_and_radial_bar_chart_types_accepted(self):
+        widgets = [
+            {
+                "id": f"c{i}",
+                "type": "chart",
+                "query_id": "demo_all",
+                "chart_type": ct,
+                "encoding": {"x": "cat", "y": "val"},
+                "pos": {"x": 1, "y": i + 1, "w": 6, "h": 4},
+            }
+            for i, ct in enumerate(["polar", "radialbar"])
+        ]
+        spec, issues = validate_spec(self._spec_with(widgets))
+        assert spec is not None, issues
+        assert issues == [], issues
+
+    def test_non_cartesian_charts_validated_against_their_own_channels(self):
+        """A sankey has no x/y — the flat rule used to reject one outright."""
+        cases = [
+            ("sankey", {"source": "s", "target": "t", "value": "v"}),
+            ("map", {"name": "country", "value": "v"}),
+            ("gauge", {"y": "v"}),
+            ("heatmap", {"x": "x", "color": "y", "value": "v"}),
+            ("candlestick", {"x": "d", "open": "o", "close": "c", "low": "l", "high": "h"}),
+            ("combo", {"x": "x", "bars": ["a"], "lines": ["b"]}),
+        ]
+        widgets = [
+            {
+                "id": f"c{i}",
+                "type": "chart",
+                "query_id": "demo_all",
+                "chart_type": ct,
+                "encoding": enc,
+                "pos": {"x": 1, "y": i + 1, "w": 6, "h": 4},
+            }
+            for i, (ct, enc) in enumerate(cases)
+        ]
+        spec, issues = validate_spec(self._spec_with(widgets))
+        assert spec is not None, issues
+        assert issues == [], issues
+
+    def test_missing_channel_still_reported_and_named(self):
+        widgets = [
+            {
+                "id": "c",
+                "type": "chart",
+                "query_id": "demo_all",
+                "chart_type": "sankey",
+                "encoding": {"source": "s"},
+                "pos": {"x": 1, "y": 1, "w": 6, "h": 4},
+            }
+        ]
+        _, issues = validate_spec(self._spec_with(widgets))
+        joined = "\n".join(issues)
+        assert "'target'" in joined, joined
+        assert "'value'" in joined, joined
+        assert "'x'" not in joined, "a sankey must not be asked for an x column"
+
+    def test_kpi_presentation_props_reach_the_embed_tag(self):
+        """prefix/suffix/decimals are honoured in-app; the embed must match."""
+        widgets = [
+            {
+                "id": "k",
+                "type": "kpi",
+                "query_id": "demo_all",
+                "encoding": {"value": "n"},
+                "props": {"label": "OSA", "format": "percent100", "suffix": "%", "decimals": 0},
+                "pos": {"x": 1, "y": 1, "w": 3, "h": 2},
+            }
+        ]
+        spec, issues = validate_spec(self._spec_with(widgets))
+        assert spec is not None, issues
+        html = spec_to_html(spec)
+        assert 'suffix="%"' in html
+        assert 'decimals="0"' in html
+
+
+class TestPassThroughWidgetFields:
+    """Fields the editor writes and the renderer reads must survive the model.
+
+    Regression guard for a bug that has now hit this model four times: a field
+    the frontend authors but the backend never inspects gets left off ``Widget``,
+    and then every path that round-trips a spec through ``validate_spec`` ->
+    ``model_dump()`` silently discards it. The MCP ``edit_dashboard`` /
+    ``update_dashboard`` tools do exactly that round-trip, so a board edited
+    through MCP came back with its click-to-filter and conditional formatting
+    gone — reported as ``valid: True`` with no issues.
+    """
+
+    PASS_THROUGH = {
+        "columnFormats": {"net_sales": {"type": "number", "decimals": 0, "bar": True}},
+        "formattingRules": [
+            {"column": "csat", "op": "lt", "value": 4.15,
+             "style": {"color": "#b42318"}, "scope": "cell"},
+        ],
+        "onClick": {"setVar": "store", "valueField": "store", "trigger": "click"},
+        "drilldown": {"target_var": "store", "value_field": "store"},
+        "signalRules": [{"column": "value", "op": "gt", "value": 10,
+                         "style": {"color": "#1d5f5a"}}],
+        "hidden": ["sm"],
+        "title": "Store leaderboard",
+        "html": "<b>{{ value }}</b>",
+    }
+
+    def _spec(self, **widget_extra):
+        return {
+            "version": 1,
+            "title": "Round-trip",
+            "layout": {"cols": 12, "row_height": 60},
+            "widgets": [{
+                "id": "w1", "type": "table", "query_id": "demo_all",
+                "pos": {"x": 1, "y": 1, "w": 6, "h": 4},
+                "encoding": {}, "props": {"limit": 10},
+                **widget_extra,
+            }],
+        }
+
+    def test_every_pass_through_field_survives_a_model_round_trip(self):
+        from app.dashboards.spec import validate_spec
+
+        result, issues = validate_spec(self._spec(**self.PASS_THROUGH))
+        assert result is not None, issues
+        widget = result.model_dump()["widgets"][0]
+        for key, expected in self.PASS_THROUGH.items():
+            assert widget.get(key) == expected, (
+                f"{key} was dropped by the Widget model — a spec saved through "
+                f"MCP or rendered server-side would silently lose it"
+            )
+
+    def test_absent_pass_through_fields_stay_absent_not_invented(self):
+        """A widget that never had them round-trips to None, not to a default."""
+        from app.dashboards.spec import validate_spec
+
+        result, _issues = validate_spec(self._spec())
+        widget = result.model_dump()["widgets"][0]
+        for key in self.PASS_THROUGH:
+            assert widget.get(key) is None

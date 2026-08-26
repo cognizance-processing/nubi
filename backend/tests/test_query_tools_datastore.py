@@ -163,3 +163,31 @@ async def test_no_token_401(client_with_ds):
     ac, _user_id, ds_id = client_with_ds
     resp = await ac.get(f"/api/v1/datastores/{ds_id}/tables")
     assert resp.status_code == 401, resp.text
+
+
+class TestSchemaAutocompleteIsOrgScoped:
+    """``GET /query/schema`` feeds SQL autocomplete from the grounding catalog.
+
+    The catalog is built from the process-global query registry, so an unscoped
+    build suggested every other tenant's table and column names in the editor —
+    and, because parsing every registered query is CPU-bound Python running on
+    the event loop, it also blocked every concurrent request behind it. The
+    query editor calls this twice on load, which pushed its own connector-list
+    request out to ~11s and left the connector picker reading "No connectors
+    yet" until then.
+    """
+
+    def test_route_scopes_the_catalog_and_keeps_it_off_the_event_loop(self):
+        import inspect
+
+        from app.routes import query_tools
+
+        src = inspect.getsource(query_tools.schema)
+        assert "_resolve_org_id" in src, (
+            "the catalog must be built for the caller's org, not the estate"
+        )
+        assert "to_thread" in src, (
+            "build_catalog parses every registered query — running it inline "
+            "blocks the event loop and stalls concurrent requests"
+        )
+        assert "build_catalog()" not in src, "unscoped build_catalog() reintroduces the leak"

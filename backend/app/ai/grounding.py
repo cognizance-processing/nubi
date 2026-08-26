@@ -138,8 +138,16 @@ def _score(candidate: str, question_tokens: list[str]) -> float:
 # ---------------------------------------------------------------------------
 
 
-def build_catalog() -> dict[str, Any]:
+def build_catalog(org_id: str | None = None) -> dict[str, Any]:
     """Build an in-memory catalog from the query registry and query graph.
+
+    Pass *org_id* to restrict the catalog to the queries that org is allowed to
+    see (``visible_to_org``). The registry is process-global and shared by every
+    org, so an unfiltered catalog exposes every tenant's table names, column
+    names and query names to whoever asks. Callers that serve a specific caller
+    — the MCP tools, chat grounding — MUST pass it. The default of ``None``
+    keeps the historical estate-wide behaviour for internal callers that
+    genuinely need it (and is what the existing tests assume).
 
     The catalog is a plain dict that can be cached and passed to ``ground()``.
     It is computed synchronously and is safe to recompute on each request
@@ -193,8 +201,12 @@ def build_catalog() -> dict[str, Any]:
     from app.queries.query_graph import build_query_graph  # noqa: PLC0415
     from app.queries.registry import get_query_registry  # noqa: PLC0415
 
+    from app.queries.registry import visible_to_org  # noqa: PLC0415
+
     registry = get_query_registry()
     all_queries = registry.all()
+    if org_id is not None:
+        all_queries = visible_to_org(all_queries, org_id)
     graph = build_query_graph(all_queries)
 
     # ── Build tables → columns mapping ─────────────────────────────────────

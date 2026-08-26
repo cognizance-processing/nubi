@@ -519,46 +519,20 @@ async def list_metrics(
     # org's queries-with-`config.metric`. In-code seeds (e.g. demo_revenue) have
     # no backing query row and are always visible. When scoping is unavailable
     # (no DB) the registry list is returned unfiltered.
-    slugs: set[str] | None = None
     try:
-        from app.db import fetch
+        from app.metrics.registry import metrics_visible_to_org  # noqa: PLC0415
         from app.routes._org import resolve_org_id, resolve_project_filter
 
         repo = get_repo()
         if identity.kind == "embed":
             org_id = identity.org
+            project_id = None
         else:
             org_id = await resolve_org_id(identity.user_id, repo, request)
-        if org_id:
-            project_id = (
-                None
-                if identity.kind == "embed"
-                else await resolve_project_filter(org_id, request)
-            )
-            if project_id:
-                rows = await fetch(
-                    "SELECT config->'metric'->>'slug' AS slug FROM queries "
-                    "WHERE org_id = $1::uuid AND project_id = $2::uuid "
-                    "AND config ? 'metric'",
-                    org_id,
-                    project_id,
-                )
-            else:
-                rows = await fetch(
-                    "SELECT config->'metric'->>'slug' AS slug FROM queries "
-                    "WHERE org_id = $1::uuid AND config ? 'metric'",
-                    org_id,
-                )
-            slugs = {str(r["slug"]) for r in rows if r.get("slug")}
+            project_id = await resolve_project_filter(org_id, request) if org_id else None
+        metrics = await metrics_visible_to_org(list(metrics), org_id, project_id)
     except Exception:  # noqa: BLE001 — scoping unavailable → unfiltered list.
-        slugs = None
-
-    if slugs is not None:
-        # Keep org-owned query-backed metrics + the in-code seeds (which belong
-        # to no tenant, e.g. demo_revenue).
-        from app.metrics.registry import SEED_METRIC_IDS  # noqa: PLC0415
-
-        metrics = [m for m in metrics if m.id in slugs or m.id in SEED_METRIC_IDS]
+        pass
 
     return {"metrics": [_metric_summary(m) for m in metrics]}
 
