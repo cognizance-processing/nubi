@@ -35,18 +35,18 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.auth.deps import current_user
-from app.auth.roles import require_writer_default
+from app.auth.roles import require_writer
 from app.errors import AppError
 from app.jobs.executor import execute_job
 from app.jobs.schedule import next_run
 from app.jobs.store import InMemoryJobStore, get_job_store
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
-from app.routes._org import get_user_org as _get_user_org
+from app.routes._org import resolve_org_id as _resolve_org_id
 
 # ---------------------------------------------------------------------------
 # Recipient cap — prevents O(N) per-tick work and worker saturation
@@ -62,9 +62,10 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
 # ---------------------------------------------------------------------------
-# Org resolution helper — shared, pin-aware (app.routes._org). Imported above as
-# ``_get_user_org``; the shared helper honours the API-key org pin, which the
-# old local copy did not (cross-tenant data op for API-key callers).
+# Org resolution — header-aware ``resolve_org_id`` (imported above as
+# ``_resolve_org_id``), so a job is created, listed and run in the workspace the
+# caller is VIEWING. It honours the API-key org pin, and the routes below pair it
+# with ``require_writer`` so the role checked is the role in that same org.
 # ---------------------------------------------------------------------------
 
 
@@ -279,9 +280,10 @@ async def _require_job_in_org(
 # ---------------------------------------------------------------------------
 
 
-@router.post("", status_code=201, dependencies=[Depends(require_writer_default)])
+@router.post("", status_code=201, dependencies=[Depends(require_writer)])
 async def create_job(
     body: CreateJobIn,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
     store: InMemoryJobStore = Depends(_get_store),
@@ -293,7 +295,7 @@ async def create_job(
 
     Returns 201 with the created job on success.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     # Validate the schedule up front; raises AppError("bad_schedule", 400) on failure.
     now = datetime.now(timezone.utc)
@@ -335,12 +337,13 @@ async def create_job(
 
 @router.get("")
 async def list_jobs(
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
     store: InMemoryJobStore = Depends(_get_store),
 ) -> list[dict[str, Any]]:
     """List all jobs for the caller's org."""
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     jobs = await _resolve(store.list_jobs(org_id))
     return [_serialize_job(j) for j in jobs]
 
@@ -348,6 +351,7 @@ async def list_jobs(
 @router.get("/{job_id}")
 async def get_job(
     job_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
     store: InMemoryJobStore = Depends(_get_store),
@@ -356,14 +360,15 @@ async def get_job(
 
     Returns 404 if the job does not exist or belongs to a different org.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     job = await _require_job_in_org(job_id, org_id, store)
     return _serialize_job(job)
 
 
-@router.delete("/{job_id}", status_code=204, dependencies=[Depends(require_writer_default)])
+@router.delete("/{job_id}", status_code=204, dependencies=[Depends(require_writer)])
 async def delete_job(
     job_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
     store: InMemoryJobStore = Depends(_get_store),
@@ -372,15 +377,16 @@ async def delete_job(
 
     Returns 204 on success; 404 if the job does not exist or is cross-org.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     await _require_job_in_org(job_id, org_id, store)
     await _resolve(store.delete_job(job_id))
     return Response(status_code=204)
 
 
-@router.post("/{job_id}/run", status_code=200, dependencies=[Depends(require_writer_default)])
+@router.post("/{job_id}/run", status_code=200, dependencies=[Depends(require_writer)])
 async def run_job_now(
     job_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
     store: InMemoryJobStore = Depends(_get_store),
@@ -392,7 +398,7 @@ async def run_job_now(
 
     Returns the job_run dict.  The run status is ``'success'`` or ``'error'``.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     job = await _require_job_in_org(job_id, org_id, store)
 
     now = datetime.now(timezone.utc)
@@ -416,6 +422,7 @@ async def run_job_now(
 @router.get("/{job_id}/runs")
 async def list_runs(
     job_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
     store: InMemoryJobStore = Depends(_get_store),
@@ -424,7 +431,7 @@ async def list_runs(
 
     Returns 404 if the job does not exist or belongs to a different org.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     await _require_job_in_org(job_id, org_id, store)
     runs = await _resolve(store.list_runs(job_id))
     return [_serialize_run(r) for r in runs]

@@ -24,13 +24,13 @@ from pydantic import BaseModel
 
 from app.audit import record_audit as _record_audit
 from app.auth.deps import current_user, verified_identity
-from app.auth.roles import require_writer_default
+from app.auth.roles import require_writer
 from app.auth.verify import VerifiedIdentity
 from app.connectors.ssrf import guard_url
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
-from app.routes._org import get_user_org as _get_user_org
+from app.routes._org import resolve_org_id as _resolve_org_id
 
 logger = logging.getLogger("nubi.mcp")
 
@@ -65,21 +65,23 @@ class McpServerUpdate(BaseModel):
 
 @mcp_router.get("/servers")
 async def list_mcp_servers(
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> list[dict[str, Any]]:
     """Return all MCP servers registered for the caller's org (no secrets)."""
     from app.mcp.store import get_mcp_store  # noqa: PLC0415
 
-    org_id = await _get_user_org(user["id"], repo)
+    org_id = await _resolve_org_id(user["id"], repo, request)
     rows = await get_mcp_store().list_for_org(org_id)
     # Strip secret fields before returning.
     return [_strip_secrets(r) for r in rows]
 
 
-@mcp_router.post("/servers", status_code=201, dependencies=[Depends(require_writer_default)])
+@mcp_router.post("/servers", status_code=201, dependencies=[Depends(require_writer)])
 async def create_mcp_server(
     body: McpServerCreate,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -89,7 +91,7 @@ async def create_mcp_server(
     # SSRF guard — validate the user-supplied URL before persisting.
     guard_url(body.url)
 
-    org_id = await _get_user_org(user["id"], repo)
+    org_id = await _resolve_org_id(user["id"], repo, request)
     row = await get_mcp_store().create(
         org_id=org_id,
         name=body.name,
@@ -115,23 +117,25 @@ async def create_mcp_server(
 @mcp_router.get("/servers/{server_id}")
 async def get_mcp_server(
     server_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Return a single MCP server by id (no secrets)."""
     from app.mcp.store import get_mcp_store  # noqa: PLC0415
 
-    org_id = await _get_user_org(user["id"], repo)
+    org_id = await _resolve_org_id(user["id"], repo, request)
     row = await get_mcp_store().get_by_id(server_id, org_id)
     if row is None:
         raise AppError("mcp_server_not_found", "MCP server not found.", 404)
     return _strip_secrets(row)
 
 
-@mcp_router.put("/servers/{server_id}", dependencies=[Depends(require_writer_default)])
+@mcp_router.put("/servers/{server_id}", dependencies=[Depends(require_writer)])
 async def update_mcp_server(
     server_id: str,
     body: McpServerUpdate,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -142,7 +146,7 @@ async def update_mcp_server(
     if body.url is not None:
         guard_url(body.url)
 
-    org_id = await _get_user_org(user["id"], repo)
+    org_id = await _resolve_org_id(user["id"], repo, request)
 
     update_kwargs: dict[str, Any] = {}
     if body.name is not None:
@@ -176,6 +180,7 @@ async def update_mcp_server(
 @mcp_router.post("/servers/{server_id}/test")
 async def test_mcp_server(
     server_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -198,7 +203,7 @@ async def test_mcp_server(
     from app.ai.mcp import MCPServer, test_connection_async  # noqa: PLC0415
     from app.mcp.store import get_mcp_store  # noqa: PLC0415
 
-    org_id = await _get_user_org(user["id"], repo)
+    org_id = await _resolve_org_id(user["id"], repo, request)
     store = get_mcp_store()
     row = await store.get_with_secret(server_id, org_id)
     if row is None:
@@ -248,16 +253,17 @@ async def test_mcp_server(
     }
 
 
-@mcp_router.delete("/servers/{server_id}", status_code=204, dependencies=[Depends(require_writer_default)])
+@mcp_router.delete("/servers/{server_id}", status_code=204, dependencies=[Depends(require_writer)])
 async def delete_mcp_server(
     server_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> None:
     """Delete an MCP server."""
     from app.mcp.store import get_mcp_store  # noqa: PLC0415
 
-    org_id = await _get_user_org(user["id"], repo)
+    org_id = await _resolve_org_id(user["id"], repo, request)
     deleted = await get_mcp_store().delete(server_id, org_id)
     if not deleted:
         raise AppError("mcp_server_not_found", "MCP server not found.", 404)
@@ -355,7 +361,7 @@ async def mcp_endpoint(
         # Build first-party claims — mirrors ai_chat exactly.
         # SECURITY: pass the identity's ACTUAL scope, never hard-code write:*
         # which would escalate a read-only or embed token to writer level.
-        org_id = await _get_user_org(str(user["id"]), repo)
+        org_id = await _resolve_org_id(str(user["id"]), repo, request)
         claims: dict[str, Any] = {
             "kind": identity.kind,
             "sub": str(user.get("id", "")),

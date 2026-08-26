@@ -12,12 +12,17 @@ Two variants mirror the two org-resolution patterns in the codebase (see
 - ``require_writer``         — header-aware (``X-Org-Id``), like ``resolve_org_id``.
                                Use on resources / projects / datasets / preagg /
                                export-share / portability / git routes.
-- ``require_writer_default`` — default first-org, like ``get_user_org``.
-                               Use on flows / secrets / connectors / bridges /
-                               jobs routes (which ignore ``X-Org-Id``).
+- ``require_writer_default`` — default first-org, like ``get_user_org``. Only
+                               for a route that genuinely resolves its own org
+                               with ``get_user_org``; almost nothing should.
 
-Both resolve the org the SAME way the route does, so the role checked is always
-the role for the org the route actually operates on (never a different org).
+**Pair the guard with the route's own org resolution.** The role checked must be
+the role in the org the route actually writes to. A route that resolves with
+``resolve_org_id`` but guards with a ``*_default`` variant checks the role in the
+caller's DEFAULT org and then acts on the HEADER org — so a writer in workspace A
+who is only a viewer in workspace B passes the guard and writes to B. That
+mismatch was live across ai / bridges / data_browser / flows / access_grants
+until 2026-08-26; if you add a route, pick the guard that matches your resolver.
 """
 
 from __future__ import annotations
@@ -154,6 +159,25 @@ def _require_approver_role(role: str | None) -> None:
             "Only members with approver role (owner/admin) may perform this action.",
             403,
         )
+
+
+async def require_approver(
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> None:
+    """Header-aware approver guard (mirrors ``resolve_org_id``).
+
+    The counterpart to ``require_writer`` for owner/admin-only routes. A route
+    that resolves its org with ``resolve_org_id`` MUST use this, not
+    ``require_approver_default``: checking the role in the caller's default org
+    while acting on the header org lets an owner of workspace A perform an
+    approver action in workspace B where they are only a member.
+    """
+    _require_write_scope_from_request(request)
+    user_id = str(user["id"])
+    org_id = await resolve_org_id(user_id, repo, request)
+    _require_approver_role(await get_org_role(user_id, org_id, repo))
 
 
 async def require_approver_default(

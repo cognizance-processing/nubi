@@ -37,7 +37,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.encoders import jsonable_encoder
 
 from app.auth.deps import current_user
-from app.auth.roles import require_writer_default
+from app.auth.roles import require_writer
 from app.connectors.arrow_io import ipc_stream_from_bytes, table_to_ipc_bytes
 from app.connectors.duckdb_conn import DuckDBConnector, open_duckdb_readonly, setup_s3_httpfs
 from app.connectors.introspect import (
@@ -827,7 +827,7 @@ async def get_rows(
 #
 # Security gates (all three):
 #   - tenant: datastore must belong to caller's org (404 otherwise, no leak)
-#   - role:   require_writer_default (viewers → 403)
+#   - role:   require_writer (header-aware, viewers → 403)
 #   - writable gate: non-writable table/connector → 409
 #   - identifiers (table + every column key): _safe_identifier allowlist AND
 #     membership in the table's introspected columns; PK keys must equal the
@@ -1031,7 +1031,7 @@ def _require_full_pk(provided: dict[str, Any], primary_key: list[str], table: st
 
 @router.patch(
     "/data/{datastore_id}/tables/{table}/rows",
-    dependencies=[Depends(require_writer_default)],
+    dependencies=[Depends(require_writer)],
 )
 async def update_row(
     datastore_id: str,
@@ -1097,7 +1097,7 @@ async def update_row(
 @router.post(
     "/data/{datastore_id}/tables/{table}/rows",
     status_code=201,
-    dependencies=[Depends(require_writer_default)],
+    dependencies=[Depends(require_writer)],
 )
 async def insert_row(
     datastore_id: str,
@@ -1134,7 +1134,7 @@ async def insert_row(
 
 @router.delete(
     "/data/{datastore_id}/tables/{table}/rows",
-    dependencies=[Depends(require_writer_default)],
+    dependencies=[Depends(require_writer)],
 )
 async def delete_row(
     datastore_id: str,

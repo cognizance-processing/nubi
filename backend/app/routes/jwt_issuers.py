@@ -29,15 +29,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from app.auth.deps import current_user
-from app.auth.roles import require_writer_default
+from app.auth.roles import require_writer
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
-from app.routes._org import get_user_org as _get_user_org
+from app.routes._org import resolve_org_id as _resolve_org_id
 
 router = APIRouter(prefix="/security/jwt-issuers", tags=["security"])
 
@@ -161,19 +161,21 @@ def _sync_registry(org_id: str, rows: list[dict[str, Any]]) -> None:
 
 @router.get("/")
 async def list_jwt_issuers(
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> list[dict[str, Any]]:
     """Return all JWT issuers configured for the caller's org."""
     from app.security.issuers_store import get_issuers_store  # noqa: PLC0415
 
-    org_id = await _get_user_org(user["id"], repo)
+    org_id = await _resolve_org_id(user["id"], repo, request)
     return await get_issuers_store().list_for_org(org_id)
 
 
-@router.post("/", status_code=201, dependencies=[Depends(require_writer_default)])
+@router.post("/", status_code=201, dependencies=[Depends(require_writer)])
 async def create_jwt_issuer(
     body: _IssuerCreate,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -187,7 +189,7 @@ async def create_jwt_issuer(
             422,
         )
 
-    org_id = await _get_user_org(user["id"], repo)
+    org_id = await _resolve_org_id(user["id"], repo, request)
     store = get_issuers_store()
 
     row = await store.create(
@@ -214,30 +216,32 @@ async def create_jwt_issuer(
 @router.get("/{issuer_id}")
 async def get_jwt_issuer(
     issuer_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Return a single JWT issuer by id."""
     from app.security.issuers_store import get_issuers_store  # noqa: PLC0415
 
-    org_id = await _get_user_org(user["id"], repo)
+    org_id = await _resolve_org_id(user["id"], repo, request)
     row = await get_issuers_store().get_by_id(issuer_id, org_id)
     if row is None:
         raise AppError("issuer_not_found", "JWT issuer not found.", 404)
     return row
 
 
-@router.put("/{issuer_id}", dependencies=[Depends(require_writer_default)])
+@router.put("/{issuer_id}", dependencies=[Depends(require_writer)])
 async def update_jwt_issuer(
     issuer_id: str,
     body: _IssuerUpdate,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Partially update a JWT issuer configuration."""
     from app.security.issuers_store import get_issuers_store  # noqa: PLC0415
 
-    org_id = await _get_user_org(user["id"], repo)
+    org_id = await _resolve_org_id(user["id"], repo, request)
     store = get_issuers_store()
 
     update_kwargs: dict[str, Any] = {}
@@ -269,16 +273,17 @@ async def update_jwt_issuer(
     return row
 
 
-@router.delete("/{issuer_id}", status_code=204, dependencies=[Depends(require_writer_default)])
+@router.delete("/{issuer_id}", status_code=204, dependencies=[Depends(require_writer)])
 async def delete_jwt_issuer(
     issuer_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> None:
     """Delete a JWT issuer configuration."""
     from app.security.issuers_store import get_issuers_store  # noqa: PLC0415
 
-    org_id = await _get_user_org(user["id"], repo)
+    org_id = await _resolve_org_id(user["id"], repo, request)
     store = get_issuers_store()
 
     deleted = await store.delete(issuer_id, org_id)

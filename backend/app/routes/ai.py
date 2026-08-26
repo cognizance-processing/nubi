@@ -90,7 +90,7 @@ from pydantic import BaseModel
 
 from app.ai.grounding import build_catalog, build_prompt, ground
 from app.auth.deps import current_user, verified_identity
-from app.auth.roles import require_writer, require_writer_default
+from app.auth.roles import require_writer
 from app.auth.verify import VerifiedIdentity
 from app.compute.metering import record_usage
 from app.errors import AppError
@@ -276,7 +276,7 @@ class DashboardResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@api_router.post("/ai/ask", response_model=AskResponse, tags=["ai"], dependencies=[Depends(require_writer_default)])
+@api_router.post("/ai/ask", response_model=AskResponse, tags=["ai"], dependencies=[Depends(require_writer)])
 async def ask(
     body: AskRequest,
     request: Request,
@@ -348,7 +348,7 @@ async def ask(
 # ---------------------------------------------------------------------------
 
 
-@api_router.post("/ai/dashboard", response_model=DashboardResponse, tags=["ai"], dependencies=[Depends(require_writer_default)])
+@api_router.post("/ai/dashboard", response_model=DashboardResponse, tags=["ai"], dependencies=[Depends(require_writer)])
 async def create_dashboard(
     body: DashboardRequest,
     request: Request,
@@ -928,7 +928,7 @@ class ChatResponse(BaseModel):
     """
 
 
-@api_router.post("/ai/chat", response_model=ChatResponse, tags=["ai"], dependencies=[Depends(require_writer_default)])
+@api_router.post("/ai/chat", response_model=ChatResponse, tags=["ai"], dependencies=[Depends(require_writer)])
 async def ai_chat(
     body: ChatRequest,
     request: Request,
@@ -1022,7 +1022,7 @@ async def ai_chat(
     )
 
 
-@api_router.post("/ai/chat/stream", tags=["ai"], dependencies=[Depends(require_writer_default)])
+@api_router.post("/ai/chat/stream", tags=["ai"], dependencies=[Depends(require_writer)])
 async def ai_chat_stream(
     body: ChatRequest,
     request: Request,
@@ -1163,7 +1163,7 @@ def _persist_dashboard_from_actions(
     "/ai/chat/async",
     response_model=ChatAsyncResponse,
     tags=["ai"],
-    dependencies=[Depends(require_writer_default)],
+    dependencies=[Depends(require_writer)],
 )
 async def ai_chat_async(
     body: ChatRequest,
@@ -1317,7 +1317,7 @@ class SqlResponse(BaseModel):
     registered_id: str | None = None
 
 
-@api_router.post("/ai/sql", response_model=SqlResponse, tags=["ai"], dependencies=[Depends(require_writer_default)])
+@api_router.post("/ai/sql", response_model=SqlResponse, tags=["ai"], dependencies=[Depends(require_writer)])
 async def generate_sql_endpoint(
     body: SqlRequest,
     request: Request,

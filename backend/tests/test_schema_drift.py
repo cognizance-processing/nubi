@@ -247,7 +247,7 @@ def test_drift_api_returns_empty_list(use_memory_store):
 
     app = _make_app()
 
-    # Stub verified_identity + get_user_org so we don't need a real DB/token.
+    # Stub verified_identity + resolve_org_id so we don't need a real DB/token.
     fake_identity = VerifiedIdentity(
         user_id="u1", kind="access", org=ORG_A, scope=["read:*"],
         policies={}, datastore=None, embed_origin=None, raw_claims={},
@@ -255,7 +255,7 @@ def test_drift_api_returns_empty_list(use_memory_store):
     )
     app.dependency_overrides[verified_identity] = lambda: fake_identity
 
-    with patch("app.routes.drift.get_user_org", return_value=ORG_A):
+    with patch("app.routes.drift.resolve_org_id", return_value=ORG_A):
         client = TestClient(app)
         resp = client.get("/api/v1/health/drift")
         assert resp.status_code == 200
@@ -278,7 +278,7 @@ def test_drift_dataset_404_when_no_snapshot(use_memory_store):
     )
     app.dependency_overrides[verified_identity] = lambda: fake_identity
 
-    with patch("app.routes.drift.get_user_org", return_value=ORG_A):
+    with patch("app.routes.drift.resolve_org_id", return_value=ORG_A):
         client = TestClient(app)
         resp = client.get(f"/api/v1/health/drift/{DATASET}")
         assert resp.status_code == 404

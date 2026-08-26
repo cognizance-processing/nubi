@@ -16,7 +16,7 @@ Security
 * Every operation is scoped to the caller's org (resolved server-side via
   ``resolve_org_id`` — NEVER from the request body).
 * Writes (POST/DELETE) are gated to approver roles (owner/admin) via
-  ``require_approver_default``, mirroring routes/admin.py's gating model.
+  ``require_approver`` (header-aware, matching this file's ``resolve_org_id``).
 * A grant id that belongs to another org (or does not exist) returns 404 (not
   403) so a grant's existence never leaks across tenants.
 """
@@ -31,7 +31,7 @@ from pydantic import BaseModel, field_validator
 
 from app.access.grants_store import VALID_SUBJECT_TYPES, get_grants_store
 from app.auth.deps import current_user
-from app.auth.roles import require_approver_default
+from app.auth.roles import require_approver
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
@@ -112,7 +112,7 @@ async def list_grants(
     return {"grants": grants}
 
 
-@router.post("", status_code=201, dependencies=[Depends(require_approver_default)])
+@router.post("", status_code=201, dependencies=[Depends(require_approver)])
 async def create_grant(
     body: GrantCreateIn,
     request: Request,
@@ -146,7 +146,7 @@ async def create_grant(
 @router.delete(
     "/{grant_id}",
     status_code=204,
-    dependencies=[Depends(require_approver_default)],
+    dependencies=[Depends(require_approver)],
 )
 async def delete_grant(
     grant_id: str,

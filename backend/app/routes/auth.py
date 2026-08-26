@@ -50,7 +50,7 @@ from app.errors import AppError
 from app.repos import projects as projects_repo
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
-from app.routes._org import get_user_org
+from app.routes._org import get_user_org, resolve_org_id
 
 # A pre-computed argon2id hash of an arbitrary dummy string.  Used so that
 # the login path always performs an argon2 verification regardless of whether
@@ -459,6 +459,7 @@ async def me(
 
 @router.get("/scope")
 async def scope(
+    request: Request,
     identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -491,11 +492,16 @@ async def scope(
     # For first-party tokens the org is usually pinned at request time via
     # membership rather than carried in the token; resolve it the same way the
     # rest of the app does so the scope reflects the org the caller operates in.
-    # The org is STILL derived from server-side state (token / membership), not
-    # the request body.
+    # Header-aware: the scope a route enforces is the scope in the org that
+    # route acts on, so reporting the DEFAULT org's scope told a multi-workspace
+    # user their permissions in the wrong workspace — the UI then showed or hid
+    # controls that did not match what the API would actually allow.
+    # ``resolve_org_id`` verifies membership (403 for a non-member) and honours
+    # the API-key/embed pin, so the org still comes from server-side state, never
+    # from the request body.
     if not identity.org and identity.kind == "access":
         try:
-            identity.org = await get_user_org(str(identity.user_id), repo)
+            identity.org = await resolve_org_id(str(identity.user_id), repo, request)
         except AppError:
             # Org-less caller (mid-onboarding) — resolve_scope returns raw.
             pass
@@ -580,10 +586,22 @@ async def my_invites(
 @router.post("/api-keys", status_code=201)
 async def create_api_key(
     body: ApiKeyCreateIn,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """Mint a long-lived API key scoped to the caller's (default) org.
+    """Mint a long-lived API key scoped to the org the caller is VIEWING.
+
+    Header-aware (``X-Org-Id``), falling back to the caller's default org.
+    That matters more here than on a normal route, because a key's org is
+    permanent: ``resolve_org_id`` pins every request made WITH an API key to
+    the org it was minted for and refuses a mismatching ``X-Org-Id`` outright.
+    Minting against the default org unconditionally therefore made the default
+    workspace the only one any key — and so any CLI, CI job, or MCP client —
+    could ever reach. There was no way to mint a key for a second workspace.
+
+    A caller who is themselves using an API key can only mint within that key's
+    own org, since ``resolve_org_id`` returns the pin.
 
     The raw key is returned ONCE in ``key`` — it is never retrievable again.
     Store it as ``NUBI_TOKEN`` for the CLI / CI.
@@ -593,7 +611,7 @@ async def create_api_key(
     201 {key, api_key: {id, name, last_four, created_at, ...}}
     """
     user_id = str(user["id"])
-    org_id = await get_user_org(user_id, repo)
+    org_id = await resolve_org_id(user_id, repo, request)
 
     raw, row = await get_api_key_store().create(
         user_id, org_id, (body.name or "CLI token")
@@ -605,17 +623,22 @@ async def create_api_key(
 
 @router.get("/api-keys")
 async def list_api_keys(
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """List the caller's API keys in their (default) org — never any secret.
+    """List the caller's API keys in the org they are VIEWING — never a secret.
+
+    Header-aware, matching ``POST /api-keys``: a key minted in a second
+    workspace has to be listable and revocable from that same workspace, or
+    creating one would be a one-way door.
 
     Returns
     -------
     200 {api_keys: [{id, name, last_four, created_at, last_used_at, revoked_at}]}
     """
     user_id = str(user["id"])
-    org_id = await get_user_org(user_id, repo)
+    org_id = await resolve_org_id(user_id, repo, request)
     keys = await get_api_key_store().list_for_org(user_id, org_id)
     return {"api_keys": keys}
 
@@ -623,16 +646,19 @@ async def list_api_keys(
 @router.delete("/api-keys/{key_id}", status_code=204)
 async def revoke_api_key(
     key_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> None:
     """Revoke one of the caller's API keys (idempotent-ish: 404 if not found).
 
-    Cross-user / cross-org keys are invisible (404, never 403) so no key's
-    existence leaks across tenants.
+    Header-aware, matching the mint and list routes. Cross-user / cross-org
+    keys stay invisible (404, never 403) so no key's existence leaks across
+    tenants — ``resolve_org_id`` has already verified membership of the
+    requested org, so a 404 here means "not your key", not "wrong workspace".
     """
     user_id = str(user["id"])
-    org_id = await get_user_org(user_id, repo)
+    org_id = await resolve_org_id(user_id, repo, request)
     revoked = await get_api_key_store().revoke(key_id, user_id, org_id)
     if not revoked:
         raise AppError("not_found", "API key not found.", 404)

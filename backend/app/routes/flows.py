@@ -393,7 +393,7 @@ from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from pydantic import BaseModel, Field, field_validator
 
 from app.auth.deps import current_user, verified_identity
-from app.auth.roles import require_writer_default
+from app.auth.roles import require_writer
 from app.auth.verify import VerifiedIdentity
 from app.config import get_settings
 from app.errors import AppError
@@ -909,7 +909,7 @@ async def list_ingest_templates_route(
     return {"templates": list_ingest_templates()}
 
 
-@router.post("/scheduled-query", status_code=201, dependencies=[Depends(require_writer_default)])
+@router.post("/scheduled-query", status_code=201, dependencies=[Depends(require_writer)])
 async def create_scheduled_query(
     request: Request,
     body: ScheduledQueryIn,
@@ -979,7 +979,7 @@ async def create_scheduled_query(
     return _serialize_flow(flow)
 
 
-@router.post("/blend", status_code=201, dependencies=[Depends(require_writer_default)])
+@router.post("/blend", status_code=201, dependencies=[Depends(require_writer)])
 async def create_blend(
     request: Request,
     body: CreateBlendIn,
@@ -1383,7 +1383,7 @@ async def codegen_from_spec(
     return {"source": source, "issues": issues}
 
 
-@router.post("/compile", status_code=200, dependencies=[Depends(require_writer_default)])
+@router.post("/compile", status_code=200, dependencies=[Depends(require_writer)])
 async def compile_code(
     body: CompileCodeIn,
     _user: dict[str, Any] = Depends(current_user),
@@ -1599,7 +1599,7 @@ async def compile_code(
     }
 
 
-@router.post("/preview", status_code=200, dependencies=[Depends(require_writer_default)])
+@router.post("/preview", status_code=200, dependencies=[Depends(require_writer)])
 async def preview_cell(
     request: Request,
     body: PreviewCellIn,
@@ -1792,7 +1792,7 @@ async def preview_cell(
     }
 
 
-@router.post("/run-cell", status_code=200, dependencies=[Depends(require_writer_default)])
+@router.post("/run-cell", status_code=200, dependencies=[Depends(require_writer)])
 async def run_cell(
     request: Request,
     body: RunCellIn,
@@ -1949,7 +1949,7 @@ async def run_cell(
             pass
 
 
-@router.post("/notebooks", status_code=201, dependencies=[Depends(require_writer_default)])
+@router.post("/notebooks", status_code=201, dependencies=[Depends(require_writer)])
 async def save_notebook(
     request: Request,
     body: NotebookSaveIn,
@@ -2068,7 +2068,7 @@ async def get_notebook(
     return result
 
 
-@router.post("", status_code=201, dependencies=[Depends(require_writer_default)])
+@router.post("", status_code=201, dependencies=[Depends(require_writer)])
 async def create_flow(
     request: Request,
     body: CreateFlowIn,
@@ -2186,7 +2186,7 @@ async def get_flow(
     return result
 
 
-@router.put("/{flow_id}", status_code=200, dependencies=[Depends(require_writer_default)])
+@router.put("/{flow_id}", status_code=200, dependencies=[Depends(require_writer)])
 async def update_flow(
     request: Request,
     flow_id: str,
@@ -2257,7 +2257,7 @@ async def update_flow(
     return _serialize_flow(updated)
 
 
-@router.delete("/{flow_id}", status_code=204, dependencies=[Depends(require_writer_default)])
+@router.delete("/{flow_id}", status_code=204, dependencies=[Depends(require_writer)])
 async def delete_flow(
     request: Request,
     flow_id: str,
@@ -2284,7 +2284,7 @@ async def delete_flow(
     return Response(status_code=204)
 
 
-@router.post("/{flow_id}/run", status_code=200, dependencies=[Depends(require_writer_default)])
+@router.post("/{flow_id}/run", status_code=200, dependencies=[Depends(require_writer)])
 async def run_flow(
     request: Request,
     flow_id: str,
@@ -2567,7 +2567,7 @@ class FireEventIn(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{flow_id}/sweep", status_code=200, dependencies=[Depends(require_writer_default)])
+@router.post("/{flow_id}/sweep", status_code=200, dependencies=[Depends(require_writer)])
 async def sweep_flow(
     request: Request,
     flow_id: str,
@@ -2695,7 +2695,7 @@ def _parse_iso_dt(value: str, field_name: str) -> datetime:
     return dt
 
 
-@router.post("/{flow_id}/backfill", status_code=200, dependencies=[Depends(require_writer_default)])
+@router.post("/{flow_id}/backfill", status_code=200, dependencies=[Depends(require_writer)])
 async def backfill_flow(
     request: Request,
     flow_id: str,
@@ -2800,7 +2800,7 @@ async def backfill_flow(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/triggers", status_code=201, dependencies=[Depends(require_writer_default)])
+@router.post("/triggers", status_code=201, dependencies=[Depends(require_writer)])
 async def create_trigger(
     request: Request,
     body: RegisterTriggerIn,
@@ -2878,7 +2878,7 @@ async def list_triggers(
     ]
 
 
-@router.post("/triggers/fire", status_code=200, dependencies=[Depends(require_writer_default)])
+@router.post("/triggers/fire", status_code=200, dependencies=[Depends(require_writer)])
 async def fire_trigger_event(
     request: Request,
     body: FireEventIn,
@@ -3113,7 +3113,7 @@ async def get_flow_version(
     }
 
 
-@router.post("/{flow_id}/revert/{version_num}", status_code=200, dependencies=[Depends(require_writer_default)])
+@router.post("/{flow_id}/revert/{version_num}", status_code=200, dependencies=[Depends(require_writer)])
 async def revert_flow_to_version(
     request: Request,
     flow_id: str,

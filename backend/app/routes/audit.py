@@ -8,7 +8,7 @@ GET /audit/{resource_type}/{resource_id}  — one resource's audit history.
 Auth gating
 -----------
 Both endpoints require a valid first-party bearer token (``current_user``).
-The org is resolved via ``get_user_org`` (default-first-org, consistent with
+The org is resolved via ``resolve_org_id`` (header-aware, consistent with
 how flows/secrets/connectors resolve the org).  Caller must have an *approver*
 role (owner or admin) — read access to the audit log is a governance-level
 privilege.  Unauthenticated callers get 401; non-approvers get 403.
@@ -31,7 +31,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from app.auth.deps import current_user
 from app.auth.roles import get_org_role, _require_approver_role
@@ -39,7 +39,7 @@ from app.db import fetch, fetchrow
 from app.errors import AppError
 from app.repos.provider import get_repo, Repo
 from app.routes import api_router
-from app.routes._org import get_user_org as _get_user_org
+from app.routes._org import resolve_org_id as _resolve_org_id
 
 router = APIRouter(prefix="/audit", tags=["audit"])
 
@@ -51,6 +51,7 @@ router = APIRouter(prefix="/audit", tags=["audit"])
 async def _require_audit_access(
     user: dict[str, Any],
     repo: Repo,
+    request: Request,
 ) -> str:
     """Resolve org_id and assert the caller is an owner/admin.
 
@@ -67,7 +68,7 @@ async def _require_audit_access(
         If the caller is not an owner or admin.
     """
     user_id = str(user["id"])
-    org_id = await _get_user_org(user_id, repo)
+    org_id = await _resolve_org_id(user_id, repo, request)
     role = await get_org_role(user_id, org_id, repo)
     _require_approver_role(role)
     return org_id
@@ -102,6 +103,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
 
 @router.get("")
 async def list_audit(
+    request: Request,
     resource_type: str | None = Query(default=None),
     action: str | None = Query(default=None),
     actor: str | None = Query(default=None, description="Filter by actor_user_id"),
@@ -129,7 +131,7 @@ async def list_audit(
     - Unauthenticated: 401
     - Non-approver (member/viewer): 403
     """
-    org_id = await _require_audit_access(user, repo)
+    org_id = await _require_audit_access(user, repo, request)
 
     # Build dynamic WHERE clauses.
     conditions: list[str] = ["org_id = $1"]
@@ -199,6 +201,7 @@ async def list_audit(
 async def get_resource_audit(
     resource_type: str,
     resource_id: str,
+    request: Request,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     user: dict[str, Any] = Depends(current_user),
@@ -215,7 +218,7 @@ async def get_resource_audit(
     - Non-approver (member/viewer): 403
     - Cross-org: impossible — org_id is always taken from verified identity
     """
-    org_id = await _require_audit_access(user, repo)
+    org_id = await _require_audit_access(user, repo, request)
 
     count_row = await fetchrow(
         """

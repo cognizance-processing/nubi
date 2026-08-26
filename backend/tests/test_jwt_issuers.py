@@ -426,12 +426,12 @@ async def test_crud_routes_roundtrip():
     # Monkey-patch the org resolver so it returns our org.
     import app.routes.jwt_issuers as _jr
 
-    original = _jr._get_user_org
+    original = _jr._resolve_org_id
 
-    async def _fake_org(uid, repo):
+    async def _fake_org(uid, repo, request):
         return org_id
 
-    _jr._get_user_org = _fake_org
+    _jr._resolve_org_id = _fake_org
 
     try:
         with TestClient(app, raise_server_exceptions=True) as client:
@@ -475,7 +475,7 @@ async def test_crud_routes_roundtrip():
             resp = client.get(f"/api/v1/security/jwt-issuers/{issuer_id}")
             assert resp.status_code == 404
     finally:
-        _jr._get_user_org = original
+        _jr._resolve_org_id = original
 
         # Cleanup singletons.
         from app.security.issuers_store import set_issuers_store

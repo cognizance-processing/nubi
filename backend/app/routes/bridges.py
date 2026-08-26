@@ -65,7 +65,7 @@ from pydantic import BaseModel
 
 from app.auth.bridge_tokens import get_bridge_token_store
 from app.auth.deps import current_user
-from app.auth.roles import get_org_role, require_writer_default
+from app.auth.roles import get_org_role, require_writer
 from app.bridges.broker import get_broker
 from app.bridges.store import (  # noqa: F401 — re-exported for existing imports
     BridgeStore,
@@ -188,7 +188,7 @@ router = APIRouter(prefix="/bridges", tags=["bridges"])
 # ── POST /bridges — create ─────────────────────────────────────────────────
 
 
-@router.post("", status_code=201, response_model=BridgeOut, dependencies=[Depends(require_writer_default)])
+@router.post("", status_code=201, response_model=BridgeOut, dependencies=[Depends(require_writer)])
 async def create_bridge(
     body: BridgeIn,
     request: Request,
@@ -254,7 +254,7 @@ async def get_bridge(
 # ── DELETE /bridges/{id} — delete ─────────────────────────────────────────
 
 
-@router.delete("/{bridge_id}", status_code=204, dependencies=[Depends(require_writer_default)])
+@router.delete("/{bridge_id}", status_code=204, dependencies=[Depends(require_writer)])
 async def delete_bridge(
     bridge_id: str,
     request: Request,

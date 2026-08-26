@@ -225,6 +225,7 @@ async def export_board_public(
 @frozen_router.get("/frozen/{dashboard_id}")
 async def get_frozen_view(
     dashboard_id: str,
+    request: Request,
     snapshot_id: str | None = None,
     identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
@@ -274,9 +275,12 @@ async def get_frozen_view(
     if identity.kind == "embed" and identity.org:
         org_id = identity.org
     else:
-        from app.routes.resources import get_user_org  # noqa: PLC0415
+        # Header-aware for the same reason as embed.get_embed_config: the
+        # embed-token branch above is pinned, the first-party branch must follow
+        # the workspace the caller is actually viewing.
+        from app.routes._org import resolve_org_id  # noqa: PLC0415
 
-        org_id = await get_user_org(identity.user_id, repo)
+        org_id = await resolve_org_id(identity.user_id, repo, request)
 
     # ── BILLING: frozen embed sessions are metered identically to live sessions ──
     # Mirrors embed.py:353-364.  First-party tokens are not metered.
