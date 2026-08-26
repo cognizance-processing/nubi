@@ -227,6 +227,65 @@ def test_render_widgets_svg_chart():
     assert "error" not in r or r["error"] is None, f"Unexpected error: {r.get('error')}"
 
 
+def test_render_widgets_svg_choropleth_draws_the_map():
+    """A map widget renders real geometry, not a labelled placeholder.
+
+    Server renders used to skip choropleths entirely — there was no geometry
+    registry on this side, so a thumbnail or an exported PDF showed a titled
+    placeholder where the map belongs. The geometry ships in the repo under
+    src/lib/maps, so the honest answer is to register it and draw.
+    """
+    payloads = [
+        {
+            "id": "m1",
+            "type": "chart",
+            "chart_type": "map",
+            "encoding": {"name": "province", "value": "net_sales"},
+            "props": {},
+            "config": {"map": "south-africa", "lowColor": "#EAF1F4", "highColor": "#0E2A38"},
+            "content": None,
+            "columns": ["province", "net_sales"],
+            "rows": [["Gauteng", 18_605_395], ["Western Cape", 9_868_123],
+                     ["Northern Cape", 468_804]],
+            "width": 500,
+            "height": 400,
+        }
+    ]
+
+    results = render_widgets_svg(payloads)
+    assert len(results) == 1
+    r = results[0]
+    assert not r.get("error"), f"Unexpected error: {r.get('error')}"
+    svg = r.get("svg") or ""
+    assert svg.strip().startswith("<svg")
+    # Province outlines are paths; a placeholder has none.
+    assert svg.count("<path") >= 9, "expected one path per province, got a placeholder"
+    assert "[chart]" not in svg
+
+
+def test_render_widgets_svg_unknown_map_still_falls_back():
+    """A map name with no geometry on disk must not draw some other chart."""
+    payloads = [
+        {
+            "id": "m2",
+            "type": "chart",
+            "chart_type": "map",
+            "encoding": {"name": "region", "value": "v"},
+            "props": {},
+            "config": {"map": "atlantis"},
+            "content": None,
+            "columns": ["region", "v"],
+            "rows": [["A", 1], ["B", 2]],
+            "width": 400,
+            "height": 300,
+        }
+    ]
+    results = render_widgets_svg(payloads)
+    svg = (results[0].get("svg") or "")
+    # Falls back to the honest placeholder rather than inventing a bar chart.
+    assert "<path" not in svg or svg.count("<path") < 9
+
+
 def test_render_widgets_svg_webgl_flagged():
     """render_widgets_svg flags WebGL widgets with webgl=True and svg=None."""
     payloads = [

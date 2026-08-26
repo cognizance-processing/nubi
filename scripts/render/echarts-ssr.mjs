@@ -68,7 +68,7 @@ const require = createRequire(import.meta.url)
 // own) because it will walk up to the real repo root where node_modules lives.
 import { fileURLToPath } from 'url'
 import { dirname, resolve } from 'path'
-import { existsSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -100,6 +100,7 @@ const REPO_ROOT = existsSync(resolve(DIRECT_ROOT, 'node_modules', 'echarts', 'co
 
 // Dynamic import of echarts — lets us emit a clear install error if missing.
 let echartsInit
+let echartsRegisterMap
 try {
   if (!REPO_ROOT) throw new Error(
     'node_modules/echarts not found — run `npm install` in the repo root'
@@ -113,6 +114,10 @@ try {
     // bars. These are the series types the remaining builders below need.
     SankeyChart, FunnelChart, RadarChart, TreemapChart, BoxplotChart,
     CandlestickChart,
+    // A choropleth used to render as a labelled placeholder because no
+    // geometry was registered on this side. The geometry ships in the repo, so
+    // the honest answer is to register it and draw the map.
+    MapChart,
   } = await import(resolve(REPO_ROOT, 'node_modules/echarts/charts.js'))
   const {
     GridComponent, TooltipComponent, LegendComponent,
@@ -123,17 +128,21 @@ try {
     PolarComponent,
     // A radar chart needs its own coordinate system component, like polar.
     RadarComponent,
+    // A map series needs the geo coordinate system registered alongside it.
+    GeoComponent,
   } = await import(resolve(REPO_ROOT, 'node_modules/echarts/components.js'))
 
   echarts.use([
     SVGRenderer,
     BarChart, LineChart, ScatterChart, PieChart, HeatmapChart, GaugeChart,
     SankeyChart, FunnelChart, RadarChart, TreemapChart, BoxplotChart, CandlestickChart,
+    MapChart,
     GridComponent, TooltipComponent, LegendComponent,
     VisualMapComponent, DataZoomComponent, TitleComponent,
-    PolarComponent, RadarComponent,
+    PolarComponent, RadarComponent, GeoComponent,
   ])
   echartsInit = echarts.init
+  echartsRegisterMap = echarts.registerMap
 } catch (err) {
   process.stderr.write(`[echarts-ssr] echarts not available: ${err.message}\n`)
   process.exit(2)
@@ -777,10 +786,10 @@ function buildChartOption(widget, colMap) {
     // A bubble is a scatter whose points are sized by `encoding.size`; the
     // sizing is a browser-side nicety, the silhouette is what matters here.
     case 'bubble':      option = buildScatter(colMap, xCol, yCol, config); break
-    // 'map' has no server-side geometry registry, so there is no honest
-    // choropleth to draw. Fall through to the placeholder rather than emit a
-    // bar chart, which is what every unlisted type used to become.
-    case 'map':         option = null; break
+    // Geometry is registered from the repo's own map files; when the named map
+    // has none on disk we still fall through to the placeholder rather than
+    // draw some other chart in its place.
+    case 'map':         option = ensureMapRegistered(config.map) ? buildMap(colMap, enc, config) : null; break
     case 'hbar':    option = buildHBar(colMap, xCol, yCol, config); break
     case 'gauge':   option = buildGauge(colMap, enc.value || yCol, props, config); break
     case 'combo':   option = buildCombo(colMap, enc, config); break
@@ -1236,6 +1245,79 @@ function renderText(widget, width, height, theme = 'light') {
   }
   svgLines.push(`</svg>`)
   return svgLines.join('\n')
+}
+
+
+// ---------------------------------------------------------------------------
+// Map geometry
+// ---------------------------------------------------------------------------
+//
+// The browser registers geometry from src/lib/maps/index.js. This side reads
+// the same files off disk, lazily and cached, so a choropleth renders in a
+// thumbnail or an exported PDF exactly as it does on screen. Names match the
+// browser registry: 'south-africa', 'world', and any slug under countries/ or
+// continents/.
+
+const MAPS_DIR = REPO_ROOT ? resolve(REPO_ROOT, 'src/lib/maps') : null
+const registeredMaps = new Set()
+
+function mapGeoPath(name) {
+  if (!MAPS_DIR || !name) return null
+  const slug = String(name).replace(/[^a-z0-9-]/gi, '')
+  if (!slug) return null
+  const candidates = [
+    resolve(MAPS_DIR, `${slug}.geo.json`),
+    resolve(MAPS_DIR, 'countries', `${slug}.geo.json`),
+    resolve(MAPS_DIR, 'continents', `${slug}.geo.json`),
+  ]
+  // The South Africa file is named for its admin level rather than the slug.
+  if (slug === 'south-africa') candidates.unshift(resolve(MAPS_DIR, 'south-africa-provinces.geo.json'))
+  return candidates.find((p) => existsSync(p)) ?? null
+}
+
+/** Register `name` with echarts if the geometry is on disk. Returns true if usable. */
+function ensureMapRegistered(name) {
+  if (!name || !echartsRegisterMap) return false
+  if (registeredMaps.has(name)) return true
+  const path = mapGeoPath(name)
+  if (!path) return false
+  try {
+    echartsRegisterMap(name, JSON.parse(readFileSync(path, 'utf8')))
+    registeredMaps.add(name)
+    return true
+  } catch (err) {
+    process.stderr.write(`[echarts-ssr] map ${name} failed to load: ${err.message}\n`)
+    return false
+  }
+}
+
+/**
+ * Choropleth. Mirrors buildMap in embed/widgets/chart-options.js: one series,
+ * a continuous visualMap doing double duty as the colour mapping and the
+ * scale, and NO legend — echarts derives legend entries from a map series'
+ * own data and paints each one at its region's centroid.
+ */
+function buildMap(colMap, enc, config) {
+  const names = (colMap[enc.name || enc.x || enc.label] || []).map(String)
+  const vals = (colMap[enc.value || enc.y] || []).map(Number)
+  if (!names.length || !vals.length) return null
+  const finite = vals.filter(Number.isFinite)
+  const min = finite.length ? Math.min(...finite) : 0
+  const max = finite.length ? Math.max(...finite) : 1
+  return {
+    visualMap: {
+      type: 'continuous', show: false,
+      min, max: max > min ? max : min + 1,
+      inRange: { color: [config.lowColor || '#e5e7eb', config.highColor || '#2a78d6'] },
+    },
+    series: [{
+      type: 'map', map: config.map,
+      data: names.map((name, i) => ({ name, value: vals[i] })),
+      layoutCenter: ['50%', '50%'], layoutSize: '92%',
+      label: { show: false },
+      itemStyle: { borderColor: '#cbd5e1', borderWidth: 0.5 },
+    }],
+  }
 }
 
 /**
