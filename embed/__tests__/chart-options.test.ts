@@ -52,6 +52,10 @@ describe('buildChartOption — every chart type returns a valid option', () => {
     gauge: { type: 'gauge', rows: [{ v: 72 }], enc: { y: 'v' }, series: 'gauge' },
     waterfall: { type: 'waterfall', rows: [{ s: 'a', d: 5 }, { s: 'b', d: -2 }, { s: 'c', d: 3 }], enc: { x: 's', y: 'd' }, series: 'bar' },
     combo: { type: 'combo', rows: CAT_ROWS, enc: { x: 'month', bars: ['sales'] }, series: 'bar' },
+    // A polar area is a rose (roseType 'area'), so its series is still a pie;
+    // a radial bar is bars on a polar grid, and its FIRST series is the track.
+    polar: { type: 'polar', rows: CAT_ROWS, enc: { x: 'month', y: 'sales' }, series: 'pie' },
+    radialbar: { type: 'radialbar', rows: CAT_ROWS, enc: { x: 'month', y: 'sales' }, series: 'bar' },
   }
 
   for (const [name, c] of Object.entries(cases)) {
@@ -86,6 +90,34 @@ describe('buildChartOption — every chart type returns a valid option', () => {
     expect(opt.series[0].data).toHaveLength(3)
   })
 
+  test('heatmap takes its ramp from config.palette, and heatColors wins', () => {
+    // A themed board sets config.palette on every chart. The heatmap used to
+    // read theme.palette directly, so it was the one chart that stayed in the
+    // stock blues while everything around it changed colour.
+    const rows = [
+      { day: 'Mon', hour: '9', n: 3 },
+      { day: 'Mon', hour: '10', n: 7 },
+    ]
+    const enc = { x: 'day', color: 'hour', value: 'n' }
+
+    const themed = buildChartOption({
+      type: 'heatmap', table: rows, encoding: enc,
+      config: { palette: ['#C8811A', '#1D5F5A', '#A8351D'] },
+    })
+    // Strongest value keeps taking palette[0], as every other builder does.
+    expect(themed.visualMap.inRange.color.at(-1)).toBe('#C8811A')
+    expect(themed.visualMap.inRange.color).not.toContain('#6366f1')
+
+    const explicit = buildChartOption({
+      type: 'heatmap', table: rows, encoding: enc,
+      config: { palette: ['#C8811A'], heatColors: ['#241C15', '#A8351D', '#E0A044'] },
+    })
+    expect(explicit.visualMap.inRange.color).toEqual(['#241C15', '#A8351D', '#E0A044'])
+
+    // heatColors is interpreted, not leaked into the raw ECharts passthrough.
+    expect(explicit.heatColors).toBeUndefined()
+  })
+
   test('candlestick maps OHLC into [open, close, low, high]', () => {
     const rows = [{ d: 'd1', o: 10, c: 12, l: 9, h: 13 }]
     const opt = buildChartOption({
@@ -112,11 +144,30 @@ describe('buildChartOption — every chart type returns a valid option', () => {
     expect(names).toContain('mid')
   })
 
-  test('SUPPORTED_TYPES lists all 19 families', () => {
-    expect(SUPPORTED_TYPES).toHaveLength(19)
+  test('SUPPORTED_TYPES lists all 21 families', () => {
+    expect(SUPPORTED_TYPES).toHaveLength(21)
     expect(SUPPORTED_TYPES).toContain('fan')
     expect(SUPPORTED_TYPES).toContain('sankey')
     expect(SUPPORTED_TYPES).toContain('combo')
+    expect(SUPPORTED_TYPES).toContain('polar')
+    expect(SUPPORTED_TYPES).toContain('radialbar')
+  })
+
+  test('radialbar puts a full-circle track ring behind the value ring', () => {
+    const opt = buildChartOption({
+      type: 'radialbar', table: CAT_ROWS, encoding: { x: 'month', y: 'sales' },
+    })
+    expect(opt.polar).toBeTruthy()
+    expect(opt.series).toHaveLength(2)
+    expect(opt.series[0].coordinateSystem).toBe('polar')
+    expect(opt.angleAxis.max).toBe(100)
+  })
+
+  test("polar renders as an equal-angle rose, not a Nightingale", () => {
+    const opt = buildChartOption({
+      type: 'polar', table: CAT_ROWS, encoding: { x: 'month', y: 'sales' },
+    })
+    expect(opt.series[0].roseType).toBe('area')
   })
 
   test('combo mixes bar + line series on dual y-axes', () => {

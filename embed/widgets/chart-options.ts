@@ -79,6 +79,7 @@ export const SUPPORTED_TYPES = [
   'bar', 'line', 'area', 'scatter', 'bubble', 'pie', 'donut',
   'sankey', 'funnel', 'waterfall', 'heatmap', 'radar', 'treemap',
   'boxplot', 'gauge', 'candlestick', 'fan', 'combo', 'map',
+  'polar', 'radialbar',
 ]
 
 // Default palette (used when no theme palette supplied).
@@ -375,6 +376,16 @@ function axisCommon(theme): Record<string, any> {
   }
 }
 
+/**
+ * Keys of an axis spec that this builder INTERPRETS. Everything else in the
+ * spec is a raw ECharts axis option and is merged through verbatim — `show`,
+ * `inverse`, `splitLine`, `axisLabel`, `nameGap`, `boundaryGap`, … — so an
+ * author can reach any axis feature without the builder needing a case for it.
+ * (`config.xAxis`/`yAxis` are stripped from the top-level passthrough merge, so
+ * without this they would be silently dropped.)
+ */
+const AXIS_INTERPRETED_KEYS = new Set(['log', 'type', 'label', 'min', 'max', 'rotate', 'format'])
+
 function buildAxis(kind, spec, theme, locale, defaults: Record<string, any> = {}) {
   const s = spec || {}
   const axis: Record<string, any> = { ...axisCommon(theme), ...defaults }
@@ -394,7 +405,13 @@ function buildAxis(kind, spec, theme, locale, defaults: Record<string, any> = {}
     const fmt = makeFormatter(s.format, locale)
     axis.axisLabel = { ...axis.axisLabel, formatter: (v) => fmt(v) }
   }
-  return axis
+  // Uninterpreted keys last, so an explicit `axisLabel`/`splitLine` overrides
+  // the themed default rather than being overwritten by it.
+  const rest: Record<string, any> = {}
+  for (const k of Object.keys(s)) {
+    if (!AXIS_INTERPRETED_KEYS.has(k)) rest[k] = s[k]
+  }
+  return Object.keys(rest).length ? deepMerge(axis, rest) : axis
 }
 
 /**
@@ -926,6 +943,122 @@ function buildPie(table, e, config, theme, locale, { donut = false } = {}) {
   return option
 }
 
+/**
+ * Polar area chart (legacy "Polar Chart" / Chart.js `polarArea`).
+ *
+ * Every sector gets the SAME central angle and encodes its value as the
+ * RADIUS — which is what ECharts spells `roseType: 'area'` (the other rose
+ * mode, `'radius'`, varies the angle instead and is the Nightingale variant).
+ * Slice colours come from the palette, one per category, so it reads as a
+ * ring of comparable wedges rather than a single-hue pie.
+ */
+function buildPolar(table, e, config, theme, locale) {
+  const nameRaw = table.col(e.x || e.label)
+  const valRaw = table.col(e.y || e.value)
+  if (!nameRaw || !valRaw) return emptyOption(theme)
+  const names = toStrings(nameRaw)
+  const vals = toNumbers(valRaw)
+  const dl = config.dataLabels
+  const showLabel = dl === false ? false : names.length <= 14
+  const fmt = isDeepObject(dl) && dl.format ? makeFormatter(dl.format, locale) : null
+
+  // Same convention as buildPie: a categorical legend belongs at the bottom
+  // unless the author said otherwise.
+  const legendCfg = config.legend === false ? undefined
+    : legendConfig(isDeepObject(config.legend) ? config : { legend: { position: 'bottom' } }, theme)
+
+  return {
+    ...baseFrame(config, theme, locale, { trigger: 'item', noGrid: true }),
+    legend: legendCfg,
+    series: [{
+      type: 'pie',
+      roseType: 'area',
+      name: e.y || e.value,
+      data: names.map((name, i) => ({ name, value: vals[i] })),
+      radius: ['12%', '72%'],
+      center: ['50%', '46%'],
+      label: {
+        show: showLabel,
+        color: theme.fg,
+        fontSize: 10,
+        formatter: fmt ? (p) => `${p.name}: ${fmt(p.value)}` : '{b}',
+      },
+      labelLine: { show: showLabel },
+      itemStyle: { borderColor: theme.border, borderWidth: 1 },
+    }],
+  }
+}
+
+/**
+ * Radial bar chart (legacy "Radial Bar Chart" / ApexCharts `radialBar`).
+ *
+ * One concentric ring per category, each filled clockwise to `value / max` of
+ * the full circle. Built as bars on a polar coordinate system: a category
+ * radius axis (one band per ring) crossed with a 0..max angle axis, plus a
+ * translucent full-circle background bar per ring so an unfilled ring still
+ * reads as a track.
+ *
+ * `config.max` (or `config.yAxis.max`) sets the scale; it defaults to 100
+ * because these are overwhelmingly percentage tiles in the legacy estate.
+ */
+function buildRadialBar(table, e, config, theme, locale) {
+  const nameRaw = table.col(e.x || e.label)
+  const valRaw = table.col(e.y || e.value)
+  if (!nameRaw || !valRaw) return emptyOption(theme)
+  // Outermost ring first reads top-to-bottom in the legend, so reverse the
+  // category axis (ECharts stacks radius-axis categories inside-out).
+  const names = toStrings(nameRaw).slice().reverse()
+  const vals = toNumbers(valRaw).slice().reverse()
+  const max = config.yAxis?.max ?? config.max ?? 100
+  const min = config.yAxis?.min ?? config.min ?? 0
+  const palette = resolvePalette(config, theme)
+  const dl = config.dataLabels
+  const fmt = isDeepObject(dl) && dl.format ? makeFormatter(dl.format, locale) : null
+  const showLabel = dl !== false
+
+  return {
+    ...baseFrame(config, theme, locale, { trigger: 'item', noGrid: true }),
+    legend: config.legend === false ? undefined
+      : legendConfig(isDeepObject(config.legend) ? config : { legend: { position: 'bottom' } }, theme),
+    polar: { center: ['50%', '50%'], radius: ['24%', '82%'] },
+    angleAxis: {
+      type: 'value', min, max, startAngle: 90, clockwise: true,
+      axisLine: { show: false }, axisTick: { show: false },
+      axisLabel: { show: false }, splitLine: { show: false },
+    },
+    radiusAxis: {
+      type: 'category', data: names,
+      axisLine: { show: false }, axisTick: { show: false },
+      splitLine: { show: false },
+      axisLabel: { color: theme.fgMuted, fontSize: 10 },
+      z: 10,
+    },
+    series: [
+      // Track ring — a full-circle bar behind each value bar.
+      {
+        type: 'bar', coordinateSystem: 'polar', silent: true, z: 1,
+        roundCap: true, barGap: '-100%',
+        itemStyle: { color: 'rgba(148,163,184,0.18)' },
+        data: names.map(() => max),
+      },
+      // Value ring.
+      {
+        type: 'bar', coordinateSystem: 'polar', z: 2,
+        roundCap: true, barGap: '-100%',
+        name: e.y || e.value,
+        data: vals.map((v, i) => ({
+          value: v,
+          itemStyle: { color: palette[(names.length - 1 - i) % palette.length] },
+        })),
+        label: {
+          show: showLabel, position: 'middle', color: theme.fg, fontSize: 10,
+          formatter: fmt ? (p) => fmt(p.value) : (p) => String(p.value),
+        },
+      },
+    ],
+  }
+}
+
 function buildSankey(table, e, config, theme, locale) {
   const srcRaw = table.col(e.source || e.x)
   const tgtRaw = table.col(e.target || e.color)
@@ -1030,6 +1163,16 @@ function buildHeatmap(table, e, config, theme, locale) {
   const max = Math.max(...vals, 0)
   const min = Math.min(...vals, 0)
 
+  // The colour ramp used to be hardcoded off `theme.palette`, so a chart with
+  // its own `config.palette` was the one chart on a themed board that stayed in
+  // the stock blues. An explicit `config.heatColors` (low -> high) wins;
+  // otherwise the two upper stops come from the chart's resolved palette,
+  // keeping the previous convention that the strongest value takes palette[0].
+  const heatPalette = resolvePalette(config, theme)
+  const heatRamp = Array.isArray(config.heatColors) && config.heatColors.length >= 2
+    ? config.heatColors
+    : ['#0f1117', heatPalette[4] || heatPalette[1] || '#3b82f6', heatPalette[0] || '#6366f1']
+
   return {
     ...baseFrame(config, theme, locale, { trigger: 'item', noGrid: true }),
     grid: deepMerge({ top: config.title ? 56 : 16, left: 80, right: 24, bottom: 64, containLabel: true }, config.grid || {}),
@@ -1039,7 +1182,7 @@ function buildHeatmap(table, e, config, theme, locale) {
     visualMap: {
       min, max, calculable: true, orient: 'horizontal', left: 'center', bottom: 8,
       textStyle: { color: theme.fgMuted, fontSize: 10 },
-      inRange: { color: ['#0f1117', theme.palette[4] || '#3b82f6', theme.palette[0] || '#6366f1'] },
+      inRange: { color: heatRamp },
     },
     series: [{
       type: 'heatmap', data,
@@ -1424,7 +1567,7 @@ function emptyOption(theme) {
 // Keys we interpret ourselves — everything else in config is treated as a raw
 // ECharts passthrough that deep-merges (and wins) over our computed option.
 const INTERPRETED_KEYS = new Set([
-  'title', 'subtitle', 'legend', 'tooltip', 'palette', 'stack', 'orientation',
+  'title', 'subtitle', 'legend', 'tooltip', 'palette', 'heatColors', 'stack', 'orientation',
   'smooth', 'areaOpacity', 'dataLabels', 'animation', 'grid', 'xAxis', 'yAxis',
   'y2Axis', 'referenceLines', 'annotations', 'locale', 'echarts', 'max', 'min',
   'centerLabel',
@@ -1469,6 +1612,8 @@ export function buildChartOption({ type, table, encoding, config, theme }: { typ
     case 'bubble': option = buildScatter(view, e, cfg, th, locale, { bubble: true }); break
     case 'pie': option = buildPie(view, e, cfg, th, locale, { donut: false }); break
     case 'donut': option = buildPie(view, e, cfg, th, locale, { donut: true }); break
+    case 'polar': option = buildPolar(view, e, cfg, th, locale); break
+    case 'radialbar': option = buildRadialBar(view, e, cfg, th, locale); break
     case 'sankey': option = buildSankey(view, e, cfg, th, locale); break
     case 'funnel': option = buildFunnel(view, e, cfg, th, locale); break
     case 'waterfall': option = buildWaterfall(view, e, cfg, th, locale); break
