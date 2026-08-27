@@ -40,6 +40,8 @@ automatically.
 
 from __future__ import annotations
 
+import asyncio
+
 import json
 import logging
 from typing import Any, Literal
@@ -945,9 +947,23 @@ async def test_connector(
             "layers": layers,
         }
 
-    probe_ok, probe_error, elapsed_ms = await _probe_connection(
-        row, org_id, connector_id, connector_type
-    )
+    # A hard ceiling on the whole probe, not just its two inner awaits. Pressing
+    # Test and getting nothing back is the worst outcome available: the user
+    # cannot tell a slow database from a wedged server, and a request that never
+    # returns holds a worker for as long as it lasts. An honest timeout is a
+    # result; a hang is not.
+    try:
+        probe_ok, probe_error, elapsed_ms = await asyncio.wait_for(
+            _probe_connection(row, org_id, connector_id, connector_type),
+            timeout=_PROBE_TIMEOUT_SECONDS * 2 + 5,
+        )
+    except asyncio.TimeoutError:
+        probe_ok, probe_error, elapsed_ms = (
+            False,
+            "the server did not finish the check in time — restart the backend "
+            "if this persists",
+            (_PROBE_TIMEOUT_SECONDS * 2 + 5) * 1000,
+        )
     layers["connection"] = probe_ok
 
     # Bridge-mode connectors take their headline status from the bridge itself

@@ -213,6 +213,10 @@ class MySQLConnector(Connector):
 
         parsed = urlparse(self._dsn)
         database = parsed.path.lstrip("/") or None
+        # Explicit timeouts. Without them a half-open socket — a host that
+        # accepts and never replies, a tunnel that died mid-handshake — parks
+        # the calling thread indefinitely, and the caller has no way to tell
+        # "slow" from "never". An error the user can read beats a spinner.
         return pymysql.connect(
             host=parsed.hostname or "localhost",
             port=parsed.port or 3306,
@@ -220,6 +224,9 @@ class MySQLConnector(Connector):
             password=unquote(parsed.password) if parsed.password else "",
             database=database,
             charset="utf8mb4",
+            connect_timeout=10,
+            read_timeout=60,
+            write_timeout=60,
         )
 
     # ------------------------------------------------------------------
