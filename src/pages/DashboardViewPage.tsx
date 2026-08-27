@@ -40,8 +40,8 @@
 
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useParams, useLocation, Link, useSearchParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Pencil, Eye, Rocket, Sun, Moon, ChevronRight, LayoutDashboard } from 'lucide-react'
-import { get } from '../lib/api.js'
+import { ArrowLeft, Pencil, Eye, Rocket, Sun, Moon, ChevronRight, LayoutDashboard, MoreVertical, Trash2 } from 'lucide-react'
+import { get, del } from '../lib/api.js'
 import DashboardView from '../dashboards/DashboardView.jsx'
 import SpecRenderer from '../dashboards/SpecRenderer.jsx'
 import { backgroundToCss } from '../dashboards/widgetHtml.js'
@@ -51,6 +51,8 @@ import { useEnv } from '../contexts/EnvContext.jsx'
 import { pushToLive, resolveLiveEnvKey, resolveLiveRender, canPushToLive } from '../lib/liveBoard.js'
 import { toast } from '../components/ui/Toast.jsx'
 import ExportShareMenu from '../components/ExportShareMenu.jsx'
+import DeleteBoardDialog from '../components/app/DeleteBoardDialog.jsx'
+import { DropdownMenu, DropdownItem } from '../components/app/PageShell.jsx'
 import { extractVarsFromURL, applyVarToSearchParams } from '../dashboards/urlSync.js'
 import { decodeJwtPayload } from '../dashboards/embedLock.js'
 import { useCanWrite, useOrg } from '../contexts/OrgContext.jsx'
@@ -173,6 +175,52 @@ function ModeSwitch({ mode, onChange }) {
 }
 
 /**
+ * BoardOptionsMenu — board-level actions that aren't worth a toolbar slot.
+ *
+ * Delete lives here rather than as a bare toolbar button for the reason every
+ * BI tool puts it behind an overflow menu: a one-click destructive control
+ * sitting next to Save and Push to live is a mis-click waiting to happen. It
+ * renders in BOTH modes, because "I opened the board and it's wrong" is just as
+ * often a live-mode realisation as an editing one — before this, deleting meant
+ * navigating back to the dashboards list to find the card you were already
+ * looking at.
+ */
+function BoardOptionsMenu({ onDelete }) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        aria-label="Board options"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        data-testid="dashboard-options-menu"
+        className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring/60"
+      >
+        <MoreVertical size={15} aria-hidden="true" />
+      </button>
+
+      <DropdownMenu open={open} onClose={() => setOpen(false)}>
+        <DropdownItem
+          icon={Trash2}
+          danger
+          // The menu's containing block is the 32px trigger wrapper, so
+          // shrink-to-fit stops at .nubi-dropdown's 10rem min-width and the
+          // label wraps. nowrap lets it size to its text instead.
+          className="whitespace-nowrap"
+          data-testid="dashboard-delete"
+          onClick={() => { setOpen(false); onDelete() }}
+        >
+          Delete dashboard
+        </DropdownItem>
+      </DropdownMenu>
+    </div>
+  )
+}
+
+/**
  * ViewToolbar — the single header for BOTH modes.
  *
  * In edit mode the embedded DashboardEditor portals its own toolbar into
@@ -184,6 +232,7 @@ function ModeSwitch({ mode, onChange }) {
 function ViewToolbar({
   backTo, title, boardId, spec, canEdit, mode, onModeChange = undefined, editorSlotRef = undefined, dirty = false,
   isLive = false, liveVersion = null, pushing = false, onPushToLive = undefined,
+  canDelete = false, onDelete = undefined,
 }) {
   const { activeOrg } = useOrg()
   const { activeProject } = useProject()
@@ -344,6 +393,17 @@ function ViewToolbar({
             {boardId && <ExportShareMenu board={boardId} spec={spec} />}
           </div>
         )}
+
+        {/* Board-level overflow — the same menu in both modes, so an author
+            never has to leave the board to get rid of it. Gated on canDelete,
+            NOT canEdit: a legacy HTML board (or one saved with no content yet)
+            can't be opened in the spec editor, and those are precisely the
+            boards someone wants to get rid of. */}
+        {canDelete && boardId && onDelete && (
+          <div className="ml-1.5">
+            <BoardOptionsMenu onDelete={onDelete} />
+          </div>
+        )}
       </div>
     </header>
   )
@@ -420,6 +480,10 @@ export default function DashboardViewPage({ edit = false }) {
   const [spec, setSpec]     = useState(null)
   const [html, setHtml]     = useState(null)
   const [boardId, setBoardId] = useState(null)
+  // The board ROW's name — what the dashboards list shows on the card, which
+  // an author may have set independently of spec.title. Kept so the delete
+  // confirm names the board the same way the list does.
+  const [boardName, setBoardName] = useState(null)
 
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
@@ -453,6 +517,7 @@ export default function DashboardViewPage({ edit = false }) {
   // Getting this backwards would make "Push to live" decorative.
   const handleEditorSaved = useCallback((board) => {
     if (!isLive && board?.config?.spec) setSpec(board.config.spec)
+    if (board?.name) setBoardName(board.name)
   }, [isLive])
 
   // The editor hands us its save action (see DashboardEditor's onSetSave seam)
@@ -501,6 +566,29 @@ export default function DashboardViewPage({ edit = false }) {
     }
   }, [boardId, id, pushing, draftDirty, environments, liveEnvKey])
 
+  // ── Delete ─────────────────────────────────────────────────────────────────
+  // Reachable from the header's overflow menu in both modes. There is no undo
+  // and no trash, so DeleteBoardDialog's confirm is the whole gate — the same
+  // dialog (and wording) the dashboards list uses.
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  const handleDelete = useCallback(async () => {
+    if (!boardId || deleting) return
+    setDeleting(true)
+    try {
+      await del(`/boards/${boardId}`)
+      // Leave before the dialog closes: this route's whole subject is now gone,
+      // and staying would leave the editor holding a draft of a board that no
+      // longer exists (its beforeunload guard included).
+      toast.success('Dashboard deleted.')
+      navigate('/dashboards', { replace: true })
+    } catch (err) {
+      toast.error(err?.message || 'Failed to delete dashboard. Please try again.')
+      setDeleting(false)
+    }
+  }, [boardId, deleting, navigate])
+
   useEffect(() => {
     // Short-circuit for the built-in sample route
     if (id === 'sample') {
@@ -530,6 +618,7 @@ export default function DashboardViewPage({ edit = false }) {
         if (cancelled) return
 
         setBoardId(board?.id ?? id)
+        setBoardName(board?.name ?? null)
 
         const live = resolveLiveRender(board)
         setIsLive(live.isLive)
@@ -705,6 +794,11 @@ export default function DashboardViewPage({ edit = false }) {
   // nothing for it to open, so those stay live-only.
   const canEdit = canWrite && renderMode === 'spec' && id !== 'sample'
 
+  // Deleting is not editing: an HTML-only board and a board that failed to
+  // load content are both undeletable-from-here if this rides on canEdit,
+  // which is backwards — they're the ones most likely to want deleting.
+  const canDelete = canWrite && id !== 'sample'
+
   // A viewer (or anyone) landing on /d/:id/edit for an uneditable board is sent
   // back to live rather than shown a broken half-editor. Waits for `loading` so
   // we don't bounce before renderMode is known. Backend enforces the same rule
@@ -789,6 +883,17 @@ export default function DashboardViewPage({ edit = false }) {
           liveVersion={liveVersion}
           pushing={pushing}
           onPushToLive={handlePushToLive}
+          canDelete={canDelete}
+          onDelete={() => setConfirmDelete(true)}
+        />
+      )}
+
+      {confirmDelete && (
+        <DeleteBoardDialog
+          board={{ name: boardName || spec?.title || 'Dashboard' }}
+          busy={deleting}
+          onConfirm={handleDelete}
+          onCancel={() => setConfirmDelete(false)}
         />
       )}
 

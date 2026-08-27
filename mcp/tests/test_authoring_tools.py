@@ -8,6 +8,7 @@ Covers the seven authoring tools added on top of the original six:
     estimate_query     — dry-run scan/cost estimate (no execution)
     preview_widget     — row-limited result preview (reuses run_query's path)
     upsert_dashboard   — the GOVERNED write (validates first; refuses invalid)
+    delete_dashboard   — the DESTRUCTIVE write (refuses without confirm=true)
     promote            — the HUMAN-GATE dev -> prod pointer copy
 
 Strategy
@@ -60,6 +61,7 @@ from app.repos import InMemoryRepo, set_repo
 from app.environments.store import InMemoryEnvStore, set_env_store
 
 from nubi_mcp.server import (
+    _delete_dashboard,
     _estimate_query,
     _get_context,
     _get_spec_schema,
@@ -326,6 +328,70 @@ class TestUpsertDashboard:
         result = _upsert_dashboard("Stored Board", _valid_spec())
         boards = asyncio.run(repo.list("boards", "mcp"))
         assert any(b["id"] == result["id"] for b in boards)
+
+
+# ---------------------------------------------------------------------------
+# delete_dashboard
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteDashboard:
+    """Tests for _delete_dashboard() — the destructive write."""
+
+    def test_confirmed_delete_removes_the_board(self, inject_stores) -> None:
+        repo, _env = inject_stores
+        import asyncio
+
+        up = _upsert_dashboard("Doomed", _valid_spec())
+        result = _delete_dashboard(up["id"], confirm=True)
+
+        assert result["ok"] is True
+        assert result["name"] == "Doomed"
+        assert asyncio.run(repo.list("boards", "mcp")) == []
+
+    def test_without_confirm_nothing_is_deleted(self, inject_stores) -> None:
+        """confirm=true stands in for the UI's confirm dialog — no flag, no write."""
+        repo, _env = inject_stores
+        import asyncio
+
+        up = _upsert_dashboard("Keep Me", _valid_spec())
+        result = _delete_dashboard(up["id"])
+
+        assert result["ok"] is False
+        assert result["reason"] == "not_confirmed"
+        assert [b["id"] for b in asyncio.run(repo.list("boards", "mcp"))] == [up["id"]]
+
+    def test_other_orgs_board_is_not_found(self, inject_stores) -> None:
+        repo, _env = inject_stores
+        import asyncio
+
+        up = _upsert_dashboard("Mine", _valid_spec())
+        result = _delete_dashboard(up["id"], confirm=True, org_id="someone-else")
+
+        assert result["ok"] is False
+        assert result["reason"] == "not_found"
+        assert len(asyncio.run(repo.list("boards", "mcp"))) == 1
+
+    def test_unknown_board_is_not_found(self, inject_stores) -> None:
+        result = _delete_dashboard("no-such-board", confirm=True)
+        assert result["ok"] is False
+        assert result["reason"] == "not_found"
+
+    def test_versions_and_pointers_are_cleaned_up(self, inject_stores) -> None:
+        """Versions/pointers are polymorphic rows with no FK cascade to the board."""
+        _repo, env_store = inject_stores
+        import asyncio
+
+        from nubi_mcp.server import _project_id_for_org
+
+        up = _upsert_dashboard("Has History", _valid_spec())
+        _delete_dashboard(up["id"], confirm=True)
+
+        project_id = _project_id_for_org("mcp")
+        dev_env = asyncio.run(env_store.get_environment_by_key(project_id, "dev"))
+        assert dev_env is not None
+        ptr = asyncio.run(env_store.get_pointer("board", up["id"], dev_env["id"]))
+        assert ptr is None, "the deleted board's dev pointer should be gone"
 
 
 # ---------------------------------------------------------------------------

@@ -973,6 +973,67 @@ def _upsert_dashboard(
     return _run_async(_write())
 
 
+def _delete_dashboard(
+    board_id: str,
+    confirm: bool = False,
+    org_id: str = "mcp",
+) -> dict[str, Any]:
+    """Permanently delete a board and its version/pointer data.
+
+    The destructive counterpart to ``upsert_dashboard``, and governed the same
+    way that one is: nothing happens unless *confirm* is true, since there is
+    no human confirm dialog in front of a tool call and no trash to restore
+    from afterwards.
+
+    Deletes via the Repo layer (org-scoped, so another org's board is a clean
+    ``ok: false, reason: "not_found"``), then drops the board's versions and
+    environment pointers from the env-store — those live in polymorphic tables
+    with no FK cascade, so without this a deleted board leaves its history and
+    a dangling prod pointer behind.
+
+    Returns
+    -------
+    dict
+        ``{ok: true, id, name, deleted: true}`` on success,
+        ``{ok: false, reason: "not_confirmed"}`` when *confirm* is false (no
+        write attempted), or ``{ok: false, reason: "not_found"}`` when the org
+        has no such board.
+    """
+    if not confirm:
+        return {
+            "ok": False,
+            "reason": "not_confirmed",
+            "message": "Deleting a board is permanent — call again with confirm=true.",
+        }
+
+    from app.environments.store import get_env_store  # noqa: PLC0415
+    from app.repos import get_repo  # noqa: PLC0415
+
+    repo = get_repo()
+    env_store = get_env_store()
+
+    async def _do() -> dict[str, Any]:
+        # Read first so the result can name what was destroyed, and so a
+        # wrong-org id reports not_found rather than a silent no-op.
+        existing = await repo.get(resource="boards", org_id=org_id, id=board_id)
+        if existing is None:
+            return {"ok": False, "reason": "not_found", "board_id": board_id}
+
+        deleted = await repo.delete("boards", org_id, board_id)
+        if not deleted:
+            return {"ok": False, "reason": "not_found", "board_id": board_id}
+
+        # Versions + env pointers — best-effort; the board itself is already gone.
+        try:
+            await env_store.delete_resource_data("board", board_id)
+        except Exception:  # noqa: BLE001
+            pass
+
+        return {"ok": True, "id": board_id, "name": existing.get("name"), "deleted": True}
+
+    return _run_async(_do())
+
+
 def _promote(
     board_id: str,
     from_env: str = "dev",
@@ -1384,6 +1445,24 @@ def _build_mcp_server() -> "_FastMCP":  # type: ignore[return]
     ) -> dict[str, Any]:
         """Validate then create/update a board in the DEV env (governed write)."""
         return _upsert_dashboard(name, spec, env, org_id)
+
+    @server.tool(
+        name="delete_dashboard",
+        description=(
+            "DESTRUCTIVE: permanently delete a board and its versions/env pointers. "
+            "Irreversible — there is no trash and no undo. Requires confirm=true; "
+            "without it nothing is written and it returns "
+            "{ok:false, reason:'not_confirmed'}. Org-scoped: another org's board "
+            "reports {ok:false, reason:'not_found'}. Confirm with the user first."
+        ),
+    )
+    def delete_dashboard(
+        board_id: str,
+        confirm: bool = False,
+        org_id: str = "mcp",
+    ) -> dict[str, Any]:
+        """Permanently delete a board (governed by an explicit confirm flag)."""
+        return _delete_dashboard(board_id, confirm, org_id)
 
     @server.tool(
         name="promote",

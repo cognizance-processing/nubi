@@ -1390,6 +1390,79 @@ def _tool_update_dashboard(
     return {"id": row.get("id"), "name": row.get("name"), "saved": True, "valid": True}
 
 
+def _tool_delete_dashboard(
+    claims: dict[str, Any],
+    board_id: str,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Permanently delete a saved board, org-scoped.
+
+    Mirrors ``DELETE /{resource}/{id}`` (``app.routes.resources``) for
+    ``resource="boards"``: ``repo.delete`` under the caller's org, then a
+    best-effort cleanup of the board's versions + environment pointers (those
+    live in polymorphic tables with no FK cascade), then an audit row.
+
+    *confirm* must be ``True``. The HTTP route relies on the UI's confirm
+    dialog as the human gate; a tool call has no such gate, so the flag is the
+    stand-in — an accidental or hallucinated call without it deletes nothing.
+    """
+    from app.errors import AppError  # noqa: PLC0415
+    from app.repos.provider import get_repo  # noqa: PLC0415
+
+    # Same boundary as save_/update_dashboard: a read-only embed session must
+    # never mutate — least of all destroy — a board.
+    if claims.get("kind", "access") != "access":
+        raise AppError(
+            "insufficient_scope",
+            "Embed/restricted tokens cannot delete dashboards via the AI tool path.",
+            403,
+        )
+    org_id = claims.get("org")
+    if not org_id:
+        raise AppError("invalid_tool_input", "Caller claims are missing org id.", 400)
+    if not confirm:
+        raise AppError(
+            "invalid_tool_input",
+            "Deleting a board is permanent — call again with confirm=true.",
+            400,
+        )
+
+    repo = get_repo()
+    # Read first so the result can name what was destroyed (and so a wrong-org
+    # id is a clean 404 rather than a silent no-op).
+    existing = _run_sync(repo.get(resource="boards", org_id=str(org_id), id=board_id))
+    if existing is None:
+        raise AppError("board_not_found", f"No board with id {board_id!r}.", 404)
+
+    deleted = _run_sync(repo.delete("boards", str(org_id), board_id))
+    if not deleted:
+        raise AppError("board_not_found", f"No board with id {board_id!r}.", 404)
+
+    # Versions + env pointers — best-effort; never fail the delete on cleanup.
+    try:
+        from app.environments.store import get_env_store  # noqa: PLC0415
+
+        _run_sync(get_env_store().delete_resource_data("board", board_id))
+    except Exception:  # noqa: BLE001
+        pass
+
+    from app.audit import record_audit  # noqa: PLC0415
+
+    _run_sync(
+        record_audit(
+            org_id=str(org_id),
+            actor_user_id=str(claims.get("sub") or "") or None,
+            actor_kind="access",
+            action="board.delete",
+            resource_type="board",
+            resource_id=board_id,
+            summary={},
+        )
+    )
+
+    return {"id": board_id, "name": existing.get("name"), "deleted": True}
+
+
 def _tool_upload_image(
     claims: dict[str, Any],
     data_base64: str | None = None,
@@ -1701,6 +1774,22 @@ _SCHEMA_UPDATE_DASHBOARD: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+_SCHEMA_DELETE_DASHBOARD: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "board_id": {"type": "string", "description": "Id of the board to delete."},
+        "confirm": {
+            "type": "boolean",
+            "description": (
+                "Must be true. Deletion is permanent and cannot be undone — this "
+                "flag exists so a board is never dropped by an accidental call."
+            ),
+        },
+    },
+    "required": ["board_id", "confirm"],
+    "additionalProperties": False,
+}
+
 _SCHEMA_LIST_METRICS: dict[str, Any] = {
     "type": "object",
     "properties": {},
@@ -1978,6 +2067,14 @@ def _make_registry() -> dict[str, ToolDef]:
     ) -> dict[str, Any]:
         return _tool_update_dashboard(claims, board_id, spec=spec, name=name)
 
+    def _wrap_delete_dashboard(
+        claims: dict[str, Any],
+        board_id: str,
+        confirm: bool = False,
+        **_kw: Any,
+    ) -> dict[str, Any]:
+        return _tool_delete_dashboard(claims, board_id, confirm=confirm)
+
     def _wrap_upload_image(
         claims: dict[str, Any],
         data_base64: str | None = None,
@@ -2136,6 +2233,17 @@ def _make_registry() -> dict[str, ToolDef]:
             ),
             json_schema=_SCHEMA_UPDATE_DASHBOARD,
             fn=_wrap_update_dashboard,
+        ),
+        ToolDef(
+            name="delete_dashboard",
+            description=(
+                "PERMANENTLY delete a saved board (and its versions) by id. "
+                "Irreversible — there is no trash and no undo. Requires "
+                "confirm=true, and only ever touches the caller's own org. "
+                "Confirm with the user before calling it."
+            ),
+            json_schema=_SCHEMA_DELETE_DASHBOARD,
+            fn=_wrap_delete_dashboard,
         ),
         ToolDef(
             name="upload_image",

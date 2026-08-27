@@ -12,7 +12,9 @@ Coverage
 8.  update_dashboard REFUSES an invalid spec and leaves the board untouched.
 9.  update_dashboard is org-scoped: org B cannot touch org A's board.
 10. update_dashboard rejects embed/restricted tokens.
-11. The route's response guard shrinks an oversized payload to valid JSON.
+11. delete_dashboard removes a board, and only with confirm=true.
+12. delete_dashboard is org-scoped and rejects embed/restricted tokens.
+13. The route's response guard shrinks an oversized payload to valid JSON.
 """
 
 from __future__ import annotations
@@ -200,6 +202,67 @@ def test_update_dashboard_rejects_embed_tokens(ctx):
     with pytest.raises(AppError) as exc:
         execute_tool("update_dashboard", {"board_id": created["id"], "name": "no"}, embed)
     assert exc.value.code == "insufficient_scope"
+
+
+# ── delete_dashboard ────────────────────────────────────────────────────────
+
+
+def test_delete_dashboard_removes_the_board(ctx):
+    _, _, claims = ctx
+    created = execute_tool("save_dashboard", {"spec": _spec(), "name": "Doomed"}, claims)
+    bid = created["id"]
+
+    res = execute_tool("delete_dashboard", {"board_id": bid, "confirm": True}, claims)
+    assert res == {"id": bid, "name": "Doomed", "deleted": True}
+
+    assert execute_tool("list_dashboards", {}, claims)["total"] == 0
+    with pytest.raises(AppError) as exc:
+        execute_tool("get_dashboard", {"board_id": bid}, claims)
+    assert exc.value.code == "board_not_found"
+
+
+def test_delete_dashboard_without_confirm_deletes_nothing(ctx):
+    """The flag is the only gate standing in for the UI's confirm dialog."""
+    _, _, claims = ctx
+    created = execute_tool("save_dashboard", {"spec": _spec(), "name": "Keep me"}, claims)
+
+    with pytest.raises(AppError) as exc:
+        execute_tool("delete_dashboard", {"board_id": created["id"], "confirm": False}, claims)
+    assert exc.value.code == "invalid_tool_input"
+
+    assert execute_tool("get_dashboard", {"board_id": created["id"]}, claims)["name"] == "Keep me"
+
+
+def test_delete_dashboard_is_org_scoped(ctx):
+    _, _, claims_a = ctx
+    created = execute_tool("save_dashboard", {"spec": _spec(), "name": "A's board"}, claims_a)
+    bid = created["id"]
+
+    claims_b = _claims(str(uuid.uuid4()), str(uuid.uuid4()))
+    with pytest.raises(AppError) as exc:
+        execute_tool("delete_dashboard", {"board_id": bid, "confirm": True}, claims_b)
+    assert exc.value.code == "board_not_found"
+
+    assert execute_tool("get_dashboard", {"board_id": bid}, claims_a)["name"] == "A's board"
+
+
+def test_delete_dashboard_rejects_embed_tokens(ctx):
+    org_id, user_id, claims = ctx
+    created = execute_tool("save_dashboard", {"spec": _spec(), "name": "Board"}, claims)
+
+    embed = _claims(org_id, user_id, kind="embed")
+    with pytest.raises(AppError) as exc:
+        execute_tool("delete_dashboard", {"board_id": created["id"], "confirm": True}, embed)
+    assert exc.value.code == "insufficient_scope"
+
+    assert execute_tool("get_dashboard", {"board_id": created["id"]}, claims)["name"] == "Board"
+
+
+def test_delete_dashboard_missing_board_is_404(ctx):
+    _, _, claims = ctx
+    with pytest.raises(AppError) as exc:
+        execute_tool("delete_dashboard", {"board_id": "nope", "confirm": True}, claims)
+    assert exc.value.code == "board_not_found"
 
 
 # ── route response guard ────────────────────────────────────────────────────
