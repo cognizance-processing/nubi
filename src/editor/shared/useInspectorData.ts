@@ -23,9 +23,12 @@ import { listRegisteredQueries } from '../../lib/api.js'
  */
 export function useColumnIntrospection(queryId) {
   const [columns, setColumns] = useState([])
+  // The Arrow table behind `columns`, for callers that want to look at the
+  // VALUES too (the chart-type suggester profiles it). Null until it lands.
+  const [table, setTable] = useState(null)
   const [introspecting, setIntrospecting] = useState(false)
   useEffect(() => {
-    if (!queryId) { setColumns([]); return }  
+    if (!queryId) { setColumns([]); setTable(null); return }
     let cancelled = false
     setIntrospecting(true)
     runArrowQueryById(queryId)
@@ -33,15 +36,16 @@ export function useColumnIntrospection(queryId) {
         if (!cancelled) {
           // table is null when the query failed — degrade to no columns.
           setColumns(table ? table.schema.fields.map(f => f.name) : [])
+          setTable(table ?? null)
           setIntrospecting(false)
         }
       })
       .catch(() => {
-        if (!cancelled) { setColumns([]); setIntrospecting(false) }
+        if (!cancelled) { setColumns([]); setTable(null); setIntrospecting(false) }
       })
     return () => { cancelled = true }
   }, [queryId])
-  return { columns, introspecting }
+  return { columns, table, introspecting }
 }
 
 /**

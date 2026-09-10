@@ -18,97 +18,17 @@
  *   onChange  (w)=>void — full widget update callback
  */
 
-import { Plus, Trash2, Database, SlidersHorizontal, BarChart3, Layers, Map as MapIcon } from 'lucide-react'
+import { useMemo } from 'react'
+import { Plus, Trash2, Database, SlidersHorizontal, BarChart3, Layers, Map as MapIcon, Sparkles } from 'lucide-react'
 import {
   inputCls, selectCls, FieldLabel, Section, ToggleRow, ColumnSelect, ColorSwatch,
 } from './inspectorPrimitives.jsx'
 import { useColumnIntrospection } from './useInspectorData.js'
 import { CHART_TYPES, SERIES_TYPES } from './constants.js'
+import { CHART_ICONS, CHART_LABELS, TYPE_ENCODING } from './chartMeta.jsx'
+import { profileTable, suggestVisuals } from './chartSuggest.js'
 import { titleText, withTitleText } from './titleValue.js'
 import { registeredMaps, mapLabel, mapCategory } from '../../lib/maps.js'
-
-// Lucide icon map for the chart-type picker grid
-import {
-  LineChart, BarChartHorizontal, ScatterChart, AreaChart, PieChart, Gauge,
-  Grid3x3, GitCommitHorizontal, TrendingDown, Waves, Network, LayoutDashboard,
-  Radar, CandlestickChart, Wind, CircleDashed,
-} from 'lucide-react'
-
-const CHART_ICONS = {
-  bar:         BarChart3,
-  line:        LineChart,
-  area:        AreaChart,
-  scatter:     ScatterChart,
-  bubble:      ScatterChart,
-  pie:         PieChart,
-  donut:       PieChart,
-  polar:       PieChart,
-  radialbar:   CircleDashed,
-  sankey:      GitCommitHorizontal,
-  funnel:      TrendingDown,
-  waterfall:   Waves,
-  treemap:     LayoutDashboard,
-  heatmap:     Grid3x3,
-  radar:       Radar,
-  boxplot:     BarChartHorizontal,
-  gauge:       Gauge,
-  candlestick: CandlestickChart,
-  fan:         Wind,
-  combo:       Layers,
-  map:         MapIcon,
-}
-
-// Human-readable labels for chart types
-const CHART_LABELS = {
-  bar:         'Bar',
-  line:        'Line',
-  area:        'Area',
-  scatter:     'Scatter',
-  bubble:      'Bubble',
-  pie:         'Pie',
-  donut:       'Donut',
-  polar:       'Polar',
-  radialbar:   'Radial bar',
-  sankey:      'Sankey',
-  funnel:      'Funnel',
-  waterfall:   'Waterfall',
-  treemap:     'Treemap',
-  heatmap:     'Heatmap',
-  radar:       'Radar',
-  boxplot:     'Box Plot',
-  gauge:       'Gauge',
-  candlestick: 'Candle',
-  fan:         'Fan',
-  combo:       'Combo',
-  map:         'Map',
-}
-
-// Per-type encoding field definitions
-// Each entry: { key, label, required?, hint? }
-const TYPE_ENCODING = {
-  // A choropleth needs the region NAME column (matched against the registered
-  // GeoJSON feature names) and the value that colours it.
-  map:         [{ key: 'name', label: 'Region column' }, { key: 'value', label: 'Value column' }],
-  bar:         [{ key: 'x', label: 'X (category)' }, { key: 'y', label: 'Y (value)' }, { key: 'color', label: 'Group / color', optional: true }],
-  line:        [{ key: 'x', label: 'X' }, { key: 'y', label: 'Y' }, { key: 'y2', label: 'Y2 (secondary axis)', optional: true }, { key: 'color', label: 'Group / color', optional: true }],
-  area:        [{ key: 'x', label: 'X' }, { key: 'y', label: 'Y' }, { key: 'color', label: 'Group / color', optional: true }],
-  scatter:     [{ key: 'x', label: 'X' }, { key: 'y', label: 'Y' }, { key: 'color', label: 'Group / color', optional: true }],
-  bubble:      [{ key: 'x', label: 'X' }, { key: 'y', label: 'Y' }, { key: 'size', label: 'Size column', optional: true }, { key: 'color', label: 'Group / color', optional: true }],
-  pie:         [{ key: 'x', label: 'Category column' }, { key: 'y', label: 'Value column' }],
-  donut:       [{ key: 'x', label: 'Category column' }, { key: 'y', label: 'Value column' }],
-  polar:       [{ key: 'x', label: 'Category column' }, { key: 'y', label: 'Value column' }],
-  radialbar:   [{ key: 'x', label: 'Ring label column' }, { key: 'y', label: 'Value column' }],
-  sankey:      [{ key: 'source', label: 'Source column' }, { key: 'target', label: 'Target column' }, { key: 'value', label: 'Value column' }],
-  funnel:      [{ key: 'x', label: 'Stage / label column' }, { key: 'y', label: 'Value column' }],
-  waterfall:   [{ key: 'x', label: 'Category column' }, { key: 'y', label: 'Delta (change) column' }],
-  treemap:     [{ key: 'x', label: 'Name column' }, { key: 'y', label: 'Size (value) column' }, { key: 'color', label: 'Group column', optional: true }],
-  heatmap:     [{ key: 'x', label: 'X column' }, { key: 'color', label: 'Y column' }, { key: 'value', label: 'Value column' }],
-  radar:       [{ key: 'x', label: 'Indicator column' }, { key: 'y', label: 'Value column' }, { key: 'color', label: 'Series / group', optional: true }],
-  boxplot:     [{ key: 'x', label: 'Category column' }, { key: 'y', label: 'Values column (raw — auto-boxed)' }],
-  gauge:       [{ key: 'y', label: 'Value column' }],
-  candlestick: [{ key: 'x', label: 'Date / time column' }, { key: 'open', label: 'Open column' }, { key: 'close', label: 'Close column' }, { key: 'low', label: 'Low column' }, { key: 'high', label: 'High column' }],
-  fan:         [{ key: 'x', label: 'X (time) column' }, { key: 'y', label: 'Forecast (midline) column' }, { key: 'lower', label: 'Lower bound column', optional: true }, { key: 'upper', label: 'Upper bound column', optional: true }],
-}
 
 // Chart types that use an x/y cartesian axis system (show axis config +
 // reference lines). Combo is cartesian too — buildCombo() honours axes and
@@ -186,11 +106,27 @@ function SeriesList({ label, hint, series, columns, onChange }) {
 }
 
 export function ChartConfig({ widget, onChange }) {
-  const { columns, introspecting } = useColumnIntrospection(widget.query_id)
+  const { columns, table, introspecting } = useColumnIntrospection(widget.query_id)
   const enc = widget.encoding ?? {}
   const cfg = widget.config ?? {}
   const wProps = widget.props ?? {}
   const baseType = widget.chart_type || 'bar'
+
+  // Chart types that fit this query's actual result — only chart shapes here,
+  // since this panel configures a chart widget (a KPI/table nomination would
+  // mean changing the widget type, which is the widget menu's job).
+  const suggestions = useMemo(() => {
+    if (!table) return []
+    const chartOnly = suggestVisuals(profileTable(table), { limit: 10 })
+      .filter(s => s.widgetType === 'chart' && CHART_TYPES.includes(s.type))
+    return chartOnly.slice(0, 3)
+  }, [table])
+  const applySuggestion = (s) => onChange({
+    ...widget,
+    chart_type: s.type,
+    encoding: s.encoding,
+    config: { ...cfg, ...(s.config ?? {}) },
+  })
 
   const setEncoding = (key, val) => onChange({ ...widget, encoding: { ...enc, [key]: val } })
   const setConfig = (key, val) => onChange({ ...widget, config: { ...cfg, [key]: val } })
@@ -246,6 +182,43 @@ export function ChartConfig({ widget, onChange }) {
     <div className="space-y-3">
       {/* ── Chart type picker ── */}
       <Section title="Chart type" icon={BarChart3}>
+        {suggestions.length > 0 && (
+          <div className="mb-2.5">
+            <p className="text-[9px] font-semibold text-muted uppercase tracking-wider mb-1 flex items-center gap-1">
+              <Sparkles size={9} /> Suggested for this data
+            </p>
+            <div className="space-y-1">
+              {suggestions.map((s, i) => {
+                const Icon = CHART_ICONS[s.type] ?? BarChart3
+                const active = baseType === s.type
+                return (
+                  <button
+                    key={s.type}
+                    type="button"
+                    onClick={() => applySuggestion(s)}
+                    title={active ? 'Re-apply the suggested columns' : `Switch to ${CHART_LABELS[s.type] ?? s.type} with these columns`}
+                    className={`w-full text-left flex items-start gap-2 p-2 rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
+                      active ? 'bg-primary/10 border-primary text-fg' : 'bg-surface border-border hover:border-primary/60'
+                    }`}
+                  >
+                    <span className={`mt-0.5 shrink-0 w-6 h-6 rounded-md flex items-center justify-center ${active ? 'bg-primary text-primary-fg' : 'bg-surface-2 text-muted'}`}>
+                      <Icon size={13} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-1.5">
+                        <span className="text-[11px] font-semibold leading-tight">{CHART_LABELS[s.type] ?? s.type}</span>
+                        {i === 0 && (
+                          <span className="text-[8px] font-semibold uppercase tracking-wider px-1 py-px rounded bg-primary/15 text-primary leading-none">Best</span>
+                        )}
+                      </span>
+                      <span className="block text-[10px] text-muted leading-snug mt-0.5">{s.reason}</span>
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-3 gap-1.5">
           {CHART_TYPES.map(t => {
             const Icon = CHART_ICONS[t] ?? BarChart3

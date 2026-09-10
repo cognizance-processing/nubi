@@ -30,7 +30,7 @@
  *                                  toggle + Queries panel button)
  */
 
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
 import {
@@ -67,6 +67,9 @@ import {
   Wand2,
   Eye,
   EyeOff,
+  Table2,
+  Grid2x2,
+  Search,
 } from 'lucide-react'
 
 import SqlEditor from '../../components/SqlEditor.jsx'
@@ -89,7 +92,11 @@ import VisualQueryBuilder from '../../components/VisualQueryBuilder.jsx'
 import TableWidget from '../../dashboards/widgets/TableWidget.jsx'
 import ChartWidget from '../../dashboards/widgets/ChartWidget.jsx'
 import KpiWidget from '../../dashboards/widgets/KpiWidget.jsx'
+import PivotWidget from '../../dashboards/widgets/PivotWidget.jsx'
 import { VariableProvider } from '../../dashboards/VariableStore.jsx'
+import { CHART_TYPES } from '../../editor/shared/constants.js'
+import { CHART_ICONS, CHART_LABELS } from '../../editor/shared/chartMeta.jsx'
+import { profileTable, suggestVisuals, encodingFor } from '../../editor/shared/chartSuggest.js'
 import { checkpoint, restoreVersion } from '../../lib/versions.js'
 import { loadSqlHistory, pushSqlHistory, clearSqlHistory } from '../../lib/sqlHistory.js'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
@@ -795,79 +802,295 @@ function CacheBadge({ status }) {
 }
 
 // ---------------------------------------------------------------------------
-// Results tabs — Results (raw DataTable, existing) | Preview (demo widget) |
-// Connected Widgets (every board widget referencing this saved query)
+// Preview tab — render the query result as ANY board widget.
+//
+// The result grid itself lives in the sibling "Results" tab, so this panel is
+// purely "what would this look like on a dashboard?": one widget, one stage,
+// every type the board editor offers (table, pivot, KPI, and all 21 chart
+// types from CHART_TYPES) rather than the three it used to hard-code.
 // ---------------------------------------------------------------------------
 
-const PREVIEW_TYPES = [
-  { value: 'table', label: 'Table' },
-  { value: 'chart', label: 'Bar Chart' },
-  { value: 'kpi', label: 'KPI' },
+// Non-chart widget kinds that can render straight from a query result.
+const BASE_PREVIEW_TYPES = [
+  { value: 'table', label: 'Table', icon: Table2 },
+  { value: 'pivot', label: 'Pivot', icon: Grid2x2 },
+  { value: 'kpi',   label: 'KPI',   icon: Hash },
 ]
 
-/** True for Arrow field types that hold a plottable number (Int, Float, Decimal variants). */
-function isNumericField(field) {
-  return /Int|Float|Decimal/.test(field.type.toString())
-}
-
 /**
- * Build the synthetic widget spec fed to TableWidget/ChartWidget/KpiWidget.
+ * Build the synthetic widget spec fed to the real board widgets.
+ *
  * `table` (an Arrow table, or undefined before the query has been run) is
- * passed separately as `providerTable` -- these widgets skip their own fetch
+ * passed separately as `providerTable` — these widgets skip their own fetch
  * and render whatever table they're handed (the BET-3 DataProvider path), so
  * this reuses the exact same query result the Results tab already shows.
  */
-function buildDemoWidget(previewType, table) {
-  if (previewType === 'chart') {
-    const fields = table?.schema?.fields ?? []
-    const xField = fields.find(f => !isNumericField(f)) ?? fields[0]
-    const yField = fields.find(isNumericField)
-    return { id: 'demo-chart', type: 'chart', chart_type: 'bar', encoding: { x: xField?.name, y: yField?.name } }
-  }
+function buildDemoWidget(previewType, profile) {
+  const nums = profile.measures.map(c => c.name)
+  const dims = [...profile.categories, ...profile.temporals, ...profile.booleans, ...profile.ids].map(c => c.name)
+  const all = profile.columns.map(c => c.name)
+
+  if (previewType === 'table') return { widget: { id: 'demo-table', type: 'table' }, missing: [] }
+
   if (previewType === 'kpi') {
-    const fields = table?.schema?.fields ?? []
-    const valueField = fields.find(isNumericField) ?? fields[0]
-    return { id: 'demo-kpi', type: 'kpi', encoding: { value: valueField?.name } }
+    const value = nums[0] ?? all[0]
+    // Spark the second numeric column when there is one, otherwise the value
+    // column itself — a KPI reads only its first row, so the sparkline is what
+    // shows the shape of the result.
+    const spark = nums[1] ?? nums[0]
+    return {
+      widget: {
+        id: 'demo-kpi',
+        type: 'kpi',
+        encoding: { value, spark },
+        props: { label: value ?? 'Value' },
+      },
+      missing: value ? [] : ['a value column'],
+    }
   }
-  return { id: 'demo-table', type: 'table' }
+
+  if (previewType === 'pivot') {
+    // rows and cols must be DIFFERENT columns — pivoting a column against
+    // itself just draws a diagonal.
+    const missing = []
+    if (dims.length < 2) missing.push('two text columns (one for rows, one for columns)')
+    if (nums.length < 1) missing.push('a numeric column to aggregate')
+    return {
+      widget: {
+        id: 'demo-pivot',
+        type: 'pivot',
+        encoding: { rows: dims[0], cols: dims[1], value: nums[0] },
+        props: { agg: 'sum' },
+      },
+      missing,
+    }
+  }
+
+  // Everything else is a chart type from CHART_TYPES.
+  const { encoding, missing } = encodingFor(previewType, profile)
+  return {
+    widget: { id: `demo-${previewType}`, type: 'chart', chart_type: previewType, encoding },
+    missing,
+  }
+}
+
+/**
+ * One suggested visual — icon, name, and the one-line reason it fits. The
+ * first entry is flagged as the best match so the eye lands on it.
+ */
+function SuggestionCard({ suggestion, icon: Icon, label, active, best, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full text-left flex items-start gap-2 p-2 rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
+        active
+          ? 'bg-primary/10 border-primary text-fg'
+          : 'bg-surface border-border hover:border-primary/60'
+      }`}
+    >
+      <span className={`mt-0.5 shrink-0 w-6 h-6 rounded-md flex items-center justify-center ${active ? 'bg-primary text-primary-fg' : 'bg-surface-2 text-muted'}`}>
+        <Icon size={13} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-1.5">
+          <span className="text-[11px] font-semibold leading-tight truncate">{label}</span>
+          {best && (
+            <span className="text-[8px] font-semibold uppercase tracking-wider px-1 py-px rounded bg-primary/15 text-primary leading-none">
+              Best
+            </span>
+          )}
+        </span>
+        <span className="block text-[10px] text-muted leading-snug mt-0.5">{suggestion.reason}</span>
+      </span>
+    </button>
+  )
+}
+
+/** One button in the widget-type rail. */
+function PreviewTypeButton({ icon: Icon, label, active, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      title={label}
+      className={`flex flex-col items-center justify-center gap-1 h-[52px] px-1 text-[10px] font-medium rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
+        active
+          ? 'bg-primary text-primary-fg border-primary shadow-sm'
+          : 'bg-surface text-muted border-border hover:border-primary/60 hover:text-primary'
+      }`}
+    >
+      <Icon size={15} className={active ? '' : 'text-muted'} />
+      <span className="truncate max-w-full leading-none">{label}</span>
+    </button>
+  )
 }
 
 function QueryPreviewTab({ table }) {
-  const [previewType, setPreviewType] = useState('table')
-  const demoWidget = buildDemoWidget(previewType, table)
+  const [search, setSearch] = useState('')
+
+  // Profile once per result; every picker below reads from it.
+  const profile = useMemo(() => profileTable(table), [table])
+  const suggestions = useMemo(() => suggestVisuals(profile), [profile])
+
+  // Open on the best suggestion for THIS result; a new result re-suggests
+  // unless the user has already chosen something for it.
+  const [choice, setChoice] = useState({ table: null, type: null })
+  const previewType = choice.table === table && choice.type
+    ? choice.type
+    : (suggestions[0]?.type ?? 'bar')
+  const setPreviewType = (type) => setChoice({ table, type })
+
+  const chartEntries = CHART_TYPES.map(t => ({
+    value: t,
+    label: CHART_LABELS[t] ?? t,
+    icon: CHART_ICONS[t] ?? Layers,
+  }))
+  const needle = search.trim().toLowerCase()
+  const matches = (e) => !needle || e.label.toLowerCase().includes(needle) || e.value.includes(needle)
+  const baseShown = BASE_PREVIEW_TYPES.filter(matches)
+  const chartsShown = chartEntries.filter(matches)
+
+  const built: { widget: Record<string, any>; missing: string[] } = buildDemoWidget(previewType, profile)
+  // A suggestion may carry presentation props (e.g. horizontal bars for long
+  // labels); apply them so the preview matches what the card promised.
+  const chosen = suggestions.find(sg => sg.type === previewType)
+  const demoWidget = (chosen?.props || chosen?.config)
+    ? {
+        ...built.widget,
+        props: { ...(built.widget.props ?? {}), ...(chosen.props ?? {}) },
+        config: { ...(built.widget.config ?? {}), ...(chosen.config ?? {}) },
+      }
+    : built.widget
+  const missing = built.missing
+  const activeLabel =
+    BASE_PREVIEW_TYPES.find(t => t.value === previewType)?.label ??
+    CHART_LABELS[previewType] ?? previewType
+
+  if (!table) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-1.5 h-full py-16 text-center">
+        <Layers size={18} className="text-muted/50" />
+        <p className="text-xs text-muted">Run the query to preview it as a widget.</p>
+      </div>
+    )
+  }
 
   return (
-    <div className="px-3 pb-3">
-      <div className="flex items-center gap-1.5 mb-3">
-        {PREVIEW_TYPES.map(t => (
-          <button
-            key={t.value}
-            onClick={() => setPreviewType(t.value)}
-            className={`px-2.5 py-1 text-[11px] font-medium rounded-full border transition-colors ${
-              previewType === t.value
-                ? 'bg-primary text-primary-fg border-primary'
-                : 'border-border text-muted hover:text-fg'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-      {table ? (
-        // VariableProvider is otherwise unused here -- providerTable already
-        // supplies the data -- but TableWidget/ChartWidget/KpiWidget call
-        // useResolvedParams() unconditionally (hooks can't be conditional),
-        // and that hook throws outside a VariableProvider ancestor.
-        <VariableProvider>
-          <div style={{ height: 320 }}>
-            {demoWidget.type === 'table' && <TableWidget widget={demoWidget} providerTable={table} />}
-            {demoWidget.type === 'chart' && <ChartWidget widget={demoWidget} providerTable={table} />}
-            {demoWidget.type === 'kpi' && <KpiWidget widget={demoWidget} providerTable={table} />}
+    <div className="flex h-full min-h-0">
+
+      {/* ── Widget-type rail — every type the board editor offers ── */}
+      <div className="w-[188px] shrink-0 border-r border-border flex flex-col min-h-0">
+        <div className="p-2 shrink-0">
+          <div className="relative">
+            <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Find a widget…"
+              className="w-full h-7 pl-6 pr-2 text-[11px] rounded-md border border-border bg-surface text-fg placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-ring/50"
+            />
           </div>
-        </VariableProvider>
-      ) : (
-        <p className="text-[11px] text-muted text-center py-10">Run the query to see a preview.</p>
-      )}
+        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2 space-y-2">
+          {!needle && suggestions.length > 0 && (
+            <div>
+              <p className="text-[9px] font-semibold text-muted uppercase tracking-wider mb-1 px-0.5 flex items-center gap-1">
+                <Sparkles size={9} /> Suggested for this data
+              </p>
+              <div className="space-y-1">
+                {suggestions.map((sg, i) => (
+                  <SuggestionCard
+                    key={sg.type}
+                    suggestion={sg}
+                    icon={BASE_PREVIEW_TYPES.find(t => t.value === sg.type)?.icon ?? CHART_ICONS[sg.type] ?? Layers}
+                    label={BASE_PREVIEW_TYPES.find(t => t.value === sg.type)?.label ?? CHART_LABELS[sg.type] ?? sg.type}
+                    active={previewType === sg.type}
+                    best={i === 0}
+                    onClick={() => setPreviewType(sg.type)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+          {baseShown.length > 0 && (
+            <div>
+              <p className="text-[9px] font-semibold text-muted uppercase tracking-wider mb-1 px-0.5">Data</p>
+              <div className="grid grid-cols-3 gap-1.5">
+                {baseShown.map(t => (
+                  <PreviewTypeButton
+                    key={t.value}
+                    icon={t.icon}
+                    label={t.label}
+                    active={previewType === t.value}
+                    onClick={() => setPreviewType(t.value)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+          {chartsShown.length > 0 && (
+            <div>
+              <p className="text-[9px] font-semibold text-muted uppercase tracking-wider mb-1 px-0.5">Charts</p>
+              <div className="grid grid-cols-3 gap-1.5">
+                {chartsShown.map(t => (
+                  <PreviewTypeButton
+                    key={t.value}
+                    icon={t.icon}
+                    label={t.label}
+                    active={previewType === t.value}
+                    onClick={() => setPreviewType(t.value)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+          {baseShown.length === 0 && chartsShown.length === 0 && (
+            <p className="text-[11px] text-muted text-center py-6">No widget matches “{search}”.</p>
+          )}
+        </div>
+      </div>
+
+      {/* ── Stage — the widget rendered exactly as a board tile would ── */}
+      <div className="flex-1 min-w-0 flex flex-col p-3 gap-2">
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="text-[11px] font-semibold text-fg">{activeLabel}</span>
+          {missing.length === 0 && (
+            <span className="text-[10px] text-muted truncate">
+              {Object.entries(demoWidget.encoding ?? {})
+                .filter(([, v]) => v != null && v !== '' && (!Array.isArray(v) || v.length))
+                .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
+                .join('  ·  ')}
+            </span>
+          )}
+        </div>
+
+        {missing.length > 0 ? (
+          <div className="flex-1 min-h-0 rounded-xl border border-dashed border-border flex flex-col items-center justify-center gap-1.5 text-center px-6">
+            <AlertCircle size={16} className="text-muted" />
+            <p className="text-xs text-fg">
+              This result doesn't have the columns a {activeLabel} widget needs.
+            </p>
+            <p className="text-[11px] text-muted">
+              Missing: {missing.join(', ')}
+            </p>
+            <p className="text-[11px] text-muted/70">
+              Adjust the SQL above, or pick another widget type.
+            </p>
+          </div>
+        ) : (
+          // VariableProvider is otherwise unused here — providerTable already
+          // supplies the data — but the widgets call useResolvedParams()
+          // unconditionally (hooks can't be conditional), and that hook throws
+          // outside a VariableProvider ancestor.
+          <VariableProvider>
+            <div className="flex-1 min-h-0 rounded-xl border border-border bg-bg overflow-hidden">
+              {demoWidget.type === 'table' && <TableWidget widget={demoWidget} providerTable={table} />}
+              {demoWidget.type === 'pivot' && <PivotWidget widget={demoWidget} providerTable={table} />}
+              {demoWidget.type === 'chart' && <ChartWidget widget={demoWidget} providerTable={table} />}
+              {demoWidget.type === 'kpi'   && <KpiWidget   widget={demoWidget} providerTable={table} />}
+            </div>
+          </VariableProvider>
+        )}
+      </div>
     </div>
   )
 }
@@ -1595,7 +1818,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
     const draft = metricToDraft(query?.metric, query?.name)
     setMetricDraft(draft)
     setMetricCollapsed(!draft.enabled)
-    setRightPanelTab('preview')
+    setRightPanelTab('results')
   }, [query?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-sync params list from SQL {{placeholders}} / {% if %} guards.
@@ -1661,7 +1884,9 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState(null)
   const [runError, setRunError] = useState(null)
-  const [rightPanelTab, setRightPanelTab] = useState('preview') // 'preview' | 'widgets' | 'ai' | 'history' — the persistent right column
+  // Bottom panel tab: 'results' | 'preview' | 'widgets' | 'ai' | 'history'.
+  // One panel, one rendering of the result — see the panel's own note below.
+  const [rightPanelTab, setRightPanelTab] = useState('results')
   const [sqlHistory, setSqlHistory] = useState(() => loadSqlHistory())
   const [builderOpen, setBuilderOpen] = useState(false)
   const [builderSchema, setBuilderSchema] = useState(null)
@@ -2591,39 +2816,64 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
 
             </div>
 
-            {/* ── Bottom row: raw Results (left, wider) | widget Preview
-                (right). Both stay visible while you iterate on the SQL above;
-                stacks to one column below lg. ── */}
-            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] border-t border-border">
+            {/* ── Bottom panel: ONE surface, tab-switched. Results (the raw
+                grid) and Preview (the same rows as a board widget) used to sit
+                side by side, which showed the same table twice whenever the
+                preview was a table — and squeezed both. As tabs of one
+                full-width panel each gets the whole width, and there is only
+                ever one rendering of the result on screen. ── */}
+            <div className="border-t border-border flex flex-col min-h-0">
+              <div className="flex items-center gap-1 px-3 py-2 shrink-0 border-b border-border flex-wrap">
+                {[
+                  { value: 'results', label: 'Results' },
+                  { value: 'preview', label: 'Preview', icon: Layers },
+                  { value: 'widgets', label: 'Connected' },
+                  { value: 'ai', label: 'Ask AI', icon: Sparkles },
+                  { value: 'history', label: 'History', icon: History },
+                ].map(t => (
+                  <button
+                    key={t.value}
+                    onClick={() => setRightPanelTab(t.value)}
+                    className={`flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider px-2 py-1 rounded-md transition-colors ${
+                      rightPanelTab === t.value ? 'bg-primary/10 text-primary' : 'text-muted hover:text-fg'
+                    }`}
+                  >
+                    {t.icon && <t.icon size={11} />}
+                    {t.label}
+                  </button>
+                ))}
 
-              {/* Results — collapses to a slim prompt until the query has
-                  actually run, so the SQL editor above (not an empty grid)
-                  is what dominates the screen on first load. */}
-              <div className="min-w-0 lg:border-r lg:border-border">
-                {hasRun ? (
-                  <>
-                    <div className="flex items-center gap-2 px-3 py-2 flex-wrap">
-                      <span className="text-[11px] font-semibold text-muted uppercase tracking-wider">Results</span>
-                      {result && !running && (
-                        <>
-                          <span className="text-[11px] font-mono text-fg">
-                            {rowCount.toLocaleString()} row{rowCount !== 1 ? 's' : ''}
-                          </span>
-                          {result.elapsedMs != null && (
-                            <span className="inline-flex items-center gap-1 text-[10px] text-muted">
-                              <Clock size={9} /> {result.elapsedMs}ms
-                            </span>
-                          )}
-                          <CacheBadge status={result.cacheStatus} />
-                        </>
-                      )}
-                      {running && (
-                        <span className="inline-flex items-center gap-1.5 text-[11px] text-muted">
-                          <Loader2 size={11} className="animate-spin" /> Streaming…
+                {/* Result meta — always visible, whichever tab is open, so the
+                    row count and timing don't vanish when previewing. */}
+                <div className="flex items-center gap-2 ml-auto">
+                  {running && (
+                    <span className="inline-flex items-center gap-1.5 text-[11px] text-muted">
+                      <Loader2 size={11} className="animate-spin" /> Streaming…
+                    </span>
+                  )}
+                  {result && !running && (
+                    <>
+                      <span className="text-[11px] font-mono text-fg">
+                        {rowCount.toLocaleString()} row{rowCount !== 1 ? 's' : ''}
+                      </span>
+                      {result.elapsedMs != null && (
+                        <span className="inline-flex items-center gap-1 text-[10px] text-muted">
+                          <Clock size={9} /> {result.elapsedMs}ms
                         </span>
                       )}
-                    </div>
-                    <div style={{ height: 360 }} className="px-3 pb-3">
+                      <CacheBadge status={result.cacheStatus} />
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div
+                className={rightPanelTab === 'ai' ? 'min-h-0 overflow-hidden' : 'min-h-0 overflow-auto'}
+                style={{ height: hasRun || rightPanelTab !== 'results' ? 400 : undefined }}
+              >
+                {rightPanelTab === 'results' && (
+                  hasRun ? (
+                    <div className="h-full px-3 py-3">
                       <DataTable
                         arrow={result?.table ?? undefined}
                         loading={running}
@@ -2633,63 +2883,36 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                         pageSize={50}
                       />
                     </div>
-                  </>
-                ) : (
-                  <div className="px-4 py-8 flex flex-col items-center justify-center gap-1.5 text-center">
-                    <span className="text-[11px] font-semibold text-muted uppercase tracking-wider">Results</span>
-                    <p className="text-xs text-muted">Run the query to see results here.</p>
-                  </div>
+                  ) : (
+                    <div className="px-4 py-10 flex flex-col items-center justify-center gap-1.5 text-center">
+                      <p className="text-xs text-muted">Run the query to see results here.</p>
+                    </div>
+                  )
                 )}
-              </div>
-
-              {/* Preview / Connected / Ask AI — persistent, switched by a small
-                  local toggle (these three don't need to be visible simultaneously). */}
-              <div className="min-w-0 border-t lg:border-t-0 border-border flex flex-col">
-                <div className="flex items-center flex-wrap gap-1 px-3 py-2 shrink-0">
-                  {[
-                    { value: 'preview', label: 'Preview' },
-                    { value: 'widgets', label: 'Connected' },
-                    { value: 'ai', label: 'Ask AI', icon: Sparkles },
-                    { value: 'history', label: 'History', icon: History },
-                  ].map(t => (
-                    <button
-                      key={t.value}
-                      onClick={() => setRightPanelTab(t.value)}
-                      className={`flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider px-2 py-1 rounded-md transition-colors ${
-                        rightPanelTab === t.value ? 'bg-primary/10 text-primary' : 'text-muted hover:text-fg'
-                      }`}
-                    >
-                      {t.icon && <t.icon size={11} />}
-                      {t.label}
-                    </button>
-                  ))}
-                </div>
-                <div className={rightPanelTab === 'ai' ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1 overflow-auto'}>
-                  {rightPanelTab === 'preview' && <QueryPreviewTab table={result?.table} />}
-                  {rightPanelTab === 'widgets' && <ConnectedWidgetsTab queryId={query?.id} />}
-                  {rightPanelTab === 'ai' && (
-                    <ChatPanel
-                      title="Ask AI"
-                      tagline="Ask about this query, request changes, or generate SQL from a description — watch each tool run live."
-                      placeholder="Ask about this query, or describe SQL to generate…"
-                      suggestions={[
-                        'Explain what this query does',
-                        'Add a date-range filter',
-                        'Optimise this query',
-                        'Write a query for total sales by region',
-                      ]}
-                      system={`The user is editing a SQL query${query?.name ? ` named "${query.name}"` : ''} in the ${dialect} dialect. Current SQL:\n\`\`\`sql\n${sql || '(empty)'}\n\`\`\`\nWhen asked to write or modify SQL, prefer the generate_sql tool and keep results in the ${dialect} dialect. Do not propose a dashboard spec here — this is the query editor, not the dashboard editor.`}
-                      onInsertSql={handleSqlChange}
-                    />
-                  )}
-                  {rightPanelTab === 'history' && (
-                    <QueryHistoryTab
-                      entries={sqlHistory}
-                      onRestore={handleSqlChange}
-                      onClear={() => setSqlHistory(clearSqlHistory())}
-                    />
-                  )}
-                </div>
+                {rightPanelTab === 'preview' && <QueryPreviewTab table={result?.table} />}
+                {rightPanelTab === 'widgets' && <ConnectedWidgetsTab queryId={query?.id} />}
+                {rightPanelTab === 'ai' && (
+                  <ChatPanel
+                    title="Ask AI"
+                    tagline="Ask about this query, request changes, or generate SQL from a description — watch each tool run live."
+                    placeholder="Ask about this query, or describe SQL to generate…"
+                    suggestions={[
+                      'Explain what this query does',
+                      'Add a date-range filter',
+                      'Optimise this query',
+                      'Write a query for total sales by region',
+                    ]}
+                    system={`The user is editing a SQL query${query?.name ? ` named "${query.name}"` : ''} in the ${dialect} dialect. Current SQL:\n\`\`\`sql\n${sql || '(empty)'}\n\`\`\`\nWhen asked to write or modify SQL, prefer the generate_sql tool and keep results in the ${dialect} dialect. Do not propose a dashboard spec here — this is the query editor, not the dashboard editor.`}
+                    onInsertSql={handleSqlChange}
+                  />
+                )}
+                {rightPanelTab === 'history' && (
+                  <QueryHistoryTab
+                    entries={sqlHistory}
+                    onRestore={handleSqlChange}
+                    onClear={() => setSqlHistory(clearSqlHistory())}
+                  />
+                )}
               </div>
             </div>
           </div>
