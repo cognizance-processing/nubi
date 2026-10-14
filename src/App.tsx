@@ -72,6 +72,8 @@ import LandingPage from './pages/LandingPage.jsx'
 import Login from './pages/Login.jsx'
 import Register from './pages/Register.jsx'
 import OnboardingPage from './pages/OnboardingPage.jsx'
+import OAuthConsentPage from './pages/OAuthConsentPage.jsx'
+import OAuthReturn from './components/OAuthReturn.jsx'
 import DocsPage from './pages/DocsPage.jsx'
 import ComparePage from './pages/ComparePage.jsx'
 import PricingPage from './pages/PricingPage.jsx'
@@ -293,6 +295,7 @@ function dashboardRoute({ edit = false } = {}) {
 export default function App() {
   return (
     <AuthProvider>
+      <OAuthReturn />
       {/* Single Suspense boundary for every lazy-loaded route element. Eager
           marketing routes never suspend, so the landing path is unaffected. */}
       <Suspense fallback={<RouteFallback />}>
@@ -396,6 +399,17 @@ export default function App() {
         </Route>
 
         {/* ── Full-viewport authenticated routes (no AppShell) ─────────── */}
+        {/* An AI app (claude.ai, ChatGPT) sends the user here to approve a
+            connection. Outside the shell: it's a sign-in-style screen, and it
+            must not depend on an active org — the user picks one on it. */}
+        <Route
+          path="oauth/consent"
+          element={
+            <ProtectedRoute>
+              <OAuthConsentPage />
+            </ProtectedRoute>
+          }
+        />
         {/* Forced onboarding for users with zero org memberships (e.g. new
             Google OAuth users). Outside the shell + OrgProvider on purpose:
             it fetches /orgs itself and bounces to /home when orgs exist. */}

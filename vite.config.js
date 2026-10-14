@@ -77,7 +77,17 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           secure: false,
         },
+        // OAuth discovery for remote MCP clients (docs/mcp.md § 4), so one
+        // public tunnel to this dev server can serve the whole connect flow.
+        '/.well-known': {
+          target: env.VITE_BACKEND_URL || 'http://localhost:8000',
+          changeOrigin: true,
+          secure: false,
+        },
       },
+      // Extra hostnames this dev server answers to, e.g. a tunnel
+      // (VITE_ALLOWED_HOSTS=my-tunnel.ngrok-free.dev). Comma-separated.
+      allowedHosts: (env.VITE_ALLOWED_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean),
     },
     // `vite preview` (serving the production build locally) needs the same
     // /api proxy as the dev server — preview does NOT inherit server.proxy.

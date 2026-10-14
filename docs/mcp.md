@@ -156,11 +156,22 @@ Settings → Connections in the app, or `POST /auth/api-keys`) rather than the
 15-minute session JWT — `verified_identity` resolves either credential to the
 same normalised identity (`app/auth/deps.py`).
 
+Browser-hosted clients (claude.ai, ChatGPT) can't be given a key, so they
+connect over **OAuth** instead — see [§ 4](#4-oauth-for-browser-ai-apps).
+An OAuth access token (`nubi_oat_…`) resolves to the same identity an API
+key does, but is accepted **only** on this endpoint.
+
+A request without a valid token gets `401` with
+`WWW-Authenticate: Bearer resource_metadata="<base>/.well-known/oauth-protected-resource/api/v1/mcp"`,
+which is how a remote client discovers where to sign in.
+
 ### Protocol version
 
-```
-protocolVersion: "2024-11-05"
-```
+The server echoes the client's `protocolVersion` when it is one of
+`2025-06-18`, `2025-03-26`, `2024-11-05`, and answers `2025-06-18` otherwise.
+Responses are plain JSON (no SSE stream, no session id); `GET`/`DELETE` on
+the endpoint return `405`. A message without an `id` is a notification and
+gets `202` with no body. `ping` returns `{}`.
 
 ### Methods
 
@@ -296,7 +307,62 @@ via the MCP path.
 
 ---
 
-## Quick start — connect your own Claude
+## 4. OAuth for browser AI apps
+
+Nubi is its own OAuth 2.1 authorization server, following the MCP
+authorization spec (`app/routes/oauth.py`, state in `app/auth/oauth.py`):
+
+| Step | Endpoint |
+|---|---|
+| Resource metadata (RFC 9728) | `GET /.well-known/oauth-protected-resource[/api/v1/mcp]` |
+| Server metadata (RFC 8414) | `GET /.well-known/oauth-authorization-server` |
+| Dynamic client registration (RFC 7591) | `POST /api/v1/oauth/register` |
+| Authorize → SPA consent page | `GET /api/v1/oauth/authorize` → `/oauth/consent?request=…` |
+| Code / refresh exchange | `POST /api/v1/oauth/token` |
+| Revocation (RFC 7009) | `POST /api/v1/oauth/revoke` |
+| Connected apps (Settings) | `GET/DELETE /api/v1/oauth/connections[/{id}]` |
+
+What the user approves is a **grant** — (app, user, one org). On the consent
+page they sign in, see which host the app will send them back to (claude.ai
+and chatgpt.com are marked as recognised; anything else carries a warning,
+since any app can register under any name), pick an org, and approve.
+
+Security properties:
+
+- PKCE `S256` is mandatory; redirect URIs must be HTTPS (or loopback HTTP)
+  and match exactly; a requested `resource` must be this MCP endpoint.
+- Codes are single-use (5 min); replaying one revokes its grant. Refresh
+  tokens rotate on every use; presenting a rotated one revokes the grant.
+- Access tokens live 1 hour, refresh tokens 30 days. Only SHA-256 digests of
+  codes and tokens are stored.
+- The token is audience-bound: it works on `POST /api/v1/mcp` (and the REST
+  calls its `api_request` tool makes, behind that tool's deny-list) and is
+  refused everywhere else — a token leaked from a chat app can't, say, mint
+  an API key. `api_request` cannot reach `/oauth/*`.
+- Every use re-checks that the user is still a member of the org; removing
+  someone from an org disconnects their apps immediately.
+- Only an interactive sign-in can approve a connection — an API key or
+  another app's token cannot.
+- Connect and disconnect are audit-logged (`oauth.connect`, `oauth.disconnect`).
+
+**Deployment:** set `PUBLIC_API_URL` to the API's public origin (e.g.
+`https://api.example.com`). It is the OAuth issuer and the resource id
+clients bind to; when unset it is derived from the request, which is only
+right if no proxy rewrites the host or scheme. The API must be reachable over
+public HTTPS for claude.ai or ChatGPT to connect.
+
+---
+
+## Quick start — connect your own AI
+
+### Claude or ChatGPT in the browser
+
+In the app, **Settings → Connections** shows the connector URL
+(`<api>/api/v1/mcp`). Add it as a custom connector — in Claude under
+Settings → Connectors, in ChatGPT as a developer-mode connector with OAuth —
+then sign in to Nubi and approve when prompted.
+
+### Claude Desktop / Claude Code with an API key
 
 In the app, go to **Settings → Connections** and generate a connection key
 (an API key, `nubi_ak_…`, scoped to your org). The page shows the raw key

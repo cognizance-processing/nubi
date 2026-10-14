@@ -12,12 +12,16 @@ import { Eye, EyeOff, AlertCircle } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext.jsx'
 import { googleStartUrl, fetchAuthConfig } from '../lib/api.js'
 import AuthLayout from '../components/AuthLayout.jsx'
+import { rememberOAuthReturn } from '../lib/oauthConnect.js'
 
 export default function Login() {
   const { login } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const from = location.state?.from?.pathname ?? '/dashboard'
+  // Keep the query string: the AI-app consent page (/oauth/consent?request=…)
+  // is useless without it.
+  const fromLoc = location.state?.from
+  const from = fromLoc?.pathname ? fromLoc.pathname + (fromLoc.search ?? '') : '/dashboard'
 
   const [email, setEmail]       = useState('')
   const [password, setPassword] = useState('')
@@ -65,7 +69,12 @@ export default function Login() {
         <>
           <button
             type="button"
-            onClick={() => { window.location.href = googleStartUrl() }}
+            onClick={() => {
+              // Google sign-in leaves the SPA and lands back on '/', so park a
+              // pending AI-app approval for <OAuthReturn> to resume.
+              if (from.startsWith('/oauth/consent')) rememberOAuthReturn(from)
+              window.location.href = googleStartUrl()
+            }}
             disabled={pending}
             className="nubi-auth-social-btn"
             aria-label="Continue with Google"
