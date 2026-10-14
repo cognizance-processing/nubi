@@ -247,7 +247,7 @@ def _tool_get_schema(
     return result
 
 
-# A mature org's registry runs to four figures (MacMobile: 1212 queries, which
+# A mature org's registry runs to four figures (one ran to 1212 queries, which
 # serialised to ~224 KB in one call).  Listing it whole is unusable for an
 # agent, so the tool paginates and filters; `total` and `has_more` keep the
 # caller honest about what it is NOT seeing.

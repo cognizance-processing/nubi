@@ -409,7 +409,7 @@ def _pick_best_query(
     # Previously the columns below were gathered from whatever tables the
     # QUESTION's keywords matched — entirely independently of `chosen_id` —
     # so the two halves of the result could (and did) disagree: asking for
-    # "route efficiency by region" picked query `demo_all` (columns
+    # "sales by region" picked query `demo_all` (columns
     # id/name/value/active, via the registry-order fallback) but paired it
     # with columns scavenged from unrelated tables elsewhere in the catalog
     # that merely matched the word "region". Every widget

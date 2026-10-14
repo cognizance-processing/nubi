@@ -570,7 +570,7 @@ class TestCreateDashboardTool:
         """The regression guard. `_pick_best_query` used to source the
         query_id and the columns from two independent places, so a widget
         could reference a column its own query never emits (asking for
-        "route efficiency by region" produced query `demo_all` paired with
+        "sales by region" produced query `demo_all` paired with
         `region` columns scavenged from unrelated tables elsewhere in the
         catalog)."""
         from app.queries.registry import get_query_registry

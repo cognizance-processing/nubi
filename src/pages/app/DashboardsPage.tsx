@@ -236,7 +236,7 @@ function NewFolderDialog({ onCreate, onCancel, busy }) {
           type="text"
           value={name}
           onChange={e => setName(e.target.value)}
-          placeholder="e.g. Route Efficiency"
+          placeholder="e.g. Weekly Sales"
           className="w-full h-10 px-3 rounded-xl border border-border bg-surface-2 text-sm text-fg placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-ring mb-6"
         />
         <div className="flex gap-2.5">
