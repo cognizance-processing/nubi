@@ -87,14 +87,11 @@ class TestMalformedJsonRpc:
 
     @pytest.mark.asyncio
     async def test_missing_id_field(self, mcp_adv_client):
-        """JSON-RPC body without 'id' — server treats id as None."""
-        payload = {"jsonrpc": "2.0", "method": "initialize", "params": {}}
+        """A method without 'id' is a notification: accepted, no reply body."""
+        payload = {"jsonrpc": "2.0", "method": "notifications/initialized"}
         resp = await mcp_adv_client.post("/api/v1/mcp", json=payload)
-        assert resp.status_code == 200
-        data = resp.json()
-        # rpc_id is None → body.get("id") returns None
-        assert data.get("id") is None
-        assert "result" in data
+        assert resp.status_code == 202
+        assert resp.content == b""
 
     @pytest.mark.asyncio
     async def test_missing_method_field(self, mcp_adv_client):

@@ -25,6 +25,7 @@ verified_identity
 
 from __future__ import annotations
 
+import contextvars
 from typing import Any
 
 from fastapi import Depends, Request
@@ -41,7 +42,51 @@ from app.errors import AppError
 _bearer = HTTPBearer(auto_error=False)
 
 
+# ── Opaque bearer credentials ────────────────────────────────────────────────
+# Two credentials are opaque strings rather than JWTs: API keys (``nubi_ak_``)
+# and OAuth access tokens issued to remote MCP clients (``nubi_oat_``). Both
+# resolve to the same ``{user_id, org_id}`` binding, and from there the request
+# is handled identically — org pin, role checks, RLS — so an AI app connected
+# through OAuth can do exactly what the same user could with an API key.
+#
+# The one difference is audience. An OAuth token was issued for the MCP
+# endpoint (RFC 8707 resource), so it is only accepted there, or on a REST call
+# that endpoint's ``api_request`` tool makes in-process (which applies its own
+# deny-list first). Anywhere else it is rejected — a token leaked out of a
+# chat app cannot be used to, say, mint a permanent API key.
+
+_MCP_PATH = "/api/v1/mcp"
+
+#: Set by the MCP ``api_request`` tool around its in-process REST dispatch.
+mcp_inprocess_call: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "mcp_inprocess_call", default=False
+)
+
+
+async def _resolve_opaque_credential(
+    raw: str, request: Request | None
+) -> dict[str, Any] | None | bool:
+    """Resolve an opaque bearer credential.
+
+    Returns ``False`` when *raw* is not an opaque credential (decode it as a
+    JWT), ``None`` when it is one but is invalid here, else the binding row
+    ``{user_id, org_id}``.
+    """
+    from app.auth.api_keys import get_api_key_store, looks_like_api_key  # noqa: PLC0415
+    from app.auth.oauth import get_oauth_store, looks_like_oauth_access_token  # noqa: PLC0415
+
+    if looks_like_api_key(raw):
+        return await get_api_key_store().resolve(raw)
+    if looks_like_oauth_access_token(raw):
+        path = request.url.path.rstrip("/") if request is not None else ""
+        if path != _MCP_PATH and not mcp_inprocess_call.get():
+            return None
+        return await get_oauth_store().resolve_access(raw)
+    return False
+
+
 async def current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> dict[str, Any]:
     """Dependency: resolve the bearer token to a verified user dict.
@@ -65,17 +110,15 @@ async def current_user(
     if credentials is None:
         raise AppError("unauthorized", "Authentication required.", 401)
 
-    # ── API-key bearer path (CLI / CI long-lived tokens) ────────────────────
-    # An opaque ``nubi_ak_…`` credential is NOT a JWT; resolve it against the
-    # api_keys store instead of decoding. A resolved key authenticates exactly
-    # like an access token but additionally PINS the request to the org the key
-    # was minted for (carried as ``_api_key_org_id`` so resolve_org_id/
-    # get_user_org honour it and reject any cross-org X-Org-Id).
-    from app.auth.api_keys import get_api_key_store, looks_like_api_key
-
+    # ── Opaque bearer path (API keys, OAuth access tokens) ──────────────────
+    # Not a JWT; resolve it against its store instead of decoding. A resolved
+    # credential authenticates exactly like an access token but additionally
+    # PINS the request to the org it was issued for (carried as
+    # ``_api_key_org_id`` so resolve_org_id/get_user_org honour it and reject
+    # any cross-org X-Org-Id).
     raw_credential: str = credentials.credentials
-    if looks_like_api_key(raw_credential):
-        key_row = await get_api_key_store().resolve(raw_credential)
+    key_row = await _resolve_opaque_credential(raw_credential, request)
+    if key_row is not False:
         if key_row is None:
             raise AppError("unauthorized", "Authentication required.", 401)
         user_row = await fetchrow(
@@ -90,7 +133,7 @@ async def current_user(
             raise AppError("unauthorized", "Authentication required.", 401)
         user = dict(user_row)
         user["_api_key_org_id"] = str(key_row["org_id"])
-        # Pin org resolution for the rest of this request to the key's org.
+        # Pin org resolution for the rest of this request to the credential's org.
         from app.routes._org import api_key_org_pin
 
         api_key_org_pin.set(str(key_row["org_id"]))
@@ -297,19 +340,15 @@ async def verified_identity(
     if credentials is None:
         raise AppError("unauthorized", "Authentication required.", 401)
 
-    # ── API-key bearer path (CLI / CI / MCP long-lived tokens) ──────────────
-    # An opaque ``nubi_ak_…`` credential is NOT a JWT — verify_token_async
-    # would reject it at the JOSE-header-parse step before it ever gets to
-    # look at the algorithm. Resolve it against the api_keys store instead,
-    # mirroring the same branch in ``current_user`` above, and synthesize a
-    # VerifiedIdentity equivalent to a normal first-party login session
+    # ── Opaque bearer path (API keys, OAuth access tokens) ──────────────────
+    # Not a JWT — verify_token_async would reject it at the JOSE-header-parse
+    # step. Resolve it the same way ``current_user`` does above and synthesize
+    # a VerifiedIdentity equivalent to a normal first-party login session
     # (kind="access", default scopes, no RLS policy claim — same as a token
     # minted by /auth/login with no explicit policies).
-    from app.auth.api_keys import get_api_key_store, looks_like_api_key
-
     raw_credential: str = credentials.credentials
-    if looks_like_api_key(raw_credential):
-        key_row = await get_api_key_store().resolve(raw_credential)
+    key_row = await _resolve_opaque_credential(raw_credential, request)
+    if key_row is not False:
         if key_row is None:
             raise AppError("unauthorized", "Authentication required.", 401)
 

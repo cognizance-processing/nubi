@@ -40,11 +40,14 @@ class AppError(Exception):
         HTTP status code that will be used in the response (default 400).
     """
 
-    def __init__(self, code: str, message: str, status: int = 400) -> None:
+    def __init__(
+        self, code: str, message: str, status: int = 400, headers: dict[str, str] | None = None
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.status = status
+        self.headers = headers
 
 
 def _app_error_handler(_request: Request, exc: AppError) -> JSONResponse:
@@ -52,6 +55,7 @@ def _app_error_handler(_request: Request, exc: AppError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status,
         content={"error": {"code": exc.code, "message": exc.message}},
+        headers=getattr(exc, "headers", None),
     )
 
 

@@ -19,12 +19,13 @@ import logging
 import re
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 from app.audit import record_audit as _record_audit
-from app.auth.deps import current_user, verified_identity
+from app.auth.deps import _bearer, current_user, mcp_inprocess_call, verified_identity
 from app.auth.roles import require_writer
 from app.auth.verify import VerifiedIdentity
 from app.connectors.ssrf import guard_url
@@ -300,13 +301,49 @@ def _strip_secrets(row: dict[str, Any]) -> dict[str, Any]:
 # Tool calls are dispatched via execute_tool, offloaded to a thread.
 
 
+#: Protocol revisions this endpoint speaks. It answers plain JSON (no SSE
+#: stream, no session), which every revision since 2025-03-26 allows.
+_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
+
+
+async def _mcp_caller(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> tuple[dict[str, Any], VerifiedIdentity]:
+    """Authenticate exactly as every other route does, plus the MCP 401 challenge.
+
+    A remote client (claude.ai, ChatGPT) starts with no token; the
+    ``WWW-Authenticate`` header is how it discovers where to get one
+    (MCP authorization spec / RFC 9728 §5.1).
+    """
+    try:
+        user = await current_user(request, credentials)
+        identity = await verified_identity(request, credentials)
+    except AppError as exc:
+        if exc.status == 401:
+            from app.routes.oauth import resource_metadata_url  # noqa: PLC0415
+
+            challenge = f'Bearer resource_metadata="{resource_metadata_url(request)}"'
+            if credentials is not None:
+                challenge += ', error="invalid_token"'
+            exc.headers = {**(exc.headers or {}), "WWW-Authenticate": challenge}
+        raise
+    return user, identity
+
+
+@mcp_router.get("")
+@mcp_router.delete("")
+async def mcp_endpoint_other_methods() -> Response:
+    """No server-initiated stream and no sessions, so only POST is served."""
+    return Response(status_code=405, headers={"Allow": "POST"})
+
+
 @mcp_router.post("")
 async def mcp_endpoint(
     request: Request,
-    user: dict[str, Any] = Depends(current_user),
-    identity: VerifiedIdentity = Depends(verified_identity),
+    caller: tuple[dict[str, Any], VerifiedIdentity] = Depends(_mcp_caller),
     repo: Repo = Depends(get_repo),
-) -> JSONResponse:
+) -> Response:
     """JSON-RPC 2.0 endpoint exposing Nubi's tools to external MCP clients.
 
     Handles:
@@ -325,16 +362,28 @@ async def mcp_endpoint(
     except Exception:  # noqa: BLE001
         return _jsonrpc_error(None, -32700, "Parse error")
 
+    user, identity = caller
+    if not isinstance(body, dict):
+        return _jsonrpc_error(None, -32600, "Invalid Request")
     rpc_id = body.get("id")
     method = body.get("method", "")
     params = body.get("params") or {}
 
+    # ── A notification (a method with no id) gets no reply (JSON-RPC 2.0 §4.1)
+    if "id" not in body and method:
+        return Response(status_code=202)
+
+    if method == "ping":
+        return _jsonrpc_result(rpc_id, {})
+
     # ── initialize ────────────────────────────────────────────────────────────
     if method == "initialize":
+        requested = str(params.get("protocolVersion") or "")
+        version = requested if requested in _PROTOCOL_VERSIONS else _PROTOCOL_VERSIONS[0]
         return _jsonrpc_result(
             rpc_id,
             {
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": version,
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "nubi", "version": "1.0.0"},
             },
@@ -430,7 +479,7 @@ async def mcp_endpoint(
 _API_PREFIX = "/api/v1"
 
 _API_DENY_ANY = re.compile(
-    r"^/(auth|admin|secrets|security|mcp)(/|$)"
+    r"^/(auth|oauth|admin|secrets|security|mcp)(/|$)"
     r"|^/bridges/[^/]+/tokens(/|$)"
     r"|^/embed/embed-token$"
 )
@@ -512,8 +561,14 @@ async def _api_request(
         kwargs["json"] = arguments["body"]
 
     transport = httpx.ASGITransport(app=request.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://nubi-mcp.internal") as client:
-        resp = await client.request(method, _API_PREFIX + path, **kwargs)
+    # An OAuth token is only accepted at the MCP endpoint; this flag extends
+    # that to the dispatch below, which the deny-list above has already vetted.
+    marker = mcp_inprocess_call.set(True)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://nubi-mcp.internal") as client:
+            resp = await client.request(method, _API_PREFIX + path, **kwargs)
+    finally:
+        mcp_inprocess_call.reset(marker)
 
     if method != "GET":
         await _record_audit(

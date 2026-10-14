@@ -251,13 +251,15 @@ async def test_mcp_registry_list_empty(mcp_client):
 @pytest.mark.asyncio
 async def test_mcp_nubi_server_initialize(mcp_client):
     """POST /api/v1/mcp — initialize method returns server info."""
-    payload = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+               "params": {"protocolVersion": "2024-11-05"}}
     resp = await mcp_client.post("/api/v1/mcp", json=payload)
     assert resp.status_code == 200
     data = resp.json()
     assert data["jsonrpc"] == "2.0"
     assert data["id"] == 1
     result = data["result"]
+    # A supported version is echoed back; anything else gets our latest.
     assert result["protocolVersion"] == "2024-11-05"
     assert result["serverInfo"]["name"] == "nubi"
     assert "tools" in result["capabilities"]

@@ -86,6 +86,12 @@ class Settings(BaseSettings):
 
     # ── Application URLs ─────────────────────────────────────────────────────
     FRONTEND_URL: str
+    # Public origin of THIS API (e.g. "https://api.example.com"), as remote
+    # clients reach it. It is the OAuth issuer and the MCP resource identifier
+    # that claude.ai / ChatGPT connect to, so it must be stable and match what
+    # users paste. Unset → derived from the request (fine for single-box
+    # setups; set it whenever a proxy rewrites the host or scheme).
+    PUBLIC_API_URL: str = ""
 
     # ── Superuser / seed admin ───────────────────────────────────────────────
     # The bootstrap admin account created by the DB reset/seed flow. Set these

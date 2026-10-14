@@ -268,6 +268,10 @@ import app.routes.drift  # noqa: F401, E402
 # /{resource} catch-all in resources.py.
 import app.routes.mcp  # noqa: F401, E402
 
+# OAuth authorization server for remote MCP clients (claude.ai, ChatGPT).
+# Same reason for the early import: /oauth must beat the /{resource} catch-all.
+from app.routes.oauth import wellknown_router as _oauth_wellknown_router  # noqa: E402
+
 # Import unified audit-log route (GET /audit, GET /audit/{type}/{id}) BEFORE
 # resources so the /audit prefix routes register ahead of the generic
 # /{resource} catch-all in resources.py.  Auth-gated: owner/admin only.
@@ -612,6 +616,8 @@ def create_app() -> FastAPI:
     # Mount the shared api_router; Wave B auth routes are attached to it
     # before or after this call — order doesn't matter for inclusion.
     application.include_router(api_router, prefix="/api/v1")
+    # RFC 8414 / RFC 9728 discovery documents live at the origin root.
+    application.include_router(_oauth_wellknown_router)
 
     # ── EE loader ─────────────────────────────────────────────────────────────
     # Load the EE sub-package (licensing, billing, SSO, …) AFTER all core
