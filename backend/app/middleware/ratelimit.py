@@ -154,6 +154,7 @@ Response format (HTTP 429)
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import os
@@ -209,6 +210,8 @@ class _Config:
         "query_rpm",
         "flowrun_rpm",
         "chat_rpm",
+        "mcp_rpm",
+        "oauth_rpm",
         "burst_factor",
     )
 
@@ -245,6 +248,16 @@ class _Config:
         # Chat/AI endpoints are expensive (LLM cost per turn) — default 20 rpm,
         # burst 1.5× (30 burst ceiling).  Set NUBI_RATELIMIT_CHAT_RPM to override.
         self.chat_rpm = max(1, _int_env("NUBI_RATELIMIT_CHAT_RPM", default=20) // workers)
+        # MCP: every tool call from an external AI client (Claude, ChatGPT,
+        # Claude Code) lands on one endpoint, and a single question can fan out
+        # into a dozen calls — so the cap is per caller, not per org.
+        self.mcp_rpm = max(1, _int_env("NUBI_RATELIMIT_MCP_RPM", default=120) // workers)
+        # OAuth client endpoints (register/authorize/token/revoke) are anonymous,
+        # so they can only be keyed by IP — and hosted AI apps reach us from a
+        # few shared egress IPs on behalf of every user. Generous by default;
+        # the codes and tokens they handle are 256-bit, so this guards load,
+        # not guessing.
+        self.oauth_rpm = max(1, _int_env("NUBI_RATELIMIT_OAUTH_RPM", default=300) // workers)
         self.burst_factor = _float_env("NUBI_RATELIMIT_BURST_FACTOR", default=1.5)
         self._loaded = True
 
@@ -459,14 +472,25 @@ _SKIP_PREFIXES = (
 )
 
 
+_OAUTH_CLIENT_PATHS = frozenset(
+    f"/api/v1/oauth/{name}" for name in ("register", "authorize", "token", "revoke")
+)
+
+
 def _classify(path: str) -> tuple[str | None, int]:
     """Return (route_class, rpm) or (None, 0) to skip.
 
-    route_class values: 'auth', 'auth-session', 'query', 'flow-run', 'chat'
+    route_class values: 'auth', 'auth-session', 'query', 'flow-run', 'chat',
+    'mcp', 'oauth'
     """
     for pfx in _SKIP_PREFIXES:
         if path == pfx or path.startswith(pfx):
             return None, 0
+
+    if path.rstrip("/") == "/api/v1/mcp":
+        return "mcp", _cfg.mcp_rpm
+    if path in _OAUTH_CLIENT_PATHS:
+        return "oauth", _cfg.oauth_rpm
 
     # Chat/AI: the streaming chat editor and the AI agentic endpoints.
     # These trigger LLM calls (high cost) so they get their own conservative
@@ -666,6 +690,58 @@ def _extract_verified_identity(request: Request) -> tuple[str | None, bool]:
     return None, is_embed
 
 
+# Opaque credentials (API keys, OAuth access tokens) aren't JWTs, so
+# ``verify_token`` can't key them and they used to fall back to the client IP.
+# For an AI app hosted elsewhere that IP is the vendor's shared egress, which
+# put every user of that app in one bucket. Resolving the credential against
+# its store gives a per-user key that is as forge-proof as a verified JWT: an
+# invalid or revoked credential resolves to nothing and keeps the IP key.
+#
+# Results are cached briefly (by digest, never the raw credential) so the
+# limiter doesn't add a DB round-trip to every request. The cache only decides
+# which bucket a request counts against; authentication still resolves the
+# credential on every request, so a revocation takes effect immediately.
+_OPAQUE_KEY_TTL = 60.0
+_OPAQUE_KEY_MAX = 10_000
+_opaque_keys: dict[str, tuple[str, float]] = {}
+
+
+async def _opaque_identity(request: Request) -> str | None:
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        return None
+    token = auth_header[7:].strip()
+
+    from app.auth.api_keys import get_api_key_store, looks_like_api_key  # noqa: PLC0415
+    from app.auth.oauth import get_oauth_store, looks_like_oauth_access_token  # noqa: PLC0415
+
+    is_key, is_oauth = looks_like_api_key(token), looks_like_oauth_access_token(token)
+    if not (is_key or is_oauth):
+        return None
+
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    now = time.monotonic()
+    cached = _opaque_keys.get(digest)
+    if cached and cached[1] > now:
+        return cached[0]
+
+    try:
+        if is_key:
+            row = await get_api_key_store().resolve(token)
+        else:
+            row = await get_oauth_store().resolve_access(token)
+    except Exception:  # noqa: BLE001 — never fail a request over bucket choice
+        return None
+    if not row:
+        return None
+
+    key = f"user:{row['user_id']}"
+    if len(_opaque_keys) >= _OPAQUE_KEY_MAX:
+        _opaque_keys.clear()
+    _opaque_keys[digest] = (key, now + _OPAQUE_KEY_TTL)
+    return key
+
+
 def _extract_identity(request: Request) -> str:
     """Return the rate-limiting key — derived only from non-forgeable signals.
 
@@ -764,6 +840,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # falls through to normal rate-limiting — no exemption for forgeries.
         if is_verified_embed and _is_embed_exempt_path(path):
             return await call_next(request)
+
+        if token_key is None:
+            token_key = await _opaque_identity(request)
 
         # Identity: use verified org key when available; else IP fallback.
         if token_key is not None:

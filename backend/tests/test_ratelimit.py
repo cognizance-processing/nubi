@@ -43,6 +43,8 @@ def limited_app():
         "auth_session_rpm": getattr(cfg, "auth_session_rpm", 120),
         "query_rpm": getattr(cfg, "query_rpm", 120),
         "flowrun_rpm": getattr(cfg, "flowrun_rpm", 60),
+        "mcp_rpm": getattr(cfg, "mcp_rpm", 120),
+        "oauth_rpm": getattr(cfg, "oauth_rpm", 300),
         "burst_factor": getattr(cfg, "burst_factor", 1.5),
     }
     # Force a deterministic, tiny configuration: 3 auth req/min, no burst headroom.
@@ -52,8 +54,11 @@ def limited_app():
     cfg.auth_session_rpm = 3
     cfg.query_rpm = 3
     cfg.flowrun_rpm = 3
+    cfg.mcp_rpm = 3
+    cfg.oauth_rpm = 3
     cfg.burst_factor = 1.0
     ratelimit._buckets.clear()
+    ratelimit._opaque_keys.clear()
 
     app = FastAPI()
     ratelimit.register_ratelimit(app)
@@ -66,10 +71,19 @@ def limited_app():
     async def _refresh() -> dict[str, str]:
         return {"ok": "yes"}
 
+    @app.post("/api/v1/mcp")
+    async def _mcp() -> dict[str, str]:
+        return {"ok": "yes"}
+
+    @app.post("/api/v1/oauth/token")
+    async def _token() -> dict[str, str]:
+        return {"ok": "yes"}
+
     try:
         yield app
     finally:
         ratelimit._buckets.clear()
+        ratelimit._opaque_keys.clear()
         for k, v in saved.items():
             setattr(cfg, k, v)
 
@@ -712,3 +726,61 @@ def test_unauthenticated_traffic_is_ip_limited(limited_app_6b):
     # Must use an ip: key, not an org: key.
     ip_keys = [k for k in ratelimit._buckets if k[0].startswith("ip:")]
     assert ip_keys, "unauthenticated traffic must produce ip: bucket keys"
+
+
+# ── MCP + OAuth client endpoints ─────────────────────────────────────────────
+
+
+def test_mcp_and_oauth_endpoints_are_limited(limited_app):
+    assert ratelimit._classify("/api/v1/mcp") == ("mcp", 3)
+    assert ratelimit._classify("/api/v1/oauth/token")[0] == "oauth"
+    assert ratelimit._classify("/api/v1/oauth/register")[0] == "oauth"
+    # Signed-in SPA routes under /oauth are not the anonymous client surface.
+    assert ratelimit._classify("/api/v1/oauth/connections") == (None, 0)
+
+    client = TestClient(limited_app)
+    codes = [client.post("/api/v1/oauth/token").status_code for _ in range(4)]
+    assert codes == [200, 200, 200, 429]
+
+
+@pytest.fixture
+def two_users_one_ip():
+    """Two OAuth access tokens for different users, as a hosted AI app sends them."""
+    import asyncio
+
+    from app.auth.oauth import InMemoryOAuthStore, set_oauth_store_for_tests
+
+    store = InMemoryOAuthStore()
+    set_oauth_store_for_tests(store)
+    tokens = []
+    for user, org in (("u1", "o1"), ("u2", "o2")):
+        store.members.add((user, org))
+        store.clients["c"] = {"id": "c", "client_name": "x", "redirect_uris": []}
+        code_grant = asyncio.run(store.create_grant_and_code(
+            client_id="c", user_id=user, org_id=org, scope="mcp",
+            redirect_uri="https://x/cb", code_challenge="c" * 43))
+        grant = asyncio.run(store.redeem_code(code_grant))
+        access, _ = asyncio.run(store.issue_tokens(grant["grant_id"]))
+        tokens.append(access)
+    try:
+        yield store, tokens
+    finally:
+        set_oauth_store_for_tests(None)
+
+
+def test_oauth_tokens_get_per_user_buckets(limited_app, two_users_one_ip):
+    _, (alice, bob) = two_users_one_ip
+    client = TestClient(limited_app)
+    hdr = lambda t: {"Authorization": f"Bearer {t}"}  # noqa: E731
+    assert [client.post("/api/v1/mcp", headers=hdr(alice)).status_code for _ in range(4)] == [
+        200, 200, 200, 429]
+    # Same client IP, different user: not throttled by the first user's use.
+    assert client.post("/api/v1/mcp", headers=hdr(bob)).status_code == 200
+
+
+def test_invalid_opaque_token_falls_back_to_ip(limited_app, two_users_one_ip):
+    client = TestClient(limited_app)
+    for i in range(3):
+        assert client.post("/api/v1/mcp", headers={"Authorization": f"Bearer nubi_oat_fake{i}"}).status_code == 200
+    # Fresh random tokens don't mint fresh buckets: all three shared the IP's.
+    assert client.post("/api/v1/mcp", headers={"Authorization": "Bearer nubi_oat_fake9"}).status_code == 429
