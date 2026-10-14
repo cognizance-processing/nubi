@@ -58,6 +58,8 @@ import { decodeJwtPayload } from '../dashboards/embedLock.js'
 import { useCanWrite, useOrg } from '../contexts/OrgContext.jsx'
 import { useProject } from '../contexts/ProjectContext.jsx'
 import { useTheme } from '../contexts/ThemeContext.jsx'
+import { boardColorMode } from '../lib/boardTheme.js'
+import { colorModeClass } from '../dashboards/ColorModeScope.jsx'
 import Skeleton from '../components/ui/Skeleton.jsx'
 
 // ---------------------------------------------------------------------------
@@ -493,11 +495,15 @@ export default function DashboardViewPage({ edit = false }) {
   // wrapper) can paint the identical background, closing the seam. Only
   // meaningful for renderMode === 'spec' (legacy `html` boards have no
   // `spec.background` concept).
+  // The board's own mode wins over the app theme (lib/boardTheme.ts), so the
+  // page around it must paint in that mode too or the seam shows.
+  const boardMode = renderMode === 'spec' ? boardColorMode(spec) : null
   const themeAdaptOn = spec?.themeAdapt !== 'off'
+  const bgTheme = boardMode ?? pageTheme
   const pageBgStyle = useMemo(
-    () => (renderMode === 'spec' ? backgroundToCss(spec?.background, themeAdaptOn ? { theme: pageTheme } : undefined) : undefined),
+    () => (renderMode === 'spec' ? backgroundToCss(spec?.background, themeAdaptOn ? { theme: bgTheme } : undefined) : undefined),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [renderMode, JSON.stringify(spec?.background), themeAdaptOn, pageTheme],
+    [renderMode, JSON.stringify(spec?.background), themeAdaptOn, bgTheme],
   )
 
   // ── Draft vs live ─────────────────────────────────────────────────────────
@@ -920,7 +926,7 @@ export default function DashboardViewPage({ edit = false }) {
           Renders the SAVED spec, never the editor's in-memory draft — that's
           what makes "Live" an honest answer to "what do my viewers see?". */}
       <div
-        className={isEdit ? 'hidden' : 'flex-1 max-w-[110rem] w-full mx-auto px-4 sm:px-6 lg:px-8 py-6'}
+        className={isEdit ? 'hidden' : ['flex-1 max-w-[110rem] w-full mx-auto px-4 sm:px-6 lg:px-8 py-6', pageBgStyle && colorModeClass(boardMode)].filter(Boolean).join(' ')}
         style={!isEdit ? pageBgStyle : undefined}
       >
 

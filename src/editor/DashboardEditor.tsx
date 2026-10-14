@@ -109,6 +109,8 @@ import { VariableProvider } from '../dashboards/VariableStore.jsx'
 import SpecRenderer from '../dashboards/SpecRenderer.jsx'
 import { backgroundToCss, styleToCss } from '../dashboards/widgetHtml.js'
 import { useTheme } from '../contexts/ThemeContext.jsx'
+import { ThemeModeProvider, colorModeClass } from '../dashboards/ColorModeScope.jsx'
+import { PAGE_BG_HEX, backgroundHex, boardColorMode, modeForHex } from '../lib/boardTheme.js'
 import { WIDGET_STYLE_PRESETS, DASHBOARD_STYLE_PRESETS } from '../dashboards/stylePresets.js'
 import TabBar from '../dashboards/TabBar.jsx'
 import {
@@ -3184,11 +3186,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
 
   // Theme-adaptation ctx (see SpecRenderer.jsx / lib/themeColor.js) — the
   // canvas/preview must match what viewers actually see.
-  const { theme } = useTheme()
-  const adaptCtx = useMemo(
-    () => (spec.themeAdapt === 'off' ? undefined : { theme }),
-    [spec.themeAdapt, theme],
-  )
+  const { theme: appTheme } = useTheme()
 
   const isDraggingRef = useRef(false)
   const frozenLayoutsRef = useRef(null)
@@ -3667,6 +3665,14 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   const canvasBackground = (activeTab?.background && activeTab.background.type)
     ? activeTab.background
     : spec.background
+
+  // The canvas renders in the board's own mode, exactly as viewers will see it
+  // (lib/boardTheme.ts): a board designed dark stays dark while you edit it
+  // in a light app, and the reverse.
+  const canvasMode = boardColorMode({ colorMode: spec.colorMode, background: canvasBackground })
+  const canvasTheme = canvasMode ?? appTheme
+  const canvasBgHex = backgroundHex(canvasBackground) ?? PAGE_BG_HEX[canvasTheme]
+  const adaptCtx = spec.themeAdapt === 'off' ? undefined : { theme: canvasTheme, bgHex: canvasBgHex }
 
   // Per-device column counts (independent now — mobile is no longer locked to 1).
   //   lg = cols (canonical), md = cols_md (fallback cols), sm = cols_sm (fallback 1).
@@ -4770,9 +4776,10 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
 
           {/* Center: grid canvas — the ONLY scrolling region in edit mode. Doubles
               as the zoom/pan viewport (pinch to zoom, one-finger drag to pan). */}
+          <ThemeModeProvider mode={canvasMode}>
           <main
             ref={mainRef}
-            className="flex-1 min-w-0 overflow-auto p-3 sm:p-4 bg-bg"
+            className={['flex-1 min-w-0 overflow-auto p-3 sm:p-4 bg-bg', colorModeClass(canvasMode)].filter(Boolean).join(' ')}
             data-testid="editor-canvas"
             style={{
               ...backgroundToCss(canvasBackground, adaptCtx),
@@ -4962,18 +4969,26 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                     const isHovered = hoveredId === widget.id
                     const reorder = gridMode === 'reorder'
                     const WidgetIcon = WIDGET_ICONS[widget.type]
+                    const cardStyle = styleToCss(widget.style, widget.style?.themeAdapt === false ? undefined : adaptCtx)
+                    // A card with its own opaque background renders in the mode
+                    // that background calls for, as it does for viewers.
+                    const cardBgHex = cardStyle ? backgroundHex(cardStyle.backgroundColor ?? cardStyle.background, canvasBgHex) : null
+                    const cardMode = modeForHex(cardBgHex)
+                    const cardScope = cardMode && cardMode !== canvasTheme ? cardMode : null
                     return (
-                      // Note: NO overflow-hidden here — the hover toolbar uses position:absolute
-                      // and must not be clipped. Inner areas handle their own overflow.
+                      <ThemeModeProvider mode={cardScope}>
+                      {/* Note: NO overflow-hidden here — the hover toolbar uses position:absolute
+                          and must not be clipped. Inner areas handle their own overflow. */}
                       <div
                         data-testid={`widget-${widget.id}`}
                         data-widget-export-root={widget.id}
                         onClick={(e) => { e.stopPropagation(); setSelectedId(widget.id); setRightCollapsed(false); setRightPanel(p => p === 'chat' ? p : 'config'); setMobileSheet('config') }}
                         onMouseEnter={() => setHoveredId(widget.id)}
                         onMouseLeave={() => setHoveredId(null)}
-                        style={styleToCss(widget.style, widget.style?.themeAdapt === false ? undefined : adaptCtx)}
+                        style={cardStyle}
                         className={[
                           'h-full w-full rounded-xl border-2 bg-surface transition-all duration-150 relative flex flex-col',
+                          colorModeClass(cardScope),
                           isSelected
                             ? 'border-primary shadow-lg shadow-primary/10'
                             : 'border-border hover:border-primary/30 hover:shadow-sm',
@@ -5043,6 +5058,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                           <WidgetPreview widget={widget} />
                         </div>
                       </div>
+                      </ThemeModeProvider>
                     )
                   }}
                 />
@@ -5051,6 +5067,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
               </div>
             )}
           </main>
+          </ThemeModeProvider>
 
           {/* ── Right sidebar ──
               Desktop (lg+): always-visible 320px panel.

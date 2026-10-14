@@ -56,6 +56,8 @@ import { useAutoRefresh } from './useAutoRefresh.js'
 import { runArrowQueryById, prefetchDemoData } from '../lib/wasmRuntime.js'
 import { backgroundToCss, styleToCss } from './widgetHtml.js'
 import { useTheme } from '../contexts/ThemeContext.jsx'
+import ColorModeScope from './ColorModeScope.jsx'
+import { PAGE_BG_HEX, backgroundHex, boardColorMode, modeForHex } from '../lib/boardTheme.js'
 import { findWidgetStylePreset } from './stylePresets.js'
 import { buildResponsiveLayouts, isHiddenAt } from './responsiveLayout.js'
 import { useProviderData } from './useProviderData.js'
@@ -445,9 +447,31 @@ function SpecRendererBody({
   // omitting it (or 'auto') keeps the default on — the no-ctx / adapted
   // outputs are proven identical whenever the viewer's theme already matches
   // an authored light chrome, so this is safe to default on.
-  const { theme } = useTheme()
+  //
+  // The board renders in the mode its own background calls for (or the one
+  // the author pinned with spec.colorMode); only a board that left its
+  // background to the theme follows the viewer's app theme. See
+  // lib/boardTheme.ts — this is what keeps a board designed dark readable for
+  // a viewer in light mode, and vice versa.
+  const { theme: appTheme } = useTheme()
+  const boardMode = useMemo(
+    () => boardColorMode(spec),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [spec.colorMode, JSON.stringify(spec.background)],
+  )
+  const theme = boardMode ?? appTheme
+  // The opaque color behind every widget — for contrast checks on cards that
+  // are transparent or see-through.
+  const boardBgHex = useMemo(
+    () => backgroundHex(spec.background) ?? PAGE_BG_HEX[theme],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(spec.background), theme],
+  )
   const themeAdaptOn = spec.themeAdapt !== 'off'
-  const adaptCtx = useMemo(() => (themeAdaptOn ? { theme } : undefined), [themeAdaptOn, theme])
+  const adaptCtx = useMemo(
+    () => (themeAdaptOn ? { theme, bgHex: boardBgHex } : undefined),
+    [themeAdaptOn, theme, boardBgHex],
+  )
 
   // Partition widgets by effective placement (SHARED CONTRACT):
   //   'drawer' → slide-over panel, grouped by drawer_group ('filters' or 'dg_*')
@@ -665,8 +689,15 @@ function SpecRendererBody({
     )
     const isFilter = widget.type === 'filter'
     const providerTable = widgetProviderTableMap[widget.id] ?? null
+    // A card with its own opaque background (a dark tile on a light board)
+    // renders in the mode that background calls for, like the board does.
+    const cardBgHex = hasCustomBg
+      ? backgroundHex(customStyle.backgroundColor ?? customStyle.background, boardBgHex)
+      : null
+    const cardMode = modeForHex(cardBgHex)
     return (
-      <div
+      <ColorModeScope
+        mode={cardMode && cardMode !== theme ? cardMode : null}
         className={[
           'w-full h-full rounded-xl transition-shadow duration-200',
           isFilter ? 'overflow-visible' : 'overflow-hidden',
@@ -675,14 +706,15 @@ function SpecRendererBody({
         style={customStyle}
       >
         <WidgetComponent widget={widget} onOpenDrawer={setOpenDrawer} editMode={editMode} providerTable={providerTable} />
-      </div>
+      </ColorModeScope>
     )
-  }, [visibleWidgetsById, editMode, setOpenDrawer, widgetProviderTableMap, dashboardPresetStyle, adaptCtx])
+  }, [visibleWidgetsById, editMode, setOpenDrawer, widgetProviderTableMap, dashboardPresetStyle, adaptCtx, boardBgHex, theme])
 
   return (
     <RefreshContext.Provider value={refreshEpoch}>
     <CrossFilterProviderWrapper onCrossFilter={onCrossFilter} onTabChange={setTab}>
-    <div
+    <ColorModeScope
+      mode={boardMode}
       className="w-full"
       data-dashboard-root
       ref={containerRef}
@@ -802,7 +834,7 @@ function SpecRendererBody({
           renderItem={renderItem}
         />
       )}
-    </div>
+    </ColorModeScope>
     <SlideOver
       open={openDrawer != null}
       title={drawerTitle}

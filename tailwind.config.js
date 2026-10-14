@@ -40,7 +40,9 @@
 
 /** @type {import('tailwindcss').Config} */
 export default {
-  darkMode: 'class',
+  // `dark:` utilities follow the nearest light/dark scope, not just <html>:
+  // a light board inside the dark app must not pick up dark variants.
+  darkMode: ['variant', '&:is(.dark *):not(.nubi-light *)'],
 
   content: [
     './index.html',

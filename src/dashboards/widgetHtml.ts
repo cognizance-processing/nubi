@@ -27,6 +27,16 @@
 
 import { sanitizeDashboardHtml } from './sanitize.js'
 import { adaptBackgroundColor, resolveEffectiveBgHex, ensureReadable } from '../lib/themeColor.js'
+import { backgroundHex, readableOn, safeThemeValue, themeProp, withDerivedTokens } from '../lib/boardTheme.js'
+
+/**
+ * Rendering context for style helpers.
+ *   theme — the mode this surface renders in (see lib/boardTheme.ts).
+ *   bgHex — the opaque color behind this surface (the board's background for
+ *           a widget), used for contrast checks when the surface itself is
+ *           transparent or translucent.
+ */
+export type StyleCtx = { theme?: 'light' | 'dark'; bgHex?: string | null }
 
 // ---------------------------------------------------------------------------
 // Background descriptor → inline style
@@ -43,7 +53,7 @@ export function backgroundToCss(bg: {
   angle?: number
   imageUrl?: string
   css?: string
-} | undefined, ctx?: { theme?: 'light' | 'dark' }): Record<string, any> | undefined {
+} | undefined, ctx?: StyleCtx): Record<string, any> | undefined {
   if (!bg || typeof bg !== 'object') return undefined
   switch (bg.type) {
     case 'transparent':
@@ -69,7 +79,7 @@ export function backgroundToCss(bg: {
           }
         : undefined
     case 'css':
-      return parseCssString(bg.css)
+      return withDerivedTokens(parseCssString(bg.css))
     default:
       return undefined
   }
@@ -112,7 +122,7 @@ const STYLE_WHITELIST = new Set([
  *
  * @param ctx omit to keep pre-adaptation behavior
  */
-export function styleToCss(style: Record<string, any>, ctx?: { theme?: 'light' | 'dark' }): Record<string, any> | undefined {
+export function styleToCss(style: Record<string, any>, ctx?: StyleCtx): Record<string, any> | undefined {
   if (!style || typeof style !== 'object') return undefined
   const out: Record<string, any> = {}
 
@@ -137,7 +147,17 @@ export function styleToCss(style: Record<string, any>, ctx?: { theme?: 'light' |
     out.backgroundColor = adaptBackgroundColor(out.backgroundColor, ctx.theme).css
   }
 
+  // The author's palette (see lib/boardTheme.ts) — so table stripes, headers
+  // and inputs inside the card use the card's colors, not the app's.
+  for (const [k, v] of Object.entries(style)) {
+    if (!k.startsWith('--')) continue
+    const prop = themeProp(k)
+    const value = safeThemeValue(v)
+    if (prop && value) out[prop] = value
+  }
+
   if (style.css) Object.assign(out, parseCssString(style.css))
+  withDerivedTokens(out)
 
   // Re-check the author's text color against whichever background actually
   // renders (adapted or not) — a fixed color that was fine on the ORIGINAL
@@ -146,10 +166,29 @@ export function styleToCss(style: Record<string, any>, ctx?: { theme?: 'light' |
   // theme). See src/lib/contrast.js.
   if (ctx && typeof out.color === 'string' && out.color) {
     const effectiveBgHex = resolveEffectiveBgHex(out, ctx.theme)
-    if (effectiveBgHex) out.color = ensureReadable(out.color, effectiveBgHex)
+    if (effectiveBgHex && !isTranslucent(out)) {
+      out.color = ensureReadable(out.color, effectiveBgHex)
+    } else {
+      // Transparent or see-through card: the reader sees the board through
+      // it, so measure against what is actually behind the text.
+      const seen = backgroundHex(out.backgroundColor ?? out.background, ctx.bgHex ?? null) ?? ctx.bgHex ?? null
+      out.color = readableOn(out.color, seen)
+    }
   }
 
   return Object.keys(out).length ? out : undefined
+}
+
+/** True when the card's own background lets the board show through. */
+function isTranslucent(out: Record<string, any>): boolean {
+  const bg = out.backgroundColor ?? out.background
+  if (typeof bg !== 'string') return false
+  const v = bg.trim().toLowerCase()
+  if (v === 'transparent') return true
+  const m = v.match(/^rgba?\([^)]*[,/]\s*([\d.]+)(%?)\s*\)$/)
+  if (!m) return false
+  const a = parseFloat(m[1]) / (m[2] ? 100 : 1)
+  return a < 1
 }
 
 /**
@@ -171,6 +210,14 @@ export function parseCssString(css) {
     if (!rawProp || !value) continue
     const lowered = value.toLowerCase()
     if (lowered.includes('javascript:') || lowered.includes('expression(')) continue
+    if (rawProp.startsWith('--')) {
+      // Custom properties keep their name (camel-casing would mangle them);
+      // only the board-theme palette is accepted.
+      const themeName = themeProp(rawProp)
+      const safe = safeThemeValue(value)
+      if (themeName && safe) out[themeName] = safe
+      continue
+    }
     const prop = rawProp.replace(/-([a-z])/g, (_, c) => c.toUpperCase())
     if (STYLE_WHITELIST.has(prop)) out[prop] = value
   }

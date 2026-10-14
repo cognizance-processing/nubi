@@ -25,7 +25,16 @@
   }
 
   /* ── LIGHT mode (default) ────────────────────────────────────────────────── */
-  :root {
+  /* `.nubi-light` re-applies these inside a dark page: a board (or widget
+     card) designed on a light background renders light whatever the app
+     theme is — see src/lib/boardTheme.ts. `.dark` does the reverse. */
+  /* A nested scope must also reset inherited ink, or plain text keeps the
+     page's color instead of the scope's. */
+  .nubi-light, .dark:not(html) {
+    color: var(--text);
+  }
+
+  :root, .nubi-light {
     --bg:         #f6f8fb;
     --surface:    #ffffff;
     --surface-2:  #eef2f7;
