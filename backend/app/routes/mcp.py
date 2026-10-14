@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -351,6 +352,7 @@ async def mcp_endpoint(
             }
             for t in schemas
         ]
+        tools.append(_API_REQUEST_TOOL)
         return _jsonrpc_result(rpc_id, {"tools": tools})
 
     # ── tools/call ────────────────────────────────────────────────────────────
@@ -362,6 +364,23 @@ async def mcp_endpoint(
         # SECURITY: pass the identity's ACTUAL scope, never hard-code write:*
         # which would escalate a read-only or embed token to writer level.
         org_id = await _resolve_org_id(str(user["id"]), repo, request)
+
+        if tool_name == _API_REQUEST_TOOL["name"]:
+            try:
+                result = await _api_request(request, identity, user, org_id, arguments)
+            except _ApiRequestRefused as exc:
+                return _jsonrpc_result(
+                    rpc_id,
+                    {"content": [{"type": "text", "text": str(exc)}], "isError": True},
+                )
+            return _jsonrpc_result(
+                rpc_id,
+                {
+                    "content": [{"type": "text", "text": _encode_tool_result(result)}],
+                    "isError": result["status"] >= 400,
+                },
+            )
+
         claims: dict[str, Any] = {
             "kind": identity.kind,
             "sub": str(user.get("id", "")),
@@ -391,6 +410,141 @@ async def mcp_endpoint(
 
     # ── Unknown method ────────────────────────────────────────────────────────
     return _jsonrpc_error(rpc_id, -32601, "Method not found")
+
+
+# ---------------------------------------------------------------------------
+# api_request — the REST API, as the caller
+# ---------------------------------------------------------------------------
+#
+# The curated tools cover the common jobs, but an MCP client acting for a user
+# should be able to do whatever that user can do in the app. Rather than grow
+# a tool per endpoint, this dispatches in-process to the REST API with the
+# caller's OWN credential and org, so every route's auth, role checks, RLS and
+# rate limits apply unchanged — the client can never do more than the user.
+#
+# A deny-list keeps credential- and membership-shaped endpoints out of reach:
+# an MCP client is a delegated agent that may be steered by content it reads,
+# so it must not be able to mint long-lived credentials, read secret material,
+# or change who has access, even though the human could do those in the UI.
+
+_API_PREFIX = "/api/v1"
+
+_API_DENY_ANY = re.compile(
+    r"^/(auth|admin|secrets|security|mcp)(/|$)"
+    r"|^/bridges/[^/]+/tokens(/|$)"
+    r"|^/embed/embed-token$"
+)
+_API_DENY_WRITE = re.compile(
+    r"^/orgs/[^/]+/(members|invites)(/|$)"
+    r"|^/orgs/invites/"
+    r"|^/access-grants(/|$)"
+)
+_API_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+_API_ROW_LIMIT = 1000
+
+_API_REQUEST_TOOL: dict[str, Any] = {
+    "name": "api_request",
+    "description": (
+        "Call any Nubi REST endpoint as the signed-in user, in their current "
+        "org, with exactly their permissions. `path` is relative to /api/v1 "
+        "(e.g. '/boards', '/boards/{id}', '/query', '/connectors'). Arrow "
+        "query results are returned as JSON rows (first 1000). Auth, secrets, "
+        "admin, credential-minting and membership changes are not reachable."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "method": {"type": "string", "enum": sorted(_API_METHODS)},
+            "path": {"type": "string", "description": "Path under /api/v1, starting with '/'."},
+            "params": {"type": "object", "description": "Query-string parameters."},
+            "body": {"description": "JSON request body."},
+        },
+        "required": ["method", "path"],
+    },
+}
+
+
+class _ApiRequestRefused(Exception):
+    pass
+
+
+def _normalise_api_path(raw: Any) -> str:
+    if not isinstance(raw, str) or not raw.startswith("/"):
+        raise _ApiRequestRefused("path must be a string starting with '/'.")
+    if "?" in raw or "#" in raw or "\\" in raw or "%" in raw:
+        raise _ApiRequestRefused("path must not contain '?', '#', '\\' or '%'; pass params separately.")
+    if raw.startswith(_API_PREFIX + "/") or raw == _API_PREFIX:
+        raw = raw[len(_API_PREFIX):] or "/"
+    segments = raw.split("/")
+    if any(s in (".", "..") for s in segments):
+        raise _ApiRequestRefused("path must not contain '.' or '..' segments.")
+    return "/" + "/".join(s for s in segments if s)
+
+
+async def _api_request(
+    request: Request,
+    identity: VerifiedIdentity,
+    user: dict[str, Any],
+    org_id: str,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    import httpx  # noqa: PLC0415
+
+    if identity.kind != "access":
+        raise _ApiRequestRefused("api_request is only available to user credentials.")
+    method = str(arguments.get("method", "")).upper()
+    if method not in _API_METHODS:
+        raise _ApiRequestRefused(f"method must be one of {sorted(_API_METHODS)}.")
+    path = _normalise_api_path(arguments.get("path"))
+    if _API_DENY_ANY.search(path) or (method != "GET" and _API_DENY_WRITE.search(path)):
+        raise _ApiRequestRefused(f"{method} {path} is not reachable over MCP.")
+
+    headers = {
+        "Authorization": request.headers.get("authorization", ""),
+        "X-Org-Id": str(org_id),
+        "User-Agent": "nubi-mcp/api_request",
+    }
+    kwargs: dict[str, Any] = {"headers": headers}
+    params = arguments.get("params")
+    if isinstance(params, dict):
+        kwargs["params"] = {str(k): v for k, v in params.items() if v is not None}
+    if "body" in arguments and method != "GET":
+        kwargs["json"] = arguments["body"]
+
+    transport = httpx.ASGITransport(app=request.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://nubi-mcp.internal") as client:
+        resp = await client.request(method, _API_PREFIX + path, **kwargs)
+
+    if method != "GET":
+        await _record_audit(
+            org_id=str(org_id),
+            actor_user_id=str(user["id"]),
+            actor_kind="access",
+            action="mcp.api_request",
+            resource_type="api",
+            resource_id=path,
+            summary={"method": method, "status": resp.status_code},
+        )
+
+    ctype = resp.headers.get("content-type", "")
+    out: dict[str, Any] = {"status": resp.status_code}
+    if "arrow" in ctype:
+        import pyarrow as pa  # noqa: PLC0415
+
+        table = pa.ipc.open_stream(resp.content).read_all()
+        out["row_count"] = table.num_rows
+        out["columns"] = table.column_names
+        out["rows"] = json.loads(
+            json.dumps(table.slice(0, _API_ROW_LIMIT).to_pylist(), default=str)
+        )
+        out["truncated"] = table.num_rows > _API_ROW_LIMIT
+    elif "json" in ctype:
+        out["body"] = resp.json()
+    elif ctype.startswith("text/") or not resp.content:
+        out["body"] = resp.text
+    else:
+        out["body"] = f"<{len(resp.content)} bytes of {ctype or 'binary'}>"
+    return out
 
 
 # ---------------------------------------------------------------------------
