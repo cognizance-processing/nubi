@@ -1373,7 +1373,12 @@ function StylePresetChips({ presets, activeKey, onSelect }) {
 // Whitespace-insensitive compare so a preset chip still lights up when a spec
 // carries an older/hand-edited variant of the same values (e.g. boxShadow with
 // different comma spacing). `color`/`padding` are additive and ignored here.
-const normStyleVal = (v) => (typeof v === 'string' ? v.replace(/\s+/g, '') : v)
+// A `solid` descriptor and the bare color string it renders to are the same
+// background, so a preset stays lit whichever shape the widget stored.
+const normStyleVal = (v) => {
+  if (v && typeof v === 'object' && v.type === 'solid') v = v.color
+  return typeof v === 'string' ? v.replace(/\s+/g, '') : v
+}
 const PRESET_MATCH_KEYS = ['background', 'border', 'borderRadius', 'boxShadow', 'backdropFilter', 'WebkitBackdropFilter']
 function matchWidgetPresetKey(style) {
   if (!style || typeof style !== 'object') return 'default'
@@ -1382,6 +1387,24 @@ function matchWidgetPresetKey(style) {
     if (PRESET_MATCH_KEYS.every(k => normStyleVal(style[k]) === normStyleVal(p.style[k]))) return p.key
   }
   return 'default'
+}
+
+/**
+ * A widget background is stored in either of two shapes, and both render: a
+ * descriptor object (what BackgroundEditor writes) or a plain CSS color string
+ * (what every WIDGET_STYLE_PRESET writes, and what the API and MCP tools
+ * accept). styleToCss() handles both; the editor only ever understood the
+ * object, so a preset-styled or API-authored card showed "none" and its real
+ * background was invisible — and unreachable — in the UI.
+ *
+ * Coercing the string to a `solid` descriptor is render-identical: both paths
+ * end at `background: adaptBackgroundColor(color)`. Nothing about the painted
+ * card changes; it just becomes editable.
+ */
+function widgetBgDescriptor(bg) {
+  if (bg && typeof bg === 'object') return bg.type ? bg : undefined
+  if (typeof bg === 'string' && bg.trim()) return { type: 'solid', color: bg.trim() }
+  return undefined
 }
 
 function WidgetAppearanceSection({ widget, onChange }) {
@@ -1418,7 +1441,7 @@ function WidgetAppearanceSection({ widget, onChange }) {
         </div>
         <div className="space-y-1">
           <SectionLabel>Card background</SectionLabel>
-          <BackgroundEditor value={typeof style.background === 'object' ? style.background : undefined} onChange={setBg} />
+          <BackgroundEditor value={widgetBgDescriptor(style.background)} onChange={setBg} />
         </div>
         <div className="space-y-2">
           <SectionLabel>Text colors</SectionLabel>

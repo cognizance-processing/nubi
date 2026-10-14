@@ -11,8 +11,12 @@
  *       maxSteps?: number,     // default 10
  *       separator?: 'arrow' | 'slash' | 'dot',   // default 'arrow'
  *       chipColor?: string,    // default var(--primary)
+ *       chipTextColor?: string, // chip text, both variants (default: fg / chipColor)
  *       chipVariant?: 'filled' | 'outlined',     // default 'filled'
+ *       size?: 'sm' | 'md',    // default 'sm'
+ *       contextColumns?: string[],  // see "Context chips" below
  *     },
+ *     query_id?, params?,      // backs the context chips
  *     pos
  *   }
  *
@@ -29,6 +33,13 @@
  * platform addresses it, and it works for a variable set by a chart click or
  * a table click-to-filter just as well as one set by a dropdown.
  *
+ * Context chips: a drill path usually starts from a scope the reader should
+ * see before they drill at all ("We are currently in week 3 › South Africa").
+ * When the widget has a query, each of props.contextColumns is read off its
+ * first row and shown as a fixed chip between Home and the drill steps. They
+ * re-query with the widget's params, so a scope that is itself a variable
+ * stays current. A label of '' for a tracked variable shows the bare value.
+ *
  * The trail is deliberately in-memory: a drill path describes a viewing
  * session, so a reload starts at Home rather than resuming a stale path whose
  * underlying data may have moved on.
@@ -36,7 +47,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronRight, Home } from 'lucide-react'
-import { useSetVariable, useVariableValues } from '../VariableStore.jsx'
+import { useResolvedParams, useSetVariable, useVariableValues } from '../VariableStore.jsx'
+import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { chipLabel, isEmptyValue } from '../legacyWidgetText.js'
 import { resolveTextColors } from '../textColors.js'
 import EmptyState from '../../components/ui/EmptyState.jsx'
@@ -63,8 +75,43 @@ export default function BreadcrumbWidget({ widget, editMode = false }) {
   // `muted` text role, so they follow the card's Appearance settings.
   const ink = resolveTextColors(widget.style)
   const chipColor = props.chipColor || ink.title || 'var(--primary)'
+  // An explicit chip text colour holds for both variants (a pale chip colour
+  // needs dark text either way); unset, each variant keeps its own default.
+  const chipTextColor = props.chipTextColor || null
   const filled = props.chipVariant !== 'outlined'
   const separator = SEPARATORS[props.separator] ?? null
+  const chipSize = props.size === 'md'
+    ? 'h-8 px-3.5 text-[13px] gap-1.5'
+    : 'h-7 px-2.5 text-[11px] gap-1'
+
+  const contextKey = JSON.stringify(props.contextColumns ?? null)
+  const contextColumns = useMemo(() => {
+    const raw = JSON.parse(contextKey)
+    return Array.isArray(raw) ? raw.filter(Boolean) : []
+  }, [contextKey])
+  const resolvedParams = useResolvedParams(widget.params)
+  const [contextRow, setContextRow] = useState(null)
+  useEffect(() => {
+    if (!widget.query_id || contextColumns.length === 0) {
+      setContextRow(null)
+      return
+    }
+    let cancelled = false
+    const named = Object.keys(resolvedParams).length > 0 ? { namedParams: resolvedParams } : undefined
+    runArrowQueryById(widget.query_id, named)
+      .then(({ table }) => {
+        if (cancelled || !table || table.numRows === 0) return
+        const row = {}
+        for (const col of contextColumns) row[col] = table.getChild(col)?.get(0) ?? null
+        setContextRow(row)
+      })
+      .catch(() => { if (!cancelled) setContextRow(null) })
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [widget.query_id, contextKey, JSON.stringify(resolvedParams)])
+  const contextChips = contextRow
+    ? contextColumns.map(col => contextRow[col]).filter(v => !isEmptyValue(v)).map(v => String(v))
+    : []
 
   const variables = useVariableValues()
   const setVariable = useSetVariable()
@@ -101,7 +148,7 @@ export default function BreadcrumbWidget({ widget, editMode = false }) {
       const value = chipLabel(after)
       const prefix = labels[name] ?? name
       setSteps(cur => {
-        const next = [...cur, { name, label: `${prefix}: ${value}`, snapshot }]
+        const next = [...cur, { name, label: prefix === '' ? value : `${prefix}: ${value}`, snapshot }]
         return next.length > maxSteps ? next.slice(-maxSteps) : next
       })
       break
@@ -144,9 +191,13 @@ export default function BreadcrumbWidget({ widget, editMode = false }) {
 
   const chipStyle = (active) => (
     active === filled
-      ? { background: chipColor, color: 'var(--primary-fg)', borderColor: chipColor }
-      : { background: 'transparent', color: chipColor, borderColor: chipColor }
+      ? { background: chipColor, color: chipTextColor ?? 'var(--primary-fg)', borderColor: chipColor }
+      : { background: 'transparent', color: chipTextColor ?? chipColor, borderColor: chipColor }
   )
+
+  const sep = separator
+    ? <span className="text-muted text-xs px-1" style={ink.muted ? { color: ink.muted } : undefined}>{separator}</span>
+    : <ChevronRight size={props.size === 'md' ? 16 : 13} className="text-muted mx-1" style={ink.muted ? { color: ink.muted } : undefined} aria-hidden="true" />
 
   return (
     <div
@@ -156,24 +207,35 @@ export default function BreadcrumbWidget({ widget, editMode = false }) {
       <button
         type="button"
         onClick={goHome}
-        style={chipStyle(steps.length === 0)}
-        className="shrink-0 inline-flex items-center gap-1 h-7 px-2.5 rounded-full border text-[11px] font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50"
+        style={chipStyle(steps.length === 0 && contextChips.length === 0)}
+        className={`shrink-0 inline-flex items-center rounded-full border font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50 ${chipSize}`}
       >
-        <Home size={12} />
+        <Home size={props.size === 'md' ? 16 : 12} />
         {homeLabel}
       </button>
 
+      {contextChips.map((label, i) => (
+        <div key={`ctx-${i}`} className="shrink-0 flex items-center gap-1.5">
+          {sep}
+          <span
+            title={label}
+            style={chipStyle(steps.length === 0 && i === contextChips.length - 1)}
+            className={`inline-flex items-center max-w-[18rem] truncate rounded-full border font-medium ${chipSize}`}
+          >
+            {label}
+          </span>
+        </div>
+      ))}
+
       {steps.map((step, i) => (
         <div key={`${step.name}-${i}`} className="shrink-0 flex items-center gap-1.5">
-          {separator
-            ? <span className="text-muted text-xs" style={ink.muted ? { color: ink.muted } : undefined}>{separator}</span>
-            : <ChevronRight size={13} className="text-muted" style={ink.muted ? { color: ink.muted } : undefined} aria-hidden="true" />}
+          {sep}
           <button
             type="button"
             onClick={() => goToStep(i)}
             title={step.label}
             style={chipStyle(i === steps.length - 1)}
-            className="inline-flex items-center h-7 px-2.5 max-w-[14rem] truncate rounded-full border text-[11px] font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50"
+            className={`inline-flex items-center max-w-[14rem] truncate rounded-full border font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50 ${chipSize}`}
           >
             {step.label}
           </button>

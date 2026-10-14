@@ -118,6 +118,29 @@ describe('buildChartOption — every chart type returns a valid option', () => {
     expect(explicit.heatColors).toBeUndefined()
   })
 
+  test('heatmap heatColorBy colours cells by column and still has a visualMap', () => {
+    // ECharts refuses a heatmap series with no visualMap ("Heatmap must use
+    // with visualMap"), so the categorical mode must keep one — hidden and
+    // piecewise over the x index — rather than dropping it.
+    const rows = [
+      { week: 'Week 1', day: 'Mon', n: 40 }, { week: 'Week 1', day: 'Tue', n: 44 },
+      { week: 'Week 2', day: 'Mon', n: 371 }, { week: 'Week 2', day: 'Tue', n: 38 },
+    ]
+    const opt = buildChartOption({
+      type: 'heatmap', table: rows, encoding: { x: 'day', y: 'week', value: 'n' },
+      config: { heatColorBy: 'x', palette: ['#7EB3E3', '#4FBFCB'], yInverse: true, xLabelRotate: 40 },
+    })
+    expect(opt.visualMap.type).toBe('piecewise')
+    expect(opt.visualMap.show).toBe(false)
+    expect(opt.visualMap.dimension).toBe(0)
+    expect(opt.visualMap.pieces).toEqual([{ value: 0, color: '#7EB3E3' }, { value: 1, color: '#4FBFCB' }])
+    expect(opt.yAxis.inverse).toBe(true)
+    expect(opt.xAxis.axisLabel.rotate).toBe(40)
+    // Interpreted keys stay out of the raw ECharts passthrough.
+    expect(opt.heatColorBy).toBeUndefined()
+    expect(opt.yInverse).toBeUndefined()
+  })
+
   test('an authored y-axis label gets the same clearance as a derived one', () => {
     // The widened nameGap used to apply only when the axis name came from the
     // column, so an authored label sat on top of tick labels like "3,500,000".

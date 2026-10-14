@@ -34,6 +34,8 @@
  *                              // inline magnitude bar alongside the text
  *   barMax?  : number          // explicit scale for `bar`; default is the
  *                              // column's own max(abs(value)) across rows
+ *   barColor?: string          // bar fill colour (default: primary)
+ *   barStyle?: 'inline'|'fill' // 'fill' = full-cell meter, value centred
  * }
  *
  * ── Exports ──────────────────────────────────────────────────────────────────

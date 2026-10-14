@@ -20,7 +20,7 @@
  * - Touch-friendly: ECharts enables touch by default on canvas renderers.
  */
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import * as echarts from 'echarts'
 import { attachECharts } from '../lib/maps.js'
 
@@ -37,6 +37,12 @@ export default function EChart({ option, height = 320, theme, onEvents }: {
   onEvents?: Record<string, (params: any, chart: echarts.ECharts) => void>
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
+  // ECharts throws for options its own validators reject (a sankey whose
+  // source/target columns form a cycle, for example). That happens inside an
+  // effect, where an uncaught throw unmounts the whole React tree — one
+  // awkwardly-shaped result set would take the entire page down. Catch it and
+  // render the reason in place of the chart instead.
+  const [renderError, setRenderError] = useState<string | null>(null)
   const chartRef = useRef<echarts.ECharts | null>(null)    // echarts instance
   const eventsRef = useRef<Record<string, (params: any, chart: echarts.ECharts) => void> | null>(null)   // track bound events for cleanup
 
@@ -88,17 +94,32 @@ export default function EChart({ option, height = 320, theme, onEvents }: {
     if (!chart || chart.isDisposed()) return
     // notMerge: false  → ECharts merges intelligently (faster for live updates)
     // lazyUpdate: false → render immediately
-    chart.setOption(option, { notMerge: false, lazyUpdate: false })
+    try {
+      chart.setOption(option, { notMerge: false, lazyUpdate: false })
+      setRenderError(null)
+    } catch (err) {
+      // Clear the half-drawn canvas so the message isn't overlaid on a stale chart.
+      try { chart.clear() } catch { /* disposed mid-update */ }
+      setRenderError(err instanceof Error ? err.message : String(err))
+    }
   }, [option])
 
   return (
     <div
-      ref={containerRef}
       style={{
         width: '100%',
         height: typeof height === 'number' ? `${height}px` : height,
         display: 'block',
+        position: 'relative',
       }}
-    />
+    >
+      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+      {renderError && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 px-6 text-center bg-bg/90">
+          <p className="text-xs font-medium text-fg">This data can't be drawn as this chart.</p>
+          <p className="text-[11px] text-muted">{renderError}</p>
+        </div>
+      )}
+    </div>
   )
 }

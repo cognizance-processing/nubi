@@ -1177,19 +1177,36 @@ function buildHeatmap(table, e, config, theme, locale) {
     ? config.heatColors
     : ['#0f1117', heatPalette[4] || heatPalette[1] || '#3b82f6', heatPalette[0] || '#6366f1']
 
+  // `config.heatColorBy: 'x' | 'y'` paints each cell by its column (or row)
+  // category from the palette instead of by value — a coloured matrix, where
+  // the numbers are read from the labels rather than from a colour ramp.
+  const colorBy = config.heatColorBy === 'x' || config.heatColorBy === 'y' ? config.heatColorBy : null
+  // ECharts refuses a heatmap without a visualMap, so the categorical mode is
+  // still a visualMap — a hidden piecewise one over the x (or y) index.
+  const colorCats = colorBy === 'x' ? xCats : yCats
+  const categoricalMap = colorBy ? {
+    type: 'piecewise', show: false, dimension: colorBy === 'x' ? 0 : 1,
+    pieces: colorCats.map((_, i) => ({ value: i, color: heatPalette[i % heatPalette.length] })),
+  } : null
+  const cellBorder = colorBy && config.heatGap !== false
+    ? { borderColor: config.heatGapColor || '#ffffff', borderWidth: 2 }
+    : null
+  const rotate = Number.isFinite(config.xLabelRotate) ? config.xLabelRotate : (xCats.length > 10 ? 30 : 0)
+
   return {
     ...baseFrame(config, theme, locale, { trigger: 'item', noGrid: true }),
-    grid: deepMerge({ top: config.title ? 56 : 16, left: 80, right: 24, bottom: 64, containLabel: true }, config.grid || {}),
+    grid: deepMerge({ top: config.title ? 56 : 16, left: 80, right: 24, bottom: colorBy ? 16 : 64, containLabel: true }, config.grid || {}),
     tooltip: tooltipConfig(config, theme, { trigger: 'item', locale }),
-    xAxis: { type: 'category', data: xCats, splitArea: { show: true }, axisLabel: { color: theme.fgMuted, fontSize: 10, rotate: xCats.length > 10 ? 30 : 0 } },
-    yAxis: { type: 'category', data: yCats, splitArea: { show: true }, axisLabel: { color: theme.fgMuted, fontSize: 10 } },
-    visualMap: {
+    xAxis: { type: 'category', data: xCats, splitArea: { show: !colorBy }, axisLine: { show: !colorBy }, axisTick: { show: !colorBy }, axisLabel: { color: theme.fgMuted, fontSize: 10, rotate } },
+    yAxis: { type: 'category', data: yCats, inverse: config.yInverse === true, splitArea: { show: !colorBy }, axisLine: { show: !colorBy }, axisTick: { show: !colorBy }, axisLabel: { color: theme.fgMuted, fontSize: 10 } },
+    visualMap: categoricalMap ?? {
       min, max, calculable: true, orient: 'horizontal', left: 'center', bottom: 8,
       textStyle: { color: theme.fgMuted, fontSize: 10 },
       inRange: { color: heatRamp },
     },
     series: [{
       type: 'heatmap', data,
+      ...(cellBorder ? { itemStyle: cellBorder } : {}),
       label: { show: config.dataLabels === true, color: theme.fg, fontSize: 9 },
       emphasis: { itemStyle: { shadowBlur: 8, shadowColor: 'rgba(0,0,0,0.4)' } },
     }],
@@ -1576,7 +1593,7 @@ function emptyOption(theme) {
 // Keys we interpret ourselves — everything else in config is treated as a raw
 // ECharts passthrough that deep-merges (and wins) over our computed option.
 const INTERPRETED_KEYS = new Set([
-  'title', 'subtitle', 'legend', 'tooltip', 'palette', 'heatColors', 'stack', 'orientation',
+  'title', 'subtitle', 'legend', 'tooltip', 'palette', 'heatColors', 'heatColorBy', 'heatGap', 'heatGapColor', 'yInverse', 'xLabelRotate', 'stack', 'orientation',
   // map-only: the geometry name and the choropleth end-stops. Without these
   // here they fall through to the raw-ECharts passthrough and land as unknown
   // top-level option keys.

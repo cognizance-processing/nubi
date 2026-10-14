@@ -83,7 +83,14 @@ function fmtNum(v) {
   return v.toLocaleString(undefined, { maximumFractionDigits: 2 })
 }
 
-export default function PivotWidget({ widget }) {
+/**
+ * @param {{ widget: object, providerTable?: import('apache-arrow').Table | null }} props
+ *
+ * providerTable — when supplied by SpecRenderer (BET-3 DataProvider path) or by
+ * the query workspace's widget preview, the widget skips its own query_id fetch
+ * and pivots this table instead.
+ */
+export default function PivotWidget({ widget, providerTable = null }) {
   const { query_id, encoding = {}, props: wProps = {}, params: widgetParams, filters: widgetFilters } = widget
   const rowCol = encoding.rows || ''
   const colCol = encoding.cols || ''
@@ -93,13 +100,15 @@ export default function PivotWidget({ widget }) {
   const resolvedParams = useResolvedParams(widgetParams)
   const resolvedFilters = useResolvedFilters(widgetFilters)
 
-  const [table, setTable] = useState(null)
+  const [fetchedTable, setTable] = useState(null)
+  const table = providerTable ?? fetchedTable
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   // Bumped by the error state's Retry button to re-run the fetch effect.
   const [retryEpoch, setRetryEpoch] = useState(0)
 
   useEffect(() => {
+    if (providerTable !== null) return
     if (!query_id) return
     let cancelled = false
     async function fetchData() {
@@ -131,7 +140,7 @@ export default function PivotWidget({ widget }) {
     fetchData()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query_id, JSON.stringify(resolvedParams), JSON.stringify(resolvedFilters), retryEpoch])
+  }, [query_id, providerTable, JSON.stringify(resolvedParams), JSON.stringify(resolvedFilters), retryEpoch])
 
   const pivot = useMemo(() => {
     if (!table || !rowCol || !colCol) return null

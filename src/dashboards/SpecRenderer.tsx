@@ -218,7 +218,7 @@ function WidgetComponent({ widget, onOpenDrawer = undefined, editMode = false, p
     case 'kpi':     return <KpiWidget    widget={w} providerTable={providerTable} />
     case 'metric':  return <MetricWidget widget={w} />
     case 'table':   return <TableWidget  widget={w} providerTable={providerTable} />
-    case 'pivot':   return <PivotWidget  widget={w} />
+    case 'pivot':   return <PivotWidget  widget={w} providerTable={providerTable} />
     // Filter widgets render in both view mode AND edit mode so the filters
     // drawer is available for authoring.  editMode suppresses the live query
     // fetch (no wasm needed in the editor canvas).

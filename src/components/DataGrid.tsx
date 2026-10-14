@@ -802,7 +802,10 @@ export default function DataGrid({
                       >
                         <div
                           className={[
-                            'w-full flex items-center gap-1 py-2 font-semibold text-muted',
+                            // An authored header colour is set on the <th>; the
+                            // default muted ink must not override it.
+                            'w-full flex items-center gap-1 py-2 font-semibold',
+                            headerStyle?.color ? '' : 'text-muted',
                             cellPx,
                             type === 'number' ? 'flex-row-reverse' : '',
                             fontSize,

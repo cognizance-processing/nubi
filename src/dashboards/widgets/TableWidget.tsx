@@ -188,13 +188,29 @@ function DeltaCell({ text, value }) {
 }
 
 /** columnFormats[col].bar → an inline magnitude bar (Excel-style data bar) beside the text. */
-function BarCell({ text, value, max }) {
+function BarCell({ text, value, max, color, variant }) {
   const n = Math.abs(Number(value))
   const pct = max > 0 && Number.isFinite(n) ? Math.min(100, (n / max) * 100) : 0
+  // 'fill': the bar spans the whole cell with the value centred on it — a
+  // progress meter rather than a sparkline next to the number.
+  if (variant === 'fill') {
+    return (
+      <span className="relative flex items-center justify-center w-full h-4 rounded-sm overflow-hidden" style={{ background: 'rgba(120,130,140,0.18)' }}>
+        <span
+          className={`absolute inset-y-0 left-0${color ? '' : ' bg-primary/50'}`}
+          style={{ width: `${pct}%`, ...(color ? { background: color } : {}) }}
+        />
+        <span className="relative font-mono tabular-nums text-[10px]">{text}</span>
+      </span>
+    )
+  }
   return (
     <span className="flex items-center gap-1.5">
       <span className="relative w-10 h-1.5 rounded-full bg-border/40 overflow-hidden shrink-0">
-        <span className="absolute inset-y-0 left-0 rounded-full bg-primary/50" style={{ width: `${pct}%` }} />
+        <span
+          className={`absolute inset-y-0 left-0 rounded-full${color ? '' : ' bg-primary/50'}`}
+          style={{ width: `${pct}%`, ...(color ? { background: color } : {}) }}
+        />
       </span>
       <span className="font-mono tabular-nums">{text}</span>
     </span>
@@ -323,6 +339,10 @@ export default function TableWidget({ widget, providerTable = null }) {
     () => (Array.isArray(formattingRules) ? formattingRules : []),
     [formattingRules],
   )
+  // props.columnWidths: {column: px} — the grid's default is one width for
+  // every column, which overflows a half-width card with a handful of columns.
+  const widthKey = JSON.stringify(wProps.columnWidths ?? null)
+  const widthMap = useMemo(() => JSON.parse(widthKey) ?? {}, [widthKey])
   const fmtMap = useMemo(
     () => (columnFormats && typeof columnFormats === 'object' ? columnFormats : {}),
     [columnFormats],
@@ -414,12 +434,14 @@ export default function TableWidget({ widget, providerTable = null }) {
     const baseCols = data.cols.map((col) => {
       const fmt = fmtMap[col.key]
       const descriptor = { ...col }
+      const width = Number(widthMap[col.key])
+      if (Number.isFinite(width) && width > 0) descriptor.width = width
       if (fmt) {
         // Apply column format both on-screen and on export.
         descriptor.renderCell = (val) => {
           if (val == null) return <span className="text-muted/50">—</span>
           const text = formatValue(val, fmt)
-          if (fmt.bar) return <BarCell text={text} value={val} max={fmt.barMax ?? barMaxByCol[col.key] ?? 0} />
+          if (fmt.bar) return <BarCell text={text} value={val} max={fmt.barMax ?? barMaxByCol[col.key] ?? 0} color={fmt.barColor} variant={fmt.barStyle} />
           if (fmt.delta) return <DeltaCell text={text} value={val} />
           return text
         }
@@ -468,7 +490,7 @@ export default function TableWidget({ widget, providerTable = null }) {
       },
       ...baseCols,
     ]
-  }, [data, fmtMap, isExpandable, expandedRows, setExpandedRows])
+  }, [data, fmtMap, widthMap, isExpandable, expandedRows, setExpandedRows])
 
   // ── Conditional formatting: evalRules → per-row + per-cell styles ─────────
   const colKeys = useMemo(() => (data ? data.cols.map((c) => c.key) : []), [data])
@@ -651,8 +673,20 @@ export default function TableWidget({ widget, providerTable = null }) {
     )
   }
 
+  // An in-card caption, opt-in: many converted tables carry a props.title that
+  // was never shown, and switching them all on would restyle those boards.
+  const caption = wProps.showTitle && wProps.title ? (
+    <div
+      className="shrink-0 px-3 pt-3 pb-2 text-[13px] font-medium truncate"
+      style={{ color: ink.title ?? 'var(--fg)' }}
+    >
+      {wProps.title}
+    </div>
+  ) : null
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
+      {caption}
       <div className="flex-1 min-h-0">
         <DataGrid
           columns={gridColumns}

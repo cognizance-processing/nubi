@@ -96,3 +96,19 @@ test('styleToCss: typography is authorable, and unknown properties still are not
   assert.equal(blocked.position, undefined)
   assert.equal(blocked.zIndex, undefined)
 })
+
+test('styleToCss: a background string and its solid descriptor render identically', () => {
+  // The editor can only author the descriptor form, but every WIDGET_STYLE_PRESET
+  // — and the API and MCP tools — write a plain CSS string. The Card background
+  // control coerces the string to `{type:'solid'}` so it is visible and editable;
+  // that coercion is only safe because both shapes land on the same declaration.
+  for (const color of ['var(--surface)', '#0b0f1a', 'color-mix(in srgb, var(--surface) 45%, transparent)']) {
+    for (const ctx of [undefined, { theme: 'light' as const }, { theme: 'dark' as const }]) {
+      assert.deepEqual(
+        styleToCss({ background: { type: 'solid', color } }, ctx),
+        styleToCss({ background: color }, ctx),
+        `string vs descriptor diverged for ${color} (${ctx?.theme ?? 'no ctx'})`,
+      )
+    }
+  }
+})
