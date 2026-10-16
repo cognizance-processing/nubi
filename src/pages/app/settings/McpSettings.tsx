@@ -13,7 +13,8 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { Cpu, Plus, Loader2, Trash2, X, Check, AlertTriangle, Zap } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Plus, Trash2, X, Check, AlertTriangle, Zap, ArrowUpRight, Loader2 } from 'lucide-react'
 import { get, post, put, del } from '../../../lib/api.js'
 import { useCanWrite } from '../../../contexts/OrgContext.jsx'
 import {
@@ -24,6 +25,10 @@ import {
 } from './SettingsUI.jsx'
 import { toast } from '../../../components/ui/Toast.jsx'
 import ConnectionStatusBadge from '../../../components/ui/ConnectionStatusBadge.jsx'
+import Button from '../../../components/ui/Button.jsx'
+import Tag from '../../../components/ui/Tag.jsx'
+import ToolLogo from '../../../components/brand/ToolLogo'
+import OAuthConsentFlow from '../../../components/illustrations/OAuthConsentFlow'
 
 // last_test_ok is a tri-state (true/false/null) -> the shared status vocabulary.
 function mcpStatusState(server) {
@@ -82,7 +87,7 @@ function AddServerForm({ onSaved, onCancel }) {
   }, [form, onSaved])
 
   return (
-    <div className="rounded-2xl border border-border bg-surface p-4 space-y-3">
+    <div className="border border-border bg-surface p-4 space-y-3" style={{ borderRadius: 2 }}>
       <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3">
         <div>
           <label className={LABEL_CLS} htmlFor="mcp-name">Name</label>
@@ -145,27 +150,18 @@ function AddServerForm({ onSaved, onCancel }) {
       </div>
 
       {error && (
-        <div className="flex items-start gap-2 text-xs text-red-600 dark:text-red-400">
-          <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+        <div className="nubi-notice nubi-notice-error text-xs" role="alert">
+          <AlertTriangle size={14} className="shrink-0 mt-0.5" aria-hidden="true" />
           <span>{error}</span>
         </div>
       )}
 
       <div className="flex items-center gap-2 pt-1">
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="inline-flex items-center gap-1.5 h-9 px-4 text-sm font-semibold rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-50 transition-opacity"
-        >
-          {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+        <Button onClick={handleSave} loading={saving}>
+          {!saving && <Check size={14} aria-hidden="true" />}
           Add server
-        </button>
-        <button
-          onClick={onCancel}
-          className="h-9 px-3 text-sm rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-        >
-          Cancel
-        </button>
+        </Button>
+        <Button variant="secondary" onClick={onCancel}>Cancel</Button>
       </div>
     </div>
   )
@@ -225,26 +221,21 @@ function ServerRow({ server, canWrite, onChanged, onDeleted }) {
   }, [server, onDeleted])
 
   return (
-    <div className="rounded-2xl border border-border bg-surface p-4">
+    <div className="border border-border bg-surface p-4" style={{ borderRadius: 2 }}>
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-3 min-w-0">
-          <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-primary/10 text-primary shrink-0">
-            <Cpu size={16} />
-          </div>
+          <span
+            className="flex items-center justify-center w-10 h-10 border border-border bg-surface text-fg shrink-0"
+            style={{ borderRadius: 2 }}
+          >
+            <ToolLogo slug="modelcontextprotocol" size={22} decorative />
+          </span>
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <p className="text-sm font-semibold text-fg truncate">{server.name}</p>
               <ConnectionStatusBadge state={mcpStatusState(server)} detail={mcpStatusDetail(server)} />
-              {server.transport && (
-                <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-surface-2 text-muted border border-border">
-                  {server.transport}
-                </span>
-              )}
-              {!enabled && (
-                <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-surface-2 text-muted border border-border">
-                  Disabled
-                </span>
-              )}
+              {server.transport && <Tag caps={false}>{server.transport}</Tag>}
+              {!enabled && <Tag dot>Disabled</Tag>}
             </div>
             {server.url && (
               <p className="text-xs text-muted mt-1 truncate font-mono">{server.url}</p>
@@ -254,53 +245,34 @@ function ServerRow({ server, canWrite, onChanged, onDeleted }) {
 
         {canWrite && (
           <div className="flex items-center gap-1.5 shrink-0">
-            <button
-              onClick={handleTest}
-              disabled={busy !== null}
-              title="Test connection"
-              aria-label="Test connection"
-              className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs font-medium border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              {busy === 'test' ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} strokeWidth={2.2} />}
+            <Button size="sm" variant="secondary" onClick={handleTest} disabled={busy !== null} loading={busy === 'test'} aria-label="Test connection">
+              {busy !== 'test' && <Zap size={12} strokeWidth={2.2} aria-hidden="true" />}
               {busy === 'test' ? 'Testing…' : 'Test'}
-            </button>
-            <button
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
               onClick={handleToggle}
               disabled={busy !== null}
-              title={enabled ? 'Disable' : 'Enable'}
+              loading={busy === 'toggle'}
               aria-label={enabled ? 'Disable server' : 'Enable server'}
-              className="inline-flex items-center h-8 px-2.5 rounded-lg text-xs font-medium border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
             >
-              {busy === 'toggle' ? <Loader2 size={12} className="animate-spin" /> : enabled ? 'Disable' : 'Enable'}
-            </button>
+              {enabled ? 'Disable' : 'Enable'}
+            </Button>
             {confirmDelete ? (
               <div className="flex items-center gap-1.5">
-                <button
-                  onClick={handleDelete}
-                  disabled={busy === 'delete'}
-                  aria-label="Confirm delete"
-                  className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-50 transition-colors"
-                >
-                  {busy === 'delete' ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                <Button size="sm" variant="danger" onClick={handleDelete} loading={busy === 'delete'} aria-label="Confirm delete">
+                  {busy !== 'delete' && <Check size={12} aria-hidden="true" />}
                   Confirm
-                </button>
-                <button
-                  onClick={() => setConfirmDelete(false)}
-                  aria-label="Cancel delete"
-                  className="h-8 w-8 flex items-center justify-center rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-                >
-                  <X size={14} />
-                </button>
+                </Button>
+                <Button size="icon-sm" variant="secondary" onClick={() => setConfirmDelete(false)} aria-label="Cancel delete">
+                  <X size={14} aria-hidden="true" />
+                </Button>
               </div>
             ) : (
-              <button
-                onClick={() => setConfirmDelete(true)}
-                title="Delete"
-                aria-label="Delete server"
-                className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border text-muted hover:text-red-600 hover:border-red-200 hover:bg-red-50 dark:hover:text-red-400 dark:hover:border-red-900/40 dark:hover:bg-red-900/10 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
-              >
-                <Trash2 size={13} />
-              </button>
+              <Button size="icon-sm" variant="secondary" onClick={() => setConfirmDelete(true)} title="Delete" aria-label="Delete server">
+                <Trash2 size={13} aria-hidden="true" />
+              </Button>
             )}
           </div>
         )}
@@ -312,6 +284,49 @@ function ServerRow({ server, canWrite, onChanged, onDeleted }) {
 // ---------------------------------------------------------------------------
 // McpSettings — main section
 // ---------------------------------------------------------------------------
+
+/** Pointer to the reverse direction: AI apps connecting to Nubi. Lives in Settings > Connections. */
+function AiAppsCard() {
+  return (
+    <section
+      className="border border-border bg-surface grid gap-6 p-5 sm:p-6 md:grid-cols-[minmax(0,1fr)_minmax(0,340px)] items-center"
+      style={{ borderRadius: 2 }}
+      aria-labelledby="mcp-ai-apps-title"
+    >
+      <div className="min-w-0">
+        <p className="font-mono text-[11px] uppercase tracking-[0.06em] text-subtle">Nubi as an MCP server</p>
+        <h3 id="mcp-ai-apps-title" className="font-display font-semibold text-[15px] text-fg mt-1.5">
+          Want Claude or ChatGPT to use Nubi?
+        </h3>
+        <p className="text-sm text-muted mt-1.5 max-w-prose leading-relaxed">
+          This page registers MCP servers that Nubi&apos;s own AI can call. To let an AI app browse your
+          schema and build boards, add Nubi to it instead: paste one URL, sign in and approve the
+          scopes. The app acts as you, in the organisation you pick.
+        </p>
+        <ul className="flex flex-wrap items-center gap-x-5 gap-y-2 mt-4 list-none p-0 m-0">
+          {[
+            { slug: 'claude', label: 'Claude' },
+            { slug: 'openai', label: 'ChatGPT' },
+            { slug: 'claudecode', label: 'Claude Code' },
+          ].map((c) => (
+            <li key={c.slug} className="inline-flex items-center gap-2 text-[13px] text-fg">
+              <ToolLogo slug={c.slug} mode="brand" size={18} decorative />
+              {c.label}
+            </li>
+          ))}
+        </ul>
+        <Button asChild size="sm" variant="secondary" className="mt-4">
+          <Link to="/settings/connections">
+            Set up AI apps <ArrowUpRight size={13} aria-hidden="true" />
+          </Link>
+        </Button>
+      </div>
+      <div className="hidden sm:block min-w-0 text-fg">
+        <OAuthConsentFlow compact title="An AI app asks, you consent to scopes, it reads your data" />
+      </div>
+    </section>
+  )
+}
 
 export default function McpSettings() {
   const canWrite = useCanWrite()
@@ -363,6 +378,8 @@ export default function McpSettings() {
         description="Register external Model Context Protocol (MCP) servers for your organisation. Auth tokens are stored encrypted and never returned after saving."
       />
 
+      <AiAppsCard />
+
       <SettingsCard
         title="Registered servers"
         description="MCP servers available to this organisation."
@@ -374,13 +391,11 @@ export default function McpSettings() {
         ) : error ? (
           <div className="py-2 flex items-center gap-3">
             <ErrorText>{error}</ErrorText>
-            <button onClick={load} className="text-xs text-muted hover:text-fg underline shrink-0">
-              Retry
-            </button>
+            <Button size="xs" variant="secondary" onClick={load}>Retry</Button>
           </div>
         ) : servers.length === 0 ? (
           <div className="flex flex-col items-center justify-center text-center py-8 px-6 gap-2">
-            <Cpu size={26} className="text-muted/40" />
+            <ToolLogo slug="modelcontextprotocol" size={28} className="text-subtle" decorative />
             <p className="text-sm font-medium text-fg">No MCP servers yet</p>
             <p className="text-xs text-muted max-w-sm">
               Add a server below to connect external MCP endpoints to this organisation.
@@ -406,13 +421,10 @@ export default function McpSettings() {
           {showForm ? (
             <AddServerForm onSaved={handleSaved} onCancel={() => setShowForm(false)} />
           ) : (
-            <button
-              onClick={() => setShowForm(true)}
-              className="inline-flex items-center gap-2 h-9 px-4 text-sm font-medium rounded-xl border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-            >
-              <Plus size={15} />
+            <Button variant="secondary" onClick={() => setShowForm(true)}>
+              <Plus size={15} aria-hidden="true" />
               Add server
-            </button>
+            </Button>
           )}
         </SettingsCard>
       )}

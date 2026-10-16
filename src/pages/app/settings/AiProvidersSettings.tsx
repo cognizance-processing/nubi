@@ -30,7 +30,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Bot, Check, Loader2, Lock, ShieldCheck, Sparkles, Trash2, AlertTriangle, ArrowUpRight,
+  Bot, Check, ShieldCheck, Sparkles, Trash2, AlertTriangle, ArrowUpRight, Loader2,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
@@ -45,58 +45,60 @@ import {
   inputCls,
 } from './SettingsUI.jsx'
 import { toast } from '../../../components/ui/Toast.jsx'
+import Button from '../../../components/ui/Button.jsx'
+import Tag from '../../../components/ui/Tag.jsx'
 
 // ---------------------------------------------------------------------------
 // Provider models list (read-only overview)
 // ---------------------------------------------------------------------------
 
 function ModelsRow({ provider }) {
+  const n = provider.models.length
   return (
-    <div className="rounded-xl border border-border bg-surface p-4">
-      <div className="flex items-start justify-between gap-3 mb-3">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <ProviderIcon provider={provider.id} size={20} />
+    <div className="py-5 first:pt-0 last:pb-0">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <ProviderIcon provider={provider.id} size={22} />
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-fg truncate">{provider.display_name}</p>
-            <p className="text-xs text-muted">{provider.models.length} model{provider.models.length === 1 ? '' : 's'} available</p>
+            <p className="text-sm font-semibold text-fg truncate leading-tight">{provider.display_name}</p>
+            <p className="font-mono text-[11px] uppercase tracking-[0.06em] text-subtle tabular-nums mt-0.5">
+              {n} model{n === 1 ? '' : 's'}
+            </p>
           </div>
         </div>
         {provider.configured ? (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300 text-[10px] font-semibold uppercase tracking-wide shrink-0">
-            <Check size={10} /> Configured
-          </span>
+          <Tag variant="success" dot>Configured</Tag>
         ) : (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 text-[10px] font-semibold uppercase tracking-wide shrink-0">
-            <Lock size={10} /> Not set up
-          </span>
+          <Tag dot>Not set up</Tag>
         )}
       </div>
-      <div className="flex flex-wrap gap-1.5">
+      <ul className="flex flex-wrap gap-2 list-none p-0 m-0">
         {provider.models.map((m) => {
           const price = formatModelPrice(m)
           return (
-            <span
+            <li
               key={m.id}
               title={price ?? undefined}
-              className="inline-flex flex-col gap-0.5 px-2 py-1 rounded-lg bg-surface-2 border border-border text-xs text-fg"
+              className="inline-flex flex-col gap-0.5 px-2.5 py-1.5 border border-border text-[13px] text-fg"
+              style={{ borderRadius: 2 }}
             >
-              <span className="inline-flex items-center gap-1">
+              <span className="inline-flex items-center gap-1.5 leading-tight">
                 {m.display_name}
                 {m.default && (
-                  <span className="text-[9.5px] font-semibold text-muted uppercase tracking-wide">default</span>
+                  <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-accent">default</span>
                 )}
               </span>
               {price && (
-                <span className="text-[10px] text-muted tabular-nums">{price}</span>
+                <span className="font-mono text-[11px] text-subtle tabular-nums">{price}</span>
               )}
-            </span>
+            </li>
           )
         })}
-      </div>
+      </ul>
       {!provider.configured && (
-        <p className="text-[11px] text-muted mt-2.5">
-          The operator hasn't configured a platform key for {provider.display_name} yet —
-          this provider is currently unavailable for wallet-billed calls
+        <p className="text-xs text-muted mt-3 max-w-prose leading-relaxed">
+          The operator hasn&apos;t configured a platform key for {provider.display_name} yet,
+          so it is unavailable for wallet-billed calls
           {byoFallbackHint(provider)}
         </p>
       )}
@@ -159,7 +161,7 @@ function ByoKeyRow({ provider, configured, canWrite, canByo, onSave, onClear }) 
   return (
     <div className="py-4 first:pt-0 last:pb-0">
       <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-        <div className="flex items-center gap-2.5 sm:w-44 shrink-0">
+        <div className="flex items-center gap-3 sm:w-48 shrink-0">
           <ProviderIcon provider={provider.id} size={18} />
           <span className="text-sm font-medium text-fg">{provider.display_name}</span>
         </div>
@@ -170,53 +172,44 @@ function ByoKeyRow({ provider, configured, canWrite, canByo, onSave, onClear }) 
             value={value}
             onChange={(e) => setValue(e.target.value)}
             disabled={disabled || saving}
-            placeholder={disabled ? 'Upgrade to a paid plan to set a key' : configured ? '•••••••• (leave blank, or paste a new key to replace it)' : `Paste your ${provider.display_name} API key`}
+            aria-label={`${provider.display_name} API key`}
+            placeholder={disabled ? 'Upgrade to a paid plan to set a key' : configured ? '•••••••• (paste a new key to replace it)' : `Paste your ${provider.display_name} API key`}
             autoComplete="new-password"
             className={`${inputCls} font-mono text-xs flex-1 disabled:opacity-50 disabled:cursor-not-allowed`}
           />
           <div className="flex items-center gap-1.5 shrink-0">
-            <button
+            <Button
+              size="sm"
               onClick={handleSave}
-              disabled={disabled || saving || !value.trim()}
-              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-xl text-xs font-semibold bg-primary text-primary-fg hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+              disabled={disabled || !value.trim()}
+              loading={saving}
             >
-              {saving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+              {!saving && <Check size={13} aria-hidden="true" />}
               Save
-            </button>
+            </Button>
             {configured && !disabled && (
               confirmClear ? (
-                <button
-                  onClick={handleClear}
-                  disabled={clearing}
-                  className="inline-flex items-center gap-1.5 h-9 px-3 rounded-xl text-xs font-semibold bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 transition-colors"
-                >
-                  {clearing ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                <Button size="sm" variant="danger" onClick={handleClear} loading={clearing}>
+                  {!clearing && <Trash2 size={13} aria-hidden="true" />}
                   Confirm
-                </button>
+                </Button>
               ) : (
-                <button
+                <Button
+                  size="icon-sm"
+                  variant="secondary"
                   onClick={() => setConfirmClear(true)}
                   title="Clear stored key"
                   aria-label={`Clear ${provider.display_name} key`}
-                  className="inline-flex items-center justify-center h-9 w-9 rounded-xl border border-border text-muted hover:text-red-600 hover:border-red-200 hover:bg-red-50 dark:hover:text-red-400 dark:hover:border-red-900/40 dark:hover:bg-red-900/10 transition-colors"
                 >
-                  <Trash2 size={13} />
-                </button>
+                  <Trash2 size={13} aria-hidden="true" />
+                </Button>
               )
             )}
           </div>
         </div>
 
         <div className="sm:w-32 shrink-0 flex sm:justify-end">
-          {configured ? (
-            <span className="inline-flex items-center gap-1 text-xs font-medium text-teal-600 dark:text-teal-400">
-              <Check size={12} /> Configured
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1 text-xs text-muted">
-              Not set
-            </span>
-          )}
+          {configured ? <Tag variant="success" dot>Key set</Tag> : <Tag dot>Not set</Tag>}
         </div>
       </div>
       {error && <ErrorText>{error}</ErrorText>}
@@ -273,7 +266,7 @@ export default function AiProvidersSettings() {
     <div className="space-y-6">
       <SettingsPageHeader
         title="AI providers"
-        description="Nubi's chat, text-to-SQL, and dashboard generation run on your choice of Claude, GPT, or Gemini models. See what's available below, and optionally bring your own provider key."
+        description="Chat, text-to-SQL and dashboard generation run on your choice of Claude, GPT or Gemini models. See what is available below, and optionally bring your own provider key."
       />
 
       {loading ? (
@@ -283,7 +276,7 @@ export default function AiProvidersSettings() {
       ) : providers.length === 0 ? (
         <SettingsCard>
           <div className="flex flex-col items-center justify-center text-center py-8 px-6 gap-2">
-            <Bot size={26} className="text-muted/40" />
+            <Bot size={24} strokeWidth={1.5} className="text-subtle" aria-hidden="true" />
             <p className="text-sm font-medium text-fg">No AI providers configured</p>
             <p className="text-xs text-muted max-w-sm">
               This deployment hasn't enabled any LLM providers yet. Contact your administrator.
@@ -296,7 +289,7 @@ export default function AiProvidersSettings() {
             title="Providers & models"
             description="Every model advertised here is safe to select in chat — the same allowlist the backend enforces."
           >
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="divide-y divide-border">
               {withByoFlag.map((p) => <ModelsRow key={p.id} provider={p} />)}
             </div>
           </SettingsCard>
@@ -306,38 +299,38 @@ export default function AiProvidersSettings() {
             description="Use your own provider API key instead of Nubi's platform key. Calls made with your key bill directly through that vendor's account and are never charged from your Nubi usage wallet."
           >
             {!byo.can_byo ? (
-              <div className="flex flex-col sm:flex-row sm:items-center gap-4 rounded-xl border border-dashed border-border bg-surface-2/50 px-4 py-5">
-                <div className="flex items-center justify-center w-11 h-11 rounded-xl bg-primary/10 text-primary shrink-0">
-                  <Sparkles size={18} />
+              <div className="flex flex-col sm:flex-row sm:items-center gap-4 border border-border px-4 py-4" style={{ borderRadius: 2 }}>
+                <div
+                  className="flex items-center justify-center w-10 h-10 border border-border text-fg shrink-0"
+                  style={{ borderRadius: 2 }}
+                >
+                  <Sparkles size={18} strokeWidth={1.75} aria-hidden="true" />
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-semibold text-fg">Bringing your own key is a paid-plan feature</p>
                   <p className="text-xs text-muted mt-0.5 leading-relaxed">
-                    Upgrade to Starter or above to connect your own Anthropic, OpenAI, or Gemini key —
-                    your calls to that provider skip Nubi's usage wallet entirely.
+                    Upgrade to Starter or above to connect your own Anthropic, OpenAI, or Gemini key.
+                    Your calls to that provider skip Nubi&apos;s usage wallet entirely.
                   </p>
                 </div>
                 {billingEnabled ? (
-                  <Link
-                    to="/billing"
-                    className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-xl text-xs font-semibold bg-primary text-primary-fg hover:opacity-90 transition-opacity shrink-0"
-                  >
-                    View plans <ArrowUpRight size={13} />
-                  </Link>
+                  <Button asChild size="sm">
+                    <Link to="/billing">View plans <ArrowUpRight size={13} aria-hidden="true" /></Link>
+                  </Button>
                 ) : (
                   <span className="text-xs text-muted shrink-0">Ask your administrator to upgrade.</span>
                 )}
               </div>
             ) : !canManageKeys ? (
-              <div className="flex items-start gap-2 rounded-xl border border-border bg-surface-2/50 px-4 py-3 text-xs text-muted">
-                <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+              <div className="nubi-notice nubi-notice-warning text-xs">
+                <AlertTriangle size={14} className="shrink-0 mt-0.5" aria-hidden="true" />
                 Only an org admin or owner can set or clear a provider key. Ask one of them to configure this.
               </div>
             ) : (
-              <div className="rounded-xl border border-teal-200 dark:border-teal-800 bg-teal-50 dark:bg-teal-900/15 px-3.5 py-2.5 mb-4 flex items-start gap-2">
-                <ShieldCheck size={14} className="text-teal-600 dark:text-teal-400 shrink-0 mt-0.5" />
-                <p className="text-xs text-teal-800 dark:text-teal-200 leading-relaxed">
-                  Keys are encrypted at rest and never shown again after saving — this list only ever
+              <div className="nubi-notice nubi-notice-info mb-4 text-xs">
+                <ShieldCheck size={14} className="shrink-0 mt-0.5" aria-hidden="true" />
+                <p className="leading-relaxed">
+                  Keys are encrypted at rest and never shown again after saving. This list only ever
                   shows whether a key is configured, not its value.
                 </p>
               </div>

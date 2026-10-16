@@ -25,7 +25,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { Plug, Plus, Loader2, Trash2, Copy, Check, AlertTriangle, KeyRound, Terminal, Globe, Link2, Bot, Info, ExternalLink } from 'lucide-react'
+import { Plug, Plus, Loader2, Trash2, Copy, Check, AlertTriangle, KeyRound, Terminal, Globe, Link2, Info, ExternalLink } from 'lucide-react'
 import {
   listApiKeys,
   createApiKey,
@@ -44,11 +44,12 @@ import {
 import {
   SettingsPageHeader,
   SettingsCard,
-  PrimaryButton,
   ErrorText,
   inputCls,
 } from './SettingsUI.jsx'
 import { toast } from '../../../components/ui/Toast.jsx'
+import Button from '../../../components/ui/Button.jsx'
+import ToolLogo from '../../../components/brand/ToolLogo'
 
 function fmtDate(iso) {
   if (!iso) return '—'
@@ -79,21 +80,17 @@ function CopyBlock({ label, icon: Icon, text, mono = true }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
-        <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-muted">
+        <span className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.06em] text-subtle">
           {Icon && <Icon size={12} />} {label}
         </span>
-        <button
-          type="button"
-          onClick={copy}
-          className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-muted hover:text-primary border border-border hover:border-primary/40 transition-colors"
-        >
-          {copied ? <Check size={12} /> : <Copy size={12} />}
+        <Button size="xs" variant="secondary" onClick={copy} aria-label={`Copy ${label}`}>
+          {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
           {copied ? 'Copied' : 'Copy'}
-        </button>
+        </Button>
       </div>
       <pre
         className={[
-          'rounded-lg bg-bg border border-border px-3 py-2 text-[11px] text-fg overflow-x-auto whitespace-pre-wrap break-all',
+          'bg-surface-2 border border-border px-3 py-2 text-[12px] text-fg overflow-x-auto whitespace-pre-wrap break-all',
           mono ? 'font-mono' : '',
         ].join(' ')}
       >
@@ -109,20 +106,20 @@ function CopyBlock({ label, icon: Icon, text, mono = true }) {
 
 function KeyReveal({ rawKey, onDismiss }) {
   return (
-    <div className="rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-4 space-y-4">
-      <div className="flex items-start gap-2">
-        <AlertTriangle size={15} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-        <p className="text-xs text-amber-800 dark:text-amber-300">
-          Copy this key now — it is shown <strong>only once</strong> and cannot be
+    <div className="space-y-4">
+      <div className="nubi-notice nubi-notice-warning text-xs" role="alert">
+        <AlertTriangle size={15} className="shrink-0 mt-0.5" aria-hidden="true" />
+        <p>
+          Copy this key now. It is shown <strong>only once</strong> and cannot be
           retrieved again. It authenticates as you, so store it somewhere safe.
         </p>
       </div>
 
-      <div className="flex items-center gap-2 rounded-lg bg-bg border border-border px-3 py-2">
+      <div className="flex items-center gap-2 bg-surface-2 border border-border px-3 py-2">
         <code className="flex-1 min-w-0 text-xs text-fg font-mono break-all">{rawKey}</code>
       </div>
 
-      <div className="space-y-3 border-t border-amber-200 dark:border-amber-900 pt-3">
+      <div className="space-y-3 border-t border-border pt-3">
         <p className="text-xs text-fg font-medium">Connect Claude Code</p>
         <CopyBlock label="Run in your terminal" icon={Terminal} text={claudeCodeAddCommand(rawKey)} />
 
@@ -135,13 +132,9 @@ function KeyReveal({ rawKey, onDismiss }) {
       </div>
 
       <div className="flex justify-end">
-        <button
-          type="button"
-          onClick={onDismiss}
-          className="px-3 py-1.5 rounded-lg text-xs font-medium text-muted hover:text-fg border border-border hover:bg-surface-2 transition-colors"
-        >
-          I&apos;ve saved it — dismiss
-        </button>
+        <Button variant="secondary" size="sm" onClick={onDismiss}>
+          I&apos;ve saved it, dismiss
+        </Button>
       </div>
     </div>
   )
@@ -155,19 +148,35 @@ function KeyReveal({ rawKey, onDismiss }) {
 // Browser AI apps (OAuth)
 // ---------------------------------------------------------------------------
 
+// Client marks come from the shared brand registry (official artwork only).
+// ChatGPT's mark is OpenAI's.
 const SETUP_TABS = [
-  { id: 'claude', label: 'Claude', icon: Bot },
-  { id: 'chatgpt', label: 'ChatGPT', icon: Globe },
-  { id: 'code', label: 'Claude Code', icon: Terminal },
+  { id: 'claude', label: 'Claude', logo: 'claude' },
+  { id: 'chatgpt', label: 'ChatGPT', logo: 'openai' },
+  { id: 'code', label: 'Claude Code', logo: 'claudecode' },
 ] as const
+
+/** Best-effort mark for a connected app, by the client name it registered with. */
+function appLogoSlug(name: string | undefined): string | null {
+  const n = (name ?? '').toLowerCase()
+  if (n.includes('claude code')) return 'claudecode'
+  if (n.includes('claude') || n.includes('anthropic')) return 'claude'
+  if (n.includes('chatgpt') || n.includes('openai')) return 'openai'
+  if (n.includes('cursor') || n.includes('gemini')) return n.includes('gemini') ? 'googlegemini' : null
+  return null
+}
 
 function Step({ n, children }) {
   return (
-    <li className="flex gap-2.5 text-xs text-fg">
-      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-semibold text-primary">
+    <li className="flex gap-3 text-fg">
+      <span
+        className="flex h-5 w-5 shrink-0 items-center justify-center border border-ink font-mono text-[11px] font-medium text-fg tabular-nums"
+        style={{ borderRadius: 2 }}
+        aria-hidden="true"
+      >
         {n}
       </span>
-      <span className="pt-0.5 leading-relaxed">{children}</span>
+      <span className="pt-0.5 text-[13px] leading-relaxed">{children}</span>
     </li>
   )
 }
@@ -214,26 +223,30 @@ function AppConnections() {
       <div className="space-y-4">
         <CopyBlock label="Server URL" icon={Link2} text={url} />
 
-        <div role="tablist" aria-label="Choose your app" className="flex gap-1 rounded-lg bg-surface-2 p-1">
+        <div role="tablist" aria-label="Choose your app" className="flex overflow-x-auto border-b border-border [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {SETUP_TABS.map((t) => (
             <button
               key={t.id}
               type="button"
               role="tab"
+              id={`setup-tab-${t.id}`}
               aria-selected={tab === t.id}
+              aria-controls="setup-panel"
               onClick={() => setTab(t.id)}
               className={[
-                'flex-1 inline-flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors',
-                tab === t.id ? 'bg-bg text-fg shadow-sm' : 'text-muted hover:text-fg',
+                'nubi-focus-inset -mb-px inline-flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 px-3 sm:px-4 py-2.5 text-[13px] font-medium transition-colors',
+                tab === t.id ? 'border-ink text-fg' : 'border-transparent text-muted hover:text-fg',
               ].join(' ')}
             >
-              <t.icon size={13} aria-hidden="true" /> {t.label}
+              <ToolLogo slug={t.logo} mode={tab === t.id ? 'brand' : 'mono'} size={16} decorative />
+              {t.label}
             </button>
           ))}
         </div>
 
+        <div id="setup-panel" role="tabpanel" aria-labelledby={`setup-tab-${tab}`}>
         {tab === 'claude' && (
-          <ol className="space-y-2.5">
+          <ol className="space-y-3 list-none p-0 m-0">
             <Step n={1}>
               In Claude (web or desktop app), open <strong>Settings → Connectors</strong> and choose{' '}
               <strong>Add custom connector</strong>.{' '}
@@ -248,7 +261,7 @@ function AppConnections() {
         )}
 
         {tab === 'chatgpt' && (
-          <ol className="space-y-2.5">
+          <ol className="space-y-3 list-none p-0 m-0">
             <Step n={1}>
               In ChatGPT, open <strong>Settings → Apps &amp; Connectors</strong>, turn on <strong>Developer mode</strong>{' '}
               under Advanced, then choose <strong>Create</strong>.
@@ -259,7 +272,7 @@ function AppConnections() {
         )}
 
         {tab === 'code' && (
-          <ol className="space-y-2.5">
+          <ol className="space-y-3 list-none p-0 m-0">
             <Step n={1}>
               Run this in your terminal:
               <div className="mt-2">
@@ -267,12 +280,14 @@ function AppConnections() {
               </div>
             </Step>
             <Step n={2}>
-              In Claude Code, type <code className="rounded bg-surface-2 px-1 font-mono">/mcp</code>, pick{' '}
+              In Claude Code, type <code className="bg-surface-2 border border-border px-1 font-mono text-[12px]">/mcp</code>, pick{' '}
               <strong>nubi</strong> and choose <strong>Authenticate</strong>.
             </Step>
             <Step n={3}>Your browser opens Nubi. Click <strong>Approve</strong>, then go back to Claude Code.</Step>
           </ol>
         )}
+
+        </div>
 
         {!webReady && tab !== 'code' && (
           <p className="flex gap-2 text-xs text-muted">
@@ -283,8 +298,8 @@ function AppConnections() {
         )}
 
         <div className="border-t border-border pt-3">
-          <p className="text-xs font-medium text-fg mb-2">Connected apps</p>
-          <p className="text-[11px] text-muted -mt-1 mb-2">Disconnecting signs the app out at once.</p>
+          <p className="font-mono text-[11px] uppercase tracking-[0.06em] text-subtle mb-1">Connected apps</p>
+          <p className="text-xs text-muted mb-2">Disconnecting signs the app out at once.</p>
           {loading ? (
             <div className="flex items-center gap-2 text-xs text-muted py-1">
               <Loader2 size={13} className="animate-spin" /> Loading…
@@ -295,9 +310,16 @@ function AppConnections() {
             <ul className="divide-y divide-border -my-1.5">
               {apps.map((a) => (
                 <li key={a.id} className="flex items-center gap-3 py-2.5">
-                  <Globe size={14} className="text-muted shrink-0" />
+                  <span
+                    className="flex h-8 w-8 shrink-0 items-center justify-center border border-border bg-surface text-muted"
+                    style={{ borderRadius: 2 }}
+                  >
+                    {appLogoSlug(a.client_name)
+                      ? <ToolLogo slug={appLogoSlug(a.client_name) as string} mode="brand" size={18} decorative />
+                      : <Globe size={15} strokeWidth={1.75} aria-hidden="true" />}
+                  </span>
                   <div className="min-w-0 flex-1">
-                    <p className="text-xs text-fg truncate">
+                    <p className="text-[13px] text-fg truncate">
                       {a.client_name}
                       {a.redirect_host ? <span className="text-muted"> · {a.redirect_host}</span> : null}
                     </p>
@@ -306,16 +328,16 @@ function AppConnections() {
                       {a.last_used_at ? ` · last used ${fmtDate(a.last_used_at)}` : ' · never used'}
                     </p>
                   </div>
-                  <button
-                    type="button"
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
                     onClick={() => disconnect(a)}
-                    disabled={busy === a.id}
+                    loading={busy === a.id}
                     title="Disconnect"
-                    aria-label="Disconnect app"
-                    className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors disabled:opacity-30 shrink-0"
+                    aria-label={`Disconnect ${a.client_name}`}
                   >
-                    {busy === a.id ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
-                  </button>
+                    {busy !== a.id && <Trash2 size={13} aria-hidden="true" />}
+                  </Button>
                 </li>
               ))}
             </ul>
@@ -387,7 +409,7 @@ export default function ConnectionsSettings() {
     <div className="space-y-6">
       <SettingsPageHeader
         title="Connections"
-        description="Connect your own AI — Claude or ChatGPT in the browser, Claude Desktop or Claude Code — to this workspace. Nubi exposes a Model Context Protocol (MCP) server so the AI can browse your schema, run governed queries, and build dashboards on your behalf, staying inside your row-level-security boundary the whole time."
+        description="Connect your own AI (Claude or ChatGPT in the browser, Claude Desktop or Claude Code) to this workspace. Nubi exposes a Model Context Protocol (MCP) server so the AI can browse your schema, run governed queries and build dashboards on your behalf, staying inside your row-level-security boundary."
       />
 
       {err && <ErrorText>{err}</ErrorText>}
@@ -411,10 +433,10 @@ export default function ConnectionsSettings() {
               className={inputCls}
               aria-label="Connection key name"
             />
-            <PrimaryButton type="submit" busy={creating} disabled={creating || !name.trim()} className="shrink-0">
-              {!creating && <Plus size={14} />}
+            <Button type="submit" loading={creating} disabled={!name.trim()} className="shrink-0">
+              {!creating && <Plus size={14} aria-hidden="true" />}
               Generate key
-            </PrimaryButton>
+            </Button>
           </form>
         )}
       </SettingsCard>
@@ -426,7 +448,7 @@ export default function ConnectionsSettings() {
           </div>
         ) : keys.length === 0 ? (
           <div className="py-6 text-center">
-            <KeyRound size={22} className="mx-auto text-muted/40 mb-2" />
+            <KeyRound size={22} strokeWidth={1.5} className="mx-auto text-subtle mb-2" aria-hidden="true" />
             <p className="text-sm text-muted">No connection keys yet — generate one above.</p>
           </div>
         ) : (
@@ -435,7 +457,7 @@ export default function ConnectionsSettings() {
               const rowBusy = busyRow === k.id
               return (
                 <li key={k.id} className="flex items-center gap-3 py-2.5">
-                  <KeyRound size={14} className="text-muted shrink-0" />
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center border border-border text-muted" style={{ borderRadius: 2 }}><KeyRound size={15} strokeWidth={1.75} aria-hidden="true" /></span>
                   <div className="min-w-0 flex-1">
                     <p className="text-xs text-fg truncate font-mono">
                       {k.name} · ••••{k.last_four ?? '????'}
@@ -445,16 +467,16 @@ export default function ConnectionsSettings() {
                       {k.last_used_at ? ` · last used ${fmtDate(k.last_used_at)}` : ' · never used'}
                     </p>
                   </div>
-                  <button
-                    type="button"
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
                     onClick={() => handleRevoke(k)}
-                    disabled={rowBusy}
+                    loading={rowBusy}
                     title="Revoke key"
-                    aria-label="Revoke key"
-                    className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors disabled:opacity-30 shrink-0"
+                    aria-label={`Revoke key ${k.name}`}
                   >
-                    {rowBusy ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
-                  </button>
+                    {!rowBusy && <Trash2 size={13} aria-hidden="true" />}
+                  </Button>
                 </li>
               )
             })}

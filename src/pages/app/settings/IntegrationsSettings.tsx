@@ -54,6 +54,9 @@ import {
   inputCls,
 } from './SettingsUI.jsx'
 import { toast } from '../../../components/ui/Toast.jsx'
+import Button from '../../../components/ui/Button.jsx'
+import Modal from '../../../components/ui/Modal.jsx'
+import Tag from '../../../components/ui/Tag.jsx'
 
 // ---------------------------------------------------------------------------
 // Per-kind field schema (drives both the form and the list summary).
@@ -143,16 +146,6 @@ function IntegrationModal({ open, kind, initial, onClose, onSaved }) {
     setError(null)
   }, [open, kind, initial, meta.label])
 
-  // Close on Escape.
-  useEffect(() => {
-    if (!open) return undefined
-    const onKey = (e) => {
-      if (e.key === 'Escape') onClose?.()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
-
   const setField = (key, v) => setValues((prev) => ({ ...prev, [key]: v }))
 
   const handleSave = useCallback(async () => {
@@ -178,35 +171,16 @@ function IntegrationModal({ open, kind, initial, onClose, onSaved }) {
     }
   }, [name, kind, values, editing, initial, onSaved, onClose])
 
-  if (!open) return null
-
-  const { Icon } = meta
-
   return (
-    <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full sm:max-w-lg max-h-[92dvh] flex flex-col bg-surface border border-border rounded-t-2xl sm:rounded-2xl shadow-2xl overflow-hidden">
-        {/* Header */}
-        <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-border">
-          <div className="flex items-center gap-2">
-            <Icon size={16} className="text-primary" />
-            <h2 className="text-sm font-semibold text-fg">
-              {editing ? `Edit ${meta.label}` : `Connect ${meta.label}`}
-            </h2>
-          </div>
-          <button
-            onClick={onClose}
-            className="h-8 w-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-            aria-label="Close"
-          >
-            <X size={16} />
-          </button>
-        </div>
-
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-          {meta.blurb && <p className="text-xs text-muted">{meta.blurb}</p>}
-
+    <Modal
+      open={open}
+      onClose={onClose}
+      size="lg"
+      title={editing ? `Edit ${meta.label}` : `Connect ${meta.label}`}
+      description={meta.blurb}
+    >
+      <Modal.Body>
+        <div className="space-y-4">
           <div>
             <label className={LABEL_CLS} htmlFor="integration-name">Name</label>
             <input
@@ -250,32 +224,21 @@ function IntegrationModal({ open, kind, initial, onClose, onSaved }) {
           })}
 
           {error && (
-            <div className="flex items-start gap-2 text-xs text-red-600 dark:text-red-400">
-              <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+            <div className="nubi-notice nubi-notice-error text-xs" role="alert">
+              <AlertTriangle size={14} className="shrink-0 mt-0.5" aria-hidden="true" />
               <span>{error}</span>
             </div>
           )}
         </div>
-
-        {/* Footer */}
-        <div className="shrink-0 flex items-center justify-end gap-2 px-4 py-3 border-t border-border">
-          <button
-            onClick={onClose}
-            className="h-9 px-3 text-sm rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="inline-flex items-center gap-1.5 h-9 px-4 text-sm font-semibold rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-50 transition-opacity"
-          >
-            {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
-            {editing ? 'Save changes' : 'Connect'}
-          </button>
-        </div>
-      </div>
-    </div>
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="secondary" onClick={onClose}>Cancel</Button>
+        <Button onClick={handleSave} loading={saving}>
+          {!saving && <Check size={14} aria-hidden="true" />}
+          {editing ? 'Save changes' : 'Connect'}
+        </Button>
+      </Modal.Footer>
+    </Modal>
   )
 }
 
@@ -349,91 +312,71 @@ function IntegrationRow({ integration, canWrite, onEdit, onChanged }) {
   }, [integration.config, meta.fields])
 
   return (
-    <div className="rounded-2xl border border-border bg-surface p-4">
+    <div className="border border-border bg-surface p-4" style={{ borderRadius: 2 }}>
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-3 min-w-0">
-          <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-primary/10 text-primary shrink-0">
-            <Icon size={16} />
+          <div className="flex items-center justify-center w-10 h-10 border border-border text-fg shrink-0" style={{ borderRadius: 2 }}>
+            <Icon size={18} strokeWidth={1.75} aria-hidden="true" />
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <p className="text-sm font-semibold text-fg truncate">{integration.name || meta.label}</p>
-              <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-surface-2 text-muted border border-border">
-                {meta.label}
-              </span>
-              {!enabled && (
-                <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-surface-2 text-muted border border-border">
-                  Disabled
-                </span>
-              )}
-              {integration.configured === false && (
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
-                  <AlertTriangle size={10} /> Not configured
-                </span>
-              )}
+              <Tag caps={false}>{meta.label}</Tag>
+              {!enabled && <Tag dot>Disabled</Tag>}
+              {integration.configured === false && <Tag variant="warning" dot>Not configured</Tag>}
+              {enabled && integration.configured !== false && <Tag variant="success" dot>Active</Tag>}
             </div>
             {summary && <p className="text-xs text-muted mt-1 truncate">{summary}</p>}
           </div>
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
-          <button
-            onClick={handleTest}
-            disabled={busy !== null}
-            title="Send a test message"
-            className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs font-medium border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
-          >
-            {busy === 'test' ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+          <Button size="sm" variant="secondary" onClick={handleTest} disabled={busy !== null} loading={busy === 'test'} title="Send a test message">
+            {busy !== 'test' && <Send size={12} aria-hidden="true" />}
             Test
-          </button>
+          </Button>
 
           {canWrite && (
             <>
-              <button
+              <Button
+                size="sm"
+                variant="secondary"
                 onClick={handleToggle}
                 disabled={busy !== null}
-                title={enabled ? 'Disable' : 'Enable'}
+                loading={busy === 'toggle'}
                 aria-label={enabled ? 'Disable integration' : 'Enable integration'}
-                className="inline-flex items-center h-8 px-2.5 rounded-lg text-xs font-medium border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
               >
-                {busy === 'toggle' ? <Loader2 size={12} className="animate-spin" /> : enabled ? 'Disable' : 'Enable'}
-              </button>
-              <button
+                {enabled ? 'Disable' : 'Enable'}
+              </Button>
+              <Button
+                size="icon-sm"
+                variant="secondary"
                 onClick={() => onEdit?.(integration)}
                 title="Edit"
                 aria-label="Edit integration"
-                className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
               >
-                <Pencil size={13} />
-              </button>
+                <Pencil size={13} aria-hidden="true" />
+              </Button>
               {confirmDelete ? (
                 <div className="flex items-center gap-1.5">
-                  <button
-                    onClick={handleDelete}
-                    disabled={busy === 'delete'}
-                    aria-label="Confirm delete"
-                    className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-50 transition-colors"
-                  >
-                    {busy === 'delete' ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                  <Button size="sm" variant="danger" onClick={handleDelete} loading={busy === 'delete'} aria-label="Confirm delete">
+                    {busy !== 'delete' && <Check size={12} aria-hidden="true" />}
                     Confirm
-                  </button>
-                  <button
-                    onClick={() => setConfirmDelete(false)}
-                    aria-label="Cancel delete"
-                    className="h-8 w-8 flex items-center justify-center rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-                  >
-                    <X size={14} />
-                  </button>
+                  </Button>
+                  <Button size="icon-sm" variant="secondary" onClick={() => setConfirmDelete(false)} aria-label="Cancel delete">
+                    <X size={14} aria-hidden="true" />
+                  </Button>
                 </div>
               ) : (
-                <button
+                <Button
+                  size="icon-sm"
+                  variant="secondary"
                   onClick={() => setConfirmDelete(true)}
                   title="Delete"
                   aria-label="Delete integration"
-                  className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border text-muted hover:text-red-600 hover:border-red-200 hover:bg-red-50 dark:hover:text-red-400 dark:hover:border-red-900/40 dark:hover:bg-red-900/10 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
                 >
-                  <Trash2 size={13} />
-                </button>
+                  <Trash2 size={13} aria-hidden="true" />
+                </Button>
               )}
             </>
           )}
@@ -441,14 +384,7 @@ function IntegrationRow({ integration, canWrite, onEdit, onChanged }) {
       </div>
 
       {testResult && (
-        <div
-          className={[
-            'mt-3 flex items-start gap-2 rounded-lg border px-3 py-2 text-xs',
-            testResult.ok
-              ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400'
-              : 'border-red-500/20 bg-red-500/5 text-red-700 dark:text-red-400',
-          ].join(' ')}
-        >
+        <div className={`nubi-notice ${testResult.ok ? 'nubi-notice-success' : 'nubi-notice-error'} mt-3 text-xs`} role="status">
           {testResult.ok ? (
             <CheckCircle2 size={14} className="shrink-0 mt-0.5" />
           ) : (
@@ -476,16 +412,16 @@ function ConnectPicker({ onPick }) {
             key={kind}
             type="button"
             onClick={() => onPick(kind)}
-            className="group flex items-center gap-3 px-4 py-3 rounded-2xl border border-border bg-surface text-left hover:border-primary/40 hover:bg-surface-2/50 transition-colors"
+            className="group flex items-center gap-3 px-4 py-3 border border-border bg-surface text-left hover:border-ink transition-colors"
           >
-            <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-primary/10 text-primary shrink-0">
-              <Icon size={16} />
+            <div className="flex items-center justify-center w-10 h-10 border border-border text-fg shrink-0" style={{ borderRadius: 2 }}>
+              <Icon size={18} strokeWidth={1.75} aria-hidden="true" />
             </div>
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-fg">{meta.label}</p>
               <p className="text-xs text-muted truncate">{meta.blurb}</p>
             </div>
-            <Plus size={15} className="text-muted/50 group-hover:text-primary shrink-0 transition-colors" />
+            <Plus size={15} className="text-subtle group-hover:text-fg shrink-0 transition-colors" aria-hidden="true" />
           </button>
         )
       })}
@@ -584,7 +520,7 @@ export default function IntegrationsSettings() {
           </div>
         ) : integrations.length === 0 ? (
           <div className="flex flex-col items-center justify-center text-center py-8 px-6 gap-2">
-            <Plug size={26} className="text-muted/40" />
+            <Plug size={24} strokeWidth={1.5} className="text-subtle" aria-hidden="true" />
             <p className="text-sm font-medium text-fg">No integrations yet</p>
             <p className="text-xs text-muted max-w-sm">
               Connect a channel below to start receiving alerts where your team already works.

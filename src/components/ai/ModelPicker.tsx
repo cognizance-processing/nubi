@@ -16,7 +16,8 @@
  */
 
 import { useState, useEffect, useRef, useCallback, useId } from 'react'
-import { ChevronDown, Check, Lock, Sparkles } from 'lucide-react'
+import { ChevronDown, Check, Sparkles } from 'lucide-react'
+import Tag from '../ui/Tag.jsx'
 import { fetchAiProviders, formatModelPrice } from '../../lib/aiApi.js'
 import ProviderIcon from './ProviderIcon.jsx'
 
@@ -96,11 +97,11 @@ export default function ModelPicker({ value, onChange, disabled = false, classNa
         aria-expanded={open}
         aria-controls={listboxId}
         aria-label="Select AI model"
-        className="inline-flex items-center gap-1.5 pl-1.5 pr-2 py-1 text-[11px] font-sans font-medium text-muted bg-surface-2 border border-border rounded-lg hover:border-primary hover:text-fg disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer focus:outline-none focus:ring-2 focus:ring-ring transition-colors"
+        className="inline-flex items-center gap-1.5 pl-1.5 pr-2 py-1 text-[11px] font-sans font-medium text-muted bg-surface-2 border border-border rounded-[3px] hover:border-fg hover:text-fg disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer focus:outline-none focus:ring-2 focus:ring-ring transition-colors"
       >
         {isDefault ? (
-          <span className="flex items-center justify-center w-[22px] h-[22px] rounded-md bg-primary/10 shrink-0">
-            <Sparkles size={11} className="text-primary" />
+          <span className="flex items-center justify-center w-[20px] h-[20px] border border-frame-line bg-surface shrink-0" style={{ borderRadius: 2 }}>
+            <Sparkles size={11} strokeWidth={1.5} className="text-fg" aria-hidden="true" />
           </span>
         ) : (
           <ProviderIcon provider={activeProvider?.id} size={14} />
@@ -116,7 +117,7 @@ export default function ModelPicker({ value, onChange, disabled = false, classNa
           id={listboxId}
           role="listbox"
           aria-label="AI model"
-          className="absolute right-0 z-50 mt-1.5 w-72 max-h-[70vh] overflow-y-auto rounded-xl border border-border bg-surface shadow-xl py-1.5"
+          className="absolute right-0 z-50 mt-1.5 w-72 max-h-[70vh] overflow-y-auto rounded-[3px] border border-border bg-surface shadow-xl py-1.5"
         >
           {/* Nubi Default entry */}
           <button
@@ -126,12 +127,12 @@ export default function ModelPicker({ value, onChange, disabled = false, classNa
             onClick={() => pick(DEFAULT_VALUE, false)}
             className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-surface-2 transition-colors"
           >
-            <span className="flex items-center justify-center w-7 h-7 rounded-lg bg-primary/10 shrink-0">
-              <Sparkles size={14} className="text-primary" />
+            <span className="flex items-center justify-center w-7 h-7 border border-frame-line bg-surface shrink-0" style={{ borderRadius: 2 }}>
+              <Sparkles size={14} strokeWidth={1.5} className="text-fg" aria-hidden="true" />
             </span>
             <span className="min-w-0 flex-1">
               <span className="block text-[12.5px] font-medium text-fg">Nubi Default</span>
-              <span className="block text-[10.5px] text-muted">Recommended — provider picks its own default model</span>
+              <span className="block text-[11px] text-muted">Recommended — provider picks its own default model</span>
             </span>
             {isDefault && <Check size={13} className="text-primary shrink-0" />}
           </button>
@@ -146,13 +147,11 @@ export default function ModelPicker({ value, onChange, disabled = false, classNa
             <div key={p.id} className="mt-1 first:mt-0 border-t border-border/60 pt-1 first:border-t-0 first:pt-0">
               <div className="flex items-center gap-2 px-3 py-1.5">
                 <ProviderIcon provider={p.id} size={13} />
-                <span className="text-[10px] font-semibold text-muted uppercase tracking-wide truncate">
+                <span className="text-[11px] font-semibold text-muted uppercase tracking-wide truncate">
                   {p.display_name}
                 </span>
                 {!p.configured && (
-                  <span className="ml-auto inline-flex items-center gap-0.5 text-[9.5px] text-amber-600 dark:text-amber-400">
-                    <Lock size={9} /> needs setup
-                  </span>
+                  <Tag variant="warning" dot className="ml-auto">Needs setup</Tag>
                 )}
               </div>
               {p.models.map((m) => {
@@ -180,13 +179,13 @@ export default function ModelPicker({ value, onChange, disabled = false, classNa
                           {m.display_name}
                         </span>
                         {m.default && (
-                          <span className="text-[9.5px] font-semibold text-muted uppercase tracking-wide shrink-0">
+                          <span className="text-[11px] font-semibold text-muted uppercase tracking-wide shrink-0">
                             default
                           </span>
                         )}
                       </span>
                       {price && (
-                        <span className="block text-[10px] text-muted tabular-nums truncate">
+                        <span className="block text-[11px] text-muted tabular-nums truncate">
                           {price}
                         </span>
                       )}

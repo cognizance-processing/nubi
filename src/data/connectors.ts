@@ -65,7 +65,8 @@ export interface ConnectorType {
   apiSeed?: string
 }
 
-const logo = (file: string) => `/logos/connectors/${file}`
+/** Official marks live in public/logos/{tools,connectors}; see src/components/brand/registry.ts. */
+const logo = (file: string) => `/logos/${file}`
 
 // ── SQL dialect map (display-only frontend mirror) ──────────────────────────
 //
@@ -212,7 +213,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'PostgreSQL',
     description: 'The classic open-source relational database.',
     category: 'relational',
-    logo: logo('postgres.svg'),
+    logo: logo('tools/postgresql.svg'),
     color: '#336791',
     fields: sqlFields({ port: 5432, userDefault: 'postgres', ssl: true }),
     summary: hostSummary,
@@ -222,7 +223,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'MySQL',
     description: 'The world’s most popular open-source database.',
     category: 'relational',
-    logo: logo('mysql.svg'),
+    logo: logo('tools/mysql.svg'),
     color: '#00758F',
     fields: sqlFields({ port: 3306, userDefault: 'root' }),
     summary: hostSummary,
@@ -232,7 +233,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'MariaDB',
     description: 'Community-developed, MySQL-compatible fork.',
     category: 'relational',
-    logo: logo('mariadb.svg'),
+    logo: logo('connectors/mariadb.svg'),
     color: '#003545',
     fields: sqlFields({ port: 3306, userDefault: 'root' }),
     summary: hostSummary,
@@ -242,7 +243,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'Microsoft SQL Server',
     description: 'Microsoft’s enterprise T-SQL database.',
     category: 'relational',
-    logo: logo('sqlserver.svg'),
+    logo: logo('connectors/microsoftsqlserver.svg'),
     color: '#CC2927',
     fields: [
       ...sqlFields({ port: 1433 }),
@@ -263,7 +264,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'Oracle Database',
     description: 'Oracle’s flagship enterprise database.',
     category: 'relational',
-    logo: logo('oracle.svg'),
+    logo: logo('connectors/oracle.svg'),
     color: '#F80000',
     fields: [
       { key: 'host', label: 'Host', type: 'text', placeholder: 'localhost', required: true, width: 'half' },
@@ -281,7 +282,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'CockroachDB',
     description: 'Distributed SQL, Postgres wire-compatible.',
     category: 'relational',
-    logo: logo('cockroachdb.svg'),
+    logo: logo('connectors/cockroachlabs.svg'),
     color: '#6933FF',
     fields: sqlFields({ port: 26257, userDefault: 'root', ssl: true }),
     summary: hostSummary,
@@ -293,7 +294,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'Google Cloud SQL',
     description: 'Managed Postgres on Google Cloud (Postgres wire).',
     category: 'cloud',
-    logo: logo('cloudsql.svg'),
+    logo: logo('connectors/googlecloud.svg'),
     color: '#4285F4',
     fields: sqlFields({ port: 5432, userDefault: 'postgres', ssl: true }),
     summary: hostSummary,
@@ -303,7 +304,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'Azure SQL Database',
     description: 'Microsoft’s managed SQL Server in Azure.',
     category: 'cloud',
-    logo: logo('azuresql.svg'),
+    logo: logo('connectors/azuresqldatabase.svg'),
     color: '#0078D4',
     fields: [
       { key: 'host', label: 'Server', type: 'text', placeholder: 'myserver.database.windows.net', required: true, width: 'full' },
@@ -321,7 +322,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'Google BigQuery',
     description: 'Google’s serverless cloud data warehouse.',
     category: 'warehouse',
-    logo: logo('bigquery.svg'),
+    logo: logo('tools/googlebigquery.svg'),
     color: '#4285F4',
     fields: [
       { key: 'project_id', label: 'GCP Project ID', type: 'text', placeholder: 'my-gcp-project', required: true, width: 'full' },
@@ -341,7 +342,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'Snowflake',
     description: 'Cloud-native data warehouse with elastic compute.',
     category: 'warehouse',
-    logo: logo('snowflake.svg'),
+    logo: logo('tools/snowflake.svg'),
     color: '#29B5E8',
     fields: [
       { key: 'account', label: 'Account', type: 'text', placeholder: 'xy12345.us-east-1', required: true, width: 'half' },
@@ -359,7 +360,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'Amazon Redshift',
     description: 'AWS petabyte-scale warehouse (Postgres wire).',
     category: 'warehouse',
-    logo: logo('redshift.svg'),
+    logo: logo('connectors/amazonredshift.svg'),
     color: '#8C4FFF',
     fields: sqlFields({ port: 5439, userDefault: 'awsuser', ssl: true }),
     summary: hostSummary,
@@ -369,7 +370,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'Databricks',
     description: 'Databricks SQL warehouse.',
     category: 'warehouse',
-    logo: logo('databricks.svg'),
+    logo: logo('tools/databricks.svg'),
     color: '#FF3621',
     fields: [
       { key: 'server_hostname', label: 'Server hostname', type: 'text', placeholder: 'dbc-xxxx.cloud.databricks.com', required: true, width: 'full' },
@@ -385,7 +386,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'ClickHouse',
     description: 'Column-oriented OLAP database for real-time analytics.',
     category: 'warehouse',
-    logo: logo('clickhouse.svg'),
+    logo: logo('tools/clickhouse.svg'),
     color: '#FFCC01',
     fields: [
       { key: 'host', label: 'Host', type: 'text', placeholder: 'localhost', required: true, width: 'half' },
@@ -402,7 +403,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'Azure Synapse',
     description: 'Microsoft’s analytics warehouse (T-SQL).',
     category: 'warehouse',
-    logo: logo('azuresql.svg'),
+    logo: logo('connectors/azuresynapse.svg'),
     color: '#0078D4',
     fields: [
       { key: 'host', label: 'Server', type: 'text', placeholder: 'myworkspace.sql.azuresynapse.net', required: true, width: 'full' },
@@ -420,7 +421,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'Amazon Athena',
     description: 'Serverless SQL over data in Amazon S3.',
     category: 'engine',
-    logo: logo('athena.svg'),
+    logo: logo('connectors/amazonathena.svg'),
     color: '#5A30B5',
     fields: [
       { key: 'region', label: 'AWS region', type: 'text', placeholder: 'us-east-1', required: true, width: 'half' },
@@ -446,7 +447,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'Trino',
     description: 'Distributed SQL query engine for federated data.',
     category: 'engine',
-    logo: logo('trino.svg'),
+    logo: logo('connectors/trino.svg'),
     color: '#DD00A1',
     fields: [
       { key: 'host', label: 'Coordinator host', type: 'text', placeholder: 'trino.example.com', required: true, width: 'half' },
@@ -464,7 +465,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'Presto',
     description: 'Open-source distributed SQL query engine.',
     category: 'engine',
-    logo: logo('presto.svg'),
+    logo: logo('connectors/presto.svg'),
     color: '#5890FF',
     fields: [
       { key: 'host', label: 'Coordinator host', type: 'text', placeholder: 'presto.example.com', required: true, width: 'half' },
@@ -490,7 +491,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'Object storage (Parquet / DuckDB)',
     description: 'Query Parquet or DuckDB files in S3, GCS, or MinIO.',
     category: 'lake',
-    logo: logo('object_storage.svg'),
+    logo: logo('connectors/amazons3.svg'),
     color: '#569A31',
     fields: [
       {
@@ -519,7 +520,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     category: 'lake',
     // Backend maps `gcs` to the `duckdb_storage` factory; apiType carries that.
     apiType: 'duckdb_storage',
-    logo: logo('gcs.svg'),
+    logo: logo('connectors/googlecloudstorage.svg'),
     color: '#4285F4',
     fields: [
       {
@@ -584,7 +585,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'SFTP',
     description: 'Pull files over SSH (SFTP). Ingest into a queryable target.',
     category: 'lake',
-    logo: logo('sftp.svg'),
+    logo: logo('connectors/sftp.svg'),
     color: '#3B6E8F',
     fields: [
       { key: 'host', label: 'Host', type: 'text', placeholder: 'sftp.example.com', required: true, width: 'half' },
@@ -603,7 +604,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'FTP / FTPS',
     description: 'Pull files over FTP (FTPS by default). Ingest into a queryable target.',
     category: 'lake',
-    logo: logo('ftp.svg'),
+    logo: logo('connectors/ftp.svg'),
     color: '#6B7280',
     fields: [
       { key: 'host', label: 'Host', type: 'text', placeholder: 'ftp.example.com', required: true, width: 'half' },
@@ -632,7 +633,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     description: 'Local DuckDB / file database.',
     category: 'lake',
     hidden: true,
-    logo: logo('duckdb.svg'),
+    logo: logo('tools/duckdb.svg'),
     color: '#FFF000',
     fields: [
       { key: 'database', label: 'Database (file path)', type: 'text', placeholder: '/data/analytics.duckdb', required: true, width: 'full' },
@@ -653,7 +654,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     description: 'Built-in sample dataset — query it instantly, no setup.',
     category: 'lake',
     system: true,
-    logo: logo('demo.svg'),
+    logo: logo('connectors/demo.svg'),
     color: '#17b3a3',
     fields: [],
     summary: () => 'Built-in sample dataset',
@@ -671,7 +672,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     // seed is passed through to the API body — not a real connector_type.
     apiType: 'duckdb',
     apiSeed: 'demo',
-    logo: logo('demo.svg'),
+    logo: logo('connectors/demo.svg'),
     color: '#17b3a3',
     // No config fields: the backend provisions the parquet automatically.
     fields: [],
@@ -684,7 +685,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'HTTP / JSON API',
     description: 'Any REST API that returns JSON.',
     category: 'api',
-    logo: logo('http_json.svg'),
+    logo: logo('connectors/http-json.svg'),
     color: '#0f9e90',
     fields: [
       { key: 'base_url', label: 'Base URL', type: 'url', placeholder: 'https://api.example.com/v1', required: true, width: 'full' },
@@ -706,7 +707,7 @@ export const CONNECTOR_TYPES: ConnectorType[] = [
     label: 'JDBC (custom driver)',
     description: 'Connect any JDBC-compatible source with a driver JAR.',
     category: 'api',
-    logo: logo('jdbc.svg'),
+    logo: logo('connectors/jdbc.svg'),
     color: '#2456a6',
     fields: [
       { key: 'jdbc_url', label: 'JDBC URL', type: 'text', placeholder: 'jdbc:mysql://host:3306/db', required: true, width: 'full' },
