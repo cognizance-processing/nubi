@@ -16,9 +16,10 @@
 
 import DashboardEditor from './DashboardEditor.jsx'
 
-export default function EditorShell({ boardId = null, onSaved = undefined, onDirtyChange = undefined, onSetSave = undefined }: {
+export default function EditorShell({ boardId = null, onSaved = undefined, onSpecChange = undefined, onDirtyChange = undefined, onSetSave = undefined }: {
   boardId?: string | null
   onSaved?: (board: Record<string, any>) => void
+  onSpecChange?: (spec: Record<string, any>) => void
   onDirtyChange?: (dirty: boolean) => void
   onSetSave?: (save: () => Promise<Record<string, any>>) => void
 }) {
@@ -27,6 +28,7 @@ export default function EditorShell({ boardId = null, onSaved = undefined, onDir
       <DashboardEditor
         boardId={boardId}
         onSaved={onSaved}
+        onSpecChange={onSpecChange}
         onDirtyChange={onDirtyChange}
         onSetSave={onSetSave}
       />

@@ -124,7 +124,7 @@ export function ParamBindingSection({ widget, onChange, specVariables, onCreateV
         {loaded && widget.query_id && (
           <button
             onClick={() => { const n = `param${Object.keys(params).length + 1}`; if (!(n in params)) setParam(n, '') }}
-            className="w-full text-[11px] font-medium px-2 h-7 rounded-lg border border-dashed border-border hover:border-primary text-muted hover:text-primary transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
+            className="w-full text-[11px] font-medium px-2 h-7 rounded-lg border border-dashed border-border hover:border-fg text-muted hover:text-fg transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
             <Plus size={11} className="inline -mt-px mr-1" />Add a parameter by name
           </button>
         )}
@@ -162,14 +162,14 @@ export function ParamBindingSection({ widget, onChange, specVariables, onCreateV
               onLiteral={v => setParam(p.name, v)}
             />
             {connected && (
-              <p className="text-[10px] text-primary/80 flex items-center gap-1">
+              <p className="text-[10px] text-accent flex items-center gap-1">
                 <Link2 size={10} /> filled by the <span className="font-mono">{binding.ref}</span> filter
               </p>
             )}
             {canOfferVariable && (
               <button
                 onClick={() => { onCreateVariable(p.name); setParam(p.name, { ref: p.name }) }}
-                className="text-[10px] text-muted hover:text-primary underline underline-offset-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50 rounded">
+                className="text-[10px] text-muted hover:text-fg underline underline-offset-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50 rounded">
                 Connect a filter called “{p.name}”
               </button>
             )}

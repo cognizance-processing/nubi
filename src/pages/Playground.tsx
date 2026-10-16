@@ -116,15 +116,15 @@ function CacheBadge({ cacheStatus }) {
   if (!cacheStatus || cacheStatus === 'MISS') return null
   if (cacheStatus === 'SAMPLE') {
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
-        <Database size={9} />
+      <span className="nubi-tag nubi-tag-warning">
+        <Database size={10} strokeWidth={1.5} />
         SAMPLE
       </span>
     )
   }
   return (
-    <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-      <Zap size={9} />
+    <span className="nubi-tag nubi-tag-success">
+      <Zap size={10} strokeWidth={1.5} />
       {cacheStatus}
     </span>
   )
@@ -138,7 +138,7 @@ function PythonNotebookCell({ cell: _cell, index, total, onRemove, onMoveUp, onM
   const [collapsed, setCollapsed] = useState(false)
 
   return (
-    <div className="group/cell relative rounded-xl border border-border bg-surface overflow-hidden shadow-sm transition-shadow hover:shadow-md">
+    <div className="group/cell relative rounded-xl border border-border bg-surface overflow-hidden transition-colors hover:border-fg">
       {/* ── Cell header ─────────────────────────────────────────────── */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-surface-2/60">
         <div className="text-muted/30 cursor-grab shrink-0">
@@ -203,7 +203,7 @@ function PythonNotebookCell({ cell: _cell, index, total, onRemove, onMoveUp, onM
 
 function HistoryPanel({ history, onRerun, onClose }) {
   return (
-    <div className="flex flex-col bg-surface border border-border rounded-xl overflow-hidden shadow-lg">
+    <div className="flex flex-col bg-surface border border-border rounded-xl overflow-hidden shadow-pop">
       <div className="flex items-center justify-between px-3 py-2.5 border-b border-border bg-surface-2/60">
         <div className="flex items-center gap-1.5">
           <History size={13} className="text-muted" />
@@ -242,7 +242,7 @@ function HistoryPanel({ history, onRerun, onClose }) {
                 </div>
                 <button
                   onClick={() => onRerun(entry.sql)}
-                  className="shrink-0 h-6 w-6 flex items-center justify-center rounded text-muted hover:text-primary hover:bg-primary/10 transition-colors opacity-0 group-hover:opacity-100"
+                  className="shrink-0 h-6 w-6 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-primary/10 transition-colors opacity-0 group-hover:opacity-100"
                   title="Re-run in new cell"
                 >
                   <RotateCcw size={11} />
@@ -267,10 +267,10 @@ function SampleChips({ onSelect }) {
         <button
           key={i}
           onClick={() => onSelect(q.sql)}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium bg-surface border border-border text-muted hover:text-fg hover:border-primary/40 hover:bg-primary/5 rounded-lg transition-colors"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium bg-surface border border-border text-muted hover:text-fg hover:border-fg/40 hover:bg-primary/5 rounded-lg transition-colors"
           title={q.description}
         >
-          <Sparkles size={10} className="text-primary/60" />
+          <Sparkles size={10} className="text-accent/60" />
           {q.label}
         </button>
       ))}
@@ -321,7 +321,7 @@ function PlaygroundToolbar({
       <button
         onClick={onRunAll}
         disabled={runAllLoading}
-        className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity focus:outline-none focus:ring-2 focus:ring-ring"
+        className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold bg-[var(--ink)] text-[var(--ink-fg)] rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity focus:outline-none focus:ring-2 focus:ring-ring"
       >
         <Layers size={12} />
         {runAllLoading ? 'Running all…' : 'Run all'}
@@ -335,14 +335,14 @@ function PlaygroundToolbar({
         className={[
           'inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium rounded-lg border transition-colors focus:outline-none focus:ring-2 focus:ring-ring',
           historyOpen
-            ? 'bg-primary/10 border-primary/30 text-primary'
+            ? 'bg-primary/10 border-primary/30 text-accent'
             : 'bg-surface border-border text-muted hover:text-fg',
         ].join(' ')}
       >
         <History size={12} />
         History
         {historyCount > 0 && (
-          <span className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full text-[9px] font-bold bg-primary text-primary-fg">
+          <span className="nbc-meta inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-sm bg-[var(--ink)] !text-[var(--ink-fg)]">
             {historyCount}
           </span>
         )}
@@ -513,7 +513,7 @@ export default function Playground() {
           <div className="flex gap-3">
             <button
               onClick={addSqlCell}
-              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 transition-opacity focus:outline-none focus:ring-2 focus:ring-ring"
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-[var(--ink)] text-[var(--ink-fg)] rounded-lg hover:opacity-90 transition-opacity focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <Code2 size={14} />
               Add SQL cell
@@ -613,14 +613,14 @@ export default function Playground() {
       <div className="flex items-center gap-3 pt-2">
         <button
           onClick={addSqlCell}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-surface border border-border border-dashed text-muted hover:text-fg hover:border-solid hover:border-primary/40 rounded-lg transition-all"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-surface border border-border border-dashed text-muted hover:text-fg hover:border-solid hover:border-fg/40 rounded-lg transition-all"
         >
           <Plus size={11} />
           SQL cell
         </button>
         <button
           onClick={addPythonCell}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-surface border border-border border-dashed text-muted hover:text-fg hover:border-solid hover:border-primary/40 rounded-lg transition-all"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-surface border border-border border-dashed text-muted hover:text-fg hover:border-solid hover:border-fg/40 rounded-lg transition-all"
         >
           <Plus size={11} />
           Python cell
@@ -779,7 +779,7 @@ function SaveAsQuery({ sql }) {
       <button
         onClick={handleSave}
         disabled={saving}
-        className="inline-flex items-center gap-1.5 h-7 px-2.5 text-xs font-semibold bg-primary text-primary-fg rounded-md hover:opacity-90 disabled:opacity-50 transition-opacity"
+        className="inline-flex items-center gap-1.5 h-7 px-2.5 text-xs font-semibold bg-[var(--ink)] text-[var(--ink-fg)] rounded-md hover:opacity-90 disabled:opacity-50 transition-opacity"
       >
         <Save size={11} />
         {saving ? 'Saving…' : 'Save'}
@@ -868,7 +868,7 @@ function SqlNotebookCellAutoRun({ autoRunTrigger, onAutoRunComplete, ...props })
   const { index, total, onRemove, onMoveUp, onMoveDown } = props
 
   return (
-    <div className="group/cell relative rounded-xl border border-border bg-surface overflow-hidden shadow-sm transition-shadow hover:shadow-md">
+    <div className="group/cell relative rounded-xl border border-border bg-surface overflow-hidden transition-colors hover:border-fg">
       {/* ── Cell header ─────────────────────────────────────────────── */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-surface-2/60">
         <div className="text-muted/30 cursor-grab active:cursor-grabbing shrink-0">
@@ -944,7 +944,7 @@ function SqlNotebookCellAutoRun({ autoRunTrigger, onAutoRunComplete, ...props })
               <button
                 onClick={handleRun}
                 disabled={loading || !sql.trim()}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-[var(--ink)] text-[var(--ink-fg)] rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
               >
                 <Play size={11} />
                 {loading ? 'Running…' : 'Run'}
@@ -959,8 +959,7 @@ function SqlNotebookCellAutoRun({ autoRunTrigger, onAutoRunComplete, ...props })
 
           {/* ── Notice ────────────────────────────────────────────────── */}
           {notice && !loading && (
-            <div className="mx-3 mb-2 px-3 py-2 rounded-lg flex items-start gap-2 text-xs"
-              style={{ background: 'color-mix(in srgb, #f59e0b 8%, transparent)', color: '#d97706', border: '1px solid color-mix(in srgb, #f59e0b 20%, transparent)' }}>
+            <div className="nubi-notice nubi-notice-warning mx-3 mb-2 text-xs" role="status">
               <span className="shrink-0 mt-0.5">&#9888;</span>
               <span>{notice}</span>
             </div>
@@ -976,11 +975,11 @@ function SqlNotebookCellAutoRun({ autoRunTrigger, onAutoRunComplete, ...props })
           {/* ── Loading ───────────────────────────────────────────────── */}
           {loading && (
             <div className="flex items-center gap-3 px-4 py-6 border-t border-border text-sm text-muted">
-              <div className="h-4 w-4 rounded-full border-2 border-primary border-t-transparent animate-spin shrink-0" />
+              <div className="h-4 w-4 rounded-full border-2 border-[var(--ink)] border-t-transparent animate-spin shrink-0" />
               <span>
                 Streaming…
                 {streamedRows != null && (
-                  <span className="ml-2 font-mono text-xs text-primary">
+                  <span className="ml-2 font-mono text-xs text-accent">
                     {streamedRows.toLocaleString()} rows
                   </span>
                 )}
@@ -1006,8 +1005,7 @@ function SqlNotebookCellAutoRun({ autoRunTrigger, onAutoRunComplete, ...props })
 
           {/* ── Error ─────────────────────────────────────────────────── */}
           {!loading && error && (
-            <div className="mx-3 mb-3 px-3 py-2 rounded-lg text-xs font-mono"
-              style={{ background: 'color-mix(in srgb, #ef4444 8%, transparent)', color: '#dc2626', border: '1px solid color-mix(in srgb, #ef4444 20%, transparent)' }}>
+            <div className="nubi-notice nubi-notice-error mx-3 mb-3 text-xs font-mono" role="alert">
               {error}
             </div>
           )}

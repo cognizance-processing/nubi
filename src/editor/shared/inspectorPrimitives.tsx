@@ -19,6 +19,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type ComponentType } from 'react'
 import { resolveSwatchHex } from './colorValue.js'
 import { useLiveEdit } from '../liveEdit.jsx'
+import '../../dashboards/widgets/chrome.css'
 
 /**
  * Upstream commit interval while a colour is being dragged, in ms.
@@ -37,25 +38,16 @@ const GESTURE_SETTLE_MS = 350
 // Shared control styling. Targets a consistent ~32px control height across
 // inputs and selects, with calm focus rings and the app's design tokens.
 // Uses nubi-input / nubi-select CSS classes from the design system for parity.
-export const inputCls =
-  'w-full h-8 text-sm border border-border rounded-lg px-2.5 bg-surface text-fg ' +
-  'placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60 ' +
-  'focus:border-ring/40 hover:border-border/80 transition-all duration-150'
+export const inputCls = 'nubi-input nubi-input-sm'
 
-// Native <select> with a custom chevron (appearance-none) so it matches the
-// inputs exactly. The chevron is a STATIC, fully percent-encoded SVG data URL
-// (quotes → %22, spaces → %20) so (a) Tailwind's static scanner picks up the
-// arbitrary value and (b) the CSS minifier sees no raw quotes/parens in url().
-export const selectCls =
-  'w-full h-8 text-sm border border-border rounded-lg pl-2.5 pr-8 bg-surface text-fg appearance-none cursor-pointer ' +
-  'focus:outline-none focus:ring-2 focus:ring-ring/60 focus:border-ring/40 hover:border-border/80 transition-all duration-150 ' +
-  'bg-[length:14px] bg-[right_0.5rem_center] bg-no-repeat ' +
-  'bg-[url(data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2012%2012%22%20fill=%22none%22%20stroke=%22%238895a8%22%20stroke-width=%221.4%22%20stroke-linecap=%22round%22%20stroke-linejoin=%22round%22%3E%3Cpath%20d=%22M3%204.5%206%207.5%209%204.5%22/%3E%3C/svg%3E)]'
+// Native <select> with the design system's square chevron (the .nubi-select
+// background image), so it matches the inputs exactly in both themes.
+export const selectCls = 'nubi-input nubi-input-sm nubi-select'
 
 /** A field label used above inputs/selects. Consistent weight + spacing. */
 export function FieldLabel({ children, className = '' }) {
   return (
-    <label className={`block text-[11px] font-medium text-muted mb-1 leading-tight ${className}`}>
+    <label className={`block text-[12px] font-medium text-muted mb-1 leading-tight ${className}`}>
       {children}
     </label>
   )
@@ -64,7 +56,7 @@ export function FieldLabel({ children, className = '' }) {
 /** A small all-caps section header. */
 export function SectionLabel({ children }) {
   return (
-    <p className="text-[10px] font-semibold text-muted/80 uppercase tracking-[0.08em] leading-none">
+    <p className="nbc-label m-0">
       {children}
     </p>
   )
@@ -75,32 +67,26 @@ export function SectionLabel({ children }) {
  */
 export function Section({ title, icon: Icon, children, defaultOpen = true, right = null }: {
   title: ReactNode
-  icon?: ComponentType<{ size?: number; className?: string }>
+  icon?: ComponentType<{ size?: number; strokeWidth?: number; className?: string }>
   children: ReactNode
   defaultOpen?: boolean
   right?: ReactNode
 }) {
   return (
-    <details
-      open={defaultOpen}
-      className="group rounded-xl border border-border bg-surface-2/20 overflow-hidden transition-all"
-    >
-      <summary className="flex items-center justify-between gap-2 px-3 h-9 cursor-pointer select-none list-none hover:bg-surface-2/60 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60">
-        <span className="flex items-center gap-2 text-xs font-semibold text-fg">
-          {Icon && <Icon size={13} className="text-primary/70 shrink-0" />}
-          {title}
+    <details open={defaultOpen} className="nbc-section group">
+      <summary>
+        <span className="flex min-w-0 items-center gap-2">
+          {Icon && <Icon size={14} strokeWidth={1.5} className="shrink-0 text-muted" />}
+          <span className="truncate">{title}</span>
         </span>
         <span className="flex items-center gap-2">
           {right}
-          <svg
-            className="w-3 h-3 text-muted/50 transition-transform duration-200 group-open:rotate-90"
-            viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6"
-          >
-            <path d="M4.5 3l3 3-3 3" strokeLinecap="round" strokeLinejoin="round" />
+          <svg className="nbc-chev h-3 w-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+            <path d="M4.5 3l3 3-3 3" strokeLinecap="square" strokeLinejoin="miter" />
           </svg>
         </span>
       </summary>
-      <div className="px-3 pb-3 pt-2.5 space-y-3 border-t border-border/50">
+      <div className="nbc-section-body">
         {children}
       </div>
     </details>
@@ -115,29 +101,18 @@ export function ToggleRow({ label, checked, onChange, hint }: {
   hint?: ReactNode
 }) {
   return (
-    <label className="flex items-center justify-between gap-3 cursor-pointer py-0.5 group/toggle">
-      <span className="text-xs font-medium text-fg leading-snug">
+    <label className="flex items-center justify-between gap-3 cursor-pointer py-0.5">
+      <span className="text-[13px] font-medium text-fg leading-snug">
         {label}
-        {hint && <span className="block text-[10px] text-muted/70 font-normal mt-0.5 leading-relaxed">{hint}</span>}
+        {hint && <span className="block text-[12px] text-muted font-normal mt-0.5 leading-snug">{hint}</span>}
       </span>
       <button
         type="button"
         role="switch"
         aria-checked={checked}
         onClick={() => onChange(!checked)}
-        className={[
-          'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-all duration-200',
-          'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-surface',
-          checked ? 'bg-primary shadow-sm' : 'bg-border hover:bg-border/80',
-        ].join(' ')}
-      >
-        <span
-          className={[
-            'inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transform transition-transform duration-200',
-            checked ? 'translate-x-[1.125rem]' : 'translate-x-0.5',
-          ].join(' ')}
-        />
-      </button>
+        className="nbc-switch"
+      />
     </label>
   )
 }
@@ -154,13 +129,8 @@ export function ChipRow({ options, value, onChange, suffix = '' }) {
           key={opt}
           type="button"
           onClick={() => onChange(opt)}
-          className={[
-            'px-2.5 py-1 text-xs font-medium rounded-lg border transition-all duration-150',
-            'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
-            value === opt
-              ? 'bg-primary text-primary-fg border-primary shadow-sm'
-              : 'bg-surface text-muted border-border hover:border-primary/60 hover:text-fg hover:bg-surface-2',
-          ].join(' ')}
+          aria-pressed={value === opt}
+          className="nbc-chip"
         >
           {opt}{suffix}
         </button>
@@ -180,7 +150,7 @@ export function ChipRow({ options, value, onChange, suffix = '' }) {
  * Props: value, onChange(hex), fallback, title, size ('sm' | 'md')
  */
 export function ColorSwatch({ value, onChange, fallback = '#6366f1', title, size = 'md' }) {
-  const dims = size === 'sm' ? 'h-6 w-6 rounded' : 'h-8 w-10 rounded-lg'
+  const dims = size === 'sm' ? 'h-6 w-6 rounded-sm' : 'h-8 w-10 rounded-sm'
   const hex = useMemo(() => resolveSwatchHex(value, fallback), [value, fallback])
 
   // `draft` is the shade under the pointer RIGHT NOW; it is what the chip shows
@@ -258,7 +228,7 @@ export function ColorSwatch({ value, onChange, fallback = '#6366f1', title, size
       value={draft ?? hex}
       onChange={handleInput}
       onBlur={endGesture}
-      className={`${dims} shrink-0 border border-border bg-surface cursor-pointer transition-colors hover:border-border/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60`}
+      className={`${dims} shrink-0 border border-frame-line bg-surface cursor-pointer p-0.5 transition-colors hover:border-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
     />
   )
 }

@@ -160,7 +160,7 @@ export default function GitPanel() {
 
   if (!projectId) {
     return (
-      <div className="rounded-2xl border border-border bg-surface p-6">
+      <div className="ap-panel mb-6 p-5">
         <p className="text-sm text-muted">
           Select a project to configure git sync.
         </p>
@@ -173,22 +173,12 @@ export default function GitPanel() {
   const showForm = !connected || editing
 
   return (
-    <div className="rounded-2xl border border-border bg-surface overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center gap-3 px-6 py-4 border-b border-border">
-        <div
-          className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
-          style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
-        >
-          {form.provider === 'gitlab' ? (
-            <GitBranch size={18} className="text-white" />
-          ) : (
-            <Github size={18} className="text-white" />
-          )}
-        </div>
-        <div className="min-w-0">
-          <h2 className="font-display font-semibold text-base text-fg">Git sync</h2>
-          <p className="text-xs text-muted truncate">
+    <section className="ap-panel mb-6">
+      {/* Header — same ruled card header as every other settings card */}
+      <div className="ap-panel-head flex items-center gap-3" style={{ paddingInline: 20 }}>
+        <div className="min-w-0 flex-1">
+          <h2 className="ap-panel-title">Git sync</h2>
+          <p className="ap-panel-sub truncate" style={{ lineHeight: 1.5 }}>
             Mirror dashboards, queries, flows &amp; automations to a repo. Connectors are never synced.
           </p>
         </div>
@@ -196,18 +186,19 @@ export default function GitPanel() {
           type="button"
           onClick={loadStatus}
           disabled={loading}
-          className="ml-auto p-2 rounded-lg text-muted hover:text-fg hover:bg-bg transition-colors disabled:opacity-50"
+          aria-label="Refresh git status"
+          className="shrink-0 p-2 rounded-[var(--radius-control)] text-muted hover:text-fg hover:bg-surface-2 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
           title="Refresh status"
         >
           <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
         </button>
       </div>
 
-      <div className="p-6 space-y-5">
+      <div className="px-5 py-5 space-y-5">
         {/* Connected summary */}
         {connected && binding && (
-          <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-bg border border-border">
-            <CheckCircle size={18} className="text-emerald-500 shrink-0 mt-0.5" />
+          <div className="flex items-start gap-3 px-4 py-3 rounded-[var(--radius-control)] bg-bg border border-border">
+            <CheckCircle size={18} className="text-success shrink-0 mt-0.5" />
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 text-sm font-medium text-fg">
                 <span className="capitalize">{binding.provider}</span>
@@ -244,8 +235,7 @@ export default function GitPanel() {
               type="button"
               onClick={handlePush}
               disabled={busy !== null}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium text-white transition-opacity disabled:opacity-50"
-              style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-[var(--radius-control)] text-sm font-medium bg-[var(--ink)] text-[var(--ink-fg)] hover:bg-[var(--ink-hover)] transition-colors disabled:opacity-50"
             >
               {busy === 'push' ? (
                 <Loader2 size={16} className="animate-spin" />
@@ -258,7 +248,7 @@ export default function GitPanel() {
               type="button"
               onClick={handlePull}
               disabled={busy !== null}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium text-fg bg-bg border border-border hover:border-primary transition-colors disabled:opacity-50"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-[var(--radius-control)] text-sm font-medium text-fg bg-bg border border-border hover:border-fg transition-colors disabled:opacity-50"
             >
               {busy === 'pull' ? (
                 <Loader2 size={16} className="animate-spin" />
@@ -271,7 +261,7 @@ export default function GitPanel() {
             <button
               type="button"
               onClick={() => setGraphOpen(true)}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium text-fg bg-bg border border-border hover:border-primary transition-colors"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-[var(--radius-control)] text-sm font-medium text-fg bg-bg border border-border hover:border-fg transition-colors"
             >
               <GitBranch size={16} />
               Branch graph
@@ -282,17 +272,17 @@ export default function GitPanel() {
         {/* Connect / edit form */}
         {showForm && (
           <form onSubmit={handleConnect} className="space-y-4">
-            <div>
-              <label className="block text-xs font-medium text-muted mb-1.5">Provider</label>
+            <div className="nubi-field">
+              <label className="nubi-label">Provider</label>
               <div className="flex gap-2">
                 {PROVIDERS.map((p) => (
                   <button
                     key={p.id}
                     type="button"
                     onClick={() => setForm((f) => ({ ...f, provider: p.id }))}
-                    className={`inline-flex items-center gap-2 px-3 py-2 rounded-xl text-sm border transition-colors ${
+                    className={`inline-flex items-center gap-2 px-3 py-2 rounded-[var(--radius-control)] text-sm border transition-colors ${
                       form.provider === p.id
-                        ? 'border-primary text-fg bg-primary/5'
+                        ? 'border-[var(--ink)] text-fg bg-surface-2'
                         : 'border-border text-muted hover:text-fg'
                     }`}
                   >
@@ -303,46 +293,46 @@ export default function GitPanel() {
               </div>
             </div>
 
-            <div>
-              <label className="block text-xs font-medium text-muted mb-1.5">Repository URL</label>
+            <div className="nubi-field">
+              <label className="nubi-label">Repository URL</label>
               <input
                 type="url"
                 required
                 value={form.repo_url}
                 onChange={update('repo_url')}
                 placeholder="https://github.com/owner/repo.git"
-                className="w-full px-3 py-2 rounded-xl bg-bg border border-border text-sm text-fg placeholder:text-muted focus:outline-none focus:border-primary"
+                className="nubi-input nubi-input-md"
               />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-muted mb-1.5">Branch</label>
+              <div className="nubi-field">
+                <label className="nubi-label">Branch</label>
                 <input
                   type="text"
                   value={form.branch}
                   onChange={update('branch')}
                   placeholder="main"
-                  className="w-full px-3 py-2 rounded-xl bg-bg border border-border text-sm text-fg placeholder:text-muted focus:outline-none focus:border-primary"
+                  className="nubi-input nubi-input-md"
                 />
               </div>
-              <div>
-                <label className="block text-xs font-medium text-muted mb-1.5">
-                  Base path <span className="text-muted/70">(optional)</span>
+              <div className="nubi-field">
+                <label className="nubi-label">
+                  Base path <span className="text-muted font-normal">(optional)</span>
                 </label>
                 <input
                   type="text"
                   value={form.base_path}
                   onChange={update('base_path')}
                   placeholder="nubi/"
-                  className="w-full px-3 py-2 rounded-xl bg-bg border border-border text-sm text-fg placeholder:text-muted focus:outline-none focus:border-primary"
+                  className="nubi-input nubi-input-md"
                 />
               </div>
             </div>
 
-            <div>
-              <label className="block text-xs font-medium text-muted mb-1.5">
-                Access token {connected && <span className="text-muted/70">(leave blank to keep current)</span>}
+            <div className="nubi-field">
+              <label className="nubi-label">
+                Access token {connected && <span className="text-muted font-normal">(leave blank to keep current)</span>}
               </label>
               <input
                 type="password"
@@ -351,12 +341,12 @@ export default function GitPanel() {
                 onChange={update('token')}
                 placeholder={form.provider === 'gitlab' ? 'glpat-…' : 'ghp_… / github_pat_…'}
                 autoComplete="off"
-                className="w-full px-3 py-2 rounded-xl bg-bg border border-border text-sm text-fg placeholder:text-muted focus:outline-none focus:border-primary font-mono"
+                className="nubi-input nubi-input-md font-mono"
               />
             </div>
 
-            <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl bg-bg border border-border text-xs text-muted">
-              <ShieldCheck size={15} className="shrink-0 mt-0.5 text-emerald-500" />
+            <div className="flex items-start gap-2 px-3 py-2.5 rounded-[var(--radius-control)] bg-bg border border-border text-xs text-muted">
+              <ShieldCheck size={15} className="shrink-0 mt-0.5 text-success" />
               <span>
                 The token is stored encrypted server-side and is never written to the
                 repository or shown again. Connectors and their secrets are never synced.
@@ -366,8 +356,7 @@ export default function GitPanel() {
             <button
               type="submit"
               disabled={busy !== null}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium text-white transition-opacity disabled:opacity-50"
-              style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-[var(--radius-control)] text-sm font-medium bg-[var(--ink)] text-[var(--ink-fg)] hover:bg-[var(--ink-hover)] transition-colors disabled:opacity-50"
             >
               {busy === 'connect' ? (
                 <Loader2 size={16} className="animate-spin" />
@@ -381,13 +370,13 @@ export default function GitPanel() {
 
         {/* Feedback */}
         {result && (
-          <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-700 dark:text-emerald-300">
+          <div className="flex items-center gap-2 px-3 py-2.5 rounded-[var(--radius-control)] nubi-notice nubi-notice-success text-xs">
             <CheckCircle size={15} className="shrink-0" />
             {result.text}
           </div>
         )}
         {error && (
-          <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-xs text-red-700 dark:text-red-300">
+          <div className="flex items-start gap-2 px-3 py-2.5 rounded-[var(--radius-control)] nubi-notice nubi-notice-error text-xs">
             <AlertTriangle size={15} className="shrink-0 mt-0.5" />
             {error}
           </div>
@@ -396,6 +385,6 @@ export default function GitPanel() {
 
       {/* Per-environment commit graph + branch sync actions */}
       <GitGraphDialog open={graphOpen} onClose={() => setGraphOpen(false)} />
-    </div>
+    </section>
   )
 }

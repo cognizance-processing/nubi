@@ -2,13 +2,14 @@
  * VersionHistoryDialog — version history modal for a versioned resource
  * (flow / board / query).
  *
- * Renders the resource's checkpointed versions as a VersionTimeline (vertical
- * rail, newest first, env-pointer chips on pinned rows). Per-row actions:
+ * Renders the resource's checkpointed versions as a VersionTimeline (a ruled
+ * ledger, newest first, env-pointer Tags on pinned rows). Per-row actions:
  *   - View (when onView is given): fetches the FULL version (incl. config via
  *     getVersion) and hands it to the host so it can show that version
  *     read-only; the dialog closes afterwards.
- *   - Restore: write that version's config back into the draft (confirmed via
- *     window.confirm; calls onRestored() afterwards so the host can reload).
+ *   - Restore: write that version's config back into the draft. Asks first, in
+ *     a second dialog that says what will be overwritten; calls onRestored()
+ *     afterwards so the host can reload.
  *   - Promote: opens PromoteDialog pre-filled with that row's env (when the
  *     row is pinned to one) as the source.
  *
@@ -25,11 +26,19 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { History, Loader2, RefreshCw, X } from 'lucide-react'
+import { RefreshCw } from 'lucide-react'
 
 import { getVersion, listVersions, restoreVersion } from '../../lib/versions.js'
 import PromoteDialog from './PromoteDialog.jsx'
 import VersionTimeline from './VersionTimeline.jsx'
+import Modal from '../ui/Modal.jsx'
+import Button from '../ui/Button.jsx'
+import Skeleton from '../ui/Skeleton.jsx'
+import EmptyState from '../ui/EmptyState.jsx'
+import Tooltip from '../ui/Tooltip.jsx'
+import { toast } from '../ui/Toast.jsx'
+import { History } from 'lucide-react'
+import '../../dashboards/widgets/chrome.css'
 
 export default function VersionHistoryDialog({
   kind,
@@ -46,6 +55,7 @@ export default function VersionHistoryDialog({
   const [pointers, setPointers] = useState([])
   const [error, setError] = useState(null)
   const [restoring, setRestoring] = useState(null)   // version number in flight
+  const [confirming, setConfirming] = useState(null) // version row awaiting the restore confirm
   const [viewing, setViewing] = useState(null)       // version number being fetched for View
   const [promoteFrom, setPromoteFrom] = useState(null) // env key → PromoteDialog open
 
@@ -69,26 +79,15 @@ export default function VersionHistoryDialog({
     return () => clearTimeout(t)
   }, [open, resourceId, load])
 
-  // ESC to close (only when the nested PromoteDialog isn't open — it handles
-  // its own ESC).
-  useEffect(() => {
-    if (!open || promoteFrom !== null) return
-    const onKey = (e) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, promoteFrom, onClose])
-
-  if (!open) return null
-
   async function handleRestore(v) {
-    if (!window.confirm(`Restore version v${v.version} into the current draft? Unsaved draft changes are overwritten.`)) return
     setRestoring(v.version)
     try {
       await restoreVersion(kind, resourceId, v.version)
+      setConfirming(null)
       onRestored?.()
       onClose()
     } catch (cause) {
-      window.alert(cause?.message || 'Restore failed.')
+      toast.error(cause?.message || 'Restore failed.')
     } finally {
       setRestoring(null)
     }
@@ -100,7 +99,7 @@ export default function VersionHistoryDialog({
     const full = await getVersion(kind, resourceId, v.version)
     setViewing(null)
     if (!full) {
-      window.alert(`Could not load v${v.version}.`)
+      toast.error(`Could not load v${v.version}.`)
       return
     }
     onView?.(full)
@@ -109,108 +108,90 @@ export default function VersionHistoryDialog({
 
   return (
     <>
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm"
-        onClick={onClose}
-        aria-hidden="true"
-      />
-
-      {/* Dialog */}
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="version-history-title"
-        className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none"
+      <Modal
+        open={open && promoteFrom === null && confirming === null}
+        onClose={onClose}
+        size="lg"
+        title="Version history"
+        description={<>{kind} · <span className="font-medium text-fg">{resourceName}</span></>}
       >
-        <div
-          className="pointer-events-auto w-full max-w-lg max-h-[80dvh] bg-surface rounded-2xl border border-border shadow-2xl flex flex-col"
-          onClick={e => e.stopPropagation()}
-        >
-          {/* Header */}
-          <div className="shrink-0 flex items-start gap-3 px-6 pt-6 pb-4 border-b border-border">
-            <div className="shrink-0 w-10 h-10 rounded-xl flex items-center justify-center bg-primary/10">
-              <History size={18} className="text-primary" />
+        <Modal.Body className="!p-0" data-testid="version-history-dialog">
+          {loading && versions.length === 0 && (
+            <div className="px-6 py-4" role="status" aria-busy="true" aria-label="Loading versions">
+              <Skeleton.Rows rows={4} />
             </div>
-            <div className="flex-1 min-w-0">
-              <h2 id="version-history-title" className="font-display font-semibold text-base text-fg truncate">
-                Version history
-              </h2>
-              <p className="text-sm text-muted mt-0.5 truncate">
-                {kind} · <span className="font-medium text-fg">{resourceName}</span>
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={load}
-              disabled={loading}
-              aria-label="Refresh versions"
-              title="Refresh"
-              className="shrink-0 p-1.5 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors disabled:opacity-50"
-            >
-              <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close"
-              className="shrink-0 p-1.5 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-            >
-              <X size={16} />
-            </button>
-          </div>
+          )}
 
-          {/* Body — timeline */}
-          <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
-            {loading && versions.length === 0 && (
-              <div className="flex items-center gap-2 text-xs text-muted py-8 justify-center">
-                <Loader2 size={13} className="animate-spin" />
-                Loading versions…
-              </div>
-            )}
+          {!loading && error && (
+            <EmptyState
+              kind="error"
+              compact
+              title="Version history couldn't load"
+              description={error}
+              action={<Button size="sm" variant="secondary" onClick={load}>Retry</Button>}
+            />
+          )}
 
-            {!loading && error && (
-              <p className="text-xs text-red-500 text-center py-8">{error}</p>
-            )}
+          {!loading && !error && versions.length === 0 && (
+            <EmptyState
+              compact
+              icon={<History size={20} strokeWidth={1.5} />}
+              title="No versions yet"
+              description="A checkpoint snapshots the current draft so you can come back to it."
+            />
+          )}
 
-            {!loading && !error && versions.length === 0 && (
-              <div className="text-xs text-muted text-center py-10 rounded-xl border border-dashed border-border">
-                <History size={20} className="mx-auto mb-2 opacity-30" />
-                No versions yet. Create a checkpoint to snapshot the current draft.
-              </div>
-            )}
-
-            {versions.length > 0 && (
+          {versions.length > 0 && (
+            <div className="px-6 pb-2 pt-4">
               <VersionTimeline
                 versions={versions}
                 pointers={pointers}
                 restoring={restoring}
                 viewing={viewing}
                 onView={onView ? handleView : undefined}
-                onRestore={handleRestore}
+                onRestore={(v) => setConfirming(v)}
                 onPromote={(envKey) => setPromoteFrom(envKey)}
               />
-            )}
-          </div>
+            </div>
+          )}
+        </Modal.Body>
+        <Modal.Footer>
+          <Tooltip content="Refresh the list" side="top">
+            <Button variant="ghost" size="sm" onClick={load} loading={loading} aria-label="Refresh versions" className="mr-auto">
+              {!loading && <RefreshCw size={14} strokeWidth={1.5} aria-hidden="true" />}
+              Refresh
+            </Button>
+          </Tooltip>
+          <Button variant="secondary" size="sm" onClick={onClose}>Close</Button>
+        </Modal.Footer>
+      </Modal>
 
-          {/* Footer */}
-          <div className="shrink-0 flex items-center justify-end px-6 py-4 border-t border-border">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 rounded-xl text-sm font-medium border border-border text-fg hover:bg-surface-2 transition-colors"
-            >
-              Close
-            </button>
-          </div>
-        </div>
-      </div>
+      {/* Restore overwrites the draft, so say so before doing it. */}
+      <Modal
+        open={open && confirming !== null}
+        onClose={() => { if (restoring === null) setConfirming(null) }}
+        size="sm"
+        title={confirming ? `Restore v${confirming.version}?` : 'Restore'}
+        description="The draft is replaced by this version. Unsaved changes in the draft are lost."
+      >
+        <Modal.Footer>
+          <Button variant="ghost" size="sm" onClick={() => setConfirming(null)} disabled={restoring !== null}>Cancel</Button>
+          <Button
+            size="sm"
+            onClick={() => confirming && handleRestore(confirming)}
+            loading={restoring !== null}
+            data-testid="version-restore-confirm"
+          >
+            Restore into draft
+          </Button>
+        </Modal.Footer>
+      </Modal>
 
       {/* Nested promote dialog, pre-filled from the clicked row */}
       <PromoteDialog
         kind={kind}
         resourceId={resourceId}
-        open={promoteFrom !== null}
+        open={open && promoteFrom !== null}
         onClose={() => { setPromoteFrom(null); load() }}
         environments={environments}
         defaultFrom={promoteFrom ?? 'dev'}

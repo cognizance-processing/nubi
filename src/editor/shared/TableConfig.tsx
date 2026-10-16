@@ -57,8 +57,8 @@ function PinList({ label, columns, value, onChange }) {
               <button key={col} onClick={() => toggle(col)}
                 className={`px-2 h-7 text-[11px] font-mono rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
                   value.includes(col)
-                    ? 'bg-primary text-primary-fg border-primary'
-                    : 'bg-surface text-muted border-border hover:border-primary'
+                    ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]'
+                    : 'bg-surface text-muted border-border hover:border-fg'
                 }`}>
                 {col}
               </button>
@@ -216,7 +216,7 @@ export function ConditionalRulesEditor({ columns, rules, onChange }) {
       <div className="flex items-center justify-between">
         <p className="text-[10px] text-muted/70">When a cell matches, apply a style.</p>
         <button onClick={addRule}
-          className="text-[11px] font-medium px-2 h-6 rounded-lg border border-dashed border-border hover:border-primary text-muted hover:text-primary transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
+          className="text-[11px] font-medium px-2 h-6 rounded-lg border border-dashed border-border hover:border-fg text-muted hover:text-fg transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
           + Add rule
         </button>
       </div>
@@ -250,7 +250,7 @@ export function ConditionalRulesEditor({ columns, rules, onChange }) {
             <div className="flex h-7 rounded-lg border border-border overflow-hidden">
               {['cell', 'row'].map(sc => (
                 <button key={sc} onClick={() => setRule(idx, { scope: sc })}
-                  className={`px-2.5 text-[11px] font-medium capitalize transition-colors ${(r.scope ?? 'cell') === sc ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>
+                  className={`px-2.5 text-[11px] font-medium capitalize transition-colors ${(r.scope ?? 'cell') === sc ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>
                   {sc}
                 </button>
               ))}
@@ -266,7 +266,7 @@ export function ConditionalRulesEditor({ columns, rules, onChange }) {
                 onChange={v => setStyle(idx, { color: v })} />
             </label>
             <button onClick={() => setStyle(idx, { fontWeight: r.style?.fontWeight === 'bold' ? undefined : 'bold' })}
-              className={`w-7 h-7 text-[11px] rounded-lg border font-bold transition-colors ${r.style?.fontWeight === 'bold' ? 'border-primary text-primary bg-primary/5' : 'border-border text-muted hover:text-fg'}`}>
+              className={`w-7 h-7 text-[11px] rounded-lg border font-bold transition-colors ${r.style?.fontWeight === 'bold' ? 'border-[var(--ink)] text-fg bg-surface-2' : 'border-border text-muted hover:text-fg'}`}>
               B
             </button>
           </div>
@@ -314,7 +314,7 @@ export function TableConfig({ widget, onChange }) {
           <div className="flex items-center justify-between">
             <FieldLabel className="mb-0">Visible columns</FieldLabel>
             {selected.length > 0 && (
-              <button onClick={() => setProps('columns', [])} className="text-[10px] font-medium text-muted hover:text-primary transition-colors">
+              <button onClick={() => setProps('columns', [])} className="text-[10px] font-medium text-muted hover:text-fg transition-colors">
                 show all
               </button>
             )}
@@ -331,8 +331,8 @@ export function TableConfig({ widget, onChange }) {
               return (
                 <button key={col} onClick={() => toggleCol(col)}
                   className={`px-2 h-7 text-[11px] font-mono rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
-                    on && selected.includes(col) ? 'bg-primary text-primary-fg border-primary'
-                      : on ? 'bg-surface text-fg border-border hover:border-primary'
+                    on && selected.includes(col) ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]'
+                      : on ? 'bg-surface text-fg border-border hover:border-fg'
                       : 'bg-surface text-muted/50 border-border line-through'
                   }`}>
                   {col}

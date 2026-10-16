@@ -59,6 +59,7 @@ import { useGridInteraction, computeCellSize } from './useGridInteraction.js'
 import { useResize, RESIZE_HANDLES } from './useResize.js'
 import { compact } from './compaction.js'
 import { DraggableItem } from './DraggableItem.jsx'
+import '../widgets/chrome.css'
 
 export interface GridItem {
   i: string
@@ -234,7 +235,7 @@ export default function GridCanvas({
     gap: `${gap}px`,
     padding: `${pad.y}px ${pad.x}px`,
     position: 'relative',
-    // Column guides: a faint repeating gradient shown only while interacting.
+    // Column guides: faint repeating rules shown only while interacting.
     // One column pitch ≈ (usableWidth/cols + gap); we expose it as a CSS var the
     // .grid-dragging class consumes (see index.css). Falls back gracefully.
     ...(isInteracting ? { '--grid-col-w': `${columnPitch(effectiveWidth, cols, gap, pad.x)}px` } : {}),

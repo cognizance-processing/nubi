@@ -299,7 +299,7 @@ export function QueryBrowser({ entries, loading, value, strictEnv, onSelect, lis
               ].join(' ')}
             >
               <div className="flex items-start gap-1.5 min-w-0">
-                <FileCode2 size={12} className={`shrink-0 mt-0.5 ${isSelected ? 'text-primary' : 'text-muted'}`} />
+                <FileCode2 size={12} className={`shrink-0 mt-0.5 ${isSelected ? 'text-accent' : 'text-muted'}`} />
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-1">
                     <span className="text-xs font-medium text-fg truncate max-w-full">

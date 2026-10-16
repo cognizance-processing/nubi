@@ -36,6 +36,9 @@ import QueryStatusLink from './QueryStatusLink.jsx'
 import { useQuerySample } from './useInspectorData.js'
 import { FieldLabel } from './inspectorPrimitives.jsx'
 import { titleText, withTitleText } from './titleValue.js'
+import Button from '../../components/ui/Button.jsx'
+import Tooltip from '../../components/ui/Tooltip.jsx'
+import '../../dashboards/widgets/chrome.css'
 
 // Widget types that read from a query — they get the data rail.
 const DATA_WIDGETS = ['kpi', 'metric', 'table', 'pivot', 'chart']
@@ -59,13 +62,7 @@ function shortType(t = '') {
   return 'other'
 }
 
-const TYPE_CLS = {
-  text:  'text-sky-600 bg-sky-500/10 dark:text-sky-400',
-  num:   'text-emerald-600 bg-emerald-500/10 dark:text-emerald-400',
-  date:  'text-amber-600 bg-amber-500/10 dark:text-amber-400',
-  bool:  'text-violet-600 bg-violet-500/10 dark:text-violet-400',
-  other: 'text-muted bg-surface-2',
-}
+// Column types are data, so they read as mono labels, not coloured pills.
 
 /** Render a sample cell value without letting a long string blow out the rail. */
 function cellText(v) {
@@ -97,26 +94,26 @@ function DataRail({ widget, onChange, extraQueryIds }) {
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="p-3 space-y-1.5 border-b border-border shrink-0">
-        <FieldLabel className="flex items-center gap-1.5"><Database size={12} /> Query</FieldLabel>
+        <FieldLabel className="flex items-center gap-1.5"><Database size={14} strokeWidth={1.5} /> Query</FieldLabel>
         <QueryPicker value={widget.query_id} onChange={setQueryId} extraIds={extraQueryIds} />
         <QueryStatusLink queryId={widget.query_id} />
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
         {!widget.query_id && (
-          <p className="text-xs text-muted/70 leading-relaxed">
+          <p className="m-0 text-[13px] leading-snug text-muted">
             Pick a query above to see its columns and sample rows here.
           </p>
         )}
 
-        {loading && <p className="text-xs text-muted/70">Running query…</p>}
+        {loading && <p className="m-0 text-[13px] text-muted" role="status">Running query…</p>}
 
         {error && (
-          <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50/70 p-2.5 dark:border-red-900/60 dark:bg-red-950/30">
-            <AlertCircle size={13} className="text-red-500 mt-0.5 shrink-0" />
+          <div className="nubi-notice nubi-notice-error items-start" role="alert">
+            <AlertCircle size={14} strokeWidth={1.5} className="mt-0.5 shrink-0" />
             <div className="min-w-0">
-              <p className="text-[11px] font-medium text-red-600 dark:text-red-400">Query failed</p>
-              <p className="text-[10px] text-red-500/80 break-words mt-0.5">{error}</p>
+              <p className="m-0 text-[13px] font-semibold">Query failed</p>
+              <p className="m-0 mt-0.5 break-words font-mono text-[11px]">{error}</p>
             </div>
           </div>
         )}
@@ -129,9 +126,9 @@ function DataRail({ widget, onChange, extraQueryIds }) {
                 {columns.map(c => {
                   const t = shortType(c.type)
                   return (
-                    <li key={c.name} className="flex items-center justify-between gap-2 px-2 py-1 rounded-md hover:bg-surface-2/70">
-                      <span className="text-[11px] font-mono text-fg/85 truncate" title={c.name}>{c.name}</span>
-                      <span className={`shrink-0 px-1.5 rounded text-[9px] font-semibold uppercase tracking-wide ${TYPE_CLS[t]}`}>{t}</span>
+                    <li key={c.name} className="flex items-center justify-between gap-2 border-b border-border px-1 py-1.5 hover:bg-surface-2">
+                      <span className="font-mono text-[12px] text-fg truncate" title={c.name}>{c.name}</span>
+                      <span className="nbc-meta shrink-0 uppercase">{t}</span>
                     </li>
                   )
                 })}
@@ -140,14 +137,14 @@ function DataRail({ widget, onChange, extraQueryIds }) {
 
             <div className="space-y-1.5">
               <FieldLabel className="flex items-center gap-1.5">
-                <Table2 size={12} /> Sample · {rows.length} of {rowCount.toLocaleString()}
+                <Table2 size={14} strokeWidth={1.5} /> Sample · {rows.length} of {rowCount.toLocaleString()}
               </FieldLabel>
-              <div className="overflow-auto rounded-lg border border-border max-h-[280px]">
-                <table className="w-full text-[10px] border-collapse">
+              <div className="max-h-[280px] overflow-auto border border-border">
+                <table className="w-full border-collapse text-[11px] font-mono tabular-nums">
                   <thead className="sticky top-0 bg-surface-2">
                     <tr>
                       {columns.map(c => (
-                        <th key={c.name} className="px-1.5 py-1 text-left font-semibold text-muted whitespace-nowrap">{c.name}</th>
+                        <th key={c.name} className="border-b-2 border-[var(--ink)] px-1.5 py-1 text-left font-semibold text-muted whitespace-nowrap">{c.name}</th>
                       ))}
                     </tr>
                   </thead>
@@ -155,7 +152,7 @@ function DataRail({ widget, onChange, extraQueryIds }) {
                     {rows.map((r, i) => (
                       <tr key={i} className="border-t border-border/60">
                         {columns.map(c => (
-                          <td key={c.name} className="px-1.5 py-1 text-fg/75 whitespace-nowrap max-w-[120px] truncate" title={cellText(r[c.name])}>
+                          <td key={c.name} className="px-1.5 py-1 text-fg whitespace-nowrap max-w-[120px] truncate" title={cellText(r[c.name])}>
                             {cellText(r[c.name])}
                           </td>
                         ))}
@@ -198,40 +195,33 @@ export default function WidgetFocusShell({
   const frameWidth = PREVIEW_WIDTHS.find(p => p.key === previewWidth)?.width
 
   return createPortal(
-    <div className="fixed inset-0 z-[90] flex flex-col bg-bg" role="dialog" aria-modal="true" aria-label={`Edit ${widget.type} widget`}>
+    <div className="fixed inset-0 z-[90] flex flex-col bg-bg" role="dialog" aria-modal="true" aria-label={`Edit ${widget.type} widget`} data-testid="widget-focus-shell">
       {/* Header */}
-      <header className="flex items-center justify-between gap-3 px-4 h-12 border-b border-border shrink-0">
+      <header className="flex items-center justify-between gap-3 px-4 h-12 border-b-2 border-[var(--ink)] bg-surface shrink-0">
         <div className="flex items-center gap-2 min-w-0">
-          {Icon && <Icon size={15} className="text-primary shrink-0" />}
-          <h2 className="text-sm font-semibold text-fg capitalize truncate">{widget.type} widget</h2>
-          <span className="text-[10px] text-muted/50 font-mono truncate hidden sm:inline">{widget.id}</span>
+          {Icon && <Icon size={16} strokeWidth={1.5} className="shrink-0 text-muted" />}
+          <h2 className="m-0 truncate text-sm font-semibold capitalize text-fg">{widget.type} widget</h2>
+          <span className="nbc-meta hidden truncate sm:inline">{widget.id}</span>
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
           {onRemove && (
-            <button
-              type="button"
-              onClick={onRemove}
-              className="flex items-center gap-1 text-xs px-2 h-7 rounded-lg border border-transparent text-muted hover:text-red-500 hover:border-red-200 hover:bg-red-50/80 transition-all dark:hover:bg-red-950/40"
-            >
-              <Trash2 size={12} /> Remove
-            </button>
+            <Button type="button" variant="ghost" size="sm" onClick={onRemove} className="hover:!text-danger">
+              <Trash2 size={14} strokeWidth={1.5} aria-hidden="true" /> Remove
+            </Button>
           )}
-          <button
-            type="button"
-            onClick={onClose}
-            data-testid="widget-focus-done"
-            className="text-xs font-medium px-3 h-7 rounded-lg bg-primary text-white hover:opacity-90 transition-opacity"
-          >
-            Done
-          </button>
+          <Tooltip content="Back to canvas" kbd="Esc" side="bottom">
+            <Button type="button" size="sm" onClick={onClose} data-testid="widget-focus-done">
+              Done
+            </Button>
+          </Tooltip>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+            className="nbc-tool !px-0"
           >
-            <X size={16} />
+            <X size={16} strokeWidth={1.5} />
           </button>
         </div>
       </header>
@@ -239,39 +229,41 @@ export default function WidgetFocusShell({
       {/* Three zones */}
       <div className="flex-1 flex min-h-0">
         {isDataWidget && (
-          <aside className="w-[280px] shrink-0 border-r border-border bg-surface/40 flex flex-col">
+          <aside className="w-[280px] shrink-0 border-r border-border bg-surface flex flex-col" aria-label="Data">
             <DataRail widget={widget} onChange={onChange} extraQueryIds={extraQueryIds} />
           </aside>
         )}
 
-        <main className="flex-1 min-w-0 flex flex-col bg-surface-2/30">
-          <div className="flex items-center justify-end gap-1 px-3 h-9 border-b border-border/60 shrink-0">
-            {PREVIEW_WIDTHS.map(p => (
-              <button
-                key={p.key}
-                type="button"
-                onClick={() => setPreviewWidth(p.key)}
-                title={p.width ? `Preview at ${p.width}px` : 'Fill available width'}
-                className={`px-2 h-6 rounded-md text-[10px] font-semibold transition-colors ${
-                  previewWidth === p.key ? 'bg-primary/10 text-primary ring-1 ring-primary/40' : 'text-muted hover:text-fg hover:bg-surface-2'
-                }`}
-              >
-                {p.label}
-              </button>
-            ))}
+        <main className="flex-1 min-w-0 flex flex-col bg-bg">
+          <div className="flex items-center justify-between gap-1 px-3 h-10 border-b border-border bg-surface shrink-0">
+            <span className="nbc-label">Preview</span>
+            <div className="nbc-seg !h-7" role="group" aria-label="Preview width">
+              {PREVIEW_WIDTHS.map(p => (
+                <button
+                  key={p.key}
+                  type="button"
+                  onClick={() => setPreviewWidth(p.key)}
+                  title={p.width ? `Preview at ${p.width}px` : 'Fill available width'}
+                  aria-pressed={previewWidth === p.key}
+                  className="!px-2.5 !text-[12px]"
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           <div className="flex-1 min-h-0 overflow-auto p-6 flex justify-center items-start">
             <div
-              className="w-full rounded-xl border border-border bg-surface shadow-sm overflow-hidden shrink-0"
-              style={{ maxWidth: frameWidth ?? undefined, height: frameHeight, ...(frameStyle ?? {}) }}
+              className="w-full overflow-hidden border border-border bg-surface shrink-0"
+              style={{ maxWidth: frameWidth ?? undefined, height: frameHeight, borderRadius: 2, ...(frameStyle ?? {}) }}
             >
               {preview}
             </div>
           </div>
         </main>
 
-        <aside className="w-[340px] shrink-0 border-l border-border overflow-y-auto">
+        <aside className="w-[340px] shrink-0 border-l border-border bg-surface overflow-y-auto" aria-label="Settings">
           {config}
         </aside>
       </div>

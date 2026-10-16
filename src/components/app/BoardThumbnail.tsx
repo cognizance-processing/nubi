@@ -94,18 +94,16 @@ export default function BoardThumbnail({ boardId, spec = undefined, enabled = tr
   return (
     <div
       ref={hostRef}
-      className={`relative w-full h-full transition-colors duration-500 ${className}`}
+      className={`relative w-full h-full ${className}`}
       // Match the backdrop to whatever is on show, so the letterbox left by
-      // `object-contain` is invisible rather than a mystery band. When the real
-      // render is up this mirrors its page colour for the same theme
-      // (svg_render._PAGE_BG); the wireframe uses theme tokens directly.
-      style={{ background: url ? (isDark ? '#111a2e' : '#ffffff') : 'var(--surface)' }}
+      // `object-contain` is a quiet sheet colour rather than a mystery band.
+      style={{ background: 'var(--surface)' }}
     >
       {/* The miniature stays mounted underneath: it is the fallback for boards
           the renderer can't do (no Node, legacy HTML, unparseable spec) and it
           prevents a flash of empty card before the render arrives. */}
       <div
-        className="absolute inset-0 transition-opacity duration-500"
+        className="absolute inset-0 transition-opacity duration-300"
         style={{ opacity: url ? 0 : 1 }}
       >
         <BoardMiniature spec={spec} className="w-full h-full" />
@@ -121,7 +119,7 @@ export default function BoardThumbnail({ boardId, spec = undefined, enabled = tr
           // edges off — silently deleting real widgets from the picture. The
           // server caps the render's aspect so the letterbox stays small, and
           // top-anchored so a tall board shows its head.
-          className="absolute inset-0 w-full h-full object-contain object-top transition-opacity duration-500"
+          className="absolute inset-0 w-full h-full object-contain object-top transition-opacity duration-300"
           style={{ opacity: 1 }}
         />
       )}

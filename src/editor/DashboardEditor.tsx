@@ -57,7 +57,13 @@ import {
 } from '../lib/widgetLibrary.js'
 import Button from '../components/ui/Button.jsx'
 import Spinner from '../components/ui/Spinner.jsx'
+import Tooltip from '../components/ui/Tooltip.jsx'
+import Modal from '../components/ui/Modal.jsx'
+import Tag from '../components/ui/Tag.jsx'
+import EmptyState from '../components/ui/EmptyState.jsx'
+import { EmptyBoards } from '../components/illustrations/index.js'
 import { toast } from '../components/ui/Toast.jsx'
+import '../dashboards/widgets/chrome.css'
 
 // Device viewport presets for the editor's responsive preview/edit switcher.
 const DEVICES = [
@@ -607,7 +613,7 @@ function SectionConfig({ widget, onChange }) {
         <div className="flex h-8 rounded-lg border border-border overflow-hidden">
           {['left', 'center', 'right'].map(a => (
             <button key={a} onClick={() => setProps('align', a)}
-              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${align === a ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{a}</button>
+              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${align === a ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{a}</button>
           ))}
         </div>
       </div>
@@ -705,7 +711,7 @@ function ImageConfig({ widget, onChange }) {
         <div className="flex h-8 rounded-lg border border-border overflow-hidden">
           {['contain', 'cover'].map(f => (
             <button key={f} onClick={() => setProps('fit', f)}
-              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.fit ?? 'contain') === f ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{f}</button>
+              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.fit ?? 'contain') === f ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{f}</button>
           ))}
         </div>
       </div>
@@ -714,7 +720,7 @@ function ImageConfig({ widget, onChange }) {
         <div className="flex h-8 rounded-lg border border-border overflow-hidden">
           {['left', 'center', 'right'].map(a => (
             <button key={a} onClick={() => setProps('align', a)}
-              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.align ?? 'center') === a ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{a}</button>
+              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.align ?? 'center') === a ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{a}</button>
           ))}
         </div>
       </div>
@@ -744,7 +750,7 @@ function DividerConfig({ widget, onChange }) {
         <div className="flex h-8 rounded-lg border border-border overflow-hidden">
           {['horizontal', 'vertical'].map(o => (
             <button key={o} onClick={() => setProps('orientation', o)}
-              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${orientation === o ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{o}</button>
+              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${orientation === o ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{o}</button>
           ))}
         </div>
         <p className="text-[10px] text-muted/70 mt-1">
@@ -899,7 +905,7 @@ function DateDisplayConfig({ widget, onChange, spec }) {
           <div className="flex h-8 rounded-lg border border-border overflow-hidden">
             {['left', 'center', 'right'].map(a => (
               <button key={a} onClick={() => setProps('align', a)}
-                className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.align ?? 'left') === a ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{a}</button>
+                className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.align ?? 'left') === a ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{a}</button>
             ))}
           </div>
         </div>
@@ -946,14 +952,14 @@ function BreadcrumbConfig({ widget, onChange, spec }) {
             <div className="flex items-center gap-1">
               <div className="flex flex-col">
                 <button type="button" onClick={() => move(i, -1)} disabled={i === 0}
-                  className="h-3 leading-none text-muted/60 hover:text-primary disabled:opacity-30" title="Move up">▲</button>
+                  className="h-3 leading-none text-muted/60 hover:text-fg disabled:opacity-30" title="Move up">▲</button>
                 <button type="button" onClick={() => move(i, 1)} disabled={i === tracked.length - 1}
-                  className="h-3 leading-none text-muted/60 hover:text-primary disabled:opacity-30" title="Move down">▼</button>
+                  className="h-3 leading-none text-muted/60 hover:text-fg disabled:opacity-30" title="Move down">▼</button>
               </div>
               <span className="flex-1 text-xs font-medium text-fg truncate">{name}</span>
               <button
                 onClick={() => setTracked(tracked.filter(n => n !== name))}
-                className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-red-500 hover:bg-red-500/10 transition-colors"
+                className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-danger hover:bg-[var(--danger-bg)] transition-colors"
                 title="Stop tracking"
               >
                 <Trash2 size={12} />
@@ -1073,7 +1079,7 @@ function StepperConfig({ widget, onChange }) {
         <div className="flex h-8 rounded-lg border border-border overflow-hidden">
           {[['one', 'One at a time'], ['all', 'All together']].map(([v, lbl]) => (
             <button key={v} onClick={() => setProps({ display: v === 'one' ? undefined : v })}
-              className={`flex-1 text-[11px] font-medium transition-colors ${(props.display ?? 'one') === v ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{lbl}</button>
+              className={`flex-1 text-[11px] font-medium transition-colors ${(props.display ?? 'one') === v ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{lbl}</button>
           ))}
         </div>
         <p className="text-[10px] text-muted/70 mt-1">
@@ -1086,7 +1092,7 @@ function StepperConfig({ widget, onChange }) {
         <div className="flex h-8 rounded-lg border border-border overflow-hidden">
           {['horizontal', 'vertical'].map(o => (
             <button key={o} onClick={() => setProps({ orientation: o })}
-              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.orientation ?? 'horizontal') === o ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{o}</button>
+              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.orientation ?? 'horizontal') === o ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{o}</button>
           ))}
         </div>
       </div>
@@ -1096,7 +1102,7 @@ function StepperConfig({ widget, onChange }) {
           <div className="flex h-8 rounded-lg border border-border overflow-hidden">
             {['labels', 'dots'].map(v => (
               <button key={v} onClick={() => setProps({ variant: v })}
-                className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.variant ?? 'labels') === v ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>{v}</button>
+                className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.variant ?? 'labels') === v ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{v}</button>
             ))}
           </div>
         </div>
@@ -1106,7 +1112,7 @@ function StepperConfig({ widget, onChange }) {
         <div className="flex items-center justify-between mb-2 mt-2">
           <FieldLabel className="!mb-0">Steps ({steps.length})</FieldLabel>
           <button onClick={addStep}
-            className="flex items-center gap-1 text-[11px] font-medium text-primary hover:text-primary/80 transition-colors">
+            className="flex items-center gap-1 text-[11px] font-medium text-accent hover:text-fg transition-colors">
             <Plus size={12} /> Add step
           </button>
         </div>
@@ -1134,7 +1140,7 @@ function StepperConfig({ widget, onChange }) {
                     className="p-1 rounded text-muted hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed" title="Move down">
                     <ChevronDown size={13} />
                   </button>
-                  <button onClick={() => removeStep(i)} className="p-1 rounded text-muted hover:text-red-500" title="Remove step">
+                  <button onClick={() => removeStep(i)} className="p-1 rounded text-muted hover:text-danger" title="Remove step">
                     <Trash2 size={13} />
                   </button>
                 </div>
@@ -1172,7 +1178,7 @@ function DrilldownSection({ widget, onChange }) {
   }
   return (
     <Section title="Drilldown / cross-filter" defaultOpen={false}
-      right={enabled ? <span className="text-[10px] text-primary font-medium">on</span> : null}>
+      right={enabled ? <span className="text-[10px] text-accent font-medium">on</span> : null}>
       <p className="text-[10px] text-muted/70 leading-relaxed">
         Make this chart a filter source. Clicking a data point sets a dashboard
         variable; other widgets bound to it (via Parameters) re-query.
@@ -1301,7 +1307,7 @@ function VariablesEditor({ variables, onChange }) {
       <div className="flex items-center justify-between">
         <SectionLabel>Dashboard variables</SectionLabel>
         <button onClick={addVar}
-          className="text-[11px] font-medium px-2 h-6 rounded-lg border border-dashed border-border hover:border-primary text-muted hover:text-primary transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
+          className="text-[11px] font-medium px-2 h-6 rounded-lg border border-dashed border-border hover:border-fg text-muted hover:text-fg transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
           + Add
         </button>
       </div>
@@ -1357,8 +1363,8 @@ function StylePresetChips({ presets, activeKey, onSelect }) {
             'px-3 py-1.5 text-xs font-medium rounded-lg border transition-all duration-150',
             'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
             activeKey === preset.key
-              ? 'bg-primary text-primary-fg border-primary shadow-sm'
-              : 'bg-surface text-muted border-border hover:border-primary/60 hover:text-fg hover:bg-surface-2',
+              ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]'
+              : 'bg-surface text-muted border-border hover:border-fg hover:text-fg hover:bg-surface-2',
           ].join(' ')}
         >
           {preset.label}
@@ -1518,7 +1524,7 @@ function WidgetAppearanceSection({ widget, onChange }) {
       </Section>
 
       <Section title="Custom HTML" defaultOpen={false}
-        right={widget.html ? <span className="text-[10px] text-primary font-medium">active</span> : null}>
+        right={widget.html ? <span className="text-[10px] text-accent font-medium">active</span> : null}>
         <p className="text-[10px] text-muted/70 leading-relaxed">
           Replaces the default widget body with your own sanitized HTML — inline styles welcome. Tokens pull live query data.
         </p>
@@ -1624,7 +1630,7 @@ function DashboardPanel({ spec, onSpecChange }) {
               const active = (layout.compaction ?? 'free') === m.id
               return (
                 <button key={m.id} onClick={() => setLayout({ compaction: m.id })} title={m.hint}
-                  className={`px-2 py-1.5 text-xs font-medium rounded-lg border text-left transition-all ${active ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-fg border-border hover:border-primary hover:text-primary'}`}>
+                  className={`px-2 py-1.5 text-xs font-medium rounded-lg border text-left transition-all ${active ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]' : 'bg-surface text-fg border-border hover:border-fg hover:text-fg'}`}>
                   {m.label}
                 </button>
               )
@@ -1726,16 +1732,13 @@ function ConfigPanel({
 
   if (!widget) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-sm text-muted py-10 px-5 text-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-surface-2 flex items-center justify-center">
-          <Settings2 size={18} className="text-muted/50" />
-        </div>
-        <div>
-          <p className="text-sm font-medium text-fg/80">Nothing selected</p>
-          <p className="text-xs text-muted/70 mt-1 leading-relaxed">Click a widget on the canvas to configure it.</p>
-        </div>
-        <p className="text-[11px] text-muted/50 leading-relaxed">
-          Background, grid &amp; variables live in the <span className="text-fg/70 font-medium">Dashboard</span> tab.
+      <div className="flex h-full flex-col px-5 pt-6" data-testid="config-empty">
+        <p className="nbc-label m-0">Nothing selected</p>
+        <p className="mt-2 mb-0 text-[13px] leading-snug text-muted">
+          Click a widget on the canvas to configure it. Press <kbd className="nubi-kbd">⏎</kbd> to open it in focus mode.
+        </p>
+        <p className="mt-4 mb-0 border-t border-border pt-3 text-[12px] leading-snug text-muted">
+          Background, grid and variables live in the <span className="font-semibold text-fg">Dashboard</span> panel.
         </p>
       </div>
     )
@@ -1794,42 +1797,38 @@ function ConfigPanel({
   return (
     <div className="flex flex-col h-full min-h-0">
       {hasPinned && (
-        <div className="shrink-0 p-3 pb-0">
+        <div className="shrink-0">
           {/* Widget header */}
           {!focus && (
-            <div className="flex items-center justify-between gap-2 pb-3 border-b border-border/60">
-              <h3 className="flex items-center gap-2 text-sm font-semibold text-fg capitalize">
-                {(() => { const I = WIDGET_ICONS[widget.type]; return I ? <I size={14} className="text-primary" /> : null })()}
-                {widget.type} widget
-              </h3>
+            <div className="flex items-center justify-between gap-2 px-3 pt-3 pb-2">
+              <div className="flex min-w-0 items-center gap-2">
+                {(() => { const I = WIDGET_ICONS[widget.type]; return I ? <I size={16} strokeWidth={1.5} className="shrink-0 text-muted" /> : null })()}
+                <h3 className="m-0 truncate text-sm font-semibold capitalize text-fg">{widget.type}</h3>
+                <span className="nbc-meta truncate" title={widget.id}>{widget.id}</span>
+              </div>
               <button
                 onClick={onRemove}
                 title="Remove widget"
-                className={[
-                  'flex items-center gap-1 text-xs px-2 h-7 rounded-lg border border-transparent',
-                  'text-muted hover:text-red-500 hover:border-red-200 hover:bg-red-50/80',
-                  'transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400/60',
-                  'dark:hover:bg-red-950/40',
-                ].join(' ')}
+                aria-label="Remove widget"
+                className="nbc-tool hover:!text-danger"
               >
-                <Trash2 size={12} /> Remove
+                <Trash2 size={14} strokeWidth={1.5} /> Remove
               </button>
             </div>
           )}
 
           {tabDefs.length > 1 && (
-            <div className="flex items-center gap-1 border-b border-border/60 py-2" data-testid="config-tabs">
+            <div className="nbc-tabs" role="tablist" aria-label="Widget settings" data-testid="config-tabs">
               {tabDefs.map(t => (
                 <button
                   key={t.id}
                   type="button"
+                  role="tab"
+                  aria-selected={effectiveTab === t.id}
                   onClick={() => setActiveTab(t.id)}
                   data-testid={`config-tab-${t.id}`}
-                  className={`flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider px-2 py-1 rounded-md transition-colors ${
-                    effectiveTab === t.id ? 'bg-primary/10 text-primary' : 'text-muted hover:text-fg'
-                  }`}
+                  className="nbc-tab"
                 >
-                  <t.icon size={11} />
                   {t.label}
                 </button>
               ))}
@@ -1886,7 +1885,7 @@ function ConfigPanel({
                   relationship between a widget and its data was a typed id. */}
               <QueryStatusLink queryId={widget.query_id} />
               {autoBound?.widgetId === widget.id && (
-                <p className="text-[10px] text-primary/90 flex items-start gap-1 leading-relaxed"
+                <p className="text-[10px] text-accent flex items-start gap-1 leading-relaxed"
                   data-testid="param-autobind-note">
                   <Link2 size={11} className="mt-px flex-none" />
                   <span>
@@ -1960,7 +1959,6 @@ function ConfigPanel({
         </div>
       )}
 
-      <p className="text-[10px] text-muted/50 pt-1 font-mono">{widget.id}</p>
       </div>
     </div>
   )
@@ -1984,8 +1982,8 @@ function RefWidgetBanner({
 
   if (isSharedEditing) {
     return (
-      <div className="rounded-xl border border-primary/40 bg-primary/5 p-3 space-y-2" data-testid="ref-widget-shared-editing">
-        <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
+      <div className="rounded-xl border border-accent bg-[var(--accent-soft)] p-3 space-y-2" data-testid="ref-widget-shared-editing">
+        <div className="flex items-center gap-1.5 text-xs font-semibold text-accent">
           <Users size={13} /> Editing shared definition
         </div>
         <p className="text-[11px] text-muted/80 leading-relaxed">
@@ -1998,7 +1996,7 @@ function RefWidgetBanner({
             onClick={onSaveShared}
             disabled={savingShared}
             data-testid="ref-widget-save-shared"
-            className="flex-1 h-8 inline-flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 transition-opacity disabled:opacity-50 disabled:pointer-events-none focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            className="flex-1 h-8 inline-flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg bg-[var(--ink)] text-[var(--ink-fg)] hover:opacity-90 transition-opacity disabled:opacity-50 disabled:pointer-events-none focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
           >
             {savingShared ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
             {savingShared ? 'Saving…' : 'Save shared changes'}
@@ -2020,7 +2018,7 @@ function RefWidgetBanner({
     <div className="rounded-xl border border-border bg-surface-2/40 p-3 space-y-2" data-testid="ref-widget-banner">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 min-w-0 text-xs font-semibold text-fg">
-          <Link2 size={13} className={isBroken ? 'text-red-500 shrink-0' : 'text-primary shrink-0'} />
+          <Link2 size={13} className={isBroken ? 'text-danger shrink-0' : 'text-accent shrink-0'} />
           <span className="truncate">
             {isBroken ? 'Broken reference' : `Linked to “${libraryName ?? widget.ref}”`}
           </span>
@@ -2029,7 +2027,7 @@ function RefWidgetBanner({
       </div>
 
       {isBroken ? (
-        <p className="text-[11px] text-red-500 leading-relaxed" data-testid="ref-widget-broken-notice">
+        <p className="text-[11px] text-danger leading-relaxed" data-testid="ref-widget-broken-notice">
           The library entry this widget points to (id {widget.ref}) no longer
           exists. This widget renders a broken placeholder everywhere it's
           used — detach it to keep this instance, or remove it.
@@ -2051,7 +2049,7 @@ function RefWidgetBanner({
                 type="button"
                 onClick={() => onResetOverride(path)}
                 data-testid={`ref-widget-reset-${path}`}
-                className="shrink-0 text-[10px] font-medium text-muted/70 hover:text-primary underline-offset-2 hover:underline transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 rounded"
+                className="shrink-0 text-[10px] font-medium text-muted/70 hover:text-fg underline-offset-2 hover:underline transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 rounded"
               >
                 Reset to library value
               </button>
@@ -2066,7 +2064,7 @@ function RefWidgetBanner({
             type="button"
             onClick={onEditScope}
             data-testid="ref-widget-edit-scope"
-            className="flex-1 h-8 inline-flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg border border-border text-fg hover:border-primary/60 hover:text-primary transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            className="flex-1 h-8 inline-flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg border border-border text-fg hover:border-fg hover:text-fg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
           >
             <Users size={12} /> Edit shared definition…
           </button>
@@ -2075,7 +2073,7 @@ function RefWidgetBanner({
           type="button"
           onClick={onDetach}
           data-testid="ref-widget-detach"
-          className="flex-1 h-8 inline-flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg border border-border text-fg hover:border-amber-500/60 hover:text-amber-600 dark:hover:text-amber-400 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          className="flex-1 h-8 inline-flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg border border-border text-fg hover:border-fg hover:text-fg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
         >
           <Unlink size={12} /> Detach
         </button>
@@ -2142,7 +2140,7 @@ function SaveToLibrarySection({ widget, onSaved }) {
         data-testid="library-save-btn"
         className={[
           'w-full flex items-center justify-center gap-1.5 h-8 rounded-lg border border-border',
-          'bg-surface text-xs font-medium text-fg hover:border-primary/60 hover:text-primary',
+          'bg-surface text-xs font-medium text-fg hover:border-fg hover:text-fg',
           'transition-colors disabled:opacity-50 disabled:pointer-events-none',
         ].join(' ')}
       >
@@ -2195,128 +2193,112 @@ function AddPanel({ onAdd, onAddReference, onAddDetachedCopy, library, libraryLo
       {/* Pinned so the search box stays reachable while the list below
           scrolls — otherwise a long palette/library list pushes it out of
           view and there's no way to search without scrolling back up. */}
-      <div className="p-3 pb-2.5 space-y-2.5 shrink-0 border-b border-border/60">
-        <p className="text-xs text-muted/70 leading-relaxed px-0.5">
-          Pick a widget type to add it to the canvas.
-        </p>
+      <div className="shrink-0 border-b border-border p-3">
         <div className="relative">
-          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted/50 pointer-events-none" />
+          <Search size={16} strokeWidth={1.5} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-subtle" aria-hidden="true" />
           <input
-            type="text"
+            type="search"
             value={q}
             onChange={e => setQ(e.target.value)}
             placeholder="Search widgets…"
+            aria-label="Search widgets"
             data-testid="add-panel-search"
-            className={`${inputCls} pl-8`}
+            className={`${inputCls} !pl-9`}
           />
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
-      {noMatches && (
-        <p className="text-[11px] text-muted/60 leading-relaxed px-0.5">
-          No widgets match “{q}”.
-        </p>
-      )}
-
-      <div className="space-y-1.5">
-        {filteredPalette.map(item => {
-          const Icon = item.icon
-          return (
-            <button
-              key={item.type}
-              onClick={() => onAdd(item.type)}
-              data-testid={`palette-add-${item.type}`}
-              className={[
-                'w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border border-border',
-                'bg-surface hover:bg-surface-2/70 hover:border-primary/60 text-fg',
-                'transition-all duration-150 group text-left',
-                'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
-                'active:scale-[0.98]',
-              ].join(' ')}
-            >
-              <span className="w-8 h-8 shrink-0 flex items-center justify-center rounded-lg bg-surface-2 text-muted group-hover:text-primary group-hover:bg-primary/10 transition-all duration-150 shadow-sm">
-                <Icon size={15} />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium text-fg group-hover:text-primary transition-colors duration-150 leading-tight">{item.label}</p>
-                <p className="text-[11px] text-muted/80 truncate mt-0.5">{item.desc}</p>
-              </div>
-              <svg
-                className="w-3.5 h-3.5 ml-auto shrink-0 text-muted/30 group-hover:text-primary/60 transition-all duration-150 translate-x-0 group-hover:translate-x-0.5"
-                viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
-              >
-                <path d="M7 3v8M3 7h8" />
-              </svg>
-            </button>
-          )
-        })}
-      </div>
-
-      {/* ── From library ──
-          Reusable widgets saved from any board in this org/project. Adding
-          one creates a REFERENCE by default — fix the shared entry once and
-          every board using it updates. "Add a detached copy" is the explicit
-          opt-in for a fully independent inline copy. */}
-      {(!needle || filteredLibrary.length > 0) && (
-      <div className="pt-1 space-y-1.5">
-        <SectionLabel>From library</SectionLabel>
-
-        {libraryLoading && <p className="text-[11px] text-muted/60 px-0.5">Loading…</p>}
-
-        {!libraryLoading && filteredLibrary.length === 0 && (
-          <p className="text-[11px] text-muted/60 leading-relaxed px-0.5">
-            No saved widgets yet. Configure a widget, then use{' '}
-            <span className="text-fg/70 font-medium">Save to library</span> in its
-            settings to reuse it here.
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {noMatches && (
+          <p role="status" className="m-0 px-4 py-6 text-[13px] leading-snug text-muted">
+            No widgets match &ldquo;{q}&rdquo;.
           </p>
         )}
 
-        {filteredLibrary.map(row => (
-          <div
-            key={row.id}
-            className="w-full flex flex-col gap-1.5 px-2.5 py-2 rounded-xl border border-border bg-surface hover:border-primary/60 transition-all duration-150 group"
-          >
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => onAddReference(row)}
-                data-testid={`library-add-${row.id}`}
-                title={`Add a reference to “${row.name}” — edits stay local, "Edit for all" updates every board`}
-                className="flex items-center gap-2.5 min-w-0 flex-1 text-left focus:outline-none"
-              >
-                <span className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg bg-surface-2 text-muted group-hover:text-primary group-hover:bg-primary/10 transition-all">
-                  {(() => { const I = WIDGET_ICONS[row.config?.type] ?? Library; return <I size={14} /> })()}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-fg group-hover:text-primary transition-colors leading-tight truncate">{row.name}</p>
-                  <p className="text-[11px] text-muted/80 truncate mt-0.5">{row.config?.type ?? 'widget'}</p>
-                </div>
-              </button>
-              <button
-                onClick={() => onDeleteLibraryEntry(row)}
-                title={`Remove “${row.name}” from the library`}
-                aria-label={`Remove ${row.name} from the library`}
-                data-testid={`library-delete-${row.id}`}
-                className="w-6 h-6 shrink-0 flex items-center justify-center rounded-md text-muted/50 hover:text-red-500 hover:bg-red-50/80 transition-colors dark:hover:bg-red-950/40"
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
-            <div className="flex items-center justify-between gap-2 pl-9">
-              <LibraryUsageBadge libraryId={row.id} />
-              <button
-                onClick={() => onAddDetachedCopy(row)}
-                data-testid={`library-add-copy-${row.id}`}
-                title={`Add a detached copy of “${row.name}” — independent, won't update with the library entry`}
-                className="shrink-0 inline-flex items-center gap-1 text-[10px] font-medium text-muted/70 hover:text-primary rounded-md px-1.5 py-0.5 -mr-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-              >
-                <Copy size={10} /> Detached copy
-              </button>
-            </div>
+        {filteredPalette.length > 0 && (
+          <div>
+            {filteredPalette.map(item => {
+              const Icon = item.icon
+              return (
+                <button
+                  key={item.type}
+                  onClick={() => onAdd(item.type)}
+                  data-testid={`palette-add-${item.type}`}
+                  className="nbc-item group"
+                >
+                  <span className="nbc-glyph"><Icon size={16} strokeWidth={1.5} /></span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[13px] font-semibold leading-tight">{item.label}</span>
+                    <span className="mt-0.5 block truncate text-[12px] text-muted">{item.desc}</span>
+                  </span>
+                  <Plus size={16} strokeWidth={1.5} className="shrink-0 text-subtle group-hover:text-fg" aria-hidden="true" />
+                </button>
+              )
+            })}
           </div>
-        ))}
-      </div>
-      )}
+        )}
+
+        {/* ── From library ──
+            Reusable widgets saved from any board in this org/project. Adding
+            one creates a REFERENCE by default — fix the shared entry once and
+            every board using it updates. "Add a detached copy" is the explicit
+            opt-in for a fully independent inline copy. */}
+        {(!needle || filteredLibrary.length > 0) && (
+          <div>
+            <div className="border-t-2 border-[var(--ink)] px-3 pb-2 pt-3"><SectionLabel>From library</SectionLabel></div>
+
+            {libraryLoading && <p className="m-0 px-3 pb-3 text-[12px] text-muted">Loading…</p>}
+
+            {!libraryLoading && filteredLibrary.length === 0 && (
+              <p className="m-0 px-3 pb-4 text-[12px] leading-snug text-muted">
+                No saved widgets yet. Configure a widget, then use{' '}
+                <span className="font-medium text-fg">Save to library</span> in its
+                settings to reuse it here.
+              </p>
+            )}
+
+            {filteredLibrary.map(row => (
+              <div key={row.id} className="group border-b border-border px-3 py-2 hover:bg-surface-2">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => onAddReference(row)}
+                    data-testid={`library-add-${row.id}`}
+                    title={`Add a reference to “${row.name}” — edits stay local, "Edit for all" updates every board`}
+                    className="flex min-w-0 flex-1 items-center gap-3 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <span className="nbc-glyph">
+                      {(() => { const I = WIDGET_ICONS[row.config?.type] ?? Library; return <I size={16} strokeWidth={1.5} /> })()}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] font-semibold leading-tight text-fg">{row.name}</span>
+                      <span className="mt-0.5 block truncate text-[12px] text-muted">{row.config?.type ?? 'widget'}</span>
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => onDeleteLibraryEntry(row)}
+                    title={`Remove “${row.name}” from the library`}
+                    aria-label={`Remove ${row.name} from the library`}
+                    data-testid={`library-delete-${row.id}`}
+                    className="nbc-tool !h-7 !min-w-7 !px-0 hover:!text-danger"
+                  >
+                    <Trash2 size={14} strokeWidth={1.5} />
+                  </button>
+                </div>
+                <div className="mt-1 flex items-center justify-between gap-2 pl-11">
+                  <LibraryUsageBadge libraryId={row.id} />
+                  <button
+                    onClick={() => onAddDetachedCopy(row)}
+                    data-testid={`library-add-copy-${row.id}`}
+                    title={`Add a detached copy of “${row.name}” — independent, won't update with the library entry`}
+                    className="-mr-1 inline-flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-[12px] font-medium text-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <Copy size={12} strokeWidth={1.5} /> Detached copy
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -2336,9 +2318,9 @@ function LibraryUsageBadge({ libraryId, className = '' }) {
     <span
       data-testid={`library-usage-${libraryId}`}
       title={count === 0 ? 'Not used on any other board yet' : `Referenced by ${count} widget instance${count === 1 ? '' : 's'} across boards`}
-      className={`inline-flex items-center gap-1 text-[10px] font-medium text-muted/70 ${className}`}
+      className={`nbc-meta inline-flex items-center gap-1 ${className}`}
     >
-      <Users size={10} />
+      <Users size={12} strokeWidth={1.5} />
       {count === 0 ? 'Not used elsewhere' : `Used by ${count}`}
     </span>
   )
@@ -2437,19 +2419,11 @@ const WidgetPreview = memo(function WidgetPreview({ widget }: { widget: Record<s
 
 /** Fallback card shown while loading or on error. */
 function WidgetCardFallback({ widget }) {
-  const accentCls = {
-    kpi:    'text-emerald-500',
-    table:  'text-primary',
-    chart:  'text-cyan-500',
-    filter: 'text-amber-500',
-    text:   'text-muted',
-  }[widget.type] ?? 'text-muted'
-
   return (
     <div className="h-full w-full bg-surface overflow-hidden flex flex-col">
       <div className="px-3 py-1.5 flex items-center gap-2 border-b border-border/50">
-        <span className={`text-[10px] font-bold uppercase tracking-widest ${accentCls}`}>{widget.type}</span>
-        {widget.query_id && <span className="text-[10px] text-muted/70 truncate">{widget.query_id}</span>}
+        <span className="nbc-label">{widget.type}</span>
+        {widget.query_id && <span className="nbc-meta truncate">{widget.query_id}</span>}
       </div>
       <div className="px-3 py-2 text-xs text-muted flex-1 overflow-hidden">
         {widget.type === 'chart' && <p className="truncate">{widget.chart_type ?? 'chart'} — <span className="font-mono">{widget.encoding?.x ?? '?'}</span> vs <span className="font-mono">{widget.encoding?.y ?? '?'}</span></p>}
@@ -2538,35 +2512,39 @@ function WidgetExportButton({ widget, boardId }) {
     } catch (e) { setError(e.message || 'CSV export failed.') } finally { setBusy(null) }
   }
 
-  const itemCls = 'w-full flex items-center gap-2 px-2.5 py-1.5 text-[11px] text-fg rounded-md hover:bg-surface-2 disabled:opacity-50 transition-colors text-left'
+  const itemCls = 'nubi-dropdown-item w-full disabled:opacity-50'
 
   return (
     <div className="relative" ref={ref}>
       <button
         title="Export this widget"
+        aria-label="Export this widget"
+        aria-expanded={open}
+        aria-haspopup="menu"
         onMouseDown={e => { e.stopPropagation(); e.preventDefault() }}
         onClick={e => { e.stopPropagation(); setOpen(o => !o) }}
-        className="w-6 h-6 flex items-center justify-center rounded-md bg-surface border border-border hover:border-primary hover:text-primary text-muted shadow-sm transition-all"
+        className="nbc-tool"
         data-testid={`widget-export-${widget.id}`}
       >
-        <Download size={11} />
+        <Download size={16} strokeWidth={1.5} />
       </button>
       {open && (
         <div
+          role="menu"
           onClick={e => e.stopPropagation()}
           onMouseDown={e => e.stopPropagation()}
-          className="absolute right-0 top-full mt-1 z-30 w-40 bg-surface border border-border rounded-lg shadow-xl p-1"
+          className="nubi-dropdown absolute right-0 top-full mt-1 z-30 w-40"
         >
-          <button onClick={exportPng} disabled={busy === 'png'} className={itemCls}>
-            <ImageIcon size={12} className="text-muted" /> {busy === 'png' ? 'Rendering…' : 'PNG'}
+          <button role="menuitem" onClick={exportPng} disabled={busy === 'png'} className={itemCls}>
+            <ImageIcon size={16} strokeWidth={1.5} /> {busy === 'png' ? 'Rendering…' : 'PNG'}
           </button>
-          <button onClick={exportPdf} disabled={busy === 'pdf'} className={itemCls}>
-            <FileText size={12} className="text-muted" /> {busy === 'pdf' ? 'Rendering…' : 'PDF'}
+          <button role="menuitem" onClick={exportPdf} disabled={busy === 'pdf'} className={itemCls}>
+            <FileText size={16} strokeWidth={1.5} /> {busy === 'pdf' ? 'Rendering…' : 'PDF'}
           </button>
-          <button onClick={exportCsv} disabled={busy === 'csv'} className={itemCls}>
-            <Table2 size={12} className="text-muted" /> {busy === 'csv' ? 'Fetching…' : 'CSV data'}
+          <button role="menuitem" onClick={exportCsv} disabled={busy === 'csv'} className={itemCls}>
+            <Table2 size={16} strokeWidth={1.5} /> {busy === 'csv' ? 'Fetching…' : 'CSV data'}
           </button>
-          {error && <p className="px-2 pt-1 text-[10px] leading-snug" style={{ color: '#dc2626' }}>{error}</p>}
+          {error && <p className="m-0 px-3 py-1.5 text-[12px] leading-snug text-danger-fg">{error}</p>}
         </div>
       )}
     </div>
@@ -2574,73 +2552,74 @@ function WidgetExportButton({ widget, boardId }) {
 }
 
 // ---------------------------------------------------------------------------
-// WidgetHoverToolbar — top-right actions: duplicate + delete
+// WidgetTileActions — the header's right-hand actions: focus, export,
+// duplicate, delete. They sit in the tile header and appear on hover, on
+// selection, and whenever focus is inside the tile (so a keyboard user who
+// tabs into a tile finds them). On touch they are always visible.
 // ---------------------------------------------------------------------------
 
-function WidgetHoverToolbar({ widget, boardId, onDuplicate, onDelete, onFocus, visible, reorder = false, onHeightStep }) {
+function WidgetTileActions({ widget, boardId, onDuplicate, onDelete, onFocus, reorder = false, onHeightStep }) {
+  // Pointer-down must not start a drag or a selection click on the tile.
+  const guard = e => { e.stopPropagation(); e.preventDefault() }
   return (
-    <div
-      data-widget-toolbar="true"
-      className={`absolute top-1 right-1 flex items-center gap-1 z-10 transition-opacity ${visible ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
-      style={{ transition: 'opacity 0.15s' }}
-    >
+    <div data-widget-toolbar="true" className="nbc-tile-actions">
       {/* Mobile (reorder) height stepper — replaces the tiny corner resize handles
           that are too fiddly on touch. Steps widget height by ±1 grid row. */}
       {reorder && (
-        <span className="flex items-center rounded-md bg-surface border border-border shadow-sm overflow-hidden">
+        <>
           <button
-            title="Shorter"
-            onMouseDown={e => { e.stopPropagation(); e.preventDefault() }}
+            title="Shorter" aria-label="Make shorter"
+            onMouseDown={guard}
             onClick={e => { e.stopPropagation(); onHeightStep?.(widget.id, -1) }}
-            className="w-6 h-6 flex items-center justify-center text-muted hover:text-primary transition-colors"
+            className="nbc-tool"
             data-testid={`widget-shorter-${widget.id}`}
-          ><ChevronDown size={13} /></button>
+          ><ChevronDown size={16} strokeWidth={1.5} /></button>
           <button
-            title="Taller"
-            onMouseDown={e => { e.stopPropagation(); e.preventDefault() }}
+            title="Taller" aria-label="Make taller"
+            onMouseDown={guard}
             onClick={e => { e.stopPropagation(); onHeightStep?.(widget.id, 1) }}
-            className="w-6 h-6 flex items-center justify-center text-muted hover:text-primary transition-colors border-l border-border"
+            className="nbc-tool"
             data-testid={`widget-taller-${widget.id}`}
-          ><ChevronUp size={13} /></button>
-        </span>
+          ><ChevronUp size={16} strokeWidth={1.5} /></button>
+        </>
       )}
       {/* Expand into focus mode — the roomy single-widget editing surface. */}
       {onFocus && !reorder && (
-        <button
-          title="Edit in focus mode (⏎)"
-          onMouseDown={e => { e.stopPropagation(); e.preventDefault() }}
-          onClick={e => { e.stopPropagation(); onFocus(widget.id) }}
-          className="w-6 h-6 flex items-center justify-center rounded-md bg-surface border border-border hover:border-primary hover:text-primary text-muted shadow-sm transition-all"
-          data-testid={`widget-focus-${widget.id}`}
-        >
-          <Maximize2 size={11} />
-        </button>
+        <Tooltip content="Focus mode" kbd="⏎" side="bottom">
+          <button
+            aria-label="Edit in focus mode"
+            onMouseDown={guard}
+            onClick={e => { e.stopPropagation(); onFocus(widget.id) }}
+            className="nbc-tool"
+            data-testid={`widget-focus-${widget.id}`}
+          >
+            <Maximize2 size={16} strokeWidth={1.5} />
+          </button>
+        </Tooltip>
       )}
       {!reorder && <WidgetExportButton widget={widget} boardId={boardId} />}
-      <button
-        title="Duplicate widget (⌘D)"
-        onMouseDown={e => { e.stopPropagation(); e.preventDefault() }}
-        onClick={e => { e.stopPropagation(); onDuplicate(widget.id) }}
-        className="w-6 h-6 flex items-center justify-center rounded-md bg-surface border border-border hover:border-primary hover:text-primary text-muted shadow-sm transition-all text-xs"
-        data-testid={`widget-duplicate-${widget.id}`}
-      >
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
-          <rect x="1" y="3" width="7" height="8" rx="1"/>
-          <path d="M4 3V2a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-1"/>
-        </svg>
-      </button>
-      <button
-        title="Delete widget (Delete)"
-        onMouseDown={e => { e.stopPropagation(); e.preventDefault() }}
-        onClick={e => { e.stopPropagation(); onDelete(widget.id) }}
-        className="w-6 h-6 flex items-center justify-center rounded-md bg-surface border border-border hover:border-red-400 hover:text-red-500 text-muted shadow-sm transition-all text-xs"
-        data-testid={`widget-delete-${widget.id}`}
-      >
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
-          <path d="M2 3h8M5 3V2h2v1M4.5 5l.5 4M7.5 5l-.5 4"/>
-          <rect x="2.5" y="3" width="7" height="7" rx="1"/>
-        </svg>
-      </button>
+      <Tooltip content="Duplicate" kbd={['⌘', 'D']} side="bottom">
+        <button
+          aria-label="Duplicate widget"
+          onMouseDown={guard}
+          onClick={e => { e.stopPropagation(); onDuplicate(widget.id) }}
+          className="nbc-tool"
+          data-testid={`widget-duplicate-${widget.id}`}
+        >
+          <Copy size={16} strokeWidth={1.5} />
+        </button>
+      </Tooltip>
+      <Tooltip content="Delete" kbd="⌫" side="bottom">
+        <button
+          aria-label="Delete widget"
+          onMouseDown={guard}
+          onClick={e => { e.stopPropagation(); onDelete(widget.id) }}
+          className="nbc-tool hover:!text-danger"
+          data-testid={`widget-delete-${widget.id}`}
+        >
+          <Trash2 size={16} strokeWidth={1.5} />
+        </button>
+      </Tooltip>
     </div>
   )
 }
@@ -2667,9 +2646,7 @@ function EditorFilterBar({ widgets, selectedId, onSelect, onRemove }) {
             key={w.id}
             data-testid={`filter-bar-item-${w.id}`}
             onClick={(e) => { e.stopPropagation(); onSelect(w.id) }}
-            className={`group relative min-w-[10rem] max-w-xs rounded-lg border-2 bg-surface px-2.5 py-1.5 cursor-pointer transition-all overflow-visible ${
-              isSelected ? 'border-primary shadow-md' : 'border-border hover:border-primary/50'
-            }`}
+            className={`nbc-tile group !h-auto min-w-[10rem] max-w-xs cursor-pointer overflow-visible px-2.5 py-1.5 ${isSelected ? 'is-selected' : ''}`}
             title="Click to configure · in the filter bar"
           >
             <button
@@ -2678,15 +2655,15 @@ function EditorFilterBar({ widgets, selectedId, onSelect, onRemove }) {
               data-testid={`filter-bar-remove-${w.id}`}
               title="Remove filter"
               aria-label="Remove filter"
-              className="absolute -top-2 -right-2 w-5 h-5 flex items-center justify-center rounded-full bg-surface border border-border text-muted hover:text-red-500 hover:border-red-400 shadow-sm opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity z-10"
+              className="nbc-tool nbc-tool-bordered absolute -right-2 -top-2 z-10 !h-5 !min-w-5 !px-0 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:!text-danger"
             >
-              <X size={11} />
+              <X size={12} strokeWidth={1.5} />
             </button>
-            <p className="text-[10px] font-medium text-muted truncate flex items-center gap-1">
-              <FilterIcon size={11} className="shrink-0" />
+            <p className="m-0 flex items-center gap-1 truncate text-[12px] font-medium text-muted">
+              <FilterIcon size={12} strokeWidth={1.5} className="shrink-0" />
               {w.props?.label || w.subtype || (w.type === 'text' ? 'Text' : 'Filter')}
             </p>
-            <p className="text-xs font-mono text-fg truncate mt-0.5">
+            <p className="nbc-meta mt-0.5 truncate !text-fg">
               {w.type === 'filter'
                 ? `${w.subtype ?? 'select'} → ${w.target_var || '(no var)'}`
                 : ((w.content ?? '').split('\n')[0] || 'text')}
@@ -2737,7 +2714,9 @@ function EditableTabStrip({
 
   return (
     <div
-      className="flex items-center gap-1 border-b border-border bg-surface px-2 h-9 shrink-0 overflow-x-auto"
+      className="flex items-stretch gap-0 border-b border-border bg-surface px-2 h-10 shrink-0 overflow-x-auto"
+      role="tablist"
+      aria-label="Dashboard tabs"
       data-testid="editor-tab-strip"
     >
       {tabs.map((tab, index) => {
@@ -2754,11 +2733,14 @@ function EditableTabStrip({
             onDrop={(e) => { e.preventDefault(); onDrop(index) }}
             onDragEnd={() => { dragIndexRef.current = null; setOverIndex(null) }}
             data-testid={`editor-tab-${tab.id}`}
-            className={`group flex items-center gap-1 h-7 pl-1.5 pr-1 rounded-lg border text-sm shrink-0 transition-colors ${
-              isActive ? 'border-primary bg-primary/10 text-primary' : 'border-border bg-surface text-muted hover:text-fg'
-            } ${isOver ? 'ring-2 ring-ring/50' : ''}`}
+            className={[
+              'group relative flex shrink-0 items-center gap-1 px-1.5 text-[13px] transition-colors duration-100',
+              isActive ? 'font-semibold text-fg' : 'font-medium text-muted hover:text-fg',
+              isOver ? 'bg-surface-2' : '',
+            ].join(' ')}
           >
-            <GripVertical size={12} className="text-muted/50 cursor-grab active:cursor-grabbing shrink-0" />
+            {isActive && <span className="absolute inset-x-0 -bottom-px h-0.5 bg-[var(--ink)]" aria-hidden="true" />}
+            <GripVertical size={14} strokeWidth={1.5} className="shrink-0 cursor-grab text-subtle active:cursor-grabbing" aria-hidden="true" />
             {isEditing ? (
               <input
                 autoFocus
@@ -2769,15 +2751,18 @@ function EditableTabStrip({
                   if (e.key === 'Enter') { e.preventDefault(); commitRename() }
                   if (e.key === 'Escape') { e.preventDefault(); setEditingId(null) }
                 }}
-                className="h-5 w-24 text-sm px-1 bg-surface border border-ring/40 rounded outline-none text-fg"
+                aria-label="Tab name"
+                className="nubi-input nubi-input-xs !h-6 !w-28 !px-1.5"
                 data-testid={`editor-tab-input-${tab.id}`}
               />
             ) : (
               <button
                 type="button"
+                role="tab"
+                aria-selected={isActive}
                 onClick={() => onActivate(tab.id)}
                 onDoubleClick={() => startRename(tab)}
-                className="font-medium px-1 whitespace-nowrap focus:outline-none"
+                className="h-full whitespace-nowrap px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                 title="Click to switch · double-click to rename"
               >
                 {tab.label || 'Tab'}
@@ -2789,9 +2774,9 @@ function EditableTabStrip({
               title="Delete tab"
               aria-label={`Delete tab ${tab.label}`}
               data-testid={`editor-tab-delete-${tab.id}`}
-              className="w-4 h-4 flex items-center justify-center rounded text-muted/50 hover:text-red-500 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity shrink-0"
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-subtle opacity-0 transition-opacity hover:text-danger focus:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
             >
-              <X size={11} />
+              <X size={12} strokeWidth={1.5} />
             </button>
           </div>
         )
@@ -2802,9 +2787,9 @@ function EditableTabStrip({
         title="Add tab"
         aria-label="Add tab"
         data-testid="editor-tab-add"
-        className="flex items-center gap-1 h-7 px-2 rounded-lg border border-dashed border-border text-muted hover:text-primary hover:border-primary transition-colors shrink-0 text-xs font-medium"
+        className="nbc-tool my-1 ml-1 shrink-0"
       >
-        <Plus size={13} /> Tab
+        <Plus size={14} strokeWidth={1.5} /> Tab
       </button>
     </div>
   )
@@ -2818,15 +2803,14 @@ function DeleteTabDialog({ tab, tabs, widgetCount, onMove, onDeleteWidgets, onCa
   const others = tabs.filter(t => t.id !== tab.id)
   const [target, setTarget] = useState(others[0]?.id ?? '')
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" data-testid="delete-tab-dialog">
-      <div className="absolute inset-0 bg-black/40" onClick={onCancel} />
-      <div className="relative w-full max-w-sm rounded-2xl border border-border bg-surface shadow-2xl p-5 space-y-4">
-        <div>
-          <h3 className="text-sm font-semibold text-fg">Delete “{tab.label}”?</h3>
-          <p className="text-xs text-muted mt-1">
-            This tab has {widgetCount} widget{widgetCount === 1 ? '' : 's'}. Choose what to do with {widgetCount === 1 ? 'it' : 'them'}.
-          </p>
-        </div>
+    <Modal
+      open
+      onClose={onCancel}
+      size="sm"
+      title={`Delete “${tab.label}”?`}
+      description={`This tab has ${widgetCount} widget${widgetCount === 1 ? '' : 's'}. Choose what to do with ${widgetCount === 1 ? 'it' : 'them'}.`}
+    >
+      <Modal.Body data-testid="delete-tab-dialog" className="space-y-4">
         {others.length > 0 && (
           <div className="space-y-1.5">
             <FieldLabel>Move widgets to</FieldLabel>
@@ -2835,32 +2819,19 @@ function DeleteTabDialog({ tab, tabs, widgetCount, onMove, onDeleteWidgets, onCa
             </select>
           </div>
         )}
-        <div className="flex flex-col gap-2 pt-1">
-          {others.length > 0 && (
-            <button
-              type="button"
-              onClick={() => onMove(target)}
-              data-testid="delete-tab-move-btn"
-              className="w-full h-9 text-sm font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 transition-opacity">
-              Move widgets &amp; delete tab
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={onDeleteWidgets}
-            data-testid="delete-tab-delete-widgets-btn"
-            className="w-full h-9 text-sm font-medium rounded-lg border border-red-300 text-red-600 hover:bg-red-50 transition-colors">
-            Delete tab &amp; its widgets
-          </button>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="w-full h-9 text-sm font-medium rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors">
-            Cancel
-          </button>
-        </div>
-      </div>
-    </div>
+      </Modal.Body>
+      <Modal.Footer className="flex-wrap">
+        <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
+        <Button variant="danger" size="sm" onClick={onDeleteWidgets} data-testid="delete-tab-delete-widgets-btn">
+          Delete tab &amp; its widgets
+        </Button>
+        {others.length > 0 && (
+          <Button size="sm" onClick={() => onMove(target)} data-testid="delete-tab-move-btn">
+            Move widgets &amp; delete tab
+          </Button>
+        )}
+      </Modal.Footer>
+    </Modal>
   )
 }
 
@@ -2877,43 +2848,26 @@ function NamePromptDialog({ title, description, defaultName, confirmLabel, testi
   const [name, setName] = useState(defaultName || '')
   const trimmed = name.trim()
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" data-testid={`${testidPrefix}-dialog`}>
-      <div className="absolute inset-0 bg-black/40" onClick={onCancel} />
-      <div className="relative w-full max-w-sm rounded-2xl border border-border bg-surface shadow-2xl p-5 space-y-4">
-        <div>
-          <h3 className="text-sm font-semibold text-fg">{title}</h3>
-          <p className="text-xs text-muted mt-1 leading-relaxed">{description}</p>
-        </div>
-        <div>
-          <FieldLabel>Name</FieldLabel>
-          <input
-            type="text"
-            className={inputCls}
-            value={name}
-            onChange={e => setName(e.target.value)}
-            autoFocus
-            data-testid={`${testidPrefix}-name`}
-            onKeyDown={e => { if (e.key === 'Enter' && trimmed) onConfirm(trimmed) }}
-          />
-        </div>
-        <div className="flex flex-col gap-2 pt-1">
-          <button
-            type="button"
-            onClick={() => trimmed && onConfirm(trimmed)}
-            disabled={!trimmed}
-            data-testid={`${testidPrefix}-confirm`}
-            className="w-full h-9 text-sm font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 transition-opacity disabled:opacity-50 disabled:pointer-events-none">
-            {confirmLabel}
-          </button>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="w-full h-9 text-sm font-medium rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors">
-            Cancel
-          </button>
-        </div>
-      </div>
-    </div>
+    <Modal open onClose={onCancel} size="sm" title={title} description={description}>
+      <Modal.Body data-testid={`${testidPrefix}-dialog`}>
+        <FieldLabel>Name</FieldLabel>
+        <input
+          type="text"
+          className={inputCls}
+          value={name}
+          onChange={e => setName(e.target.value)}
+          autoFocus
+          data-testid={`${testidPrefix}-name`}
+          onKeyDown={e => { if (e.key === 'Enter' && trimmed) onConfirm(trimmed) }}
+        />
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
+        <Button size="sm" onClick={() => trimmed && onConfirm(trimmed)} disabled={!trimmed} data-testid={`${testidPrefix}-confirm`}>
+          {confirmLabel}
+        </Button>
+      </Modal.Footer>
+    </Modal>
   )
 }
 
@@ -2927,41 +2881,23 @@ function NamePromptDialog({ title, description, defaultName, confirmLabel, testi
 function EditScopeDialog({ count, onEditForAll, onDuplicate, onCancel }) {
   const n = count ?? 0
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" data-testid="edit-scope-dialog">
-      <div className="absolute inset-0 bg-black/40" onClick={onCancel} />
-      <div className="relative w-full max-w-sm rounded-2xl border border-border bg-surface shadow-2xl p-5 space-y-4">
-        <div>
-          <h3 className="text-sm font-semibold text-fg">
-            This widget is used by {n} board{n === 1 ? '' : 's'}.
-          </h3>
-          <p className="text-xs text-muted mt-1 leading-relaxed">
-            Choose how your change should apply.
-          </p>
-        </div>
-        <div className="flex flex-col gap-2 pt-1">
-          <button
-            type="button"
-            onClick={onEditForAll}
-            data-testid="edit-scope-all"
-            className="w-full h-9 text-sm font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 transition-opacity">
-            Edit for all
-          </button>
-          <button
-            type="button"
-            onClick={onDuplicate}
-            data-testid="edit-scope-duplicate"
-            className="w-full h-9 text-sm font-medium rounded-lg border border-border text-fg hover:border-primary/60 hover:text-primary transition-colors">
-            Duplicate &amp; edit just this one
-          </button>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="w-full h-9 text-sm font-medium rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors">
-            Cancel
-          </button>
-        </div>
-      </div>
-    </div>
+    <Modal
+      open
+      onClose={onCancel}
+      size="sm"
+      title={`This widget is used by ${n} board${n === 1 ? '' : 's'}.`}
+      description="Choose how your change should apply."
+    >
+      <Modal.Body data-testid="edit-scope-dialog" className="space-y-2">
+        <Button className="w-full" onClick={onEditForAll} data-testid="edit-scope-all">Edit for all</Button>
+        <Button className="w-full" variant="secondary" onClick={onDuplicate} data-testid="edit-scope-duplicate">
+          Duplicate &amp; edit just this one
+        </Button>
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
+      </Modal.Footer>
+    </Modal>
   )
 }
 
@@ -2999,7 +2935,7 @@ function TabsPanel({ spec, onSpecChange, activeTabId, onActivate, onAddTab }) {
         <button
           onClick={onAddTab}
           data-testid="tabs-panel-add-first"
-          className="w-full flex items-center justify-center gap-2 h-9 text-sm font-medium rounded-lg border border-dashed border-border text-muted hover:text-primary hover:border-primary transition-colors">
+          className="w-full flex items-center justify-center gap-2 h-9 text-sm font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:border-fg transition-colors">
           <Plus size={14} /> Add first tab
         </button>
       </div>
@@ -3024,7 +2960,7 @@ function TabsPanel({ spec, onSpecChange, activeTabId, onActivate, onAddTab }) {
               const active = (tabBar.variant ?? 'underline') === v
               return (
                 <button key={v} onClick={() => setTabBar({ variant: v })}
-                  className={`h-7 text-[11px] font-medium rounded-lg border capitalize transition-all ${active ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-muted border-border hover:border-primary hover:text-primary'}`}>
+                  className={`h-7 text-[11px] font-medium rounded-lg border capitalize transition-all ${active ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]' : 'bg-surface text-muted border-border hover:border-fg hover:text-fg'}`}>
                   {v}
                 </button>
               )
@@ -3062,7 +2998,7 @@ function TabsPanel({ spec, onSpecChange, activeTabId, onActivate, onAddTab }) {
         <div className="flex flex-wrap gap-1.5">
           {tabs.map(t => (
             <button key={t.id} onClick={() => onActivate(t.id)}
-              className={`px-2.5 h-7 text-xs font-medium rounded-lg border transition-all ${t.id === activeTabId ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-muted border-border hover:border-primary hover:text-primary'}`}>
+              className={`px-2.5 h-7 text-xs font-medium rounded-lg border transition-all ${t.id === activeTabId ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]' : 'bg-surface text-muted border-border hover:border-fg hover:text-fg'}`}>
               {t.label || t.id}
             </button>
           ))}
@@ -3114,7 +3050,7 @@ function TabsPanel({ spec, onSpecChange, activeTabId, onActivate, onAddTab }) {
 
 // Vertical divider between toolbar clusters.
 function ToolbarDivider() {
-  return <div className="hidden md:block w-px h-5 bg-border shrink-0" aria-hidden="true" />
+  return <div className="nbc-sep hidden md:block" aria-hidden="true" />
 }
 
 /**
@@ -3143,22 +3079,16 @@ function ToolbarPopover({ icon: Icon, label, title, testId, active, children }) 
         aria-label={title}
         aria-expanded={open}
         data-testid={testId}
-        className={[
-          'h-8 pl-2.5 pr-2 inline-flex items-center gap-1 rounded-lg border text-xs font-medium whitespace-nowrap',
-          'transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
-          open || active
-            ? 'bg-primary text-primary-fg border-primary'
-            : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2',
-        ].join(' ')}
+        className={['nbc-tool nbc-tool-bordered', open || active ? 'is-active' : ''].join(' ')}
       >
-        <Icon size={14} />
+        <Icon size={16} strokeWidth={1.5} />
         <span className="hidden lg:inline">{label}</span>
-        <ChevronDown size={12} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+        <ChevronDown size={14} strokeWidth={1.5} className={open ? 'rotate-180' : ''} />
       </button>
 
       {open && (
         <div
-          className="absolute right-0 top-full mt-1.5 z-50 bg-surface border border-border rounded-xl shadow-xl p-3 w-max"
+          className="nubi-dropdown absolute right-0 top-full mt-1.5 z-50 w-max p-3"
           onClick={(e) => e.stopPropagation()}
         >
           {children}
@@ -3201,10 +3131,15 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   // ── Dirty tracking ────────────────────────────────────────────────────────
   // We track the spec at last save time to compute dirtyness.
   const savedSpecRef = useRef(null) // null = never saved
+  // savedSpecRef is a ref, so moving it (a save, a load) does not re-render by
+  // itself. Without this tick the memo below kept its last value after a save
+  // and "Unsaved changes" stayed lit until the next edit.
+  const [savedTick, setSavedTick] = useState(0)
   const dirty = useMemo(() => {
     if (savedSpecRef.current === null && spec.widgets.length === 0) return false
     return JSON.stringify(spec) !== JSON.stringify(savedSpecRef.current)
-  }, [spec])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spec, savedTick])
 
   // Publish dirtyness to the host page (DashboardViewPage) so its header can
   // warn that Live isn't showing the author's unsaved work. Read-only signal —
@@ -3269,12 +3204,6 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
     onSetSpec?.(commitSpec)
   }, [onSetSpec, commitSpec])
 
-  // Notify callers (e.g. EditorShell) whenever the spec changes so they can
-  // observe the live spec without owning it.
-  useEffect(() => {
-    onSpecChange?.(spec)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spec])
 
   const [selectedId, setSelectedId] = useState(null)
   // focusId — the widget open in full-screen focus mode (null = canvas view).
@@ -3323,6 +3252,16 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   const [loading, setLoading] = useState(!!boardId)
   const [loadError, setLoadError] = useState(null)
   const [savedBoardId, setSavedBoardId] = useState(boardId)
+
+  // Notify callers (the board page's draft bar) whenever the spec changes so
+  // they can observe the working draft without owning it. Held back while the
+  // saved draft is still loading: before that the spec is the blank default,
+  // and a diff against it would read as "every widget removed".
+  useEffect(() => {
+    if (loading) return
+    onSpecChange?.(spec)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spec, loading])
   // rightPanel ∈ {'add','config','chat','board'} — drives the single RHS panel.
   // Defaults to 'config' (shows the "Nothing selected" placeholder): 'add' now
   // lives permanently in the left widget-library rail on desktop, and 'add' as
@@ -3334,7 +3273,6 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   const [rightCollapsed, setRightCollapsed] = useState(
     () => typeof window !== 'undefined' && window.innerWidth < 1024
   )
-  const [hoveredId, setHoveredId] = useState(null)
   // Mobile/tablet sheet state: which sheet is open (null = closed)
   // 'palette' | 'config' | 'chat' | 'board' | null
   const [mobileSheet, setMobileSheet] = useState(null)
@@ -3608,6 +3546,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         if (loadedSpec) {
           setHist(createHistory(loadedSpec))
           savedSpecRef.current = loadedSpec
+          setSavedTick(t => t + 1)
         } else {
           setLoadError('This board has no spec yet. Starting with a blank canvas.')
         }
@@ -4168,6 +4107,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
       }
       boardConfigRef.current = board?.config ?? config
       savedSpecRef.current = spec  // mark clean
+      setSavedTick(t => t + 1)
       toast.success('Dashboard saved')
       onSaved?.(board)
       return board
@@ -4202,27 +4142,21 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   // top-bar button. Same handleSave — dashboards persist as one spec, there's
   // no separate per-widget or per-panel save endpoint.
   const renderSaveFooter = () => (
-    <div className="shrink-0 border-t border-border px-3 py-2.5 bg-surface-2/30 flex items-center justify-between gap-2">
-      <span className="text-[11px] text-muted">
+    <div className="shrink-0 border-t border-border px-3 py-2.5 flex items-center justify-between gap-2">
+      <span className="flex items-center gap-2 text-[12px] text-muted">
+        <span className={`nubi-dot ${dirty ? 'nubi-dot-warning' : 'nubi-dot-success'}`} aria-hidden="true" />
         {dirty ? 'Unsaved changes' : 'All changes saved'}
       </span>
-      <button
+      <Button
         onClick={() => { handleSave().catch(() => {}) }}
-        disabled={saving}
+        loading={saving}
+        variant="secondary"
+        size="xs"
         data-testid="config-panel-save-btn"
-        className={[
-          'px-3 h-8 inline-flex items-center gap-1.5 text-xs font-medium rounded-lg transition-all duration-150',
-          'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 whitespace-nowrap',
-          saving
-            ? 'bg-primary/70 text-primary-fg cursor-not-allowed'
-            : 'bg-primary text-primary-fg hover:opacity-90 active:scale-[0.97]',
-        ].join(' ')}
       >
-        {saving
-          ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
-          : <><Save size={13} /> {savedBoardId ? 'Save' : 'Create'}</>
-        }
-      </button>
+        {!saving && <Save size={14} strokeWidth={1.5} aria-hidden="true" />}
+        {saving ? 'Saving…' : (savedBoardId ? 'Save' : 'Create')}
+      </Button>
     </div>
   )
 
@@ -4326,54 +4260,46 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   // into the app top bar. Also rendered in the mobile slide-out menu via the same
   // function. Pinch / ctrl+wheel zoom still works via the canvas effect.
   const zoomControls = () => (
-    <div className="flex items-center gap-0.5" data-testid="zoom-control">
+    <div className="flex items-center gap-1" data-testid="zoom-control">
       <button
         onClick={() => setZoomMode(z => Math.max(MIN_ZOOM, (z === 'fit' ? fitZoom : z) - 0.1))}
         title="Zoom out" aria-label="Zoom out"
-        className="w-8 h-8 flex items-center justify-center rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+        className="nbc-tool nbc-tool-bordered !px-0"
       >
-        <ZoomOut size={14} />
+        <ZoomOut size={16} strokeWidth={1.5} />
       </button>
       <button
         onClick={() => setZoomMode('fit')}
         title="Fit to screen"
-        className={[
-          'text-[11px] font-medium px-2 h-8 rounded-lg border transition-all duration-150 whitespace-nowrap',
-          'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
-          zoomMode === 'fit'
-            ? 'bg-primary text-primary-fg border-primary'
-            : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2',
-        ].join(' ')}
+        aria-pressed={zoomMode === 'fit'}
+        className="nbc-tool nbc-tool-bordered nbc-meta !text-fg"
       >
         {zoomMode === 'fit' ? `Fit · ${Math.round(effectiveZoom * 100)}%` : `${Math.round(effectiveZoom * 100)}%`}
       </button>
       <button
         onClick={() => setZoomMode(z => Math.min(MAX_ZOOM, (z === 'fit' ? fitZoom : z) + 0.1))}
         title="Zoom in" aria-label="Zoom in"
-        className="w-8 h-8 flex items-center justify-center rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+        className="nbc-tool nbc-tool-bordered !px-0"
       >
-        <ZoomIn size={14} />
+        <ZoomIn size={16} strokeWidth={1.5} />
       </button>
       <button
         onClick={resetView}
         title="Reset view (fit zoom + default widths)" aria-label="Reset view"
         data-testid="reset-view"
-        className="w-8 h-8 flex items-center justify-center rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+        className="nbc-tool nbc-tool-bordered !px-0"
       >
-        <Maximize2 size={13} />
+        <Maximize2 size={16} strokeWidth={1.5} />
       </button>
     </div>
   )
 
   // Device viewport switcher — shared by the top bar and the mobile slide-out.
   const deviceSwitcher = (
-    <div className="flex items-center rounded-lg border border-border bg-surface overflow-hidden" data-testid="device-switcher">
-      {DEVICES.map((d, i) => (
-        <button key={d.id} onClick={() => setDevice(d.id)} title={d.label} aria-label={d.label} aria-pressed={device === d.id}
-          className={`flex items-center justify-center w-8 h-8 transition-colors ${i > 0 ? 'border-l border-border' : ''} ${
-            device === d.id ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-fg'
-          }`}>
-          <d.Icon size={15} />
+    <div className="nbc-seg" role="group" aria-label="Preview size" data-testid="device-switcher">
+      {DEVICES.map(d => (
+        <button key={d.id} onClick={() => setDevice(d.id)} title={d.label} aria-label={d.label} aria-pressed={device === d.id}>
+          <d.Icon size={16} strokeWidth={1.5} />
         </button>
       ))}
     </div>
@@ -4406,13 +4332,14 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         const isFilters = seg.id === 'filters'
         const isActiveDesktop = isFilters ? filtersOpen : (rightPanel === seg.id && !rightCollapsed)
         const isActiveMobile = isFilters ? filtersOpen : mobileSheet === seg.mobileSheet
-        return (
+        const pressed = isActiveDesktop || isActiveMobile
+        const button = (
           <button
             key={seg.id}
             data-testid={`panel-toggle-${seg.id}`}
-            title={seg.title}
+            title={compact ? seg.title : undefined}
             aria-label={seg.ariaLabel}
-            aria-pressed={isActiveDesktop || isActiveMobile}
+            aria-pressed={pressed}
             onClick={() => {
               // Filters is a full-screen slide-over, not a docked side panel —
               // it doesn't participate in the rightPanel/mobileSheet toggle at all.
@@ -4435,21 +4362,18 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
               setMobileSheet(s => s === seg.mobileSheet ? null : seg.mobileSheet)
               if (compact) setMobileMenu(false)
             }}
-            className={`
-              ${compact ? 'w-full h-9 justify-start gap-2 px-3' : 'w-9 h-8 justify-center'}
-              ${seg.hideOnLg && !compact ? 'lg:hidden' : ''}
-              flex items-center rounded-lg border
-              transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-ring/60
-              ${(isActiveDesktop || isActiveMobile)
-                ? 'bg-primary text-primary-fg border-primary shadow-sm'
-                : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2'
-              }
-            `}
+            className={[
+              'nbc-tool',
+              compact ? 'w-full !justify-start !h-9 gap-2 !px-3' : '!px-0',
+            ].join(' ')}
           >
-            <seg.Icon size={15} strokeWidth={2} />
+            <seg.Icon size={16} strokeWidth={1.5} />
             {compact && <span className="text-sm font-medium">{seg.label}</span>}
           </button>
         )
+        return compact
+          ? button
+          : <Tooltip key={seg.id} content={seg.label} side="bottom" className={seg.hideOnLg ? 'lg:hidden' : undefined}>{button}</Tooltip>
       })}
     </div>
   )
@@ -4459,52 +4383,40 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
       <input
         type="text"
         data-testid="editor-title"
-        className="min-w-[80px] max-w-[180px] sm:max-w-[260px] flex-shrink h-8 text-sm font-semibold border border-transparent rounded-lg px-2.5 bg-transparent text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60 focus:border-border focus:bg-surface transition-all duration-150"
+        aria-label="Dashboard title"
+        className="min-w-[80px] max-w-[180px] sm:max-w-[260px] flex-shrink h-8 text-sm font-semibold border border-transparent rounded-sm px-2 bg-transparent text-fg placeholder:text-subtle hover:border-frame-line focus:outline-none focus:border-ring focus:bg-surface transition-colors duration-100"
         value={spec.title}
         onChange={e => setSpec(prev => ({ ...prev, title: e.target.value }))}
         placeholder="Dashboard title…"
       />
 
       {loadError && (
-        <span className="hidden lg:inline text-xs px-2 py-1 rounded-lg border whitespace-nowrap"
-          style={{ background: 'color-mix(in srgb, #f59e0b 8%, transparent)', color: '#d97706', borderColor: 'color-mix(in srgb, #f59e0b 20%, transparent)' }}>
-          {loadError}
-        </span>
+        <Tag variant="warning" dot caps={false} className="hidden lg:inline-flex shrink-0">{loadError}</Tag>
       )}
 
       <div className="flex items-center gap-1 ml-auto shrink-0">
-        {/* Dirty pill — subtle amber indicator */}
-        {dirty && !saving && (
-          <span
-            className="hidden sm:inline-flex items-center gap-1 text-[11px] px-2 h-6 rounded-md border whitespace-nowrap"
-            style={{ background: 'color-mix(in srgb, #f59e0b 8%, transparent)', color: '#b45309', borderColor: 'color-mix(in srgb, #f59e0b 25%, transparent)' }}
-            title="You have unsaved changes"
-          >
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-            Unsaved
-          </span>
-        )}
-
         {!preview && (
           <div className="flex items-center gap-0.5">
-            <button
-              onClick={handleUndo}
-              disabled={!canUndo(hist)}
-              title="Undo (⌘Z / Ctrl+Z)"
-              aria-label="Undo"
-              className="w-8 h-8 flex items-center justify-center rounded-lg border border-transparent text-muted hover:border-border hover:bg-surface-2 hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-            >
-              <Undo2 size={14} />
-            </button>
-            <button
-              onClick={handleRedo}
-              disabled={!canRedo(hist)}
-              title="Redo (⇧⌘Z / Ctrl+Y)"
-              aria-label="Redo"
-              className="w-8 h-8 flex items-center justify-center rounded-lg border border-transparent text-muted hover:border-border hover:bg-surface-2 hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-            >
-              <Redo2 size={14} />
-            </button>
+            <Tooltip content="Undo" kbd={['⌘', 'Z']} side="bottom">
+              <button
+                onClick={handleUndo}
+                disabled={!canUndo(hist)}
+                aria-label="Undo"
+                className="nbc-tool !px-0"
+              >
+                <Undo2 size={16} strokeWidth={1.5} />
+              </button>
+            </Tooltip>
+            <Tooltip content="Redo" kbd={['⇧', '⌘', 'Z']} side="bottom">
+              <button
+                onClick={handleRedo}
+                disabled={!canRedo(hist)}
+                aria-label="Redo"
+                className="nbc-tool !px-0"
+              >
+                <Redo2 size={16} strokeWidth={1.5} />
+              </button>
+            </Tooltip>
           </div>
         )}
 
@@ -4545,22 +4457,19 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
           title="Menu"
           aria-label="Open editor menu"
           data-testid="editor-hamburger"
-          className="md:hidden flex items-center justify-center w-9 h-8 rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          className="nbc-tool nbc-tool-bordered md:!hidden !px-0"
         >
-          <Menu size={16} />
+          <Menu size={16} strokeWidth={1.5} />
         </button>
 
         <ToolbarDivider />
 
         {/* View switcher — Canvas / Code */}
-        <div
-          className="flex h-8 rounded-lg border border-border bg-surface overflow-hidden shrink-0"
-          data-testid="dashboard-view-switcher"
-        >
+        <div className="nbc-seg max-sm:!hidden" role="group" aria-label="Editor view" data-testid="dashboard-view-switcher">
           {[
             { id: 'canvas', Icon: LayoutDashboard, title: 'Canvas / grid view' },
             { id: 'code', Icon: FileCode2, title: 'Code view (dashboard.json)' },
-          ].map((v, i) => {
+          ].map(v => {
             const active = v.id === 'code' ? codeView : (!codeView && !preview)
             return (
               <button
@@ -4569,37 +4478,24 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                 title={v.title}
                 aria-label={v.title}
                 aria-pressed={active}
-                className={[
-                  'flex items-center justify-center w-8 transition-all duration-150',
-                  'focus:outline-none focus-visible:ring-inset focus-visible:ring-2 focus-visible:ring-ring/60',
-                  i > 0 ? 'border-l border-border' : '',
-                  active
-                    ? 'bg-primary text-primary-fg'
-                    : 'text-muted hover:text-fg hover:bg-surface-2',
-                ].join(' ')}
               >
-                <v.Icon size={14} />
+                <v.Icon size={16} strokeWidth={1.5} />
               </button>
             )
           })}
         </div>
 
         {!codeView && (
-          <button
-            onClick={() => setPreview(p => !p)}
-            title={preview ? 'Back to editing' : 'Preview dashboard'}
-            aria-label={preview ? 'Back to editing' : 'Preview dashboard'}
-            aria-pressed={preview}
-            className={[
-              'w-8 h-8 flex items-center justify-center rounded-lg border transition-all duration-150',
-              'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
-              preview
-                ? 'bg-primary text-primary-fg border-primary hover:opacity-90'
-                : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2',
-            ].join(' ')}
-          >
-            {preview ? <Pencil size={14} /> : <Eye size={14} />}
-          </button>
+          <Tooltip content={preview ? 'Back to editing' : 'Preview dashboard'} side="bottom">
+            <button
+              onClick={() => setPreview(p => !p)}
+              aria-label={preview ? 'Back to editing' : 'Preview dashboard'}
+              aria-pressed={preview}
+              className="nbc-tool nbc-tool-bordered !px-0"
+            >
+              {preview ? <Pencil size={16} strokeWidth={1.5} /> : <Eye size={16} strokeWidth={1.5} />}
+            </button>
+          </Tooltip>
         )}
 
         <div className="hidden sm:block">
@@ -4608,24 +4504,25 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
 
         <ToolbarDivider />
 
-        <button
-          onClick={() => { handleSave().catch(() => {}) }}
-          disabled={saving}
-          data-testid="editor-save-btn"
-          title={savedBoardId ? 'Save dashboard (⌘S)' : 'Create dashboard'}
-          className={[
-            'px-3 h-8 inline-flex items-center gap-1.5 text-xs font-medium rounded-lg transition-all duration-150',
-            'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 whitespace-nowrap',
-            saving
-              ? 'bg-primary/70 text-primary-fg cursor-not-allowed'
-              : 'bg-primary text-primary-fg hover:opacity-90 active:scale-[0.97]',
-          ].join(' ')}
-        >
-          {saving
-            ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
-            : <><Save size={13} /> {savedBoardId ? 'Save' : 'Create'}</>
-          }
-        </button>
+        {/* Save writes the draft; the ink primary on this surface is "Push to
+            live" in the draft bar, so Save is a secondary button. A dot says
+            there is something to save. */}
+        <Tooltip content={savedBoardId ? 'Save draft' : 'Create dashboard'} kbd={['⌘', 'S']} side="bottom">
+          <Button
+            onClick={() => { handleSave().catch(() => {}) }}
+            loading={saving}
+            variant="secondary"
+            size="sm"
+            data-testid="editor-save-btn"
+            className="whitespace-nowrap"
+          >
+            {!saving && <Save size={16} strokeWidth={1.5} aria-hidden="true" />}
+            {saving ? 'Saving…' : (savedBoardId ? 'Save' : 'Create')}
+            {dirty && !saving && (
+              <span className="nubi-dot nubi-dot-warning" role="img" aria-label="Unsaved changes" />
+            )}
+          </Button>
+        </Tooltip>
       </div>
     </div>
   )
@@ -4673,7 +4570,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   }
 
   const SHEET_TITLES = {
-    palette: '+ Add Widget',
+    palette: 'Add widget',
     config: selectedWidget ? `Configure · ${selectedWidget.type}` : 'Configure',
     chat: 'Chat',
     board: 'Dashboard',
@@ -4706,7 +4603,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
               }}
             >
               <div
-                className={device === 'desktop' ? '' : 'rounded-2xl border border-border shadow-md bg-bg overflow-hidden'}
+                className={device === 'desktop' ? '' : 'rounded-xl border border-frame-line bg-bg overflow-hidden'}
                 style={{
                   width: designWidth,
                   transform: effectiveZoom !== 1 ? `scale(${effectiveZoom})` : undefined,
@@ -4745,11 +4642,9 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
               they keep using the "Add widget" toggle (slide-over / bottom
               sheet), which is why that toggle stays visible below lg
               (PANEL_SEGMENTS' hideOnLg). */}
-          <aside className="hidden lg:flex lg:w-60 lg:shrink-0 border-r border-border bg-surface flex-col overflow-hidden">
-            <div className="flex items-center px-3 h-10 border-b border-border shrink-0 bg-surface-2/30">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted/80">
-                Widget library
-              </span>
+          <aside aria-label="Widget library" className="hidden lg:flex lg:w-60 lg:shrink-0 border-r border-border bg-surface flex-col overflow-hidden">
+            <div className="nbc-panel-head">
+              <span className="nbc-label">Widget library</span>
             </div>
             {/* No overflow-y-auto here — AddPanel pins its own search box and
                 scrolls its own body, so this wrapper just needs to be bounded
@@ -4769,8 +4664,9 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
           {/* ── Tablet slide-over backdrop (md only, not on lg+) ── */}
           {!rightCollapsed && (
             <div
-              className="hidden md:block lg:hidden fixed inset-0 z-20 bg-black/30"
+              className="hidden md:block lg:hidden fixed inset-0 z-20 nubi-backdrop"
               onClick={() => setRightCollapsed(true)}
+              aria-hidden="true"
             />
           )}
 
@@ -4808,44 +4704,43 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                   {WIDTH_PRESETS.map(w => (
                     <button key={w} onClick={() => setDeviceWidths(s => ({ ...s, [device]: w }))}
                       title={`${w}px wide`}
-                      className={`text-[10px] font-medium px-1.5 h-6 rounded-md border transition-colors ${
-                        deviceWidths[device] === w ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-muted border-border hover:text-fg'
-                      }`}>{w}</button>
+                      aria-pressed={deviceWidths[device] === w}
+                      className="nbc-chip !h-6 !px-1.5 !text-[11px]">{w}</button>
                   ))}
                   <input
                     type="number" min={200} max={2000}
+                    aria-label="Custom width in pixels"
                     value={deviceWidths[device]}
                     onChange={e => { const v = parseInt(e.target.value, 10); if (v) setDeviceWidths(s => ({ ...s, [device]: v })) }}
-                    className="w-14 h-6 text-[10px] px-1.5 rounded-md border border-border bg-surface text-fg focus:outline-none focus:ring-1 focus:ring-ring/50"
+                    className="nubi-input nubi-input-xs !h-6 !w-16 !px-1.5 font-mono tabular-nums"
                   />
-                  <span className="text-[10px] text-muted">px</span>
+                  <span className="nbc-meta">px</span>
                 </div>
               )}
 
-              {/* Zoom controls now live in the app top bar (and mobile slide-out). */}
+              {/* Is this size its own layout, or the desktop one scaled down? */}
               {device !== 'desktop' && (() => {
                 const custom = hasOverrides(spec, activeBreakpoint)
                 return (
                   <div className="flex items-center gap-1.5 flex-wrap">
-                    <span
+                    <Tag
+                      variant={custom ? 'accent' : 'neutral'}
+                      dot
                       title={custom
                         ? 'This size has a custom layout — edits here only affect this breakpoint.'
                         : 'This size inherits the desktop layout. Move/resize a widget to start a custom layout.'}
-                      className={`inline-flex items-center gap-1 text-[10px] font-medium px-1.5 h-5 rounded-md border whitespace-nowrap ${
-                        custom
-                          ? 'bg-primary/10 text-primary border-primary/30'
-                          : 'bg-surface-2 text-muted border-border'
-                      }`}>
-                      <span className={`w-1.5 h-1.5 rounded-full ${custom ? 'bg-primary' : 'bg-muted/50'}`} />
+                    >
                       {custom ? 'Custom layout' : 'Inherits desktop'}
-                    </span>
+                    </Tag>
                     {custom && (
-                      <button
+                      <Button
+                        size="xs"
+                        variant="ghost"
                         onClick={() => setSpec(prev => clearBreakpointOverrides(prev, activeBreakpoint))}
                         title="Reset this size to the desktop layout"
-                        className="text-[10px] font-medium px-1.5 h-5 rounded-md border border-border bg-surface text-muted hover:text-fg hover:border-primary transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
+                      >
                         Reset to desktop
-                      </button>
+                      </Button>
                     )}
                   </div>
                 )
@@ -4855,43 +4750,36 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
             </div>
 
             {tabWidgets.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 sm:py-24 text-center rounded-2xl mx-2 min-h-[50vh] border-2 border-dashed border-border/60 bg-surface/30 transition-colors">
-                {/* Grid icon */}
-                <div className="w-14 h-14 rounded-2xl bg-surface-2 flex items-center justify-center mb-4 shadow-sm">
-                  <svg className="w-7 h-7 text-muted/40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2}
-                      d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
-                  </svg>
-                </div>
-                <p className="text-sm font-semibold text-fg mb-1.5">
-                  {hasTabs ? 'This tab is empty' : 'Your dashboard is empty'}
-                </p>
-                <p className="text-xs text-muted/70 mb-6 px-6 leading-relaxed max-w-xs">
-                  <span className="md:hidden">Tap <strong className="text-fg/80">Add</strong> below, or </span>
-                  <span className="hidden md:inline">Use the <strong className="text-fg/80">Add</strong> panel on the right, or </span>
-                  ask <strong className="text-fg/80">Chat</strong> to build one for you.
-                </p>
-                <div className="flex flex-wrap gap-2 justify-center px-4">
-                  {PALETTE_ITEMS.filter(p => ['kpi','table','chart','text'].includes(p.type)).map(p => {
-                    const Icon = p.icon
-                    return (
-                      <button
-                        key={p.type}
-                        onClick={() => addWidget(p.type)}
-                        className={[
-                          'flex items-center gap-1.5 px-3 py-1.5 min-h-[40px] sm:min-h-0',
-                          'text-xs font-medium rounded-lg border border-border bg-surface',
-                          'hover:border-primary/60 hover:text-primary hover:bg-surface-2/60',
-                          'text-muted transition-all duration-150',
-                          'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
-                        ].join(' ')}
-                      >
-                        <Icon size={13} />
-                        {p.label}
-                      </button>
-                    )
-                  })}
-                </div>
+              <div className="mx-auto flex min-h-[50vh] max-w-xl flex-col items-center justify-center px-4 py-12" data-testid="editor-empty-canvas">
+                <EmptyState
+                  art={<EmptyBoards />}
+                  title={hasTabs ? 'This tab is empty' : 'Your dashboard is empty'}
+                  description={
+                    <>
+                      <span className="md:hidden">Tap <strong className="font-semibold text-fg">Add</strong> in the menu, or </span>
+                      <span className="hidden md:inline">Pick a widget from the library, or </span>
+                      ask <strong className="font-semibold text-fg">Chat</strong> to build one for you.
+                    </>
+                  }
+                  action={
+                    <div className="flex flex-wrap justify-center gap-2">
+                      {PALETTE_ITEMS.filter(p => ['kpi','table','chart','text'].includes(p.type)).map((p, i) => {
+                        const Icon = p.icon
+                        return (
+                          <Button
+                            key={p.type}
+                            size="sm"
+                            variant={i === 0 ? 'primary' : 'secondary'}
+                            onClick={() => addWidget(p.type)}
+                          >
+                            <Icon size={16} strokeWidth={1.5} aria-hidden="true" />
+                            {p.label}
+                          </Button>
+                        )
+                      })}
+                    </div>
+                  }
+                />
               </div>
             ) : (
               <div
@@ -4912,7 +4800,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                   }}
                 >
                 <div
-                  className={device === 'desktop' ? '' : 'rounded-2xl border border-border shadow-md bg-bg overflow-hidden'}
+                  className={device === 'desktop' ? '' : 'rounded-xl border border-frame-line bg-bg overflow-hidden'}
                   style={{
                     width: designWidth,
                     transform: effectiveZoom !== 1 ? `scale(${effectiveZoom})` : undefined,
@@ -4966,7 +4854,6 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                     // {id, ref, overrides, pos} entry with no type/props of its own.
                     const widget = resolveEntry(raw)
                     const isSelected = selectedId === widget.id
-                    const isHovered = hoveredId === widget.id
                     const reorder = gridMode === 'reorder'
                     const WidgetIcon = WIDGET_ICONS[widget.type]
                     const cardStyle = styleToCss(widget.style, widget.style?.themeAdapt === false ? undefined : adaptCtx)
@@ -4977,84 +4864,60 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                     const cardScope = cardMode && cardMode !== canvasTheme ? cardMode : null
                     return (
                       <ThemeModeProvider mode={cardScope}>
-                      {/* Note: NO overflow-hidden here — the hover toolbar uses position:absolute
-                          and must not be clipped. Inner areas handle their own overflow. */}
+                      {/* Note: NO overflow-hidden on the frame — menus opened from the
+                          header actions are absolutely positioned and must not be
+                          clipped. Inner areas handle their own overflow. */}
                       <div
                         data-testid={`widget-${widget.id}`}
                         data-widget-export-root={widget.id}
                         onClick={(e) => { e.stopPropagation(); setSelectedId(widget.id); setRightCollapsed(false); setRightPanel(p => p === 'chat' ? p : 'config'); setMobileSheet('config') }}
-                        onMouseEnter={() => setHoveredId(widget.id)}
-                        onMouseLeave={() => setHoveredId(null)}
                         style={cardStyle}
                         className={[
-                          'h-full w-full rounded-xl border-2 bg-surface transition-all duration-150 relative flex flex-col',
+                          'nbc-tile',
                           colorModeClass(cardScope),
-                          isSelected
-                            ? 'border-primary shadow-lg shadow-primary/10'
-                            : 'border-border hover:border-primary/30 hover:shadow-sm',
-                        ].join(' ')}
+                          isSelected ? 'is-selected' : '',
+                        ].filter(Boolean).join(' ')}
                       >
-                        {/* Hover toolbar: duplicate + delete (+ height stepper on mobile). */}
-                        <WidgetHoverToolbar
-                          widget={widget}
-                          boardId={savedBoardId}
-                          onDuplicate={duplicateWidget}
-                          onDelete={removeWidget}
-                          onFocus={openFocus}
-                          visible={isHovered || isSelected}
-                          reorder={reorder}
-                          onHeightStep={handleHeightStep}
-                        />
-
-                        {/* Drag handle — top strip */}
-                        <div
-                          className={[
-                            'drag-handle h-7 shrink-0 cursor-grab active:cursor-grabbing',
-                            'flex items-center gap-1.5 px-2.5 border-b border-border/80',
-                            'transition-colors duration-150 select-none rounded-t-[10px]',
-                            isSelected
-                              ? 'bg-primary/8 hover:bg-primary/12'
-                              : 'bg-surface-2/50 hover:bg-surface-2',
-                          ].join(' ')}
-                          title={reorder ? 'Drag to reorder' : 'Drag to move'}
-                        >
-                          {/* Grip dots */}
-                          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="text-muted/40 shrink-0">
-                            <circle cx="2.5" cy="2.5" r="1" fill="currentColor"/>
-                            <circle cx="7.5" cy="2.5" r="1" fill="currentColor"/>
-                            <circle cx="2.5" cy="5" r="1" fill="currentColor"/>
-                            <circle cx="7.5" cy="5" r="1" fill="currentColor"/>
-                            <circle cx="2.5" cy="7.5" r="1" fill="currentColor"/>
-                            <circle cx="7.5" cy="7.5" r="1" fill="currentColor"/>
-                          </svg>
-                          {WidgetIcon && (
-                            <WidgetIcon size={11} className={isSelected ? 'text-primary/70' : 'text-muted/50'} />
-                          )}
-                          {isRefWidget(raw) && (
-                            <span
-                              className="shrink-0 inline-flex"
-                              title="Referenced from the widget library"
-                              aria-label="Referenced from the widget library"
-                              data-testid={`widget-ref-badge-${raw.id}`}
-                            >
-                              <Link2 size={10} className={isSelected ? 'text-primary/70' : 'text-muted/50'} />
+                        {/* 32px header: grip, type glyph, title, mono type. The
+                            handle is everything left of the actions, so pressing an
+                            action never starts a drag. */}
+                        <div className="nbc-tile-head">
+                          <div
+                            className="drag-handle flex h-full min-w-0 flex-1 cursor-grab items-center gap-2 active:cursor-grabbing"
+                            title={reorder ? 'Drag to reorder' : 'Drag to move'}
+                          >
+                            <GripVertical size={14} strokeWidth={1.5} className="shrink-0 text-subtle" aria-hidden="true" />
+                            {WidgetIcon && <WidgetIcon size={16} strokeWidth={1.5} className="shrink-0" aria-hidden="true" />}
+                            {isRefWidget(raw) && (
+                              <span
+                                className="inline-flex shrink-0"
+                                title="Referenced from the widget library"
+                                aria-label="Referenced from the widget library"
+                                data-testid={`widget-ref-badge-${raw.id}`}
+                              >
+                                <Link2 size={16} strokeWidth={1.5} />
+                              </span>
+                            )}
+                            <span className="nbc-tile-title capitalize">
+                              {widget.props?.label || widget.type}
                             </span>
-                          )}
-                          <span className={[
-                            'text-[11px] font-medium truncate flex-1 capitalize',
-                            isSelected ? 'text-primary' : 'text-muted/70',
-                          ].join(' ')}>
-                            {widget.props?.label || widget.type}
-                          </span>
-                          {isSelected && (
-                            <span className="shrink-0 text-[9px] font-semibold text-primary/80 uppercase tracking-wider">
-                              selected
-                            </span>
-                          )}
+                            {widget.props?.label && item.w >= 4 && (
+                              <span className="nbc-meta shrink-0">{widget.type}</span>
+                            )}
+                          </div>
+                          <WidgetTileActions
+                            widget={widget}
+                            boardId={savedBoardId}
+                            onDuplicate={duplicateWidget}
+                            onDelete={removeWidget}
+                            onFocus={openFocus}
+                            reorder={reorder}
+                            onHeightStep={handleHeightStep}
+                          />
                         </div>
 
                         {/* Live widget preview — scrolls/clips independently */}
-                        <div className="flex-1 min-h-0 overflow-hidden rounded-b-[10px]">
+                        <div className="flex-1 min-h-0 overflow-hidden">
                           <WidgetPreview widget={widget} />
                         </div>
                       </div>
@@ -5079,23 +4942,25 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                 'border-l border-border bg-surface flex flex-col overflow-hidden',
                 'hidden md:flex',
                 'lg:static lg:w-80 lg:shrink-0',
-                'md:fixed md:inset-y-0 md:right-0 md:z-30 md:w-80 md:shadow-2xl',
+                'md:fixed md:inset-y-0 md:right-0 md:z-30 md:w-80 md:shadow-pop',
                 'lg:shadow-none',
               ].join(' ')}
+              aria-label={RIGHT_PANEL_TITLES[rightPanel] ?? 'Configure'}
             >
               {/* Panel header */}
-              <div className="flex items-center justify-between px-3 h-10 border-b border-border shrink-0 bg-surface-2/30">
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-muted/80">
+              <div className="nbc-panel-head">
+                <span className="nbc-label">
                   {RIGHT_PANEL_TITLES[rightPanel] ?? 'Configure'}
                 </span>
-                <button
-                  onClick={() => setRightCollapsed(true)}
-                  title="Collapse panel"
-                  aria-label="Collapse side panel"
-                  className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-                >
-                  <PanelRightClose size={15} />
-                </button>
+                <Tooltip content="Collapse panel" side="left">
+                  <button
+                    onClick={() => setRightCollapsed(true)}
+                    aria-label="Collapse side panel"
+                    className="nbc-tool !px-0"
+                  >
+                    <PanelRightClose size={16} strokeWidth={1.5} />
+                  </button>
+                </Tooltip>
               </div>
               {/* Body scrolls WITHIN the fixed-width sidebar. No overflow-y-auto
                   on this wrapper — each panel (ConfigPanel/AddPanel/etc.)
@@ -5160,20 +5025,21 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
           switcher, zoom controls (+ Reset), and the panel toggles. Slides in from
           the right; tap the backdrop or × to dismiss. */}
       {mobileMenu && (
-        <div className="md:hidden fixed inset-0 z-50 flex justify-end" data-testid="editor-mobile-menu">
+        <div className="md:hidden fixed inset-0 z-50 flex justify-end" data-testid="editor-mobile-menu" role="dialog" aria-modal="true" aria-label="Editor options">
           <div
-            className="absolute inset-0 bg-black/50 backdrop-blur-[2px] transition-opacity"
+            className="nubi-backdrop absolute inset-0"
             onClick={() => setMobileMenu(false)}
+            aria-hidden="true"
           />
-          <div className="relative w-72 max-w-[85vw] h-full bg-surface border-l border-border shadow-2xl flex flex-col animate-in slide-in-from-right duration-200">
-            <div className="flex items-center justify-between px-4 h-12 border-b border-border shrink-0 bg-surface-2/30">
+          <div className="relative flex h-full w-72 max-w-[85vw] flex-col border-l border-border bg-surface shadow-pop nubi-animate-slide-up">
+            <div className="nbc-panel-head !h-12 !px-4">
               <span className="text-sm font-semibold text-fg">Editor options</span>
               <button
                 onClick={() => setMobileMenu(false)}
                 aria-label="Close menu"
-                className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                className="nbc-tool !px-0"
               >
-                <X size={16} />
+                <X size={16} strokeWidth={1.5} />
               </button>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-5">
@@ -5202,29 +5068,26 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
           Slides up from the bottom when mobileSheet is set. A fixed overlay with
           a drag handle and scrollable body. Tap the backdrop or × to dismiss. */}
       {!preview && mobileSheet && (
-        <div className="md:hidden fixed inset-0 z-40 flex flex-col justify-end" style={{ pointerEvents: 'auto' }}>
+        <div className="md:hidden fixed inset-0 z-40 flex flex-col justify-end" style={{ pointerEvents: 'auto' }} role="dialog" aria-modal="true" aria-label={SHEET_TITLES[mobileSheet] ?? 'Panel'}>
           {/* Backdrop */}
           <div
-            className="absolute inset-0 bg-black/50 backdrop-blur-[2px]"
+            className="nubi-backdrop absolute inset-0"
             onClick={() => setMobileSheet(null)}
+            aria-hidden="true"
           />
           {/* Sheet */}
-          <div className="relative bg-surface rounded-t-2xl border-t border-border flex flex-col max-h-[80vh] shadow-2xl">
-            {/* Drag pill */}
-            <div className="flex justify-center pt-2 shrink-0">
-              <div className="w-8 h-1 rounded-full bg-border/60" />
-            </div>
+          <div className="relative flex max-h-[80vh] flex-col border-t-2 border-[var(--ink)] bg-surface shadow-pop nubi-animate-slide-up">
             {/* Sheet header */}
-            <div className="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
+            <div className="flex items-center justify-between px-4 h-12 border-b border-border shrink-0">
               <span className="text-sm font-semibold text-fg">
                 {SHEET_TITLES[mobileSheet] ?? 'Panel'}
               </span>
               <button
                 onClick={() => setMobileSheet(null)}
                 aria-label="Close sheet"
-                className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                className="nbc-tool !px-0"
               >
-                <X size={16} />
+                <X size={16} strokeWidth={1.5} />
               </button>
             </div>
             {/* Sheet body — each panel pins its own header/tabs and scrolls
@@ -5300,32 +5163,34 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
           author add a filter or jump straight to one's settings. The drawer is
           global across tabs (filter variables are dashboard-wide). */}
       {filtersOpen && (
-        <div className="fixed inset-0 z-50 flex justify-end" data-testid="editor-filters-drawer">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setFiltersOpen(false)} />
-          <div className="relative w-80 max-w-[90vw] h-full bg-surface border-l border-border shadow-2xl flex flex-col">
-            <div className="flex items-center justify-between px-4 h-12 border-b border-border shrink-0">
-              <span className="text-sm font-semibold text-fg flex items-center gap-2">
-                <FilterIcon size={15} className="text-primary" /> Filters
+        <div className="fixed inset-0 z-50 flex justify-end" data-testid="editor-filters-drawer" role="dialog" aria-modal="true" aria-label="Filters">
+          <div className="nubi-backdrop absolute inset-0" onClick={() => setFiltersOpen(false)} aria-hidden="true" />
+          <div className="relative flex h-full w-80 max-w-[90vw] flex-col border-l border-border bg-surface shadow-pop">
+            <div className="nbc-panel-head !h-12 !px-4">
+              <span className="flex items-center gap-2 text-sm font-semibold text-fg">
+                <FilterIcon size={16} strokeWidth={1.5} className="text-muted" /> Filters
               </span>
-              <button onClick={() => setFiltersOpen(false)} aria-label="Close filters"
-                className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors">
-                <X size={16} />
+              <button onClick={() => setFiltersOpen(false)} aria-label="Close filters" className="nbc-tool !px-0">
+                <X size={16} strokeWidth={1.5} />
               </button>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
-              <p className="text-xs text-muted/80 leading-relaxed">
+              <p className="m-0 text-[13px] leading-snug text-muted">
                 Filter widgets drive dashboard variables. They are shared across all
-                tabs. Add one here, then configure its target variable &amp; options.
+                tabs. Add one here, then configure its target variable and options.
               </p>
-              <button
+              <Button
+                variant="secondary"
+                size="sm"
+                className="w-full"
                 onClick={() => { addWidget('filter'); setFiltersOpen(false); setRightPanel('config'); setRightCollapsed(false) }}
                 data-testid="filters-drawer-add"
-                className="w-full flex items-center justify-center gap-2 h-9 text-sm font-medium rounded-lg border border-dashed border-border text-muted hover:text-primary hover:border-primary transition-colors">
-                <Plus size={14} /> Add filter
-              </button>
-              <div className="space-y-1.5">
+              >
+                <Plus size={16} strokeWidth={1.5} aria-hidden="true" /> Add filter
+              </Button>
+              <div className="border-t-2 border-[var(--ink)]">
                 {spec.widgets.filter(w => w.type === 'filter').length === 0 ? (
-                  <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-3 text-center">
+                  <p className="m-0 border-b border-border px-1 py-4 text-[13px] text-muted">
                     No filters yet.
                   </p>
                 ) : (
@@ -5334,11 +5199,12 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                       key={w.id}
                       onClick={() => { setSelectedId(w.id); setRightPanel('config'); setRightCollapsed(false); setFiltersOpen(false) }}
                       data-testid={`filters-drawer-item-${w.id}`}
-                      className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-surface hover:border-primary text-left transition-colors">
-                      <FilterIcon size={14} className="text-muted shrink-0" />
+                      className="nbc-item"
+                    >
+                      <span className="nbc-glyph"><FilterIcon size={16} strokeWidth={1.5} /></span>
                       <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-medium text-fg truncate">{w.props?.label || w.subtype || 'Filter'}</span>
-                        <span className="block text-[11px] text-muted truncate font-mono">{w.target_var || '(no variable)'}</span>
+                        <span className="block truncate text-[13px] font-semibold">{w.props?.label || w.subtype || 'Filter'}</span>
+                        <span className="nbc-meta block truncate">{w.target_var || '(no variable)'}</span>
                       </span>
                     </button>
                   ))

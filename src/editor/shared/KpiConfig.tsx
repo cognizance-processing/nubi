@@ -105,7 +105,7 @@ export function KpiConfig({ widget, onChange }) {
             <div className="flex h-8 rounded-lg border border-border overflow-hidden">
               {['percent', 'absolute'].map(f => (
                 <button key={f} onClick={() => setProps('deltaFormat', f)}
-                  className={`flex-1 text-[11px] font-medium capitalize transition-colors ${deltaFormat === f ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>
+                  className={`flex-1 text-[11px] font-medium capitalize transition-colors ${deltaFormat === f ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>
                   {f}
                 </button>
               ))}
@@ -120,7 +120,7 @@ export function KpiConfig({ widget, onChange }) {
               <div className="flex h-8 rounded-lg border border-border overflow-hidden">
                 {[['line', 'Line'], ['bar', 'Bars']].map(([v, lbl]) => (
                   <button key={v} onClick={() => setProps('sparkType', v === 'line' ? undefined : v)}
-                    className={`flex-1 text-[11px] font-medium transition-colors ${(props.sparkType ?? 'line') === v ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>
+                    className={`flex-1 text-[11px] font-medium transition-colors ${(props.sparkType ?? 'line') === v ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>
                     {lbl}
                   </button>
                 ))}
@@ -171,7 +171,7 @@ export function KpiConfig({ widget, onChange }) {
             <div className="flex h-8 rounded-lg border border-border overflow-hidden">
               {[['segments', 'Segments'], ['bar', 'Continuous']].map(([v, lbl]) => (
                 <button key={v} onClick={() => setProgressField('style', v === 'bar' ? 'bar' : undefined)}
-                  className={`flex-1 text-[11px] font-medium transition-colors ${(progress.style === 'bar' ? 'bar' : 'segments') === v ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>
+                  className={`flex-1 text-[11px] font-medium transition-colors ${(progress.style === 'bar' ? 'bar' : 'segments') === v ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>
                   {lbl}
                 </button>
               ))}

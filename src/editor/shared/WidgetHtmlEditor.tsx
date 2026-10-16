@@ -16,6 +16,7 @@
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import Editor from '@monaco-editor/react'
+import '../../components/app/monacoSetup'
 import { Code2, Maximize2, X, Eye, Smile } from 'lucide-react'
 import { renderWidgetHtml } from '../../dashboards/widgetHtml.js'
 import { useTheme } from '../../contexts/ThemeContext.jsx'
@@ -88,7 +89,7 @@ function EmojiPicker({ onInsert }) {
         aria-label="Insert emoji"
         aria-expanded={open}
         className={`flex items-center gap-1 px-1.5 h-6 rounded-md border text-[10px] font-medium transition-colors ${
-          open ? 'border-primary/60 text-primary bg-primary/5' : 'border-border bg-surface text-muted hover:text-primary hover:border-primary/60'
+          open ? 'border-[var(--ink)] text-fg bg-surface-2' : 'border-border bg-surface text-muted hover:text-fg hover:border-fg'
         }`}
       >
         <Smile size={12} /> Emoji
@@ -96,7 +97,7 @@ function EmojiPicker({ onInsert }) {
 
       {open && (
         <div
-          className="absolute z-[110] mt-1 left-0 w-[248px] rounded-lg border border-border bg-bg shadow-xl overflow-hidden"
+          className="absolute z-[110] mt-1 left-0 w-[248px] border border-border bg-bg shadow-pop overflow-hidden rounded"
           role="dialog"
           aria-label="Emoji picker"
         >
@@ -110,7 +111,7 @@ function EmojiPicker({ onInsert }) {
                 aria-label={g.name}
                 aria-pressed={group === i}
                 className={`shrink-0 w-6 h-6 flex items-center justify-center rounded-md text-sm transition-colors ${
-                  group === i ? 'bg-primary/10 ring-1 ring-primary/40' : 'hover:bg-surface-2'
+                  group === i ? 'bg-[var(--accent-soft)] ring-1 ring-primary/40' : 'hover:bg-surface-2'
                 }`}
               >
                 {g.icon}
@@ -124,7 +125,7 @@ function EmojiPicker({ onInsert }) {
                 type="button"
                 onClick={() => onInsert(em)}
                 title={`Insert ${em}`}
-                className="w-6 h-6 flex items-center justify-center rounded-md text-base leading-none hover:bg-primary/10 transition-colors"
+                className="w-6 h-6 flex items-center justify-center rounded-md text-base leading-none hover:bg-[var(--accent-soft)] transition-colors"
               >
                 {em}
               </button>
@@ -182,7 +183,7 @@ export default function WidgetHtmlEditor({ widget, onChange }) {
           type="button"
           onClick={() => insertToken(t.snip)}
           title={`Insert ${t.desc}`}
-          className="px-1.5 h-6 rounded-md border border-border bg-surface font-mono text-[10px] text-muted hover:text-primary hover:border-primary/60 transition-colors"
+          className="px-1.5 h-6 rounded-md border border-border bg-surface font-mono text-[10px] text-muted hover:text-fg hover:border-fg transition-colors"
         >
           {t.label}
         </button>
@@ -214,10 +215,10 @@ export default function WidgetHtmlEditor({ widget, onChange }) {
         <div className="flex items-center gap-1.5">
           {!html && (
             <button type="button" onClick={() => setHtml(STARTER)}
-              className="text-[10px] font-medium text-muted hover:text-primary transition-colors">Insert starter</button>
+              className="text-[10px] font-medium text-muted hover:text-fg transition-colors">Insert starter</button>
           )}
           <button type="button" onClick={() => setExpanded(true)} title="Expand editor"
-            className="flex items-center gap-1 px-1.5 h-6 rounded-md border border-border bg-surface text-[10px] font-medium text-muted hover:text-primary hover:border-primary/60 transition-colors">
+            className="flex items-center gap-1 px-1.5 h-6 rounded-md border border-border bg-surface text-[10px] font-medium text-muted hover:text-fg hover:border-fg transition-colors">
             <Maximize2 size={11} /> Expand
           </button>
         </div>
@@ -235,14 +236,14 @@ export default function WidgetHtmlEditor({ widget, onChange }) {
 
       {html && (
         <button type="button" onClick={() => setHtml('')}
-          className="text-xs text-muted hover:text-red-500 transition-colors">Clear custom HTML → use default widget</button>
+          className="text-xs text-muted hover:text-danger transition-colors">Clear custom HTML → use default widget</button>
       )}
 
       {expanded && createPortal(
-        <div className="fixed inset-0 z-[100] flex flex-col bg-black/50 backdrop-blur-sm" role="dialog" aria-modal="true">
-          <div className="m-auto w-[min(1100px,94vw)] h-[min(760px,90vh)] flex flex-col rounded-2xl border border-border bg-bg shadow-2xl overflow-hidden">
+        <div className="fixed inset-0 z-[100] flex flex-col nubi-backdrop" role="dialog" aria-modal="true">
+          <div className="m-auto w-[min(1100px,94vw)] h-[min(760px,90vh)] flex flex-col rounded-xl border border-border border-t-2 border-t-[var(--ink)] bg-bg shadow-pop overflow-hidden">
             <div className="flex items-center justify-between px-4 h-12 border-b border-border shrink-0">
-              <span className="flex items-center gap-2 text-sm font-semibold text-fg"><Code2 size={15} className="text-primary" /> Custom HTML</span>
+              <span className="flex items-center gap-2 text-sm font-semibold text-fg"><Code2 size={15} className="text-accent" /> Custom HTML</span>
               <button type="button" onClick={() => setExpanded(false)}
                 className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors" aria-label="Close">
                 <X size={16} />

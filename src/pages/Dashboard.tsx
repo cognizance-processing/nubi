@@ -20,8 +20,8 @@ const QUICK_LINKS = [
     ),
     label: 'SQL Playground',
     description: 'Run queries against your datastores with DuckDB-WASM',
-    accent: 'text-brand-teal',
-    border: 'hover:border-brand-teal',
+    accent: 'text-muted',
+    border: 'hover:border-fg',
   },
   {
     to: '/editor',
@@ -32,8 +32,8 @@ const QUICK_LINKS = [
     ),
     label: 'Dashboard Editor',
     description: 'Drag-and-drop widgets, AI-generated layouts',
-    accent: 'text-brand-blue',
-    border: 'hover:border-brand-blue',
+    accent: 'text-muted',
+    border: 'hover:border-fg',
   },
   {
     to: '/d/sample',
@@ -44,8 +44,8 @@ const QUICK_LINKS = [
     ),
     label: 'Sample Dashboard',
     description: 'See KPI, table, and chart widgets in action',
-    accent: 'text-brand-cyan',
-    border: 'hover:border-brand-cyan',
+    accent: 'text-muted',
+    border: 'hover:border-fg',
   },
   {
     to: '/docs',
@@ -57,7 +57,7 @@ const QUICK_LINKS = [
     label: 'Documentation',
     description: 'Widget reference, API specs, and embed guide',
     accent: 'text-muted',
-    border: 'hover:border-border',
+    border: 'hover:border-fg',
   },
 ]
 
@@ -78,8 +78,8 @@ export default function Dashboard() {
       {/* Page header */}
       <div className="mb-10 flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-3xl font-bold font-display text-fg">
-            Hello, {firstName} 👋
+          <h1 className="t-page m-0 text-fg">
+            Hello, {firstName}
           </h1>
           <p className="mt-1 text-sm text-muted">
             Welcome back to your Nubi workspace.
@@ -87,7 +87,7 @@ export default function Dashboard() {
         </div>
         <button
           onClick={handleLogout}
-          className="px-4 py-2 text-sm font-medium text-fg border border-border bg-surface rounded-lg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
+          className="px-4 py-2 text-sm font-medium text-fg border border-border bg-surface rounded-sm hover:bg-surface-2 transition-colors"
         >
           Log out
         </button>
@@ -95,18 +95,18 @@ export default function Dashboard() {
 
       {/* Quick-access cards */}
       <section className="mb-10">
-        <h2 className="text-xs font-semibold text-muted uppercase tracking-wider mb-4">Quick access</h2>
+        <h2 className="t-label mb-4">Quick access</h2>
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {QUICK_LINKS.map(link => (
             <Link
               key={link.to}
               to={link.to}
-              className={`group block bg-surface border border-border rounded-xl p-5 transition-all hover:shadow-md hover:-translate-y-0.5 ${link.border} focus:outline-none focus:ring-2 focus:ring-ring`}
+              className={`group block bg-surface border border-border rounded-xl p-5 transition-colors ${link.border} focus:outline-none focus:ring-2 focus:ring-ring`}
             >
               <div className={`mb-3 ${link.accent}`}>
                 {link.icon}
               </div>
-              <p className="text-sm font-semibold text-fg group-hover:text-primary transition-colors">
+              <p className="text-sm font-semibold text-fg group-hover:text-fg transition-colors">
                 {link.label}
               </p>
               <p className="text-xs text-muted mt-1 leading-relaxed">
@@ -119,7 +119,7 @@ export default function Dashboard() {
 
       {/* Coming soon placeholders */}
       <section className="mb-10">
-        <h2 className="text-xs font-semibold text-muted uppercase tracking-wider mb-4">Workspace</h2>
+        <h2 className="t-label mb-4">Workspace</h2>
         <div className="grid sm:grid-cols-3 gap-4">
           {['Datastores', 'Boards', 'Saved Queries'].map(label => (
             <div
@@ -135,7 +135,7 @@ export default function Dashboard() {
 
       {/* Account info card */}
       <section>
-        <h2 className="text-xs font-semibold text-muted uppercase tracking-wider mb-4">Account</h2>
+        <h2 className="t-label mb-4">Account</h2>
         <div className="bg-surface border border-border rounded-xl p-6 max-w-md">
           <dl className="space-y-3 text-sm">
             <div className="flex gap-3">
@@ -148,7 +148,7 @@ export default function Dashboard() {
             </div>
             <div className="flex gap-3">
               <dt className="w-28 text-muted shrink-0 font-medium">Verified</dt>
-              <dd className={user?.email_verified ? 'text-brand-teal font-medium' : 'text-fg'}>
+              <dd className={user?.email_verified ? 'text-success-fg font-medium' : 'text-fg'}>
                 {user?.email_verified ? 'Yes' : 'No'}
               </dd>
             </div>

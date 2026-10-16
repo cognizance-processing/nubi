@@ -24,6 +24,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { useResolvedParams, useResolvedFilters } from '../VariableStore.jsx'
 import WidgetError from '../../components/app/WidgetError.jsx'
+import Skeleton from '../../components/ui/Skeleton.jsx'
 
 const AGGS = {
   sum:   (acc) => acc.reduce((s, v) => s + v, 0),
@@ -149,8 +150,8 @@ export default function PivotWidget({ widget, providerTable = null }) {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full text-sm text-muted">
-        <span className="animate-pulse">Loading pivot…</span>
+      <div className="h-full p-3" role="status" aria-busy="true" aria-label="Loading pivot">
+        <Skeleton.Table rows={6} cols={5} className="border-0" />
       </div>
     )
   }
@@ -161,6 +162,7 @@ export default function PivotWidget({ widget, providerTable = null }) {
       <WidgetError
         message={error}
         queryId={query_id}
+        kind="pivot"
         onRetry={() => setRetryEpoch(e => e + 1)}
       />
     )

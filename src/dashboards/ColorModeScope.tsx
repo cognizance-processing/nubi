@@ -11,6 +11,7 @@
 import { forwardRef, useContext, useMemo, type CSSProperties, type HTMLAttributes, type ReactNode } from 'react'
 import { ThemeContext } from '../contexts/ThemeContext.jsx'
 import type { ColorMode } from '../lib/boardTheme.js'
+import './widgets/chrome.css'
 
 export function colorModeClass(mode: ColorMode | null | undefined): string | undefined {
   if (mode === 'dark') return 'dark'

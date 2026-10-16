@@ -586,6 +586,7 @@ export default function TableWidget({ widget, providerTable = null }) {
       <WidgetError
         message={error}
         queryId={query_id}
+        kind="table"
         onRetry={() => setRetryEpoch(e => e + 1)}
       />
     )

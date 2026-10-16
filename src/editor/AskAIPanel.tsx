@@ -158,7 +158,7 @@ export default function AskAIPanel({ onApply }) {
         <button
           onClick={handleGenerate}
           disabled={loading || !question.trim()}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
+          className="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium bg-[var(--ink)] text-[var(--ink-fg)] rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
         >
           {loading ? (
             <>
@@ -236,14 +236,14 @@ export default function AskAIPanel({ onApply }) {
             <div className="flex gap-2 pt-0.5">
               <button
                 onClick={handleReplace}
-                className="flex-1 px-3 py-1.5 text-xs font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 transition-opacity focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
+                className="flex-1 px-3 py-1.5 text-xs font-medium bg-[var(--ink)] text-[var(--ink-fg)] rounded-lg hover:opacity-90 transition-opacity focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
                 title="Replace the entire canvas with the AI-generated spec"
               >
                 Replace canvas
               </button>
               <button
                 onClick={handleMerge}
-                className="flex-1 px-3 py-1.5 text-xs font-medium bg-surface text-primary border border-border rounded-lg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
+                className="flex-1 px-3 py-1.5 text-xs font-medium bg-surface text-accent border border-border rounded-lg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
                 title="Append the AI-generated widgets to the current canvas (offsets positions to avoid overlap)"
               >
                 Merge widgets

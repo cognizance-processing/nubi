@@ -20,13 +20,13 @@
  * (bottom) stay pinned.
  *
  * Features: streamed assistant text rendered as markdown, rich collapsible
- * tool cards (shared with the global chat panel), gradient assistant avatar,
+ * tool cards (shared with the global chat panel), ink assistant avatar,
  * a model picker (remembered per session), Stop (AbortController), conversation
  * history + New chat, example-prompt empty state, and an "Applied to dashboard"
  * affordance on spec apply.
  *
  * Presentation reuses the app design tokens (bg-surface / bg-surface-2 /
- * border-border / text-fg / text-muted / primary / brand-gradient), the shared
+ * border-border / text-fg / text-muted / primary), the shared
  * MarkdownRenderer (`prose-chat` compact overrides live in index.css) and the
  * shared <ToolCard>. The streaming/data flow is unchanged from the prior version.
  */
@@ -82,13 +82,13 @@ function extractSpec(output) {
 }
 
 // ---------------------------------------------------------------------------
-// AssistantAvatar — the brand gradient mark used on every assistant turn
+// AssistantAvatar — the ink square used on every assistant turn
 // ---------------------------------------------------------------------------
 
 function AssistantAvatar() {
   return (
-    <div className="flex items-center justify-center w-6 h-6 rounded-full shrink-0 mt-0.5 bg-brand-gradient">
-      <Sparkles size={12} className="text-white" />
+    <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-sm bg-[var(--ink)]" aria-hidden="true">
+      <Sparkles size={14} strokeWidth={1.5} className="text-[var(--ink-fg)]" />
     </div>
   )
 }
@@ -96,9 +96,9 @@ function AssistantAvatar() {
 function TypingDots() {
   return (
     <span className="inline-flex gap-1 items-center">
-      <span className="w-1.5 h-1.5 rounded-full bg-muted/70 animate-bounce" style={{ animationDelay: '0ms' }} />
-      <span className="w-1.5 h-1.5 rounded-full bg-muted/70 animate-bounce" style={{ animationDelay: '120ms' }} />
-      <span className="w-1.5 h-1.5 rounded-full bg-muted/70 animate-bounce" style={{ animationDelay: '240ms' }} />
+      <span className="w-1.5 h-1.5 bg-muted/70 animate-bounce" style={{ animationDelay: '0ms' }} />
+      <span className="w-1.5 h-1.5 bg-muted/70 animate-bounce" style={{ animationDelay: '120ms' }} />
+      <span className="w-1.5 h-1.5 bg-muted/70 animate-bounce" style={{ animationDelay: '240ms' }} />
     </span>
   )
 }
@@ -114,7 +114,7 @@ function InsertSqlButton({ sql, onInsertSql }) {
     <button
       type="button"
       onClick={() => { onInsertSql(sql); setInserted(true); setTimeout(() => setInserted(false), 1500) }}
-      className="mt-1.5 flex items-center gap-1.5 text-[11px] font-medium text-primary hover:text-primary/80 transition-colors"
+      className="mt-1.5 flex items-center gap-1.5 text-[11px] font-medium text-accent hover:text-fg transition-colors"
     >
       {inserted ? <Check size={12} /> : <ArrowDownToLine size={12} />}
       {inserted ? 'Inserted' : 'Insert into editor'}
@@ -126,7 +126,7 @@ function MessageBubble({ message, onInsertSql }) {
   if (message.role === 'user') {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary text-primary-fg px-3.5 py-2.5 text-[13px] leading-relaxed shadow-sm whitespace-pre-wrap break-words">
+        <div className="max-w-[85%] rounded-sm bg-[var(--ink)] text-[var(--ink-fg)] px-3.5 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap break-words">
           {message.content}
         </div>
       </div>
@@ -167,7 +167,7 @@ function MessageBubble({ message, onInsertSql }) {
             <MarkdownRenderer content={message.content} />
             {message.streaming && (
               <span
-                className="inline-block w-[7px] h-[14px] -mb-0.5 ml-0.5 bg-brand-teal rounded-[1px] align-middle"
+                className="inline-block w-[7px] h-[14px] -mb-0.5 ml-0.5 bg-[var(--ink)] align-middle"
                 style={{ animation: 'nubiChatCaret 1s step-end infinite' }}
               />
             )}
@@ -197,7 +197,7 @@ function MessageBubble({ message, onInsertSql }) {
 
 function HistoryDropdown({ conversations, activeChatId, onSelect, onClose, loading }) {
   return (
-    <div className="absolute right-0 top-10 z-20 w-64 max-h-72 overflow-y-auto rounded-xl border border-border bg-surface shadow-lg py-1">
+    <div className="absolute right-0 top-10 z-20 w-64 max-h-72 overflow-y-auto rounded border border-border bg-surface shadow-pop py-1">
       {loading && <p className="px-3 py-2 text-xs text-muted">Loading…</p>}
       {!loading && conversations.length === 0 && (
         <p className="px-3 py-2 text-xs text-muted">No past conversations.</p>
@@ -226,7 +226,7 @@ function SuggestionChip({ text, onClick, disabled }) {
       type="button"
       onClick={() => onClick(text)}
       disabled={disabled}
-      className="px-3 py-1.5 rounded-full border border-border bg-surface-2 text-[12px] text-muted hover:border-primary hover:text-primary hover:bg-primary/5 disabled:opacity-40 disabled:cursor-not-allowed transition-all focus:outline-none focus:ring-2 focus:ring-ring text-left"
+      className="px-3 py-1.5 rounded-sm border border-border bg-surface text-[12px] text-muted hover:border-fg hover:text-fg disabled:opacity-40 disabled:cursor-not-allowed transition-all focus:outline-none focus:ring-2 focus:ring-ring text-left"
     >
       {text}
     </button>
@@ -454,8 +454,8 @@ export default function ChatPanel({
     <div className="flex flex-col h-full w-full bg-surface overflow-hidden">
       {/* ── Header: title + history + new chat ── */}
       <div className="relative shrink-0 flex items-center gap-2 px-3 py-2.5 border-b border-border">
-        <div className="flex items-center justify-center w-7 h-7 rounded-lg shrink-0 bg-brand-gradient">
-          <Sparkles size={13} className="text-white" />
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm bg-[var(--ink)]" aria-hidden="true">
+          <Sparkles size={14} strokeWidth={1.5} className="text-[var(--ink-fg)]" />
         </div>
         <span className="font-display font-semibold text-sm text-fg leading-none">{title}</span>
         <div className="flex-1" />
@@ -498,8 +498,8 @@ export default function ChatPanel({
       >
         {isEmpty && (
           <div className="h-full flex flex-col items-center justify-center text-center gap-5 px-4 pb-4">
-            <div className="flex items-center justify-center w-14 h-14 rounded-2xl shadow-lg bg-brand-gradient">
-              <Sparkles size={24} className="text-white" />
+            <div className="flex h-14 w-14 items-center justify-center rounded-sm bg-[var(--ink)]" aria-hidden="true">
+              <Sparkles size={24} strokeWidth={1.5} className="text-[var(--ink-fg)]" />
             </div>
             <div>
               <p className="font-display font-semibold text-fg text-[14px] mb-1">{title}</p>
@@ -519,7 +519,7 @@ export default function ChatPanel({
 
       {/* ── Error banner with retry ── */}
       {error && (
-        <div className="shrink-0 mx-3 mb-2 flex items-start gap-2 text-[12px] rounded-xl px-3 py-2 border border-red-500/30 bg-red-500/10 text-red-500">
+        <div className="shrink-0 mx-3 mb-2 flex items-start gap-2 text-[12px] rounded-xl px-3 py-2 border border-red-500/30 bg-red-500/10 text-danger">
           <AlertCircle size={14} className="shrink-0 mt-0.5" />
           <span className="flex-1 leading-relaxed">{error}</span>
           <button
@@ -566,7 +566,7 @@ export default function ChatPanel({
               onClick={() => send()}
               disabled={!input.trim() || !model}
               aria-label="Send message"
-              className="flex items-center justify-center w-7 h-7 rounded-lg shrink-0 bg-primary text-primary-fg hover:opacity-90 active:scale-95 disabled:opacity-35 disabled:cursor-not-allowed transition-all focus:outline-none focus:ring-2 focus:ring-ring"
+              className="flex items-center justify-center w-7 h-7 rounded-lg shrink-0 bg-[var(--ink)] text-[var(--ink-fg)] hover:opacity-90 active:scale-95 disabled:opacity-35 disabled:cursor-not-allowed transition-all focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <Send size={13} />
             </button>

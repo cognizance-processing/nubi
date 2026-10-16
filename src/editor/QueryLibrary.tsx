@@ -105,7 +105,7 @@ function ParamInput({ param, value, onChange }) {
       <label htmlFor={id} className="text-xs font-medium text-fg">
         <span className="font-mono">{param.name}</span>
         <span className="ml-1 text-muted">({param.type})</span>
-        {param.required && <span className="ml-1 text-red-500">*</span>}
+        {param.required && <span className="ml-1 text-danger">*</span>}
       </label>
       <input
         id={id}
@@ -203,7 +203,7 @@ function QueryCard({ query }) {
           onClick={handleRun}
           disabled={running}
           data-testid="query-run-btn"
-          className="shrink-0 px-4 py-1.5 text-sm font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
+          className="shrink-0 px-4 py-1.5 text-sm font-medium bg-[var(--ink)] text-[var(--ink-fg)] rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
         >
           {running ? 'Running…' : 'Run'}
         </button>

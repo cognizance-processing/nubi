@@ -14,6 +14,10 @@
  *   defaultFrom  {string}  default 'dev'
  *   defaultTo    {string}  default 'prod'
  *
+ * Before promoting, a change summary says what moves: the version pinned in each
+ * environment and, for boards, how the two specs differ (widgets added, edited,
+ * moved or removed) so nobody promotes blind.
+ *
  * After a successful promote the dialog shows the returned `promoted` list
  * (everything that moved) and the user closes it explicitly.
  *
@@ -28,30 +32,79 @@
  *     (push --force-with-lease semantics).
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
   ArrowRight,
-  CheckCircle2,
   ExternalLink,
   GitMerge,
-  Loader2,
   Rocket,
   Upload,
-  X,
 } from 'lucide-react'
 
-import { promote } from '../../lib/versions.js'
+import { promote, listVersions, getVersion } from '../../lib/versions.js'
 import { pullEnvironment } from '../../lib/gitenv.js'
 import { get } from '../../lib/api.js'
 import { useProject } from '../../contexts/ProjectContext.jsx'
+import { summarizeSpecChanges, describeBreakdown } from '../../editor/boardMeta.js'
+import Modal from '../ui/Modal.jsx'
+import Button from '../ui/Button.jsx'
+import Tag from '../ui/Tag.jsx'
+import Skeleton from '../ui/Skeleton.jsx'
+import '../../dashboards/widgets/chrome.css'
 
 const FALLBACK_ENVS = [{ key: 'dev', name: 'Development' }, { key: 'prod', name: 'Production' }]
 
-function envDotClass(key) {
-  if (key === 'prod') return 'bg-emerald-500'
-  if (key === 'dev') return 'bg-sky-500'
-  return 'bg-violet-500'
+function envVariant(key) {
+  if (key === 'prod') return 'success'
+  if (key === 'dev') return 'neutral'
+  return 'accent'
+}
+
+/**
+ * Change summary for promoting `from` → `to`.
+ *
+ * Fetches the version list once for the resource, finds the version each
+ * environment points at, and (boards only) loads both specs to diff them.
+ * Returns { loading, from, to, diff } where from/to are `{ version } | null`.
+ */
+function usePromoteSummary({ open, kind, resourceId, fromEnv, toEnv, versionsKey }) {
+  const [state, setState] = useState({ loading: false, from: null, to: null, diff: null, failed: false })
+
+  useEffect(() => {
+    if (!open || !resourceId || fromEnv === toEnv) {
+      setState({ loading: false, from: null, to: null, diff: null, failed: false })
+      return
+    }
+    let cancelled = false
+    setState(s => ({ ...s, loading: true, failed: false }))
+    ;(async () => {
+      const data = await listVersions(kind, resourceId)
+      if (cancelled) return
+      if (!data) { setState({ loading: false, from: null, to: null, diff: null, failed: true }); return }
+      const pin = (env) => {
+        const p = (data.pointers ?? []).find(x => x.env_key === env)
+        return p ? { version: p.version } : null
+      }
+      const from = pin(fromEnv)
+      const to = pin(toEnv)
+      let diff = null
+      if (kind === 'board' && from && to && from.version !== to.version) {
+        const [a, b] = await Promise.all([
+          getVersion('board', resourceId, to.version),
+          getVersion('board', resourceId, from.version),
+        ])
+        if (cancelled) return
+        const specA = a?.config?.spec
+        const specB = b?.config?.spec
+        if (specA && specB) diff = summarizeSpecChanges(specA, specB)
+      }
+      setState({ loading: false, from, to, diff, failed: false })
+    })()
+    return () => { cancelled = true }
+  }, [open, kind, resourceId, fromEnv, toEnv, versionsKey])
+
+  return state
 }
 
 export default function PromoteDialog({
@@ -100,17 +153,12 @@ export default function PromoteDialog({
     return () => { cancelled = true }
   }, [git?.conflict, activeProject?.id])
 
-  // ESC to close
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e) => { if (e.key === 'Escape' && !busy) onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, busy, onClose])
+  const sameEnv = fromEnv === toEnv
+  const summary = usePromoteSummary({
+    open: open && promoted === null, kind, resourceId, fromEnv, toEnv, versionsKey: 0,
+  })
 
   if (!open) return null
-
-  const sameEnv = fromEnv === toEnv
 
   async function handlePromote() {
     setBusy(true)
@@ -153,13 +201,13 @@ export default function PromoteDialog({
   }
 
   const envSelect = (value, onChange, label) => (
-    <label className="flex-1 min-w-0">
-      <span className="block text-[11px] font-medium text-muted mb-1">{label}</span>
+    <label className="min-w-0 flex-1">
+      <span className="nbc-label mb-1 block">{label}</span>
       <select
         value={value}
         onChange={e => onChange(e.target.value)}
         disabled={busy || promoted !== null}
-        className="w-full h-9 px-2 rounded-xl border border-border bg-bg text-sm font-mono text-fg focus:outline-none focus:ring-2 focus:ring-ring/60 disabled:opacity-50"
+        className="nubi-input nubi-input-md nubi-select font-mono"
       >
         {envs.map(env => (
           <option key={env.key} value={env.key}>{env.key}</option>
@@ -169,205 +217,227 @@ export default function PromoteDialog({
   )
 
   return (
-    <>
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm"
-        onClick={busy ? undefined : onClose}
-        aria-hidden="true"
-      />
-
-      {/* Dialog */}
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="promote-dialog-title"
-        className="fixed inset-0 z-[60] flex items-center justify-center p-4 pointer-events-none"
-      >
-        <div
-          className="pointer-events-auto w-full max-w-md bg-surface rounded-2xl border border-border shadow-2xl flex flex-col"
-          onClick={e => e.stopPropagation()}
-        >
-          {/* Header */}
-          <div className="flex items-start gap-3 px-6 pt-6 pb-4 border-b border-border">
-            <div className="shrink-0 w-10 h-10 rounded-xl flex items-center justify-center bg-primary/10">
-              <Rocket size={18} className="text-primary" />
+    <Modal
+      open={open}
+      onClose={() => { if (!busy) onClose() }}
+      size="md"
+      title={`Promote ${kind}`}
+      description="Copy the pinned version from one environment to another."
+      persistent={busy}
+    >
+      <Modal.Body data-testid="promote-dialog" className="space-y-4">
+        {promoted === null ? (
+          <>
+            <div className="flex items-end gap-2">
+              {envSelect(fromEnv, setFromEnv, 'From')}
+              <ArrowRight size={16} strokeWidth={1.5} className="mb-[11px] shrink-0 text-muted" aria-hidden="true" />
+              {envSelect(toEnv, setToEnv, 'To')}
             </div>
-            <div className="flex-1 min-w-0">
-              <h2 id="promote-dialog-title" className="font-display font-semibold text-base text-fg">
-                Promote {kind}
-              </h2>
-              <p className="text-sm text-muted mt-0.5">
-                Copy the pinned version from one environment to another.
+
+            {/* What will move: the version pinned in each env, and (boards) how
+                the two specs differ. */}
+            <PromoteSummary
+              kind={kind}
+              fromEnv={fromEnv}
+              toEnv={toEnv}
+              sameEnv={sameEnv}
+              {...summary}
+            />
+
+            {sameEnv && (
+              <p role="alert" className="m-0 text-[13px] text-warning-fg">
+                Source and target environments must differ.
               </p>
-            </div>
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={busy}
-              aria-label="Close"
-              className="shrink-0 p-1.5 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors disabled:opacity-50"
-            >
-              <X size={16} />
-            </button>
-          </div>
-
-          {/* Body */}
-          <div className="px-6 py-5 space-y-4">
-            {promoted === null ? (
-              <>
-                <div className="flex items-end gap-2">
-                  {envSelect(fromEnv, setFromEnv, 'From environment')}
-                  <ArrowRight size={16} className="text-muted shrink-0 mb-2.5" />
-                  {envSelect(toEnv, setToEnv, 'To environment')}
-                </div>
-
-                {/* What will move */}
-                <div className="rounded-xl border border-border bg-surface-2/40 px-4 py-3 text-sm text-muted space-y-1">
-                  <p>
-                    The version pinned to{' '}
-                    <span className="font-mono text-fg">{fromEnv}</span> will also be pinned to{' '}
-                    <span className="font-mono text-fg">{toEnv}</span>.
-                  </p>
-                  {kind === 'flow' && (
-                    <p className="text-xs">Incremental watermarks of materialized tasks are copied best-effort.</p>
-                  )}
-                  {kind === 'board' && (
-                    <p className="text-xs">Queries referenced by the pinned board version are promoted too.</p>
-                  )}
-                </div>
-
-                {sameEnv && (
-                  <p className="text-xs text-amber-600 dark:text-amber-400">
-                    Source and target environments must differ.
-                  </p>
-                )}
-                {error && <p className="text-xs text-red-500">{error}</p>}
-              </>
-            ) : (
-              /* ---- Result: what was promoted + git outcome ---- */
-              <div className="space-y-3">
-                <div className="rounded-xl border border-emerald-300/50 dark:border-emerald-700/50 bg-emerald-50 dark:bg-emerald-900/10 px-4 py-3 space-y-2">
-                  <p className="flex items-center gap-2 text-sm font-medium text-emerald-700 dark:text-emerald-400">
-                    <CheckCircle2 size={15} className="shrink-0" />
-                    Promoted {promoted.length} item{promoted.length === 1 ? '' : 's'}
-                  </p>
-                  <ul className="space-y-1">
-                    {promoted.map((item, i) => (
-                      <li key={i} className="flex items-center gap-2 text-xs text-emerald-700 dark:text-emerald-400">
-                        <span className={['w-1.5 h-1.5 rounded-full shrink-0', envDotClass(item.to_env)].join(' ')} />
-                        <span className="font-medium">{item.kind}</span>
-                        <span className="font-mono truncate">{String(item.resource_id).slice(0, 8)}…</span>
-                        <span className="font-mono">v{item.version ?? '?'}</span>
-                        <span className="text-muted ml-auto font-mono shrink-0">
-                          {item.from_env} → {item.to_env}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-
-                {/* Git merge footnote (best-effort, branches followed the pointers) */}
-                {git?.merge?.merged && (
-                  <p className="flex items-center gap-1.5 text-xs text-muted px-1">
-                    <GitMerge size={12} className="shrink-0 text-violet-500" />
-                    <span className="truncate">
-                      Branch <span className="font-mono">{git.merge.from_branch}</span> merged into{' '}
-                      <span className="font-mono">{git.merge.to_branch}</span>
-                      {git.merge.sha ? <> @ <span className="font-mono">{String(git.merge.sha).slice(0, 7)}</span></> : null}
-                      {git.merge.ff ? ' (fast-forward)' : ''}
-                    </span>
-                  </p>
-                )}
-                {git?.warning && !git?.conflict && (
-                  <p className="text-xs text-muted px-1">{git.warning}</p>
-                )}
-
-                {/* Git merge conflict — pointers promoted, branches diverged */}
-                {git?.conflict && (
-                  <div className="rounded-xl border border-amber-300/60 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-900/10 px-4 py-3 space-y-2">
-                    <p className="flex items-start gap-2 text-xs font-medium text-amber-700 dark:text-amber-400">
-                      <AlertTriangle size={13} className="shrink-0 mt-0.5" />
-                      <span>
-                        The promote succeeded, but the git branches could not be merged
-                        (<span className="font-mono">{String(git.conflict.from_sha || '').slice(0, 7)}</span> vs{' '}
-                        <span className="font-mono">{String(git.conflict.to_sha || '').slice(0, 7)}</span>).
+            )}
+            {error && <p role="alert" className="m-0 text-[13px] text-danger-fg">{error}</p>}
+          </>
+        ) : (
+          /* ---- Result: what was promoted + git outcome ---- */
+          <div className="space-y-3">
+            <div className="nubi-notice nubi-notice-success items-start" role="status">
+              <div className="min-w-0 flex-1">
+                <p className="m-0 text-[13px] font-semibold">
+                  Promoted {promoted.length} item{promoted.length === 1 ? '' : 's'}
+                </p>
+                <ul className="m-0 mt-2 list-none space-y-1.5 p-0">
+                  {promoted.map((item, i) => (
+                    <li key={i} className="flex items-center gap-2 text-[12px]">
+                      <span className="font-medium">{item.kind}</span>
+                      <span className="nbc-meta truncate !text-current">{String(item.resource_id).slice(0, 8)}</span>
+                      <span className="nbc-meta !text-current">v{item.version ?? '?'}</span>
+                      <span className="nbc-meta ml-auto shrink-0 !text-current">
+                        {item.from_env} → {item.to_env}
                       </span>
-                    </p>
-                    {Array.isArray(git.conflict.files) && git.conflict.files.length > 0 && (
-                      <ul className="max-h-24 overflow-y-auto space-y-0.5">
-                        {git.conflict.files.map(file => (
-                          <li key={file} className="text-[11px] font-mono text-amber-700/80 dark:text-amber-400/80 truncate">
-                            {file}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                      <button
-                        type="button"
-                        onClick={handleUseEnvState}
-                        disabled={gitBusy || !toEnvRow?.id}
-                        title={`Overwrite the "${toEnv}" branch from its pinned environment state (force-with-lease)`}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-amber-400/60 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors disabled:opacity-50"
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+
+            {/* Git merge footnote (best-effort, branches followed the pointers) */}
+            {git?.merge?.merged && (
+              <p className="m-0 flex items-center gap-1.5 text-[12px] text-muted">
+                <GitMerge size={14} strokeWidth={1.5} className="shrink-0" aria-hidden="true" />
+                <span className="truncate">
+                  Branch <span className="font-mono">{git.merge.from_branch}</span> merged into{' '}
+                  <span className="font-mono">{git.merge.to_branch}</span>
+                  {git.merge.sha ? <> @ <span className="font-mono">{String(git.merge.sha).slice(0, 7)}</span></> : null}
+                  {git.merge.ff ? ' (fast-forward)' : ''}
+                </span>
+              </p>
+            )}
+            {git?.warning && !git?.conflict && (
+              <p className="m-0 text-[12px] text-muted">{git.warning}</p>
+            )}
+
+            {/* Git merge conflict — pointers promoted, branches diverged */}
+            {git?.conflict && (
+              <div className="nubi-notice nubi-notice-warning items-start" role="alert">
+                <AlertTriangle size={16} strokeWidth={1.5} className="mt-0.5 shrink-0" aria-hidden="true" />
+                <div className="min-w-0 flex-1 space-y-2">
+                  <p className="m-0 text-[13px] font-semibold">
+                    The promote succeeded, but the git branches could not be merged
+                    (<span className="font-mono">{String(git.conflict.from_sha || '').slice(0, 7)}</span> vs{' '}
+                    <span className="font-mono">{String(git.conflict.to_sha || '').slice(0, 7)}</span>).
+                  </p>
+                  {Array.isArray(git.conflict.files) && git.conflict.files.length > 0 && (
+                    <ul className="m-0 max-h-24 list-none space-y-0.5 overflow-y-auto p-0">
+                      {git.conflict.files.map(file => (
+                        <li key={file} className="truncate font-mono text-[11px]">{file}</li>
+                      ))}
+                    </ul>
+                  )}
+                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                    <Button
+                      size="xs"
+                      variant="secondary"
+                      onClick={handleUseEnvState}
+                      loading={gitBusy}
+                      disabled={!toEnvRow?.id}
+                      title={`Overwrite the "${toEnv}" branch from its pinned environment state (force-with-lease)`}
+                    >
+                      {!gitBusy && <Upload size={14} strokeWidth={1.5} aria-hidden="true" />}
+                      Use environment state
+                    </Button>
+                    {repoUrl && (
+                      <a
+                        href={repoUrl.replace(/\.git$/, '')}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-[12px] font-medium underline-offset-2 hover:underline"
                       >
-                        {gitBusy ? <Loader2 size={11} className="animate-spin" /> : <Upload size={11} />}
-                        Use environment state
-                      </button>
-                      {repoUrl && (
-                        <a
-                          href={repoUrl.replace(/\.git$/, '')}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 dark:text-amber-400 hover:underline"
-                        >
-                          Resolve on provider <ExternalLink size={10} />
-                        </a>
-                      )}
-                    </div>
+                        Resolve on provider <ExternalLink size={12} strokeWidth={1.5} aria-hidden="true" />
+                      </a>
+                    )}
                   </div>
-                )}
-                {gitNotice && (
-                  <p className="text-xs text-muted px-1">{gitNotice}</p>
-                )}
+                </div>
               </div>
             )}
-          </div>
-
-          {/* Footer */}
-          <div className="flex items-center justify-end gap-3 px-6 pb-6">
-            {promoted === null ? (
-              <>
-                <button
-                  type="button"
-                  onClick={onClose}
-                  disabled={busy}
-                  className="px-4 py-2 rounded-xl text-sm font-medium border border-border text-fg hover:bg-surface-2 transition-colors disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handlePromote}
-                  disabled={busy || sameEnv}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-primary text-primary-fg hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                >
-                  {busy ? <Loader2 size={15} className="animate-spin" /> : <Rocket size={15} />}
-                  {busy ? 'Promoting…' : 'Promote'}
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-4 py-2 rounded-xl text-sm font-semibold bg-primary text-primary-fg hover:opacity-90 transition-colors"
-              >
-                Done
-              </button>
+            {gitNotice && (
+              <p className="m-0 text-[12px] text-muted" role="status">{gitNotice}</p>
             )}
           </div>
+        )}
+      </Modal.Body>
+
+      <Modal.Footer>
+        {promoted === null ? (
+          <>
+            <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>Cancel</Button>
+            <Button size="sm" onClick={handlePromote} loading={busy} disabled={sameEnv}>
+              {!busy && <Rocket size={14} strokeWidth={1.5} aria-hidden="true" />}
+              {busy ? 'Promoting…' : `Promote to ${toEnv}`}
+            </Button>
+          </>
+        ) : (
+          <Button size="sm" onClick={onClose}>Done</Button>
+        )}
+      </Modal.Footer>
+    </Modal>
+  )
+}
+
+/**
+ * PromoteSummary — "what will move", as a ruled block.
+ *
+ *   WHAT MOVES
+ *   dev  v5   →   prod  v2
+ *   2 added · 1 edited · 1 moved
+ *   added    Revenue by region
+ *   edited   Total orders
+ */
+function PromoteSummary({ kind, fromEnv, toEnv, sameEnv, loading, from, to, diff, failed }) {
+  const rows = useMemo(() => (diff?.changes ?? []).slice(0, 6), [diff])
+  if (sameEnv) return null
+
+  return (
+    <section aria-label="What will move" aria-live="polite" className="border-t-2 border-[var(--ink)]">
+      <h3 className="nbc-label m-0 pt-2">What moves</h3>
+
+      {loading ? (
+        <div className="pt-2" role="status" aria-busy="true" aria-label="Comparing versions">
+          <Skeleton className="mb-2 h-4 w-48" />
+          <Skeleton className="h-3 w-32" />
         </div>
-      </div>
-    </>
+      ) : failed ? (
+        <p className="m-0 pt-2 text-[13px] text-muted">
+          Could not compare the two environments. Promoting still copies the pinned version.
+        </p>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-2 py-2.5 text-[13px]">
+            <Tag variant={envVariant(fromEnv)} caps={false}>{fromEnv}</Tag>
+            <span className="font-mono text-[13px] font-semibold tabular-nums">{from ? `v${from.version}` : 'nothing pinned'}</span>
+            <ArrowRight size={14} strokeWidth={1.5} className="text-muted" aria-hidden="true" />
+            <Tag variant={envVariant(toEnv)} caps={false}>{toEnv}</Tag>
+            <span className="font-mono text-[13px] tabular-nums text-muted">{to ? `v${to.version}` : 'nothing pinned'}</span>
+          </div>
+
+          {!from && (
+            <p className="m-0 border-t border-border py-2 text-[13px] text-warning-fg">
+              Nothing is pinned to {fromEnv}, so there is nothing to copy. Create a checkpoint first.
+            </p>
+          )}
+          {from && !to && (
+            <p className="m-0 border-t border-border py-2 text-[13px] text-muted">
+              First promote: {toEnv} has no version yet, so everything in v{from.version} is new there.
+            </p>
+          )}
+          {from && to && from.version === to.version && (
+            <p className="m-0 border-t border-border py-2 text-[13px] text-muted">
+              Both environments already point at v{from.version}. Nothing will change.
+            </p>
+          )}
+
+          {diff && (
+            <>
+              <p className="nbc-meta m-0 border-t border-border py-2">
+                {diff.total === 0 ? 'The specs are identical.' : describeBreakdown(diff)}
+              </p>
+              {rows.length > 0 && (
+                <ul className="m-0 list-none p-0">
+                  {rows.map(c => (
+                    <li key={`${c.kind}:${c.id}`} className="flex items-center gap-3 border-t border-border py-1.5 text-[13px]">
+                      <span className="nbc-label w-16 shrink-0">{c.kind === 'board' ? 'setting' : c.kind}</span>
+                      <span className="min-w-0 flex-1 truncate text-fg">{c.label}</span>
+                    </li>
+                  ))}
+                  {diff.total > rows.length && (
+                    <li className="nbc-meta border-t border-border py-1.5">and {diff.total - rows.length} more</li>
+                  )}
+                </ul>
+              )}
+            </>
+          )}
+
+          {kind === 'flow' && (
+            <p className="nbc-meta m-0 border-t border-border py-2 !whitespace-normal">Incremental watermarks of materialized tasks are copied best-effort.</p>
+          )}
+          {kind === 'board' && (
+            <p className="nbc-meta m-0 border-t border-border py-2 !whitespace-normal">Queries referenced by the pinned board version are promoted too.</p>
+          )}
+        </>
+      )}
+    </section>
   )
 }

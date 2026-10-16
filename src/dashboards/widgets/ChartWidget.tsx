@@ -50,7 +50,10 @@
  * - Light/dark via ThemeContext → resolveSpaTheme().
  */
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import * as echarts from 'echarts'
+import { arrowTableToCSV, downloadCSV, chartToPNG } from '../../lib/exports.js'
+import WidgetToolbar from '../WidgetToolbar.jsx'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { runMetricQuery } from '../../lib/metricRuntime.js'
 import { buildChartOption } from '../../lib/chartOptionShared.js'
@@ -145,6 +148,7 @@ export default function ChartWidget({ widget, providerTable = null }) {
   const refreshEpoch = useRefreshEpoch()
 
   const [table, setTable] = useState(null)
+  const rootRef = useRef(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   // Bumped by the error state's Retry button to re-run the fetch effect.
@@ -312,17 +316,10 @@ export default function ChartWidget({ widget, providerTable = null }) {
 
   if (loading) {
     return (
-      <div className="flex flex-col h-full p-3 gap-2" aria-busy="true" aria-label="Loading chart">
-        <div className="flex-1 min-h-0 flex items-end gap-1.5 px-2 pb-2">
-          {[55, 80, 40, 90, 65, 75, 50, 85].map((h, i) => (
-            <Skeleton
-              key={i}
-              className="flex-1 rounded-sm"
-              style={{ height: `${h}%` }}
-            />
-          ))}
-        </div>
-        <Skeleton className="h-2.5 w-32 mx-auto rounded" />
+      // Axes and gridlines draw at once; only the bars pulse (static under
+      // reduced motion). That reads as "the frame is here, the data is coming".
+      <div className="flex flex-col h-full p-3 gap-2" role="status" aria-busy="true" aria-label="Loading chart">
+        <Skeleton.Chart height={'100%' as unknown as number} className="flex-1 min-h-0" bars={10} />
       </div>
     )
   }
@@ -334,13 +331,35 @@ export default function ChartWidget({ widget, providerTable = null }) {
       <WidgetError
         message={error}
         queryId={query_id}
+        kind="chart"
         onRetry={() => setRetryEpoch(e => e + 1)}
       />
     )
   }
 
+  // File name for the tile's downloads: the chart's own title when it has one.
+  const rawTitle = widget.config?.title
+  const exportName = String(
+    (typeof rawTitle === 'string' ? rawTitle : rawTitle?.text) || widget.props?.title || widget.id || 'chart',
+  ).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'chart'
+
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div ref={rootRef} className="group relative flex flex-col h-full overflow-hidden">
+      {/* Download actions: shown on hover or when a button inside has focus, so
+          they never sit on top of the chart at rest. Hidden on touch (no hover
+          to reveal them; the board's Export menu covers it) and inside the
+          editor, where the tile header carries its own actions. */}
+      {table && option && (
+        <WidgetToolbar
+          className="nbc-live-actions absolute right-2 top-2 z-10 [@media(hover:none)]:!hidden"
+          onExportCsv={() => downloadCSV(`${exportName}.csv`, arrowTableToCSV(table))}
+          onExportPng={() => {
+            const el = rootRef.current?.querySelector('[_echarts_instance_]') as HTMLElement | null
+            const inst = el ? echarts.getInstanceByDom(el) : null
+            if (inst) chartToPNG(inst, `${exportName}.png`, { backgroundColor: getComputedStyle(rootRef.current).getPropertyValue('--surface').trim() || undefined })
+          }}
+        />
+      )}
       {/* The 180px floor keeps a chart from collapsing when the parent has no
           definite height, but as a hard value it also forced a chart TALLER
           than a short grid cell, so the cell clipped it — a small gauge tile

@@ -82,15 +82,15 @@ function SeriesList({ label, hint, series, columns, onChange }) {
         <div key={`${col}-${i}`} className="flex items-center gap-1">
           <div className="flex flex-col">
             <button type="button" onClick={() => move(i, -1)} disabled={i === 0}
-              className="h-3 leading-none text-muted/60 hover:text-primary disabled:opacity-30" title="Move up">▲</button>
+              className="h-3 leading-none text-muted/60 hover:text-fg disabled:opacity-30" title="Move up">▲</button>
             <button type="button" onClick={() => move(i, 1)} disabled={i === series.length - 1}
-              className="h-3 leading-none text-muted/60 hover:text-primary disabled:opacity-30" title="Move down">▼</button>
+              className="h-3 leading-none text-muted/60 hover:text-fg disabled:opacity-30" title="Move down">▼</button>
           </div>
           <select className={`${selectCls} flex-1`} value={col} onChange={e => update(i, e.target.value)}>
             {columns.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
           <button type="button" onClick={() => remove(i)}
-            className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-red-500 hover:bg-red-500/10 transition-colors" title="Remove">
+            className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-danger hover:bg-[var(--danger-bg)] transition-colors" title="Remove">
             <Trash2 size={12} />
           </button>
         </div>
@@ -198,17 +198,17 @@ export function ChartConfig({ widget, onChange }) {
                     onClick={() => applySuggestion(s)}
                     title={active ? 'Re-apply the suggested columns' : `Switch to ${CHART_LABELS[s.type] ?? s.type} with these columns`}
                     className={`w-full text-left flex items-start gap-2 p-2 rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
-                      active ? 'bg-primary/10 border-primary text-fg' : 'bg-surface border-border hover:border-primary/60'
+                      active ? 'bg-[var(--accent-soft)] border-[var(--ink)] text-fg' : 'bg-surface border-border hover:border-fg'
                     }`}
                   >
-                    <span className={`mt-0.5 shrink-0 w-6 h-6 rounded-md flex items-center justify-center ${active ? 'bg-primary text-primary-fg' : 'bg-surface-2 text-muted'}`}>
+                    <span className={`mt-0.5 shrink-0 w-6 h-6 rounded-md flex items-center justify-center ${active ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface-2 text-muted'}`}>
                       <Icon size={13} />
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center gap-1.5">
                         <span className="text-[11px] font-semibold leading-tight">{CHART_LABELS[s.type] ?? s.type}</span>
                         {i === 0 && (
-                          <span className="text-[8px] font-semibold uppercase tracking-wider px-1 py-px rounded bg-primary/15 text-primary leading-none">Best</span>
+                          <span className="nbc-meta !text-accent">Best</span>
                         )}
                       </span>
                       <span className="block text-[10px] text-muted leading-snug mt-0.5">{s.reason}</span>
@@ -230,8 +230,8 @@ export function ChartConfig({ widget, onChange }) {
                 onClick={() => onChange({ ...widget, chart_type: t })}
                 className={`flex flex-col items-center justify-center gap-1 h-14 px-1 text-[10px] font-medium rounded-lg border capitalize transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
                   active
-                    ? 'bg-primary text-primary-fg border-primary shadow-sm'
-                    : 'bg-surface text-muted border-border hover:border-primary/60 hover:text-primary'
+                    ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]'
+                    : 'bg-surface text-muted border-border hover:border-fg hover:text-fg'
                 }`}
               >
                 <Icon size={16} className={active ? '' : 'text-muted'} />
@@ -769,7 +769,7 @@ export function ChartConfig({ widget, onChange }) {
                 </select>
                 <button
                   onClick={() => removeRefLine(i)}
-                  className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg border border-transparent hover:border-red-300 hover:bg-red-50 text-muted hover:text-red-500 transition-colors"
+                  className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg border border-transparent hover:border-danger hover:bg-[var(--danger-bg)] text-muted hover:text-danger transition-colors"
                   title="Remove"
                 >
                   <Trash2 size={12} />
@@ -801,7 +801,7 @@ export function ChartConfig({ widget, onChange }) {
           ))}
           <button
             onClick={addRefLine}
-            className="flex items-center gap-1 text-[11px] font-medium pl-1.5 pr-2 h-7 rounded-lg border border-dashed border-border hover:border-primary text-muted hover:text-primary transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50 w-full justify-center"
+            className="flex items-center gap-1 text-[11px] font-medium pl-1.5 pr-2 h-7 rounded-lg border border-dashed border-border hover:border-fg text-muted hover:text-fg transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50 w-full justify-center"
           >
             <Plus size={12} /> Add reference line
           </button>

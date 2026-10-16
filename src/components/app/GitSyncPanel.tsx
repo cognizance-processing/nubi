@@ -87,8 +87,8 @@ function useActiveEnv(envId) {
 
 function DivergedNotice({ diverged, busy, onResolve, onDismiss }) {
   return (
-    <div className="rounded-xl border border-amber-300/60 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-900/10 px-3 py-2.5 space-y-2">
-      <p className="flex items-start gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-400">
+    <div className="rounded-xl nubi-notice nubi-notice-warning px-3 py-2.5 space-y-2">
+      <p className="flex items-start gap-1.5 text-xs font-medium text-warning-fg">
         <AlertTriangle size={13} className="shrink-0 mt-0.5" />
         <span>
           Branch diverged — <span className="font-mono">{shortSha(diverged.branch_sha)}</span> on
@@ -101,7 +101,7 @@ function DivergedNotice({ diverged, busy, onResolve, onDismiss }) {
           {diverged.files.map(file => (
             <li
               key={file}
-              className="text-[11px] font-mono text-amber-700/80 dark:text-amber-400/80 truncate"
+              className="text-[11px] font-mono text-warning-fg truncate"
             >
               {file}
             </li>
@@ -114,7 +114,7 @@ function DivergedNotice({ diverged, busy, onResolve, onDismiss }) {
           disabled={busy}
           onClick={() => onResolve('take_branch')}
           title="Import the branch state into the environment"
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-amber-400/60 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-frame-line text-fg hover:border-fg"
         >
           <Download size={11} /> Use branch
         </button>
@@ -123,7 +123,7 @@ function DivergedNotice({ diverged, busy, onResolve, onDismiss }) {
           disabled={busy}
           onClick={() => onResolve('take_env')}
           title="Overwrite the branch from the environment's pinned state (force-with-lease)"
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-amber-400/60 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-frame-line text-fg hover:border-fg"
         >
           <Upload size={11} /> Use environment
         </button>
@@ -156,7 +156,7 @@ function StatusHeader({ loading, error, status, onRetry }) {
 
   if (error) {
     return (
-      <div className="flex items-start gap-2 px-4 py-3 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-xs text-red-700 dark:text-red-300">
+      <div className="flex items-start gap-2 px-4 py-3 rounded-xl nubi-notice nubi-notice-error text-xs">
         <AlertTriangle size={15} className="shrink-0 mt-0.5" />
         <div className="min-w-0 flex-1">
           <p>{error}</p>
@@ -189,7 +189,7 @@ function StatusHeader({ loading, error, status, onRetry }) {
 
   return (
     <div className="flex items-start gap-2.5 px-4 py-3 rounded-xl bg-bg border border-border">
-      <CheckCircle size={16} className="text-emerald-500 shrink-0 mt-0.5" />
+      <CheckCircle size={16} className="text-success shrink-0 mt-0.5" />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 text-sm font-medium text-fg">
           <span className="capitalize">{binding.provider}</span>
@@ -317,7 +317,7 @@ export default function GitSyncPanel({ projectId, open, onClose, envId, embedded
       {/* Backdrop — overlay mode only (embedded lives inside the shared sidebar) */}
       {!embedded && (
         <div
-          className="fixed inset-0 z-[55] bg-black/40 backdrop-blur-[1px]"
+          className="fixed inset-0 z-[55] nubi-backdrop"
           onClick={busy ? undefined : onClose}
           aria-hidden="true"
         />
@@ -330,11 +330,11 @@ export default function GitSyncPanel({ projectId, open, onClose, envId, embedded
         aria-labelledby="git-sync-panel-title"
         className={embedded
           ? 'flex h-full w-full flex-col bg-surface'
-          : 'fixed inset-y-0 right-0 z-[55] w-full max-w-md bg-surface border-l border-border shadow-2xl flex flex-col'}
+          : 'fixed inset-y-0 right-0 z-[55] w-full max-w-md bg-surface border-l border-border shadow-pop flex flex-col'}
       >
         {/* Header */}
         <div className="flex items-center gap-3 px-5 py-4 border-b border-border shrink-0">
-          <div className="shrink-0 w-9 h-9 rounded-xl flex items-center justify-center bg-primary/10">
+          <div className="shrink-0 w-9 h-9 rounded-xl flex items-center justify-center bg-surface-2">
             <GitBranch size={17} className="text-primary" />
           </div>
           <div className="min-w-0 flex-1">
@@ -380,7 +380,7 @@ export default function GitSyncPanel({ projectId, open, onClose, envId, embedded
             className={[
               'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
               view === 'sync'
-                ? 'bg-primary/10 text-primary'
+                ? 'bg-[var(--accent-soft)] text-fg'
                 : 'text-muted hover:text-fg hover:bg-surface-2',
             ].join(' ')}
           >
@@ -394,7 +394,7 @@ export default function GitSyncPanel({ projectId, open, onClose, envId, embedded
             className={[
               'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
               view === 'files'
-                ? 'bg-primary/10 text-primary'
+                ? 'bg-[var(--accent-soft)] text-fg'
                 : 'text-muted hover:text-fg hover:bg-surface-2',
             ].join(' ')}
           >
@@ -419,8 +419,8 @@ export default function GitSyncPanel({ projectId, open, onClose, envId, embedded
                 <div className="flex items-center gap-2">
                   <span className="text-[11px] font-semibold uppercase tracking-wide text-muted">Sync</span>
                   {envKey ? (
-                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-surface border border-border text-[11px] font-mono text-fg">
-                      <span className={`w-1.5 h-1.5 rounded-full ${envDotClass(envKey)}`} />
+                    <span className="nubi-tag nubi-tag-nocaps">
+                      <span className={`w-1.5 h-1.5 ${envDotClass(envKey)}`} />
                       {envKey}
                     </span>
                   ) : (
@@ -440,7 +440,7 @@ export default function GitSyncPanel({ projectId, open, onClose, envId, embedded
                       onClick={handlePush}
                       disabled={!canSync}
                       title={`Push pinned ${envKey ?? 'env'} resources to its branch`}
-                      className="inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl text-sm font-semibold bg-primary text-primary-fg hover:bg-primary/90 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                      className="inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl text-sm font-semibold bg-[var(--ink)] text-[var(--ink-fg)] hover:bg-[var(--ink-hover)] transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
                     >
                       {busy === 'push' ? (
                         <Loader2 size={15} className="animate-spin" />
@@ -454,7 +454,7 @@ export default function GitSyncPanel({ projectId, open, onClose, envId, embedded
                       onClick={() => handlePull()}
                       disabled={!canSync}
                       title={`Pull this environment's branch into ${envKey ?? 'env'}`}
-                      className="inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium text-fg bg-surface border border-border hover:border-primary hover:bg-surface-2 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                      className="inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium text-fg bg-surface border border-border hover:border-fg hover:bg-surface-2 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
                     >
                       {busy === 'pull' ? (
                         <Loader2 size={15} className="animate-spin" />
@@ -500,7 +500,7 @@ export default function GitSyncPanel({ projectId, open, onClose, envId, embedded
               <button
                 type="button"
                 onClick={() => setGraphOpen(true)}
-                className="w-full inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium text-fg bg-bg border border-border hover:border-primary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                className="w-full inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium text-fg bg-bg border border-border hover:border-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
               >
                 <GitBranch size={15} className="text-muted" />
                 Branch graph

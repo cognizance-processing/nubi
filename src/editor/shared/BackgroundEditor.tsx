@@ -26,8 +26,8 @@ export function BackgroundEditor({ value, onChange }) {
           <button key={t} type="button" onClick={() => set({ type: t === 'none' ? undefined : t })}
             className={`px-3 py-1.5 text-xs font-medium rounded-lg border capitalize transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 ${
               (type === t || (t === 'none' && !bg.type))
-                ? 'bg-primary text-primary-fg border-primary shadow-sm'
-                : 'bg-surface text-muted border-border hover:border-primary/60 hover:text-fg hover:bg-surface-2'
+                ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]'
+                : 'bg-surface text-muted border-border hover:border-fg hover:text-fg hover:bg-surface-2'
             }`}>{t}</button>
         ))}
       </div>

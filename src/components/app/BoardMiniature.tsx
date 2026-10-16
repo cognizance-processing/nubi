@@ -10,14 +10,22 @@
  * specMiniature.js for why a live <SpecRenderer> per card is not viable.
  *
  * Theming: every fill/stroke derives from `currentColor` (the caller sets a
- * text colour) or from CSS theme tokens, never a hard-coded hex — so the
- * miniature is correct in light and dark with no per-theme branch. The one
- * exception is the per-board gradient tint, which is intentionally a fixed
- * brand ramp (it's the board's identity colour, the same in both themes).
+ * text colour) or from CSS theme tokens, never a hard-coded hex, so the
+ * miniature is correct in light and dark with no per-theme branch. It is drawn
+ * flat: hairline tiles and ink glyphs at three opacities, with no tint.
+ *
+ * Also exported: <BoardCard>, the one dashboard card (thumbnail, name, status
+ * Tag, mono time). The dashboards list and Home both render boards, and two
+ * hand-built cards drift; this is the shared construction.
  */
 
-import { useMemo } from 'react'
+import { useMemo, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { buildMiniature } from '../../dashboards/specMiniature.js'
+import BoardThumbnail from './BoardThumbnail.jsx'
+import Tag from '../ui/Tag.jsx'
+import { relativeTime } from '../../editor/boardMeta.js'
+import '../../dashboards/widgets/chrome.css'
 
 // The drawable box. Width is normalised to 100 units; height follows from the
 // board's real geometry (cols + row_height — see buildMiniature's unitHeight),
@@ -48,8 +56,8 @@ function Glyph({ kind, x, y, w, h }) {
       const valueH = Math.min(2.6, ih * 0.42)
       return (
         <>
-          <rect x={ix} y={iy + ih * 0.16} width={iw * 0.42} height={labelH} rx={labelH / 2} {...ink} opacity="0.35" />
-          <rect x={ix} y={iy + ih * 0.16 + labelH + ih * 0.12} width={iw * 0.66} height={valueH} rx={0.5} {...ink} opacity="0.75" />
+          <rect x={ix} y={iy + ih * 0.16} width={iw * 0.42} height={labelH} rx="0.3" {...ink} opacity="0.35" />
+          <rect x={ix} y={iy + ih * 0.16 + labelH + ih * 0.12} width={iw * 0.66} height={valueH} rx="0.3" {...ink} opacity="0.75" />
         </>
       )
     }
@@ -67,7 +75,7 @@ function Glyph({ kind, x, y, w, h }) {
           y={iy + ih * (1 - f)}
           width={bw}
           height={ih * f}
-          rx={Math.min(0.4, bw / 3)}
+          rx="0.3"
           {...ink}
           opacity="0.6"
         />
@@ -139,7 +147,7 @@ function Glyph({ kind, x, y, w, h }) {
           y={iy + i * (rowH + gap)}
           width={i === 0 ? iw : iw * (i % 2 ? 0.82 : 0.94)}
           height={rowH}
-          rx={rowH / 2}
+          rx="0.3"
           {...ink}
           opacity={i === 0 ? 0.6 : 0.28}
         />
@@ -148,14 +156,14 @@ function Glyph({ kind, x, y, w, h }) {
 
     case 'filter': {
       const ph = Math.min(ih, 2.2)
-      return <rect x={ix} y={iy + (ih - ph) / 2} width={iw} height={ph} rx={ph / 2} fill="none" stroke="currentColor" strokeWidth="0.4" opacity="0.5" />
+      return <rect x={ix} y={iy + (ih - ph) / 2} width={iw} height={ph} rx="0.3" fill="none" stroke="currentColor" strokeWidth="0.4" opacity="0.5" />
     }
 
     case 'heading': {
       const barH = Math.min(1.2, ih * 0.5)
       return (
         <>
-          <rect x={ix} y={iy} width={iw * 0.34} height={barH} rx={barH / 2} {...ink} opacity="0.7" />
+          <rect x={ix} y={iy} width={iw * 0.34} height={barH} rx="0.3" {...ink} opacity="0.7" />
           <rect x={ix} y={iy + barH + 0.5} width={iw} height={0.25} {...ink} opacity="0.2" />
         </>
       )
@@ -168,7 +176,7 @@ function Glyph({ kind, x, y, w, h }) {
       const lines = Math.max(1, Math.min(4, Math.floor(ih / (lineH + gap))))
       const widths = [1, 0.86, 0.94, 0.6]
       return Array.from({ length: lines }, (_, i) => (
-        <rect key={i} x={ix} y={iy + i * (lineH + gap)} width={iw * widths[i % widths.length]} height={lineH} rx={lineH / 2} {...ink} opacity="0.3" />
+        <rect key={i} x={ix} y={iy + i * (lineH + gap)} width={iw * widths[i % widths.length]} height={lineH} rx="0.3" {...ink} opacity="0.3" />
       ))
     }
   }
@@ -194,7 +202,6 @@ export default function BoardMiniature({ spec, className = '', maxRows = 14 }) {
   const { unitWidth, unitHeight, rows, items, header, truncated } = model
   const headerH = header.length > 0 ? unitHeight * 1.2 : 0
   const viewH = rows * unitHeight + headerH
-  const fadeId = `bm-fade-${rows}-${items.length}`
 
   return (
     <svg
@@ -208,15 +215,6 @@ export default function BoardMiniature({ spec, className = '', maxRows = 14 }) {
       aria-hidden="true"
       focusable="false"
     >
-      {truncated && (
-        <defs>
-          <linearGradient id={fadeId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--surface)" stopOpacity="0" />
-            <stop offset="100%" stopColor="var(--surface)" stopOpacity="0.85" />
-          </linearGradient>
-        </defs>
-      )}
-
       {/* Header filter strip — drawn where it actually appears: above the grid. */}
       {header.length > 0 && (
         <g color="var(--fg)">
@@ -229,7 +227,7 @@ export default function BoardMiniature({ spec, className = '', maxRows = 14 }) {
                 y={headerH * 0.22}
                 width={pw}
                 height={headerH * 0.5}
-                rx={headerH * 0.25}
+                rx="0.3"
                 fill="none"
                 stroke="currentColor"
                 strokeWidth="0.4"
@@ -257,7 +255,7 @@ export default function BoardMiniature({ spec, className = '', maxRows = 14 }) {
               y={y + 0.5}
               width={Math.max(0, w - 1)}
               height={Math.max(0, h - 1)}
-              rx="1.2"
+              rx="0.4"
               fill="var(--surface)"
               stroke="var(--border)"
               strokeWidth="0.3"
@@ -270,12 +268,129 @@ export default function BoardMiniature({ spec, className = '', maxRows = 14 }) {
         )
       })}
 
-      {/* The board continues past the row clamp — fade the cut so the miniature
-          reads as "there's more below", not as a board that simply ends here. */}
+      {/* The board continues past the row clamp: a dashed cut across the
+          bottom edge says "there is more below", without a fade. */}
       {truncated && (
-        <rect x="0" y={viewH - unitHeight * 2} width={VIEW_W} height={unitHeight * 2} fill={`url(#${fadeId})`} />
+        <line
+          x1="0" x2={VIEW_W} y1={viewH - 0.4} y2={viewH - 0.4}
+          stroke="currentColor" strokeWidth="0.5" strokeDasharray="1.6 1.2" opacity="0.5"
+          color="var(--fg)"
+        />
       )}
     </svg>
+  )
+}
+
+/**
+ * BoardCard: the one dashboard card.
+ *
+ *   ┌────────────────────────┐
+ *   │  thumbnail (16:9)      │   real render, miniature underneath until it lands
+ *   ├────────────────────────┤
+ *   │ Board name             │   one line, 14px / 600
+ *   │ ■ LIVE        2h ago   │   status Tag, mono relative time
+ *   └────────────────────────┘
+ *
+ * Hairline frame, no shadow, no tint. Hover turns the border ink (it never
+ * lifts or scales). Every card in a grid is the same height: the name is clamped
+ * to one line and the thumbnail is a fixed 16:9, so a long title or a tall
+ * board cannot stretch a row.
+ *
+ * The card is a link; `actions` (an overflow menu, say) is rendered OUTSIDE the
+ * link, over the card's top-right corner, so buttons are never nested in an
+ * anchor and the menu stays keyboard reachable (revealed on hover and on
+ * focus-within).
+ *
+ * Props:
+ *   id, name          the board
+ *   to                href for the card (default `/d/<id>`)
+ *   linkState         router state for the link
+ *   spec              board spec: the miniature is drawn from it
+ *   renderEnabled     false keeps the miniature (legacy HTML boards)
+ *   status            'live' | 'draft' | 'not-live' | null  (Tag next to the time)
+ *   statusLabel       override the Tag text
+ *   updatedAt         ISO string / Date: shown as mono relative time
+ *   meta              extra mono text before the time ("9 widgets")
+ *   actions           ReactNode, e.g. a menu button
+ *   fallback          ReactNode drawn instead of a thumbnail when the board has
+ *                     no layout to show (a legacy HTML board, say)
+ */
+export function BoardCard({
+  id,
+  name,
+  to = undefined,
+  linkState = undefined,
+  spec = undefined,
+  renderEnabled = true,
+  status = null,
+  statusLabel = undefined,
+  updatedAt = undefined,
+  meta = undefined,
+  actions = undefined,
+  fallback = undefined,
+  className = '',
+}: {
+  id: string
+  name: string
+  to?: string
+  linkState?: unknown
+  spec?: any
+  renderEnabled?: boolean
+  status?: 'live' | 'draft' | 'not-live' | null
+  statusLabel?: string
+  updatedAt?: string | number | Date | null
+  meta?: ReactNode
+  actions?: ReactNode
+  fallback?: ReactNode
+  className?: string
+}) {
+  const href = to ?? `/d/${id}`
+  const time = relativeTime(updatedAt)
+  const tag =
+    status === 'live' ? { variant: 'success' as const, text: 'Live' }
+    : status === 'draft' ? { variant: 'warning' as const, text: 'Draft' }
+    : status === 'not-live' ? { variant: 'neutral' as const, text: 'Not live' }
+    : null
+
+  return (
+    <article
+      className={[
+        'group relative flex h-full flex-col rounded-sm border border-border bg-surface',
+        'transition-colors duration-100 hover:border-[var(--ink)] focus-within:border-[var(--ink)]',
+        className,
+      ].join(' ')}
+      data-testid={`board-card-${id}`}
+    >
+      <Link
+        to={href}
+        state={linkState}
+        className="flex min-h-0 flex-1 flex-col rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]"
+        aria-label={`Open ${name}`}
+      >
+        {/* 16:9 rather than something squarer: a rendered board lands between ~1.4:1
+            (tall, height-capped) and ~2.2:1 (short), and 16:9 is close to both, so
+            neither extreme carries much dead letterbox once contained. */}
+        <div className="relative aspect-video w-full overflow-hidden border-b border-border bg-surface-2">
+          {fallback ?? (
+            <BoardThumbnail boardId={id} spec={spec} enabled={renderEnabled} />
+          )}
+        </div>
+        <div className="flex flex-1 flex-col justify-between gap-2 px-3 pb-3 pt-2.5">
+          <h3 className="m-0 truncate text-sm font-semibold leading-tight text-fg" title={name}>{name}</h3>
+          <div className="flex min-h-[20px] items-center gap-2">
+            {tag && <Tag variant={tag.variant} dot>{statusLabel ?? tag.text}</Tag>}
+            {meta && <span className="nbc-meta truncate">{meta}</span>}
+            {time && <span className="nbc-meta ml-auto shrink-0" title={updatedAt ? new Date(updatedAt).toLocaleString() : undefined}>{time}</span>}
+          </div>
+        </div>
+      </Link>
+
+      {actions && (
+        <div className="absolute right-2 top-2 opacity-0 transition-opacity duration-100 focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
+          {actions}
+        </div>
+      )}
+    </article>
   )
 }
 

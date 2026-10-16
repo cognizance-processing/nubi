@@ -319,7 +319,7 @@ export function OptionsQueryBuilder({
           onClick={create}
           disabled={!canCreate}
           data-testid="options-create-btn"
-          className="h-7 px-2.5 text-[11px] font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity inline-flex items-center gap-1"
+          className="h-7 px-2.5 text-[11px] font-medium bg-[var(--ink)] text-[var(--ink-fg)] rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity inline-flex items-center gap-1"
         >
           {saving ? <Loader2 size={10} className="animate-spin" /> : <Check size={11} />}
           {saving ? 'Creating…' : 'Create & use'}

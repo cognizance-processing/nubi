@@ -47,6 +47,7 @@
  */
 
 import { Download, Image, FileText } from 'lucide-react'
+import './widgets/chrome.css'
 
 /**
  * @param {{
@@ -57,49 +58,45 @@ import { Download, Image, FileText } from 'lucide-react'
  * }} props
  */
 export default function WidgetToolbar({
-  onExportCsv,
-  onExportPng,
-  onExportPdf,
+  onExportCsv = undefined,
+  onExportPng = undefined,
+  onExportPdf = undefined,
   className = '',
 }) {
   const hasAny = onExportCsv || onExportPng || onExportPdf
   if (!hasAny) return null
 
+  // Hidden until the tile (a `group` parent) is hovered or anything inside the
+  // toolbar has focus, so a keyboard user who tabs to a button sees the bar.
+  // Touch has no hover, so it stays visible there.
   return (
     <div
-      className={`flex items-center gap-0.5 rounded-md border bg-surface shadow-sm ${className}`}
+      className={[
+        'flex items-center border border-border bg-surface rounded-sm',
+        'opacity-0 transition-opacity duration-100 group-hover:opacity-100 focus-within:opacity-100',
+        '[@media(hover:none)]:opacity-100',
+        className,
+      ].join(' ')}
       role="toolbar"
       aria-label="Widget export actions"
     >
       {onExportCsv && (
-        <ToolbarButton
-          onClick={onExportCsv}
-          title="Download CSV"
-          aria-label="Download CSV"
-        >
-          <Download size={13} />
+        <ToolbarButton onClick={onExportCsv} title="Download CSV" aria-label="Download CSV">
+          <Download size={16} strokeWidth={1.5} />
           <span className="sr-only">CSV</span>
         </ToolbarButton>
       )}
 
       {onExportPng && (
-        <ToolbarButton
-          onClick={onExportPng}
-          title="Download PNG"
-          aria-label="Download PNG"
-        >
-          <Image size={13} />
+        <ToolbarButton onClick={onExportPng} title="Download PNG" aria-label="Download PNG">
+          <Image size={16} strokeWidth={1.5} />
           <span className="sr-only">PNG</span>
         </ToolbarButton>
       )}
 
       {onExportPdf && (
-        <ToolbarButton
-          onClick={onExportPdf}
-          title="Download PDF"
-          aria-label="Download PDF"
-        >
-          <FileText size={13} />
+        <ToolbarButton onClick={onExportPdf} title="Download PDF" aria-label="Download PDF">
+          <FileText size={16} strokeWidth={1.5} />
           <span className="sr-only">PDF</span>
         </ToolbarButton>
       )}
@@ -117,14 +114,7 @@ function ToolbarButton({ onClick, title, children, ...rest }) {
       type="button"
       onClick={onClick}
       title={title}
-      className={[
-        'inline-flex items-center justify-center',
-        'h-6 w-6 rounded',
-        'text-muted hover:text-foreground',
-        'hover:bg-accent',
-        'transition-colors duration-100',
-        'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-      ].join(' ')}
+      className="nbc-tool !h-7 !min-w-7 !px-0"
       {...rest}
     >
       {children}

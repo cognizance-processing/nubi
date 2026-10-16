@@ -3,7 +3,7 @@
  *
  * See DASHBOARD_TABS_AND_FILTERS_IMPLEMENTATION.md (Track T2). This component is
  * deliberately self-contained: it imports nothing from the rest of the app (only
- * React) so it can be dropped into SpecRenderer / EditorPage post-merge without
+ * React and one pure contrast helper) so it can be dropped into SpecRenderer / EditorPage post-merge without
  * pulling in shared dependencies.
  *
  * Accessibility follows the WAI-ARIA tablist pattern (full arrow-key navigation,
@@ -28,6 +28,7 @@
  */
 
 import { useRef } from 'react'
+import { readableInk } from '../lib/contrast.js'
 
 function cx(...parts) {
   return parts.filter(Boolean).join(' ')
@@ -94,11 +95,13 @@ export default function TabBar({ tabs, activeTabId, onChange, tabBar }) {
     }
   }
 
+  // Swiss: square corners, hairlines, no shadow. The active tab is marked by a
+  // 2px rule (underline), an ink fill (pills) or a raised hairline (segmented).
   const containerClass = {
-    underline: 'flex items-stretch gap-1 border-b border-border',
-    pills: 'flex items-center gap-1.5',
-    segmented: 'inline-flex items-center gap-1 p-1 rounded-xl bg-surface-2 border border-border',
-  }[variant] ?? 'flex items-stretch gap-1 border-b border-border'
+    underline: 'flex items-stretch gap-0 border-b border-border overflow-x-auto',
+    pills: 'flex items-center gap-1.5 overflow-x-auto',
+    segmented: 'inline-flex items-center border border-frame-line bg-surface-2 p-0.5 rounded-sm max-w-full overflow-x-auto',
+  }[variant] ?? 'flex items-stretch gap-0 border-b border-border overflow-x-auto'
 
   return (
     <div
@@ -113,41 +116,43 @@ export default function TabBar({ tabs, activeTabId, onChange, tabBar }) {
         // Per-tab accent overrides the bar-level accent.
         const accent = tab.style?.accent ?? barAccent ?? null
 
-        const baseBtn = 'relative text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:ring-offset-0'
+        const baseBtn = 'relative shrink-0 whitespace-nowrap text-[13px] transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring'
 
         let variantBtn
         let inlineStyle
         switch (variant) {
           case 'pills':
             variantBtn = cx(
-              'px-3.5 py-1.5 rounded-full',
+              'h-8 px-3 rounded-sm border',
               isActive
-                ? 'text-white'
-                : 'bg-surface-2 text-muted hover:text-fg border border-border',
+                ? 'border-[var(--ink)] bg-[var(--ink)] font-semibold text-[var(--ink-fg)]'
+                : 'border-frame-line bg-surface font-medium text-muted hover:border-fg hover:text-fg',
             )
-            inlineStyle = isActive && accent ? { backgroundColor: accent } : undefined
+            inlineStyle = isActive && accent
+              ? { backgroundColor: accent, borderColor: accent, color: readableInk(accent) ?? 'var(--primary-fg)' }
+              : undefined
             break
           case 'segmented':
             variantBtn = cx(
-              'px-3.5 py-1.5 rounded-lg',
+              'h-7 px-3 rounded-sm',
               isActive
-                ? 'bg-surface text-fg shadow-sm'
-                : 'text-muted hover:text-fg',
+                ? 'border border-frame-line bg-surface font-semibold text-fg'
+                : 'border border-transparent font-medium text-muted hover:text-fg',
             )
             inlineStyle = isActive && accent ? { color: accent } : undefined
             break
           case 'underline':
           default:
-            // Active tab is underlined via a bottom border that sits on the bar line.
+            // The active tab carries a 2px rule that sits on the bar's hairline.
+            // `bg-current` makes the rule follow the label colour, so a tab with
+            // its own accent underlines in that accent.
             variantBtn = cx(
-              'px-3.5 py-2 -mb-px border-b-2 rounded-t-lg',
+              'h-10 px-3.5',
               isActive
-                ? 'text-fg border-accent font-semibold'
-                : 'text-muted hover:text-fg hover:bg-surface-2/60 border-transparent',
+                ? 'font-semibold text-fg after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-current'
+                : 'font-medium text-muted hover:bg-surface-2 hover:text-fg',
             )
-            inlineStyle = isActive && accent
-              ? { color: accent, borderBottomColor: accent }
-              : undefined
+            inlineStyle = isActive && accent ? { color: accent } : undefined
             break
         }
 

@@ -24,6 +24,7 @@
 
 import { useState, useCallback, useMemo } from 'react'
 import Editor from '@monaco-editor/react'
+import '../components/app/monacoSetup'
 import {
   FileJson,
   Copy,
@@ -165,13 +166,13 @@ export default function DashboardCodeView({ spec, onSpecChange, board = null }) 
           <button
             className={[
               'group w-full flex items-center gap-2 px-2 py-1 text-left text-xs rounded-md transition-colors',
-              'bg-primary/10 text-fg',
+              'bg-[var(--accent-soft)] text-fg',
             ].join(' ')}
             title="The DashboardSpec (config.spec) as a JSON file"
           >
             <FileJson size={13} className="text-amber-500 shrink-0" />
             <span className="truncate flex-1">{fileName}</span>
-            {dirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Unsaved edits" />}
+            {dirty && <span className="nubi-dot nubi-dot-warning shrink-0" role="img" aria-label="Unsaved edits" title="Unsaved edits" />}
           </button>
         </div>
         <div className="shrink-0 px-3 py-2 border-t border-border">
@@ -190,7 +191,7 @@ export default function DashboardCodeView({ spec, onSpecChange, board = null }) 
             <FileJson size={13} className="text-amber-500 shrink-0" />
             <span className="text-xs font-medium text-fg truncate">{fileName}</span>
             {dirty && (
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Unsaved edits" />
+              <span className="nubi-dot nubi-dot-warning shrink-0" role="img" aria-label="Unsaved edits" title="Unsaved edits" />
             )}
             {board && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 border border-border text-muted font-mono truncate max-w-[120px]" title={board}>

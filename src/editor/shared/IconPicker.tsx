@@ -14,8 +14,8 @@
 import { KPI_ICONS } from '../../dashboards/kpiIcons.jsx'
 
 const btnBase = 'w-8 h-8 flex items-center justify-center rounded-lg border transition-colors'
-const activeCls = 'border-primary bg-primary/10 text-primary'
-const idleCls = 'border-border bg-surface text-muted hover:text-primary hover:border-primary/60'
+const activeCls = 'border-[var(--ink)] bg-surface-2 text-fg'
+const idleCls = 'border-border bg-surface text-muted hover:text-fg hover:border-fg'
 
 export function IconPicker({ value, onChange }) {
   // Group the flat catalogue into its section headers, preserving order.

@@ -63,8 +63,8 @@ function shortDate(iso) {
 
 function DivergedPanel({ diverged, busy, onResolve, onDismiss }) {
   return (
-    <div className="rounded-xl border border-amber-300/60 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-900/10 px-3 py-2.5 space-y-2">
-      <p className="flex items-start gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-400">
+    <div className="rounded-xl nubi-notice nubi-notice-warning px-3 py-2.5 space-y-2">
+      <p className="flex items-start gap-1.5 text-xs font-medium text-warning-fg">
         <AlertTriangle size={13} className="shrink-0 mt-0.5" />
         <span>
           Branch diverged — <span className="font-mono">{shortSha(diverged.branch_sha)}</span> on
@@ -75,7 +75,7 @@ function DivergedPanel({ diverged, busy, onResolve, onDismiss }) {
       {Array.isArray(diverged.files) && diverged.files.length > 0 && (
         <ul className="max-h-24 overflow-y-auto space-y-0.5">
           {diverged.files.map(file => (
-            <li key={file} className="text-[11px] font-mono text-amber-700/80 dark:text-amber-400/80 truncate">
+            <li key={file} className="text-[11px] font-mono text-warning-fg truncate">
               {file}
             </li>
           ))}
@@ -87,7 +87,7 @@ function DivergedPanel({ diverged, busy, onResolve, onDismiss }) {
           disabled={busy}
           onClick={() => onResolve('take_branch')}
           title="Import the branch state into the environment"
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-amber-400/60 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-frame-line text-fg hover:border-fg"
         >
           <Download size={11} /> Use branch
         </button>
@@ -96,7 +96,7 @@ function DivergedPanel({ diverged, busy, onResolve, onDismiss }) {
           disabled={busy}
           onClick={() => onResolve('take_env')}
           title="Overwrite the branch from the environment's pinned state (force-with-lease)"
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-amber-400/60 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-frame-line text-fg hover:border-fg"
         >
           <Upload size={11} /> Use environment
         </button>
@@ -145,8 +145,8 @@ function BranchColumn({ branch, env, sharedShas, onPush, onPull, onNewEnv, busy,
           <span className="ml-auto font-mono text-[10px] text-muted/70 shrink-0">{shortSha(branch.head_sha)}</span>
         </div>
         <div className="flex items-center gap-1.5 mt-1.5">
-          <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-surface border border-border text-[10px] font-mono text-fg ${env ? '' : 'opacity-60'}`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${envDotClass(branch.env_key)}`} />
+          <span className={`nubi-tag nubi-tag-nocaps ${env ? '' : 'opacity-60'}`}>
+            <span className={`w-1.5 h-1.5 ${envDotClass(branch.env_key)}`} />
             {branch.env_key}
           </span>
           {/* Actions */}
@@ -204,7 +204,7 @@ function BranchColumn({ branch, env, sharedShas, onPush, onPull, onNewEnv, busy,
               type="button"
               onClick={commitNewEnv}
               disabled={busy !== null}
-              className="h-7 px-2 rounded-md text-xs font-medium bg-primary text-primary-fg hover:opacity-90 transition-opacity shrink-0 disabled:opacity-50"
+              className="h-7 px-2 rounded-md text-xs font-medium bg-[var(--ink)] text-[var(--ink-fg)] hover:opacity-90 transition-opacity shrink-0 disabled:opacity-50"
             >
               Create
             </button>
@@ -214,7 +214,7 @@ function BranchColumn({ branch, env, sharedShas, onPush, onPull, onNewEnv, busy,
 
       {/* Per-branch feedback */}
       {notice && (
-        <p className={`text-[11px] px-1 ${notice.kind === 'error' ? 'text-red-500' : 'text-muted'}`}>
+        <p className={`text-[11px] px-1 ${notice.kind === 'error' ? 'text-danger' : 'text-muted'}`}>
           {notice.text}
         </p>
       )}
@@ -249,7 +249,7 @@ function BranchColumn({ branch, env, sharedShas, onPush, onPull, onNewEnv, busy,
                   <span className="relative z-10 shrink-0 mt-1 w-[9px] flex justify-center">
                     <span
                       className={[
-                        'w-[9px] h-[9px] rounded-full border-2',
+                        'w-[9px] h-[9px] border-2',
                         isHead
                           ? `${envDotClass(branch.env_key)} border-transparent ring-2 ring-primary/20`
                           : shared
@@ -265,7 +265,7 @@ function BranchColumn({ branch, env, sharedShas, onPush, onPull, onNewEnv, busy,
                     <span className="flex items-center gap-1.5 text-[10px] text-muted/70 font-mono">
                       <span>{shortSha(commit.sha)}</span>
                       {isMerge && (
-                        <span className="inline-flex items-center gap-0.5 text-violet-500/90" title={`Merge — parents ${commit.parents.map(shortSha).join(', ')}`}>
+                        <span className="inline-flex items-center gap-0.5 text-accent" title={`Merge — parents ${commit.parents.map(shortSha).join(', ')}`}>
                           <GitMerge size={10} />
                           {shortSha(commit.parents[1])}
                         </span>
@@ -435,7 +435,7 @@ export default function GitGraphDialog({ open, onClose }) {
     <>
       {/* Backdrop */}
       <div
-        className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm"
+        className="fixed inset-0 z-[60] nubi-backdrop"
         onClick={busy ? undefined : onClose}
         aria-hidden="true"
       />
@@ -448,12 +448,12 @@ export default function GitGraphDialog({ open, onClose }) {
         className="fixed inset-0 z-[60] flex items-center justify-center p-4 pointer-events-none"
       >
         <div
-          className="pointer-events-auto w-full max-w-3xl max-h-[85vh] bg-surface rounded-2xl border border-border shadow-2xl flex flex-col"
+          className="pointer-events-auto w-full max-w-3xl max-h-[85vh] bg-surface rounded-2xl border border-border shadow-pop flex flex-col"
           onClick={e => e.stopPropagation()}
         >
           {/* Header */}
           <div className="flex items-start gap-3 px-6 pt-6 pb-4 border-b border-border">
-            <div className="shrink-0 w-10 h-10 rounded-xl flex items-center justify-center bg-primary/10">
+            <div className="shrink-0 w-10 h-10 rounded-xl flex items-center justify-center bg-surface-2">
               <GitBranch size={18} className="text-primary" />
             </div>
             <div className="flex-1 min-w-0">

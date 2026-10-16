@@ -54,7 +54,7 @@ export default function QueryStatusLink({ queryId }) {
 
       <Link
         to={`/queries/${encodeURIComponent(queryId)}`}
-        className="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+        className="inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
       >
         Open in query editor
         <ArrowUpRight size={11} />

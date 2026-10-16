@@ -187,7 +187,7 @@ function FileRow({ path, selected, onSelect, depth }) {
       className={[
         'flex w-full items-center gap-1.5 px-2 py-1 rounded-lg text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
         selected
-          ? 'bg-primary/10 text-primary font-medium'
+          ? 'bg-[var(--accent-soft)] text-fg font-medium'
           : 'text-fg hover:bg-surface-2',
       ].join(' ')}
       style={{ paddingLeft: `${8 + indent}px` }}
@@ -214,7 +214,7 @@ function ContentPane({ file, loading, error }) {
 
   if (error) {
     return (
-      <div className="flex items-start gap-2 m-4 px-3 py-2.5 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-xs text-red-700 dark:text-red-300">
+      <div className="flex items-start gap-2 m-4 px-3 py-2.5 rounded-xl nubi-notice nubi-notice-error text-xs">
         <AlertTriangle size={14} className="shrink-0 mt-0.5" />
         <span>{error}</span>
       </div>
@@ -241,7 +241,7 @@ function ContentPane({ file, loading, error }) {
         <span className="text-xs font-mono font-medium text-fg truncate" title={file.path}>
           {file.path}
         </span>
-        <span className="ml-auto shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-2 border border-border text-[10px] font-mono text-muted">
+        <span className="ml-auto shrink-0 nubi-tag nubi-tag-nocaps">
           {lang}
         </span>
       </div>
@@ -399,7 +399,7 @@ export default function GitFilesPanel({ projectId, defaultRef = '' }) {
           )}
 
           {listError && (
-            <div className="flex items-start gap-1.5 px-3 py-2 text-xs text-red-500">
+            <div className="flex items-start gap-1.5 px-3 py-2 text-xs text-danger">
               <AlertTriangle size={13} className="shrink-0 mt-0.5" />
               {listError}
             </div>

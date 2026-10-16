@@ -72,7 +72,7 @@ export function PlacementControl({ widget, onChange }) {
             data-testid={`placement-${o.id}`}
             title={o.hint}
             className={`h-8 px-1.5 text-[11px] font-medium rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
-              current === o.id ? 'bg-primary text-primary-fg border-primary shadow-sm' : 'bg-surface text-muted border-border hover:border-primary hover:text-primary'
+              current === o.id ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]' : 'bg-surface text-muted border-border hover:border-fg hover:text-fg'
             }`}>
             {o.label}
           </button>
@@ -161,7 +161,7 @@ function MakeFilterable({ queryId, varName, subtype, onDone, onConnectDirect, la
         type="button"
         onClick={load}
         data-testid={`make-filterable-${queryId}`}
-        className="mt-1 ml-6 inline-flex items-center gap-1 text-[10px] font-medium text-muted hover:text-primary underline underline-offset-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 rounded"
+        className="mt-1 ml-6 inline-flex items-center gap-1 text-[10px] font-medium text-muted hover:text-fg underline underline-offset-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 rounded"
       >
         <Wand2 size={10} /> {label}
       </button>
@@ -200,7 +200,7 @@ function MakeFilterable({ queryId, varName, subtype, onDone, onConnectDirect, la
                 onClick={() => onConnectDirect(column)}
                 disabled={!column}
                 data-testid={`connect-direct-${queryId}`}
-                className="h-6 px-2 text-[10px] font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
+                className="h-6 px-2 text-[10px] font-medium bg-[var(--ink)] text-[var(--ink-fg)] rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
               >
                 Connect directly
               </button>
@@ -211,8 +211,8 @@ function MakeFilterable({ queryId, varName, subtype, onDone, onConnectDirect, la
               disabled={busy || !column}
               className={`h-6 px-2 text-[10px] font-medium rounded-lg transition-colors inline-flex items-center gap-1 disabled:opacity-50 ${
                 onConnectDirect
-                  ? 'border border-border hover:border-primary text-muted hover:text-primary bg-surface'
-                  : 'bg-primary text-primary-fg hover:opacity-90 transition-opacity'
+                  ? 'border border-border hover:border-fg text-muted hover:text-fg bg-surface'
+                  : 'bg-[var(--ink)] text-[var(--ink-fg)] hover:opacity-90 transition-opacity'
               }`}
             >
               {busy && <Loader2 size={9} className="animate-spin" />}
@@ -318,7 +318,7 @@ function ConnectedWidgets({ widget, spec, varName, onPatchWidget, resolveWidget,
           <button
             data-testid="filter-connect-all"
             onClick={() => connectable.forEach(r => connect(r, r.paramName))}
-            className="text-[11px] font-medium px-2 h-6 rounded-lg border border-dashed border-border hover:border-primary text-muted hover:text-primary transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
+            className="text-[11px] font-medium px-2 h-6 rounded-lg border border-dashed border-border hover:border-fg text-muted hover:text-fg transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
             Connect {connectable.length === 1 ? 'the other one' : `all ${connectable.length}`}
           </button>
         )}
@@ -334,7 +334,7 @@ function ConnectedWidgets({ widget, spec, varName, onPatchWidget, resolveWidget,
             <li key={row.id}
               data-testid={`filter-connection-${row.id}`}
               className={`rounded-lg border px-2 py-1.5 transition-colors ${
-                isOn ? 'border-primary/40 bg-primary/5' : 'border-border bg-surface'
+                isOn ? 'border-accent bg-[var(--accent-soft)]' : 'border-border bg-surface'
               }`}>
               <div className="flex items-center gap-2">
                 <button
@@ -345,13 +345,13 @@ function ConnectedWidgets({ widget, spec, varName, onPatchWidget, resolveWidget,
                   disabled={!canToggle}
                   onClick={() => (isOn ? disconnect(row) : connect(row, row.paramName))}
                   className={`w-4 h-4 flex-none rounded border flex items-center justify-center transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50 ${
-                    isOn ? 'bg-primary border-primary text-primary-fg'
-                    : canToggle ? 'border-border hover:border-primary bg-surface'
+                    isOn ? 'bg-[var(--ink)] border-[var(--ink)] text-[var(--ink-fg)]'
+                    : canToggle ? 'border-border hover:border-fg bg-surface'
                     : 'border-border/60 bg-surface-2 cursor-not-allowed'
                   }`}>
                   {isOn && <Check size={11} strokeWidth={3} />}
                 </button>
-                <Icon size={12} className={`flex-none ${isOn ? 'text-primary' : 'text-muted/70'}`} />
+                <Icon size={12} className={`flex-none ${isOn ? 'text-accent' : 'text-muted/70'}`} />
                 <span className={`flex-1 text-xs truncate ${canToggle ? 'text-fg' : 'text-muted/70'}`} title={row.label}>
                   {row.label}
                 </span>
@@ -562,7 +562,7 @@ export function FilterConfig({ widget, onChange, spec, onPatchWidget = undefined
           <div className="flex h-8 rounded-lg border border-border overflow-hidden">
             {['sm', 'md', 'lg'].map(s => (
               <button key={s} type="button" onClick={() => setProps('size', s === 'md' ? undefined : s)}
-                className={`flex-1 text-[11px] font-medium uppercase transition-colors ${(props.size ?? 'md') === s ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary'}`}>
+                className={`flex-1 text-[11px] font-medium uppercase transition-colors ${(props.size ?? 'md') === s ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>
                 {s}
               </button>
             ))}

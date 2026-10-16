@@ -178,7 +178,7 @@ export function QueryPicker({
             type="button"
             onClick={startBuilding}
             data-testid="query-picker-create"
-            className="text-[10px] text-primary/90 hover:text-primary transition-colors focus-visible:outline-none focus-visible:underline inline-flex items-center gap-1"
+            className="text-[10px] text-accent hover:text-fg transition-colors focus-visible:outline-none focus-visible:underline inline-flex items-center gap-1"
           >
             <Plus size={10} /> Build one from a column
           </button>

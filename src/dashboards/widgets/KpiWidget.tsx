@@ -405,6 +405,7 @@ export default function KpiWidget({ widget, providerTable = null }) {
       <WidgetError
         message={error}
         queryId={query_id}
+        kind="kpi"
         onRetry={() => setRetryEpoch(e => e + 1)}
         compact
       />
@@ -414,9 +415,9 @@ export default function KpiWidget({ widget, providerTable = null }) {
   return (
     <div className="flex flex-col justify-center h-full px-5 py-4 gap-1">
       {loading ? (
-        <div className="space-y-3" aria-busy="true" aria-label="Loading KPI">
-          <Skeleton className="h-9 w-28 rounded-lg" />
-          <Skeleton className="h-3.5 w-20 rounded" />
+        <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading KPI">
+          <Skeleton className="h-9 w-28" />
+          <Skeleton className="h-3.5 w-20" />
         </div>
       ) : (
         <>

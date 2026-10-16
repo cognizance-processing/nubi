@@ -133,12 +133,12 @@ function ListSlicer({ label, options, value, onChange, allLabel = 'All', accent,
                 'flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-left transition-colors duration-150',
                 'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
                 active
-                  ? (accent ? 'font-semibold' : 'font-semibold bg-primary/15 text-primary')
+                  ? (accent ? 'font-semibold' : 'font-semibold bg-[var(--accent-soft)] text-accent')
                   : 'text-muted hover:text-fg hover:bg-surface-2/70',
               ].join(' ')}
             >
               <span
-                className="w-1.5 h-1.5 rounded-full shrink-0"
+                className="w-1.5 h-1.5 shrink-0"
                 style={{
                   background: active ? (accent || 'var(--primary)') : 'transparent',
                   boxShadow: active && accent ? `0 0 8px ${accent}` : undefined,

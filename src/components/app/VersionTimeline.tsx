@@ -1,10 +1,16 @@
 /**
- * VersionTimeline — vertical version rail for a versioned resource
+ * VersionTimeline — version history for a versioned resource
  * (flow / board / query), newest first.
  *
- * Each row: a rail node (dot + connecting line — the parent chain is implied
- * by the order), `vN`, the checkpoint message, author/date, env-pointer
- * chips, plus per-row actions:
+ * Reads as a ruled ledger, not a stack of cards: a 2px ink rule opens the list,
+ * each version is one hairline-separated row, and the rail is a square node per
+ * version (filled when an environment points at it). Mono carries the data:
+ * `v12`, the short content hash, the author and the time.
+ *
+ *   ■ v12  a1b2c3d  [prod]            Added the regional split      👁 ↺ 🚀
+ *     priya · 2026-10-14 09:12
+ *
+ * Per-row actions (icon buttons, labelled, with tooltips):
  *   - View (optional, when onView is given): load that version read-only.
  *   - Restore: write the version's config back into the draft.
  *   - Promote: open the promote flow seeded from the row's pinned env.
@@ -13,7 +19,7 @@
  * (VersionHistoryDialog).
  *
  * Props:
- *   versions  {Array<{id, version, message, created_by, created_at}>}
+ *   versions  {Array<{id, version, config_hash?, message, created_by, created_at}>}
  *   pointers  {Array<{environment_id, env_key, version_id}>}
  *   restoring {number|null}  version number with a restore in flight
  *   viewing   {number|null}  version number with a View fetch in flight
@@ -22,13 +28,33 @@
  *   onPromote {(envKey: string) => void}
  */
 
-import { Eye, Loader2, Rocket, RotateCcw } from 'lucide-react'
+import { Eye, Rocket, RotateCcw } from 'lucide-react'
+import Tag from '../ui/Tag.jsx'
+import Tooltip from '../ui/Tooltip.jsx'
+import Spinner from '../ui/Spinner.jsx'
+import '../../dashboards/widgets/chrome.css'
 
-/** Env-pointer chip accent (matches envDotClass semantics). */
-function envChipClass(key) {
-  if (key === 'prod') return 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
-  if (key === 'dev') return 'bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/30'
-  return 'bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-500/30'
+/** Env-pointer Tag variant: production reads as live, the rest stay quiet. */
+function envVariant(key) {
+  if (key === 'prod') return 'success'
+  if (key === 'dev') return 'neutral'
+  return 'accent'
+}
+
+/** A user id is not an author name: show its first segment, as mono data. */
+function author(v) {
+  const id = v?.created_by
+  if (!id) return ''
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(String(id)) ? String(id).slice(0, 8) : String(id)
+}
+
+function stamp(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  // ISO-style minute stamp: sortable, locale-free, reads as data.
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} `
+    + `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
 export default function VersionTimeline({
@@ -36,7 +62,7 @@ export default function VersionTimeline({
   pointers,
   restoring = null,
   viewing = null,
-  onView,
+  onView = undefined,
   onRestore,
   onPromote,
 }) {
@@ -46,97 +72,86 @@ export default function VersionTimeline({
   const busy = restoring !== null || viewing !== null
 
   return (
-    <ol className="relative">
-      {versions.map((v, idx) => {
+    <ol className="m-0 list-none border-t-2 border-[var(--ink)] p-0" aria-label="Versions, newest first">
+      {versions.map((v) => {
         const chips = chipsFor(v.id)
-        const isLast = idx === versions.length - 1
+        const pinned = chips.length > 0
         return (
-          <li key={v.id} className="relative flex gap-3 pb-1.5">
-            {/* Rail: node dot + connector down to the (older) parent */}
-            <div className="relative flex flex-col items-center w-4 shrink-0" aria-hidden="true">
-              <span
-                className={[
-                  'mt-4 w-2.5 h-2.5 rounded-full border-2 shrink-0 z-10',
-                  chips.length > 0
-                    ? 'bg-primary border-primary'
-                    : 'bg-surface border-border',
-                ].join(' ')}
-              />
-              {!isLast && (
-                <span className="absolute top-6 bottom-[-0.875rem] w-px bg-border" />
-              )}
+          <li key={v.id} className="nbc-row !items-start !gap-3 !py-3">
+            {/* Rail node: a filled square when an environment points here. */}
+            <span
+              aria-hidden="true"
+              className={[
+                'mt-[5px] h-2 w-2 shrink-0 border border-[var(--ink)]',
+                pinned ? 'bg-[var(--ink)]' : 'bg-surface',
+              ].join(' ')}
+            />
+
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                <span className="font-mono text-[13px] font-semibold tabular-nums text-fg">v{v.version}</span>
+                {v.config_hash && (
+                  <span className="nbc-meta" title={`Content hash ${v.config_hash}`}>
+                    {String(v.config_hash).slice(0, 7)}
+                  </span>
+                )}
+                {chips.map(p => (
+                  <Tag
+                    key={p.environment_id}
+                    variant={envVariant(p.env_key)}
+                    dot={p.env_key === 'prod'}
+                    caps={false}
+                    title={`Pinned to ${p.env_key}`}
+                  >
+                    {p.env_key}
+                  </Tag>
+                ))}
+              </div>
+              <p className="m-0 mt-1 truncate text-[13px] text-fg">
+                {v.message || <span className="text-muted">No message</span>}
+              </p>
+              <p className="nbc-meta m-0 mt-0.5 truncate">
+                {author(v) ? `${author(v)} · ` : ''}{stamp(v.created_at)}
+              </p>
             </div>
 
-            {/* Row card */}
-            <div className="flex-1 min-w-0 flex items-center gap-3 px-3 py-2.5 rounded-xl border border-border bg-surface hover:bg-surface-2/60 transition-colors">
-              <span className="shrink-0 w-10 text-xs font-mono font-semibold text-fg">
-                v{v.version}
-              </span>
-
-              <div className="flex-1 min-w-0">
-                <p className="text-xs text-fg truncate">
-                  {v.message || <span className="text-muted italic">No message</span>}
-                </p>
-                <p className="text-[10px] text-muted mt-0.5 truncate">
-                  {v.created_by ? `${v.created_by} · ` : ''}
-                  {v.created_at ? new Date(v.created_at).toLocaleString() : ''}
-                </p>
-              </div>
-
-              {/* Env-pointer badges */}
-              {chips.length > 0 && (
-                <div className="shrink-0 flex items-center gap-1">
-                  {chips.map(p => (
-                    <span
-                      key={p.environment_id}
-                      title={`Pinned to ${p.env_key}`}
-                      className={[
-                        'inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono font-medium rounded-md border',
-                        envChipClass(p.env_key),
-                      ].join(' ')}
-                    >
-                      {p.env_key}
-                    </span>
-                  ))}
-                </div>
-              )}
-
-              {/* Row actions */}
-              <div className="shrink-0 flex items-center gap-0.5">
-                {onView && (
+            {/* Row actions */}
+            <div className="flex shrink-0 items-center gap-0.5">
+              {onView && (
+                <Tooltip content={`View v${v.version} read-only`} side="top">
                   <button
                     type="button"
                     onClick={() => onView(v)}
                     disabled={busy}
-                    title={`View v${v.version} read-only`}
-                    className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors disabled:opacity-40"
+                    aria-label={`View version ${v.version} read-only`}
+                    className="nbc-tool !px-0"
                   >
-                    {viewing === v.version
-                      ? <Loader2 size={13} className="animate-spin" />
-                      : <Eye size={13} />}
+                    {viewing === v.version ? <Spinner size="xs" /> : <Eye size={16} strokeWidth={1.5} />}
                   </button>
-                )}
+                </Tooltip>
+              )}
+              <Tooltip content="Restore into the draft" side="top">
                 <button
                   type="button"
                   onClick={() => onRestore(v)}
                   disabled={busy}
-                  title={`Restore v${v.version} into the draft`}
-                  className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors disabled:opacity-40"
+                  aria-label={`Restore version ${v.version} into the draft`}
+                  className="nbc-tool !px-0"
                 >
-                  {restoring === v.version
-                    ? <Loader2 size={13} className="animate-spin" />
-                    : <RotateCcw size={13} />}
+                  {restoring === v.version ? <Spinner size="xs" /> : <RotateCcw size={16} strokeWidth={1.5} />}
                 </button>
+              </Tooltip>
+              <Tooltip content="Promote between environments" side="top">
                 <button
                   type="button"
                   onClick={() => onPromote(chips[0]?.env_key ?? 'dev')}
                   disabled={busy}
-                  title="Promote between environments"
-                  className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors disabled:opacity-40"
+                  aria-label={`Promote version ${v.version}`}
+                  className="nbc-tool !px-0"
                 >
-                  <Rocket size={13} />
+                  <Rocket size={16} strokeWidth={1.5} />
                 </button>
-              </div>
+              </Tooltip>
             </div>
           </li>
         )

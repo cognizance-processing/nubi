@@ -38,6 +38,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import Editor from '@monaco-editor/react'
+import '../components/app/monacoSetup'
 import { Code2, Download, Upload, Copy, Check, X, FileUp, AlertCircle, CloudUpload } from 'lucide-react'
 import yaml from 'js-yaml'
 import { get, post } from '../lib/api.js'
@@ -399,7 +400,7 @@ export default function DashboardCodePanel({ kind = 'dashboard', spec, onApply, 
               }}
               className={`h-7 px-2.5 text-[11px] font-medium transition-colors ${
                 mode === opt.v
-                  ? 'bg-primary/10 text-primary'
+                  ? 'bg-[var(--accent-soft)] text-accent'
                   : 'bg-surface text-muted hover:text-fg hover:bg-surface-2'
               } ${opt.v === 'edit' ? 'border-l border-border' : ''}`}
             >
@@ -425,7 +426,7 @@ export default function DashboardCodePanel({ kind = 'dashboard', spec, onApply, 
               }}
               className={`h-7 px-2.5 text-[11px] font-medium uppercase transition-colors ${
                 format === f
-                  ? 'bg-primary/10 text-primary'
+                  ? 'bg-[var(--accent-soft)] text-accent'
                   : 'bg-surface text-muted hover:text-fg hover:bg-surface-2'
               } ${f === 'json' ? 'border-l border-border' : ''}`}
             >
@@ -501,18 +502,18 @@ export default function DashboardCodePanel({ kind = 'dashboard', spec, onApply, 
         {problemCount > 0 ? (
           <div className="space-y-0.5 max-h-20 overflow-y-auto">
             <div className="flex items-center gap-1.5">
-              <AlertCircle size={12} className="text-red-500 shrink-0" />
-              <span className="text-red-500 font-medium">
+              <AlertCircle size={12} className="text-danger shrink-0" />
+              <span className="text-danger font-medium">
                 {problemCount} problem{problemCount !== 1 ? 's' : ''}
               </span>
             </div>
             {markers.map((m, i) => (
-              <p key={`m${i}`} className="text-red-500/90 pl-[18px] truncate" title={m.message}>
+              <p key={`m${i}`} className="text-danger/90 pl-[18px] truncate" title={m.message}>
                 Ln {m.startLineNumber}: {m.message}
               </p>
             ))}
             {specIssues.map((msg, i) => (
-              <p key={`s${i}`} className="text-red-500/90 pl-[18px] truncate" title={msg}>
+              <p key={`s${i}`} className="text-danger/90 pl-[18px] truncate" title={msg}>
                 {msg}
               </p>
             ))}
@@ -592,7 +593,7 @@ export default function DashboardCodePanel({ kind = 'dashboard', spec, onApply, 
                 data-testid="code-apply-btn"
                 onClick={applyDraft}
                 disabled={problemCount > 0}
-                className="flex-1 h-8 px-3 text-xs font-semibold rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity flex items-center justify-center gap-1.5"
+                className="flex-1 h-8 px-3 text-xs font-semibold rounded-lg bg-[var(--ink)] text-[var(--ink-fg)] hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity flex items-center justify-center gap-1.5"
                 title="Validate and apply this spec to the canvas (does not save)"
               >
                 <Upload size={13} /> Apply to editor
@@ -638,7 +639,7 @@ export default function DashboardCodePanel({ kind = 'dashboard', spec, onApply, 
         aria-pressed={open}
         className={`px-2.5 h-8 text-xs font-medium rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/60 flex items-center gap-1.5 whitespace-nowrap ${
           open
-            ? 'bg-surface-2 border-primary text-primary'
+            ? 'bg-surface-2 border-primary text-accent'
             : 'bg-surface text-fg border-border hover:bg-surface-2'
         }`}
         title="View or edit the dashboard spec as code"
