@@ -17,6 +17,12 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    resolve: {
+      // The landing stage imports R3F through this id, typed locally (src/pages/landing/stage/r3f.d.ts), so
+      // TypeScript never loads R3F's global JSX augmentation (it turns polymorphic `as: ElementType` props
+      // across the app into `never`). Same module at runtime.
+      alias: [{ find: /^@nubi\/r3f$/, replacement: '@react-three/fiber' }],
+    },
     build: {
       rollupOptions: {
         output: {
@@ -30,6 +36,13 @@ export default defineConfig(({ mode }) => {
             arrow: ['apache-arrow'],
             duckdb: ['@duckdb/duckdb-wasm'],
             monaco: ['@monaco-editor/react'],
+            // Shared by the landing page and the docs figures; app routes never import it.
+            three: ['three'],
+            // Landing-only: the story stage (R3F), its scroll timeline (GSAP) and smooth scroll (Lenis).
+            // Reached only through the landing's lazy import(), so /login, /register and the app never fetch them.
+            r3f: ['@react-three/fiber', '@react-three/drei'],
+            gsap: ['gsap', 'gsap/ScrollTrigger', '@gsap/react'],
+            lenis: ['lenis'],
           },
         },
       },

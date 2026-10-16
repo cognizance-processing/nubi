@@ -54,6 +54,7 @@
 import { Suspense, createElement, lazy } from 'react'
 import { Navigate, Routes, Route, useLocation, useParams } from 'react-router-dom'
 import BrandLoader from './components/ui/BrandLoader.jsx'
+import { AppErrorBoundary } from './shell/ErrorBoundary.jsx'
 import { AuthProvider } from './contexts/AuthContext.jsx'
 import { UiProvider } from './contexts/UiContext.jsx'
 import { OrgProvider, useOrg } from './contexts/OrgContext.jsx'
@@ -68,7 +69,6 @@ import AppShell from './layouts/AppShell.jsx'
 import ProtectedRoute from './components/ProtectedRoute.jsx'
 
 // Public pages
-import LandingPage from './pages/LandingPage.jsx'
 import Login from './pages/Login.jsx'
 import Register from './pages/Register.jsx'
 import OnboardingPage from './pages/OnboardingPage.jsx'
@@ -78,6 +78,9 @@ import DocsPage from './pages/DocsPage.jsx'
 import ComparePage from './pages/ComparePage.jsx'
 import PricingPage from './pages/PricingPage.jsx'
 const ReportingPage = lazy(() => import('./pages/ReportingPage.jsx'))
+// The landing page is the only public route that owns its own header and a WebGL figure;
+// lazy so /login, /pricing and the app routes never download its code.
+const LandingPage = lazy(() => import('./pages/LandingPage.jsx'))
 import LegalPage from './pages/LegalPage.jsx'
 import NotFound from './pages/NotFound.jsx'
 
@@ -120,7 +123,8 @@ const AdminOrgDetailPage = lazy(() => import('./pages/admin/AdminOrgDetailPage.j
 const AdminAuditPage = lazy(() => import('./pages/admin/AdminAuditPage.jsx'))
 
 // Dev
-const IllustrationGallery = lazy(() => import('./pages/dev/IllustrationGallery.jsx'))
+// Dev-only: the DEV guard lets the bundler drop the import() (and the gallery chunk) from production builds.
+const IllustrationGallery = import.meta.env.DEV ? lazy(() => import('./pages/dev/IllustrationGallery.jsx')) : null
 
 // ---------------------------------------------------------------------------
 // EE dynamic mount (open-core boundary — NO static import of src/ee)
@@ -298,6 +302,8 @@ export default function App() {
       <OAuthReturn />
       {/* Single Suspense boundary for every lazy-loaded route element. Eager
           marketing routes never suspend, so the landing path is unaffected. */}
+      {/* Viewport-level boundary for routes outside the app shell (AppShell has its own). */}
+      <AppErrorBoundary>
       <Suspense fallback={<RouteFallback />}>
       <Routes>
 
@@ -433,13 +439,14 @@ export default function App() {
         <Route path="d/:id" element={dashboardRoute()} />
         <Route path="d/:id/edit" element={dashboardRoute({ edit: true })} />
         {/* ── Dev only ─────────────────────────────────────────────────── */}
-        <Route path="dev/illustrations" element={<IllustrationGallery />} />
+        {IllustrationGallery && <Route path="dev/illustrations" element={<IllustrationGallery />} />}
 
         {/* ── Catch-all ────────────────────────────────────────────────── */}
         <Route path="*" element={<NotFound />} />
 
       </Routes>
       </Suspense>
+      </AppErrorBoundary>
     </AuthProvider>
   )
 }

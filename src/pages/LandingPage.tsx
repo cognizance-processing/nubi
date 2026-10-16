@@ -1,2150 +1,248 @@
 /**
- * LandingPage — Nubi marketing site.
+ * LandingPage — the public home page (Swiss, round 2: "the life of a query").
  *
- * Token reference (tailwind.config.js + src/index.css):
- * ──────────────────────────────────────────────────────
- *  bg-bg / bg-surface / bg-surface-2   — surfaces (auto light/dark)
- *  text-fg / text-muted                — text (auto light/dark)
- *  border-border                       — borders (auto light/dark)
- *  bg-primary / text-primary / text-primary-fg — interactive
- *  bg-accent / text-accent / ring-ring — teal accent
- *  text-brand-navy / text-brand-blue / text-brand-teal / text-brand-cyan
- *  bg-brand-gradient / text-brand-gradient
- *  font-display (Space Grotesk) / font-sans (Inter)
+ *   header           static markup (landingMarkup): [mark]ubi lockup, nav, ⌘K, Sign in, Start free
+ *   #story           <Story>: a pinned stage + caption plates (desktop) or a sticky band + chapters (mobile).
+ *                    One persistent stage plays six scenes (scenes/<id>/) with the same 4,096 cubes.
+ *   outro            static markup: 06 Live · 07 Embed · 08 What you get · 09 Open core · 10 Pricing · 11 Start
  *
- * Section IDs (scroll targets for footer / navbar links):
- * ────────────────────────────────────────────────────────
- *  #hero         — Hero
- *  #features     — Differentiators ("Why Nubi" / six decisions)
- *  #embedding    — Auth-as-code embedding diff row
- *  #connectors   — SQL-first connector SDK diff row
- *  #as-code      — Everything-as-code (in-app code view, local files, CLI, CI)
- *  #how-it-works — How it works
- *  #pricing      — Closing CTA / pricing callout
- *  #compare      — Comparison table section
- *  #about        — Footer brand tagline (re-used for about anchor)
+ * First paint has the copy and a 2D poster of the hero. Then, lazily (never on other routes):
+ *   - the R3F stage chunk (three, @react-three/fiber, the ink shader, the morph engine)
+ *   - GSAP ScrollTrigger (+ Lenis on desktop pointers) for scroll → story time T
+ *   - landingLive (the Live instrument, the embed demo, the particle wordmark)
+ * Every module returns a cleanup, so leaving the route stops every loop and frees WebGL.
  */
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { HEADER_MARKUP, OUTRO_MARKUP, OVERLAY_MARKUP } from './landing/landingMarkup'
+import { mount as mountChrome } from './landing/chrome.js'
+import Footer from '../components/Footer'
+import { Story, type StoryApi } from './landing/Story'
+import { SCENES } from './landing/stage/registry'
+import { compileStory } from './landing/stage/story'
+import { Director } from './landing/stage/director'
+import { LabelLayer } from './landing/stage/labels'
+import { attachPicking } from './landing/stage/pick'
+import { mountPosterStage } from './landing/stage/posterStage'
+import { gsapScroll, nativeScroll, type ScrollController } from './landing/scroll'
+import { applyTheme, installHook, parseDebug, targetT, type Metrics } from './landing/debug'
+import './landing/landing.css'
 
-import { useState, useEffect, useRef, type CSSProperties } from 'react'
-import MarketingStyles from '../components/marketing/MarketingStyles.jsx'
-import useReveal from '../components/marketing/useReveal.js'
-import CalcShell from '../components/marketing/CalcShell.jsx'
-import { Link } from 'react-router-dom'
-import {
-  ArrowRight,
-  Zap,
-  Shield,
-  Database,
-  Code2,
-  Globe,
-  Bot,
-  Workflow,
-  ChevronRight,
-  Check,
-  X,
-  Minus,
-  PlugZap,
-  SearchCode,
-  Layers,
-  Lock,
-  KeyRound,
-  Filter,
-  Sparkles,
-  Star,
-  Headset,
-  Users,
-  Server,
-  SlidersHorizontal,
-  TrendingDown,
-  CheckCircle2,
-  XCircle,
-  Wallet,
-  GitBranch,
-  Terminal,
-  FolderGit2,
-} from 'lucide-react'
-import {
-  TIERS,
-  BILLING_MODEL,
-  CALC_OPTIONS,
-  ORCH_CALC_OPTIONS,
-  ENTERPRISE_NOTE,
-  OVERAGE_RATES,
-  OVERAGE_NOTE,
-} from '../data/pricing.js'
-import { CONNECTOR_TYPES } from '../data/connectors.js'
-import { fetchPricingData } from '../lib/pricing.js'
-import { useCurrency } from '../contexts/CurrencyContext.jsx'
-import KernelInBrowser from '../components/illustrations/KernelInBrowser.jsx'
-import EdgeCache from '../components/illustrations/EdgeCache.jsx'
-import WebGLPerf from '../components/illustrations/WebGLPerf.jsx'
-// Dev-centric features read better as real code than abstract art.
-import { FlowCode, LlmDashboardCode, FilesAsCodeCli } from '../components/illustrations/CodeTile.jsx'
+type Mount = (root: HTMLElement) => () => void
+const GLStage = lazy(() => import('./landing/stage/Stage'))
 
-/* ─────────────────────────────────────────────────────────────────────────── */
-/*  Scoped animations — only on .nubi-lp so they don't bleed to other pages   */
-/* ─────────────────────────────────────────────────────────────────────────── */
-
-/* ─────────────────────────────────────────────────────────────────────────── */
-/*  Sub-components (all use tokens)                                            */
-/* ─────────────────────────────────────────────────────────────────────────── */
-
-/* ── Product tour — tabbed REAL screenshots (regenerated by
-      `npm run screenshots`, so they always match the shipping UI) ─────────── */
-const TOUR_TABS = [
-  {
-    id: 'queries',
-    label: 'Queries',
-    icon: SearchCode,
-    url: 'app.nubi.dev/queries',
-    img: '/docs/screenshots/queries-editor.webp',
-    alt: 'The Nubi query workspace — SQL editor cells with a results grid streamed from the in-browser DuckDB kernel',
-    title: 'Write SQL. Results stream back instantly.',
-    body: 'The DuckDB-WASM kernel runs in the tab — no cold start, no per-session cloud cost. Named {{params}}, AI text-to-SQL grounded on your real schema, and results that arrive as Arrow IPC.',
-    chips: ['DuckDB-WASM', 'Named params', 'AI text-to-SQL'],
-  },
-  {
-    id: 'dashboards',
-    label: 'Dashboards',
-    icon: Layers,
-    url: 'app.nubi.dev/editor',
-    img: '/docs/screenshots/dashboard-editor.webp',
-    alt: 'The Nubi dashboard editor — KPIs, charts, and tables composed on a drag-and-drop grid',
-    title: 'Compose it. Embed it anywhere.',
-    body: 'Drag KPIs, charts, and tables onto a grid, then drop the <nubi-dashboard> web component into your app. Per-viewer row-level security travels in a signed JWT — and viewers are free on every plan.',
-    chips: ['Drag & drop', 'Embed anywhere', 'Viewers free'],
-  },
-  {
-    id: 'flows',
-    label: 'Flows',
-    icon: Workflow,
-    url: 'app.nubi.dev/flows',
-    img: '/docs/screenshots/flows-canvas.webp',
-    alt: 'The Nubi flows canvas — a SQL and Python pipeline drawn as a DAG with query, python, materialize, and export tasks',
-    title: 'Orchestrate SQL + Python. Canvas, notebook, or code.',
-    body: 'A built-in workflow orchestrator: wire query, Python, and export tasks into a DAG, schedule it, and watch runs live. The same flow is editable as a canvas, a notebook, or generated Python files.',
-    chips: ['DAG canvas', 'Notebook cells', 'Files-as-code'],
-  },
-]
-
-function ProductTour() {
-  const [active, setActive] = useState(TOUR_TABS[0].id)
-  const tab = TOUR_TABS.find(t => t.id === active)
-  return (
-    <div>
-      {/* tab bar */}
-      <div className="flex justify-center mb-7 sm:mb-9">
-        <div className="inline-flex flex-wrap justify-center gap-1 p-1 rounded-2xl bg-surface-2 border border-border" role="tablist" aria-label="Product tour">
-          {TOUR_TABS.map(t => {
-            const ActiveIcon = t.icon
-            const selected = t.id === active
-            return (
-              <button
-                key={t.id}
-                role="tab"
-                aria-selected={selected}
-                onClick={() => setActive(t.id)}
-                className={[
-                  'inline-flex items-center gap-2 px-4 sm:px-5 py-2.5 rounded-xl text-sm font-semibold transition-all',
-                  selected
-                    ? 'bg-brand-gradient text-white shadow-md'
-                    : 'text-muted hover:text-fg',
-                ].join(' ')}
-              >
-                <ActiveIcon size={15} strokeWidth={2.2} />
-                {t.label}
-              </button>
-            )
-          })}
-        </div>
-      </div>
-
-      {/* framed screenshot */}
-      <div className="relative max-w-5xl mx-auto">
-        {/* glow bed */}
-        <div
-          className="pointer-events-none absolute -inset-6 sm:-inset-10 rounded-[2.5rem] blur-2xl opacity-50"
-          style={{
-            background:
-              'radial-gradient(ellipse 65% 60% at 50% 45%, rgba(36,86,166,0.18) 0%, rgba(23,179,163,0.12) 55%, transparent 78%)',
-          }}
-          aria-hidden="true"
-        />
-        <div className="relative rounded-2xl overflow-hidden border border-border bg-surface shadow-[0_30px_70px_-28px_rgba(27,35,99,0.45)]">
-          {/* browser chrome */}
-          <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border bg-surface-2">
-            <span className="flex gap-1.5" aria-hidden="true">
-              <span className="w-2.5 h-2.5 rounded-full bg-[#f4726f]/70" />
-              <span className="w-2.5 h-2.5 rounded-full bg-[#f5bd4f]/70" />
-              <span className="w-2.5 h-2.5 rounded-full bg-[#61c554]/70" />
-            </span>
-            <span className="flex-1 max-w-xs mx-auto flex items-center justify-center gap-1.5 font-mono text-[10.5px] text-muted bg-bg border border-border rounded-md px-3 py-1">
-              <Lock size={9} className="text-brand-teal" />
-              {tab.url}
-            </span>
-            <span className="hidden sm:inline w-12" aria-hidden="true" />
-          </div>
-          {/* stacked images so switching never flashes a loading gap */}
-          <div className="relative" style={{ aspectRatio: '1440 / 900' }}>
-            {TOUR_TABS.map(t => (
-              <div
-                key={t.id}
-                className={[
-                  'absolute inset-0 transition-opacity duration-300',
-                  t.id === active ? 'opacity-100' : 'opacity-0',
-                ].join(' ')}
-              >
-                {/* light + dark captures from the screenshot pipeline; CSS picks
-                    the one matching the site theme */}
-                <img
-                  src={t.img}
-                  alt={t.alt}
-                  width="2880"
-                  height="1800"
-                  loading="lazy"
-                  className="absolute inset-0 w-full h-full object-cover object-top dark:hidden"
-                />
-                <img
-                  src={t.img.replace(/\.webp$/, '-dark.webp')}
-                  alt=""
-                  aria-hidden="true"
-                  width="2880"
-                  height="1800"
-                  loading="lazy"
-                  className="hidden dark:block absolute inset-0 w-full h-full object-cover object-top"
-                />
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* caption */}
-      <div className="max-w-2xl mx-auto text-center mt-8 sm:mt-10">
-        <h3 className="font-display text-xl sm:text-2xl font-bold text-fg">{tab.title}</h3>
-        <p className="text-sm leading-relaxed text-muted mt-2.5">{tab.body}</p>
-        <div className="flex flex-wrap justify-center gap-2 mt-4">
-          {tab.chips.map(chip => (
-            <span key={chip} className="font-mono text-[11px] font-medium px-2.5 py-1 rounded-full bg-brand-teal/10 text-brand-teal border border-brand-teal/20">
-              {chip}
-            </span>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
+function useMedia(q: string) {
+  const sub = useCallback((f: () => void) => { const m = window.matchMedia(q); m.addEventListener('change', f); return () => m.removeEventListener('change', f) }, [q])
+  return useSyncExternalStore(sub, () => window.matchMedia(q).matches, () => false)
 }
 
-/* ── "Eight decisions" — bento deck on an observatory panel ─────────────────
-   Replaces the alternating illustration rows. Each card: glass surface,
-   accent glow on hover, bolded key phrases, mono outcome chip. Two wide
-   "wedge" cards carry small CSS visualisations instead of stock art. ── */
-
-const B = ({ children }) => (
-  <strong className="font-semibold text-fg dark:text-white">{children}</strong>
-)
-
-function KernelVisual() {
-  return (
-    <div className="rounded-xl border border-border dark:border-white/10 bg-bg/70 dark:bg-black/25 p-3 font-mono text-[10px] leading-relaxed">
-      <div className="flex items-center gap-1.5 pb-2 mb-2.5 border-b border-border dark:border-white/10">
-        <span className="w-2 h-2 rounded-full bg-[#f4726f]/70" />
-        <span className="w-2 h-2 rounded-full bg-[#f5bd4f]/70" />
-        <span className="w-2 h-2 rounded-full bg-[#61c554]/70" />
-        <span className="ml-2 text-muted">the user&apos;s browser tab</span>
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <span
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-white font-semibold"
-          style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}
-        >
-          <span className="relative flex h-1.5 w-1.5">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-60" />
-            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-white" />
-          </span>
-          duckdb-wasm kernel
-        </span>
-        <span className="text-muted">cold start 0 ms · cost / view $0.000</span>
-      </div>
-      <div className="mt-2 flex flex-wrap items-center gap-2 opacity-70">
-        <span className="px-2.5 py-1.5 rounded-md border border-dashed border-border dark:border-white/25 text-muted">
-          server kernel
-        </span>
-        <span className="text-muted">fallback only · metered · scale-to-zero</span>
-      </div>
-    </div>
-  )
+function webgl2(): boolean {
+  try { const c = document.createElement('canvas'); return !!c.getContext('webgl2') } catch { return false }
 }
 
-function CacheVisual() {
-  return (
-    <div className="rounded-xl border border-border dark:border-white/10 bg-bg/70 dark:bg-black/25 p-3 font-mono text-[10px] flex items-center justify-between gap-3">
-      <div className="flex flex-col gap-1.5 min-w-0">
-        <span className="text-muted">dashboard viewers</span>
-        <div className="flex flex-wrap gap-1 max-w-[7.5rem]">
-          {Array.from({ length: 24 }, (_, i) => (
-            <span
-              key={i}
-              className="w-1.5 h-1.5 rounded-full"
-              style={{ background: '#2456a6', opacity: 0.35 + ((i * 37) % 55) / 100 }}
-            />
-          ))}
-        </div>
-        <span className="font-bold text-fg dark:text-white">500 views</span>
-      </div>
-      <ArrowRight size={14} className="text-muted shrink-0" />
-      <div className="flex flex-col items-center gap-1.5">
-        <span className="px-2.5 py-1.5 rounded-md text-white font-semibold" style={{ background: '#17b3a3' }}>
-          edge cache
-        </span>
-        <span className="text-muted">content-hashed</span>
-      </div>
-      <ArrowRight size={14} className="text-muted shrink-0" />
-      <div className="flex flex-col items-end gap-1.5">
-        <span className="text-muted">warehouse</span>
-        <span className="font-display text-xl font-bold text-fg dark:text-white leading-none">1</span>
-        <span className="text-muted">query</span>
-      </div>
-    </div>
-  )
-}
-
-const DECISIONS = [
-  {
-    id: 'kernel', index: '01', tag: 'core architecture', icon: Zap, accent: '#17b3a3', wide: true,
-    hook: 'Ship the kernel, not the bill.',
-    body: (
-      <>
-        A <B>DuckDB-WASM engine runs inside the user&apos;s tab</B> — zero cold starts, zero
-        per-session cloud cost. Python falls through to a <B>metered, scale-to-zero server
-        kernel</B> only when a workload truly needs one.
-      </>
-    ),
-    chip: '≈ $0 marginal cost per dashboard view',
-    visual: <KernelVisual />,
-  },
-  {
-    index: '02', tag: 'rendering', icon: Globe, accent: '#38bdf8',
-    hook: 'Charts read columns, not JSON.',
-    body: (
-      <>
-        Results stream as <B>columnar Arrow IPC straight into ECharts on canvas</B> — no
-        serialisation round-trip, no DOM-bound SVG. Cross-filter a big result set and it
-        just moves.
-      </>
-    ),
-    chip: 'fluid charts at 100k+ rows',
-  },
-  {
-    id: 'cache', index: '03', tag: 'cost architecture', icon: Database, accent: '#2dd4bf', wide: true,
-    hook: '500 viewers. One warehouse hit.',
-    body: (
-      <>
-        A <B>content-hashed edge cache</B> keyed on plan + JWT claims collapses identical
-        dashboard traffic, while a <B>rollup suggester mines hot GROUP BYs</B> from your
-        query log — materialize the winners in one click.
-      </>
-    ),
-    chip: '10–50× fewer warehouse scans',
-    visual: <CacheVisual />,
-  },
-  {
-    id: 'embedding', index: '04', tag: 'security', icon: Shield, accent: '#2456a6',
-    hook: 'RLS lives in your repo.',
-    body: (
-      <>
-        <B>Policies are claims in a JWT your backend signs</B> — auth logic gets code
-        review, not a vendor UI. Predicates are <B>injected into the SQL AST</B>, never
-        string-concatenated.
-      </>
-    ),
-    chip: '<nubi-dashboard get-token> — the whole integration',
-  },
-  {
-    index: '05', tag: 'ai-native', icon: Bot, accent: '#8b5cf6',
-    hook: 'Agents speak fluent dashboard.',
-    body: (
-      <>
-        A dashboard is <B>sanitized HTML with declarative &lt;nubi-*&gt; elements</B> — a
-        format LLMs author natively, grounded on your real schema. <B>Nine MCP tools</B>{' '}
-        build and iterate end-to-end.
-      </>
-    ),
-    chip: 'run_query · create_dashboard · 7 more',
-  },
-  {
-    id: 'connectors', index: '06', tag: 'extensibility', icon: Code2, accent: '#0ea5e9',
-    hook: 'Point at a warehouse and go.',
-    body: (
-      <>
-        <B>No semantic model to build first.</B> 25+ connectors out of the box, plus a
-        Python SDK that wraps <B>any Arrow-returning function</B> as a first-class,
-        fail-closed source.
-      </>
-    ),
-    chip: 'predicate_rls=False → 501',
-  },
-  {
-    id: 'flows', index: '07', tag: 'workflows', icon: Workflow, accent: '#14b8a6',
-    hook: 'The orchestrator bill, deleted.',
-    body: (
-      <>
-        <B>SQL + Python DAGs</B> you edit as a canvas, a notebook, or files — schedules,
-        retries, caching, fan-out, conditional gates. <B>Runs on Postgres alone.</B> No
-        Redis, no Celery, no Airflow to feed.
-      </>
-    ),
-    chip: 'orchestration included in every plan',
-  },
-]
-
-function DecisionCard({ d, idx }) {
-  const [ref, seen] = useReveal()
-  return (
-    <div
-      ref={ref}
-      id={d.id}
-      style={{ '--lp-card-accent': d.accent, transitionDelay: `${(idx % 3) * 90}ms` } as CSSProperties}
-      className={[
-        'lp-card lp-reveal',
-        seen ? 'lp-in' : '',
-        'flex flex-col p-6 sm:p-7',
-        d.wide ? 'md:col-span-2' : '',
-        d.id ? 'scroll-mt-20' : '',
-      ].join(' ')}
-    >
-      <div className="flex items-center justify-between mb-4">
-        <span
-          className="inline-flex items-center justify-center w-10 h-10 rounded-xl text-white shadow-md"
-          style={{ background: `linear-gradient(135deg, ${d.accent}, ${d.accent}cc)` }}
-        >
-          <d.icon size={18} strokeWidth={1.9} />
-        </span>
-        <span className="font-mono text-[11px] font-bold" style={{ color: d.accent }}>
-          /{d.index}
-        </span>
-      </div>
-      <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-muted mb-1.5">
-        {d.tag}
-      </p>
-      <h3 className="font-display text-lg sm:text-[1.35rem] font-bold text-fg dark:text-white leading-snug mb-2">
-        {d.hook}
-      </h3>
-      <p className="text-[13.5px] sm:text-sm leading-relaxed text-muted dark:text-slate-300/85 flex-1">
-        {d.body}
-      </p>
-      {d.visual && <div className="mt-4">{d.visual}</div>}
-      <p
-        className="mt-4 inline-flex items-center gap-1.5 self-start font-mono text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border"
-        style={{ color: d.accent, borderColor: `${d.accent}45`, background: `${d.accent}0f` }}
-      >
-        <ArrowRight size={11} strokeWidth={2.5} className="shrink-0" />
-        {d.chip}
-      </p>
-    </div>
-  )
-}
-
-function DecisionCtaCard() {
-  const [ref, seen] = useReveal()
-  return (
-    <div
-      ref={ref}
-      className={`lp-reveal ${seen ? 'lp-in' : ''} md:col-span-2 rounded-[1.25rem] p-6 sm:p-7 flex flex-col justify-between text-white bg-brand-gradient shadow-[0_24px_50px_-20px_rgba(23,179,163,0.55)]`}
-      style={{ transitionDelay: '90ms' }}
-    >
-      <div>
-        <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-white/70 mb-1.5">
-          the wedge
-        </p>
-        <h3 className="font-display text-xl sm:text-2xl font-bold leading-snug">
-          Stop paying for viewers. Start tonight.
-        </h3>
-        <p className="text-sm leading-relaxed text-white/85 mt-2 max-w-md">
-          Free tier, <strong className="font-semibold text-white">unlimited seats</strong> —
-          connect a warehouse and ship your first dashboard before anything else even
-          finishes provisioning.
-        </p>
-      </div>
-      <div className="flex flex-wrap items-center gap-4 mt-5">
-        <Link
-          to="/register"
-          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white text-brand-navy font-semibold text-sm hover:-translate-y-0.5 transition-all shadow-md"
-        >
-          Start free <ArrowRight size={14} strokeWidth={2.5} />
-        </Link>
-        <Link to="/pricing" className="font-mono text-[11px] text-white/75 hover:text-white transition-colors">
-          see the pricing math →
-        </Link>
-      </div>
-    </div>
-  )
-}
-
-function DecisionGrid() {
-  return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
-      {DECISIONS.map((d, i) => (
-        <DecisionCard key={d.index} d={d} idx={i} />
-      ))}
-      <DecisionCtaCard />
-    </div>
-  )
-}
-
-/* ── How it works — vertical journey timeline ──────────────────────────────── */
-
-const HIW_STEPS = [
-  {
-    num: '01', title: 'Connect', icon: PlugZap,
-    color: 'linear-gradient(135deg, #1b2363, #2456a6)', dot: '#2456a6',
-    tagline: 'Bring your warehouse. Secrets stay in your network.',
-    bullets: [
-      { icon: Database, text: 'BigQuery, Snowflake, Redshift, Postgres, ClickHouse — point and go, no semantic model required.' },
-      { icon: Lock, text: 'Warehouse credentials never leave the connector. Self-host in your VPC or use Nubi-managed regional connectors near your data.' },
-      { icon: Code2, text: 'Python connector SDK: any Arrow-returning function is a first-class source. Wrap a proprietary store, a dataframe job, or a REST feed.' },
-      { icon: Shield, text: 'Capability contract enforces a security floor — connectors without predicate-RLS support are refused (501), not silently trusted.' },
-    ],
-    chips: [
-      { label: 'BigQuery' }, { label: 'Snowflake' }, { label: 'Postgres' },
-      { label: 'Python SDK', accent: true }, { label: 'Private VPC bridge', accent: true },
-    ],
-    code: 'nubi push ./resources --dry-run', lang: 'shell', file: 'terminal',
-  },
-  {
-    num: '02', title: 'Query', icon: SearchCode,
-    color: 'linear-gradient(135deg, #2456a6, #17b3a3)', dot: '#17b3a3',
-    tagline: 'SQL, named params, and AI text-to-SQL — all in the browser.',
-    bullets: [
-      { icon: Database, text: "DuckDB-WASM kernel runs in the user's tab — zero cold starts, zero per-session cloud cost. Results stream as Arrow IPC." },
-      { icon: Sparkles, text: 'AI text-to-SQL grounded on your actual catalog and lineage graph — not hallucinated schemas. Nine MCP tools for agent authoring.' },
-      { icon: SearchCode, text: 'Named-parameter registered queries keep your SQL versioned and reusable. The planner pushes predicates and projections to the warehouse.' },
-      { icon: Globe, text: 'Content-hashed edge cache: 500 viewers of the same dashboard collapse to 1 warehouse hit. Auto pre-aggregation mines query logs for rollups.' },
-    ],
-    chips: [
-      { label: 'DuckDB-WASM', accent: true }, { label: 'Arrow IPC', accent: true },
-      { label: 'AI text-to-SQL' }, { label: 'Named params' }, { label: 'Edge cache' },
-    ],
-    code: 'SELECT month, SUM(revenue) FROM events\nWHERE tenant_id = {{tenant_id}} GROUP BY 1', lang: 'sql', file: 'revenue.sql',
-  },
-  {
-    num: '03', title: 'Embed', icon: Layers,
-    color: 'linear-gradient(135deg, #17b3a3, #2dd4bf)', dot: '#2dd4bf',
-    tagline: 'One JWT primitive. Per-viewer RLS. Cross-filtering dashboards.',
-    bullets: [
-      { icon: KeyRound, text: 'Signed JWT carries per-viewer claims. Predicate injection is AST-based — never string concat. Policies live as code in your repo, PR-reviewable.' },
-      { icon: Filter, text: 'Token-locked params prevent viewers escaping their data scope. Column masking and row-level security enforced before data leaves the connector.' },
-      { icon: Globe, text: 'Cross-filtering dashboards rendered with ECharts on Arrow buffers — canvas rendering that stays smooth on large result sets.' },
-      { icon: Code2, text: 'Drop the <nubi-dashboard> web component into your host app — UMD or ES module. Theme attribute, short-lived JWTs that refresh before expiry.' },
-    ],
-    chips: [
-      { label: 'JWT RLS', accent: true }, { label: 'AST predicate inject', accent: true },
-      { label: 'Token-locked params' }, { label: 'Cross-filter dashboards' }, { label: 'Web component' },
-    ],
-    code: '<nubi-dashboard\n  dashboard-id="revenue-overview"\n  get-token="getEmbedToken"\n  backend="https://api.nubi.dev">', lang: 'html', file: 'app.html',
-  },
-]
-
-function HiwStep({ s, last }) {
-  const [ref, seen] = useReveal()
-  const Icon = s.icon
-  return (
-    <div ref={ref} className={`lp-reveal ${seen ? 'lp-in' : ''} relative flex gap-5 sm:gap-8`}>
-      {/* spine + node */}
-      <div className="relative flex flex-col items-center shrink-0 w-12">
-        <span
-          className="z-10 flex items-center justify-center w-12 h-12 rounded-2xl text-white font-mono text-sm font-bold shadow-lg"
-          style={{ background: s.color }}
-        >
-          {s.num}
-        </span>
-        {!last && <span className="lp-connector w-px flex-1 mt-2 opacity-30" aria-hidden="true" />}
-      </div>
-
-      {/* content */}
-      <div className={`flex-1 min-w-0 ${last ? '' : 'pb-12 sm:pb-16'}`}>
-        <div className="flex flex-wrap items-center gap-3 mb-1.5">
-          <span
-            className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-white shadow-sm"
-            style={{ background: s.color }}
-          >
-            <Icon size={15} strokeWidth={2} />
-          </span>
-          <h3 className="font-display text-2xl sm:text-3xl font-bold text-fg tracking-tight">{s.title}</h3>
-        </div>
-        <p className="text-sm sm:text-base text-muted mb-5">{s.tagline}</p>
-
-        <div className="grid lg:grid-cols-[1.15fr_1fr] gap-5 lg:gap-7 items-start">
-          {/* bullets */}
-          <div className="grid sm:grid-cols-2 gap-3">
-            {s.bullets.map(({ icon: BIcon, text }) => (
-              <div key={text} className="flex items-start gap-2.5 rounded-xl border border-border bg-surface p-3">
-                <span className="shrink-0 mt-0.5 w-5 h-5 rounded-md bg-surface-2 border border-border flex items-center justify-center">
-                  <BIcon size={11} strokeWidth={2.5} className="text-accent" />
-                </span>
-                <span className="text-xs leading-relaxed text-muted">{text}</span>
-              </div>
-            ))}
-          </div>
-
-          {/* terminal card + chips */}
-          <div>
-            <div className="lp-term rounded-xl overflow-hidden border border-white/10 bg-[#0c1230] shadow-[0_20px_44px_-22px_rgba(0,0,0,0.6)]">
-              <div className="flex items-center gap-2 px-3.5 py-2 border-b border-white/[0.08] bg-white/[0.03]">
-                <span className="flex gap-1.5" aria-hidden="true">
-                  <span className="w-2 h-2 rounded-full bg-[#f4726f]/80" />
-                  <span className="w-2 h-2 rounded-full bg-[#f5bd4f]/80" />
-                  <span className="w-2 h-2 rounded-full bg-[#61c554]/80" />
-                </span>
-                <span className="font-mono text-[10px] text-slate-400">{s.file}</span>
-                <span className="ml-auto font-mono text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded border border-white/10 text-slate-400">{s.lang}</span>
-              </div>
-              <pre className="px-4 py-3.5 font-mono text-[12px] leading-relaxed text-slate-200 whitespace-pre-wrap break-words">
-                {highlightCode(s.code, s.lang)}
-              </pre>
-            </div>
-            <div className="flex flex-wrap gap-1.5 mt-3">
-              {s.chips.map(c => (
-                <Chip key={c.label} accent={c.accent}>{c.label}</Chip>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function HowItWorksTimeline() {
-  return (
-    <div className="max-w-5xl mx-auto">
-      {HIW_STEPS.map((s, i) => (
-        <HiwStep key={s.num} s={s} last={i === HIW_STEPS.length - 1} />
-      ))}
-    </div>
-  )
-}
-
-function CompareCell({ value, isNubi = false }) {
-  if (value === true) {
-    // Nubi's wins get a strong filled gradient check; competitors a quiet tint.
-    return isNubi ? (
-      <span
-        className="inline-flex items-center justify-center w-7 h-7 rounded-full mx-auto shadow-sm"
-        style={{ background: 'linear-gradient(135deg, #17b3a3, #2dd4bf)' }}
-      >
-        <Check size={15} strokeWidth={3.25} className="text-white" />
-      </span>
-    ) : (
-      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-accent/15 mx-auto">
-        <Check size={13} strokeWidth={3} className="text-accent" />
-      </span>
-    )
-  }
-  if (value === false) {
-    return (
-      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-border/50 mx-auto">
-        <X size={12} strokeWidth={2.5} className="text-muted opacity-60" />
-      </span>
-    )
-  }
-  if (value === 'partial') {
-    return (
-      <span className="inline-flex items-center justify-center gap-1 px-2 h-6 rounded-full bg-amber-400/15 mx-auto">
-        <Minus size={12} strokeWidth={3} className="text-amber-500" />
-      </span>
-    )
-  }
-  return (
-    <span className={`text-[13px] leading-snug ${isNubi ? 'font-semibold text-fg' : 'text-muted'}`}>
-      {value}
-    </span>
-  )
-}
-
-function Chip({ icon: Icon = undefined, children, accent = false }) {
-  return (
-    <span
-      className={`lp-chip ${
-        accent
-          ? 'bg-accent/10 border-accent/30 text-brand-teal'
-          : 'bg-surface-2 border-border text-muted'
-      }`}
-    >
-      {Icon && <Icon size={10} strokeWidth={2.5} />}
-      {children}
-    </span>
-  )
-}
-
-/** Mid-page CTA strip — repeats the primary "Start free" action after major sections. */
-function SectionCta({ sub }) {
-  return (
-    <div className="flex flex-col items-center gap-4 text-center mt-12 sm:mt-16">
-      {sub && <p className="text-sm sm:text-base text-muted max-w-md">{sub}</p>}
-      <div className="flex flex-col sm:flex-row gap-3">
-        <Link
-          to="/register"
-          className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold transition-all bg-brand-gradient text-white hover:opacity-90 hover:-translate-y-0.5 min-h-[44px]"
-        >
-          Start free
-          <ArrowRight size={14} strokeWidth={2.5} />
-        </Link>
-        <Link
-          to="/pricing"
-          className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue hover:text-primary min-h-[44px]"
-        >
-          See pricing
-        </Link>
-      </div>
-    </div>
-  )
-}
-
-/* ── Tiny dependency-free code highlighter (SQL / shell / html) ──────────────
-   Single left-to-right scan with sticky regexes; the FIRST matching rule wins,
-   so strings always beat keywords, comments beat punctuation, and tokens can
-   never overlap or nest. Emits flat <span>s. Colors come from CSS variables
-   with explicit light/dark values (see ScopedStyles) so tokens stay readable
-   on the code surface in both themes. */
-const HL = {
-  kw:    'var(--lp-hl-kw)',    // keyword (blue)
-  fn:    'var(--lp-hl-fn)',    // function / tag / leading command (teal)
-  str:   'var(--lp-hl-str)',   // string (amber)
-  num:   'var(--lp-hl-num)',
-  param: 'var(--lp-hl-param)', // {{param}} / {expr} (violet)
-  punc:  'var(--lp-hl-punc)',
-  cm:    'var(--lp-hl-cm)',    // comment
-  plain: 'currentColor',
-}
-const HL_RULES = {
-  sql: [
-    [/\s+/y, 'plain'],
-    [/--[^\n]*/y, 'cm'],                 // -- line comment (before punc, so "--" never splits)
-    [/'(?:[^']|'')*'/y, 'str'],          // SQL strings escape quotes by doubling ('')
-    [/"(?:[^"\\]|\\.)*"/y, 'str'],
-    [/\{\{[^}]*\}\}/y, 'param'],
-    [/\b\d+(?:\.\d+)?\b/y, 'num'],
-    [/\b(?:SELECT|FROM|WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|JOIN|LEFT|RIGHT|INNER|OUTER|FULL|CROSS|ON|AS|AND|OR|NOT|IN|IS|NULL|LIKE|BETWEEN|DISTINCT|UNION|ALL|WITH|CASE|WHEN|THEN|ELSE|END|ASC|DESC|OVER|PARTITION)\b/iy, 'kw'],
-    [/\b(?:SUM|COUNT|AVG|MIN|MAX|COALESCE|CAST|ROUND|DATE_TRUNC|NOW|EXTRACT|LOWER|UPPER|ABS|RANK|ROW_NUMBER)\b/iy, 'fn'],
-    [/[a-zA-Z_][a-zA-Z0-9_]*/y, 'plain'], // identifiers AFTER keywords; \b in the kw rule
-                                          // stops keyword prefixes inside identifiers
-    [/[(),.*=<>+\-/|]/y, 'punc'],
-  ],
-  shell: [
-    [/\s+/y, 'plain'],
-    [/#[^\n]*/y, 'cm'],
-    [/'(?:[^'\\]|\\.)*'/y, 'str'],
-    [/"(?:[^"\\]|\\.)*"/y, 'str'],
-    [/--?[a-zA-Z][\w-]*/y, 'kw'],        // flags before identifiers
-    [/\.{1,2}\/[\w./-]*/y, 'plain'],     // ./relative and ../relative paths as one token
-    [/[a-zA-Z_][\w.-]*/y, 'plain'],
-    [/[=:/]/y, 'punc'],
-  ],
-  html: [
-    [/\s+/y, 'plain'],
-    [/<!--[\s\S]*?-->/y, 'cm'],
-    [/"(?:[^"\\]|\\.)*"/y, 'str'],       // strings before {expr} so quoted braces stay strings
-    [/\{[^}]*\}/y, 'param'],
-    [/<\/?[a-zA-Z][\w-]*/y, 'kw'],
-    [/\/?>/y, 'kw'],
-    [/[a-zA-Z_][\w-]*(?==)/y, 'fn'],     // attribute names (incl. kebab-case like get-token)
-    [/[a-zA-Z_][\w-]*/y, 'plain'],
-    [/=/y, 'punc'],
-  ],
-}
-function highlightCode(code, lang) {
-  const rules = HL_RULES[lang]
-  if (!rules) return code
-  const out = []
-  let i = 0, firstWord = true
-  while (i < code.length) {
-    let matched = false
-    for (const [re, key] of rules) {
-      re.lastIndex = i // sticky /y: anchors the match at i (shared regexes are reset every use)
-      const m = re.exec(code)
-      if (m) {
-        let c = key
-        // shell: color the leading command token
-        if (lang === 'shell' && key === 'plain' && /\S/.test(m[0])) {
-          if (firstWord) { c = 'fn'; firstWord = false }
-        }
-        out.push([m[0], c])
-        i += m[0].length || 1
-        matched = true
-        break
-      }
-    }
-    if (!matched) { out.push([code[i], 'plain']); i++ }
-  }
-  return out.map(([t, c], idx) => (
-    <span key={idx} style={{ color: HL[c] || 'currentColor', fontWeight: c === 'kw' ? 600 : undefined }}>{t}</span>
-  ))
-}
-
-/**
- * DiffRow — alternating illustration left/right layout.
- * On mobile/tablet: always stacks (illustration on top, copy below).
- * On desktop (lg+): alternates left/right based on `reverse` prop.
- */
-function DiffRow({ icon: Icon, index = undefined, title, hook = undefined, desc, outcome = undefined, Illustration, reverse = false, badge = undefined, id = undefined }) {
-  // Scroll reveal: each row fades/slides in once, the first time it enters the
-  // viewport. Falls back to always-visible when IntersectionObserver is absent.
-  const revealRef = useRef(null)
-  // Visible from the start when IntersectionObserver is unavailable (SSR/old
-  // browsers) — the reveal is purely progressive enhancement.
-  const [seen, setSeen] = useState(() => typeof IntersectionObserver === 'undefined')
-  useEffect(() => {
-    const el = revealRef.current
-    if (!el || typeof IntersectionObserver === 'undefined') return
-    const obs = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) {
-          setSeen(true)
-          obs.disconnect()
-        }
-      },
-      { threshold: 0.18 }
-    )
-    obs.observe(el)
-    return () => obs.disconnect()
-  }, [])
-
-  const IllustrationBlock = (
-    <div className="relative w-full min-h-[220px] sm:min-h-[280px] lg:min-h-[320px] flex items-center justify-center px-4 py-6 sm:px-8 sm:py-8">
-      {index && (
-        <span
-          aria-hidden="true"
-          className="pointer-events-none select-none absolute -top-1 right-5 font-display font-bold text-[5rem] sm:text-[6.5rem] leading-none text-transparent"
-          style={{ WebkitTextStroke: '1.5px rgba(36,86,166,0.16)' }}
-        >
-          {index}
-        </span>
-      )}
-      <Illustration className="w-full h-auto max-w-[480px]" />
-    </div>
-  )
-  const CopyBlock = (
-    <div className={`flex flex-col gap-4 sm:gap-5 ${reverse ? 'lg:pr-8' : 'lg:pl-8'}`}>
-      <div className="flex items-center gap-2.5">
-        {index && <span className="font-mono text-xs font-bold text-brand-teal">/{index}</span>}
-        {badge && (
-          <span className="inline-flex items-center gap-1.5 font-mono text-[10px] font-semibold px-2.5 py-1 rounded-full bg-surface-2 border border-border text-muted tracking-[0.14em] uppercase">
-            {badge}
-          </span>
-        )}
-      </div>
-      <div className="flex items-center gap-3.5">
-        <span className="shrink-0 inline-flex items-center justify-center w-11 h-11 rounded-xl bg-brand-gradient text-white shadow-[0_8px_20px_-6px_rgba(36,86,166,0.5)]">
-          <Icon size={20} strokeWidth={1.75} />
-        </span>
-        <h3 className="font-display font-bold text-2xl sm:text-3xl text-fg leading-tight tracking-tight">{title}</h3>
-      </div>
-      <p className="text-sm sm:text-base lg:text-lg leading-relaxed text-muted">
-        {hook && <strong className="text-fg font-semibold">{hook}{' '}</strong>}
-        {desc}
-      </p>
-      {outcome && (
-        <p className="flex items-start gap-2 font-mono text-[12px] sm:text-[13px] font-medium text-brand-teal border-l-2 border-brand-teal/50 pl-3 leading-relaxed">
-          <ArrowRight size={13} strokeWidth={2.5} className="mt-0.5 shrink-0" />
-          {outcome}
-        </p>
-      )}
-    </div>
-  )
-
-  // Render each block ONCE and reorder with CSS on desktop. Rendering the
-  // illustration twice (mobile + desktop copies) duplicates its gradient ids in
-  // the DOM; Chrome won't build gradient paint-servers from the display:none
-  // copy, so the visible copy's gradient fills vanish. Single-render avoids it.
-  return (
-    <div
-      ref={revealRef}
-      id={id}
-      className={`lp-reveal ${seen ? 'lp-in' : ''} grid grid-cols-1 lg:grid-cols-2 gap-8 sm:gap-10 lg:gap-16 items-center ${id ? 'scroll-mt-20' : ''}`}
-    >
-      {/* Mobile: illustration always first. Desktop: side depends on `reverse`. */}
-      <div className={`lp-illo-card order-1 rounded-2xl border border-border overflow-hidden ${reverse ? 'lg:order-2' : 'lg:order-1'}`}>
-        {IllustrationBlock}
-      </div>
-      <div className={`order-2 ${reverse ? 'lg:order-1' : 'lg:order-2'}`}>
-        {CopyBlock}
-      </div>
-    </div>
-  )
-}
-
-/* ─────────────────────────────────────────────────────────────────────────── */
-/*  §6 helpers — Pricing section (TierCards + CostCalculator)                  */
-/*  Pricing helpers — live data via src/lib/pricing.js; static fallback from src/data/pricing.js */
-/* ─────────────────────────────────────────────────────────────────────────── */
-
-const fmtUSD = (n) => {
-  if (!n) return '$0'
-  if (n >= 1e6) return `$${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M`
-  if (n >= 1e3) return `$${Math.round(n / 1e3)}k`
-  return `$${Math.round(n)}`
-}
-const fmtNum = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`)
-
-const METER_ICONS = [Users, Zap, Database, Bot, Server]
-
-/** Parse the USD anchor out of a tier price string ("$1,000" → 1000); NaN if non-numeric. */
-const parseUsd = (price) => {
-  const n = Number(String(price ?? '').replace(/[^0-9.]/g, ''))
-  return Number.isFinite(n) && String(price).match(/\d/) ? n : NaN
-}
-
-/** Landing-page tier card — matches PricingPage TierCard quality */
-function LpTierCard({ tier }) {
-  const hi = tier.highlight
-  const { isBilling, format, billedZar } = useCurrency()
-
-  // Price is anchored in USD; show it in the visitor's selected display
-  // currency, with the authoritative ZAR charge (what we actually bill) as a
-  // small note. When ZAR itself is selected, show the billed amount directly.
-  const usd = parseUsd(tier.price)
-  const hasUsd = Number.isFinite(usd)
-  const bigPrice = !hasUsd ? tier.price : isBilling ? billedZar(usd) : format(usd)
-  const zarNote = hasUsd && usd > 0 && !isBilling ? `≈ ${billedZar(usd)} / mo · billed in ZAR` : null
-
-  return (
-    <div
-      className={`relative flex flex-col rounded-2xl border p-5 transition-all duration-200
-        ${hi
-          ? 'border-brand-teal/70 bg-surface shadow-xl ring-1 ring-brand-teal/20 lg:-translate-y-2 z-10'
-          : 'border-border bg-surface shadow-sm hover:-translate-y-1 hover:shadow-lg hover:border-brand-blue/40'}`}
-    >
-      {tier.badge && (
-        <span
-          className={`absolute -top-3 left-1/2 -translate-x-1/2 inline-flex items-center gap-1 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest whitespace-nowrap shadow-sm
-            ${hi
-              ? 'bg-brand-gradient text-white'
-              : 'bg-surface-2 border border-border text-brand-teal'}`}
-        >
-          {tier.id === 'enterprise'
-            ? <Headset size={10} strokeWidth={2.5} />
-            : <Star size={10} strokeWidth={2.5} />}
-          {tier.badge}
-        </span>
-      )}
-      <h3 className="font-display text-base font-bold text-fg">{tier.name}</h3>
-      <div className="mt-1.5 flex items-end gap-1.5">
-        <span className="font-display text-3xl font-bold tracking-tight text-fg">{bigPrice}</span>
-        <span className="text-xs text-muted mb-1">{tier.cadence}</span>
-      </div>
-      {zarNote && (
-        <p className="mt-1 text-[11px] text-muted/70 leading-snug tabular-nums">{zarNote}</p>
-      )}
-      <p className="mt-2 text-[13px] text-muted leading-relaxed min-h-[52px]">{tier.tagline}</p>
-
-      <Link
-        to={tier.href}
-        className={`mt-4 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all min-h-[44px]
-          ${hi
-            ? 'bg-brand-gradient text-white hover:opacity-90 shadow-sm'
-            : 'bg-surface-2 border border-border text-fg hover:border-brand-blue hover:text-primary'}`}
-      >
-        {tier.cta}
-        <ArrowRight size={14} strokeWidth={2.5} />
-      </Link>
-
-      <ul className="mt-5 flex flex-col gap-2">
-        {tier.features.map((f, i) => {
-          const isHeader = f.endsWith('plus:')
-          return (
-            <li
-              key={i}
-              className={`flex items-start gap-2 text-[13px]
-                ${isHeader ? 'text-muted font-semibold pt-1' : 'text-fg'}`}
-            >
-              {!isHeader && (
-                <Check size={14} strokeWidth={2.75} className="mt-0.5 shrink-0 text-brand-teal" />
-              )}
-              <span className={isHeader ? '' : 'leading-snug'}>{f}</span>
-            </li>
-          )
-        })}
-      </ul>
-    </div>
-  )
-}
-
-/** Landing-page cost calculator — mirrors PricingPage CostCalculator */
-function LpCostCalculator() {
-  const [sv, setSv] = useState(50)
-  const [editors, setEditors] = useState(5)
-  const viewers = Math.round(10 * Math.pow(2500, sv / 100))
-
-  const results = CALC_OPTIONS
-    .map(o => ({ ...o, cost: Math.round(o.annual(viewers, editors)) }))
-    .sort((a, b) => a.cost - b.cost)
-  const max = Math.max(...results.map(r => r.cost), 1)
-  const nubi = results.find(r => r.isNubi)
-  const cheapestComp = Math.min(...results.filter(r => !r.isNubi).map(r => r.cost))
-  const savings = Math.max(0, cheapestComp - (nubi?.cost ?? 0))
-  const multiple = nubi && nubi.cost > 0 ? cheapestComp / nubi.cost : null
-
-  return (
-    <div>
-      {/* Inputs */}
-      <div className="grid md:grid-cols-2 gap-6 p-6 sm:p-8 border-b border-border bg-surface-2">
-        <div>
-          <div className="flex items-baseline justify-between mb-3">
-            <label htmlFor="lp-calc-viewers" className="text-sm font-semibold text-fg">
-              Dashboard viewers
-            </label>
-            <span className="font-display text-xl font-bold text-primary">{fmtNum(viewers)}</span>
-          </div>
-          <input
-            id="lp-calc-viewers" type="range" min="0" max="100" value={sv}
-            onChange={e => setSv(Number(e.target.value))}
-            className="lp-range w-full"
-            aria-label="Dashboard viewers"
-          />
-          <div className="flex justify-between text-[11px] text-muted mt-1.5">
-            <span>10</span><span>25k</span>
-          </div>
-        </div>
-        <div>
-          <div className="flex items-baseline justify-between mb-3">
-            <label htmlFor="lp-calc-editors" className="text-sm font-semibold text-fg">
-              Editors (creators)
-            </label>
-            <span className="font-display text-xl font-bold text-primary">{editors}</span>
-          </div>
-          <input
-            id="lp-calc-editors" type="range" min="1" max="50" value={editors}
-            onChange={e => setEditors(Number(e.target.value))}
-            className="lp-range w-full"
-            aria-label="Editors"
-          />
-          <div className="flex justify-between text-[11px] text-muted mt-1.5">
-            <span>1</span><span>50</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Savings headline */}
-      <div className="flex flex-wrap items-center justify-center gap-2 px-6 py-4 text-center bg-brand-teal/[0.06] border-b border-border">
-        <TrendingDown size={18} className="text-brand-teal" />
-        <span className="text-sm sm:text-base text-fg">
-          Nubi costs{' '}
-          <strong className="text-brand-teal font-bold">{fmtUSD(nubi?.cost ?? 0)}/yr</strong>
-          {savings > 0 && (
-            <>
-              {' '}— that&rsquo;s{' '}
-              <strong className="text-brand-teal font-bold">{fmtUSD(savings)}/yr less</strong>
-              {multiple && multiple >= 2 && <> ({Math.round(multiple)}&times; cheaper)</>}{' '}
-              than the next option.
-            </>
-          )}
-        </span>
-      </div>
-
-      {/* Bars */}
-      <div className="p-6 sm:p-8 flex flex-col gap-3">
-        {results.map(r => (
-          <div
-            key={r.name}
-            className="grid grid-cols-[110px_1fr_auto] sm:grid-cols-[150px_1fr_auto] items-center gap-3"
-          >
-            <div className="min-w-0">
-              <div className={`text-sm font-semibold truncate ${r.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
-                {r.isNubi && <Star size={12} className="inline mr-1 -mt-0.5 text-brand-teal" strokeWidth={2.5} />}
-                {r.name}{r.estimate ? <sup className="text-muted">†</sup> : null}
-              </div>
-              <div className="text-[11px] text-muted truncate hidden sm:block">{r.note}</div>
-            </div>
-            <div className="h-7 rounded-md bg-surface-2 overflow-hidden">
-              <div
-                className={`h-full rounded-md ${r.isNubi ? '' : 'bg-brand-blue/25'}`}
-                style={{
-                  width: `${Math.max(2, (r.cost / max) * 100)}%`,
-                  background: r.isNubi ? 'linear-gradient(90deg, #2456a6, #17b3a3)' : undefined,
-                }}
-              />
-            </div>
-            <div className={`text-sm font-bold tabular-nums text-right w-16 ${r.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
-              {fmtUSD(r.cost)}
-            </div>
-          </div>
-        ))}
-      </div>
-      <p className="px-6 sm:px-8 pb-6 text-xs text-muted opacity-70 leading-relaxed">
-        Estimated annual cost from each vendor&rsquo;s public model (before your own warehouse compute).
-        † Looker is quote-only; figure is directional. Verify before switching.
-      </p>
-    </div>
-  )
-}
-
-/** Landing-page orchestration cost calculator — Flows vs standalone orchestrators */
-function LpOrchCalculator() {
-  const [envs, setEnvs] = useState(2)
-  const [gb, setGb] = useState(1000)
-
-  const results = ORCH_CALC_OPTIONS
-    .map(o => ({ ...o, cost: Math.round(o.annual(envs, gb)) }))
-    .sort((a, b) => a.cost - b.cost)
-  const max = Math.max(...results.map(r => r.cost), 1)
-  const nubi = results.find(r => r.isNubi)
-  const cheapestComp = Math.min(...results.filter(r => !r.isNubi).map(r => r.cost))
-  const savings = Math.max(0, cheapestComp - (nubi?.cost ?? 0))
-
-  return (
-    <div>
-      {/* Inputs */}
-      <div className="grid md:grid-cols-2 gap-6 p-6 sm:p-8 border-b border-border bg-surface-2">
-        <div>
-          <div className="flex items-baseline justify-between mb-3">
-            <label htmlFor="lp-orch-envs" className="text-sm font-semibold text-fg">Environments</label>
-            <span className="font-display text-xl font-bold text-primary">{envs}</span>
-          </div>
-          <input
-            id="lp-orch-envs" type="range" min="1" max="5" value={envs}
-            onChange={e => setEnvs(Number(e.target.value))}
-            className="lp-range w-full" aria-label="Environments"
-          />
-          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>1</span><span>5</span></div>
-        </div>
-        <div>
-          <div className="flex items-baseline justify-between mb-3">
-            <label htmlFor="lp-orch-gb" className="text-sm font-semibold text-fg">Data processed (GB/mo)</label>
-            <span className="font-display text-xl font-bold text-primary">{fmtNum(gb)}</span>
-          </div>
-          <input
-            id="lp-orch-gb" type="range" min="0" max="10000" step="100" value={gb}
-            onChange={e => setGb(Number(e.target.value))}
-            className="lp-range w-full" aria-label="Data processed in GB per month"
-          />
-          <div className="flex justify-between text-[11px] text-muted mt-1.5"><span>0</span><span>10 TB</span></div>
-        </div>
-      </div>
-
-      {/* Savings headline — honest: Flows has a real metered-compute cost. */}
-      <div className="flex flex-wrap items-center justify-center gap-2 px-6 py-4 text-center bg-brand-teal/[0.06] border-b border-border">
-        <TrendingDown size={18} className="text-brand-teal" />
-        <span className="text-sm sm:text-base text-fg">
-          Flows costs{' '}
-          <strong className="text-brand-teal font-bold">{nubi?.cost ? `${fmtUSD(nubi.cost)}/yr` : '$0'}</strong>
-          {' '}— metered on data processed, no per-environment bill.
-          {savings > 0 && (
-            <> Saving <strong className="text-brand-teal font-bold">{fmtUSD(savings)}/yr</strong> vs the cheapest standalone orchestrator.</>
-          )}
-        </span>
-      </div>
-
-      {/* Bars */}
-      <div className="p-6 sm:p-8 flex flex-col gap-3">
-        {results.map(r => (
-          <div key={r.name} className="grid grid-cols-[120px_1fr_auto] sm:grid-cols-[180px_1fr_auto] items-center gap-3">
-            <div className="min-w-0">
-              <div className={`text-sm font-semibold truncate ${r.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
-                {r.isNubi && <Star size={12} className="inline mr-1 -mt-0.5 text-brand-teal" strokeWidth={2.5} />}
-                {r.name}{r.estimate ? <sup className="text-muted">†</sup> : null}
-              </div>
-              <div className="text-[11px] text-muted truncate hidden sm:block">{r.note}</div>
-            </div>
-            <div className="h-7 rounded-md bg-surface-2 overflow-hidden">
-              <div
-                className={`h-full rounded-md ${r.isNubi ? '' : 'bg-brand-blue/25'}`}
-                style={{
-                  width: `${Math.max(2, (r.cost / max) * 100)}%`,
-                  background: r.isNubi ? 'linear-gradient(90deg, #2456a6, #17b3a3)' : undefined,
-                }}
-              />
-            </div>
-            <div className={`text-sm font-bold tabular-nums text-right w-20 ${r.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
-              {r.cost === 0 ? 'Included' : fmtUSD(r.cost)}
-            </div>
-          </div>
-        ))}
-      </div>
-      <p className="px-6 sm:px-8 pb-6 text-xs text-muted opacity-70 leading-relaxed">
-        Apples-to-apples: data volume → compute at ~50 GB / compute-hour, then each vendor priced as its
-        published always-on floor (per environment / capacity / seats) + compute for the work. Directional
-        estimates, not quotes. Managed orchestrators are floor-dominated; Nubi Flows has no floor.
-        † Self-host Airflow is infra + on-call estimate.
-      </p>
-    </div>
-  )
-}
-
-/**
- * LpPricingSection — full pricing section for the landing page.
- *
- * Renders:
- *  1. Hero header + "pricing that doesn't tax viewers" copy
- *  2. Full tier cards grid — live data from GET /api/v1/pricing, falls back
- *     to TIERS from src/data/pricing.js if the endpoint is unavailable.
- *  3. What we charge / never charge cards (BILLING_MODEL)
- *  4. Interactive cost calculator (CALC_OPTIONS)
- *  5. CTA strip + micro-features
- *
- * Live data: fetchPricingData() from src/lib/pricing.js calls the public
- * GET /api/v1/pricing endpoint (no auth required) and returns FALLBACK_TIERS
- * on any error, so the section always renders. The live endpoint tiers are
- * mapped to the LpTierCard display shape (price label, cadence, tagline, cta,
- * href, features) using the TIERS array from src/data/pricing.js as the
- * display-metadata source — the live endpoint provides pricing signals
- * (usd_monthly_price, monthly_price_zar) that override the static prices.
- */
-function LpPricingSection() {
-  const [liveTiers, setLiveTiers] = useState(TIERS)
-
-  useEffect(() => {
-    fetchPricingData().then(data => {
-      if (!Array.isArray(data?.tiers) || data.tiers.length === 0) return
-      // Merge live USD prices into the static display tiers.
-      // The API returns backend-shaped objects; we overlay price/cadence only
-      // and keep all other display fields (tagline, features, cta, href) from
-      // the static TIERS so the landing page copy stays under editorial control.
-      const merged = TIERS.map(staticTier => {
-        const live = data.tiers.find(t => t.tier === staticTier.id)
-        if (!live) return staticTier
-        const usd = parseFloat(live.usd_monthly_price ?? 0)
-        const price = usd === 0 ? '$0' : '$' + usd.toLocaleString('en-US')
-        return { ...staticTier, price }
-      })
-      setLiveTiers(merged)
-    })
-  }, [])
-
-  return (
-    <section id="pricing" className="scroll-mt-14 bg-bg">
-      {/* ── 6a: Header ── */}
-      <div className="relative overflow-hidden border-y border-border bg-surface-2 py-16 sm:py-20">
-        <div className="absolute top-0 left-0 right-0 h-1 bg-brand-gradient" />
-        <svg className="absolute inset-0 w-full h-full opacity-[0.03] pointer-events-none" aria-hidden="true">
-          <defs>
-            <pattern id="lp-pricing-dots" x="0" y="0" width="28" height="28" patternUnits="userSpaceOnUse">
-              <circle cx="1" cy="1" r="1" fill="currentColor" />
-            </pattern>
-          </defs>
-          <rect width="100%" height="100%" fill="url(#lp-pricing-dots)" className="text-primary" />
-        </svg>
-        <div className="relative max-w-3xl mx-auto px-4 sm:px-6 text-center">
-          <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">Pricing</p>
-          <h2 className="font-display text-3xl sm:text-5xl lg:text-6xl font-bold leading-tight mb-5 text-fg">
-            Pricing that doesn&rsquo;t{' '}
-            <span className="text-brand-gradient">tax your viewers.</span>
-          </h2>
-          <p className="text-sm sm:text-base lg:text-lg leading-relaxed text-muted">
-            Dashboards compute in your users&rsquo; browsers — an extra viewer costs us ≈ $0, and
-            we never charge for one. Pay for{' '}
-            <strong className="text-fg font-medium">storage</strong>,{' '}
-            <strong className="text-fg font-medium">compute</strong>, and{' '}
-            <strong className="text-fg font-medium">AI</strong>. Not for people looking at charts.
-          </p>
-        </div>
-      </div>
-
-      {/* ── 6b: Tier cards ── */}
-      <div className="py-14 sm:py-20 bg-bg">
-        <div className="max-w-[88rem] mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-5 xl:gap-4 items-start pt-3">
-            {liveTiers.map(t => <LpTierCard key={t.id} tier={t} />)}
-          </div>
-          <p className="mt-8 text-center text-sm text-muted">
-            {ENTERPRISE_NOTE}{' '}
-            <Link
-              to="/register"
-              className="text-brand-teal font-medium hover:underline inline-flex items-center gap-1"
-            >
-              Contact us <ChevronRight size={13} />
-            </Link>
-          </p>
-        </div>
-      </div>
-
-      {/* ── 6b-ii: Usage wallet / overage strip ── */}
-      <div className="pb-14 sm:pb-20 bg-bg">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="rounded-3xl border border-brand-teal/30 bg-surface shadow-sm overflow-hidden">
-            <div className="grid lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-              {/* Pitch */}
-              <div className="p-6 sm:p-8 bg-gradient-to-br from-brand-navy/[0.04] via-brand-blue/[0.04] to-brand-teal/[0.07] border-b lg:border-b-0 lg:border-r border-border flex flex-col justify-center">
-                <span className="inline-flex items-center gap-2 self-start text-[11px] font-semibold uppercase tracking-widest text-brand-teal mb-3">
-                  <span className="w-8 h-8 rounded-xl bg-brand-gradient text-white flex items-center justify-center">
-                    <Wallet size={15} strokeWidth={2} />
-                  </span>
-                  Buy more when you need it
-                </span>
-                <h3 className="font-display text-xl sm:text-2xl font-bold text-fg mb-2">
-                  A usage wallet — pay only for what you use
-                </h3>
-                <p className="text-sm text-muted leading-relaxed">{OVERAGE_NOTE}</p>
-              </div>
-              {/* Rates */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 divide-y divide-border sm:divide-y-0 sm:[&>*:nth-child(n+3)]:border-t sm:[&>*:nth-child(2n)]:border-l border-border">
-                {OVERAGE_RATES.map((o, i) => {
-                  const Icon = METER_ICONS[(i + 2) % METER_ICONS.length]
-                  return (
-                    <div key={o.label} className="flex items-start gap-3 px-5 py-4 border-border">
-                      <span className="shrink-0 mt-0.5 w-8 h-8 rounded-lg bg-surface-2 border border-border flex items-center justify-center text-primary">
-                        <Icon size={14} strokeWidth={2} />
-                      </span>
-                      <div className="min-w-0">
-                        <div className="flex items-baseline gap-1">
-                          <span className="font-display text-base font-bold text-fg tabular-nums">{o.rate}</span>
-                          <span className="text-[11px] text-muted">{o.unit}</span>
-                        </div>
-                        <p className="text-[12px] font-semibold text-fg leading-tight">{o.label}</p>
-                      </div>
-                    </div>
-                  )
-                })}
-                <div className="flex items-center px-5 py-4 border-t border-border bg-surface-2/40">
-                  <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-brand-teal">
-                    <Check size={12} strokeWidth={3} /> Same rate, every paid tier — never per-seat
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* ── 6c: What we charge / never charge ── */}
-      <div className="pb-14 sm:pb-20 bg-bg">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="grid md:grid-cols-2 gap-5">
-            <div className="rounded-2xl border border-border bg-surface p-6 sm:p-7">
-              <h3 className="flex items-center gap-2 font-display font-bold text-lg text-fg mb-4">
-                <CheckCircle2 size={18} className="text-brand-teal" /> What we charge for
-              </h3>
-              <ul className="flex flex-col gap-3">
-                {BILLING_MODEL.metered.map((m, i) => {
-                  const Icon = METER_ICONS[i % METER_ICONS.length]
-                  return (
-                    <li key={m.label} className="flex items-start gap-3">
-                      <span className="shrink-0 mt-0.5 w-7 h-7 rounded-lg bg-surface-2 border border-border flex items-center justify-center text-primary">
-                        <Icon size={14} strokeWidth={2} />
-                      </span>
-                      <span className="text-sm text-muted leading-snug">
-                        <strong className="text-fg font-semibold">{m.label}.</strong> {m.desc}
-                      </span>
-                    </li>
-                  )
-                })}
-              </ul>
-            </div>
-            <div className="rounded-2xl border border-brand-teal/30 bg-surface p-6 sm:p-7">
-              <h3 className="flex items-center gap-2 font-display font-bold text-lg text-fg mb-4">
-                <XCircle size={18} className="text-muted" /> What we never charge for
-              </h3>
-              <ul className="flex flex-col gap-3">
-                {BILLING_MODEL.neverBilled.map(m => (
-                  <li key={m} className="flex items-start gap-3">
-                    <span className="shrink-0 mt-0.5 w-7 h-7 rounded-lg bg-brand-teal/10 flex items-center justify-center">
-                      <X size={14} strokeWidth={2.5} className="text-brand-teal" />
-                    </span>
-                    <span className="text-sm text-fg leading-snug">{m}</span>
-                  </li>
-                ))}
-              </ul>
-              <p className="mt-5 text-xs text-muted leading-relaxed border-t border-border pt-4">
-                Competitors meter the viewer — per-seat or per-query. That&rsquo;s the cost we designed away.
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* ── 6d: Cost calculator ── */}
-      <div className="pb-14 sm:pb-20 bg-bg">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="text-center mb-8">
-            <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal inline-flex items-center gap-1.5">
-              <SlidersHorizontal size={12} /> Estimate your cost
-            </p>
-            <h3 className="font-display text-3xl sm:text-4xl font-bold text-fg mb-3">
-              What would you pay?
-            </h3>
-            <p className="text-sm sm:text-base text-muted max-w-2xl mx-auto">
-              Drag the sliders to your scale and watch the gap.
-              Everyone else bills the viewer — we don&rsquo;t.
-            </p>
-          </div>
-
-          {/* Calculator 1 — BI viewer tax */}
-          <CalcShell index="01" slug="bi-viewer-cost">
-            <LpCostCalculator />
-          </CalcShell>
-
-          {/* Calculator 2 — orchestration */}
-          <div className="mt-10">
-            <p className="text-sm text-muted max-w-2xl mb-4">
-              Flows is built in. A standalone orchestrator (Prefect, Microsoft Fabric, MWAA,
-              self-host Airflow) is pure added cost — and most bill per environment.
-            </p>
-            <CalcShell index="02" slug="orchestration-cost">
-              <LpOrchCalculator />
-            </CalcShell>
-          </div>
-        </div>
-      </div>
-
-      {/* ── 6e: CTA + micro-features ── */}
-      <div className="relative overflow-hidden py-16 sm:py-24 bg-surface-2 border-t border-border">
-        <div className="absolute top-0 left-0 right-0 h-1 bg-brand-gradient" />
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 text-center">
-          <h3 className="font-display text-3xl sm:text-5xl font-bold leading-tight mb-4 text-fg">
-            Start free.<br />
-            <span className="text-brand-gradient">Scale without the viewer tax.</span>
-          </h3>
-          <p className="text-sm sm:text-base text-muted mb-8 max-w-lg mx-auto">
-            Unlimited dashboard views on every plan, including Free. Upgrade for seats, embed
-            volume, governance, and dedicated support.
-          </p>
-          <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center mb-8">
-            <Link
-              to="/register"
-              className="lp-cta-pulse inline-flex items-center justify-center gap-2 px-6 sm:px-8 py-4 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:opacity-90 hover:-translate-y-0.5 min-h-[52px]"
-            >
-              Start free
-              <ArrowRight size={16} strokeWidth={2.5} />
-            </Link>
-            <Link
-              to="/pricing"
-              className="inline-flex items-center justify-center gap-2 px-6 sm:px-8 py-4 rounded-xl text-base font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue hover:text-primary min-h-[52px]"
-            >
-              See full pricing →
-            </Link>
-          </div>
-          <div className="flex flex-wrap justify-center gap-x-6 sm:gap-x-8 gap-y-2 text-xs font-medium text-muted">
-            {[
-              'No credit card required',
-              'Free tier — no gotchas',
-              'Self-host connector option',
-              'Connector SDK included',
-            ].map(f => (
-              <span key={f} className="flex items-center gap-1.5">
-                <Check size={10} strokeWidth={3} className="text-accent" />
-                {f}
-              </span>
-            ))}
-          </div>
-        </div>
-      </div>
-    </section>
-  )
-}
-
-/* ─────────────────────────────────────────────────────────────────────────── */
-/*  Page                                                                       */
-/* ─────────────────────────────────────────────────────────────────────────── */
+const HEADER_H = 56
 
 export default function LandingPage() {
+  const navigate = useNavigate()
+  const debug = useMemo(() => parseDebug(), [])
+  useMemo(() => applyTheme(debug.theme), [debug.theme])
+  const prefersReduced = useMedia('(prefers-reduced-motion: reduce)')
+  const reduced = prefersReduced || debug.rm
+  const mobile = useMedia('(max-width: 860px)')
+  const story = useMemo(() => compileStory(SCENES), [])
+  const director = useMemo(() => new Director(story), [story])
+  director.reduced = reduced
+  director.mobile = mobile
+
+  const rootRef = useRef<HTMLDivElement>(null)
+  const labelsRef = useRef<HTMLDivElement>(null)
+  const posterRef = useRef<HTMLCanvasElement>(null)
+  const hostRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<ScrollController | null>(null)
+  const labelLayer = useRef<LabelLayer | null>(null)
+  const metricsRef = useRef<Metrics>({ fps: 0, cpuMs: 0, calls: 0, tris: 0, cells: 0, dpr: 1, tier: 'poster' })
+  const [glState, setGlState] = useState<'off' | 'loading' | 'ready' | 'lost'>(() => (debug.poster || !webgl2() ? 'off' : 'loading'))
+  const readyRef = useRef<{ resolve: () => void; promise: Promise<void> } | null>(null)
+  if (!readyRef.current) { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r }); readyRef.current = { resolve, promise } }
+
+  /* ── chrome (menu, anchors, ⌘K), page title, the outro figures ── */
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    let cancelled = false
+    const prevTitle = document.title
+    document.title = 'Nubi: open-source BI that runs in your browser'
+    const stops: Array<() => void> = []
+    const run = (name: string, fn: () => () => void) => { try { stops.push(fn()) } catch (e) { console.warn(`[landing] ${name} failed`, e) } }
+    run('chrome', () => mountChrome(root, { navigate }))
+    const nl = (root as any).__nl
+    if (nl) {
+      nl.scrollTo = (id: string) => {
+        const el = document.getElementById(id)
+        if (el) scrollRef.current ? scrollRef.current.scrollToEl(el) : el.scrollIntoView({ block: 'start' })
+      }
+      nl.addCommands(story.scenes.map((s, k) => [typeof s.copy.title === 'string' ? s.copy.title.replace(/<[^>]+>/g, '') : s.kicker, `Chapter ${s.index}`, () => api.jumpToScene(k)]))
+    }
+    const load = (name: string, importer: () => Promise<{ mount: Mount }>) =>
+      importer().then(m => { if (!cancelled) run(name, () => m.mount(root)) }).catch(e => console.warn(`[landing] ${name} failed to load`, e))
+    const idle = (window as any).requestIdleCallback ?? ((f: () => void) => setTimeout(f, 200))
+    idle(() => load('live figure', () => import('./landing/landingLive.js')))
+    return () => {
+      cancelled = true
+      stops.forEach(stop => stop())
+      document.title = prevTitle
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigate])
+
+  /* ── jumps (beat buttons, rail, ⌘K, focus in an inactive chapter) ── */
+  const api: StoryApi = useMemo(() => ({
+    jumpToLabel(T, instant) { director.cancelBuild(); scrollRef.current?.scrollToT(T, { instant: instant || reduced }) },
+    jumpToScene(si, instant) {
+      const l = story.labels.find(x => x.scene === si && x.beat === 0)
+      if (l) { director.cancelBuild(); scrollRef.current?.scrollToT(l.T, { instant: instant || reduced }) }
+    },
+  }), [director, story, reduced])
+
+  /* ── viewport: the pin's size and the stage safe rect (right of the caption plate) ── */
+  useEffect(() => {
+    const root = rootRef.current
+    const pin = root?.querySelector<HTMLElement>('.story-pin')
+    if (!root || !pin) return
+    const measure = () => {
+      const r = pin.getBoundingClientRect()
+      const w = Math.round(r.width), h = Math.round(r.height)
+      if (mobile) director.vpBase = { w, h, mobile: true, safe: { x0: 8, y0: 8, x1: w - 8, y1: h - 8 } }
+      else {
+        const plates = root.querySelector<HTMLElement>('.plates')
+        const pr = plates?.getBoundingClientRect()
+        const plateRight = pr && debug.ui ? pr.right - r.left : 0
+        const x0 = debug.ui ? plateRight + 48 : 32
+        director.vpBase = { w, h, mobile: false, safe: { x0, y0: (debug.ui ? HEADER_H : 0) + 24, x1: w - (w >= 1200 ? 56 : 32), y1: h - 32 } }
+        director.heroBottomExtra = debug.ui ? 64 : 0
+        if (labelLayer.current) labelLayer.current.plateRight = debug.ui ? plateRight : 0
+      }
+      director.emit()
+      clearTimeout(refreshT)
+      refreshT = window.setTimeout(() => scrollRef.current?.refresh(), 120)   // band / plate size changed → re-measure the scroll map
+    }
+    let refreshT = 0
+    const ro = new ResizeObserver(measure)
+    ro.observe(pin)
+    const plates = root.querySelector('.plates'); if (plates) ro.observe(plates)
+    measure()
+    return () => { ro.disconnect(); clearTimeout(refreshT) }
+  }, [director, mobile, debug.ui])
+
+  /* ── scroll → T: native first, GSAP (+ Lenis) after first paint ── */
+  useEffect(() => {
+    const el = document.getElementById('story')
+    if (!el) return
+    const env = { reduced, mobile, debug: debug.any }
+    let ctl: ScrollController = nativeScroll(el, director, env)
+    scrollRef.current = ctl
+    let dead = false
+    const t = setTimeout(() => {
+      gsapScroll(el, director, env).then(g => { if (dead) { g.destroy(); return } ctl.destroy(); ctl = g; scrollRef.current = g })
+        .catch(e => console.warn('[landing] scroll timeline failed to load', e))
+    }, 50)
+    return () => { dead = true; clearTimeout(t); ctl.destroy(); if (scrollRef.current === ctl) scrollRef.current = null }
+  }, [director, reduced, mobile, debug.any])
+
+  /* ── label layer + picking ── */
+  useEffect(() => {
+    const el = labelsRef.current
+    if (!el) return
+    const L = new LabelLayer(el, director)
+    L.showCallouts = debug.labels
+    labelLayer.current = L
+    let raf = 0
+    const kick = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; L.update() }) }
+    const off = director.on(kick)
+    kick()
+    return () => { off(); cancelAnimationFrame(raf); L.destroy(); labelLayer.current = null }
+  }, [director, debug.labels, mobile])
+  useEffect(() => { const h = hostRef.current; return h ? attachPicking(h, director) : undefined }, [director, mobile])
+
+  /* ── poster: always for first paint; the stage itself when ?poster=1, no WebGL or a lost context ── */
+  const posterLive = glState !== 'ready'
+  useEffect(() => {
+    const c = posterRef.current, root = rootRef.current
+    if (!c || !root || !posterLive) return
+    const ps = mountPosterStage(c, director, { paletteRoot: root, drawTexts: false })
+    const mo = new MutationObserver(() => ps.redraw())
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+    if (glState === 'off') director.nextFrame().then(() => readyRef.current!.resolve())
+    return () => { mo.disconnect(); ps.destroy() }
+  }, [director, posterLive, glState, mobile])
+
+  /* ── pause when the pin is offscreen or the tab is hidden ── */
+  useEffect(() => {
+    const pin = rootRef.current?.querySelector('.story-pin')
+    if (!pin) return
+    let vis = true
+    const upd = () => { director.paused = !vis || document.hidden; if (!director.paused) director.invalidate() }
+    const io = new IntersectionObserver(([e]) => { vis = e.isIntersecting; upd() })
+    io.observe(pin)
+    document.addEventListener('visibilitychange', upd)
+    return () => { io.disconnect(); document.removeEventListener('visibilitychange', upd) }
+  }, [director, mobile])
+
+  /* ── build-in: plays if the stage is ready within 1.5 s of first paint and nothing has scrolled ── */
+  const t0 = useRef(performance.now())
+  const onGlReady = useCallback(() => {
+    setGlState('ready')
+    if (!debug.any && !reduced && window.scrollY < 2 && performance.now() - t0.current < 1500) director.startBuild(story.scenes[0].build?.morph.len ?? 2600)
+    readyRef.current!.resolve()
+  }, [director, debug.any, reduced, story])
+  const onGlLost = useCallback((lost: boolean) => setGlState(lost ? 'lost' : 'ready'), [])
+
+  /* ── debug hook + initial deep link ── */
+  useEffect(() => {
+    const off = installHook({ director, scroll: () => scrollRef.current, ready: readyRef.current!.promise.then(() => (document as any).fonts?.ready).then(() => director.nextFrame()).then(() => director.nextFrame()), metrics: () => metricsRef.current })
+    if (debug.t != null) director.freeze(debug.t)
+    if (debug.scene) {
+      readyRef.current!.promise.then(async () => {
+        const T = targetT(director, debug.scene!, debug.beat != null && /^\d+$/.test(debug.beat) ? +debug.beat : debug.beat ?? 0, debug.p)
+        if (T == null) return
+        await new Promise(r => setTimeout(r, 120))
+        await (window as any).__nubiLanding.goto(debug.scene, debug.beat != null && /^\d+$/.test(debug.beat) ? +debug.beat : debug.beat ?? 0, { p: debug.p, state: debug.state })
+      })
+    }
+    return off
+  }, [director, debug])
+
+  /* ── perf overlay ── */
+  const [perf, setPerf] = useState('')
+  useEffect(() => {
+    if (!debug.perf) return
+    const id = setInterval(() => { const m = metricsRef.current; setPerf(`${m.tier} · ${m.fps.toFixed(0)} fps · ${m.cpuMs.toFixed(1)} ms js · ${m.calls} calls · ${(m.tris / 1000).toFixed(0)}k tris · ${m.cells} cells · dpr ${m.dpr}`) }, 500)
+    return () => clearInterval(id)
+  }, [debug.perf])
+
+  const stage = (
+    <div className="stage-host" ref={hostRef}>
+      <canvas ref={posterRef} className="poster" aria-hidden="true" style={{ opacity: glState === 'ready' ? 0 : 1 }} />
+      {glState !== 'off' && (
+        <Suspense fallback={null}>
+          <GLStage director={director} paletteRoot={rootRef} onReady={onGlReady} onContextLost={onGlLost} metrics={metricsRef} onFrame={() => labelLayer.current?.update()} probe={debug.probe} />
+        </Suspense>
+      )}
+    </div>
+  )
+
   return (
     <>
-      <MarketingStyles />
-
-      {/* overflow-x-clip (not -hidden): hidden makes this div a scroll
-          container (overflow-y computes to auto), so stray scrollIntoView /
-          focus scrolling can silently scroll the page INSIDE it; clip just
-          clips. */}
-      <div className="nubi-lp overflow-x-clip bg-bg text-fg font-sans">
-
-        {/* ════════════════════════════════════════════════════════════════════
-            §1  HERO — dark observatory panel: copy | real product frame,
-            with the proof stats fused into the panel's lower band
-        ════════════════════════════════════════════════════════════════════ */}
-        <section id="hero" className="relative scroll-mt-14 bg-bg px-3 sm:px-5 pt-3 sm:pt-5">
-          <div className="lp-hero-panel relative max-w-[1440px] mx-auto rounded-[1.5rem] sm:rounded-[2rem] overflow-hidden border border-border dark:border-white/[0.06]">
-
-            {/* drifting mesh blobs */}
-            <div
-              className="lp-mesh-a lp-mesh-blob pointer-events-none absolute -top-40 -left-40 w-[42rem] h-[42rem] rounded-full"
-              style={{ background: 'radial-gradient(circle, rgba(72,124,214,0.28) 0%, transparent 65%)' }}
-              aria-hidden="true"
-            />
-            <div
-              className="lp-mesh-b lp-mesh-blob pointer-events-none absolute top-1/4 -right-48 w-[38rem] h-[38rem] rounded-full"
-              style={{ background: 'radial-gradient(circle, rgba(45,212,191,0.16) 0%, transparent 65%)' }}
-              aria-hidden="true"
-            />
-
-            {/* perspective data-grid floor */}
-            <svg
-              className="lp-hero-grid pointer-events-none absolute inset-x-0 bottom-0 h-[55%] w-full"
-              preserveAspectRatio="none"
-              viewBox="0 0 1200 400"
-              aria-hidden="true"
-            >
-              <defs>
-                <linearGradient id="lp-gridfade" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0" stopColor="#8db4f5" stopOpacity="0" />
-                  <stop offset="1" stopColor="#8db4f5" stopOpacity="0.8" />
-                </linearGradient>
-              </defs>
-              {Array.from({ length: 13 }, (_, i) => (
-                <line key={`v${i}`} x1={600 + (i - 6) * 100} y1="0" x2={600 + (i - 6) * 260} y2="400" stroke="url(#lp-gridfade)" strokeWidth="1" />
-              ))}
-              {Array.from({ length: 7 }, (_, i) => (
-                <line key={`h${i}`} x1="0" y1={60 + i * 56 + i * i * 2} x2="1200" y2={60 + i * 56 + i * i * 2} stroke="url(#lp-gridfade)" strokeWidth="1" />
-              ))}
-            </svg>
-
-            {/* film grain */}
-            <div className="lp-noise pointer-events-none absolute inset-0" aria-hidden="true" />
-
-            <div className="relative px-5 sm:px-10 lg:px-14 pt-12 sm:pt-16 lg:pt-20">
-              <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.18fr] gap-12 lg:gap-14 items-center">
-
-                {/* ── Left: copy ── */}
-                <div>
-                  {/* terminal-flavoured eyebrow */}
-                  <p className="inline-flex items-center gap-2 font-mono text-[10px] sm:text-xs font-medium tracking-wide text-brand-teal dark:text-teal-300/90 border border-border dark:border-white/10 bg-white/60 dark:bg-white/[0.04] rounded-full px-3 sm:px-3.5 py-1.5 mb-6 sm:mb-8 whitespace-nowrap">
-                    <span className="relative flex h-1.5 w-1.5 shrink-0">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-60" />
-                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-teal-300" />
-                    </span>
-                    open source · apache-2.0 · real free tier
-                  </p>
-
-                  <h1 className="font-display text-4xl sm:text-5xl lg:text-[3.9rem] xl:text-[4.4rem] font-bold leading-[1.04] tracking-tight mb-5 sm:mb-7 text-fg">
-                    BI that runs in
-                    <br />
-                    <span className="lp-hero-gradient-text">your browser.</span>
-                    <br />
-                    Viewers are free.
-                  </h1>
-
-                  <p className="text-base sm:text-lg leading-relaxed mb-8 sm:mb-9 max-w-lg text-muted dark:text-slate-300/90">
-                    A DuckDB-WASM kernel runs{' '}
-                    <strong className="text-fg font-semibold">inside the tab</strong> — zero
-                    cold starts, and an extra viewer costs{' '}
-                    <strong className="text-fg font-semibold">≈ $0</strong>. So every plan has{' '}
-                    <strong className="text-fg font-semibold">unlimited seats</strong>. Flows
-                    orchestration built in. Embed it in your SaaS for a fraction of per-seat BI.
-                  </p>
-
-                  {/* CTAs */}
-                  <div className="flex flex-col sm:flex-row flex-wrap gap-3 mb-8 sm:mb-10">
-                    <Link
-                      to="/register"
-                      className="lp-cta-glow inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:-translate-y-0.5 min-h-[48px]"
-                    >
-                      Start free
-                      <ArrowRight size={16} strokeWidth={2.5} />
-                    </Link>
-                    <Link
-                      to="/docs"
-                      className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-base font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue dark:bg-white/[0.06] dark:border-white/15 dark:text-white dark:hover:bg-white/[0.12] dark:hover:border-white/25 min-h-[48px]"
-                    >
-                      View docs
-                    </Link>
-                    <Link
-                      to="/compare"
-                      className="inline-flex items-center justify-center gap-1.5 px-4 py-3.5 rounded-xl text-sm font-medium transition-all text-muted hover:text-fg min-h-[48px]"
-                    >
-                      Compare vs Hex &amp; Cube <ChevronRight size={13} />
-                    </Link>
-                  </div>
-
-                  {/* trust strip — mono, data-tool flavour */}
-                  <div className="flex flex-wrap gap-x-5 gap-y-2 font-mono text-[11px] font-medium text-muted">
-                    {[
-                      'unlimited seats & viewers',
-                      'no credit card',
-                      'apache-2.0 open core',
-                      'arrow ipc → echarts',
-                    ].map(f => (
-                      <span key={f} className="flex items-center gap-1.5">
-                        <Check size={11} strokeWidth={2.5} className="text-teal-400" />
-                        {f}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                {/* ── Right: the real product, in a glass browser frame ── */}
-                <div className="relative mt-4 lg:mt-0 lg:-mr-2">
-                  {/* glow bed under the frame */}
-                  <div
-                    className="pointer-events-none absolute -inset-8 rounded-[2.5rem] blur-2xl opacity-60"
-                    style={{
-                      background:
-                        'radial-gradient(ellipse 70% 60% at 50% 55%, rgba(45,140,220,0.35) 0%, rgba(45,212,191,0.18) 50%, transparent 75%)',
-                    }}
-                    aria-hidden="true"
-                  />
-
-                  <div className="lp-float-1 relative rounded-2xl overflow-hidden border border-border dark:border-white/[0.13] bg-surface dark:bg-[#0c1230]/80 shadow-[0_30px_70px_-26px_rgba(27,35,99,0.4)] dark:shadow-[0_40px_80px_-24px_rgba(0,0,0,0.7)]">
-                    {/* browser chrome */}
-                    <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border dark:border-white/[0.08] bg-surface-2 dark:bg-white/[0.03]">
-                      <span className="flex gap-1.5" aria-hidden="true">
-                        <span className="w-2.5 h-2.5 rounded-full bg-[#f4726f]/80" />
-                        <span className="w-2.5 h-2.5 rounded-full bg-[#f5bd4f]/80" />
-                        <span className="w-2.5 h-2.5 rounded-full bg-[#61c554]/80" />
-                      </span>
-                      <span className="flex-1 max-w-xs mx-auto flex items-center justify-center gap-1.5 font-mono text-[10.5px] text-muted bg-bg dark:bg-white/[0.05] border border-border dark:border-white/[0.07] rounded-md px-3 py-1">
-                        <Lock size={9} className="text-teal-400/80" />
-                        app.nubi.dev/d/retail-sales
-                      </span>
-                      <span className="hidden sm:inline-flex font-mono text-[9.5px] text-brand-teal dark:text-teal-300/80 border border-brand-teal/25 dark:border-teal-400/20 bg-brand-teal/[0.07] dark:bg-teal-400/[0.07] rounded px-1.5 py-0.5">
-                        arrow ipc
-                      </span>
-                    </div>
-                    <img
-                      src="/landing/hero-light.png"
-                      alt="A live Nubi dashboard — retail sales KPIs, trend line, and category breakdowns rendered in the browser"
-                      width="2400"
-                      height="1500"
-                      fetchPriority="high"
-                      className="block w-full h-auto dark:hidden"
-                    />
-                    <img
-                      src="/landing/hero-dark.png"
-                      alt=""
-                      aria-hidden="true"
-                      width="2400"
-                      height="1500"
-                      loading="lazy"
-                      className="hidden w-full h-auto dark:block"
-                    />
-                  </div>
-
-                  {/* floating stat chips */}
-                  <div className="lp-float-2 lp-hero-chip absolute -left-3 sm:-left-6 top-20 hidden md:flex items-center gap-2.5 rounded-xl px-3.5 py-2.5">
-                    <Zap size={15} className="text-teal-300" />
-                    <span className="font-mono text-[11px] leading-tight text-fg dark:text-white">
-                      0 s cold start
-                      <span className="block text-[9.5px] text-muted">kernel lives in the tab</span>
-                    </span>
-                  </div>
-                  <div className="lp-float-3 lp-hero-chip absolute -right-2 sm:-right-5 -bottom-5 hidden md:flex items-center gap-2.5 rounded-xl px-3.5 py-2.5">
-                    <Users size={15} className="text-sky-300" />
-                    <span className="font-mono text-[11px] leading-tight text-fg dark:text-white">
-                      ≈ $0 / dashboard view
-                      <span className="block text-[9.5px] text-muted">so viewers are never billed</span>
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* ── Proof stats — fused into the panel ── */}
-              <div className="relative mt-12 sm:mt-16 lg:mt-20 border-t border-border dark:border-white/10 py-8 sm:py-10">
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-y-8 divide-x divide-y lg:divide-y-0 divide-border dark:divide-white/[0.07]">
-                  {[
-                    { v: '≈ $0', l: 'marginal cost per dashboard view' },
-                    { v: '∞', l: 'users & viewers — no per-seat pricing' },
-                    { v: '10–50×', l: 'cost reduction vs naive warehouse use¹' },
-                    { v: '0 s', l: 'cold start — kernel runs in the tab' },
-                  ].map(s => (
-                    <div key={s.l} className="px-4 sm:px-8 py-2 lg:py-0 text-center">
-                      <div className="lp-hero-gradient-text font-display text-3xl sm:text-4xl lg:text-[2.6rem] font-bold tracking-tight">
-                        {s.v}
-                      </div>
-                      <div className="mt-1.5 font-mono text-[10px] sm:text-[11px] leading-snug text-muted">
-                        {s.l}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <p className="text-center font-mono text-[10px] mt-7 text-muted opacity-70">
-                  ¹ real at high cache-hit / pre-aggregation rates — 500 viewers of one dashboard collapse to 1 warehouse hit
-                </p>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* ════════════════════════════════════════════════════════════════════
-            §2.5  PRODUCT SHOWCASE — what you actually work in
-            id="product" — query workspace + dashboard builder, side by side
-        ════════════════════════════════════════════════════════════════════ */}
-        <section id="product" className="py-14 sm:py-20 lg:py-24 bg-bg scroll-mt-14">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="text-center mb-12 sm:mb-16">
-              <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">
-                See it in action
-              </p>
-              <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold text-fg">
-                One workspace, from{' '}
-                <span className="text-primary">SQL</span> to{' '}
-                <span className="text-brand-teal">embedded dashboard</span>.
-              </h2>
-              <p className="text-sm sm:text-base leading-relaxed mt-4 text-muted max-w-2xl mx-auto">
-                Write a query, see results{' '}
-                <strong className="text-fg font-semibold">the instant you hit Run</strong>, then
-                drag the charts into a dashboard your customers can open —{' '}
-                <strong className="text-fg font-semibold">no separate tools, no cold-start
-                kernel, no per-viewer bill.</strong>
-              </p>
-            </div>
-
-            <ProductTour />
-          </div>
-        </section>
-
-        {/* ════════════════════════════════════════════════════════════════════
-            §2.75  REPORTING TEASER — concise wedge callout → /reporting
-        ════════════════════════════════════════════════════════════════════ */}
-        <section className="py-10 sm:py-14 bg-surface-2 border-y border-border">
-          <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="rounded-2xl bg-brand-gradient p-px shadow-[0_16px_48px_-16px_rgba(23,179,163,0.5)]">
-              <div className="rounded-[calc(1rem-1px)] bg-surface dark:bg-[#070b21]/90 p-6 sm:p-8 flex flex-col md:flex-row md:items-center gap-6 md:gap-10">
-                <div className="flex-1 min-w-0">
-                  <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-2 text-brand-teal">
-                    pay per refresh · not per viewer
-                  </p>
-                  <h3 className="font-display text-xl sm:text-2xl font-bold text-fg leading-snug mb-2">
-                    Unlimited viewers — flat cost as you scale.
-                  </h3>
-                  <p className="text-sm leading-relaxed text-muted max-w-xl">
-                    The DuckDB-WASM kernel runs inside each visitor&rsquo;s tab — extra viewers
-                    cost ≈ $0. Embed live, freeze to a CDN snapshot, export to PDF.
-                    One dashboard drives every output via Flows.
-                  </p>
-                </div>
-                <div className="flex flex-col sm:flex-row md:flex-col gap-2.5 shrink-0">
-                  <Link
-                    to="/reporting"
-                    className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all bg-brand-gradient text-white hover:opacity-90 hover:-translate-y-0.5 min-h-[44px] shadow-md"
-                  >
-                    How it works <ArrowRight size={14} strokeWidth={2.5} />
-                  </Link>
-                  <Link
-                    to="/pricing"
-                    className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue hover:text-primary min-h-[44px]"
-                  >
-                    See pricing
-                  </Link>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* ════════════════════════════════════════════════════════════════════
-            §3  EIGHT DECISIONS — bento deck on an observatory panel
-            id="features" — scroll target for footer "Dashboards" link
-        ════════════════════════════════════════════════════════════════════ */}
-        <section id="features" className="relative scroll-mt-14 bg-bg px-3 sm:px-5 py-8 sm:py-12">
-          <div className="lp-hero-panel relative max-w-[1440px] mx-auto rounded-[1.5rem] sm:rounded-[2rem] overflow-hidden border border-border dark:border-white/[0.06]">
-            <div className="lp-noise pointer-events-none absolute inset-0" aria-hidden="true" />
-            <div
-              className="lp-mesh-blob pointer-events-none absolute -top-32 -right-40 w-[36rem] h-[36rem] rounded-full"
-              style={{ background: 'radial-gradient(circle, rgba(45,212,191,0.14) 0%, transparent 65%)' }}
-              aria-hidden="true"
-            />
-
-            <div className="relative px-5 sm:px-10 lg:px-14 py-12 sm:py-16 lg:py-20">
-              {/* Section header */}
-              <div className="text-center mb-10 sm:mb-14 max-w-3xl mx-auto">
-                <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">
-                  why teams switch · the wedge
-                </p>
-                <h2 className="font-display text-3xl sm:text-4xl lg:text-[3.4rem] font-bold leading-[1.08] tracking-tight mb-4 sm:mb-6 text-fg">
-                  Eight decisions that make{' '}
-                  <span className="lp-hero-gradient-text">everything cheaper.</span>
-                </h2>
-                <p className="text-sm sm:text-base lg:text-lg leading-relaxed text-muted dark:text-slate-300/90">
-                  Most BI rents you compute —{' '}
-                  <B>by the seat, by the session, by the query.</B> Nubi makes one
-                  structural bet instead: <B>ship the kernel to the browser.</B> Every
-                  decision below compounds that bet, until the marginal dashboard view
-                  costs <B>≈ $0.</B>
-                </p>
-              </div>
-
-              <DecisionGrid />
-            </div>
-          </div>
-        </section>
-
-        {/* ════════════════════════════════════════════════════════════════════
-            §3.25  EVERYTHING-AS-CODE — power-user / files / CLI / CI story
-            id="as-code" — in-app code view + local files + CLI + CI deploy
-        ════════════════════════════════════════════════════════════════════ */}
-        <section id="as-code" className="py-14 sm:py-20 lg:py-24 bg-surface-2 border-y border-border scroll-mt-14">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-
-            {/* Section header */}
-            <div className="text-center mb-12 sm:mb-16 lg:mb-20 max-w-2xl mx-auto">
-              <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">
-                Everything-as-code
-              </p>
-              <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold leading-tight mb-4 sm:mb-5 text-fg">
-                Click to build. Then{' '}
-                <span className="text-brand-gradient">own it as code.</span>
-              </h2>
-              <p className="text-sm sm:text-base leading-relaxed text-muted">
-                Every dashboard, query, flow, and connector is{' '}
-                <strong className="text-fg font-semibold">a file you can edit, review, and version</strong> —
-                in a VS Code-style editor right in the app, or pulled to your own git repo and
-                shipped with the <code className="font-mono text-xs px-1 py-0.5 rounded bg-surface border border-border text-fg">nubi</code> CLI.
-                No lock-in, no copy-paste between a vendor UI and your stack.
-              </p>
-            </div>
-
-            {/* Alternating rows */}
-            <div className="flex flex-col gap-12 sm:gap-16 lg:gap-20">
-              <DiffRow
-                id="code-view"
-                icon={Code2}
-                title="A code view for everything"
-                badge="In-app editor"
-                desc="Flip any dashboard, query, or flow into a VS Code-style file view — the same resource, edited as files instead of forms. A persistent git/versions rail lets you switch refs, diff, and roll back without leaving the page. Power users get a text editor; everyone else keeps the visual builder. Same source, two views."
-                Illustration={LlmDashboardCode}
-                reverse={false}
-              />
-
-              <DiffRow
-                id="local-files"
-                icon={FolderGit2}
-                title="Pull your project to git"
-                badge="Local files-as-code"
-                desc="nubi pull writes your whole project as a normal git repo: dashboards, queries (raw .sql + metadata), flows (one folder per flow, one file per cell), and non-secret connector manifests. Commit it, branch it, PR it. Secrets stay in gitignored local .env files — non-secret config is committed, credentials never are."
-                Illustration={FilesAsCodeCli}
-                reverse={true}
-              />
-
-              <DiffRow
-                id="ci-deploy"
-                icon={GitBranch}
-                title="Ship local → cloud on push"
-                badge="CLI & CI/CD"
-                desc="One CLI to pull, push, sync, and deploy. nubi secrets push seals your secrets into GitHub Actions or GitLab CI; the scaffolded pipeline materializes them and runs nubi deploy on every push to main — manifests and secrets land in the right environment. Edit locally, open a PR, merge, deployed."
-                Illustration={FlowCode}
-                reverse={false}
-              />
-            </div>
-
-            <SectionCta sub="Browse the on-disk project format, the full CLI command tree, and the CI templates in the docs." />
-          </div>
-        </section>
-
-        {/* ════════════════════════════════════════════════════════════════════
-            §3.5  CONNECTORS — brand logo wall
-            id="sources" — "connect to your whole stack"
-        ════════════════════════════════════════════════════════════════════ */}
-        <section id="sources" className="py-14 sm:py-20 lg:py-24 bg-bg scroll-mt-14">
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="text-center mb-10 sm:mb-14 max-w-2xl mx-auto">
-              <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">
-                Connectors
-              </p>
-              <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold leading-tight mb-4 sm:mb-5 text-fg">
-                Connect to your{' '}
-                <span className="text-brand-gradient">whole stack.</span>
-              </h2>
-              <p className="text-sm sm:text-base leading-relaxed text-muted">
-                Point Nubi at the warehouses, databases, and lakes you already run —{' '}
-                <strong className="text-fg font-semibold">no proprietary semantic model to
-                start.</strong> Relational, cloud-managed, warehouse, query-engine, and
-                object-storage sources are first-class, all enforcing{' '}
-                <strong className="text-fg font-semibold">the same security floor.</strong>
-              </p>
-            </div>
-
-            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7 gap-3 sm:gap-4">
-              {CONNECTOR_TYPES.filter((info) => info.id !== 'demo' && info.id !== 'duckdb_demo').map((info) => (
-                <div
-                  key={info.id}
-                  title={info.description}
-                  className="group flex flex-col items-center gap-2.5 rounded-2xl border border-border bg-surface p-3 sm:p-4 transition-all duration-200 hover:-translate-y-1 hover:shadow-md hover:border-border/80"
-                >
-                  <span
-                    className="inline-flex items-center justify-center w-11 h-11 rounded-xl shrink-0"
-                    style={{ background: `${info.color}14` }}
-                  >
-                    <img
-                      src={info.logo}
-                      alt={info.label}
-                      className="w-6 h-6 object-contain transition-transform duration-200 group-hover:scale-110"
-                      loading="lazy"
-                    />
-                  </span>
-                  <span className="text-[11px] font-medium text-muted text-center leading-tight">
-                    {info.label}
-                  </span>
-                </div>
-              ))}
-            </div>
-
-            <p className="text-center text-xs sm:text-sm text-muted mt-8 sm:mt-10 max-w-xl mx-auto">
-              Don&rsquo;t see yours? The{' '}
-              <span className="text-fg font-medium">Python connector SDK</span> wraps any
-              Arrow-returning function as a first-class source — and JDBC covers the long tail.
-            </p>
-
-            <SectionCta sub="Connect a database and ship your first dashboard on the free tier — no credit card required." />
-          </div>
-        </section>
-
-        {/* ════════════════════════════════════════════════════════════════════
-            §4  HOW IT WORKS — 3-step
-            id="how-it-works" — scroll target for footer link
-        ════════════════════════════════════════════════════════════════════ */}
-        <section id="how-it-works" className="py-14 sm:py-20 lg:py-24 bg-surface-2 scroll-mt-14">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="text-center mb-12 sm:mb-16">
-              <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">
-                How it works
-              </p>
-              <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold text-fg">
-                Connect <span className="text-muted opacity-40 font-normal">→</span> Query <span className="text-muted opacity-40 font-normal">→</span> Embed
-              </h2>
-              <p className="text-sm sm:text-base leading-relaxed mt-4 text-muted max-w-2xl mx-auto">
-                Three stages from zero to a live, cross-filtering, multi-tenant dashboard.
-                No proprietary semantic model. No cold-start cloud kernel. No per-view compute cost.
-              </p>
-            </div>
-
-            <HowItWorksTimeline />
-
-            {/* Architecture note */}
-            <div className="mt-10 sm:mt-12 mx-auto max-w-3xl rounded-2xl p-5 sm:p-6 text-sm leading-relaxed text-center bg-surface border border-border">
-              <strong className="text-primary font-semibold">One language, one engine, one wire format.</strong>
-              {' '}Python everywhere (FastAPI + connector planner + flows executor). DuckDB everywhere (WASM in the browser, embedded in the connector).
-              Arrow IPC at every boundary — results stream from connector to browser with no serialization tax.
-              <span className="text-muted"> sqlglot rewrites SQL between dialects on the server.</span>
-            </div>
-          </div>
-        </section>
-
-        {/* ════════════════════════════════════════════════════════════════════
-            §5  POSITIONING vs Hex / Cube
-            id="compare" — scroll target, also has a full /compare page
-        ════════════════════════════════════════════════════════════════════ */}
-        <section id="compare" className="py-14 sm:py-20 lg:py-24 bg-bg scroll-mt-14">
-          <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="text-center mb-10 sm:mb-14">
-              <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">
-                Honest comparison
-              </p>
-              <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold mb-4 text-fg">
-                Nubi vs the field
-              </h2>
-              <p className="text-sm sm:text-base text-muted max-w-xl mx-auto mb-4">
-                Hex is great. Cube is great. But both run compute in their cloud —
-                and that single decision shapes everything about their pricing and architecture.
-              </p>
-              <Link
-                to="/compare"
-                className="inline-flex items-center gap-1 text-sm font-medium text-brand-teal hover:underline"
-              >
-                Full comparison page <ChevronRight size={13} />
-              </Link>
-            </div>
-
-            {/* Horizontally scrollable on mobile */}
-            <p className="flex items-center justify-end gap-1 font-mono text-[10px] uppercase tracking-[0.12em] text-muted mb-1.5 sm:hidden">
-              scroll to compare <ChevronRight size={10} strokeWidth={2.5} aria-hidden="true" />
-            </p>
-            <div className="lp-compare-table-wrap rounded-2xl border border-border overflow-hidden shadow-sm">
-              <div className="lp-compare-table-inner">
-
-                {/* Column headers */}
-                <div className="grid grid-cols-[1.6fr_1fr_1fr_1.15fr] text-xs font-semibold">
-                  {/* Dimension label */}
-                  <div className="py-4 px-5 bg-surface-2 border-b border-border">
-                    <span className="text-muted uppercase tracking-widest">Dimension</span>
-                  </div>
-                  {/* Hex */}
-                  <div className="py-4 px-4 bg-surface-2 border-b border-l border-border text-center">
-                    <span className="text-muted tracking-wide">Hex</span>
-                    <p className="text-muted opacity-50 font-normal normal-case tracking-normal mt-0.5 text-[10px]">Notebook + apps</p>
-                  </div>
-                  {/* Cube */}
-                  <div className="py-4 px-4 bg-surface-2 border-b border-l border-border text-center">
-                    <span className="text-muted tracking-wide">Cube</span>
-                    <p className="text-muted opacity-50 font-normal normal-case tracking-normal mt-0.5 text-[10px]">Semantic layer</p>
-                  </div>
-                  {/* Nubi — highlighted */}
-                  <div className="lp-nubi-col-header py-4 px-4 border-b text-center">
-                    <span className="text-brand-teal tracking-wide">Nubi</span>
-                    <p className="text-brand-teal opacity-60 font-normal normal-case tracking-normal mt-0.5 text-[10px]">BI + embed</p>
-                  </div>
-                </div>
-
-                {/* Rows */}
-                {[
-                  {
-                    category: 'Architecture',
-                    dim: 'Compute kernel',
-                    hex: 'Python/session, their cloud (10–30s cold)',
-                    cube: 'n/a — warehouse + Cube Store',
-                    nubi: 'DuckDB-WASM in the browser; on-demand server kernel only when needed',
-                  },
-                  {
-                    dim: 'Wire format',
-                    hex: 'JSON via pandas',
-                    cube: 'JSON / SQL API',
-                    nubi: 'Arrow IPC streamed to the browser',
-                  },
-                  {
-                    dim: 'Cold-start',
-                    hex: '10–30 s per session',
-                    cube: 'n/a',
-                    nubi: '0 s — kernel is in the tab',
-                  },
-                  {
-                    category: 'Data & Caching',
-                    dim: 'Edge caching',
-                    hex: 'Per-session, weak cross-user',
-                    cube: 'Pre-aggs in Cube Store',
-                    nubi: 'Content-hashed edge cache + auto pre-aggs',
-                  },
-                  {
-                    dim: 'Modeling tax',
-                    hex: 'Medium',
-                    cube: 'High — define cubes first',
-                    nubi: 'Low — point at a warehouse and go',
-                  },
-                  {
-                    dim: 'Pre-aggregation rollups',
-                    hex: false,
-                    cube: 'partial',
-                    nubi: 'Auto-suggested from query log · one-click build',
-                  },
-                  {
-                    category: 'Visualization',
-                    dim: 'Rendering engine',
-                    hex: 'Plotly / SVG, chokes past ~50k rows',
-                    cube: 'Bring your own',
-                    nubi: 'ECharts on Arrow buffers · canvas, fast on large result sets',
-                  },
-                  {
-                    dim: 'Cross-filter at scale',
-                    hex: false,
-                    cube: false,
-                    nubi: true,
-                    isBool: true,
-                  },
-                  {
-                    category: 'Auth & Embedding',
-                    dim: 'Embedding',
-                    hex: 'Separate product, bolt-on auth',
-                    cube: 'Core strength — headless only',
-                    nubi: 'Core surface; dashboards + cell widgets embeddable',
-                  },
-                  {
-                    dim: 'Auth-as-code RLS',
-                    hex: false,
-                    cube: 'partial',
-                    nubi: true,
-                    isBool: true,
-                  },
-                  {
-                    category: 'AI & Pricing',
-                    dim: 'LLM / MCP authoring',
-                    hex: false,
-                    cube: false,
-                    nubi: 'MCP server · 9 tools · LLM-authorable HTML dashboards',
-                  },
-                  {
-                    dim: 'Real free tier',
-                    hex: false,
-                    cube: false,
-                    nubi: true,
-                    isBool: true,
-                  },
-                ].map(({ category, dim, hex, cube, nubi }, i, arr) => {
-                  const isLastInBlock = i === arr.length - 1 || arr[i + 1]?.category
-                  return (
-                    <div key={dim}>
-                      {/* Category separator row */}
-                      {category && (
-                        <div className="grid grid-cols-[1.6fr_1fr_1fr_1.15fr] bg-surface-2 border-t border-border">
-                          <div className="py-2 px-5 col-span-1 flex items-center gap-2">
-                            <span className="w-1.5 h-1.5 rounded-full bg-brand-teal" />
-                            <span className="text-[11px] font-bold uppercase tracking-widest text-primary">{category}</span>
-                          </div>
-                          <div className="border-l border-border" />
-                          <div className="border-l border-border" />
-                          <div className="lp-nubi-col" />
-                        </div>
-                      )}
-                      {/* Data row */}
-                      <div className={`lp-compare-row grid grid-cols-[1.6fr_1fr_1fr_1.15fr] ${!isLastInBlock ? 'border-b border-border' : ''}`}>
-                        <div className="py-4 px-5 flex items-center">
-                          <span className="text-[13px] font-semibold text-fg">{dim}</span>
-                        </div>
-                        <div className="py-3.5 px-4 border-l border-border flex items-center justify-center">
-                          <CompareCell value={hex} />
-                        </div>
-                        <div className="py-3.5 px-4 border-l border-border flex items-center justify-center">
-                          <CompareCell value={cube} />
-                        </div>
-                        <div className="lp-nubi-col py-3.5 px-4 flex items-center justify-center">
-                          <CompareCell value={nubi} isNubi />
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })}
-
-              </div>
-            </div>
-
-            <p className="text-center text-xs mt-5 text-muted opacity-50">
-              Data sourced from public documentation and the Nubi roadmap. We&rsquo;re honest: check primary sources before switching.
-            </p>
-
-            <SectionCta sub="Try the architecture instead of reading about it — the free tier is the real product." />
-          </div>
-        </section>
-
-        {/* ════════════════════════════════════════════════════════════════════
-            §6  FULL PRICING SECTION
-            id="pricing" — scroll target for footer "Pricing" link
-            Renders live tier cards (GET /api/v1/pricing, falls back to
-            src/data/pricing.js) + cost calculator. No EE imports.
-        ════════════════════════════════════════════════════════════════════ */}
-        <LpPricingSection />
-
-        {/* ════════════════════════════════════════════════════════════════════
-            §7  ABOUT — minimal "about" anchor for footer link
-        ════════════════════════════════════════════════════════════════════ */}
-        <section id="about" className="relative scroll-mt-14 bg-bg px-3 sm:px-5 py-8 sm:py-12">
-          <div className="lp-hero-panel relative max-w-[1440px] mx-auto rounded-[1.5rem] sm:rounded-[2rem] overflow-hidden border border-border dark:border-white/[0.06]">
-            <div className="lp-noise pointer-events-none absolute inset-0" aria-hidden="true" />
-            <div
-              className="lp-mesh-blob pointer-events-none absolute -bottom-40 -left-32 w-[38rem] h-[38rem] rounded-full"
-              style={{ background: 'radial-gradient(circle, rgba(72,124,214,0.22) 0%, transparent 65%)' }}
-              aria-hidden="true"
-            />
-            <div className="relative max-w-3xl mx-auto px-5 sm:px-10 py-14 sm:py-20 text-center">
-              <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">About Nubi</p>
-              <h2 className="font-display text-3xl sm:text-4xl lg:text-[3.2rem] font-bold leading-[1.08] tracking-tight mb-4 sm:mb-6 text-fg">
-                Built on <span className="lp-hero-gradient-text">one structural bet.</span>
-              </h2>
-              <p className="text-sm sm:text-base lg:text-lg leading-relaxed text-muted dark:text-slate-300/90 mb-6">
-                The analytics kernel runs in the user&rsquo;s browser by default. That single decision
-                makes the marginal cost of a dashboard view{' '}
-                <B>≈ $0 — not a marketing claim, a consequence of where compute runs.</B>{' '}
-                Hex runs a Python kernel per session in their cloud. Cube runs the data plane in
-                their cloud. Nubi pushes compute to the browser and only falls through to a
-                metered server kernel for the workloads that need it.
-              </p>
-              <p className="font-mono text-[11px] text-muted opacity-80 mb-8">
-                apache-2.0 open core · real free tier · self-hostable connectors
-              </p>
-              <div className="flex flex-wrap justify-center gap-3">
-                <Link
-                  to="/register"
-                  className="lp-cta-glow inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:-translate-y-0.5 min-h-[48px]"
-                >
-                  Start free
-                  <ArrowRight size={16} strokeWidth={2.5} />
-                </Link>
-                <Link
-                  to="/docs/getting-started"
-                  className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-base font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue dark:bg-white/[0.06] dark:border-white/15 dark:text-white dark:hover:bg-white/[0.12] min-h-[48px]"
-                >
-                  Read the docs
-                </Link>
-              </div>
-            </div>
-          </div>
-        </section>
-
+      <div ref={rootRef} className={`nl${debug.ui ? '' : ' noui'}${reduced ? ' rm' : ''}`} id="top">
+        <div className="hdr-wrap" dangerouslySetInnerHTML={{ __html: HEADER_MARKUP }} />
+        <main id="main" tabIndex={-1}>
+          <Story director={director} env={{ mobile, reduced, debug: debug.any, ui: debug.ui }} api={api} stage={stage} labelsRef={labelsRef} />
+        </main>
+        <div className="outro-wrap" dangerouslySetInnerHTML={{ __html: OUTRO_MARKUP }} />
+        <div className="ovl-wrap" dangerouslySetInnerHTML={{ __html: OVERLAY_MARKUP }} />
+        {debug.perf && <div className="perf" aria-hidden="true">{perf}</div>}
       </div>
+      <div className="nl-foot"><Footer /></div>
     </>
   )
 }
