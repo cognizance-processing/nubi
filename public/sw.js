@@ -48,8 +48,8 @@ self.addEventListener('push', (event) => {
       id: payload.id,
       severity: payload.severity,
     },
-    badge: '/nubi.png',
-    icon: '/nubi.png',
+    badge: '/icon-192.png',
+    icon: '/icon-192.png',
   }
 
   event.waitUntil(self.registration.showNotification(title, options))

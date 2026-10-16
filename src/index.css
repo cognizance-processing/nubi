@@ -1,79 +1,150 @@
 /* ── Fonts ─────────────────────────────────────────────────────────────────── */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
+/* Instrument Sans (UI + display) and Geist Mono (data) load through <link> tags
+   with preconnect in index.html: no render-blocking @import chain here.
+   Inter, Space Grotesk and JetBrains Mono (still named by saved boards) load
+   from a separate non-blocking stylesheet, also in index.html. */
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* ── Design tokens ─────────────────────────────────────────────────────────── */
+/* ── Design tokens ─────────────────────────────────────────────────────────────
+   Swiss: ink on paper. One light sheet inset in a grey frame, structure from
+   2px ink rules + 1px hairlines + size contrast, 2px corners, no shadow at rest,
+   ink for primary actions, one blue (accent) for selection, focus, links and the
+   live dot. The contract lives in reports/design-system-tokens.md. */
 @layer base {
 
-  /* ── Brand constants (never change) ─────────────────────────────────────── */
+  /* ── Brand constants ────────────────────────────────────────────────────── */
   :root {
-    --brand-navy:  #1b2363;
-    --brand-blue:  #2456a6;
-    --brand-teal:  #17b3a3;
-    --brand-cyan:  #2dd4bf;
-    --brand-gradient: linear-gradient(135deg, #1b2363, #2456a6, #17b3a3);
-    /* Gradient for text-fill — starts lighter in dark mode so the first words
-       don't sink into the dark background (navy-on-navy is unreadable). */
-    --brand-text-gradient: linear-gradient(135deg, #1b2363, #2456a6, #17b3a3);
+    --brand-navy:  #0b0c0e;
+    --brand-blue:  #1f4fd1;
+    --brand-teal:  #1f4fd1;
+    --brand-cyan:  #7d9bff;
+    /* DEPRECATED aliases, flat on purpose. Migrate to bg-ink / text-accent. */
+    --brand-gradient: var(--ink);
   }
-
   .dark {
-    --brand-text-gradient: linear-gradient(135deg, #7da3f0, #4d8de0, #2dd4bf);
+    --brand-navy:  #f4f5f7;
+    --brand-cyan:  #a9bcff;
   }
 
-  /* ── LIGHT mode (default) ────────────────────────────────────────────────── */
-  /* `.nubi-light` re-applies these inside a dark page: a board (or widget
-     card) designed on a light background renders light whatever the app
-     theme is — see src/lib/boardTheme.ts. `.dark` does the reverse. */
   /* A nested scope must also reset inherited ink, or plain text keeps the
      page's color instead of the scope's. */
   .nubi-light, .dark:not(html) {
     color: var(--text);
   }
 
+  /* ── LIGHT (default). `.nubi-light` re-applies these inside a dark page: a
+     board designed on a light background renders light whatever the app theme
+     is (see src/lib/boardTheme.ts). */
   :root, .nubi-light {
-    --bg:         #f6f8fb;
-    --surface:    #ffffff;
-    --surface-2:  #eef2f7;
-    --text:       #0e1729;
-    --text-muted: #566377;
-    --border:     #e2e8f0;
-    --primary:    #2456a6;
-    --primary-fg: #ffffff;
-    --accent:     #0f9e90;
-    --ring:       #17b3a3;
+    --bg:          #eceef1;   /* frame, the shell around the sheet */
+    --surface:     #ffffff;   /* sheet */
+    --surface-2:   #f5f6f8;   /* sunk, row hover */
+    --surface-3:   #e7e9ed;   /* pressed, skeleton highlight */
+    --text:        #0b0c0e;   /* ink */
+    --text-muted:  #4f545e;   /* 7.6:1 on sheet */
+    --text-subtle: #646974;   /* 5.5:1 on sheet, 4.7:1 on frame (AA) */
+    --border:      #e3e5e9;   /* hairline, decorative */
+    --frame-line:  #d3d7de;   /* stronger hairline */
+    --border-control: #7d838f;/* edge of form controls, 3.8:1 on sheet (WCAG 1.4.11) */
+    --frame-hover: rgba(0,0,0,.045);
+    --ink:         #0b0c0e;
+    --ink-fg:      #ffffff;
+    --ink-hover:   #2a2d33;
+    --primary:     #1f4fd1;   /* links + focus. NOT a button fill */
+    --primary-fg:  #ffffff;
+    --accent:      #1f4fd1;
+    --accent-soft: #e8eefc;
+    --ring:        #1f4fd1;
+    --font-ui:     'Instrument Sans', 'Helvetica Neue', Arial, system-ui, sans-serif;
+    --font-mono:   'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 
-    /* ── Extended token scale (light) ── */
-    --surface-3:   #e4eaf3;
-    --text-subtle: #8496ae;
-    --shadow-sm:   0 1px 2px rgba(14,23,41,0.06), 0 1px 1px rgba(14,23,41,0.04);
-    --shadow-md:   0 4px 8px rgba(14,23,41,0.08), 0 2px 4px rgba(14,23,41,0.05);
-    --shadow-lg:   0 12px 28px rgba(14,23,41,0.10), 0 4px 10px rgba(14,23,41,0.07);
-    --shadow-xl:   0 24px 48px rgba(14,23,41,0.14), 0 8px 20px rgba(14,23,41,0.08);
-    --radius-sm:   0.375rem;  /* 6px  */
-    --radius-md:   0.625rem;  /* 10px */
-    --radius-lg:   0.875rem;  /* 14px */
-    --radius-xl:   1.125rem;  /* 18px */
-    --radius-2xl:  1.5rem;    /* 24px */
-    /* Focus ring */
+    /* Elevation: none at rest. Only popovers, menus, modals, toasts, Spotlight. */
+    --shadow-pop:  0 12px 32px -16px rgba(11,12,14,.28);
+    --shadow-sm:   0 0 0 0 transparent; /* no shadow at rest (valid inside a shadow list) */
+    --shadow-md:   0 0 0 0 transparent;
+    --shadow-lg:   var(--shadow-pop);
+    --shadow-xl:   var(--shadow-pop);
+    --scrim:       rgba(11,12,14,.5);
+
+    /* Radius: 2px controls/cards/tags, 4px sheet/modals/popovers, 0 tables/rules */
+    --radius-control: 2px;
+    --radius-sheet:   4px;
+    --radius-sm:   2px;
+    --radius-md:   2px;
+    --radius-lg:   2px;
+    --radius-xl:   3px;
+    --radius-2xl:  4px;
+
+    /* Rules */
+    --rule-strong: 2px solid var(--ink);
+    --rule:        1px solid var(--border);
+
+    /* Focus */
     --ring-width:  2px;
     --ring-offset: 2px;
-    /* Success / warning / danger semantic */
+
+    /* Semantic: a 6px square dot plus text in -fg. Washes only in banners. */
     --success:      #059669;
     --success-bg:   #ecfdf5;
     --success-fg:   #065f46;
-    --warning:      #d97706;
+    --warning:      #b45309;
     --warning-bg:   #fffbeb;
     --warning-fg:   #92400e;
     --danger:       #dc2626;
     --danger-bg:    #fef2f2;
     --danger-fg:    #991b1b;
-    --info:         #2456a6;
+    --danger-solid: #c81e1e;
+    --danger-solid-hover: #a61a1a;
+    --info:         #1f4fd1;
     --info-bg:      #eff6ff;
     --info-fg:      #1e40af;
+
+    /* Data-viz neutral palette: chrome, illustrations, landing + marketing
+       charts, skeletons. Never applied to board-authored charts. All >= 3:1 on
+       the sheet. */
+    --viz-1: #1f4fd1;
+    --viz-2: #0b0c0e;
+    --viz-3: #6b7587;
+    --viz-4: #5f84e6;
+    --viz-5: #d9480f;
+    --viz-6: #0e7c6b;
+    --viz-7: #9a7000;
+    --viz-8: #6741d9;
+    --viz-grid: #d3d7de;
+    --viz-axis: #646974;
+    --viz-pos:  #0e7c6b;
+    --viz-neg:  #d9480f;
+
+    /* Spacing (4px base). Same numbering as Tailwind. */
+    --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px; --sp-6: 24px;
+    --sp-8: 32px; --sp-12: 48px; --sp-16: 64px; --sp-24: 96px; --sp-32: 128px;
+    --sheet-pad: 16px;
+    --section-y: 64px;
+    --measure:   66ch;
+
+    /* Type roles: size / line-height / tracking */
+    --t-display: clamp(44px, 6vw, 88px);  --lh-display: .95;  --tr-display: -.035em;
+    --t-h2:      clamp(30px, 3.6vw, 48px);--lh-h2: 1.05;      --tr-h2: -.025em;
+    --t-h3:      22px;                    --lh-h3: 1.2;       --tr-h3: -.02em;
+    --t-lead:    16px;                    --lh-lead: 1.55;
+    --t-reading: 17px;                    --lh-reading: 1.6;
+    --t-page:    24px;                    --lh-page: 1.2;     --tr-page: -.015em;
+    --t-section: 15px;                    --lh-section: 1.35;
+    --t-body:    14px;                    --lh-body: 1.5;
+    --t-small:   13px;                    --lh-small: 1.45;
+    --t-label:   11px;                    --lh-label: 1.4;    --tr-label: .06em;
+
+    /* Motion: the app ceiling is --dur-4. No overshoot. */
+    --dur-1: 100ms;  /* hover, press */
+    --dur-2: 160ms;  /* menus, popovers, modal */
+    --dur-3: 220ms;  /* panels, drawers, route fade */
+    --dur-4: 280ms;  /* toasts, the ceiling */
+    --ease-out:    cubic-bezier(.22, 1, .36, 1);
+    --ease-in-out: cubic-bezier(.65, 0, .35, 1); /* landing morph only */
+
     /* Z-index scale */
     --z-dropdown:  100;
     --z-sticky:    200;
@@ -86,38 +157,62 @@
     color-scheme: light;
   }
 
-  /* ── DARK mode — applied by adding .dark to <html> ──────────────────────── */
-  .dark {
-    --bg:         #0a1020;
-    --surface:    #111a2e;
-    --surface-2:  #16223b;
-    --text:       #e7edf6;
-    --text-muted: #93a4bd;
-    --border:     #21304a;
-    --primary:    #4d8de0;
-    --primary-fg: #06101f;
-    --accent:     #2dd4bf;
-    --ring:       #2dd4bf;
+  @media (min-width: 768px) {
+    :root, .nubi-light { --sheet-pad: 32px; --section-y: 96px; }
+  }
 
-    /* ── Extended token scale (dark) ── */
-    --surface-3:   #1c2d47;
-    --text-subtle: #5f7694;
-    --shadow-sm:   0 1px 2px rgba(0,0,0,0.30), 0 1px 1px rgba(0,0,0,0.20);
-    --shadow-md:   0 4px 8px rgba(0,0,0,0.35), 0 2px 4px rgba(0,0,0,0.25);
-    --shadow-lg:   0 12px 28px rgba(0,0,0,0.45), 0 4px 10px rgba(0,0,0,0.30);
-    --shadow-xl:   0 24px 48px rgba(0,0,0,0.55), 0 8px 20px rgba(0,0,0,0.35);
+  /* ── DARK: applied by adding .dark to <html> ────────────────────────────── */
+  .dark {
+    --bg:          #0d0e10;
+    --surface:     #141518;
+    --surface-2:   #1a1b1e;
+    --surface-3:   #202227;
+    --text:        #f4f5f7;
+    --text-muted:  #a7abb4;
+    --text-subtle: #8f949e;   /* 6.0:1 on sheet */
+    --border:      #26282d;
+    --frame-line:  #2f3238;
+    --border-control: #6c717c;/* 3.7:1 on sheet */
+    --frame-hover: rgba(255,255,255,.05);
+    --ink:         #f4f5f7;
+    --ink-fg:      #0d0e10;
+    --ink-hover:   #ffffff;
+    --primary:     #7d9bff;
+    --primary-fg:  #0d0e10;
+    --accent:      #7d9bff;
+    --accent-soft: #1b2142;
+    --ring:        #7d9bff;
+
+    --shadow-pop:  0 12px 32px -16px rgba(0,0,0,.6);
+    --scrim:       rgba(0,0,0,.6);
+
     --success:      #10b981;
-    --success-bg:   rgba(16,185,129,0.12);
+    --success-bg:   rgba(16,185,129,.12);
     --success-fg:   #6ee7b7;
     --warning:      #f59e0b;
-    --warning-bg:   rgba(245,158,11,0.12);
+    --warning-bg:   rgba(245,158,11,.12);
     --warning-fg:   #fcd34d;
     --danger:       #f87171;
-    --danger-bg:    rgba(248,113,113,0.12);
+    --danger-bg:    rgba(248,113,113,.12);
     --danger-fg:    #fca5a5;
-    --info:         #60a5fa;
-    --info-bg:      rgba(96,165,250,0.12);
-    --info-fg:      #93c5fd;
+    --danger-solid: #c42b2b;
+    --danger-solid-hover: #a82424;
+    --info:         #7d9bff;
+    --info-bg:      rgba(125,155,255,.12);
+    --info-fg:      #a9bcff;
+
+    --viz-1: #7d9bff;
+    --viz-2: #f4f5f7;
+    --viz-3: #8b95a8;
+    --viz-4: #4f6bd0;
+    --viz-5: #ff8a5c;
+    --viz-6: #3fc4ad;
+    --viz-7: #e0b33a;
+    --viz-8: #a78bfa;
+    --viz-grid: #2f3238;
+    --viz-axis: #8f949e;
+    --viz-pos:  #3fc4ad;
+    --viz-neg:  #ff8a5c;
 
     color-scheme: dark;
   }
@@ -129,855 +224,769 @@
     box-sizing: border-box;
   }
 
-  /* ── Font rendering ──────────────────────────────────────────────────────── */
   html {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
 
-  /* ── Horizontal-overflow guard ────────────────────────────────────────────
-     Phantom horizontal scroll appears on systems with classic (space-taking)
-     scrollbars when any element overhangs the viewport by a few px — and a
-     horizontally-dragged page slides the sticky top bar out of position.
-     `clip` clamps it at the root without creating a new scroll container. */
+  /* Horizontal-overflow guard: `clip` clamps at the root without creating a
+     scroll container (a dragged page would slide the sticky top bar). */
   html,
   body {
     overflow-x: clip;
   }
 
-  /* ── Base body styles — use semantic tokens ──────────────────────────────── */
+  /* Theme switches are instant. There is deliberately NO global `*` transition:
+     transitions belong only on interactive primitives. */
   body {
     background-color: var(--bg);
     color: var(--text);
-    font-family: Inter, system-ui, sans-serif;
+    font-family: var(--font-ui);
+    font-size: var(--t-body);
+    line-height: var(--lh-body);
     min-height: 100vh;
-
-    /* Smooth palette transition when toggling theme */
-    transition:
-      background-color 200ms ease,
-      color 200ms ease;
   }
 
-  /* Smooth transition on all elements that use CSS vars */
-  *,
-  *::before,
-  *::after {
-    transition-property: background-color, border-color, color, fill, stroke;
-    transition-duration: 150ms;
-    transition-timing-function: ease;
-  }
+  h1, h2 { text-wrap: balance; }
+  p, li  { text-wrap: pretty; }
 
-  /* Opt-out for elements where transitions cause layout jank */
-  input, textarea, select, button, a {
-    transition-duration: 100ms;
+  ::selection { background: var(--accent); color: var(--primary-fg); }
+
+  /* ── Focus: one ring everywhere. Nothing removes it without replacing it. ── */
+  :where(a, button, input, select, textarea, summary, [role="button"], [role="tab"],
+         [role="menuitem"], [role="option"], [role="switch"], [role="checkbox"],
+         [role="radio"], [role="link"], [tabindex]:not([tabindex="-1"])):focus-visible {
+    outline: var(--ring-width) solid var(--ring);
+    outline-offset: var(--ring-offset);
   }
+  /* Dense lists, table cells, tabs: ring drawn inside the element */
+  .nubi-focus-inset:focus-visible {
+    outline: var(--ring-width) solid var(--ring);
+    outline-offset: calc(var(--ring-width) * -1);
+  }
+  /* Controls with their own edge sit the ring flush on it */
+  input:focus-visible, select:focus-visible, textarea:focus-visible { outline-offset: 0; }
+
+  /* Skip link: first Tab stop on every page */
+  .nubi-skip-link {
+    position: fixed; top: 8px; left: 8px; z-index: calc(var(--z-tooltip) + 1);
+    padding: 8px 12px; border-radius: var(--radius-control);
+    background: var(--ink); color: var(--ink-fg);
+    font: 500 13px/1 var(--font-ui); text-decoration: none;
+    transform: translateY(-200%);
+  }
+  .nubi-skip-link:focus { transform: none; }
 }
 
 /* ── Design-system component layer ─────────────────────────────────────────────
-   Reusable class-based API for UI primitives. Consumed by src/components/ui/*.
-   All classes are nubi-prefixed to avoid collisions with Tailwind utilities.
-   Usage comments are in the individual component files.
+   Class API for the primitives in src/components/ui/*. All classes are
+   nubi-prefixed. Transitions live ONLY here, on interactive primitives, using
+   the --dur-* / --ease-out tokens. Usage notes sit in each component file.
    ──────────────────────────────────────────────────────────────────────────── */
 
 @layer components {
 
+  /* ── TYPE ROLES ──────────────────────────────────────────────────────────── */
+  .t-display { font-size: var(--t-display); line-height: var(--lh-display); letter-spacing: var(--tr-display); font-weight: 600; text-wrap: balance; }
+  .t-h2      { font-size: var(--t-h2); line-height: var(--lh-h2); letter-spacing: var(--tr-h2); font-weight: 600; text-wrap: balance; }
+  .t-h3      { font-size: var(--t-h3); line-height: var(--lh-h3); letter-spacing: var(--tr-h3); font-weight: 600; }
+  .t-lead    { font-size: var(--t-lead); line-height: var(--lh-lead); color: var(--text-muted); max-width: 62ch; text-wrap: pretty; }
+  .t-reading { font-size: var(--t-reading); line-height: var(--lh-reading); max-width: var(--measure); text-wrap: pretty; }
+  .t-page    { font-size: var(--t-page); line-height: var(--lh-page); letter-spacing: var(--tr-page); font-weight: 600; }
+  .t-section { font-size: var(--t-section); line-height: var(--lh-section); font-weight: 600; }
+  .t-body    { font-size: var(--t-body); line-height: var(--lh-body); }
+  .t-small   { font-size: var(--t-small); line-height: var(--lh-small); }
+  .t-label   {
+    font-family: var(--font-mono); font-size: var(--t-label); line-height: var(--lh-label);
+    letter-spacing: var(--tr-label); text-transform: uppercase; color: var(--text-subtle);
+    font-variant-numeric: tabular-nums;
+  }
+  .t-num     { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+  /* ── RULES ───────────────────────────────────────────────────────────────── */
+  .rule-t        { border-top: var(--rule); }
+  .rule-b        { border-bottom: var(--rule); }
+  .rule-t-strong { border-top: var(--rule-strong); }
+  .rule-b-strong { border-bottom: var(--rule-strong); }
+
+  /* ── KEYCAP ──────────────────────────────────────────────────────────────── */
+  .nubi-kbd {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 18px; height: 18px; padding: 0 4px;
+    font: 500 11px/1 var(--font-mono); letter-spacing: 0;
+    color: var(--text-muted); background: transparent;
+    border: 1px solid var(--frame-line); border-radius: var(--radius-control);
+  }
+
+  /* ── STATUS DOT: always square ───────────────────────────────────────────── */
+  .nubi-dot {
+    display: inline-block; flex: none; width: 6px; height: 6px;
+    background: var(--text-subtle); border-radius: 0;
+  }
+  .nubi-dot-live    { background: var(--accent); }
+  .nubi-dot-success { background: var(--success); }
+  .nubi-dot-warning { background: var(--warning); }
+  .nubi-dot-danger  { background: var(--danger); }
+  .nubi-dot-muted   { background: var(--border-control); }
+
   /* ── BUTTON ──────────────────────────────────────────────────────────────── */
-
-  /* Base — apply to every button; then layer a variant */
   .nubi-btn {
-    @apply inline-flex items-center justify-center gap-1.5 font-medium
-           select-none whitespace-nowrap rounded-xl
-           transition-all duration-150 ease-out
-           disabled:pointer-events-none disabled:opacity-50;
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    height: 36px; padding: 0 14px;
+    font-family: var(--font-ui); font-size: 14px; font-weight: 500; line-height: 1;
+    white-space: nowrap; user-select: none; text-decoration: none; cursor: pointer;
+    border: 1px solid transparent; border-radius: var(--radius-control);
     -webkit-tap-highlight-color: transparent;
+    transition:
+      background-color var(--dur-1) var(--ease-out),
+      border-color var(--dur-1) var(--ease-out),
+      color var(--dur-1) var(--ease-out),
+      transform var(--dur-1) var(--ease-out);
   }
-  .nubi-btn:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring);
+  .nubi-btn:disabled, .nubi-btn[aria-disabled="true"] { opacity: .45; pointer-events: none; }
+  .nubi-btn[data-loading="true"]:disabled { opacity: 1; pointer-events: none; cursor: progress; }
+  .nubi-btn:active:not(:disabled) { transform: scale(.98); }
+  .nubi-btn > svg { flex: none; }
+
+  /* Sizes: 28 / 32 / 36 in the app, 40 / 48 for marketing */
+  .nubi-btn-xs  { height: 28px; padding: 0 10px; font-size: 13px; gap: 5px; }
+  .nubi-btn-sm  { height: 32px; padding: 0 12px; font-size: 13px; gap: 6px; }
+  .nubi-btn-md  { height: 36px; padding: 0 14px; font-size: 14px; }
+  .nubi-btn-lg  { height: 40px; padding: 0 16px; font-size: 14px; gap: 8px; }
+  .nubi-btn-xl  { height: 48px; padding: 0 20px; font-size: 16px; gap: 8px; }
+  .nubi-btn-icon-xs { height: 28px; width: 28px; padding: 0; }
+  .nubi-btn-icon-sm { height: 32px; width: 32px; padding: 0; }
+  .nubi-btn-icon    { height: 36px; width: 36px; padding: 0; }
+  .nubi-btn-icon-lg { height: 40px; width: 40px; padding: 0; }
+
+  /* Primary: ink fill (deprecated .nubi-btn-accent renders identically) */
+  .nubi-btn-primary, .nubi-btn-accent {
+    background: var(--ink); color: var(--ink-fg); border-color: var(--ink);
+  }
+  .nubi-btn-primary:hover:not(:disabled), .nubi-btn-accent:hover:not(:disabled) {
+    background: var(--ink-hover); border-color: var(--ink-hover);
   }
 
-  /* Size variants */
-  .nubi-btn-xs  { @apply h-7  px-2.5 text-xs  gap-1; }
-  .nubi-btn-sm  { @apply h-8  px-3   text-sm  gap-1.5; }
-  .nubi-btn-md  { @apply h-9  px-4   text-sm  gap-1.5; }
-  .nubi-btn-lg  { @apply h-10 px-5   text-sm  gap-2; }
-  .nubi-btn-xl  { @apply h-12 px-6   text-base gap-2; }
-
-  /* Primary — brand blue fill */
-  .nubi-btn-primary {
-    background: var(--primary);
-    color: var(--primary-fg);
-    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
-  }
-  .nubi-btn-primary:hover:not(:disabled)  { opacity: 0.90; }
-  .nubi-btn-primary:active:not(:disabled) { transform: scale(0.97); }
-
-  /* Secondary — subtle bordered */
+  /* Secondary: surface + hairline, border turns ink on hover */
   .nubi-btn-secondary {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    color: var(--text);
-    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+    background: var(--surface); color: var(--text); border-color: var(--frame-line);
   }
-  .nubi-btn-secondary:hover:not(:disabled)  { background: var(--surface-2); }
-  .nubi-btn-secondary:active:not(:disabled) { transform: scale(0.97); }
+  .nubi-btn-secondary:hover:not(:disabled) { border-color: var(--ink); }
 
-  /* Ghost — no chrome, hover surface */
-  .nubi-btn-ghost {
-    color: var(--text);
-    background: transparent;
+  /* Ghost: no chrome */
+  .nubi-btn-ghost { background: transparent; color: var(--text); }
+  .nubi-btn-ghost:hover:not(:disabled) { background: var(--frame-hover); }
+
+  /* Outline: ink hairline */
+  .nubi-btn-outline { background: transparent; color: var(--text); border-color: var(--ink); }
+  .nubi-btn-outline:hover:not(:disabled) { background: var(--frame-hover); }
+
+  /* Danger: destructive solid (the one semantic fill, white text) */
+  .nubi-btn-danger { background: var(--danger-solid); color: #fff; border-color: var(--danger-solid); }
+  .nubi-btn-danger:hover:not(:disabled) { background: var(--danger-solid-hover); border-color: var(--danger-solid-hover); }
+
+  /* Loading spinner inside a button */
+  .nubi-btn-spinner { width: 14px; height: 14px; }
+
+  /* ── SPINNER: square-capped arc, currentColor ────────────────────────────── */
+  .nubi-spinner {
+    display: inline-block; flex: none; width: 20px; height: 20px; color: inherit;
   }
-  .nubi-btn-ghost:hover:not(:disabled)  { background: var(--surface-2); }
-  .nubi-btn-ghost:active:not(:disabled) { transform: scale(0.97); }
-
-  /* Danger — destructive red */
-  .nubi-btn-danger {
-    background: #dc2626;
-    color: #fff;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
-  }
-  .nubi-btn-danger:hover:not(:disabled)  { background: #b91c1c; }
-  .nubi-btn-danger:active:not(:disabled) { transform: scale(0.97); }
-
-  /* Outline primary */
-  .nubi-btn-outline {
-    border: 1px solid var(--primary);
-    color: var(--primary);
-    background: transparent;
-  }
-  .nubi-btn-outline:hover:not(:disabled)  { background: color-mix(in srgb, var(--primary) 10%, transparent); }
-  .nubi-btn-outline:active:not(:disabled) { transform: scale(0.97); }
-
-  /* Accent teal */
-  .nubi-btn-accent {
-    background: var(--accent);
-    color: #fff;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
-  }
-  .nubi-btn-accent:hover:not(:disabled)  { opacity: 0.90; }
-  .nubi-btn-accent:active:not(:disabled) { transform: scale(0.97); }
-
-  /* Icon-only button (square) */
-  .nubi-btn-icon    { @apply nubi-btn aspect-square px-0 w-9  h-9  text-sm; }
-  .nubi-btn-icon-sm { @apply nubi-btn aspect-square px-0 w-8  h-8  text-sm; }
-  .nubi-btn-icon-lg { @apply nubi-btn aspect-square px-0 w-10 h-10 text-sm; }
-
-  /* Loading spinner wrapper inside a button (replaces icon+label) */
-  .nubi-btn-spinner {
-    @apply animate-spin opacity-70;
-  }
+  .nubi-spinner svg { display: block; width: 100%; height: 100%; animation: nubi-spin .8s linear infinite; }
+  .nubi-spinner-xs { width: 14px; height: 14px; }
+  .nubi-spinner-sm { width: 16px; height: 16px; }
+  .nubi-spinner-md { width: 20px; height: 20px; }
+  .nubi-spinner-lg { width: 28px; height: 28px; }
+  .nubi-spinner-xl { width: 40px; height: 40px; }
+  .nubi-spinner-accent { color: var(--accent); }
 
   /* ── FORM FIELDS ─────────────────────────────────────────────────────────── */
-
-  /* Base input chrome */
   .nubi-input {
-    display: block;
-    width: 100%;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 0.75rem;
-    font-size: 0.875rem;
-    color: var(--text);
-    padding: 0.5rem 0.75rem;
-    transition: border-color 100ms, box-shadow 100ms;
+    display: block; width: 100%; height: 36px; padding: 0 12px;
+    font-family: var(--font-ui); font-size: 14px; line-height: 1.4; color: var(--text);
+    background: var(--surface); border: 1px solid var(--border-control); border-radius: var(--radius-control);
+    transition: border-color var(--dur-1) var(--ease-out);
   }
-  .nubi-input::placeholder { color: var(--text-muted); }
-  .nubi-input:focus {
-    outline: none;
-    border-color: color-mix(in srgb, var(--ring) 60%, transparent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 20%, transparent);
-  }
-  .nubi-input:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  .nubi-input-sm { @apply nubi-input; font-size: 0.75rem; padding: 0.375rem 0.625rem; border-radius: 0.5rem; }
-  .nubi-input-lg { @apply nubi-input; font-size: 1rem;    padding: 0.75rem 1rem; }
-
-  /* Error state override */
-  .nubi-input-error { border-color: #f87171; }
-  .nubi-input-error:focus {
-    border-color: #f87171;
-    box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.20);
+  .nubi-input::placeholder { color: var(--text-subtle); opacity: 1; }
+  .nubi-input:hover:not(:disabled):not(:focus) { border-color: var(--text-muted); }
+  .nubi-input:focus { border-color: var(--ring); }
+  .nubi-input:disabled { background: var(--surface-2); color: var(--text-subtle); cursor: not-allowed; }
+  .nubi-input[readonly] { background: var(--surface-2); }
+  .nubi-input-xs { height: 28px; padding: 0 8px; font-size: 13px; }
+  .nubi-input-sm { height: 32px; padding: 0 10px; font-size: 13px; }
+  .nubi-input-md { height: 36px; }
+  .nubi-input-lg { height: 40px; padding: 0 12px; font-size: 14px; }
+  .nubi-input-xl { height: 48px; padding: 0 14px; font-size: 16px; }
+  /* iOS zooms the page when a focused field is under 16px */
+  @media (max-width: 640px) and (pointer: coarse) {
+    .nubi-input, .nubi-search-input { font-size: 16px; }
   }
 
-  /* Field wrapper (label + input + hint/error) */
-  .nubi-field       { display: flex; flex-direction: column; gap: 0.375rem; }
-  .nubi-label       { display: block; font-size: 0.875rem; font-weight: 500; color: var(--text); }
-  .nubi-label-muted { display: block; font-size: 0.75rem;  font-weight: 500; color: var(--text-muted); }
-  .nubi-hint        { font-size: 0.75rem; color: var(--text-muted); }
-  .nubi-field-error { font-size: 0.75rem; color: #dc2626; }
-  .dark .nubi-field-error { color: #f87171; }
+  .nubi-input-error, .nubi-input-error:hover:not(:disabled):not(:focus) { border-color: var(--danger); }
+  .nubi-input-error:focus { border-color: var(--danger); outline-color: var(--danger); }
 
-  /* Select */
+  .nubi-field       { display: flex; flex-direction: column; gap: 6px; }
+  .nubi-label       { display: block; font-size: 13px; font-weight: 500; line-height: 1.4; color: var(--text); }
+  .nubi-label-muted { display: block; font-size: 12px; font-weight: 500; color: var(--text-muted); }
+  .nubi-hint        { font-size: 12px; line-height: 1.4; color: var(--text-muted); }
+  .nubi-field-error {
+    display: flex; align-items: flex-start; gap: 6px;
+    font-size: 12px; line-height: 1.4; color: var(--danger-fg);
+  }
+  .nubi-field-error::before {
+    content: ''; flex: none; width: 6px; height: 6px; margin-top: 4px; background: var(--danger);
+  }
+
+  /* Select: chevron per theme */
   .nubi-select {
-    @apply nubi-input;
-    appearance: none;
-    cursor: pointer;
-    padding-right: 2rem;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2393a4bd' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 10px center;
+    appearance: none; -webkit-appearance: none; cursor: pointer; padding-right: 32px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%234f545e' stroke-width='2.5' stroke-linecap='square' stroke-linejoin='miter'%3E%3Cpolyline points='5 9 12 16 19 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center;
   }
-
-  /* Textarea */
+  .dark .nubi-select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a7abb4' stroke-width='2.5' stroke-linecap='square' stroke-linejoin='miter'%3E%3Cpolyline points='5 9 12 16 19 9'/%3E%3C/svg%3E");
+  }
   .nubi-textarea {
-    @apply nubi-input;
-    resize: vertical;
-    min-height: 80px;
-    padding-top: 0.625rem;
-    padding-bottom: 0.625rem;
+    height: auto; min-height: 80px; padding: 8px 12px; line-height: 1.5; resize: vertical;
   }
 
-  /* ── CARD ────────────────────────────────────────────────────────────────── */
+  /* Icon gutter: padding is added ONLY for a slot that exists */
+  .nubi-input-wrap { position: relative; display: block; }
+  .nubi-input-wrap > .nubi-input-icon {
+    position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+    display: flex; pointer-events: none; color: var(--text-muted);
+  }
+  .nubi-input-wrap > .nubi-input-trailing {
+    position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+    display: flex; align-items: center; color: var(--text-muted);
+  }
+  .nubi-input-wrap[data-icon] > .nubi-input { padding-left: 36px; }
+  .nubi-input-wrap[data-trailing] > .nubi-input { padding-right: 36px; }
+  .nubi-input-wrap[data-size="xs"] > .nubi-input-icon { left: 8px; }
+  .nubi-input-wrap[data-size="xs"][data-icon] > .nubi-input { padding-left: 30px; }
+  .nubi-input-wrap[data-size="xl"] > .nubi-input-icon { left: 14px; }
+  .nubi-input-wrap[data-size="xl"][data-icon] > .nubi-input { padding-left: 42px; }
 
+  /* Checkbox */
+  .nubi-check {
+    appearance: none; -webkit-appearance: none; flex: none; cursor: pointer;
+    width: 16px; height: 16px; margin: 0; display: inline-grid; place-content: center;
+    background: var(--surface); border: 1px solid var(--border-control); border-radius: var(--radius-control);
+    transition: background-color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
+  }
+  .nubi-check:hover:not(:disabled) { border-color: var(--ink); }
+  .nubi-check:checked, .nubi-check:indeterminate { background: var(--ink); border-color: var(--ink); }
+  .nubi-check:checked::after {
+    content: ''; width: 9px; height: 5px; margin-top: -2px;
+    border-left: 2px solid var(--ink-fg); border-bottom: 2px solid var(--ink-fg);
+    transform: rotate(-45deg);
+  }
+  .nubi-check:indeterminate::after { content: ''; width: 8px; height: 2px; background: var(--ink-fg); }
+  .nubi-check:disabled { opacity: .45; cursor: not-allowed; }
+
+  /* ── CARD: no shadow at rest; hover turns the border ink, never lifts ────── */
   .nubi-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 1rem;
-    box-shadow: var(--shadow-sm);
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-control);
   }
   .nubi-card-raised {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 1rem;
-    box-shadow: var(--shadow-md);
+    background: var(--surface); border: 1px solid var(--border); border-top: 2px solid var(--ink);
+    border-radius: var(--radius-control);
   }
   .nubi-card-interactive {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 1rem;
-    cursor: pointer;
-    transition: transform 200ms ease, box-shadow 200ms ease;
-    box-shadow: var(--shadow-sm);
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-control);
+    cursor: pointer; transition: border-color var(--dur-1) var(--ease-out);
   }
-  .nubi-card-interactive:hover {
-    transform: translateY(-2px);
-    box-shadow: var(--shadow-md);
-  }
-  .nubi-card-body { padding: 1.25rem; }
-  @media (min-width: 640px) { .nubi-card-body { padding: 1.5rem; } }
+  .nubi-card-interactive:hover { border-color: var(--ink); }
+  a.nubi-card, a.nubi-card-raised, a.nubi-card-interactive { display: block; color: inherit; text-decoration: none; }
+  .nubi-card-body { padding: 16px; }
+  @media (min-width: 640px) { .nubi-card-body { padding: 20px; } }
   .nubi-card-header {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 1.25rem 1.25rem 1rem;
+    display: flex; align-items: center; gap: 12px; padding: 16px 16px 12px;
     border-bottom: 1px solid var(--border);
   }
-  @media (min-width: 640px) {
-    .nubi-card-header { padding: 1.5rem 1.5rem 1rem; }
-  }
+  @media (min-width: 640px) { .nubi-card-header { padding: 16px 20px 12px; } }
   .nubi-card-footer {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 0.75rem;
-    padding: 1rem 1.25rem 1.25rem;
-    border-top: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: flex-end; gap: 12px;
+    padding: 12px 16px; border-top: 1px solid var(--border);
   }
-  @media (min-width: 640px) {
-    .nubi-card-footer { padding: 1rem 1.5rem 1.5rem; }
-  }
+  @media (min-width: 640px) { .nubi-card-footer { padding: 12px 20px; } }
 
-  /* ── BADGE / CHIP ────────────────────────────────────────────────────────── */
+  /* ── TAG / BADGE: square, hairline, mono 11px. Never a pill. ─────────────── */
+  .nubi-tag, .nubi-badge {
+    display: inline-flex; align-items: center; gap: 6px; flex: none; vertical-align: middle;
+    height: 20px; padding: 0 6px;
+    font: 500 11px/1 var(--font-mono); letter-spacing: .06em; text-transform: uppercase;
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+    color: var(--text-muted); background: transparent;
+    border: 1px solid var(--frame-line); border-radius: var(--radius-control);
+  }
+  .nubi-tag-md { height: 24px; padding: 0 8px; font-size: 12px; }
+  .nubi-tag-nocaps { text-transform: none; letter-spacing: 0; }
+  .nubi-tag-dot, .nubi-badge-dot { flex: none; width: 6px; height: 6px; border-radius: 0; background: currentColor; }
 
-  .nubi-badge {
-    display: inline-flex; align-items: center; gap: 0.25rem;
-    font-weight: 500; border-radius: 9999px;
-    padding: 0.125rem 0.625rem;
-    font-size: 0.75rem; line-height: 1; white-space: nowrap;
+  .nubi-tag-ink, .nubi-badge-ink { color: var(--ink-fg); background: var(--ink); border-color: var(--ink); }
+  .nubi-tag-accent, .nubi-badge-accent, .nubi-badge-primary, .nubi-badge-info {
+    color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   }
-  .nubi-badge-sm { @apply nubi-badge; font-size: 0.625rem; padding: 0.0625rem 0.5rem; }
-  .nubi-badge-lg { @apply nubi-badge; font-size: 0.875rem; padding: 0.25rem 0.75rem; }
+  .nubi-tag-danger,  .nubi-badge-danger  { color: var(--danger-fg);  border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+  .nubi-tag-success, .nubi-badge-success { color: var(--success-fg); border-color: color-mix(in srgb, var(--success) 45%, transparent); }
+  .nubi-tag-warning, .nubi-badge-warning { color: var(--warning-fg); border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
+  .nubi-tag-danger  .nubi-tag-dot, .nubi-badge-danger  .nubi-badge-dot { background: var(--danger); }
+  .nubi-tag-success .nubi-tag-dot, .nubi-badge-success .nubi-badge-dot { background: var(--success); }
+  .nubi-tag-warning .nubi-tag-dot, .nubi-badge-warning .nubi-badge-dot { background: var(--warning); }
+  .nubi-tag-accent  .nubi-tag-dot, .nubi-badge-accent .nubi-badge-dot,
+  .nubi-badge-primary .nubi-badge-dot, .nubi-badge-info .nubi-badge-dot { background: var(--accent); }
 
-  .nubi-badge-default {
-    @apply nubi-badge;
-    background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border);
-  }
-  .nubi-badge-primary {
-    @apply nubi-badge;
-    background: color-mix(in srgb, var(--primary) 10%, transparent);
-    color: var(--primary);
-    border: 1px solid color-mix(in srgb, var(--primary) 25%, transparent);
-  }
-  .nubi-badge-success {
-    @apply nubi-badge;
-    background: var(--success-bg); color: var(--success-fg);
-    border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
-  }
-  .nubi-badge-warning {
-    @apply nubi-badge;
-    background: var(--warning-bg); color: var(--warning-fg);
-    border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
-  }
-  .nubi-badge-danger {
-    @apply nubi-badge;
-    background: var(--danger-bg); color: var(--danger-fg);
-    border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
-  }
-  .nubi-badge-info {
-    @apply nubi-badge;
-    background: var(--info-bg); color: var(--info-fg);
-    border: 1px solid color-mix(in srgb, var(--info) 30%, transparent);
-  }
-  .nubi-badge-accent {
-    @apply nubi-badge;
-    background: color-mix(in srgb, var(--accent) 10%, transparent);
-    color: var(--accent);
-    border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
-  }
+  .nubi-badge-sm { height: 18px; padding: 0 5px; font-size: 11px; }
+  .nubi-badge-lg { height: 24px; padding: 0 8px; font-size: 12px; }
 
-  .nubi-badge-dot {
-    width: 0.375rem; height: 0.375rem; border-radius: 9999px;
-    flex-shrink: 0; background: currentColor;
+  /* Interactive tag (as="button" | "a") */
+  button.nubi-tag, a.nubi-tag { cursor: pointer; text-decoration: none; transition: border-color var(--dur-1) var(--ease-out); }
+  button.nubi-tag:hover, a.nubi-tag:hover { border-color: var(--ink); }
+  .nubi-tag-remove {
+    display: inline-flex; align-items: center; justify-content: center; flex: none;
+    width: 16px; height: 16px; margin: 0 -4px 0 0; padding: 0;
+    color: inherit; background: transparent; border: 0; border-radius: var(--radius-control); cursor: pointer;
   }
+  .nubi-tag-remove:hover { background: var(--frame-hover); }
 
-  /* ── SKELETON ────────────────────────────────────────────────────────────── */
-
-  .nubi-skeleton {
-    border-radius: 0.5rem;
-    background: var(--surface-2);
-    animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  /* ── SKELETON: flat tint, opacity pulse, invisible for the first 300ms ──── */
+  .nubi-skeleton, .nubi-shimmer {
+    background: var(--surface-3); border-radius: var(--radius-control);
+    animation:
+      nubi-skel-in var(--dur-2) var(--ease-out) 300ms backwards,
+      nubi-pulse 1.6s ease-in-out 460ms infinite;
   }
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50%       { opacity: 0.5; }
-  }
+  .nubi-skeleton-text   { height: 12px; }
+  .nubi-skeleton-title  { height: 20px; }
+  .nubi-skeleton-avatar { border-radius: 9999px; }
 
-  .nubi-skeleton-text   { @apply nubi-skeleton; height: 1rem; }
-  .nubi-skeleton-title  { @apply nubi-skeleton; height: 1.5rem; }
-  .nubi-skeleton-avatar { @apply nubi-skeleton; border-radius: 9999px; }
-
-  /* ── SPINNER ─────────────────────────────────────────────────────────────── */
-
-  .nubi-spinner {
-    @apply rounded-full animate-spin;
-    border: 2.5px solid var(--border);
-    border-top-color: var(--primary);
-  }
-  .nubi-spinner-xs { @apply nubi-spinner w-3.5 h-3.5; }
-  .nubi-spinner-sm { @apply nubi-spinner w-4 h-4; }
-  .nubi-spinner-md { @apply nubi-spinner w-5 h-5; }
-  .nubi-spinner-lg { @apply nubi-spinner w-7 h-7; }
-  .nubi-spinner-xl { @apply nubi-spinner w-10 h-10; }
-
-  /* Accent variant */
-  .nubi-spinner-accent {
-    border-top-color: var(--accent);
-  }
-
-  /* ── TABLE ───────────────────────────────────────────────────────────────── */
-
+  /* ── TABLE: 36px rows, 28px compact, 2px ink rule under a sticky header ──── */
   .nubi-table-wrap {
-    width: 100%; overflow-x: auto;
-    border-radius: 0.75rem; border: 1px solid var(--border);
+    width: 100%; overflow-x: auto; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 0;
   }
   .nubi-table {
-    width: 100%; font-size: 0.875rem; color: var(--text);
-    border-collapse: collapse;
-  }
-  .nubi-table thead tr {
-    border-bottom: 1px solid var(--border);
-    background: var(--surface-2);
+    width: 100%; border-collapse: separate; border-spacing: 0;
+    font-size: 13px; line-height: 1.4; color: var(--text);
   }
   .nubi-table th {
-    padding: 0.625rem 1rem;
-    text-align: left; font-size: 0.75rem; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.05em;
-    color: var(--text-muted);
+    height: 36px; padding: 0 12px; text-align: left; white-space: nowrap;
+    font: 500 11px/1.4 var(--font-mono); letter-spacing: var(--tr-label); text-transform: uppercase;
+    color: var(--text-muted); background: var(--surface);
+    border-bottom: 2px solid var(--ink);
   }
-  .nubi-table th.sortable {
-    cursor: pointer; user-select: none;
-    transition: color 150ms;
+  .nubi-table th.sortable { padding: 0; }
+  .nubi-table th .nubi-th-btn {
+    display: inline-flex; align-items: center; gap: 6px; width: 100%; height: 100%; min-height: 34px;
+    padding: 0 12px; font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit;
+    background: none; border: 0; cursor: pointer; text-align: inherit;
   }
-  .nubi-table th.sortable:hover { color: var(--text); }
+  .nubi-table th .nubi-th-btn:hover { color: var(--text); }
+  .nubi-table th[aria-sort="ascending"], .nubi-table th[aria-sort="descending"] { color: var(--text); }
   .nubi-table td {
-    padding: 0.75rem 1rem; vertical-align: top; color: var(--text);
+    height: 36px; padding: 0 12px; vertical-align: middle;
+    border-bottom: 1px solid var(--border); color: var(--text);
   }
-  .nubi-table tbody tr {
-    border-bottom: 1px solid var(--border);
-    transition: background 150ms;
-  }
-  .nubi-table tbody tr:last-child { border-bottom: 0; }
-  .nubi-table-zebra tbody tr:nth-child(even) {
-    background: color-mix(in srgb, var(--surface-2) 50%, transparent);
-  }
-  .nubi-table tbody tr:hover {
-    background: color-mix(in srgb, var(--primary) 3.5%, transparent);
-  }
-  .nubi-table-sticky thead { position: sticky; top: 0; z-index: 10; }
+  .nubi-table tbody tr:last-child td { border-bottom: 0; }
+  .nubi-table tbody tr { transition: background-color var(--dur-1) var(--ease-out); }
+  .nubi-table tbody tr:hover td { background: var(--surface-2); }
+  .nubi-table tbody tr[aria-selected="true"] td { background: var(--accent-soft); }
+  .nubi-table tbody tr[data-clickable="true"] { cursor: pointer; }
+  .nubi-table-compact th, .nubi-table-compact td { height: 28px; }
+  .nubi-table-compact th .nubi-th-btn { min-height: 26px; }
+  .nubi-table .nubi-num, .nubi-table th.nubi-num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .nubi-table th.nubi-num .nubi-th-btn { justify-content: flex-end; }
+  .nubi-table .nubi-col-check { width: 40px; padding-right: 0; }
+  .nubi-table-sticky thead th { position: sticky; top: 0; z-index: 2; }
+  .nubi-table .nubi-sticky-col { position: sticky; left: 0; z-index: 1; max-width: 44vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--surface); box-shadow: inset -1px 0 0 var(--border); }
+  .nubi-table thead .nubi-sticky-col { z-index: 3; }
+  .nubi-table-zebra tbody tr:nth-child(even) td { background: var(--surface-2); }
+  .nubi-sort-tri { flex: none; width: 8px; height: 8px; color: var(--ink); }
+  .nubi-sort-tri-idle { color: var(--text-subtle); opacity: .6; }
 
-  /* ── TABS ────────────────────────────────────────────────────────────────── */
-
+  /* ── TABS: 2px ink underline ─────────────────────────────────────────────── */
   .nubi-tablist {
-    display: flex; align-items: stretch; gap: 0.125rem;
+    display: flex; align-items: stretch; gap: 4px; overflow-x: auto; scrollbar-width: none;
     border-bottom: 1px solid var(--border);
   }
+  .nubi-tablist::-webkit-scrollbar { display: none; }
   .nubi-tab {
-    position: relative;
-    display: inline-flex; align-items: center; gap: 0.375rem;
-    padding: 0.625rem 1rem;
-    font-size: 0.875rem; font-weight: 500; color: var(--text-muted);
-    transition: color 150ms; cursor: pointer; user-select: none;
-    border: none; background: none;
+    position: relative; flex: none; display: inline-flex; align-items: center; gap: 8px;
+    height: 40px; padding: 0 12px; margin-bottom: -1px;
+    font: 500 14px/1 var(--font-ui); color: var(--text-muted); white-space: nowrap;
+    background: none; border: 0; cursor: pointer; user-select: none;
+    transition: color var(--dur-1) var(--ease-out);
   }
   .nubi-tab:hover { color: var(--text); }
-  .nubi-tab:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--ring); }
   .nubi-tab[aria-selected="true"] { color: var(--text); }
   .nubi-tab[aria-selected="true"]::after {
-    content: ''; position: absolute; bottom: 0; left: 0; right: 0;
-    height: 2px; border-radius: 2px 2px 0 0;
-    background: var(--primary);
+    content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--ink);
   }
+  .nubi-tab:disabled { opacity: .4; cursor: not-allowed; }
+  .nubi-tab-count {
+    font: 500 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-subtle);
+  }
+  .nubi-tab[aria-selected="true"] .nubi-tab-count { color: var(--text-muted); }
 
-  .nubi-tablist-pills {
-    display: flex; align-items: center; gap: 0.25rem;
-    border-bottom: none; padding: 0;
-  }
+  .nubi-tablist-pills { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
   .nubi-tab-pill {
-    display: inline-flex; align-items: center; gap: 0.375rem;
-    padding: 0.375rem 0.875rem; border-radius: 0.5rem;
-    font-size: 0.875rem; font-weight: 500; color: var(--text-muted);
-    transition: color 150ms, background 150ms; cursor: pointer; user-select: none;
-    border: none; background: none;
+    display: inline-flex; align-items: center; gap: 8px; height: 28px; padding: 0 10px;
+    font: 500 13px/1 var(--font-ui); color: var(--text-muted);
+    background: transparent; border: 1px solid var(--frame-line); border-radius: var(--radius-control);
+    cursor: pointer; user-select: none;
+    transition: color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out), background-color var(--dur-1) var(--ease-out);
   }
-  .nubi-tab-pill:hover { color: var(--text); background: var(--surface-2); }
-  .nubi-tab-pill:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring); }
-  .nubi-tab-pill[aria-selected="true"] {
-    background: var(--surface-2); color: var(--text);
-    box-shadow: var(--shadow-sm);
-  }
+  .nubi-tab-pill:hover { color: var(--text); border-color: var(--ink); }
+  .nubi-tab-pill:disabled { opacity: .4; cursor: not-allowed; }
+  .nubi-tab-pill[aria-selected="true"] { background: var(--ink); border-color: var(--ink); color: var(--ink-fg); }
+  .nubi-tab-pill[aria-selected="true"] .nubi-tab-count { color: inherit; opacity: .8; }
 
   /* ── SEGMENTED CONTROL ───────────────────────────────────────────────────── */
-
   .nubi-segmented {
-    display: inline-flex; align-items: stretch; gap: 1px;
-    background: var(--surface-2); border: 1px solid var(--border);
-    border-radius: 0.75rem; padding: 0.125rem;
+    display: inline-flex; align-items: stretch;
+    background: var(--surface); border: 1px solid var(--border-control); border-radius: var(--radius-control);
   }
   .nubi-segment {
-    position: relative;
-    display: flex; align-items: center; gap: 0.375rem;
-    padding: 0.375rem 0.75rem; border-radius: 0.625rem;
-    font-size: 0.875rem; font-weight: 500; color: var(--text-muted);
-    transition: color 150ms, background 150ms; cursor: pointer; user-select: none;
-    border: none; background: none;
+    position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    height: 32px; min-width: 32px; padding: 0 12px;
+    font: 500 13px/1 var(--font-ui); color: var(--text-muted);
+    background: transparent; border: 0; cursor: pointer; user-select: none;
+    transition: color var(--dur-1) var(--ease-out), background-color var(--dur-1) var(--ease-out);
   }
-  .nubi-segment:hover { color: var(--text); }
-  .nubi-segment:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring); }
-  .nubi-segment[aria-selected="true"],
-  .nubi-segment[aria-pressed="true"],
-  .nubi-segment.active {
-    background: var(--surface); color: var(--text);
-    box-shadow: var(--shadow-sm);
+  .nubi-segment + .nubi-segment { border-left: 1px solid var(--border-control); }
+  .nubi-segment:hover:not(.active) { color: var(--text); background: var(--frame-hover); }
+  .nubi-segment[aria-checked="true"], .nubi-segment[aria-selected="true"],
+  .nubi-segment[aria-pressed="true"], .nubi-segment.active {
+    background: var(--ink); color: var(--ink-fg);
   }
+  .nubi-segmented-sm .nubi-segment { height: 26px; min-width: 28px; padding: 0 10px; font-size: 12px; }
+  .nubi-segmented-lg .nubi-segment { height: 34px; padding: 0 14px; font-size: 14px; }
 
   /* ── DIVIDER ─────────────────────────────────────────────────────────────── */
-
-  .nubi-divider {
-    border: none; border-top: 1px solid var(--border); margin: 1rem 0;
-  }
-  .nubi-divider-label {
-    display: flex; align-items: center; gap: 0.75rem;
-    font-size: 0.75rem; color: var(--text-muted);
-  }
-  .nubi-divider-label::before,
-  .nubi-divider-label::after {
-    content: ''; flex: 1; border-top: 1px solid var(--border);
-  }
+  .nubi-divider { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+  .nubi-divider-label { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--text-muted); }
+  .nubi-divider-label::before, .nubi-divider-label::after { content: ''; flex: 1; border-top: 1px solid var(--border); }
 
   /* ── EMPTY STATE ─────────────────────────────────────────────────────────── */
-
   .nubi-empty {
-    display: flex; flex-direction: column; align-items: center;
-    justify-content: center; text-align: center;
-    gap: 0.75rem; padding: 4rem 1.5rem;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+    gap: 8px; padding: 64px 24px;
   }
+  .nubi-empty-compact { padding: 32px 16px; gap: 6px; }
+  .nubi-empty-bordered { border: 1px solid var(--border); border-top: 2px solid var(--ink); background: var(--surface); }
+  .nubi-empty-art { width: 160px; max-width: 100%; margin-bottom: 8px; color: var(--ink); }
+  .nubi-empty-art > svg { display: block; width: 100%; height: auto; }
+  .nubi-empty-compact .nubi-empty-art { width: 120px; }
   .nubi-empty-icon {
-    width: 3rem; height: 3rem; border-radius: 1rem;
-    display: flex; align-items: center; justify-content: center;
-    background: var(--surface-2); color: var(--text-muted);
+    display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; margin-bottom: 8px;
+    color: var(--text-muted); border: 1px solid var(--frame-line); border-radius: var(--radius-control);
   }
-  .nubi-empty-title { font-size: 0.875rem; font-weight: 600; color: var(--text); }
-  .nubi-empty-body  { font-size: 0.875rem; color: var(--text-muted); max-width: 20rem; line-height: 1.625; }
-
-  /* ── FOCUS RING ──────────────────────────────────────────────────────────── */
-
-  /* Applied to interactive elements that need an explicit ring not handled by
-     Tailwind's focus-visible ring utilities */
-  .nubi-focus-ring:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring);
+  .nubi-empty-label { margin-bottom: 2px; }
+  .nubi-empty-title { font-size: 15px; font-weight: 600; line-height: 1.35; color: var(--text); }
+  .nubi-empty-body  { max-width: 44ch; font-size: 14px; line-height: 1.5; color: var(--text-muted); }
+  .nubi-empty-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; margin-top: 12px; }
+  .nubi-empty-reqid {
+    display: inline-flex; align-items: center; gap: 8px; margin-top: 12px; padding: 0 0 0 8px;
+    height: 28px; border: 1px solid var(--frame-line); border-radius: var(--radius-control);
+    font: 400 12px/1 var(--font-mono); color: var(--text-muted); font-variant-numeric: tabular-nums;
   }
+  .nubi-empty-reqid b { font-weight: 500; color: var(--text); user-select: all; }
 
-  /* ── OVERLAY BACKDROP ────────────────────────────────────────────────────── */
-
-  .nubi-backdrop {
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.5);
-    backdrop-filter: blur(2px);
-    z-index: var(--z-overlay);
-  }
-
-  /* ── SURFACE PANEL (used by modals, drawers) ─────────────────────────────── */
+  /* ── OVERLAY / MODAL ─────────────────────────────────────────────────────── */
+  .nubi-backdrop { position: fixed; inset: 0; background: var(--scrim); z-index: var(--z-overlay); }
   .nubi-panel {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 1rem;
-    box-shadow: var(--shadow-xl);
+    background: var(--surface); border: 1px solid var(--border); border-top: 2px solid var(--ink);
+    border-radius: var(--radius-sheet); box-shadow: var(--shadow-pop);
   }
 
-  /* ── TOOLTIP BUBBLE ──────────────────────────────────────────────────────── */
+  /* ── TOOLTIP ─────────────────────────────────────────────────────────────── */
   .nubi-tooltip-bubble {
-    display: inline-block; max-width: 13.75rem;
-    border-radius: 0.5rem; padding: 0.375rem 0.625rem;
-    font-size: 0.75rem; line-height: 1.35; font-weight: 500;
-    background: var(--text); color: var(--surface);
-    pointer-events: none;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-    z-index: var(--z-tooltip);
+    display: inline-flex; align-items: center; gap: 8px; max-width: 16rem;
+    padding: 5px 8px; border-radius: var(--radius-control);
+    font: 500 12px/1.35 var(--font-ui); background: var(--ink); color: var(--ink-fg);
+    box-shadow: var(--shadow-pop); z-index: var(--z-tooltip);
   }
+  .nubi-tooltip-bubble .nubi-kbd { color: inherit; border-color: color-mix(in srgb, currentColor 40%, transparent); height: 16px; min-width: 16px; font-size: 10.5px; }
+  .nubi-tooltip-pop { animation: nubi-tip-in 120ms var(--ease-out) both; }
+  .nubi-tooltip-pop[data-instant="true"] { animation: none; }
 
-  /* ── TOAST ────────────────────────────────────────────────────────────────── */
+  /* ── TOAST ───────────────────────────────────────────────────────────────── */
   .nubi-toast {
-    display: flex; align-items: flex-start; gap: 0.75rem;
-    width: 100%;
-    padding: 0.875rem 1rem;
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 1rem;
-    box-shadow: var(--shadow-xl);
+    display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 12px 12px 12px 14px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sheet);
+    box-shadow: var(--shadow-pop);
   }
-  .nubi-toast-icon-wrap {
-    flex-shrink: 0; width: 2rem; height: 2rem;
-    border-radius: 0.75rem;
-    display: flex; align-items: center; justify-content: center;
+  .nubi-toast-dot { flex: none; width: 6px; height: 6px; margin-top: 7px; background: var(--accent); }
+  .nubi-toast-success .nubi-toast-dot { background: var(--success); }
+  .nubi-toast-warning .nubi-toast-dot { background: var(--warning); }
+  .nubi-toast-error   .nubi-toast-dot { background: var(--danger); }
+  .nubi-toast-info    .nubi-toast-dot { background: var(--accent); }
+
+  /* ── SWITCH: square track, square thumb ──────────────────────────────────── */
+  .nubi-switch {
+    position: relative; display: inline-flex; flex: none; align-items: center;
+    width: 36px; height: 20px; padding: 2px; cursor: pointer;
+    background: var(--surface); border: 1px solid var(--border-control); border-radius: var(--radius-control);
+    transition: background-color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
   }
-  .nubi-toast-success .nubi-toast-icon-wrap {
-    background: var(--success-bg);
-    color: var(--success);
+  .nubi-switch:disabled { pointer-events: none; opacity: .45; }
+  .nubi-switch[aria-checked="true"] { background: var(--ink); border-color: var(--ink); }
+  .nubi-switch-thumb {
+    pointer-events: none; display: block; width: 14px; height: 14px; border-radius: 1px;
+    background: var(--border-control); transform: translateX(0);
+    transition: transform var(--dur-2) var(--ease-out), background-color var(--dur-1) var(--ease-out);
   }
-  .nubi-toast-warning .nubi-toast-icon-wrap {
-    background: var(--warning-bg);
-    color: var(--warning);
+  .nubi-switch[aria-checked="true"] .nubi-switch-thumb { background: var(--ink-fg); transform: translateX(16px); }
+
+  /* ── NOTICE BANNER: the one place a tinted wash is allowed ───────────────── */
+  .nubi-notice {
+    display: flex; align-items: flex-start; gap: 10px; margin-bottom: 16px; padding: 10px 14px;
+    font-size: 13px; line-height: 1.5; color: var(--text);
+    background: var(--surface-2); border: 1px solid var(--border); border-left: 2px solid var(--text-muted);
+    border-radius: var(--radius-control);
   }
-  .nubi-toast-error .nubi-toast-icon-wrap {
-    background: var(--danger-bg);
-    color: var(--danger);
+  .nubi-notice-info    { background: var(--info-bg);    border-color: color-mix(in srgb, var(--info) 25%, transparent);    border-left-color: var(--info);    color: var(--info-fg); }
+  .nubi-notice-success { background: var(--success-bg); border-color: color-mix(in srgb, var(--success) 25%, transparent); border-left-color: var(--success); color: var(--success-fg); }
+  .nubi-notice-warning { background: var(--warning-bg); border-color: color-mix(in srgb, var(--warning) 25%, transparent); border-left-color: var(--warning); color: var(--warning-fg); }
+  .nubi-notice-error   { background: var(--danger-bg);  border-color: color-mix(in srgb, var(--danger) 25%, transparent);  border-left-color: var(--danger);  color: var(--danger-fg); }
+
+  /* ── DROPDOWN / POPOVER chrome ───────────────────────────────────────────── */
+  .nubi-dropdown {
+    position: absolute; z-index: var(--z-dropdown); min-width: 10rem; padding: 4px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sheet);
+    box-shadow: var(--shadow-pop); animation: nubi-fade-in var(--dur-2) var(--ease-out) both;
   }
-  .nubi-toast-info .nubi-toast-icon-wrap {
-    background: var(--info-bg);
-    color: var(--info);
+  .nubi-dropdown-item {
+    display: flex; align-items: center; gap: 10px; width: 100%; min-height: 32px; padding: 6px 10px;
+    font-size: 13px; color: var(--text); text-align: left; text-decoration: none;
+    background: transparent; border: none; border-radius: var(--radius-control); cursor: pointer;
+    transition: background-color var(--dur-1) var(--ease-out);
   }
+  .nubi-dropdown-item:hover { background: var(--surface-2); }
+  .nubi-dropdown-item.danger { color: var(--danger-fg); }
+  .nubi-dropdown-item.danger:hover { background: var(--danger-bg); }
+  .nubi-dropdown-divider { height: 1px; background: var(--border); margin: 4px 0; }
+
+  /* ── FOCUS RING (legacy helper) ──────────────────────────────────────────── */
+  .nubi-focus-ring:focus-visible { outline: var(--ring-width) solid var(--ring); outline-offset: var(--ring-offset); }
 
   /* ── AUTH LAYOUT ─────────────────────────────────────────────────────────── */
-
-  /* Social OAuth button (Google, etc.) */
   .nubi-auth-social-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.75rem;
-    width: 100%;
-    min-height: 48px;
-    padding: 0.75rem 1rem;
-    border: 1px solid var(--border);
-    border-radius: 0.875rem;
-    background: var(--surface);
-    color: var(--text);
-    font-size: 0.875rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: background 120ms, box-shadow 120ms, transform 80ms;
+    display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; min-height: 44px; padding: 10px 16px;
+    font-size: 14px; font-weight: 500; color: var(--text); cursor: pointer;
+    background: var(--surface); border: 1px solid var(--frame-line); border-radius: var(--radius-control);
+    transition: border-color var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
   }
-  .nubi-auth-social-btn:hover {
-    background: var(--surface-2);
-    box-shadow: var(--shadow-sm);
+  .nubi-auth-social-btn:hover { border-color: var(--ink); }
+  .nubi-auth-social-btn:active { transform: scale(.98); }
+  .nubi-auth-divider { display: flex; align-items: center; gap: 12px; margin: 20px 0; font: 500 11px/1 var(--font-mono); letter-spacing: var(--tr-label); text-transform: uppercase; color: var(--text-subtle); }
+  .nubi-auth-divider::before, .nubi-auth-divider::after { content: ''; flex: 1; border-top: 1px solid var(--border); }
+  .nubi-auth-error, .nubi-auth-success {
+    display: flex; align-items: flex-start; gap: 10px; margin-bottom: 20px; padding: 10px 14px;
+    border-radius: var(--radius-control); font-size: 13px; line-height: 1.5; border: 1px solid; border-left-width: 2px;
   }
-  .nubi-auth-social-btn:active { transform: scale(0.98); }
-  .nubi-auth-social-btn:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring);
-  }
-
-  /* Divider "or" separator */
-  .nubi-auth-divider {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    margin: 1.25rem 0;
-    font-size: 0.75rem;
-    color: var(--text-muted);
-  }
-  .nubi-auth-divider::before,
-  .nubi-auth-divider::after {
-    content: '';
-    flex: 1;
-    border-top: 1px solid var(--border);
-  }
-
-  /* Error alert banner */
-  .nubi-auth-error {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.625rem;
-    margin-bottom: 1.25rem;
-    padding: 0.75rem 1rem;
-    border-radius: 0.75rem;
-    border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
-    background: var(--danger-bg);
-    color: var(--danger-fg);
-    font-size: 0.8125rem;
-    line-height: 1.5;
-  }
-
-  /* Success alert banner */
-  .nubi-auth-success {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.625rem;
-    margin-bottom: 1.25rem;
-    padding: 0.75rem 1rem;
-    border-radius: 0.75rem;
-    border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
-    background: var(--success-bg);
-    color: var(--success-fg);
-    font-size: 0.8125rem;
-    line-height: 1.5;
-  }
-
-  /* Demo/info checkbox card */
+  .nubi-auth-error   { background: var(--danger-bg);  border-color: color-mix(in srgb, var(--danger) 25%, transparent);  border-left-color: var(--danger);  color: var(--danger-fg); }
+  .nubi-auth-success { background: var(--success-bg); border-color: color-mix(in srgb, var(--success) 25%, transparent); border-left-color: var(--success); color: var(--success-fg); }
   .nubi-auth-checkbox-card {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.75rem;
-    padding: 0.875rem 1rem;
-    border-radius: 0.875rem;
-    border: 1px solid var(--border);
-    background: var(--bg);
-    cursor: pointer;
-    transition: background 120ms, border-color 120ms;
+    display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px; cursor: pointer;
+    border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface);
+    transition: border-color var(--dur-1) var(--ease-out);
   }
-  .nubi-auth-checkbox-card:hover {
-    background: var(--surface-2);
-    border-color: color-mix(in srgb, var(--primary) 30%, transparent);
-  }
+  .nubi-auth-checkbox-card:hover { border-color: var(--ink); }
 
-  /* Input wrapper with icon (relative container) */
-  .nubi-input-icon-wrap {
-    position: relative;
-    display: block;
-  }
+  /* Legacy icon wrapper: left gutter ONLY when a left icon exists (login indent fix) */
+  .nubi-input-icon-wrap { position: relative; display: block; }
   .nubi-input-icon-wrap .nubi-input-icon-left {
-    position: absolute;
-    left: 0.875rem;
-    top: 50%;
-    transform: translateY(-50%);
-    pointer-events: none;
-    color: var(--text-muted);
+    position: absolute; left: 12px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--text-muted);
   }
   .nubi-input-icon-wrap .nubi-input-icon-right {
-    position: absolute;
-    right: 0.75rem;
-    top: 50%;
-    transform: translateY(-50%);
-    color: var(--text-muted);
-    cursor: pointer;
-    padding: 0.25rem;
-    border-radius: 0.375rem;
-    transition: color 100ms;
+    position: absolute; right: 8px; top: 50%; transform: translateY(-50%); padding: 4px; cursor: pointer;
+    color: var(--text-muted); background: none; border: 0; border-radius: var(--radius-control);
+    transition: color var(--dur-1) var(--ease-out);
   }
   .nubi-input-icon-wrap .nubi-input-icon-right:hover { color: var(--text); }
-  .nubi-input-icon-wrap .nubi-input-icon-right:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--ring);
-  }
-  .nubi-input-icon-wrap .nubi-input { padding-left: 2.5rem; }
-  .nubi-input-icon-wrap .nubi-input-has-right { padding-right: 2.75rem; }
+  .nubi-input-icon-wrap:has(.nubi-input-icon-left) .nubi-input { padding-left: 40px; }
+  .nubi-input-icon-wrap .nubi-input-has-right { padding-right: 44px; }
 
-  /* Password strength bar */
-  .nubi-pw-strength {
-    display: flex;
-    gap: 0.25rem;
-    height: 3px;
-    margin-top: 0.375rem;
-  }
-  .nubi-pw-strength-seg {
-    flex: 1;
-    border-radius: 9999px;
-    background: var(--border);
-    transition: background 200ms;
-  }
-  .nubi-pw-strength-seg.filled-1 { background: #ef4444; }
-  .nubi-pw-strength-seg.filled-2 { background: #f97316; }
-  .nubi-pw-strength-seg.filled-3 { background: #eab308; }
-  .nubi-pw-strength-seg.filled-4 { background: #22c55e; }
-
-  /* ── SWITCH / TOGGLE ──────────────────────────────────────────────────────── */
-  .nubi-switch {
-    position: relative;
-    display: inline-flex; height: 1.25rem; width: 2.25rem;
-    flex-shrink: 0; cursor: pointer; border-radius: 9999px;
-    border: 2px solid transparent;
-    transition: background 200ms; background: var(--surface-2);
-  }
-  .nubi-switch:disabled { pointer-events: none; opacity: 0.5; }
-  .nubi-switch:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring); }
-  .nubi-switch[aria-checked="true"] { background: var(--primary); }
-  .nubi-switch-thumb {
-    pointer-events: none;
-    display: inline-block; height: 1rem; width: 1rem;
-    border-radius: 9999px; background: #fff;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
-    transition: transform 200ms;
-    transform: translateX(0);
-  }
-  .nubi-switch[aria-checked="true"] .nubi-switch-thumb { transform: translateX(1rem); }
-
+  /* Password strength: square segments, token colours */
+  .nubi-pw-strength { display: flex; gap: 4px; height: 3px; margin-top: 6px; }
+  .nubi-pw-strength-seg { flex: 1; background: var(--border); transition: background-color var(--dur-2) var(--ease-out); }
+  .nubi-pw-strength-seg.filled-1 { background: var(--danger); }
+  .nubi-pw-strength-seg.filled-2 { background: var(--warning); }
+  .nubi-pw-strength-seg.filled-3 { background: var(--viz-7); }
+  .nubi-pw-strength-seg.filled-4 { background: var(--success); }
 }
 
-/* ── Design-system animations (outside @layer so they're always available) ─────
-   Used by Modal, Toast, Tooltip, Drawer primitives in src/components/ui. */
+/* ── Keyframes (outside @layer so they are always available) ────────────────── */
+@keyframes nubi-spin        { to { transform: rotate(360deg); } }
+@keyframes nubi-pulse       { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+@keyframes nubi-skel-in     { from { opacity: 0; } to { opacity: 1; } }
+@keyframes nubi-fade-in     { from { opacity: 0; } to { opacity: 1; } }
+@keyframes nubi-fade-out    { from { opacity: 1; } to { opacity: 0; } }
+@keyframes nubi-scale-in    { from { opacity: 0; transform: scale(.96); } to { opacity: 1; transform: scale(1); } }
+@keyframes nubi-scale-out   { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(.96); } }
+@keyframes nubi-slide-up    { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes nubi-slide-down  { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes nubi-slide-right { from { opacity: 0; transform: translateX(-4px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes nubi-tip-in      { from { opacity: 0; transform: scale(.97); } to { opacity: 1; transform: scale(1); } }
+@keyframes nubi-toast-in    { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes nubi-toast-out   { from { opacity: 1; transform: translateY(0); max-height: 120px; margin-bottom: 8px; }
+                              to   { opacity: 0; transform: translateY(4px); max-height: 0; margin-bottom: 0; } }
 
-@keyframes nubi-fade-in       { from { opacity: 0 }                                to { opacity: 1 } }
-@keyframes nubi-fade-out      { from { opacity: 1 }                                to { opacity: 0 } }
-@keyframes nubi-scale-in      { from { opacity: 0; transform: scale(0.95) }        to { opacity: 1; transform: scale(1) } }
-@keyframes nubi-scale-out     { from { opacity: 1; transform: scale(1) }           to { opacity: 0; transform: scale(0.95) } }
-@keyframes nubi-slide-up      { from { opacity: 0; transform: translateY(8px) }    to { opacity: 1; transform: translateY(0) } }
-@keyframes nubi-slide-down    { from { opacity: 0; transform: translateY(-8px) }   to { opacity: 1; transform: translateY(0) } }
-@keyframes nubi-slide-right   { from { opacity: 0; transform: translateX(-8px) }   to { opacity: 1; transform: translateX(0) } }
-@keyframes nubi-toast-in      { from { opacity: 0; transform: translateX(100%) }   to { opacity: 1; transform: translateX(0) } }
-@keyframes nubi-toast-out     { from { opacity: 1; transform: translateX(0); max-height: 120px; margin-bottom: 0.5rem }
-                                 to   { opacity: 0; transform: translateX(100%); max-height: 0; margin-bottom: 0 } }
+.nubi-animate-fade-in   { animation: nubi-fade-in   var(--dur-2) var(--ease-out) both; }
+.nubi-animate-scale-in  { animation: nubi-scale-in  var(--dur-2) var(--ease-out) both; }
+.nubi-animate-slide-up  { animation: nubi-slide-up  var(--dur-3) var(--ease-out) both; }
+.nubi-animate-toast-in  { animation: nubi-toast-in  var(--dur-3) var(--ease-out) both; }
+.nubi-animate-toast-out { animation: nubi-toast-out var(--dur-2) var(--ease-out) both; }
 
-.nubi-animate-fade-in    { animation: nubi-fade-in    150ms ease forwards; }
-.nubi-animate-scale-in   { animation: nubi-scale-in   160ms cubic-bezier(0.34, 1.2, 0.64, 1) forwards; }
-.nubi-animate-slide-up   { animation: nubi-slide-up   180ms cubic-bezier(0.22, 1, 0.36, 1) forwards; }
-.nubi-animate-toast-in   { animation: nubi-toast-in   280ms cubic-bezier(0.22, 1, 0.36, 1) forwards; }
-.nubi-animate-toast-out  { animation: nubi-toast-out  240ms ease forwards; }
+/* ── BrandLoader (src/components/ui/BrandLoader.tsx) ──────────────────────────
+   The ribbon draws in over 900ms (stroke-dashoffset), the arrowhead settles with
+   a 2px upward nudge, a 400ms rest, then it fades and loops. 1700ms cycle.
+   Under reduced motion: the static mark plus "Loading…". */
+.nubi-brand-loader-svg { display: block; overflow: visible; color: var(--ink); animation: nubi-loader-cycle 1700ms linear infinite; }
+.nubi-brand-loader-ribbon { animation: nubi-loader-draw 1700ms cubic-bezier(.65, 0, .35, 1) infinite; }
+.nubi-brand-loader-head   { animation: nubi-loader-head 1700ms var(--ease-out) infinite; }
+.nubi-brand-loader-rm     { display: none; }
+@keyframes nubi-loader-draw  { 0% { stroke-dashoffset: var(--len); } 53% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: 0; } }
+@keyframes nubi-loader-head  { 0%, 40% { opacity: 0; transform: translateY(var(--nudge)); } 56% { opacity: 1; transform: translateY(0); } 100% { opacity: 1; transform: translateY(0); } }
+@keyframes nubi-loader-cycle { 0%, 76% { opacity: 1; } 90%, 100% { opacity: 0; } }
 
-@media (prefers-reduced-motion: reduce) {
-  .nubi-animate-fade-in, .nubi-animate-scale-in,
-  .nubi-animate-slide-up, .nubi-animate-toast-in { animation: none; }
-}
-
-/* ── BrandLoader (src/components/ui/BrandLoader.jsx) ────────────────────────
-   Branded loading indicator: a slim brand-gradient ring spins around the
-   Nubi mark, which breathes gently in place. Used for full-page / route-level
-   loading states in place of a generic spinner. */
-
-.nubi-brand-loader-ring-wrap {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.nubi-brand-loader-ring {
-  animation: nubi-loader-spin 1.3s linear infinite;
-  filter: drop-shadow(0 0 6px rgba(23, 179, 163, 0.35));
-}
-.nubi-brand-loader-mark {
-  position: absolute;
-  inset: 0;
-  margin: auto;
-  object-fit: contain;
-  animation: nubi-loader-breathe 1.9s ease-in-out infinite;
-}
-@keyframes nubi-loader-spin {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
-}
-@keyframes nubi-loader-breathe {
-  0%, 100% { opacity: 0.78; transform: scale(0.94); }
-  50%      { opacity: 1;    transform: scale(1.05); }
-}
-@keyframes nubi-loader-static-pulse {
-  0%, 100% { opacity: 0.5; }
-  50%      { opacity: 1; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .nubi-brand-loader-ring,
-  .nubi-brand-loader-mark {
-    animation: nubi-loader-static-pulse 2.2s ease-in-out infinite;
-    transform: none;
-  }
-}
-
-/* ── Navbar (src/components/Navbar.jsx) ────────────────────────────────────────
-   Backdrop blur + smooth mobile drawer. */
+/* ── Navbar / footer / scroll chrome (rules, not shadows) ─────────────────── */
 .nubi-navbar {
-  position: sticky;
-  top: 0;
-  z-index: var(--z-sticky);
-  background: color-mix(in srgb, var(--surface) 88%, transparent);
-  border-bottom: 1px solid var(--border);
-  backdrop-filter: blur(14px) saturate(180%);
-  -webkit-backdrop-filter: blur(14px) saturate(180%);
-  transition: background 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+  position: sticky; top: 0; z-index: var(--z-sticky);
+  background: var(--surface); border-bottom: 1px solid var(--border);
 }
-.nubi-navbar.scrolled {
-  box-shadow: 0 1px 0 var(--border), 0 4px 16px -4px rgba(14,23,41,0.06);
+.nubi-navbar.scrolled { border-bottom-color: var(--ink); }
+.nubi-footer-brand-rule { height: 2px; background: var(--ink); }
+
+.nubi-sidebar-scroll { scrollbar-width: thin; scrollbar-color: transparent transparent; scrollbar-gutter: stable; }
+.nubi-sidebar-scroll:hover { scrollbar-color: var(--frame-line) transparent; }
+.nubi-sidebar-scroll::-webkit-scrollbar { width: 8px; }
+.nubi-sidebar-scroll::-webkit-scrollbar-track { background: transparent; }
+.nubi-sidebar-scroll::-webkit-scrollbar-thumb { background-color: transparent; border: 2px solid transparent; border-radius: 0; background-clip: content-box; }
+.nubi-sidebar-scroll:hover::-webkit-scrollbar-thumb { background-color: var(--frame-line); }
+.nubi-sidebar-scroll::-webkit-scrollbar-thumb:hover { background-color: var(--text-muted); }
+
+/* ── App shell: page-level layout classes ───────────────────────────────────────
+   Presentation helpers still used by pages; PageShell (shell squad) is the new
+   page template and builds on the same tokens. ────────────────────────────── */
+
+.nubi-page { min-height: 100%; padding: 24px var(--sheet-pad); }
+@media (min-width: 1024px) { .nubi-page { padding-block: 32px; } }
+
+.nubi-page-header { display: flex; flex-direction: column; gap: 16px; margin-bottom: 24px; }
+@media (min-width: 640px) {
+  .nubi-page-header { flex-direction: row; align-items: center; justify-content: space-between; }
 }
-.dark .nubi-navbar.scrolled {
-  box-shadow: 0 1px 0 var(--border), 0 4px 20px -4px rgba(0,0,0,0.3);
+.nubi-page-title {
+  font-family: var(--font-ui); font-size: var(--t-page); line-height: var(--lh-page);
+  letter-spacing: var(--tr-page); font-weight: 600; color: var(--text);
+}
+.nubi-page-subtitle { margin-top: 4px; font-size: var(--t-small); line-height: var(--lh-small); color: var(--text-muted); }
+
+/* Toolbar row: search + sort + view toggle */
+.nubi-toolbar { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+@media (min-width: 640px) { .nubi-toolbar { flex-direction: row; align-items: center; } }
+
+.nubi-search-wrap { position: relative; flex: 1; }
+.nubi-search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--text-muted); }
+.nubi-search-input {
+  display: block; width: 100%; height: 36px; padding: 0 36px;
+  font-size: 14px; color: var(--text);
+  background: var(--surface); border: 1px solid var(--border-control); border-radius: var(--radius-control);
+  transition: border-color var(--dur-1) var(--ease-out);
+}
+.nubi-search-input::placeholder { color: var(--text-subtle); opacity: 1; }
+.nubi-search-input:hover:not(:focus) { border-color: var(--text-muted); }
+.nubi-search-input:focus { border-color: var(--ring); }
+.nubi-search-clear {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  display: flex; align-items: center; justify-content: center; width: 24px; height: 24px;
+  color: var(--text-muted); background: transparent; border: none; border-radius: var(--radius-control); cursor: pointer;
+  transition: color var(--dur-1) var(--ease-out), background-color var(--dur-1) var(--ease-out);
+}
+.nubi-search-clear:hover { color: var(--text); background: var(--frame-hover); }
+
+.nubi-sort-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px;
+  font-size: 13px; font-weight: 500; color: var(--text); white-space: nowrap; user-select: none; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--frame-line); border-radius: var(--radius-control);
+  transition: border-color var(--dur-1) var(--ease-out);
+}
+.nubi-sort-btn:hover { border-color: var(--ink); }
+
+.nubi-sort-menu {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: var(--z-dropdown); min-width: 9rem; padding: 4px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sheet); box-shadow: var(--shadow-pop);
+}
+.nubi-sort-option {
+  display: flex; align-items: center; width: 100%; padding: 6px 10px; font-size: 13px; text-align: left; color: var(--text);
+  background: transparent; border: none; border-radius: var(--radius-control); cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+.nubi-sort-option:hover  { background: var(--surface-2); }
+.nubi-sort-option.active { color: var(--accent); font-weight: 600; }
+
+.nubi-view-toggle { display: flex; height: 36px; flex-shrink: 0; overflow: hidden; border: 1px solid var(--border-control); border-radius: var(--radius-control); }
+.nubi-view-btn {
+  display: flex; align-items: center; justify-content: center; width: 36px; border: none; cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.nubi-view-btn + .nubi-view-btn { border-left: 1px solid var(--border-control); }
+.nubi-view-btn.active { background: var(--ink); color: var(--ink-fg); }
+.nubi-view-btn:not(.active) { background: var(--surface); color: var(--text-muted); }
+.nubi-view-btn:not(.active):hover { background: var(--surface-2); color: var(--text); }
+.nubi-view-btn:focus-visible { outline-offset: -2px; }
+
+.nubi-card-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+@media (min-width: 640px)  { .nubi-card-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 1024px) { .nubi-card-grid { grid-template-columns: repeat(3, 1fr); } }
+
+/* Resource card: thumbnail + body. Hover turns the border ink; no lift. */
+.nubi-resource-card {
+  position: relative; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-control);
+  transition: border-color var(--dur-1) var(--ease-out);
+}
+.nubi-resource-card:hover { border-color: var(--ink); }
+.nubi-resource-card-body { display: flex; flex-direction: column; flex: 1; gap: 12px; padding: 14px 16px 16px; }
+
+/* List container */
+.nubi-list-wrap { overflow: hidden; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-control); }
+.nubi-list-header { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: var(--surface); border-bottom: 2px solid var(--ink); }
+.nubi-list-header-label { font: 500 11px/1.4 var(--font-mono); letter-spacing: var(--tr-label); text-transform: uppercase; color: var(--text-muted); }
+.nubi-list-row {
+  display: flex; align-items: center; gap: 12px; padding: 8px 16px; min-height: 36px; border-bottom: 1px solid var(--border);
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+.nubi-list-row:last-child { border-bottom: 0; }
+.nubi-list-row:hover { background: var(--surface-2); }
+.nubi-list-row.selected { background: var(--accent-soft); }
+
+/* Selection action bar: bulk actions replace the toolbar */
+.nubi-selection-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 16px; padding: 6px 12px;
+  font-size: 13px; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-left: 2px solid var(--accent); border-radius: var(--radius-control);
 }
 
-/* ── Footer (src/components/Footer.jsx) ────────────────────────────────────── */
-.nubi-footer-brand-rule {
-  height: 1px;
-  background: linear-gradient(90deg, transparent 0%, #17b3a3 30%, #2456a6 70%, transparent 100%);
-  opacity: 0.5;
+/* Error state box */
+.nubi-error-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 64px 24px; text-align: center; }
+.nubi-error-icon {
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 40px; height: 40px;
+  color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: var(--radius-control);
 }
 
-/* ── Sidebar scroll area (src/components/app/AppSidebar.jsx) ───────────────────
-   A quiet, thin scrollbar that only paints on hover, so the nav list scrolls
-   when the link set outgrows the rail without a chunky OS scrollbar cutting
-   into the rounded nav pills. Firefox + WebKit/Blink both covered. */
-.nubi-sidebar-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-  scrollbar-gutter: stable;
+/* Topbar action button: AppTopbar rail items */
+.nubi-topbar-action {
+  position: relative; display: flex; align-items: center; justify-content: center; width: 32px; height: 32px;
+  color: var(--text-muted); background: transparent; border: 1px solid transparent; border-radius: var(--radius-control); cursor: pointer;
+  transition: color var(--dur-1) var(--ease-out), background-color var(--dur-1) var(--ease-out);
 }
-.nubi-sidebar-scroll:hover {
-  scrollbar-color: var(--border) transparent;
-}
-.nubi-sidebar-scroll::-webkit-scrollbar {
-  width: 8px;
-}
-.nubi-sidebar-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-.nubi-sidebar-scroll::-webkit-scrollbar-thumb {
-  background-color: transparent;
-  border: 2px solid transparent;
-  border-radius: 9999px;
-  background-clip: content-box;
-}
-.nubi-sidebar-scroll:hover::-webkit-scrollbar-thumb {
-  background-color: var(--border);
-}
-.nubi-sidebar-scroll::-webkit-scrollbar-thumb:hover {
-  background-color: var(--text-muted);
-}
-
-/* ── Logo (src/components/Logo.jsx) ───────────────────────────────────────────
-   Wordmark gradient per theme: the light gradient opens on brand navy, which
-   disappears against dark surfaces — dark mode uses lifted stops instead
-   (same pairing as .lp-hero-gradient-text). */
-.nubi-logo-word {
-  background: linear-gradient(135deg, #1b2363, #2456a6, #17b3a3);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-}
-.dark .nubi-logo-word {
-  background: linear-gradient(135deg, #8db4f5, #5fd6c8, #2dd4bf);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-/* The mark's navy strokes sink into dark surfaces — lift them slightly. */
-.dark .nubi-logo-mark {
-  filter: brightness(1.22) saturate(1.05);
-}
+.nubi-topbar-action:hover { color: var(--text); background: var(--frame-hover); }
+.nubi-topbar-action.active { background: var(--ink); color: var(--ink-fg); }
 
 /* ── Headless grid engine (dnd-kit + CSS Grid) ─────────────────────────────────
    Owned by src/dashboards/grid/GridCanvas.jsx. These DO NOT depend on any RGL or
@@ -1007,7 +1016,7 @@
 .grid-ghost {
   background-color: color-mix(in srgb, var(--primary) 12%, transparent);
   border: 2px dashed var(--primary);
-  border-radius: 0.75rem;
+  border-radius: 2px;
   z-index: 1;
 }
 
@@ -1068,391 +1077,24 @@
 .prose-chat table { font-size: 0.75rem; }
 .prose-chat th, .prose-chat td { padding: 0.4rem 0.6rem; }
 
-/* ── App shell — page-level layout classes ──────────────────────────────────
-   Stripe-grade spacing, consistent page anatomy, reduces utility soup.
-   ─────────────────────────────────────────────────────────────────────────── */
-
-/* Page root — constrains width, owns vertical padding */
-.nubi-page {
-  min-height: 100%;
-  padding: 1.5rem 1rem;
-}
-@media (min-width: 640px)  { .nubi-page { padding: 1.75rem 1.5rem; } }
-@media (min-width: 1024px) { .nubi-page { padding: 2rem 2rem; } }
-
-/* Page header row — title + CTA */
-.nubi-page-header {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  margin-bottom: 1.5rem;
-}
-@media (min-width: 640px) {
-  .nubi-page-header {
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
+/* ══ Reduced motion: the global kill switch ═══════════════════════════════════
+   Everything lands on its final state immediately. Shimmer becomes a static
+   tint, reveal content shows at once, spinners switch to a slow opacity pulse
+   (a progress cue that involves no movement), BrandLoader shows the static mark
+   plus "Loading…". JS-driven animation must read the media query itself. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
   }
+  .lp-reveal { opacity: 1 !important; transform: none !important; }
+  .nubi-skeleton, .nubi-shimmer { animation: none !important; opacity: .7; }
+  .nubi-spinner svg { animation: nubi-pulse 1.6s ease-in-out infinite !important; animation-duration: 1.6s !important; animation-iteration-count: infinite !important; }
+  .nubi-brand-loader-svg, .nubi-brand-loader-ribbon, .nubi-brand-loader-head { animation: none !important; }
+  .nubi-brand-loader-ribbon { stroke-dashoffset: 0 !important; }
+  .nubi-brand-loader-rm { display: block; }
+  .nubi-tooltip-pop { animation: none !important; }
 }
-
-.nubi-page-title {
-  font-family: 'Space Grotesk', system-ui, sans-serif;
-  font-size: 1.375rem;
-  font-weight: 600;
-  color: var(--text);
-  line-height: 1.2;
-  letter-spacing: -0.01em;
-}
-@media (min-width: 640px) { .nubi-page-title { font-size: 1.5rem; } }
-
-.nubi-page-subtitle {
-  font-size: 0.8125rem;
-  color: var(--text-muted);
-  margin-top: 0.1875rem;
-  line-height: 1.4;
-}
-
-/* Toolbar row — search + sort + view toggle */
-.nubi-toolbar {
-  display: flex;
-  flex-direction: column;
-  gap: 0.625rem;
-  margin-bottom: 1.25rem;
-}
-@media (min-width: 640px) {
-  .nubi-toolbar {
-    flex-direction: row;
-    align-items: center;
-  }
-}
-
-/* Search input wrapper with icon */
-.nubi-search-wrap {
-  position: relative;
-  flex: 1;
-}
-.nubi-search-icon {
-  position: absolute;
-  left: 0.75rem;
-  top: 50%;
-  transform: translateY(-50%);
-  pointer-events: none;
-  color: var(--text-muted);
-}
-.nubi-search-input {
-  display: block;
-  width: 100%;
-  height: 2.375rem;
-  padding: 0 2.25rem 0 2.25rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 0.75rem;
-  font-size: 0.875rem;
-  color: var(--text);
-  transition: border-color 100ms, box-shadow 100ms;
-}
-.nubi-search-input::placeholder { color: var(--text-muted); }
-.nubi-search-input:focus {
-  outline: none;
-  border-color: color-mix(in srgb, var(--ring) 60%, transparent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 18%, transparent);
-}
-.nubi-search-clear {
-  position: absolute;
-  right: 0.625rem;
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.5rem;
-  height: 1.5rem;
-  border-radius: 0.375rem;
-  color: var(--text-muted);
-  background: transparent;
-  transition: color 100ms, background 100ms;
-  cursor: pointer;
-  border: none;
-}
-.nubi-search-clear:hover { color: var(--text); background: var(--surface-2); }
-
-/* Sort / filter pill button */
-.nubi-sort-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  height: 2.375rem;
-  padding: 0 0.875rem;
-  border-radius: 0.75rem;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--text);
-  cursor: pointer;
-  transition: background 100ms, border-color 100ms;
-  white-space: nowrap;
-  user-select: none;
-}
-.nubi-sort-btn:hover { background: var(--surface-2); }
-.nubi-sort-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring); }
-
-/* Sort dropdown menu */
-.nubi-sort-menu {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 0.375rem);
-  z-index: var(--z-dropdown);
-  min-width: 9rem;
-  padding: 0.25rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 0.875rem;
-  box-shadow: var(--shadow-lg);
-}
-.nubi-sort-option {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  padding: 0.5rem 0.75rem;
-  border-radius: 0.625rem;
-  font-size: 0.8125rem;
-  color: var(--text);
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  text-align: left;
-  transition: background 100ms;
-}
-.nubi-sort-option:hover  { background: var(--surface-2); }
-.nubi-sort-option.active { color: var(--primary); font-weight: 600; }
-
-/* View toggle (grid/list) */
-.nubi-view-toggle {
-  display: flex;
-  height: 2.375rem;
-  border: 1px solid var(--border);
-  border-radius: 0.75rem;
-  overflow: hidden;
-  flex-shrink: 0;
-}
-.nubi-view-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 2.375rem;
-  border: none;
-  cursor: pointer;
-  transition: background 100ms, color 100ms;
-}
-.nubi-view-btn + .nubi-view-btn { border-left: 1px solid var(--border); }
-.nubi-view-btn.active { background: var(--primary); color: var(--primary-fg); }
-.nubi-view-btn:not(.active) { background: var(--surface); color: var(--text-muted); }
-.nubi-view-btn:not(.active):hover { background: var(--surface-2); color: var(--text); }
-.nubi-view-btn:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--ring); }
-
-/* Card grid */
-.nubi-card-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 0.875rem;
-}
-@media (min-width: 640px)  { .nubi-card-grid { grid-template-columns: repeat(2, 1fr); } }
-@media (min-width: 1024px) { .nubi-card-grid { grid-template-columns: repeat(3, 1fr); } }
-
-/* Resource card — thumbnail + body */
-.nubi-resource-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 0.875rem;
-  overflow: hidden;
-  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
-}
-.nubi-resource-card:hover {
-  border-color: color-mix(in srgb, var(--primary) 40%, transparent);
-  box-shadow: var(--shadow-md);
-  transform: translateY(-1px);
-}
-.nubi-resource-card-body {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  padding: 0.875rem 1rem 1rem;
-  gap: 0.75rem;
-}
-
-/* List container */
-.nubi-list-wrap {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 0.875rem;
-  overflow: hidden;
-}
-.nubi-list-header {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.5rem 1rem;
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface-2) 50%, transparent);
-}
-.nubi-list-header-label {
-  font-size: 0.6875rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  color: var(--text-muted);
-}
-.nubi-list-row {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.625rem 1rem;
-  border-bottom: 1px solid var(--border);
-  transition: background 100ms;
-}
-.nubi-list-row:last-child { border-bottom: 0; }
-.nubi-list-row:hover { background: color-mix(in srgb, var(--surface-2) 60%, transparent); }
-.nubi-list-row.selected { background: color-mix(in srgb, var(--primary) 5%, transparent); }
-
-/* Notice banner (success/info) */
-.nubi-notice {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  padding: 0.625rem 1rem;
-  border-radius: 0.75rem;
-  font-size: 0.8125rem;
-  margin-bottom: 1rem;
-}
-.nubi-notice-success {
-  background: var(--success-bg);
-  border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
-  color: var(--success-fg);
-}
-.nubi-notice-error {
-  background: var(--danger-bg);
-  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
-  color: var(--danger-fg);
-}
-
-/* Selection action bar */
-.nubi-selection-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.625rem;
-  padding: 0.5rem 1rem;
-  margin-bottom: 0.875rem;
-  border-radius: 0.875rem;
-  background: color-mix(in srgb, var(--primary) 5%, transparent);
-  border: 1px solid color-mix(in srgb, var(--primary) 25%, transparent);
-  font-size: 0.8125rem;
-}
-
-/* Error state box */
-.nubi-error-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: 4rem 1.5rem;
-  gap: 1rem;
-}
-.nubi-error-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 3rem;
-  height: 3rem;
-  border-radius: 1rem;
-  background: var(--danger-bg);
-  color: var(--danger);
-  flex-shrink: 0;
-}
-
-/* Skeleton shimmer — richer shimmer than the plain pulse */
-@keyframes nubi-shimmer {
-  0%   { background-position: -600px 0; }
-  100% { background-position:  600px 0; }
-}
-.nubi-shimmer {
-  background: linear-gradient(
-    90deg,
-    var(--surface-2) 25%,
-    var(--surface-3) 50%,
-    var(--surface-2) 75%
-  );
-  background-size: 1200px 100%;
-  animation: nubi-shimmer 1.6s ease-in-out infinite;
-  border-radius: 0.5rem;
-}
-@media (prefers-reduced-motion: reduce) { .nubi-shimmer { animation: none; } }
-
-/* Topbar action button — used by AppTopbar rail items */
-.nubi-topbar-action {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 2.125rem;
-  height: 2.125rem;
-  border-radius: 0.5rem;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: color 100ms, background 100ms, border-color 100ms, box-shadow 100ms;
-}
-.nubi-topbar-action:hover {
-  color: var(--text);
-  background: var(--surface-2);
-  border-color: color-mix(in srgb, var(--border) 80%, var(--primary));
-}
-.nubi-topbar-action.active {
-  background: var(--primary);
-  color: var(--primary-fg);
-  border-color: var(--primary);
-  box-shadow: 0 1px 4px color-mix(in srgb, var(--primary) 30%, transparent);
-}
-.nubi-topbar-action:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring);
-}
-
-/* Dropdown menu shared chrome */
-.nubi-dropdown {
-  position: absolute;
-  z-index: var(--z-dropdown);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 0.875rem;
-  box-shadow: var(--shadow-lg);
-  padding: 0.25rem;
-  min-width: 10rem;
-}
-.nubi-dropdown-item {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  width: 100%;
-  padding: 0.5rem 0.75rem;
-  border-radius: 0.625rem;
-  font-size: 0.8125rem;
-  color: var(--text);
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  text-align: left;
-  text-decoration: none;
-  transition: background 100ms;
-  min-height: 2.25rem;
-}
-.nubi-dropdown-item:hover { background: var(--surface-2); }
-.nubi-dropdown-item.danger { color: var(--danger); }
-.nubi-dropdown-item.danger:hover { background: var(--danger-bg); }
-.nubi-dropdown-divider { height: 1px; background: var(--border); margin: 0.25rem 0; }

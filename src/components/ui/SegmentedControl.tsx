@@ -1,8 +1,8 @@
 /**
  * SegmentedControl — Nubi mutually-exclusive option selector primitive.
  *
- * Visually: a pill-shaped container with sliding active selection.
- * Semantically: a radiogroup.
+ * Visually: a square hairline group; the active segment is an ink fill.
+ * Semantically: a radiogroup (arrow keys move and select, roving tabindex).
  *
  * Usage:
  *   <SegmentedControl
@@ -30,7 +30,7 @@
  *   value     string — currently selected value
  *   onChange  (value: string) => void
  *   options   Array<{ value, label, ariaLabel?, disabled? }>
- *   size      'sm' | 'md' (default)
+ *   size      'sm' 28px | 'md' 32px (default) | 'lg' 36px
  *   className
  *
  * Keyboard: Arrow keys navigate, Enter/Space select.
@@ -48,6 +48,12 @@ export default function SegmentedControl({
   options = [],
   size = 'md',
   className,
+}: {
+  value?: any
+  onChange?: (value: any) => void
+  options?: { value: any; label: React.ReactNode; ariaLabel?: string; disabled?: boolean }[]
+  size?: 'sm' | 'md' | 'lg'
+  className?: string
 }) {
   const containerRef = useRef(null)
 
@@ -70,15 +76,11 @@ export default function SegmentedControl({
     }
   }
 
-  const sizeClasses = size === 'sm'
-    ? { seg: 'px-2.5 py-1 text-xs' }
-    : { seg: 'px-3 py-1.5 text-sm' }
-
   return (
     <div
       ref={containerRef}
       role="radiogroup"
-      className={cx('nubi-segmented', className)}
+      className={cx('nubi-segmented', size === 'sm' && 'nubi-segmented-sm', size === 'lg' && 'nubi-segmented-lg', className)}
     >
       {options.map((opt, idx) => {
         const isActive = value === opt.value
@@ -94,8 +96,7 @@ export default function SegmentedControl({
             onClick={() => !opt.disabled && onChange?.(opt.value)}
             onKeyDown={(e) => handleKeyDown(e, idx)}
             className={cx(
-              'nubi-segment',
-              sizeClasses.seg,
+              'nubi-segment nubi-focus-inset',
               isActive && 'active',
               opt.disabled && 'opacity-40 pointer-events-none',
             )}

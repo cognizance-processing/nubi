@@ -2,7 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" href="/nubi.png" />
+    <!-- Favicon set: ICO first with sizes (works around Chrome preferring it over the SVG),
+         then the SVG (swaps ink/white with prefers-color-scheme), then apple-touch + manifest. -->
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
     <!-- ── SEO ─────────────────────────────────────────────────────────────── -->
@@ -17,8 +22,8 @@
     />
     <link rel="canonical" href="https://nubi.fly.dev/" />
     <meta name="robots" content="index, follow" />
-    <meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#070b21" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#eceef1" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0d0e10" media="(prefers-color-scheme: dark)" />
 
     <!-- Open Graph -->
     <meta property="og:type" content="website" />
@@ -29,10 +34,10 @@
       content="DuckDB-WASM kernel in the tab: zero cold starts, ≈$0 marginal cost per view, unlimited viewers on every plan. Dashboards, SQL + Python flows, embedded analytics — Apache-2.0 open core."
     />
     <meta property="og:url" content="https://nubi.fly.dev/" />
-    <meta property="og:image" content="https://nubi.fly.dev/landing/hero-dark.png" />
+    <meta property="og:image" content="https://nubi.fly.dev/brand/og-image.png" />
     <meta property="og:image:width" content="2400" />
-    <meta property="og:image:height" content="1500" />
-    <meta property="og:image:alt" content="A Nubi dashboard — retail sales overview with KPIs, trend chart, and breakdowns" />
+    <meta property="og:image:height" content="1260" />
+    <meta property="og:image:alt" content="The Nubi mark and the line “Open-source BI that runs in your browser” beside a sample sales dashboard with three KPIs, a weekly revenue bar chart and a regional breakdown" />
 
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image" />
@@ -41,7 +46,8 @@
       name="twitter:description"
       content="Zero cold starts, ≈$0 per dashboard view, unlimited free viewers. Open-source BI with flows, embedding, and 25+ connectors."
     />
-    <meta name="twitter:image" content="https://nubi.fly.dev/landing/hero-dark.png" />
+    <meta name="twitter:image" content="https://nubi.fly.dev/brand/og-image.png" />
+    <meta name="twitter:image:alt" content="The Nubi mark and the line “Open-source BI that runs in your browser” beside a sample sales dashboard" />
 
     <!-- Structured data -->
     <script type="application/ld+json">
@@ -133,13 +139,30 @@
       })();
     </script>
 
-    <!-- ── Google Fonts: Space Grotesk (display) + Inter (body) + JetBrains Mono (data accents) ── -->
+    <!-- ── Fonts ─────────────────────────────────────────────────────────────
+         Instrument Sans (UI + display) and Geist Mono (data) are the only fonts the
+         app shell needs, so they are the only render-blocking stylesheet. Inter,
+         Space Grotesk and JetBrains Mono are still named by saved boards; they
+         load in a second, NON-blocking stylesheet (media swap) and never delay
+         first paint. -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
       rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap"
     />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+      media="print"
+      onload="this.media='all'"
+    />
+    <noscript>
+      <link
+        rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+      />
+    </noscript>
   </head>
   <body>
     <div id="root"></div>

@@ -1,27 +1,34 @@
 /**
- * Button — Nubi design-system button primitive.
+ * Button — Nubi design-system button primitive (Swiss).
  *
  * Usage:
- *   <Button>Save</Button>
- *   <Button variant="secondary" size="sm">Cancel</Button>
+ *   <Button>Save</Button>                                   ink primary, 36px
+ *   <Button variant="secondary" size="sm">Cancel</Button>   hairline, 32px
  *   <Button variant="danger" loading>Deleting…</Button>
  *   <Button variant="ghost" size="icon" aria-label="Close"><X /></Button>
  *
- * asChild renders the first child as the element (not a <button>) — useful
- * for Link buttons: <Button asChild><a href="/foo">Go</a></Button>
+ * Variants: primary (ink fill) | secondary | ghost | outline | danger | accent
+ *           (accent is deprecated and renders as primary: the one blue is for
+ *           selection, focus and links, never a button fill).
+ * Sizes:    xs 28 | sm 32 | md 36 (default) | lg 40 | xl 48 (marketing CTAs)
+ *           icon-xs 28 | icon-sm 32 | icon 36 | icon-lg 40 (square: needs aria-label)
+ * States:   hover (100ms), :active scale(.98), :focus-visible ring, disabled,
+ *           loading (disabled + aria-busy, square-capped spinner, label stays so
+ *           the width never jumps).
  *
- * All buttons get focus-visible rings, transitions, and disabled states.
+ * asChild renders the first child as the element (not a <button>), useful for
+ * link buttons: <Button asChild><a href="/foo">Go</a></Button>
  */
 
 import { forwardRef, type ReactNode, type ButtonHTMLAttributes } from 'react'
-import { Loader2 } from 'lucide-react'
+import Spinner from './Spinner'
 
 function cx(...parts: unknown[]) {
   return parts.filter(Boolean).join(' ')
 }
 
 type Variant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'outline' | 'accent'
-type Size = 'xs' | 'sm' | 'md' | 'lg' | 'xl' | 'icon' | 'icon-sm' | 'icon-lg'
+type Size = 'xs' | 'sm' | 'md' | 'lg' | 'xl' | 'icon' | 'icon-xs' | 'icon-sm' | 'icon-lg'
 
 const VARIANT: Record<Variant, string> = {
   primary:   'nubi-btn-primary',
@@ -39,6 +46,7 @@ const SIZE: Record<Size, string> = {
   lg:      'nubi-btn-lg',
   xl:      'nubi-btn-xl',
   icon:    'nubi-btn-icon',
+  'icon-xs': 'nubi-btn-icon-xs',
   'icon-sm': 'nubi-btn-icon-sm',
   'icon-lg': 'nubi-btn-icon-lg',
 }
@@ -75,7 +83,7 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
 
   const inner = loading ? (
     <>
-      <Loader2 size={14} className="nubi-btn-spinner" aria-hidden="true" />
+      <Spinner size="xs" className="nubi-btn-spinner" label="" />
       {children}
     </>
   ) : children
@@ -92,6 +100,7 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
       props: {
         ...child.props,
         className: cx(classes, child.props?.className),
+        'aria-disabled': isDisabled || undefined,
         ref,
       },
     }
@@ -103,6 +112,8 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
       className={classes}
       disabled={isDisabled}
       aria-disabled={isDisabled || undefined}
+      aria-busy={loading || undefined}
+      data-loading={loading || undefined}
       {...rest}
     >
       {inner}

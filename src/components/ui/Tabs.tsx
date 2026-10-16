@@ -1,7 +1,10 @@
 /**
- * Tabs — Nubi tab navigation primitive.
+ * Tabs — Nubi tab navigation primitive (Swiss).
  *
- * WAI-ARIA tablist pattern (automatic activation).
+ * WAI-ARIA tablist pattern (automatic activation). The underline variant is a
+ * 1px hairline baseline with a 2px ink underline on the active tab; counts are
+ * mono tabular text, not pills. The list scrolls horizontally on narrow screens
+ * instead of wrapping. Focus rings are drawn inside the tab.
  *
  * Usage:
  *   <Tabs defaultValue="overview">
@@ -19,7 +22,7 @@
  *     ...
  *   </Tabs>
  *
- *   // Pills variant
+ *   // Chip variant: square hairline chips, active = ink fill
  *   <Tabs variant="pills" defaultValue="all">
  *     <TabsList>
  *       <TabsTrigger value="all">All</TabsTrigger>
@@ -37,7 +40,7 @@
  * Props (TabsTrigger):
  *   value     string (required)
  *   disabled  boolean
- *   badge     string | number — small badge rendered after label
+ *   badge     string | number — mono count rendered after the label
  */
 
 import { createContext, useCallback, useContext, useId, useRef, useState } from 'react'
@@ -66,6 +69,14 @@ export function Tabs({
   className,
   children,
   ...rest
+}: {
+  value?: string
+  defaultValue?: string
+  onValueChange?: (value: string) => void
+  variant?: 'underline' | 'pills'
+  className?: string
+  children?: React.ReactNode
+  [k: string]: any
 }) {
   const id = useId()
   const [uncontrolledValue, setUncontrolledValue] = useState(defaultValue ?? '')
@@ -88,7 +99,7 @@ export function Tabs({
 
 // ── TabsList ──────────────────────────────────────────────────────────────
 
-export function TabsList({ className, children, ...rest }) {
+export function TabsList({ className, children, ...rest }: { className?: string; children?: React.ReactNode; [k: string]: any }) {
   const { variant } = useTabs()
   const listRef = useRef(null)
 
@@ -121,7 +132,7 @@ export function TabsList({ className, children, ...rest }) {
 
 // ── TabsTrigger ───────────────────────────────────────────────────────────
 
-export function TabsTrigger({ value, disabled = false, badge, className, children, ...rest }) {
+export function TabsTrigger({ value, disabled = false, badge, className, children, ...rest }: { value: string; disabled?: boolean; badge?: string | number; className?: string; children?: React.ReactNode; [k: string]: any }) {
   const { active, activate, id, variant } = useTabs()
   const isActive = active === value
   const tabId    = `${id}-tab-${value}`
@@ -139,24 +150,20 @@ export function TabsTrigger({ value, disabled = false, badge, className, childre
       onClick={() => !disabled && activate(value)}
       className={cx(
         variant === 'pills' ? 'nubi-tab-pill' : 'nubi-tab',
-        disabled && 'opacity-40 pointer-events-none',
+        'nubi-focus-inset',
         className,
       )}
       {...rest}
     >
       {children}
-      {badge !== undefined && (
-        <span className="ml-1 inline-flex items-center justify-center min-w-[1.125rem] h-[1.125rem] px-1 rounded-full text-[10px] font-semibold bg-surface-2 text-muted">
-          {badge}
-        </span>
-      )}
+      {badge !== undefined && <span className="nubi-tab-count">{badge}</span>}
     </button>
   )
 }
 
 // ── TabsContent ───────────────────────────────────────────────────────────
 
-export function TabsContent({ value, className, children, ...rest }) {
+export function TabsContent({ value, className, children, ...rest }: { value: string; className?: string; children?: React.ReactNode; [k: string]: any }) {
   const { active, id } = useTabs()
   const isActive = active === value
   return (
@@ -166,7 +173,7 @@ export function TabsContent({ value, className, children, ...rest }) {
       aria-labelledby={`${id}-tab-${value}`}
       hidden={!isActive}
       tabIndex={0}
-      className={cx('rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring', className)}
+      className={cx('nubi-focus-inset', className)}
       {...rest}
     >
       {isActive ? children : null}

@@ -1,63 +1,50 @@
 /**
- * Nubi Design-System Primitives — barrel export.
+ * Nubi Design-System Primitives — barrel export (Swiss).
+ * Contract: reports/design-system-tokens.md. Tokens: src/index.css.
  *
- * Import individual primitives:
- *   import Button from '@/components/ui/Button'
+ *   import { Button, Tag, EmptyState, Modal } from '@/components/ui'
  *   import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
  *   import { toast, Toaster } from '@/components/ui/Toast'
  *
- * Or import from the barrel:
- *   import { Button, Badge, Card, Modal } from '@/components/ui'
- *
  * ── Primitive index ────────────────────────────────────────────────────────
  *
- * Button           variants: primary | secondary | ghost | danger | outline | accent
- *                  sizes: xs | sm | md | lg | xl | icon | icon-sm | icon-lg
+ * Button           variants: primary (ink) | secondary | ghost | outline | danger
+ *                  sizes: xs 28 | sm 32 | md 36 | lg 40 | xl 48 | icon-xs/icon-sm/icon/icon-lg
  *                  props: loading, asChild
+ * Tag              variants: neutral | ink | accent | danger | success | warning
+ *                  props: dot, size (sm|md), caps, onRemove, as — replaces every pill
+ * Badge            legacy name for Tag (same look)
  *
- * Input            sizes: sm | md | lg  |  props: error, hint, label, required
+ * Input            sizes: xs | sm | md | lg | xl  |  props: icon, trailing, error, hint, label
  * Field            label, hint, error, required — wraps any form element
- * Select           options array or children <option>  — same props as Input
- * Textarea         same props as Input + rows
+ * Select / Textarea  same props as Input
+ * Checkbox         checked, indeterminate, label
  *
- * Card             raised, interactive, noPadding
+ * Card             raised (2px ink top rule), interactive (ink border on hover), noPadding, as
  * CardHeader / CardTitle / CardDescription / CardBody / CardFooter
  *
- * Badge            variants: default | primary | success | warning | danger | info | accent
- *                  sizes: sm | md | lg  |  dot prop
- *
- * Spinner          sizes: xs | sm | md | lg | xl  |  accent prop
- *
- * Skeleton         className for dimensions
- * Skeleton.Text    lines, lastLineWidth
- * Skeleton.Title
- * Skeleton.Avatar  size (px)
- * Skeleton.Card    rows
+ * Spinner          sizes: xs | sm | md | lg | xl  |  accent, label
+ * Skeleton         className; .Text .Title .Avatar .Card .Rows .Table .Chart .Kpi
+ * BrandLoader      size ('sm'|'md'|'lg'|px), label — the mark draws itself
  *
  * Modal            open, onClose, title, description, size, hideClose, persistent
  * Modal.Body / Modal.Footer
+ * Tooltip          content, kbd, side (top|bottom|left|right), delay, disabled
+ * Toaster / toast  toast.success/error/warning/info/dismiss — mount <Toaster/> once
  *
- * Tooltip          content, side (top|bottom|left|right), delay, disabled
- *
- * Table            columns, rows, zebra, sticky, loading, onSort, sortKey, sortDir
- *
- * EmptyState       icon, title, description, action, compact
- *
- * Toaster          position — mount once at app root
- * toast            imperative API: toast.success/error/warning/info/dismiss
- *
+ * Table            columns, rows, density, selectable, stickyFirstColumn, loading, onSort …
+ * EmptyState       kind (blank|none-match|gated|error), art, icon, title, description,
+ *                  action, secondaryAction, requestId, compact, bordered
  * Tabs             value, defaultValue, onValueChange, variant (underline|pills)
- * TabsList / TabsTrigger / TabsContent
- *
- * SegmentedControl value, onChange, options, size
- *
- * BrandLoader      size ('sm'|'md'|'lg'|px), label — branded full-page/route loader
+ * SegmentedControl value, onChange, options, size (sm|md|lg)
  */
 
 export { default as Button } from './Button.jsx'
-export { default as Input, Field, Select, Textarea } from './Input.jsx'
+export { default as Input, Field, Select, Textarea, Checkbox } from './Input.jsx'
 export { default as Card, CardHeader, CardTitle, CardDescription, CardBody, CardFooter } from './Card.jsx'
 export { default as Badge } from './Badge.jsx'
+export { default as Tag } from './Tag.jsx'
+export type { TagProps, TagVariant } from './Tag.jsx'
 export { default as ConnectionStatusBadge } from './ConnectionStatusBadge.jsx'
 export { default as Spinner } from './Spinner.jsx'
 export { default as BrandLoader } from './BrandLoader.jsx'

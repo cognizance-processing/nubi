@@ -1,5 +1,9 @@
 /**
- * Toast / notification system — Nubi primitive.
+ * Toast / notification system — Nubi primitive (Swiss).
+ *
+ * A bordered card with --shadow-pop and a 6px square status dot (no tinted icon
+ * tile). Enters in 220ms on --ease-out (8px rise + fade), pauses its timer while
+ * hovered or focused, errors are announced assertively.
  *
  * ── Usage ─────────────────────────────────────────────────────────────────
  *
@@ -37,7 +41,7 @@
 
 import { createPortal } from 'react-dom'
 import { useState, useEffect, useCallback } from 'react'
-import { CheckCircle2, AlertCircle, AlertTriangle, Info, X } from 'lucide-react'
+import { X } from 'lucide-react'
 
 // ── Event bus (module-level singleton) ──────────────────────────────────────
 
@@ -66,15 +70,6 @@ export const toast = Object.assign(emit, {
   dismiss: (id = undefined)        => _dispatch?.({ type: 'REMOVE', id }),
 })
 
-// ── Icon map ─────────────────────────────────────────────────────────────────
-
-const ICON = {
-  success: CheckCircle2,
-  error:   AlertCircle,
-  warning: AlertTriangle,
-  info:    Info,
-}
-
 // ── Position classes ─────────────────────────────────────────────────────────
 
 const POSITION_CLS = {
@@ -89,47 +84,49 @@ const POSITION_CLS = {
 // ── ToastItem ─────────────────────────────────────────────────────────────────
 
 function ToastItem({ t, onDismiss }) {
-  const Icon = ICON[t.variant] ?? Info
   const [leaving, setLeaving] = useState(false)
+  const [paused, setPaused] = useState(false)
 
   const dismiss = useCallback(() => {
     setLeaving(true)
-    setTimeout(() => onDismiss(t.id), 230)
+    setTimeout(() => onDismiss(t.id), 170)
   }, [t.id, onDismiss])
 
-  // Auto-dismiss
+  // Auto-dismiss (paused while hovered or focused)
   useEffect(() => {
-    if (!t.duration) return
+    if (!t.duration || paused) return
     const timer = setTimeout(dismiss, t.duration)
     return () => clearTimeout(timer)
-  }, [t.duration, dismiss])
+  }, [t.duration, dismiss, paused])
 
   return (
     <div
-      role="alert"
+      role={t.variant === 'error' ? 'alert' : 'status'}
       aria-live={t.variant === 'error' ? 'assertive' : 'polite'}
       aria-atomic="true"
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}
+      onFocus={() => setPaused(true)}
+      onBlur={() => setPaused(false)}
       className={[
         'nubi-toast',
         `nubi-toast-${t.variant}`,
         leaving ? 'nubi-animate-toast-out' : 'nubi-animate-toast-in',
       ].join(' ')}
     >
-      <div className="nubi-toast-icon-wrap shrink-0">
-        <Icon size={16} aria-hidden="true" />
-      </div>
+      <span className="nubi-toast-dot" aria-hidden="true" />
       <div className="flex-1 min-w-0">
         {t.title && (
-          <p className="text-sm font-semibold text-fg leading-snug">{t.title}</p>
+          <p className="text-small font-semibold text-fg">{t.title}</p>
         )}
-        <p className={['text-sm text-muted leading-snug', t.title ? 'mt-0.5' : 'text-fg font-medium'].join(' ')}>
+        <p className={['text-small', t.title ? 'text-muted mt-0.5' : 'text-fg font-medium'].join(' ')}>
           {t.message}
         </p>
         {t.action && (
           <button
             type="button"
             onClick={() => { t.action.onClick(); dismiss() }}
-            className="mt-1.5 rounded text-xs font-semibold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="mt-1.5 text-xs font-semibold text-fg underline underline-offset-2 hover:text-accent"
           >
             {t.action.label}
           </button>
@@ -139,9 +136,10 @@ function ToastItem({ t, onDismiss }) {
         type="button"
         onClick={dismiss}
         aria-label="Dismiss notification"
-        className="shrink-0 p-1 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors -mt-0.5 -mr-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="nubi-btn nubi-btn-ghost nubi-btn-icon-xs shrink-0 -mt-1.5 -mr-1.5"
+        style={{ width: 24, height: 24 }}
       >
-        <X size={14} />
+        <X size={14} aria-hidden="true" />
       </button>
     </div>
   )
@@ -173,6 +171,7 @@ export function Toaster({ position = 'bottom-right' }) {
 
   return createPortal(
     <div
+      role="region"
       aria-label="Notifications"
       className={`fixed flex flex-col gap-2 pointer-events-none ${posCls}`}
       style={{ zIndex: 'var(--z-toast)', maxWidth: 'min(calc(100vw - 2rem), 26rem)' }}
