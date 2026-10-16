@@ -2,31 +2,31 @@
  * 01 COLUMNS — "Columns, not rows, at every boundary." (storyboard §4.2).
  *
  * Story: data travels as Arrow columns, so a chart reads only the column it needs.
- *   in     "lay the data down": the hero tab is erased top-down, line by line, while its table prints on the
- *          floor in front of it, header first, then row after row toward the viewer
- *   table  "Every board is a table underneath": 8 named columns × 24 rows, banded in 4-row record batches
- *   split  "Stored column by column": each column lifts batch by batch into a pillar (4 × 2 × 12), its header
- *          landing last as the INK lid; the eight pillars rise left → right in a wave
- *   read   "A chart reads one column": revenue stays solid (accent) and feeds a chart window (5.05M) along an
- *          accent trace; the other seven collapse to hidden-line slabs. Click a pillar (or a chip) to re-read.
+ *   in     "lay the data down": the hero tab is erased top-down while its table prints on the floor in front of
+ *          it, the ink header first, then row after row toward the viewer
+ *   table  "Every board is a table underneath": ONE spreadsheet, 8 named columns × 24 striped rows
+ *   split  "Stored column by column": each column's header lifts to become a lid and its rows stack under it,
+ *          column after column; a pillar's depth is its bytes per value
+ *   read   "A chart reads one column": revenue turns accent bottom-up and feeds a browser tab ($5.05M) along an
+ *          accent trace; the other seven collapse to dashed hidden lines. Click a pillar (or a chip) to re-read.
  * Pure data + pure functions (no three here): 3D extras live in Extras.tsx, loaded lazily.
  */
 import { lazy } from 'react'
 import type { Beat, CalloutSpec, CameraKey, SceneModule, SurfaceText } from '../../stage/types'
-import { FIELDS, FIELD_SHORT, ROWS_TOTAL, fmtInt } from '../../stage/data'
+import { FIELDS, ROWS_TOTAL, fmtInt } from '../../stage/data'
 import {
-  BOARD_SCREEN, BOARD_W, N_COLS, READ_DEFAULT, TABLE_X0, TABLE_Z1, TOWER_TOP, Z_HEAD, Z_TOWER,
-  aggregate, byteShare, codeLine, colMid, hoverText, readOf, tableLayout, towerX, towersLayout, type ColumnsState,
+  BODY_H, COL_W, HEAD_H, N_COLS, READ_DEFAULT, ROW_H, TABLE_X0, TABLE_Z1, TOWER_TOP, WIN_BAR, WIN_FRONT, WIN_H, WIN_W, WIN_X0, Z_FRONT, Z_TFRONT,
+  aggregate, byteShare, codeLine, colMid, hoverText, readOf, shownValue, skippedShare, tableLayout, towerX, towerZ, towersLayout,
+  type ColumnsState,
 } from './layouts'
 
 export type { ColumnsState } from './layouts'
 
 /* ───────────── cameras ───────────── */
 
-const TABLE_CZ = (Z_HEAD + TABLE_Z1) / 2
-const camTable: CameraKey = { az: -0.62, el: 0.58, target: [0, 0, TABLE_CZ], zoom: 0.86, mobile: { zoom: 1.15, el: 0.62 } }
-const camSplit: CameraKey = { az: -0.42, el: 0.36, target: [0, 6.4, Z_TOWER], zoom: 0.88, mobile: { zoom: 1.12, el: 0.4 } }
-const camRead: CameraKey = { az: -0.42, el: 0.46, target: [-3, 6, 12], zoom: 0.86, mobile: { zoom: 1.08, el: 0.5 } }
+const camTable: CameraKey = { az: -0.5, el: 0.55, target: [0, 0, 10.5], zoom: 1.0, mobile: { az: -0.12, el: 0.46, target: [0, -5.5, 9.5], zoom: 1.5 } }
+const camSplit: CameraKey = { az: -0.42, el: 0.36, target: [0, 6.2, 2], zoom: 0.92, mobile: { az: -0.3, el: 0.4, target: [0, 6.2, 2], zoom: 1.12 } }
+const camRead: CameraKey = { az: -0.42, el: 0.5, target: [-1.9, 8.6, 8], zoom: 0.88, mobile: { az: -0.3, el: 0.44, target: [-1.5, 5, 8], zoom: 1.1 } }
 
 /* ───────────── beats ───────────── */
 
@@ -34,7 +34,7 @@ const beats: Beat<ColumnsState>[] = [
   { id: 'table', caption: 'Every board is a table underneath', len: 0.5, camera: camTable,
     layout: (_k, s) => tableLayout(s, true) },
   { id: 'split', caption: 'Stored column by column', len: 0.5, camera: camSplit,
-    morph: { kind: 'lift', len: 0.9, assign: 'group', spread: 0.75, arc: 2.2 },
+    morph: { kind: 'lift', len: 0.9, assign: 'group', spread: 0.85, arc: 1.2 },
     layout: (k, s) => towersLayout(k, s, true) },
   { id: 'read', caption: 'A chart reads one column', len: 0.6, camera: camRead, state: { read: READ_DEFAULT },
     morph: { kind: 'cut', len: 0.6, spread: 0.6, order: 'y-asc', toneAt: 0.5 },
@@ -43,28 +43,45 @@ const beats: Beat<ColumnsState>[] = [
 
 /* ───────────── labels ───────────── */
 
+const field = (s: ColumnsState) => FIELDS[readOf(s)]
+
 const callouts: CalloutSpec[] = [
-  // table: the header names, and the row count at the front corner
-  ...FIELDS.map((f, c): CalloutSpec => ({
-    id: `head-${c}`, anchor: [colMid(c), 0.62, Z_HEAD], text: f, short: FIELD_SHORT[c], side: 'n', lead: c % 2 ? 40 : 22, priority: 2, beats: ['table'],
-  })),
-  { id: 'rows', anchor: [TABLE_X0, 0.4, TABLE_Z1], text: `${fmtInt(ROWS_TOTAL)} rows`, sub: `${N_COLS} columns · one Arrow table`, short: '1M ROWS', side: 'se', lead: 22, priority: 3, beats: ['table'] },
-  // towers: the legend (hidden on the tower being read: its group is renamed 'read')
-  ...FIELDS.map((f, c): CalloutSpec => ({
-    id: `f-${c}`, anchor: { group: `col-${c}`, at: 'top' }, text: f, short: FIELD_SHORT[c], side: 'n', lead: c % 2 ? 34 : 16, priority: 1, beats: ['split', 'read'],
-  })),
-  { id: 'f-read', anchor: { group: 'read', at: 'top' }, text: s => FIELDS[readOf(s)], tone: 'accent', side: 'n', lead: 30, priority: 3, beats: ['split', 'read'] },
-  // the chart's window: what it read, and what that cost
-  { id: 'chart', anchor: { group: 'readout-win', at: 'bottom' }, text: s => `Chart reads ${FIELDS[readOf(s)]} only`, sub: s => `${byteShare(readOf(s))} of bytes · 1 of ${N_COLS} columns`,
-    tone: 'accent', side: 's', lead: 22, priority: 4, beats: ['split', 'read'] },
+  // table: one callout; the field names are printed on the ink header
+  { id: 'rows', anchor: [TABLE_X0 + 2 * COL_W, ROW_H, TABLE_Z1], text: `${fmtInt(ROWS_TOTAL)} rows`, sub: `${N_COLS} columns · one Arrow table`, short: '1M ROWS', side: 's', lead: 26, priority: 3, beats: ['table'] },
+  // split: why the pillars differ (the names are printed on the pillars)
+  { id: 'bytes-hi', anchor: { group: 'col-6', at: 'top' }, text: '8 bytes per value', sub: 'float64 · the deepest column', short: '8 B/VALUE', side: 'nw', lead: 26, priority: 2, beats: ['split'] },
+  { id: 'bytes-lo', anchor: { group: 'col-1', at: 'top' }, text: '1 byte per value', sub: 'dictionary-encoded', short: '1 B/VALUE', side: 'n', lead: 26, priority: 1, beats: ['split'] },
+  // read: what the chart read, and what it skipped
+  { id: 'chart', anchor: [WIN_X0, WIN_H * 0.45, WIN_FRONT], text: s => `Reads ${field(s)} only`, sub: s => `${byteShare(readOf(s))} of bytes · 1 column`,
+    short: 'READS 1 OF 8', tone: 'accent', side: 'w', lead: 26, priority: 4, beats: ['read'] },
+  { id: 'skip', anchor: [towerX(0), 0, Z_TFRONT], text: `${N_COLS - 1} columns skipped`, sub: s => `${skippedShare(readOf(s))} of bytes never read`,
+    short: '7 SKIPPED', side: 's', lead: 22, priority: 2, beats: ['read'] },
 ]
 
+/** Field names: upright on the table's ink header, then up the front of each pillar (no floating legend to collide). */
+const HEAD_CAP = 0.75, SPINE_CAP = 1.0
 const surface: SurfaceText[] = [
-  { id: 'board-caption', at: [BOARD_SCREEN.x0 + 0.1, BOARD_SCREEN.y1 - 0.75, BOARD_SCREEN.z], text: s => (s.read >= 0 ? aggregate(readOf(s)).caption : ''),
-    font: 'mono', size: 0.56, tone: 'muted', maxWidth: BOARD_W - 2.4, beats: ['split', 'read'] },
+  ...FIELDS.map((f, c): SurfaceText => ({
+    id: `head-${c}`, at: [colMid(c), ROW_H + (HEAD_H - ROW_H - HEAD_CAP) / 2 + 0.02, Z_FRONT + 0.02], text: f,
+    font: 'title', size: HEAD_CAP, tone: 'onInk', align: 'centre', maxWidth: COL_W - 0.3, beats: ['table'],
+  })),
+  ...FIELDS.flatMap((f, c): SurfaceText[] => {
+    const base = { at: [towerX(c) + SPINE_CAP / 2, BODY_H - 0.55, Z_TFRONT + 0.02] as [number, number, number], plane: { right: [0, 1, 0] as [number, number, number], up: [-1, 0, 0] as [number, number, number] }, font: 'title' as const, size: SPINE_CAP, align: 'right' as const, maxWidth: BODY_H - 1.2, beats: ['split', 'read'] }
+    return [
+      { ...base, id: `spine-${c}`, text: (s: ColumnsState) => (s.read < 0 ? f : ''), tone: 'ink' },
+      { ...base, id: `spine-skip-${c}`, text: (s: ColumnsState) => (s.read >= 0 && s.read !== c ? f : ''), tone: 'muted' },
+      { ...base, id: `spine-read-${c}`, text: (s: ColumnsState) => (s.read === c ? f : ''), tone: 'onInk' },
+    ]
+  }),
+  { id: 'win-caption', at: [WIN_X0 + 0.9, WIN_H - WIN_BAR - 1.25, WIN_FRONT + 0.02], text: s => (s.read >= 0 ? aggregate(readOf(s)).caption : ''),
+    font: 'mono', size: 0.8, tone: 'muted', maxWidth: WIN_W - 1.8, beats: ['split', 'read'] },
+  { id: 'win-value', at: [WIN_X0 + 0.8, 1.4, WIN_FRONT + 0.02], text: s => (s.read >= 0 ? shownValue(readOf(s)) : ''),
+    font: 'title', size: 2.3, tone: 'ink', maxWidth: WIN_W - 1.6, beats: ['split', 'read'] },
 ]
 
 /* ───────────── module ───────────── */
+
+const columnOf = (group: string) => (/^col-(\d)$/.test(group) ? +group.slice(4) : -1)
 
 const columns: SceneModule<ColumnsState> = {
   id: 'columns', index: '01', kicker: 'TRANSPORT',
@@ -82,27 +99,27 @@ const columns: SceneModule<ColumnsState> = {
   // of it, header first, then row after row toward the viewer. With spread .7 a cut lands at m = .15 + .7·order:
   // big plates (a window's back, hidden behind its screen tiles) at .15, the tab's top at ~.35, its foot at ~.6;
   // the table's own cells carry orders .2 → 1 (header at ~.29, last row at ~.85).
-  in: { kind: 'cut', len: 1.2, spread: 0.7, assign: 'group', order: c => (c.group.startsWith('col-') || c.group === 'read' ? 33 : (c.s?.[0] ?? 1) > 8 ? -60 : -c.p[1]) },
+  in: { kind: 'cut', len: 1.2, spread: 0.7, assign: 'group', order: c => (c.group.startsWith('col-') ? 33 : (c.s?.[0] ?? 1) > 8 ? -60 : -c.p[1]) },
   beats,
   callouts,
   surface,
   controls: [
     { id: 'field', kind: 'chips', label: 'Column to read', options: FIELDS.map((f, i) => ({ value: String(i), label: f })),
       get: s => String(s.read), set: (_s, v) => ({ read: +v }),
-      announce: s => `Reading ${FIELDS[readOf(s)]}: ${byteShare(readOf(s))} of bytes, 1 of ${N_COLS} columns` },
+      announce: s => `Reading ${field(s)}: ${byteShare(readOf(s))} of bytes, 1 of ${N_COLS} columns` },
   ],
   pick: {
     hover(group, s) {
-      const c = group === 'read' ? s.read : /^col-(\d)$/.test(group) ? +group.slice(4) : -1
+      const c = columnOf(group)
       if (c < 0) return null
-      return { anchor: [towerX(c), TOWER_TOP, Z_TOWER], ...hoverText(c, s) }
+      return { anchor: [towerX(c), TOWER_TOP, towerZ(c)], ...hoverText(c, s) }
     },
-    click(group) {
-      const m = /^col-(\d)$/.exec(group)
-      return m ? { read: +m[1] } : null
+    click(group, s) {
+      const c = columnOf(group)
+      return c >= 0 && c !== s.read ? { read: c } : null
     },
   },
-  // a click re-reads: the chosen tower fills with accent bottom-up while the old one collapses to hidden lines
+  // a click re-reads: the chosen pillar fills with accent bottom-up while the old one collapses to hidden lines
   onState: () => ({ kind: 'cut', len: 450, spread: 0.6, order: 'y-asc', toneAt: 0.5 }),
   Extras: lazy(() => import('./Extras')),
   poster: 'read',
