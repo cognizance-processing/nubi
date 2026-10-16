@@ -1,5 +1,7 @@
 # Building dashboards
 
+![A dashboard is a grid of widgets reading from registered queries](illustration:DashboardCanvas)
+
 A Nubi dashboard is a grid of **widgets** — KPIs, charts, tables, filters, and more — that read from your registered queries and re-query when filters change. You build dashboards in the visual **Dashboard Editor**: add widgets to a grid, bind each to a query, map columns to encodings, wire up cross-filtering, and save. The same dashboard can also be authored by the AI assistant or edited as raw YAML/JSON in the **Code panel**.
 
 Under the hood every dashboard is a single JSON document — a `DashboardSpec`. The editor, the AI chat panel, the Code panel, and the embed pipeline all share it as the source of truth, so anything you build by clicking can be exported as code, and anything the AI writes can be edited by hand.
@@ -202,6 +204,8 @@ A filter widget writes to a **dashboard variable**; data widgets bound to that v
 ---
 
 ## Chart types in depth
+
+![Charts render with WebGL above a row threshold so large scatter plots stay interactive](illustration:WebGLPerf)
 
 The chart widget renders 17 types via Apache ECharts, all reading from Arrow columns streamed from the query engine. Pick the type from the icon grid in **Configure → Chart type**; the encoding fields below it change to match.
 

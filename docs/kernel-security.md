@@ -1,6 +1,6 @@
 # Kernel Security
 
-![The two-kernel trust boundary: browser DuckDB-WASM vs. server Python sandbox](illustration:TrustBoundary)
+![The browser kernel runs DuckDB-WASM inside the visitor tab; the server kernel is a separate Python sandbox](illustration:KernelInBrowser)
 
 Nubi runs two kinds of kernels with very different trust boundaries:
 

@@ -1,5 +1,7 @@
 # Flows — orchestration
 
+![A flow is cells wired into a DAG: Nubi runs them in dependency order](illustration:FlowOrchestration)
+
 Flows is Nubi's built-in workflow orchestrator. A flow is a set of **cells** — SQL queries, Python scripts, or Markdown notes — wired into a directed acyclic graph. Nubi runs them in dependency order, retrying failures, caching results, and keeping durable run history.
 
 You work on a flow in **three views**: as a **notebook** (a top-to-bottom list of cells), as a **canvas** (a visual DAG), or as **code** (a file tree — `flow.py` plus one file per cell). They are three windows onto the same flow — flip between them at any time without losing anything.

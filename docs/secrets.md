@@ -1,6 +1,6 @@
 # Secrets
 
-![Secrets stay server-side — the trust boundary between browser and kernel](illustration:TrustBoundary)
+![Secrets are encrypted at rest and resolved server-side at run time; the browser never receives the value](illustration:SecretsVault)
 
 Secrets are org-scoped, named, encrypted credentials — API keys, storage tokens, third-party passwords — that flow tasks and notebook cells reference at execution time. A secret is written once, encrypted at rest under a master key that never enters the database, and resolved server-side at runtime. The plaintext value is **never** returned by the API after it is set.
 

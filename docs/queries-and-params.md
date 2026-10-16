@@ -1,5 +1,7 @@
 # Queries & parameters
 
+![Write SQL on the left, see results and a chart on the right](illustration:QueryWorkspace)
+
 The **Queries** workspace is Nubi's SQL IDE. Write SQL against any connector, turn a query into a reusable, parameterized **saved query**, and explore data in a notebook of scratch cells. Saved queries are the building blocks that dashboards, flows, and scheduled reports read from.
 
 Open it from the sidebar (route `/queries`).

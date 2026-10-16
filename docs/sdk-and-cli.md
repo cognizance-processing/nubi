@@ -1,6 +1,6 @@
 # SDK & CLI
 
-![Build and automate with the @nubi/sdk and nubi CLI](illustration:ConnectorSdk)
+![The nubi CLI: log in, push boards as code, set a secret](illustration:CliTerminal)
 
 Two tools for building on Nubi programmatically: **`@nubi/sdk`** is a framework-agnostic JavaScript library for querying data, managing resources, and mounting embedded dashboards. **`nubi`** is a Python CLI for dashboards-as-code, flow management, and secrets.
 

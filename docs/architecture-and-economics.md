@@ -20,12 +20,14 @@ The Nubi server never runs a query on behalf of a dashboard viewer. The browser
 receives Arrow IPC data (or reads a frozen `.duckdb` sidecar) and executes the
 DuckDB kernel locally.
 
+![Interactive: drag to turn, click a part to open its step. Tabs aggregate 1,048,576 synthetic rows in your browser.](illustration:ViewAnatomy)
+
 This means:
 
-- **Marginal COGS per dashboard view ≈ R0.** No server scan, no server compute,
+- **Marginal COGS per dashboard view ≈ $0.** No server scan, no server compute,
   no billed egress per view.
 - **Viewer seats are permanently free at every tier.** Adding 1,000 viewers
-  costs Nubi one extra DB row and one auth check per session (~R0.001/user/month).
+  costs Nubi one extra DB row and one auth check per session (~$0.0001/user/month).
   There is no per-seat pricing at any tier.
 - **Server compute only fires on events that have a real COGS line**: snapshot
   refreshes, export renders, scheduled report sends, and live private warehouse
@@ -48,7 +50,7 @@ pushes the query down to the customer's own live data warehouse via the
 registered connector. Results stream back as Arrow IPC.
 
 Billing: bytes scanned against the warehouse hit the `scan_zar_per_tib` meter
-(first 1 TiB/month free, then R83/TiB at the reference rate). This is the only
+(first 1 TiB/month free, then ~$5/TiB at the reference rate). This is the only
 mode that generates ongoing server compute cost per query execution.
 
 ### Mode 2 — id-based connector override
@@ -91,7 +93,7 @@ has no live JWT.
 
 Billing for each snapshot create/refresh:
 - **Storage**: the `.duckdb` sidecar written to Cloudflare R2 →
-  `storage_zar_per_gb_month` (R0.33/GB; COGS ~R0.24/GB at R2 parity).
+  `storage_zar_per_gb_month` (~$0.02/GB; COGS ~$0.015/GB at R2 parity).
 - **Scan**: `collect_board_data` executes the board's widget queries against
   the live warehouse → `scan_zar_per_tib` (same bytes-scanned meter as any
   live query).
@@ -124,7 +126,7 @@ Billing for the export event:
 - **Storage**: the HTML artifact + the snapshot sidecar written to R2 →
   `storage_zar_per_gb_month`.
 - **CDN egress**: each download of the public HTML or sidecar is treated as an
-  embedded session event → `embedded_session_zar_per_10k` (R50/10K sessions).
+  embedded session event → `embedded_session_zar_per_10k` (~$3 per 10K sessions).
 
 Viewers consume no server compute — the browser runs DuckDB-WASM.
 
@@ -245,22 +247,22 @@ actions map to existing COGS dimensions defined in
   generates no server scan, no server compute, no billed egress.
 - Demo / read-only / client-computed views: DuckDB-WASM runs in the browser.
 - Connector count, dashboard count, saved query count, flow definition count:
-  each is one DB row (~R0.001/month COGS).
+  each is one DB row (~$0.0001/month COGS).
 
-### Overage rates (reference, ZAR-denominated)
+### Overage rates (reference, USD)
 
-All ZAR amounts are derived as `ceil_to_nearest_10(usd * rate * 1.02)` from a
-USD anchor, using the daily-refreshed FX rate. Reference amounts below are
-the June 2026 baseline at R16.26/USD + 2% buffer.
+Overage is metered per dimension and priced from a USD anchor. The meter
+identifiers keep the `zar` infix they carry in the billing code; the amounts
+below are the USD reference values.
 
 | Dimension | Rate | COGS basis | Gross margin |
 |---|---|---|---|
-| `storage_zar_per_gb_month` | R0.33/GB | Cloudflare R2 (~R0.24/GB) | ~27% |
-| `scan_zar_per_tib` | R83/TiB (~$5/TiB) | DuckDB CPU + R2 egress (~R15/TiB; PENDING benchmark) | ~82% |
-| `compute_zar_per_1000_cu` | R100/1,000 CU | Container/DuckDB compute | ~77% |
-| `ai_call_zar_per_call` | R5/call | Anthropic API tokens | ~93% |
-| `embedded_session_zar_per_10k` | R50/10K | Egress + CDN compute | ~99% |
-| `agent_run_zar_per_run` | R2/run | Remote kernel compute | ~99% |
+| `storage_zar_per_gb_month` | ~$0.02/GB | Cloudflare R2 (~$0.015/GB) | ~27% |
+| `scan_zar_per_tib` | ~$5/TiB | DuckDB CPU + R2 egress (~$0.90/TiB; PENDING benchmark) | ~82% |
+| `compute_zar_per_1000_cu` | ~$6/1,000 CU | Container/DuckDB compute | ~77% |
+| `ai_call_zar_per_call` | ~$0.30/call | Anthropic API tokens | ~93% |
+| `embedded_session_zar_per_10k` | ~$3/10K | Egress + CDN compute | ~99% |
+| `agent_run_zar_per_run` | ~$0.12/run | Remote kernel compute | ~99% |
 
 The first 1 TiB of bytes scanned per org per month is free (matching BigQuery's
 free tier). There is no per-seat overage at any tier.
@@ -270,23 +272,23 @@ free tier). There is no per-seat overage at any tier.
 All paid tiers achieve ≥75% gross margin. The tier floor is 70%; all tiers meet
 the 75% target:
 
-| Tier | USD/mo | ZAR/mo (ref) | Total COGS | Gross margin |
-|---|---|---|---|---|
-| Starter | $9 | R150 | R20.12 | 86.6% |
-| Team | $49 | R820 | R117.96 | 85.6% |
-| Pro | $149 | R2,480 | R504.57 | 79.7% |
-| Enterprise | $1,000 | R16,590 | R4,065.72 | 75.5% |
+| Tier | USD/mo | Total COGS (USD/mo) | Gross margin |
+|---|---|---|---|
+| Starter | $9 | $1.21 | 86.6% |
+| Team | $49 | $7.11 | 85.6% |
+| Pro | $149 | $30.43 | 79.7% |
+| Enterprise | $1,000 | $245.20 | 75.5% |
 
-Enterprise COGS includes SLA monitoring and on-call overhead (~R700/org/month)
-and a dedicated CSM allocation (~R700/org/month) on top of hosted infra.
+Enterprise COGS includes SLA monitoring and on-call overhead (~$42/org/month)
+and a dedicated CSM allocation (~$42/org/month) on top of hosted infra.
 
 ### Currency and FX disclosure
 
-Prices are anchored in USD and converted to ZAR at billing time using a
-daily-refreshed FX rate (see `app/ee/billing/fx.py`). The ZAR amount may vary
-slightly between billing cycles as the rate moves; the USD anchor is fixed for
-the duration of the plan. The customer-facing disclosure copy is defined in
-`tiers.py` as `ZAR_DISCLOSURE_COPY`.
+Prices are anchored in USD and the USD anchor is fixed for the duration of a
+plan. Where an instance bills in a local currency, the amount is converted at
+billing time using a daily-refreshed FX rate (see `app/ee/billing/fx.py`) and
+may vary slightly between billing cycles. The customer-facing disclosure copy
+is defined in `tiers.py`.
 
 ---
 
@@ -396,7 +398,7 @@ The wedge holds at every tier:
 - **Rollup build** (one-time or scheduled): `compute_zar_per_1000_cu`.
 - **Snapshot refresh** (periodic): `scan_zar_per_tib` + `storage_zar_per_gb_month`.
 - **Viewer seats**: permanently free at every tier. A rollup built once and
-  cached serves N viewers at marginal cost ≈ R0 per view.
+  cached serves N viewers at marginal cost ≈ $0 per view.
 
 The smart engine is exactly the mechanism that makes "viewers are free" scale:
 instead of scanning the raw fact table on every dashboard load, a once-built

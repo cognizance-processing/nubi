@@ -1,82 +1,31 @@
 /**
- * EdgeCache — content-hashed edge cache: many viewers collapse to one warehouse
- * hit. Metaphor: a column of viewer nodes fan-in to a cache module, then a
- * single line out to a warehouse cylinder. Flat line-art, no blur/glow.
+ * EdgeCache — content-hashed result cache: many viewers collapse to one
+ * warehouse query. Viewers fan in to a cache block, one line goes out.
  */
-export default function EdgeCache({ className = '' }) {
-  const viewers = [78, 132, 186, 240, 294]
-  const cacheY = 186 // center of cache module
+import { FigSvg, Box, Cylinder, Label, Link, makeIso, type FigProps } from './kit'
+
+export default function EdgeCache({ className, title, compact }: FigProps) {
+  const P = makeIso(238, 92, 28)
   return (
-    <svg
-      viewBox="30 46 420 282"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
-      aria-hidden="true"
-      width="100%"
-      height="auto"
-      preserveAspectRatio="xMidYMid meet"
-    >
-      <defs>
-        <linearGradient id="edg-stroke" x1="0" y1="1" x2="1" y2="0">
-          <stop offset="0%" stopColor="#3b66c4" />
-          <stop offset="45%" stopColor="#2456a6" />
-          <stop offset="100%" stopColor="#17b3a3" />
-        </linearGradient>
-        <linearGradient id="edg-mod" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#2456a6" />
-          <stop offset="55%" stopColor="#17b3a3" />
-          <stop offset="100%" stopColor="#2dd4bf" />
-        </linearGradient>
-        <clipPath id="edg-clip">
-          <rect x="30" y="46" width="420" height="282" rx="16" />
-        </clipPath>
-      </defs>
-
-      <g clipPath="url(#edg-clip)">
-        {/* fan-in connectors: viewers → cache */}
-        {viewers.map((y, i) => (
-          <path key={i}
-            d={`M 96 ${y} C 150 ${y}, 168 ${cacheY}, 188 ${cacheY}`}
-            stroke="#a7bbdb" strokeWidth="1.75" fill="none" />
-        ))}
-
-        {/* viewer nodes (left) */}
-        {viewers.map((y, i) => (
+    <FigSvg fig="05" name="Edge cache" className={className} title={title} compact={compact}>
+      {[0, 1, 2, 3, 4].map(i => {
+        const y = 36 + i * 46
+        return (
           <g key={i}>
-            <rect x="46" y={y - 16} width="48" height="32" rx="8"
-              fill="#2456a6" fillOpacity="0.05" stroke="url(#edg-stroke)" strokeWidth="1.75" />
-            <circle cx="60" cy={y} r="4" fill="#17b3a3" />
-            <line x1="72" y1={y - 4} x2="86" y2={y - 4} stroke="#a7bbdb" strokeWidth="2" strokeLinecap="round" />
-            <line x1="72" y1={y + 4} x2="82" y2={y + 4} stroke="#a7bbdb" strokeWidth="2" strokeLinecap="round" />
+            <rect x={20} y={y} width={26} height={20} rx={2} className="k1 fp" />
+            <line x1={20} y1={y + 6} x2={46} y2={y + 6} className="k1" />
+            <line x1={46} y1={y + 10} x2={182} y2={133} className="k3" />
           </g>
-        ))}
-
-        {/* cache module (center) */}
-        <rect x="188" y="150" width="92" height="72" rx="14"
-          fill="#2456a6" fillOpacity="0.06" stroke="url(#edg-stroke)" strokeWidth="2" />
-        {/* stacked-layers motif = cache */}
-        <rect x="206" y="166" width="56" height="12" rx="4" fill="url(#edg-mod)" />
-        <rect x="206" y="184" width="56" height="12" rx="4" fill="url(#edg-mod)" fillOpacity="0.6" />
-        <rect x="206" y="202" width="56" height="12" rx="4" fill="url(#edg-mod)" fillOpacity="0.35" />
-
-        {/* single line out: cache → warehouse (the one warehouse hit) */}
-        <path d="M 280 186 L 372 186"
-          stroke="url(#edg-stroke)" strokeWidth="2.5" fill="none" strokeLinecap="round" />
-        {/* "1×" pill emphasising the single collapsed request */}
-        <rect x="312" y="170" width="32" height="18" rx="9"
-          fill="#17b3a3" fillOpacity="0.12" stroke="#17b3a3" strokeWidth="1.25" strokeOpacity="0.55" />
-        <text x="328" y="183" textAnchor="middle" fontSize="11" fontWeight="700"
-          fontFamily="Space Grotesk, system-ui, sans-serif" fill="#17b3a3">1×</text>
-
-        {/* warehouse cylinder (right) */}
-        <g>
-          <ellipse cx="404" cy="158" rx="32" ry="11" fill="#2456a6" fillOpacity="0.08" stroke="url(#edg-stroke)" strokeWidth="2" />
-          <path d="M 372 158 L 372 214 A 32 11 0 0 0 436 214 L 436 158"
-            fill="#2456a6" fillOpacity="0.05" stroke="url(#edg-stroke)" strokeWidth="2" />
-          <path d="M 372 186 A 32 11 0 0 0 436 186" stroke="#b2c4e0" strokeWidth="1.5" fill="none" />
-        </g>
-      </g>
-    </svg>
+        )
+      })}
+      <Box iso={P} x={0} y={0} w={2.4} d={2.4} h={1.6} weight={2} />
+      <Label x={238} y={176} anchor="middle" tone="ink">cache</Label>
+      <text x={238} y={190} textAnchor="middle" className="lc">sha256 · a3f9…</text>
+      <Link x1={298} y1={118} x2={346} y2={118} tone="ka" weight={2} head />
+      <Label x={322} y={108} anchor="middle" tone="accent">1 query</Label>
+      <Cylinder x={350} y={84} w={74} h={78} rings={2} />
+      <Label x={387} y={182} anchor="middle" tone="ink">warehouse</Label>
+      {!compact && <Label x={20} y={20}>1,800 viewers</Label>}
+    </FigSvg>
   )
 }

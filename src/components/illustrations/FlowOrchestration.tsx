@@ -1,98 +1,37 @@
 /**
- * FlowOrchestration — visual DAG orchestration (a Prefect alternative). Metaphor:
- * a left→right directed graph: a source node branches into two task nodes that
- * merge into an end node. One node is "running" (gradient). Flat line-art, no
- * blur/glow. Reads on white + dark-navy.
+ * FlowOrchestration — a directed graph of tasks: one source fans out to two
+ * tasks that merge into a load step. One node is running (the accent).
  */
-export default function FlowOrchestration({ className = '' }) {
-  // node centers
-  const A = { x: 96, y: 180 }   // source
-  const B = { x: 240, y: 110 }  // task 1 (running)
-  const C = { x: 240, y: 250 }  // task 2
-  const D = { x: 384, y: 180 }  // end
-  const node = (n) => ({ x: n.x - 42, y: n.y - 24, cx: n.x, cy: n.y })
+import { FigSvg, Label, Route, Dot, type FigProps } from './kit'
 
+type N = { id: string; x: number; y: number; t: string; s: 'done' | 'run' | 'wait' }
+const NODES: N[] = [
+  { id: 'a', x: 20, y: 114, t: 'Extract', s: 'done' },
+  { id: 'b', x: 188, y: 46, t: 'Clean', s: 'run' },
+  { id: 'c', x: 188, y: 182, t: 'Enrich', s: 'done' },
+  { id: 'd', x: 356, y: 114, t: 'Load', s: 'wait' },
+]
+const W = 104, H = 44
+
+export default function FlowOrchestration({ className, title, compact }: FigProps) {
   return (
-    <svg
-      viewBox="40 72 400 216"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
-      aria-hidden="true"
-      width="100%"
-      height="auto"
-      preserveAspectRatio="xMidYMid meet"
-    >
-      <defs>
-        <linearGradient id="flw-stroke" x1="0" y1="1" x2="1" y2="0">
-          <stop offset="0%" stopColor="#3b66c4" />
-          <stop offset="45%" stopColor="#2456a6" />
-          <stop offset="100%" stopColor="#17b3a3" />
-        </linearGradient>
-        <linearGradient id="flw-run" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#2456a6" />
-          <stop offset="55%" stopColor="#17b3a3" />
-          <stop offset="100%" stopColor="#2dd4bf" />
-        </linearGradient>
-        <clipPath id="flw-clip">
-          <rect x="40" y="72" width="400" height="216" rx="16" />
-        </clipPath>
-      </defs>
-
-      <g clipPath="url(#flw-clip)">
-        {/* edges */}
-        <path d={`M ${A.x + 42} ${A.y} C 168 ${A.y}, 170 ${B.y}, ${B.x - 42} ${B.y}`}
-          stroke="url(#flw-stroke)" strokeWidth="2.25" fill="none" />
-        <path d={`M ${A.x + 42} ${A.y} C 168 ${A.y}, 170 ${C.y}, ${C.x - 42} ${C.y}`}
-          stroke="#a7bbdb" strokeWidth="2.25" fill="none" />
-        <path d={`M ${B.x + 42} ${B.y} C 312 ${B.y}, 314 ${D.y}, ${D.x - 42} ${D.y}`}
-          stroke="url(#flw-stroke)" strokeWidth="2.25" fill="none" />
-        <path d={`M ${C.x + 42} ${C.y} C 312 ${C.y}, 314 ${D.y}, ${D.x - 42} ${D.y}`}
-          stroke="#a7bbdb" strokeWidth="2.25" fill="none" />
-        {/* edge midpoint dots */}
-        <circle cx="168" cy="145" r="3.5" fill="#17b3a3" />
-        <circle cx="168" cy="215" r="3.5" fill="#92abd3" />
-        <circle cx="312" cy="145" r="3.5" fill="#17b3a3" />
-        <circle cx="312" cy="215" r="3.5" fill="#92abd3" />
-
-        {/* source node A */}
-        {(() => { const n = node(A); return (
-          <g>
-            <rect x={n.x} y={n.y} width="84" height="48" rx="12" fill="#2456a6" fillOpacity="0.05" stroke="url(#flw-stroke)" strokeWidth="2" />
-            <rect x={n.x + 16} y={n.cy - 11} width="14" height="22" rx="3" fill="#17b3a3" fillOpacity="0.7" />
-            <rect x={n.x + 38} y={n.cy - 6} width="30" height="5" rx="2.5" fill="#b2c4e0" />
-            <rect x={n.x + 38} y={n.cy + 4} width="22" height="5" rx="2.5" fill="#c8d5e9" />
-          </g>
-        )})()}
-
-        {/* task node B — RUNNING (gradient) */}
-        {(() => { const n = node(B); return (
-          <g>
-            <rect x={n.x} y={n.y} width="84" height="48" rx="12" fill="url(#flw-run)" />
-            <circle cx={n.x + 20} cy={n.cy} r="7" fill="#ffffff" fillOpacity="0.9" />
-            <rect x={n.x + 36} y={n.cy - 6} width="32" height="5" rx="2.5" fill="#ffffff" fillOpacity="0.85" />
-            <rect x={n.x + 36} y={n.cy + 4} width="22" height="5" rx="2.5" fill="#ffffff" fillOpacity="0.6" />
-          </g>
-        )})()}
-
-        {/* task node C */}
-        {(() => { const n = node(C); return (
-          <g>
-            <rect x={n.x} y={n.y} width="84" height="48" rx="12" fill="#2456a6" fillOpacity="0.05" stroke="url(#flw-stroke)" strokeWidth="2" />
-            <circle cx={n.x + 20} cy={n.cy} r="7" stroke="#17b3a3" strokeWidth="2.25" fill="none" />
-            <rect x={n.x + 36} y={n.cy - 6} width="30" height="5" rx="2.5" fill="#b2c4e0" />
-            <rect x={n.x + 36} y={n.cy + 4} width="22" height="5" rx="2.5" fill="#c8d5e9" />
-          </g>
-        )})()}
-
-        {/* end node D */}
-        {(() => { const n = node(D); return (
-          <g>
-            <rect x={n.x} y={n.y} width="84" height="48" rx="12" fill="#2456a6" fillOpacity="0.05" stroke="url(#flw-stroke)" strokeWidth="2" />
-            <path d={`M ${n.x + 24} ${n.cy} l 8 8 l 16 -18`} stroke="url(#flw-run)" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-          </g>
-        )})()}
-      </g>
-    </svg>
+    <FigSvg fig="10" name="Flow graph" className={className} title={title} compact={compact}>
+      <Route points={[[124, 136], [156, 136], [156, 68], [188, 68]]} />
+      <Route points={[[124, 136], [156, 136], [156, 204], [188, 204]]} />
+      <Route points={[[292, 68], [324, 68], [324, 136], [356, 136]]} tone="k2" dash />
+      <Route points={[[292, 204], [324, 204], [324, 136], [356, 136]]} />
+      {NODES.map(n => (
+        <g key={n.id}>
+          <rect x={n.x} y={n.y} width={W} height={H} rx={2}
+            className={n.s === 'run' ? 'ka w2 fp' : n.s === 'wait' ? 'k2 dd fp' : 'k1 fp'} />
+          <text x={n.x + 12} y={n.y + 19} className={n.s === 'wait' ? '' : 't1'}>{n.t}</text>
+          <Dot x={n.x + 15} y={n.y + 32} tone={n.s === 'run' ? 'accent' : n.s === 'wait' ? 'mid' : 'ink'} s={6} />
+          <text x={n.x + 24} y={n.y + 35} className={n.s === 'run' ? 'ta' : ''} style={{ fontSize: 9 }}>
+            {n.s === 'run' ? 'Running' : n.s === 'wait' ? 'Queued' : 'Done'}
+          </text>
+        </g>
+      ))}
+      {!compact && <Label x={20} y={24}>Schedule · hourly</Label>}
+    </FigSvg>
   )
 }

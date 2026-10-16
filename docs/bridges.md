@@ -1,6 +1,6 @@
 # Bridges
 
-![Nubi self-host topology: bridge agent in the VPC, Nubi backend in the cloud](illustration:SelfHostTopology)
+![A bridge agent inside your network dials out to Nubi over one outbound TLS connection; no inbound ports are opened](illustration:BridgeTopology)
 
 A Nubi **bridge** is a lightweight agent that runs inside your VPC or on-prem network and proxies database connections to the Nubi backend over an outbound WebSocket tunnel. Private databases that are not reachable from the public internet can be queried without opening any inbound firewall ports.
 

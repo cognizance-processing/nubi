@@ -1,84 +1,37 @@
 /**
- * OpenCoreSplit — the open-core architecture: a large OSS core module with an
- * optional EE module docking into it through a single feature-gate socket.
- * Metaphor: solid core block (gradient) + dashed EE block plugging in via a
- * connector stem; a gate dot marks the seam. Flat line-art, no blur/glow.
+ * OpenCoreSplit — the open core is the solid block; the optional ee/ module
+ * hovers above it (dashed) and docks into one socket, the feature gate (accent).
  */
-export default function OpenCoreSplit({ className = '' }) {
+import { FigSvg, Box, Label, Link, makeIso, type FigProps } from './kit'
+
+export default function OpenCoreSplit({ className, title, compact }: FigProps) {
+  const P = makeIso(236, 124, 31)
+  const top = 1.8
+  const corner = (x: number, y: number, z: number) => P(x, y, z)
+  const sock = [corner(1.2, 1.0, top), corner(2.2, 1.0, top), corner(2.2, 2.0, top), corner(1.2, 2.0, top)]
+  const ghost = { x: 0.7, y: 0.5, w: 2, d: 2, z: top + 1.3, h: 1.1 }
+  const [gx, gy] = corner(2.2, 1.0, top)
   return (
-    <svg
-      viewBox="32 68 416 224"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
-      aria-hidden="true"
-      width="100%"
-      height="auto"
-      preserveAspectRatio="xMidYMid meet"
-    >
-      <defs>
-        <linearGradient id="ocs-stroke" x1="0" y1="1" x2="1" y2="0">
-          <stop offset="0%" stopColor="#3b66c4" />
-          <stop offset="45%" stopColor="#2456a6" />
-          <stop offset="100%" stopColor="#17b3a3" />
-        </linearGradient>
-        <linearGradient id="ocs-gate" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#2456a6" />
-          <stop offset="100%" stopColor="#2dd4bf" />
-        </linearGradient>
-        <clipPath id="ocs-clip">
-          <rect x="32" y="68" width="416" height="224" rx="16" />
-        </clipPath>
-      </defs>
-
-      <g clipPath="url(#ocs-clip)">
-        {/* ── OSS core module (left, dominant) ── */}
-        <rect x="48" y="84" width="212" height="192" rx="18"
-          fill="#2456a6" fillOpacity="0.05" stroke="url(#ocs-stroke)" strokeWidth="2" />
-
-        {/* circuit motif inside the core: node dots + connecting lines */}
-        <circle cx="92" cy="128" r="5" fill="#17b3a3" />
-        <circle cx="158" cy="128" r="5" fill="#87a2ce" />
-        <circle cx="118" cy="180" r="5" fill="#87a2ce" />
-        <circle cx="188" cy="180" r="5" fill="#17b3a3" />
-        <circle cx="92" cy="232" r="5" fill="#2dd4bf" />
-        <circle cx="158" cy="232" r="5" fill="#87a2ce" />
-        <path d="M 97 128 L 153 128" stroke="#b2c4e0" strokeWidth="1.75" strokeLinecap="round" />
-        <path d="M 158 133 L 122 175" stroke="#b2c4e0" strokeWidth="1.75" strokeLinecap="round" />
-        <path d="M 123 180 L 183 180" stroke="#b2c4e0" strokeWidth="1.75" strokeLinecap="round" />
-        <path d="M 118 185 L 96 227" stroke="#b2c4e0" strokeWidth="1.75" strokeLinecap="round" />
-        <path d="M 97 232 L 153 232" stroke="#b2c4e0" strokeWidth="1.75" strokeLinecap="round" />
-        <path d="M 188 185 L 162 227" stroke="#b2c4e0" strokeWidth="1.75" strokeLinecap="round" />
-
-        {/* gate socket on the core's right edge */}
-        <rect x="252" y="158" width="16" height="44" rx="6"
-          fill="#2456a6" fillOpacity="0.08" stroke="url(#ocs-gate)" strokeWidth="2" />
-
-        {/* connector stem: socket → EE plug (the single seam) */}
-        <path d="M 268 180 L 312 180" stroke="url(#ocs-gate)" strokeWidth="2.25" strokeLinecap="round" />
-        {/* gate dot on the seam */}
-        <circle cx="290" cy="180" r="6" fill="#17b3a3" />
-        <circle cx="290" cy="180" r="11" stroke="#17b3a3" strokeOpacity="0.3" strokeWidth="1.75" />
-
-        {/* ── EE module (right, optional → dashed) ── */}
-        <rect x="312" y="120" width="120" height="120" rx="16"
-          fill="#17b3a3" fillOpacity="0.05" stroke="url(#ocs-stroke)" strokeWidth="2"
-          strokeDasharray="7 6" />
-
-        {/* plug prongs reaching into the seam */}
-        <path d="M 312 168 L 296 168" stroke="#9cb3d7" strokeWidth="2" strokeLinecap="round" />
-        <path d="M 312 192 L 296 192" stroke="#9cb3d7" strokeWidth="2" strokeLinecap="round" />
-
-        {/* EE contents: two compact feature tiles */}
-        <rect x="332" y="142" width="80" height="32" rx="8"
-          fill="#2456a6" fillOpacity="0.06" stroke="#92abd3" strokeWidth="1.75" />
-        <circle cx="346" cy="158" r="4" fill="#2dd4bf" />
-        <line x1="358" y1="158" x2="398" y2="158" stroke="#b2c4e0" strokeWidth="2" strokeLinecap="round" />
-        <rect x="332" y="186" width="80" height="32" rx="8"
-          fill="#2456a6" fillOpacity="0.06" stroke="#92abd3" strokeWidth="1.75" />
-        <circle cx="346" cy="202" r="4" fill="#17b3a3" />
-        <line x1="358" y1="202" x2="386" y2="202" stroke="#b2c4e0" strokeWidth="2" strokeLinecap="round" />
-      </g>
-    </svg>
+    <FigSvg fig="11" name="Open core" className={className} title={title} compact={compact}>
+      <Box iso={P} x={0} y={0} w={3.4} d={3} h={top} weight={2} />
+      {/* socket on the core's top face */}
+      <polygon points={sock.map(p => p.join(',')).join(' ')} className="ns fa" />
+      {/* dashed stems from the hovering module down to the socket */}
+      {[[1.2, 1.0], [2.2, 1.0], [2.2, 2.0], [1.2, 2.0]].map(([x, y], i) => {
+        const a = corner(x, y, top), b = corner(x, y, ghost.z)
+        return <line key={i} x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} className="k2 dd" />
+      })}
+      <Box iso={P} x={ghost.x} y={ghost.y} z={ghost.z} w={ghost.w} d={ghost.d} h={ghost.h} tone="ghost" />
+      {!compact && (
+        <>
+          <Label x={20} y={34} tone="ink">Core</Label>
+          <Label x={20} y={47}>Apache-2.0</Label>
+          <Label x={336} y={34} tone="ink">ee/</Label>
+          <Label x={336} y={47}>Licensed module</Label>
+          <Link x1={gx + 8} y1={gy + 10} x2={gx + 66} y2={gy + 54} tone="k2" lead />
+          <Label x={gx + 70} y={gy + 62} tone="accent">Feature gate</Label>
+        </>
+      )}
+    </FigSvg>
   )
 }

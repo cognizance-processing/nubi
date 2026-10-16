@@ -137,7 +137,7 @@ and the browser (which is untrusted) would be in the loop. Instead:
   warehouse — never string-concatenated, never trusted from the request body,
   never enforced in the browser.
 
-![The browser is untrusted; RLS predicates are injected server-side from the verified token](illustration:TrustBoundary)
+![The browser is untrusted; RLS predicates are injected server-side from the verified token](illustration:RlsBoundary)
 
 ### How it fits together
 

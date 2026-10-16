@@ -1,0 +1,182 @@
+/* Docs figures (View anatomy, Edge cache keys) — Swiss, scoped under .nfig.
+   Colours map onto the app's theme tokens, so .dark on <html> flips them too.
+   Layout responds to the figure's own width (container queries), because docs
+   render it inside a narrow content column. */
+.nfig {
+  container: nfig / inline-size;
+  --paper: var(--surface); --sheet: var(--surface-2); --ink: var(--text); --ink-2: var(--text-muted); --ink-3: var(--text-subtle);
+  --hair: var(--border); --accent: var(--primary); --accent-soft: var(--accent-soft); --on-accent: var(--primary-fg);
+  --f-display: var(--font-ui); --f-body: var(--font-ui); --f-mono: var(--font-mono);
+  --rule: 2px solid var(--ink); --hairline: 1px solid var(--hair);
+  position: relative; margin: 28px 0; font-family: var(--font-ui); color: var(--ink); background: var(--paper); line-height: 1.55;
+}
+.nfig *, .nfig *::before, .nfig *::after { box-sizing: border-box; }
+.nfig [hidden] { display: none !important; }
+.nfig button { font-family: inherit; }
+.nfig .fcap { margin: 0 0 14px; font-weight: 600; font-size: 22px; letter-spacing: -.02em; line-height: 1.15; }
+.nfig .story { margin-top: 0; }
+.nfig .toast { position: absolute; bottom: 12px; top: auto; }
+.nfig .cap-panel h3 { margin: 0; border: 0; padding: 0; }
+.nfig p { margin: 0; }
+.nfig .label {font-family:var(--f-mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-2)}
+.nfig .num {font-variant-numeric:tabular-nums}
+.nfig .btn {display:inline-flex;align-items:center;gap:8px;height:40px;padding:0 16px;font:inherit;font-weight:600;font-size:14px;text-decoration:none;cursor:pointer;border:2px solid var(--ink);background:var(--ink);color:var(--paper)}
+.nfig .btn:hover {background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.nfig .btn.ghost {background:transparent;color:var(--ink)}
+.nfig .btn.ghost:hover {background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.nfig .btn.sm {height:34px;padding:0 12px;font-size:13px}
+.nfig .story {margin-top:44px;border-top:var(--rule);border-bottom:var(--rule)}
+.nfig .rail {display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border-bottom:var(--hairline)}
+.nfig .rail button {position:relative;display:grid;gap:2px;text-align:left;font:inherit;background:transparent;border:0;color:var(--ink-3);padding:12px 12px 14px 0;cursor:pointer;min-width:0}
+.nfig .rail button+button {padding-left:14px;border-left:var(--hairline)}
+.nfig .rail button b {font-family:var(--f-mono);font-size:11px;font-weight:500;letter-spacing:.08em}
+.nfig .rail button span {font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nfig .rail button:hover {color:var(--ink-2)}
+.nfig .rail button[aria-current="step"] {color:var(--ink)}
+.nfig .rail button[aria-current="step"] b {color:var(--accent)}
+.nfig .rail button.done {color:var(--ink-2)}
+.nfig .rail i {position:absolute;left:0;bottom:-1px;height:3px;width:var(--p,0%);background:var(--accent)}
+.nfig .rail button+button i {left:14px}
+@container nfig (max-width:700px) {
+.nfig .rail button span {display:none}
+.nfig .rail button {padding-right:6px}
+}
+.nfig .story-body {display:grid;grid-template-columns:minmax(0,3fr) minmax(0,9fr)}
+.nfig .cap-panel {padding:22px 24px 24px 0;border-right:var(--hairline);display:grid;gap:16px;align-content:start;min-width:0}
+.nfig .cap-panel .chn {font-family:var(--f-mono);font-size:12px;color:var(--ink-2);display:flex;justify-content:space-between;gap:8px}
+.nfig .cap-panel h3 {margin:0;font-weight:650;font-stretch:82%;font-size:clamp(28px,2.6vw,38px);line-height:1;letter-spacing:-.025em;text-wrap:balance}
+.nfig .cap-panel p {margin:0;color:var(--ink-2);font-size:15.5px}
+.nfig .cap-panel p b {color:var(--ink);font-weight:600}
+.nfig .cap-ctl {display:grid;gap:10px;justify-items:start}
+.nfig .cap-ctl .hint {font-size:13px;color:var(--ink-2)}
+.nfig .cap-ctl code {font-family:var(--f-mono);font-size:12px;background:var(--sheet);border:var(--hairline);padding:4px 8px;word-break:break-all;color:var(--ink)}
+.nfig .cap-nav {display:flex;gap:8px;flex-wrap:wrap;border-top:var(--hairline);padding-top:14px;margin-top:4px}
+.nfig .key {display:grid;gap:6px;font-family:var(--f-mono);font-size:11px;color:var(--ink-2);border-top:var(--hairline);padding-top:12px}
+.nfig .key div {display:flex;align-items:center;gap:8px}
+.nfig .key s {display:inline-block;width:14px;height:6px;text-decoration:none}
+.nfig .key .k1 {background:var(--accent)}
+.nfig .key .k2 {border:1px solid var(--ink);height:9px;width:9px;margin:0 2.5px}
+.nfig .key .k3 {border-top:1px dashed var(--ink-3);height:0}
+.nfig .key .k4 {border:1px dashed var(--ink-3);height:9px;width:9px;margin:0 2.5px}
+.nfig .stage {position:relative;height:clamp(500px, 50vw, 660px);background:var(--paper);overflow:hidden;touch-action:pan-y;cursor:grab;min-width:0}
+.nfig .stage.drag {cursor:grabbing}
+.nfig .stage.hot {cursor:pointer}
+.nfig .stage canvas {display:block;width:100%;height:100%}
+.nfig .leaders {position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+.nfig .leaders path {fill:none;stroke:var(--ink);stroke-width:1}
+.nfig .leaders circle {fill:var(--paper);stroke:var(--ink);stroke-width:1.5}
+.nfig .leaders .dim path, .nfig .leaders .dim circle {stroke:var(--ink-3)}
+.nfig .anno {position:absolute;inset:0;pointer-events:none}
+.nfig .an {position:absolute;left:0;top:0;display:grid;gap:1px;white-space:nowrap;transition:opacity .25s}
+.nfig .an b {font-family:var(--f-mono);font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase}
+.nfig .an span {font-family:var(--f-mono);font-size:12px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.nfig .an.dim {opacity:.38}
+.nfig .an.focus b {color:var(--accent)}
+.nfig .tok {position:absolute;left:0;top:0;pointer-events:auto;font-family:var(--f-mono);font-size:11px;border:1px solid var(--accent);background:var(--sheet);color:var(--accent);padding:2px 7px;cursor:pointer;white-space:nowrap}
+.nfig .tok:hover {background:var(--accent);color:var(--on-accent)}
+.nfig .tok.wait {border-style:dashed;color:var(--ink-2);border-color:var(--ink-3)}
+.nfig .drag-hint {position:absolute;right:0;bottom:10px;font-family:var(--f-mono);font-size:11px;color:var(--ink-3);pointer-events:none}
+.nfig .nogl {position:absolute;inset:0;display:grid;place-items:center;text-align:center;color:var(--ink-2);padding:24px}
+@container nfig (max-width:900px) {
+.nfig .story-body {grid-template-columns:1fr}
+.nfig .cap-panel {order:2;border-right:0;border-top:var(--hairline);padding-right:0}
+.nfig .stage {height:clamp(420px,110vw,560px)}
+}
+.nfig .readouts {display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border-top:var(--hairline)}
+.nfig .ro {padding:14px 16px 16px 0;display:grid;gap:4px;min-width:0}
+.nfig .ro+.ro {border-left:var(--hairline);padding-left:16px}
+.nfig .ro .v {font-family:var(--f-mono);font-size:clamp(18px,2vw,24px);font-weight:500;font-variant-numeric:tabular-nums;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nfig .ro .v.zero {color:var(--accent)}
+.nfig .ro small {font-size:12px;color:var(--ink-2)}
+@container nfig (max-width:860px) {
+.nfig .readouts {grid-template-columns:repeat(2,minmax(0,1fr))}
+.nfig .ro:nth-child(odd) {border-left:0;padding-left:0}
+.nfig .ro:nth-child(even) {border-left:var(--hairline);padding-left:16px}
+.nfig .ro:nth-child(n+3) {border-top:var(--hairline)}
+.nfig .ro:last-child {grid-column:1 / -1;border-left:0;padding-left:0}
+}
+.nfig .toast {position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--paper);font-family:var(--f-mono);font-size:12px;padding:10px 14px;z-index:60;max-width:calc(100vw - 32px)}
+.nfig .seg {display:inline-flex;border:1px solid var(--ink)}
+.nfig .seg button {font:inherit;font-size:13px;padding:5px 11px;border:0;background:transparent;color:var(--ink);cursor:pointer}
+.nfig .seg button+button {border-left:1px solid var(--ink)}
+.nfig .seg button[aria-pressed="true"] {background:var(--ink);color:var(--paper)}
+.nfig .seg button:hover:not([aria-pressed="true"]) {background:var(--accent-soft)}
+.nfig .cache {display:grid;grid-template-columns:minmax(0,3fr) minmax(0,9fr);gap:24px}
+.nfig .panel {display:grid;gap:22px;align-content:start}
+.nfig .field {display:grid;gap:8px}
+.nfig .field output {font-family:var(--f-mono);font-size:28px;font-weight:500;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.nfig input[type=range] {width:100%;accent-color:var(--accent)}
+.nfig .switch {display:flex;align-items:center;gap:10px;cursor:pointer;font-size:14px}
+.nfig .switch input {appearance:none;width:38px;height:20px;border:1px solid var(--ink);background:transparent;position:relative;cursor:pointer;margin:0}
+.nfig .switch input::after {content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;background:var(--ink);transition:left .15s}
+.nfig .switch input:checked {background:var(--accent);border-color:var(--accent)}
+.nfig .switch input:checked::after {left:20px;background:var(--on-accent)}
+.nfig .bignum {border-top:var(--hairline);padding-top:14px;display:grid;gap:2px}
+.nfig .bignum .v {font-family:var(--f-mono);font-weight:500;font-size:clamp(40px,5vw,64px);line-height:1;letter-spacing:-.04em;font-variant-numeric:tabular-nums}
+.nfig .bignum .v.good {color:var(--accent)}
+.nfig .figbox {position:relative;border:var(--hairline);background:var(--sheet);min-width:0}
+.nfig .figbox canvas {display:block;width:100%;height:380px}
+.nfig .formula {display:flex;flex-wrap:wrap;gap:6px 16px;justify-content:space-between;border-top:var(--hairline);padding:10px 14px;font-family:var(--f-mono);font-size:12px;color:var(--ink-2)}
+.nfig .formula code {color:var(--ink)}
+@container nfig (max-width:860px) {
+.nfig .cache {grid-template-columns:1fr}
+.nfig .figbox canvas {height:320px}
+}
+/* ── Live instrument (auth / docs): axonometric line-drawing chart ── */
+.nfig .inst {
+  --bg: var(--surface); --ink: var(--text); --muted: var(--text-muted); --subtle: var(--text-subtle); --line: var(--border); --wash: var(--surface-2);
+  --f: var(--font-ui); --fm: var(--font-mono);
+  /* WebGL colours are read as resolved hex by instrument.js, so they follow the global tokens */
+  --g-face: var(--surface); --g-line: var(--text); --g-acc: var(--accent); --g-soft: #c9d6f6; --g-fill: var(--text); --g-tone: 1, .9, .78;
+}
+.dark .nfig .inst { --g-face: var(--surface-3); --g-line: var(--text); --g-acc: var(--accent); --g-soft: #2f3d6e; --g-fill: var(--text); --g-tone: 1.25, 1, .8; }
+@keyframes blink { 50% { opacity: 0; } }
+.nfig .inst .seg button { color: var(--ink); font-family: var(--f); }
+.nfig .inst .note { padding: 0 12px 10px; }
+.nfig .inst { border: 1px solid var(--ink); display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
+.nfig .inst .ibar { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--ink); font: 500 11.5px var(--fm); letter-spacing: .06em; }
+.nfig .inst .live { width: 8px; height: 8px; background: var(--accent); animation: blink 1.6s steps(1) infinite; }
+.nfig .inst .ibar .r { margin-left: auto; color: var(--subtle); }
+.nfig .inst .ctrls { display: flex; flex-wrap: wrap; gap: 8px 20px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.nfig .inst .ctrl { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.nfig .inst .ctrl > span { font: 500 10.5px var(--fm); letter-spacing: .08em; color: var(--subtle); text-transform: uppercase; }
+.nfig .inst .seg { display: inline-flex; border: 1px solid var(--ink); border-radius: 2px; }
+.nfig .inst .seg button { border: 0; background: transparent; padding: 4px 10px; font-size: 13px; cursor: pointer; border-left: 1px solid var(--ink); white-space: nowrap; }
+.nfig .inst .seg button:first-child { border-left: 0; }
+.nfig .inst .seg button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+.nfig .inst .seg button:not([aria-pressed="true"]):hover { background: var(--wash); }
+.nfig .inst .istage { position: relative; aspect-ratio: 16 / 10.5; max-width: 100%; touch-action: none; cursor: grab; overflow: hidden; }
+.nfig .inst .istage.drag { cursor: grabbing; }
+.nfig .inst .istage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.nfig .inst .lbls { position: absolute; inset: 0; pointer-events: none; }
+.nfig .inst .lbl { position: absolute; left: 0; top: 0; font: 500 10px var(--fm); color: var(--subtle); letter-spacing: .04em; white-space: nowrap; transform: translate(-50%, -50%); }
+.nfig .inst .lbl.acc { color: var(--accent); }
+.nfig .inst .lbl.tag { font-size: 10.5px; color: var(--ink); background: var(--bg); padding: 2px 6px; border-left: 2px solid currentColor; text-transform: uppercase; letter-spacing: .07em; transform: translate(0, -100%); }
+.nfig .inst .lbl.tag.acc { color: var(--accent); }
+.nfig .inst .tip { position: absolute; z-index: 3; pointer-events: none; background: var(--ink); color: var(--bg); font: 12px/1.4 var(--fm); padding: 7px 9px; border-radius: 2px; white-space: nowrap; transform: translate(12px, -110%); }
+.nfig .inst .tip b { font-weight: 500; display: block; font-family: var(--f); font-size: 13px; }
+.nfig .inst .hintline { position: absolute; left: 12px; bottom: 10px; font: 11px var(--fm); color: var(--subtle); pointer-events: none; }
+.nfig .inst .sel { position: absolute; right: 12px; top: 10px; display: flex; align-items: center; gap: 8px; background: var(--accent); color: var(--primary-fg); font: 500 12px var(--fm); padding: 4px 4px 4px 10px; border-radius: 2px; }
+.nfig .inst .sel button { border: 0; background: color-mix(in srgb, var(--primary-fg) 18%, transparent); color: var(--primary-fg); width: 20px; height: 20px; cursor: pointer; border-radius: 2px; line-height: 1; }
+.nfig .inst .kpis { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); border-top: 1px solid var(--ink); }
+.nfig .inst .kpi { padding: 10px 12px 12px; border-left: 1px solid var(--line); min-width: 0; }
+.nfig .inst .kpi:first-child { border-left: 0; }
+.nfig .inst .kpi span { font: 500 10.5px var(--fm); letter-spacing: .08em; color: var(--subtle); text-transform: uppercase; }
+.nfig .inst .kpi b { display: block; font: 500 clamp(20px, 2vw, 28px)/1.15 var(--f); letter-spacing: -.035em; font-variant-numeric: tabular-nums; }
+.nfig .inst .read { display: flex; flex-wrap: wrap; gap: 4px 18px; padding: 8px 12px; border-top: 1px solid var(--ink); background: var(--wash); font: 12px var(--fm); color: var(--muted); }
+.nfig .inst .read b { color: var(--ink); font-weight: 500; }
+.nfig .inst .read .r { margin-left: auto; }
+.nfig .inst .note { font: 11.5px/1.5 var(--fm); color: var(--subtle); margin-top: 10px; }
+
+/* ── Auth frame: the figure sits on the grey frame as one compact sheet ── */
+.nubi-auth-art .nfig { margin: 0; }
+.nubi-auth-art .nfig .key, .nubi-auth-art .nfig .readouts, .nubi-auth-art .nfig .chn { display: none; }
+.nubi-auth-art .nfig .story { border: 1px solid var(--ink); border-top-width: 2px; }
+.nubi-auth-art .nfig .stage { height: min(50vh, 500px); }
+.nubi-auth-art .nfig .cap-panel { padding: 16px 16px 18px; gap: 10px; }
+.nubi-auth-art .nfig .cap-panel h3 { font-size: 24px; }
+.nubi-auth-art .nfig .cap-panel p { font-size: 14px; }
+.nubi-auth-art .nfig .rail button { padding-top: 10px; padding-bottom: 10px; }
+.nubi-auth-art .nfig .rail button:first-child { padding-left: 12px; }
+.nubi-auth-art .nfig .inst .istage { aspect-ratio: auto; height: min(46vh, 460px); }
+.nubi-auth-art .nfig .inst .note { display: none; }

@@ -1,6 +1,6 @@
 # Connector Security
 
-![The Nubi connector trust boundary: secrets stay encrypted in the app layer, never in the database or API responses](illustration:TrustBoundary)
+![Connector credentials are encrypted in the app layer and never reach the database or API responses in plain text](illustration:SecretsVault)
 
 Connector credentials — passwords, service-account keys, API tokens — are encrypted at the application layer before they touch the database. This page explains the storage model, the encryption scheme, key rotation, network modes, and the API contracts that enforce these guarantees.
 

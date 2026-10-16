@@ -1,82 +1,40 @@
 /**
- * WebGLPerf — 1M+ points at 60fps on the GPU. Metaphor: a dense scatter plot
- * with hundreds of crisp points + a cross-filter brush selection. Deterministic
- * point field (seeded), flat, no blur/glow. Reads on white + dark-navy.
+ * WebGLPerf — a million points at 60 fps on the GPU: a dense, seeded scatter
+ * with one brushed selection (the accent) for cross-filtering.
  */
-export default function WebGLPerf({ className = '' }) {
-  // Deterministic seeded point field (stable across renders, no Math.random).
-  const pts = []
-  let s = 1337
-  const rnd = () => ((s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff)
-  for (let i = 0; i < 460; i++) {
-    const t = i / 460
-    // positive-correlation cloud across the plot (dense = "1M+ points")
-    const jx = (rnd() - 0.5) * 0.24
-    const jy = (rnd() - 0.5) * 0.24
-    const x = 96 + (t + jx) * 304
-    const y = 288 - (t + jy) * 222
-    if (x < 92 || x > 408 || y < 60 || y > 290) continue
-    pts.push({ x, y, t: Math.max(0, Math.min(1, t + jy)) })
+import { FigSvg, Label, seeded, type FigProps } from './kit'
+
+const X0 = 44, X1 = 456, Y0 = 30, Y1 = 224
+const BRUSH = { x: 262, y: 74, w: 112, h: 84 }
+
+export default function WebGLPerf({ className, title, compact }: FigProps) {
+  const rnd = seeded(1337)
+  const g = () => (rnd() + rnd() + rnd() + rnd() - 2) / 2 // ~gaussian in [-1, 1]
+  const base: string[] = [], hit: string[] = []
+  for (let i = 0; i < 620; i++) {
+    const t = rnd()
+    const cx = X0 + 20 + t * (X1 - X0 - 40)
+    const cy = Y1 - 22 - t * (Y1 - Y0) * 0.55 + g() * 38
+    const x = Math.round(cx + g() * 22), y = Math.round(cy)
+    if (x < X0 + 4 || x > X1 - 4 || y < Y0 + 2 || y > Y1 - 4) continue
+    const inside = x >= BRUSH.x && x <= BRUSH.x + BRUSH.w && y >= BRUSH.y && y <= BRUSH.y + BRUSH.h
+    ;(inside ? hit : base).push(`M${x} ${y}h2v2h-2z`)
   }
-  // color stops along blue→teal by height; the low band uses a lightened
-  // brand blue — pure #2456a6 dots vanish on the dark-navy surface card.
-  const col = (t) => (t > 0.66 ? '#2dd4bf' : t > 0.33 ? '#17b3a3' : '#4d7fd6')
-
   return (
-    <svg
-      viewBox="28 28 424 304"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
-      aria-hidden="true"
-      width="100%"
-      height="auto"
-      preserveAspectRatio="xMidYMid meet"
-    >
-      <defs>
-        <linearGradient id="wgl-stroke" x1="0" y1="1" x2="1" y2="0">
-          <stop offset="0%" stopColor="#3b66c4" />
-          <stop offset="45%" stopColor="#2456a6" />
-          <stop offset="100%" stopColor="#17b3a3" />
-        </linearGradient>
-        <clipPath id="wgl-clip">
-          <rect x="40" y="40" width="400" height="280" rx="16" />
-        </clipPath>
-      </defs>
-
-      {/* plot frame */}
-      <rect x="40" y="40" width="400" height="280" rx="16"
-        fill="#2456a6" fillOpacity="0.03" stroke="url(#wgl-stroke)" strokeWidth="2" />
-
-      <g clipPath="url(#wgl-clip)">
-        {/* faint grid lines for depth */}
-        {[122, 160, 198, 236].map((y) => (
-          <line key={`h${y}`} x1="84" y1={y} x2="416" y2={y}
-            stroke="#2456a6" strokeWidth="1" strokeOpacity="0.08" />
-        ))}
-        {[150, 216, 282, 348].map((x) => (
-          <line key={`v${x}`} x1={x} y1="62" x2={x} y2="294"
-            stroke="#2456a6" strokeWidth="1" strokeOpacity="0.08" />
-        ))}
-
-        {/* axes */}
-        <line x1="84" y1="62" x2="84" y2="294" stroke="#b2c4e0" strokeWidth="1.5" />
-        <line x1="84" y1="294" x2="416" y2="294" stroke="#b2c4e0" strokeWidth="1.5" />
-
-        {/* point cloud */}
-        {pts.map((p, i) => (
-          <circle key={i} cx={p.x} cy={p.y} r={2.1} fill={col(p.t)}
-            fillOpacity={0.4 + p.t * 0.5} />
-        ))}
-
-        {/* cross-filter brush selection */}
-        <rect x="250" y="96" width="130" height="104" rx="8"
-          fill="#2dd4bf" fillOpacity="0.08" stroke="#17b3a3" strokeWidth="1.75" strokeDasharray="5 4" />
-        {/* corner handles on the brush */}
-        {[[250, 96], [380, 96], [250, 200], [380, 200]].map(([hx, hy], i) => (
-          <circle key={i} cx={hx} cy={hy} r="3.25" fill="#17b3a3" />
-        ))}
-      </g>
-    </svg>
+    <FigSvg fig="06" name="1M points · 60 fps" className={className} title={title} compact={compact}>
+      <polyline points={`${X0},${Y0} ${X0},${Y1} ${X1},${Y1}`} className="k1" />
+      {[0, 1, 2, 3, 4, 5].map(i => <line key={i} x1={X0 + 40 + i * 74} y1={Y1} x2={X0 + 40 + i * 74} y2={Y1 + 5} className="k2" />)}
+      <path d={base.join('')} className="ns fm" />
+      <path d={hit.join('')} className="ns fa" />
+      <rect x={BRUSH.x} y={BRUSH.y} width={BRUSH.w} height={BRUSH.h} className="ka w2 dd" />
+      {!compact && (
+        <>
+          <Label x={X0 + 8} y={Y0 + 10} tone="ink">1,048,576 points</Label>
+          <Label x={X1} y={Y0 + 10} anchor="end">60 fps · GPU</Label>
+          <Label x={BRUSH.x} y={BRUSH.y - 8} tone="accent">Brush · cross-filter</Label>
+          <Label x={X1} y={Y1 + 18} anchor="end">Order value →</Label>
+        </>
+      )}
+    </FigSvg>
   )
 }
