@@ -79,7 +79,7 @@ function UsdInput({ label, hint, value, onChange, min = 1, max = 100000, disable
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
           aria-label={label ? undefined : accessibleLabel}
-          className="w-32 px-3 py-1.5 rounded-lg border border-border bg-surface text-sm text-fg focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-32 px-3 py-1.5 rounded-sm border border-border bg-surface text-sm text-fg focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-50 disabled:cursor-not-allowed"
         />
         <span className="text-xs text-muted">USD</span>
       </div>
@@ -99,7 +99,7 @@ function CardChip({ brand, last4, expMonth, expYear }: {
   if (!last4) return null
   const brandLabel = brand ? brand.charAt(0).toUpperCase() + brand.slice(1) : 'Card'
   return (
-    <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-surface-2 border border-border text-sm text-fg">
+    <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-sm bg-surface-2 border border-border text-sm text-fg">
       <CreditCard size={14} className="text-muted" />
       <span>
         {brandLabel} ending in <span className="font-mono font-semibold">{last4}</span>
@@ -189,14 +189,14 @@ export default function AutoTopupSettings({ config, onSaved, className }: {
   }
 
   return (
-    <section className={`rounded-2xl border border-border bg-surface p-6 space-y-6 ${className ?? ''}`}>
+    <section className={`rounded-sm border border-border bg-surface p-6 space-y-6 ${className ?? ''}`}>
       {/* Header */}
       <div className="flex items-center gap-3">
         <div
-          className="flex items-center justify-center w-10 h-10 rounded-xl shrink-0"
-          style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6)' }}
+          className="flex items-center justify-center w-10 h-10 rounded-sm shrink-0"
+          style={{ background: 'var(--ink)' }}
         >
-          <Settings2 size={18} className="text-white" />
+          <Settings2 size={18} className="text-[var(--ink-fg)]" />
         </div>
         <div>
           <h2 className="font-display font-semibold text-base text-fg">Auto-topup</h2>
@@ -218,7 +218,7 @@ export default function AutoTopupSettings({ config, onSaved, className }: {
           />
         </div>
       ) : (
-        <div className="flex items-start gap-2 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+        <div className="nubi-notice nubi-notice-warning">
           <AlertCircle size={15} className="shrink-0 mt-0.5" />
           <span>
             No saved payment method. Make a{' '}
@@ -243,14 +243,14 @@ export default function AutoTopupSettings({ config, onSaved, className }: {
             onClick={() => setEnabled((v) => !v)}
             disabled={!hasCard}
             title={!hasCard ? 'Add a payment method first' : undefined}
-            className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-accent/40 ${
+            className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-sm border-2 border-transparent transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-accent/40 ${
               enabled && hasCard ? 'bg-accent' : 'bg-surface-3'
             } ${!hasCard ? 'opacity-40 cursor-not-allowed' : ''}`}
             role="switch"
             aria-checked={enabled}
           >
             <span
-              className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ${
+              className={`pointer-events-none inline-block h-5 w-5 transform rounded-sm bg-surface ring-0 transition duration-200 ${
                 enabled && hasCard ? 'translate-x-5' : 'translate-x-0'
               }`}
             />
@@ -362,13 +362,13 @@ export default function AutoTopupSettings({ config, onSaved, className }: {
         {/* Feedback — role="status"/"alert" so screen readers announce the outcome
             without requiring focus to move (the save button stays focused). */}
         {saveError && (
-          <p role="alert" className="text-xs text-red-600 dark:text-red-400 flex items-center gap-1.5">
+          <p role="alert" className="text-xs text-[color:var(--danger-fg)] flex items-center gap-1.5">
             <AlertCircle size={12} />
             {saveError}
           </p>
         )}
         {savedOk && (
-          <p role="status" className="text-xs text-teal-600 dark:text-teal-400 flex items-center gap-1.5">
+          <p role="status" className="text-xs text-[color:var(--success-fg)] flex items-center gap-1.5">
             <CheckCircle size={12} />
             Settings saved.
           </p>
@@ -379,7 +379,7 @@ export default function AutoTopupSettings({ config, onSaved, className }: {
           <button
             type="submit"
             disabled={saving}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-accent text-white hover:bg-accent/90 disabled:opacity-60 transition-colors"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-sm text-sm font-semibold bg-[var(--ink)] text-[var(--ink-fg)] hover:bg-[var(--ink-hover)] disabled:opacity-60 transition-colors"
           >
             {saving ? <Loader2 size={14} className="animate-spin" /> : null}
             {saving ? 'Saving…' : 'Save settings'}

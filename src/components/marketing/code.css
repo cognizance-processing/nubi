@@ -1,0 +1,53 @@
+/*
+ * Code surface — the ink block used for every snippet on the public site and in
+ * the docs. These are the only raw colours in the marketing kit: a syntax
+ * palette tuned to sit on the ink surface at 4.5:1 or better in both themes
+ * (comment text included).
+ */
+:root, .nubi-light {
+  --code-bg: #0b0c0e;
+  --code-bar: #15171b;
+  --code-line: #2a2d33;
+  --code-fg: #e6e8ec;
+  --code-cm: #9aa1ad;
+  --code-kw: #9db4ff;
+  --code-str: #e2c48d;
+  --code-num: #8fd3c3;
+  --code-fn: #ffffff;
+  --code-punc: #aeb4bf;
+  --code-tag: #c9b8ff;
+  --code-ln: #8a919d;
+}
+.dark {
+  --code-bg: #08090b;
+  --code-bar: #101216;
+}
+
+.mk-code {
+  position: relative;
+  background: var(--code-bg);
+  color: var(--code-fg);
+  border: 1px solid var(--code-line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.mk-code-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  min-height: 34px; padding: 0 6px 0 14px;
+  background: var(--code-bar); border-bottom: 1px solid var(--code-line);
+  font: 500 11px/1 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--code-cm);
+}
+.mk-code pre {
+  margin: 0; padding: 14px 16px; overflow-x: auto;
+  font: 13px/1.65 var(--font-mono); font-variant-ligatures: none; tab-size: 2;
+  color: var(--code-fg);
+}
+.mk-code pre code { font: inherit; background: none; border: 0; padding: 0; color: inherit; }
+.mk-code .cm { color: var(--code-cm); }
+.mk-copy {
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px;
+  font: 500 11px/1 var(--font-mono); letter-spacing: .06em; text-transform: uppercase;
+  color: var(--code-cm); background: transparent; border: 1px solid transparent; border-radius: 2px; cursor: pointer;
+}
+.mk-copy:hover { color: var(--code-fn); border-color: var(--code-line); }
+.mk-copy:focus-visible { outline: 2px solid var(--code-kw); outline-offset: 1px; }

@@ -91,7 +91,7 @@ export default function FxNotice({
 
   return (
     <aside
-      className={`rounded-xl border border-border bg-surface-2 px-5 py-4 space-y-2 ${className ?? ''}`}
+      className={`rounded-sm border border-border bg-surface-2 px-5 py-4 space-y-2 ${className ?? ''}`}
       aria-label="ZAR pricing disclosure"
     >
       <p className="text-xs font-semibold text-muted uppercase tracking-wider">
@@ -109,7 +109,7 @@ export default function FxNotice({
             </>
           )}
           {isFallback && (
-            <span className="ml-1 text-amber-600 dark:text-amber-400">
+            <span className="ml-1 text-[color:var(--warning-fg)]">
               — Using a reference estimate; live rate unavailable.
             </span>
           )}

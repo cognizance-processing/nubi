@@ -1,376 +1,270 @@
 /**
- * Navbar — sticky marketing/app shell header.
+ * Navbar — the public site header, built to the landing header's spec.
  *
- * Left:   Logo (links to /)
- * Center: nav links — Docs, Reporting, Compare, Pricing, Portal (auth-only)
- * Right:  GitHub, CurrencySelector, ThemeToggle, Login/Register (or UserMenu)
- *
- * Polished: backdrop-blur glass effect, scroll-aware shadow, refined active
- * states, smooth mobile drawer with staggered link reveals.
+ * 56px, lockup left, text links, ⌘K search, ghost "Sign in", ink "Start free".
+ * A hairline appears under the bar once the page scrolls; the current route
+ * sits on a 2px ink rule. Below lg the links move into a full-width drawer.
  */
 
-import { useState, useEffect, useRef } from 'react'
-import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { Sun, Moon, Menu, X, LogOut, LayoutDashboard, ChevronDown, Github } from 'lucide-react'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { Sun, Moon, Menu, X, LogOut, Search, ArrowRight, LayoutDashboard } from 'lucide-react'
 import { useTheme } from '../contexts/ThemeContext.jsx'
 import { useAuth } from '../contexts/AuthContext.jsx'
 import Logo from './Logo.jsx'
-import CurrencySelector from './CurrencySelector.jsx'
+import Brand from './marketing/Brand.jsx'
+import MarketingStyles from './marketing/MarketingStyles.jsx'
+import PublicPalette, { openPublicSearch, isMacLike } from './marketing/PublicPalette.jsx'
 
-const GITHUB_URL = 'https://github.com/nu-bi/nubi'
+export const GITHUB_URL = 'https://github.com/nu-bi/nubi'
 
-const NAV_LINKS: { label: string; to: string; authOnly?: boolean; scrollTo?: string }[] = [
-  { label: 'Docs',      to: '/docs' },
-  { label: 'Reporting', to: '/reporting' },
-  { label: 'Compare',   to: '/compare' },
-  { label: 'Pricing',   to: '/pricing' },
+type Link_ = { label: string; to: string; hash?: string }
+
+const NAV_LINKS: Link_[] = [
+  { label: 'Product', to: '/' },
+  { label: 'Live demo', to: '/', hash: '#live' },
+  { label: 'Docs', to: '/docs' },
+  { label: 'Pricing', to: '/pricing' },
+  { label: 'Compare', to: '/compare' },
 ]
 
-// ── Theme toggle ──────────────────────────────────────────────────────────────
+const CSS = `
+.mk-nav { position: sticky; top: 0; z-index: 40; background: var(--surface); border-bottom: 1px solid transparent; }
+.mk-nav[data-scrolled="true"] { border-bottom-color: var(--border); }
+.mk-nav-in { display: flex; align-items: center; gap: 12px; height: 56px; }
+@media (min-width: 1024px) { .mk-nav-in { gap: 28px; } }
+.mk-skip { position: absolute; left: 8px; top: -48px; z-index: 60; padding: 10px 14px; background: var(--ink); color: var(--ink-fg); font: 600 14px var(--font-ui); border-radius: 2px; text-decoration: none; }
+.mk-skip:focus { top: 8px; }
+.mk-brand { display: inline-flex; align-items: center; color: var(--text); text-decoration: none; border-radius: 2px; }
+.mk-links { display: none; align-items: stretch; gap: 4px; height: 100%; }
+@media (min-width: 1024px) { .mk-links { display: flex; } }
+.mk-link-item { position: relative; display: inline-flex; align-items: center; padding: 0 12px; font-size: 14px; font-weight: 500; color: var(--text-muted); text-decoration: none; }
+.mk-link-item:hover { color: var(--text); }
+.mk-link-item[aria-current="page"] { color: var(--text); }
+.mk-link-item[aria-current="page"]::after { content: ''; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 2px; background: var(--ink); }
+.mk-nav-r { margin-left: auto; display: flex; align-items: center; gap: 4px; min-width: 0; }
+@media (min-width: 640px) { .mk-nav-r { gap: 8px; } }
+.mk-kbtn { display: none; align-items: center; gap: 10px; height: 34px; padding: 0 10px; min-width: 200px; border: 1px solid var(--frame-line); background: var(--surface-2); color: var(--text-muted); font: 13px var(--font-ui); cursor: pointer; border-radius: 2px; }
+.mk-kbtn:hover { border-color: var(--ink); color: var(--text); }
+.mk-kbtn span { flex: 1; text-align: left; }
+@media (min-width: 1100px) { .mk-kbtn { display: inline-flex; } }
+.mk-icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; color: var(--text-muted); background: transparent; border: 0; border-radius: 2px; cursor: pointer; text-decoration: none; }
+.mk-icon-btn:hover { color: var(--text); background: var(--frame-hover); }
+.mk-only-lg { display: none; }
+@media (min-width: 1024px) { .mk-only-lg { display: inline-flex; } .mk-not-lg { display: none !important; } }
+@media (min-width: 1100px) { .mk-search-icon { display: none; } }
+.mk-drawer { position: fixed; z-index: 39; left: 0; right: 0; top: 56px; bottom: 0; background: var(--surface); border-top: 2px solid var(--ink); overflow-y: auto; overscroll-behavior: contain; }
+.mk-drawer nav a { display: flex; align-items: center; gap: 16px; min-height: 56px; padding: 0 16px; font-size: 22px; font-weight: 600; letter-spacing: -.02em; color: var(--text); text-decoration: none; border-bottom: 1px solid var(--border); }
+.mk-drawer nav a small { font: 500 11px var(--font-mono); letter-spacing: .08em; color: var(--text-muted); width: 24px; }
+.mk-drawer nav a[aria-current="page"] { box-shadow: inset 2px 0 0 var(--ink); }
+.mk-drawer nav a svg { margin-left: auto; color: var(--text-muted); }
+.mk-drawer .mk-dr-act { display: grid; gap: 10px; padding: 20px 16px; }
+.mk-drawer .mk-dr-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px 28px; border-top: 1px solid var(--border); }
+.mk-user { position: relative; }
+.mk-avatar { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; background: var(--ink); color: var(--ink-fg); font: 600 12px var(--font-ui); border-radius: 2px; }
+.mk-menu { position: absolute; right: 0; top: calc(100% + 8px); width: 220px; background: var(--surface); border: 1px solid var(--ink); border-radius: 4px; box-shadow: var(--shadow-pop, var(--shadow-lg)); padding: 4px; z-index: 45; }
+.mk-menu .mk-menu-id { padding: 8px 10px; font: 12px var(--font-mono); color: var(--text-muted); border-bottom: 1px solid var(--border); margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; }
+.mk-menu a, .mk-menu button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 36px; padding: 0 10px; font: 500 14px var(--font-ui); color: var(--text); background: transparent; border: 0; border-radius: 2px; cursor: pointer; text-decoration: none; text-align: left; }
+.mk-menu a:hover, .mk-menu button:hover { background: var(--frame-hover); }
+`
 
-function ThemeToggle() {
+function ThemeButton({ className = 'mk-icon-btn' }: { className?: string }) {
   const { theme, toggleTheme } = useTheme()
-  const isDark = theme === 'dark'
+  const dark = theme === 'dark'
   return (
-    <button
-      onClick={toggleTheme}
-      aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-      className="nubi-btn-icon nubi-btn nubi-btn-secondary focus-visible:ring-2 focus-visible:ring-ring"
-    >
-      {isDark
-        ? <Sun size={15} strokeWidth={2} aria-hidden="true" />
-        : <Moon size={15} strokeWidth={2} aria-hidden="true" />
-      }
+    <button type="button" onClick={toggleTheme} className={className} aria-label={dark ? 'Switch to light mode' : 'Switch to dark mode'}>
+      {dark ? <Sun size={16} strokeWidth={1.75} aria-hidden="true" /> : <Moon size={16} strokeWidth={1.75} aria-hidden="true" />}
     </button>
   )
 }
 
-// ── User avatar / menu ────────────────────────────────────────────────────────
+function GithubLink({ className = 'mk-icon-btn' }: { className?: string }) {
+  return (
+    <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer" className={className} aria-label="Nubi on GitHub">
+      <Brand slug="github" name="GitHub" size={18} mode="mono" />
+    </a>
+  )
+}
 
-function UserMenu({ user, logout }) {
+function UserMenu({ user, logout }: { user: any; logout: () => Promise<void> }) {
   const [open, setOpen] = useState(false)
   const navigate = useNavigate()
-  const menuRef = useRef(null)
+  const ref = useRef<HTMLDivElement>(null)
   const initial = (user.name || user.email || '?')[0].toUpperCase()
-
-  async function handleLogout() {
-    setOpen(false)
-    await logout()
-    navigate('/')
-  }
 
   useEffect(() => {
     if (!open) return
-    function onDown(e) {
-      if (menuRef.current && !menuRef.current.contains(e.target)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
+    const down = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false) }
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', down)
+    document.addEventListener('keydown', key)
+    return () => { document.removeEventListener('mousedown', down); document.removeEventListener('keydown', key) }
   }, [open])
 
   return (
-    <div className="relative" ref={menuRef}>
-      <button
-        onClick={() => setOpen(v => !v)}
-        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-border bg-surface text-sm text-fg hover:bg-surface-2 min-h-[36px] transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
-        aria-label="User menu"
-        aria-expanded={open}
-        aria-haspopup="true"
-      >
-        <span
-          className="flex items-center justify-center w-6 h-6 rounded-full text-[11px] font-bold text-white shrink-0"
-          style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
-          aria-hidden="true"
-        >
-          {initial}
-        </span>
-        <span className="hidden sm:inline max-w-[100px] truncate text-sm">{user.name || user.email}</span>
-        <ChevronDown size={11} className="text-muted" aria-hidden="true" />
+    <div className="mk-user" ref={ref}>
+      <button type="button" className="mk-icon-btn" style={{ width: 'auto', padding: '0 4px' }} onClick={() => setOpen(v => !v)} aria-label="Account menu" aria-expanded={open} aria-haspopup="menu">
+        <span className="mk-avatar" aria-hidden="true">{initial}</span>
       </button>
-
       {open && (
-        <>
-          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden="true" />
-          <div
-            className="absolute right-0 top-full mt-1.5 z-40 w-52 p-1 rounded-xl nubi-card nubi-animate-scale-in"
-            role="menu"
-          >
-            <div className="px-3 py-2 mb-1 border-b border-border">
-              <p className="text-xs text-muted truncate">{user.email}</p>
-            </div>
-            <Link
-              to="/home"
-              onClick={() => setOpen(false)}
-              role="menuitem"
-              className="flex items-center gap-2 w-full px-3 py-2.5 rounded-lg text-sm text-fg hover:bg-surface-2 transition-colors min-h-[40px]"
-            >
-              <LayoutDashboard size={14} className="text-muted" aria-hidden="true" />
-              Portal
-            </Link>
-            <button
-              onClick={handleLogout}
-              role="menuitem"
-              className="flex items-center gap-2 w-full px-3 py-2.5 rounded-lg text-sm text-fg hover:bg-surface-2 transition-colors text-left min-h-[40px]"
-            >
-              <LogOut size={14} className="text-muted" aria-hidden="true" />
-              Sign out
-            </button>
-          </div>
-        </>
+        <div className="mk-menu" role="menu">
+          <div className="mk-menu-id">{user.email}</div>
+          <Link to="/home" role="menuitem" onClick={() => setOpen(false)}><LayoutDashboard size={15} strokeWidth={1.75} aria-hidden="true" />Open app</Link>
+          <button type="button" role="menuitem" onClick={async () => { setOpen(false); await logout(); navigate('/') }}><LogOut size={15} strokeWidth={1.75} aria-hidden="true" />Sign out</button>
+        </div>
       )}
     </div>
   )
 }
 
-// ── Desktop nav link ──────────────────────────────────────────────────────────
-
-function DesktopNavLink({ to, label, scrollTo }) {
-  const location = useLocation()
-
-  if (scrollTo) {
-    function handleClick(e) {
-      if (location.pathname === '/') {
-        e.preventDefault()
-        const el = document.getElementById(scrollTo)
-        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      }
-    }
-    return (
-      <a
-        href={`/#${scrollTo}`}
-        onClick={handleClick}
-        className="relative text-sm font-medium px-3 py-1.5 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-      >
-        {label}
-      </a>
-    )
-  }
-
-  return (
-    <NavLink
-      to={to}
-      className={({ isActive }) =>
-        `relative text-sm font-medium px-3 py-1.5 rounded-lg transition-colors
-         ${isActive
-           ? 'text-fg bg-surface-2'
-           : 'text-muted hover:text-fg hover:bg-surface-2'
-         }`
-      }
-    >
-      {({ isActive }) => (
-        <>
-          {label}
-          {isActive && (
-            <span
-              className="absolute inset-x-3 bottom-0 h-0.5 rounded-full"
-              style={{ background: 'linear-gradient(90deg, #2456a6, #17b3a3)' }}
-              aria-hidden="true"
-            />
-          )}
-        </>
-      )}
-    </NavLink>
-  )
+function isActive(l: Link_, pathname: string) {
+  if (l.hash) return false
+  if (l.to === '/') return false // the landing has its own header
+  return pathname === l.to || pathname.startsWith(l.to + '/')
 }
 
-// ── Main Navbar ───────────────────────────────────────────────────────────────
-
 export default function Navbar() {
-  const [mobileOpen, setMobileOpen] = useState(false)
+  const [open, setOpen] = useState(false)
   const [scrolled, setScrolled] = useState(false)
   const { user, logout } = useAuth()
-  const location = useLocation()
+  const { pathname } = useLocation()
   const navigate = useNavigate()
+  const menuBtn = useRef<HTMLButtonElement>(null)
+  const mac = isMacLike()
 
-  // Close mobile menu on route change
-  const [lastPath, setLastPath] = useState(location.pathname)
-  if (lastPath !== location.pathname) {
-    setLastPath(location.pathname)
-    setMobileOpen(false)
-  }
+  // Close the drawer on navigation.
+  const [lastPath, setLastPath] = useState(pathname)
+  if (lastPath !== pathname) { setLastPath(pathname); setOpen(false) }
 
-  // Scroll-aware shadow
   useEffect(() => {
-    function onScroll() { setScrolled(window.scrollY > 8) }
-    window.addEventListener('scroll', onScroll, { passive: true })
-    return () => window.removeEventListener('scroll', onScroll)
+    const on = () => setScrolled(window.scrollY > 4)
+    on()
+    window.addEventListener('scroll', on, { passive: true })
+    return () => window.removeEventListener('scroll', on)
   }, [])
 
-  const visibleLinks = NAV_LINKS.filter(l => !l.authOnly || user)
+  // Drawer: lock page scroll, Esc closes, wide screens reset it.
+  useEffect(() => {
+    if (!open) return
+    const prev = document.documentElement.style.overflow
+    document.documentElement.style.overflow = 'hidden'
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { setOpen(false); menuBtn.current?.focus() } }
+    const mq = window.matchMedia('(min-width: 1024px)')
+    const wide = () => { if (mq.matches) setOpen(false) }
+    document.addEventListener('keydown', key)
+    mq.addEventListener('change', wide)
+    return () => { document.documentElement.style.overflow = prev; document.removeEventListener('keydown', key); mq.removeEventListener('change', wide) }
+  }, [open])
 
-  function handleMobileScrollLink(e, scrollTo) {
-    setMobileOpen(false)
-    if (location.pathname === '/') {
-      e.preventDefault()
-      const el = document.getElementById(scrollTo)
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    }
-  }
+  const goHash = useCallback((e: React.MouseEvent, l: Link_) => {
+    if (!l.hash) return
+    e.preventDefault()
+    setOpen(false)
+    navigate({ pathname: l.to, hash: l.hash })
+    setTimeout(() => document.getElementById(l.hash!.slice(1))?.scrollIntoView({ behavior: 'smooth' }), 120)
+  }, [navigate])
 
   return (
-    <header className={`nubi-navbar${scrolled ? ' scrolled' : ''}`}>
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-3">
+    <header className="mk-nav" data-scrolled={scrolled || open ? 'true' : 'false'}>
+      <MarketingStyles />
+      <style href="nubi-navbar" precedence="default">{CSS}</style>
+      <PublicPalette />
+      <a href="#main" className="mk-skip">Skip to content</a>
 
-        {/* ── Logo ─────────────────────────────────────────────────────── */}
-        <Link to="/" aria-label="Nubi home" className="shrink-0 flex items-center nubi-focus-ring rounded-lg">
-          <Logo size={30} showName={true} />
-        </Link>
+      <div className="mk-wrap">
+        <div className="mk-nav-in">
+          <Link to="/" className="mk-brand" aria-label="Nubi home"><Logo size={26} showName /></Link>
 
-        {/* ── Desktop nav ──────────────────────────────────────────────── */}
-        <nav className="hidden lg:flex items-center gap-0.5 flex-1 justify-center" aria-label="Main navigation">
-          {visibleLinks.map(link => (
-            <DesktopNavLink key={link.label} to={link.to} label={link.label} scrollTo={link.scrollTo} />
-          ))}
-        </nav>
-
-        {/* ── Right actions ─────────────────────────────────────────────── */}
-        <div className="flex items-center gap-1.5 shrink-0">
-          {/* GitHub */}
-          <a
-            href={GITHUB_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label="Nubi on GitHub"
-            title="Star Nubi on GitHub"
-            className="nubi-btn-icon nubi-btn nubi-btn-secondary"
-          >
-            <Github size={15} strokeWidth={2} aria-hidden="true" />
-          </a>
-
-          <CurrencySelector />
-          <ThemeToggle />
-
-          {/* Auth controls — desktop */}
-          <div className="hidden lg:flex items-center gap-2">
-            {user ? (
-              <UserMenu user={user} logout={logout} />
-            ) : (
-              <>
-                <Link
-                  to="/login"
-                  className="text-sm font-medium text-muted hover:text-fg transition-colors px-3 py-1.5 rounded-lg hover:bg-surface-2 min-h-[36px] flex items-center nubi-focus-ring"
-                >
-                  Log in
-                </Link>
-                <Link
-                  to="/register"
-                  className="nubi-btn nubi-btn-primary nubi-btn-sm"
-                >
-                  Get started
-                </Link>
-              </>
-            )}
-          </div>
-
-          {/* Hamburger — mobile */}
-          <button
-            className="lg:hidden nubi-btn nubi-btn-ghost nubi-btn-icon"
-            onClick={() => setMobileOpen(v => !v)}
-            aria-label={mobileOpen ? 'Close menu' : 'Open menu'}
-            aria-expanded={mobileOpen}
-            aria-controls="mobile-nav"
-          >
-            {mobileOpen
-              ? <X size={18} aria-hidden="true" />
-              : <Menu size={18} aria-hidden="true" />
-            }
-          </button>
-        </div>
-      </div>
-
-      {/* ── Mobile drawer ────────────────────────────────────────────────── */}
-      <div
-        id="mobile-nav"
-        role="region"
-        aria-label="Mobile navigation"
-        className={`
-          lg:hidden overflow-hidden bg-surface border-t border-border
-          transition-all duration-300 ease-in-out
-          ${mobileOpen ? 'max-h-[600px] opacity-100' : 'max-h-0 opacity-0'}
-        `}
-      >
-        <div className="px-4 py-3 flex flex-col gap-0.5">
-          {visibleLinks.map((link, i) =>
-            link.scrollTo ? (
-              <a
-                key={link.label}
-                href={`/#${link.scrollTo}`}
-                onClick={(e) => handleMobileScrollLink(e, link.scrollTo)}
-                className="flex items-center px-3 py-3 rounded-xl text-sm font-medium text-fg hover:bg-surface-2 transition-colors min-h-[44px]"
-                style={{ animationDelay: `${i * 40}ms` }}
+          <nav className="mk-links" aria-label="Main">
+            {NAV_LINKS.map(l => (
+              <Link
+                key={l.label}
+                to={{ pathname: l.to, hash: l.hash }}
+                onClick={e => goHash(e, l)}
+                className="mk-link-item"
+                aria-current={isActive(l, pathname) ? 'page' : undefined}
               >
-                {link.label}
-              </a>
-            ) : (
-              <NavLink
-                key={link.to}
-                to={link.to}
-                onClick={() => setMobileOpen(false)}
-                className={({ isActive }) =>
-                  `flex items-center px-3 py-3 rounded-xl text-sm font-medium transition-colors min-h-[44px]
-                   ${isActive
-                     ? 'bg-surface-2 text-primary font-semibold'
-                     : 'text-fg hover:bg-surface-2'
-                   }`
-                }
-                style={{ animationDelay: `${i * 40}ms` }}
-              >
-                {link.label}
-              </NavLink>
-            )
-          )}
+                {l.label}
+              </Link>
+            ))}
+          </nav>
 
-          {/* Mobile auth */}
-          <div className="mt-3 pt-3 border-t border-border flex flex-col gap-2">
+          <div className="mk-nav-r">
+            <button type="button" className="mk-kbtn" onClick={openPublicSearch} aria-label={`Search (${mac ? 'Command' : 'Control'} K)`}>
+              <Search size={14} strokeWidth={1.75} aria-hidden="true" />
+              <span>Search or jump to…</span>
+              <kbd className="mk-kbd">{mac ? '⌘K' : 'Ctrl K'}</kbd>
+            </button>
+            <button type="button" className="mk-icon-btn mk-search-icon" onClick={openPublicSearch} aria-label="Search">
+              <Search size={17} strokeWidth={1.75} aria-hidden="true" />
+            </button>
+            <GithubLink className="mk-icon-btn mk-only-lg" />
             {user ? (
               <>
-                <div className="px-3 py-2 flex items-center gap-2.5">
-                  <span
-                    className="flex items-center justify-center w-7 h-7 rounded-full text-[11px] font-bold text-white shrink-0"
-                    style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
-                    aria-hidden="true"
-                  >
-                    {(user.name || user.email || '?')[0].toUpperCase()}
-                  </span>
-                  <span className="text-xs text-muted truncate">{user.name || user.email}</span>
-                </div>
-                <Link
-                  to="/home"
-                  onClick={() => setMobileOpen(false)}
-                  className="flex items-center gap-2 px-3 py-3 rounded-xl text-sm font-medium text-fg hover:bg-surface-2 transition-colors min-h-[44px]"
-                >
-                  <LayoutDashboard size={15} className="text-muted" aria-hidden="true" />
-                  Portal
-                </Link>
-                <button
-                  onClick={async () => { setMobileOpen(false); await logout(); navigate('/') }}
-                  className="flex items-center gap-2 px-3 py-3 rounded-xl text-sm font-medium text-fg hover:bg-surface-2 transition-colors text-left min-h-[44px] w-full"
-                >
-                  <LogOut size={15} className="text-muted" aria-hidden="true" />
-                  Sign out
-                </button>
+                <Link to="/home" className="nubi-btn nubi-btn-primary nubi-btn-sm mk-only-lg">Open app</Link>
+                <span className="mk-only-lg"><UserMenu user={user} logout={logout} /></span>
               </>
             ) : (
               <>
-                <Link
-                  to="/login"
-                  onClick={() => setMobileOpen(false)}
-                  className="nubi-btn nubi-btn-secondary nubi-btn-lg w-full justify-center"
-                >
-                  Log in
-                </Link>
-                <Link
-                  to="/register"
-                  onClick={() => setMobileOpen(false)}
-                  className="nubi-btn nubi-btn-primary nubi-btn-lg w-full justify-center"
-                >
-                  Get started free
-                </Link>
+                <Link to="/login" className="nubi-btn nubi-btn-ghost nubi-btn-sm mk-only-lg">Sign in</Link>
+                <Link to="/register" className="nubi-btn nubi-btn-primary nubi-btn-sm">Start free</Link>
               </>
             )}
+            <button
+              ref={menuBtn}
+              type="button"
+              className="mk-icon-btn mk-not-lg"
+              onClick={() => setOpen(v => !v)}
+              aria-label={open ? 'Close menu' : 'Open menu'}
+              aria-expanded={open}
+              aria-controls="mk-drawer"
+            >
+              {open ? <X size={20} strokeWidth={1.75} aria-hidden="true" /> : <Menu size={20} strokeWidth={1.75} aria-hidden="true" />}
+            </button>
           </div>
         </div>
       </div>
+
+      {open && (
+        <div id="mk-drawer" className="mk-drawer" role="dialog" aria-modal="true" aria-label="Menu">
+          <nav aria-label="Mobile">
+            {NAV_LINKS.map((l, i) => (
+              <Link
+                key={l.label}
+                to={{ pathname: l.to, hash: l.hash }}
+                onClick={e => goHash(e, l)}
+                aria-current={isActive(l, pathname) ? 'page' : undefined}
+              >
+                <small>{String(i + 1).padStart(2, '0')}</small>
+                {l.label}
+                <ArrowRight size={18} strokeWidth={1.5} aria-hidden="true" />
+              </Link>
+            ))}
+            <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer">
+              <small>{String(NAV_LINKS.length + 1).padStart(2, '0')}</small>GitHub<ArrowRight size={18} strokeWidth={1.5} aria-hidden="true" />
+            </a>
+          </nav>
+          <div className="mk-dr-act">
+            {user ? (
+              <>
+                <Link to="/home" className="nubi-btn nubi-btn-primary nubi-btn-xl">Open app</Link>
+                <button type="button" className="nubi-btn nubi-btn-secondary nubi-btn-xl" onClick={async () => { setOpen(false); await logout(); navigate('/') }}>Sign out</button>
+              </>
+            ) : (
+              <>
+                <Link to="/register" className="nubi-btn nubi-btn-primary nubi-btn-xl">Start free</Link>
+                <Link to="/login" className="nubi-btn nubi-btn-secondary nubi-btn-xl">Sign in</Link>
+              </>
+            )}
+          </div>
+          <div className="mk-dr-foot">
+            <button type="button" className="nubi-btn nubi-btn-ghost nubi-btn-sm" onClick={() => { setOpen(false); openPublicSearch() }}>
+              <Search size={15} strokeWidth={1.75} aria-hidden="true" />Search docs
+            </button>
+            <ThemeButton />
+          </div>
+        </div>
+      )}
     </header>
   )
 }

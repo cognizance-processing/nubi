@@ -21,9 +21,11 @@
  */
 
 import { useState } from 'react'
-import { ArrowUpRight, Lock, Loader2 } from 'lucide-react'
+import { ArrowUpRight, Lock } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { createCheckout } from '../../lib/ee/billing.js'
+import EmptyState from '../../components/ui/EmptyState.jsx'
+import Button from '../../components/ui/Button.jsx'
 
 // ---------------------------------------------------------------------------
 // Compact (inline) variant
@@ -34,7 +36,7 @@ function CompactPrompt({ feature, tier, className }) {
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 text-xs font-medium text-accent cursor-pointer hover:underline ${className ?? ''}`}
+      className={`inline-flex items-center gap-1.5 text-xs font-medium text-accent cursor-pointer underline-offset-2 hover:underline ${className ?? ''}`}
       onClick={() => navigate('/billing')}
       role="button"
       tabIndex={0}
@@ -71,52 +73,20 @@ function CardPrompt({ feature, tier, className }) {
   }
 
   return (
-    <div
-      className={`rounded-2xl border border-border bg-surface p-6 flex flex-col items-start gap-4 ${className ?? ''}`}
-    >
-      <div className="flex items-center gap-3">
-        <div
-          className="flex items-center justify-center w-10 h-10 rounded-xl shrink-0"
-          style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
-        >
-          <Lock size={18} className="text-white" />
-        </div>
-        <div>
-          <p className="font-display font-semibold text-base text-fg">
-            {feature} is a {tier} feature
-          </p>
-          <p className="text-sm text-muted mt-0.5">
-            Upgrade your plan to unlock this capability.
-          </p>
-        </div>
-      </div>
-
-      {error && (
-        <p className="text-xs text-red-600 dark:text-red-400">{error}</p>
-      )}
-
-      <div className="flex items-center gap-3">
-        <button
-          onClick={handleUpgrade}
-          disabled={loading}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-accent text-white hover:bg-accent/90 disabled:opacity-60 transition-colors"
-        >
-          {loading ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : (
-            <ArrowUpRight size={14} />
-          )}
+    <EmptyState
+      kind="gated"
+      bordered
+      className={className}
+      title={`${feature} is on the ${tier} plan`}
+      description={error ?? 'Upgrade to unlock it. Viewers stay free on every plan.'}
+      action={
+        <Button onClick={handleUpgrade} loading={loading} size="md">
+          {!loading && <ArrowUpRight size={14} strokeWidth={1.75} aria-hidden="true" />}
           Upgrade to {tier}
-        </button>
-
-        <button
-          onClick={() => navigate('/billing')}
-          className="text-sm text-muted hover:text-fg transition-colors"
-        >
-          View plans
-        </button>
-      </div>
-    </div>
+        </Button>
+      }
+      secondaryAction={<Button variant="ghost" size="md" onClick={() => navigate('/billing')}>View plans</Button>}
+    />
   )
 }
 

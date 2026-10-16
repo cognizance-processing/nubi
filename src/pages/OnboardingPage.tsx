@@ -1,97 +1,133 @@
 /**
- * OnboardingPage — Supabase-style forced onboarding at /onboarding.
+ * OnboardingPage — /onboarding.
  *
- * Shown to authenticated users with ZERO org memberships (e.g. brand-new
- * Google OAuth user). Two paths out:
+ * Shown to authenticated users with zero org memberships (for example a brand
+ * new Google sign-in). Two ways out:
  *   1. Accept a pending invite
  *   2. Create a workspace
  *
- * Polished: entrance animation, nubi design system inputs/buttons,
- * refined error states, dark mode parity, a11y.
+ * A stepper makes the way ahead visible: this page is step 01 of four
+ * (workspace, connect, query, board). The rest happens from Home.
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Loader2, Building2, CheckCircle, Mail, AlertTriangle, LogOut, ArrowRight } from 'lucide-react'
+import { LogOut } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext.jsx'
 import * as api from '../lib/api.js'
 import { acceptInvite } from '../lib/members.js'
 import Logo from '../components/Logo.jsx'
+import MarketingStyles from '../components/marketing/MarketingStyles.jsx'
+import Figure from '../components/marketing/Figure.jsx'
+import { Tag } from '../components/marketing/kit.jsx'
+import { TextField, Checkbox, Banner, SubmitLabel, check, validators, focusFirst } from '../components/marketing/AuthFields.jsx'
 
 const ACTIVE_ORG_KEY = 'nubi-active-org-id'
 
-function saveActiveProjectId(orgId, projectId) {
+function saveActiveProjectId(orgId: string, projectId: string) {
   try { localStorage.setItem(`nubi-active-project-id:${orgId}`, projectId) } catch { /* ignore */ }
 }
-function saveActiveOrgId(orgId) {
+function saveActiveOrgId(orgId: string) {
   try { localStorage.setItem(ACTIVE_ORG_KEY, orgId) } catch { /* ignore */ }
 }
+
+const STEPS = [
+  { n: '01', t: 'Workspace', d: 'Name your organization' },
+  { n: '02', t: 'Connect', d: 'Point at a warehouse' },
+  { n: '03', t: 'Query', d: 'Write your first SQL' },
+  { n: '04', t: 'Board', d: 'Publish a dashboard' },
+]
+
+const CSS = `
+.ob { min-height: 100vh; display: flex; flex-direction: column; background: var(--surface); color: var(--text); }
+.ob-top { height: 56px; border-bottom: 1px solid var(--border); }
+.ob-top .mk-wrap { height: 100%; display: flex; align-items: center; justify-content: space-between; }
+.ob-main { flex: 1; padding-block: 40px 72px; display: grid; gap: 40px; align-content: start; }
+@media (min-width: 1000px) { .ob-main { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: 80px; padding-block: 64px 96px; } }
+.ob-steps { list-style: none; margin: 28px 0 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+.ob-steps li { padding-top: 10px; border-top: 3px solid var(--border); }
+.ob-steps li[aria-current="step"] { border-top-color: var(--ink); }
+.ob-steps b { display: block; font: 500 11px var(--font-mono); letter-spacing: .08em; color: var(--text-muted); }
+.ob-steps li[aria-current="step"] b { color: var(--text); }
+.ob-steps span { display: block; margin-top: 2px; font-size: 14px; font-weight: 600; }
+.ob-steps small { display: none; font-size: 12.5px; color: var(--text-muted); line-height: 1.4; margin-top: 2px; }
+@media (min-width: 640px) { .ob-steps small { display: block; } }
+.ob-card { border: 1px solid var(--border); border-top: 2px solid var(--ink); padding: 24px 20px 26px; }
+@media (min-width: 640px) { .ob-card { padding: 28px 28px 32px; } }
+.ob-card + .ob-card { margin-top: 20px; }
+.ob-card h2 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -.02em; }
+.ob-inv { list-style: none; margin: 16px 0 0; padding: 0; border-top: 1px solid var(--border); }
+.ob-inv li { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.ob-inv b { display: block; font-size: 15px; font-weight: 600; }
+.ob-inv small { font: 12px var(--font-mono); color: var(--text-muted); text-transform: capitalize; }
+`
 
 export default function OnboardingPage() {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
 
-  const [checking, setChecking]       = useState(true)
-  const [invites, setInvites]         = useState([])
-  const [acceptingId, setAcceptingId] = useState(null)
-  const [inviteError, setInviteError] = useState(null)
-  const [orgName, setOrgName]         = useState('')
+  const [checking, setChecking] = useState(true)
+  const [invites, setInvites] = useState<any[]>([])
+  const [acceptingId, setAcceptingId] = useState<string | null>(null)
+  const [inviteError, setInviteError] = useState<string | null>(null)
+  const [orgName, setOrgName] = useState('')
   const [projectName, setProjectName] = useState('Default')
   const [demoProject, setDemoProject] = useState(true)
-  const [creating, setCreating]       = useState(false)
-  const [createError, setCreateError] = useState(null)
+  const [touched, setTouched] = useState<{ org?: boolean; project?: boolean }>({})
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
+  const alive = useRef(true)
 
   useEffect(() => {
-    let cancelled = false
+    alive.current = true
     async function load() {
       try {
         const data = await api.get('/orgs')
         const list = Array.isArray(data?.orgs) ? data.orgs : []
-        if (cancelled) return
+        if (!alive.current) return
         if (list.length > 0) { navigate('/home', { replace: true }); return }
-      } catch { /* Transport error — stay on the page */ }
+      } catch { /* Transport error: stay on the page */ }
       const pending = await api.getMyInvites()
-      if (!cancelled) { setInvites(pending); setChecking(false) }
+      if (alive.current) { setInvites(pending); setChecking(false) }
     }
     load()
-    return () => { cancelled = true }
+    return () => { alive.current = false }
   }, [navigate])
 
-  async function handleAccept(invite) {
+  async function handleAccept(invite: any) {
     setAcceptingId(invite.id)
     setInviteError(null)
     try {
       const org = await acceptInvite(invite.token)
       saveActiveOrgId(org?.id ?? invite.org_id)
       window.location.assign('/home')
-    } catch (e) {
+    } catch (e: any) {
       setInviteError(e?.message ?? 'Could not accept this invite.')
       setAcceptingId(null)
     }
   }
 
-  async function handleCreate(e) {
+  const orgErr = check(orgName, validators.required('an organization name'))
+  const projErr = check(projectName, validators.required('a project name'))
+
+  async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
     setCreateError(null)
-    const org_name     = orgName.trim()
-    const project_name = projectName.trim()
-    if (!org_name || !project_name) {
-      setCreateError('Organization name and project name are required.')
-      return
-    }
+    setTouched({ org: true, project: true })
+    if (orgErr || projErr) { focusFirst([orgErr ? 'ob-org-name' : '', projErr ? 'ob-project-name' : ''].filter(Boolean)); return }
     setCreating(true)
     try {
-      const org = await api.createOrg(org_name)
+      const org = await api.createOrg(orgName.trim())
       saveActiveOrgId(org.id)
       api.setActiveOrgId(org.id)
-      const project = await api.createProject(project_name)
+      const project = await api.createProject(projectName.trim())
       if (project?.id) {
         saveActiveProjectId(org.id, project.id)
         api.setActiveProjectId(project.id)
       }
       if (demoProject) await api.restoreSample()
       window.location.assign('/home')
-    } catch (err) {
+    } catch (err: any) {
       setCreateError(err?.message ?? 'Could not create your workspace.')
       setCreating(false)
     }
@@ -102,204 +138,85 @@ export default function OnboardingPage() {
     navigate('/login', { replace: true })
   }
 
-  return (
-    <div className="min-h-screen bg-bg text-fg flex flex-col">
-      {/* Subtle gradient background */}
-      <div
-        className="fixed inset-0 pointer-events-none"
-        style={{
-          background:
-            'radial-gradient(ellipse 65% 45% at 20% 0%, rgba(36,86,166,0.07) 0%, transparent 65%), radial-gradient(ellipse 50% 40% at 85% 85%, rgba(23,179,163,0.07) 0%, transparent 65%)',
-        }}
-        aria-hidden="true"
-      />
+  const first = user?.name ? user.name.split(/\s+/)[0] : ''
 
-      {/* Top bar */}
-      <header className="relative flex items-center justify-between px-6 py-4 border-b border-border bg-surface/80 backdrop-blur-sm">
-        <Logo size={30} showName />
-        <button
-          type="button"
-          onClick={handleSignOut}
-          className="nubi-btn nubi-btn-ghost nubi-btn-sm text-muted"
-          aria-label="Sign out"
-        >
-          <LogOut size={14} aria-hidden="true" />
-          Sign out
-        </button>
+  return (
+    <div className="mk ob">
+      <MarketingStyles />
+      <style href="nubi-onboarding" precedence="default">{CSS}</style>
+
+      <header className="ob-top">
+        <div className="mk-wrap">
+          <Logo size={26} showName />
+          <button type="button" onClick={handleSignOut} className="nubi-btn nubi-btn-ghost nubi-btn-sm">
+            <LogOut size={14} strokeWidth={1.75} aria-hidden="true" />Sign out
+          </button>
+        </div>
       </header>
 
-      {/* Centered content */}
-      <main className="relative flex-1 flex items-start sm:items-center justify-center px-5 py-10">
-        <div className="w-full max-w-lg nubi-animate-slide-up">
+      <main id="main" className="mk-wrap ob-main">
+        <section aria-labelledby="ob-h" style={{ display: 'grid', gap: 20, alignContent: 'start' }}>
+          <div className="mk-idx"><b>SETUP</b><span>STEP 01 OF 04</span></div>
+          <h1 id="ob-h" className="mk-h1" style={{ fontSize: 'clamp(36px, 5vw, 64px)' }}>
+            Welcome{first ? <>, {first}</> : ''}. <em>Set up your workspace.</em>
+          </h1>
+          <p className="mk-lead">Join an organization you were invited to, or create your own. Then connect a warehouse and build your first board from Home.</p>
+
+          <ol className="ob-steps" aria-label="Setup steps">
+            {STEPS.map((s, i) => (
+              <li key={s.n} aria-current={i === 0 ? 'step' : undefined}>
+                <b>{s.n}</b><span>{s.t}</span><small>{s.d}</small>
+              </li>
+            ))}
+          </ol>
+
+          <Figure name="OnboardingSteps" step={1} title="Three steps after setup: connect data, write a query, build a board" className="w-full h-auto" />
+        </section>
+
+        <div>
           {checking ? (
-            <div className="flex items-center justify-center gap-2 text-sm text-muted py-20">
-              <Loader2 size={16} className="animate-spin" aria-hidden="true" />
-              Setting things up…
-            </div>
+            <p className="mk-p" role="status" style={{ display: 'flex', alignItems: 'center', gap: 10 }}><span className="mk-spin" aria-hidden="true" />Setting things up…</p>
           ) : (
             <>
-              {/* Hero heading */}
-              <div className="text-center mb-8">
-                <div
-                  className="mx-auto flex items-center justify-center w-14 h-14 rounded-2xl mb-5 shadow-lg"
-                  style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
-                >
-                  <Building2 size={24} className="text-white" aria-hidden="true" />
-                </div>
-                <h1 className="font-display font-bold text-2xl sm:text-3xl text-fg leading-tight tracking-tight">
-                  Welcome to Nubi{user?.name ? `, ${user.name.split(/\s+/)[0]}` : ''}
-                </h1>
-                <p className="mt-2.5 text-sm text-muted leading-relaxed max-w-sm mx-auto">
-                  Join an organization you&apos;ve been invited to, or create your own workspace to get started.
-                </p>
-              </div>
-
-              {/* ── Pending invites ──────────────────────────────────────── */}
               {invites.length > 0 && (
-                <section className="mb-5 nubi-card p-6">
-                  <div className="flex items-start justify-between mb-1">
-                    <h2 className="font-display font-semibold text-base text-fg">
-                      Pending invitations
-                    </h2>
-                    <span className="nubi-badge-primary text-[11px]">
-                      {invites.length}
-                    </span>
+                <section className="ob-card" aria-labelledby="ob-inv-h">
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                    <h2 id="ob-inv-h">Pending invitations</h2>
+                    <Tag tone="accent" dot>{invites.length}</Tag>
                   </div>
-                  <p className="nubi-hint mb-4">
-                    You&apos;ve been invited to {invites.length === 1 ? 'an organization' : 'organizations'}.
-                  </p>
-
-                  {inviteError && (
-                    <div className="nubi-auth-error mb-3">
-                      <AlertTriangle size={13} aria-hidden="true" />
-                      {inviteError}
-                    </div>
-                  )}
-
-                  <ul className="flex flex-col gap-2.5">
-                    {invites.map((invite) => (
-                      <li
-                        key={invite.id}
-                        className="flex items-center gap-3 rounded-xl border border-border bg-bg px-4 py-3"
-                      >
-                        <span className="flex items-center justify-center w-9 h-9 rounded-lg bg-surface-2 text-muted shrink-0">
-                          <Mail size={15} aria-hidden="true" />
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-sm font-semibold text-fg truncate">{invite.org_name}</span>
-                          <span className="block text-xs text-muted capitalize">{invite.role}</span>
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => handleAccept(invite)}
-                          disabled={acceptingId !== null}
-                          className="nubi-btn nubi-btn-sm text-white disabled:opacity-50 shrink-0"
-                          style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}
-                        >
-                          {acceptingId === invite.id ? (
-                            <Loader2 size={12} className="animate-spin" aria-hidden="true" />
-                          ) : (
-                            <CheckCircle size={12} aria-hidden="true" />
-                          )}
-                          Accept
+                  <p className="mk-small" style={{ marginTop: 6 }}>You&rsquo;ve been invited to {invites.length === 1 ? 'an organization' : 'organizations'}.</p>
+                  {inviteError && <div style={{ marginTop: 14 }}><Banner>{inviteError}</Banner></div>}
+                  <ul className="ob-inv">
+                    {invites.map(inv => (
+                      <li key={inv.id}>
+                        <span style={{ flex: 1, minWidth: 0 }}><b>{inv.org_name}</b><small>{inv.role}</small></span>
+                        <button type="button" onClick={() => handleAccept(inv)} disabled={acceptingId !== null} className="nubi-btn nubi-btn-primary nubi-btn-md" aria-busy={acceptingId === inv.id}>
+                          <SubmitLabel pending={acceptingId === inv.id} idle="Accept" busy="Joining…" />
                         </button>
                       </li>
                     ))}
                   </ul>
-
-                  <div className="nubi-auth-divider mt-6">or create a new workspace</div>
                 </section>
               )}
 
-              {/* ── Create organization ──────────────────────────────────── */}
-              <section className="nubi-card-raised p-6 sm:p-7">
-                <h2 className="font-display font-semibold text-base text-fg mb-1">
-                  {invites.length > 0 ? 'Create a new organization' : 'Create your workspace'}
-                </h2>
-                <p className="nubi-hint mb-5">
-                  Your workspace for projects, dashboards, and teammates.
-                </p>
-
-                {createError && (
-                  <div role="alert" aria-live="assertive" className="nubi-auth-error">
-                    <AlertTriangle size={14} className="shrink-0 mt-0.5" aria-hidden="true" />
-                    {createError}
+              <section className="ob-card" aria-labelledby="ob-new-h">
+                <h2 id="ob-new-h">{invites.length > 0 ? 'Or create a new organization' : 'Create your workspace'}</h2>
+                <p className="mk-small" style={{ marginTop: 6, marginBottom: 20 }}>Your home for projects, dashboards and teammates.</p>
+                {createError && <div style={{ marginBottom: 16 }}><Banner>{createError}</Banner></div>}
+                <form onSubmit={handleCreate} className="mk-form" noValidate>
+                  <div className="mk-pair">
+                    <TextField id="ob-org-name" label="Organization" autoComplete="organization" placeholder="Acme Inc"
+                      value={orgName} onChange={setOrgName} disabled={creating}
+                      error={touched.org ? orgErr : null} onBlurValue={() => setTouched(t => ({ ...t, org: true }))} />
+                    <TextField id="ob-project-name" label="First project" placeholder="Default"
+                      value={projectName} onChange={setProjectName} disabled={creating}
+                      error={touched.project ? projErr : null} onBlurValue={() => setTouched(t => ({ ...t, project: true }))} />
                   </div>
-                )}
-
-                <form onSubmit={handleCreate} className="flex flex-col gap-4" noValidate>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="nubi-field">
-                      <label htmlFor="ob-org-name" className="nubi-label">Organization</label>
-                      <input
-                        id="ob-org-name"
-                        type="text"
-                        autoComplete="organization"
-                        required
-                        value={orgName}
-                        onChange={(e) => setOrgName(e.target.value)}
-                        className="nubi-input"
-                        placeholder="Acme Inc"
-                        disabled={creating}
-                      />
-                    </div>
-                    <div className="nubi-field">
-                      <label htmlFor="ob-project-name" className="nubi-label">First project</label>
-                      <input
-                        id="ob-project-name"
-                        type="text"
-                        required
-                        value={projectName}
-                        onChange={(e) => setProjectName(e.target.value)}
-                        className="nubi-input"
-                        placeholder="Default"
-                        disabled={creating}
-                      />
-                    </div>
-                  </div>
-
-                  <label htmlFor="ob-demo-data" className="nubi-auth-checkbox-card">
-                    <input
-                      id="ob-demo-data"
-                      type="checkbox"
-                      checked={demoProject}
-                      onChange={(e) => setDemoProject(e.target.checked)}
-                      disabled={creating}
-                      className="mt-0.5 h-4 w-4 shrink-0 rounded border-border accent-[var(--primary)] focus:outline-none focus:ring-2 focus:ring-ring"
-                    />
-                    <span>
-                      <span className="block text-sm font-medium text-fg">Seed with demo data</span>
-                      <span className="block mt-0.5 text-xs text-muted">
-                        Sample dashboards, queries &amp; a demo connector — removable anytime.
-                      </span>
-                    </span>
-                  </label>
-
-                  <button
-                    type="submit"
-                    disabled={creating}
-                    className="nubi-btn nubi-btn-primary w-full justify-center"
-                    style={{
-                      minHeight: '48px',
-                      fontSize: '0.9375rem',
-                      borderRadius: '0.875rem',
-                      background: creating
-                        ? undefined
-                        : 'linear-gradient(135deg, #1b2363 0%, #2456a6 50%, #17b3a3 100%)',
-                      boxShadow: creating ? undefined : '0 8px 28px -8px rgba(23,179,163,0.5), 0 4px 14px rgba(36,86,166,0.4)',
-                    }}
-                  >
-                    {creating ? (
-                      <>
-                        <span className="nubi-spinner nubi-spinner-sm border-white/40 border-t-white" aria-hidden="true" />
-                        Creating workspace…
-                      </>
-                    ) : (
-                      <>
-                        Create organization
-                        <ArrowRight size={14} aria-hidden="true" />
-                      </>
-                    )}
+                  <Checkbox id="ob-demo-data" checked={demoProject} onChange={setDemoProject} disabled={creating} title="Add demo data">
+                    Sample dashboards, queries and a demo connector. Remove them any time.
+                  </Checkbox>
+                  <button type="submit" disabled={creating} className="nubi-btn nubi-btn-primary nubi-btn-xl mk-submit" aria-busy={creating}>
+                    <SubmitLabel pending={creating} idle="Create workspace" busy="Creating workspace…" />
                   </button>
                 </form>
               </section>

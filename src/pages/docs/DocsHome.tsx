@@ -1,120 +1,80 @@
 /**
- * DocsHome — the illustrated documentation landing page (slug "home").
+ * DocsHome — the docs landing page (slug "home").
  *
- * Replaces the plain-markdown index with a guided home: a hero + prominent
- * search, illustrated cards for the core product workflows, and quick links
- * into the three doc sections (Using Nubi · Nubi Cloud · Open-source project).
- * Uses the same brand illustrations as the landing/gallery so docs feel of a
- * piece with the product.
+ * One search box, six illustrated workflows, three sections. Hairline cells,
+ * mono indices, the same kit-drawn figures as the landing and the gallery.
  */
 import { Link } from 'react-router-dom'
-import { Search, ArrowRight, Rocket, Cloud, Github } from 'lucide-react'
+import { Search, ArrowRight } from 'lucide-react'
 import { DOC_ILLUSTRATIONS } from '../../components/illustrations/docMap.js'
+import { isMacLike } from '../../components/marketing/PublicPalette.jsx'
 
-// Core product workflows — each links to the deep section doc.
+// Core product workflows, each linking to the deep doc.
 const WORKFLOWS = [
-  {
-    slug: 'queries-and-params', illo: 'QueryWorkspace', title: 'Queries & parameters',
-    body: 'Write SQL, add typed {{params}}, reuse a query library, and let AI text-to-SQL ground on your real schema.',
-  },
-  {
-    slug: 'dashboards', illo: 'DashboardCanvas', title: 'Dashboards & widgets',
-    body: 'Compose KPIs, charts, tables, and filters on a grid. Nine widget types, variables, and a code view.',
-  },
-  {
-    slug: 'flows', illo: 'FlowOrchestration', title: 'Flows',
-    body: 'Cell-based pipelines — SQL, Python, and Note cells in a notebook or canvas view, with scheduling.',
-  },
-  {
-    slug: 'ai-and-mcp', illo: 'LlmDashboards', title: 'AI, Chat & MCP',
-    body: 'Grounded text-to-SQL, an agentic chat loop, and an MCP server so agents can author dashboards.',
-  },
-  {
-    slug: 'embedding', illo: 'EmbedAuth', title: 'Embedding & security',
-    body: 'Drop in <nubi-dashboard>, mint per-viewer JWTs, and enforce row-level security as signed claims.',
-  },
-  {
-    slug: 'connectors', illo: 'ConnectorSdk', title: 'Connectors',
-    body: 'Point at any Postgres-compatible warehouse or wrap your own source with the Python connector SDK.',
-  },
+  { slug: 'queries-and-params', illo: 'QueryWorkspace', title: 'Queries and parameters', body: 'Write SQL, add typed {{params}}, reuse a query library, and let AI text-to-SQL ground on your real schema.' },
+  { slug: 'dashboards', illo: 'DashboardCanvas', title: 'Dashboards and widgets', body: 'Compose KPIs, charts, tables and filters on a grid. Nine widget types, variables and a code view.' },
+  { slug: 'flows', illo: 'FlowOrchestration', title: 'Flows', body: 'Cell-based pipelines: SQL, Python and note cells in a notebook or canvas view, with scheduling.' },
+  { slug: 'ai-and-mcp', illo: 'LlmDashboards', title: 'AI, chat and MCP', body: 'Grounded text-to-SQL, an agentic chat loop, and an MCP server so agents can author dashboards.' },
+  { slug: 'embedding', illo: 'EmbedAuth', title: 'Embedding and security', body: 'Drop in <nubi-dashboard>, mint per-viewer JWTs and enforce row-level security as signed claims.' },
+  { slug: 'connectors', illo: 'ConnectorSdk', title: 'Connectors', body: 'Point at any Postgres-compatible warehouse, or wrap your own source with the Python connector SDK.' },
 ]
 
 const SECTIONS = [
-  { icon: Rocket, slug: 'getting-started', title: 'Using Nubi', body: 'How to use the product — for self-host and Cloud alike.' },
-  { icon: Cloud, slug: 'cloud', title: 'Nubi Cloud', body: 'The thin managed layer: plans, usage wallet, billing.' },
-  { icon: Github, slug: 'self-host', title: 'Open-source project', body: 'Self-host, architecture, security internals, building on Nubi.' },
+  { slug: 'getting-started', title: 'Using Nubi', body: 'How to use the product, for self-host and Cloud alike.' },
+  { slug: 'cloud', title: 'Nubi Cloud', body: 'The thin managed layer: plans, the usage wallet and billing.' },
+  { slug: 'self-host', title: 'Open-source project', body: 'Self-host, architecture, security internals and building on Nubi.' },
 ]
 
-function WorkflowCard({ slug, illo, title, body }) {
-  const Illo = DOC_ILLUSTRATIONS[illo]
+export default function DocsHome({ onOpenSearch }: { onOpenSearch: () => void }) {
+  const mod = isMacLike() ? '⌘K' : 'Ctrl K'
   return (
-    <Link
-      to={`/docs/${slug}`}
-      className="group flex flex-col rounded-2xl border border-border bg-surface overflow-hidden hover:border-brand-teal/40 hover:shadow-md transition-all"
-    >
-      <div className="bg-surface-2 px-5 pt-5 pb-2 border-b border-border" aria-hidden="true">
-        {Illo ? <Illo className="w-full h-auto max-h-40 mx-auto" /> : null}
-      </div>
-      <div className="p-5 flex flex-col gap-1.5 flex-1">
-        <h3 className="font-display text-base font-bold text-fg flex items-center gap-1.5">
-          {title}
-          <ArrowRight size={15} className="text-muted group-hover:text-brand-teal group-hover:translate-x-0.5 transition-all" />
-        </h3>
-        <p className="text-sm leading-relaxed text-muted">{body}</p>
-      </div>
-    </Link>
-  )
-}
+    <div style={{ maxWidth: 1080 }}>
+      <div className="mk-idx"><b>NUBI</b><span>DOCUMENTATION</span></div>
+      <h1 className="mk-h1" style={{ marginTop: 28, fontSize: 'clamp(40px, 5.4vw, 72px)' }}>Build with <em>Nubi.</em></h1>
+      <p className="mk-lead" style={{ marginTop: 18 }}>
+        Embedded-first BI where the kernel runs in the browser. Connect a warehouse, write a query, compose a dashboard and
+        embed it with per-viewer security. Start here.
+      </p>
 
-export default function DocsHome({ onOpenSearch }) {
-  return (
-    <div className="max-w-5xl mx-auto">
-      {/* Hero */}
-      <div className="text-center pt-2 pb-8">
-        <p className="text-xs font-semibold tracking-widest uppercase text-brand-teal mb-3">Documentation</p>
-        <h1 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold text-fg">
-          Build with <span className="text-brand-blue">Nubi</span>
-        </h1>
-        <p className="mt-4 text-sm sm:text-base text-muted max-w-2xl mx-auto leading-relaxed">
-          Embedded-first BI where the kernel runs in the browser. Connect a warehouse, write a query,
-          compose a dashboard, and embed it with per-viewer security — start here.
-        </p>
+      <button
+        type="button"
+        onClick={onOpenSearch}
+        aria-label={`Search the docs (${mod})`}
+        style={{ marginTop: 28, width: '100%', maxWidth: 560, height: 48, display: 'flex', alignItems: 'center', gap: 12, padding: '0 14px', border: '1px solid var(--ink)', borderRadius: 2, background: 'var(--surface)', color: 'var(--text-muted)', font: '15px var(--font-ui)', cursor: 'pointer', textAlign: 'left' }}
+      >
+        <Search size={17} strokeWidth={1.75} aria-hidden="true" />
+        <span style={{ flex: 1 }}>Search the docs</span>
+        <kbd className="mk-kbd">{mod}</kbd>
+      </button>
 
-        {/* Prominent search */}
-        <button
-          onClick={onOpenSearch}
-          className="mt-7 w-full max-w-xl mx-auto flex items-center gap-3 px-4 h-12 rounded-xl border border-border bg-surface hover:bg-surface-2 hover:border-brand-teal/40 transition-colors text-left"
-        >
-          <Search size={18} className="text-muted shrink-0" />
-          <span className="text-sm text-muted flex-1">Search the docs…</span>
-          <kbd className="hidden sm:inline-flex items-center px-2 h-6 text-[11px] font-mono rounded-md border border-border bg-surface-2 text-muted">⌘K</kbd>
-        </button>
-      </div>
-
-      {/* Core workflows */}
-      <div className="mt-4">
-        <h2 className="font-display text-lg font-bold text-fg mb-4">Core workflows</h2>
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {WORKFLOWS.map((w) => <WorkflowCard key={w.slug} {...w} />)}
+      <div style={{ marginTop: 64 }}>
+        <div className="mk-idx"><b>01</b><span>CORE WORKFLOWS</span></div>
+        <div className="mk-cells mk-cells-3" style={{ marginTop: 24 }}>
+          {WORKFLOWS.map(w => {
+            const Illo = (DOC_ILLUSTRATIONS as Record<string, any>)[w.illo]
+            return (
+              <Link key={w.slug} to={`/docs/${w.slug}`} className="mk-cell" style={{ padding: 0, gap: 0 }}>
+                <div aria-hidden="true" style={{ background: 'var(--surface-2)', borderBottom: '1px solid var(--border)', padding: '16px 18px 8px' }}>
+                  {Illo ? <Illo className="w-full h-auto" style={{ maxHeight: 150, margin: '0 auto' }} /> : null}
+                </div>
+                <div style={{ padding: '16px 18px 20px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <h3 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>{w.title}<ArrowRight size={15} strokeWidth={1.5} aria-hidden="true" style={{ color: 'var(--text-muted)' }} /></h3>
+                  <p>{w.body}</p>
+                </div>
+              </Link>
+            )
+          })}
         </div>
       </div>
 
-      {/* Sections */}
-      <div className="mt-12">
-        <h2 className="font-display text-lg font-bold text-fg mb-4">Browse by section</h2>
-        <div className="grid sm:grid-cols-3 gap-4">
-          {SECTIONS.map(({ icon: Icon, slug, title, body }) => (
-            <Link
-              key={slug}
-              to={`/docs/${slug}`}
-              className="group flex flex-col gap-2 rounded-2xl border border-border bg-surface p-5 hover:border-brand-teal/40 hover:shadow-md transition-all"
-            >
-              <Icon size={20} className="text-brand-teal" />
-              <h3 className="font-display text-base font-bold text-fg flex items-center gap-1.5">
-                {title}
-                <ArrowRight size={15} className="text-muted group-hover:text-brand-teal group-hover:translate-x-0.5 transition-all" />
-              </h3>
-              <p className="text-sm leading-relaxed text-muted">{body}</p>
+      <div style={{ marginTop: 64 }}>
+        <div className="mk-idx"><b>02</b><span>BROWSE BY SECTION</span></div>
+        <div className="mk-cells mk-cells-3" style={{ marginTop: 24 }}>
+          {SECTIONS.map((s, i) => (
+            <Link key={s.slug} to={`/docs/${s.slug}`} className="mk-cell">
+              <p className="mk-label">{String(i + 1).padStart(2, '0')}</p>
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>{s.title}<ArrowRight size={15} strokeWidth={1.5} aria-hidden="true" style={{ color: 'var(--text-muted)' }} /></h3>
+              <p>{s.body}</p>
             </Link>
           ))}
         </div>

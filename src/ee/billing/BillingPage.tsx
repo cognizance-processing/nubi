@@ -10,7 +10,7 @@
  * to the hosted payment page.
  *
  * Styling follows SettingsPage.jsx (max-w-2xl mx-auto, header pattern, card
- * surfaces with rounded-2xl border-border).
+ * surfaces with rounded-sm border-border).
  */
 
 import { useEffect, useState, useCallback } from 'react'
@@ -38,9 +38,9 @@ function zar(amount) {
 }
 
 const INVOICE_STATUS_STYLES = {
-  paid: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300',
-  pending: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
-  past_due: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+  paid: 'border border-[var(--frame-line)] text-fg',
+  pending: 'border border-[var(--frame-line)] text-fg',
+  past_due: 'border border-[var(--frame-line)] text-fg',
   draft: 'bg-surface-2 text-muted',
   void: 'bg-surface-2 text-muted line-through',
 }
@@ -63,15 +63,15 @@ function UsageBar({ label, used, limit, unit }) {
     <div className="space-y-1">
       <div className="flex items-center justify-between text-xs">
         <span className="text-fg font-medium">{label}</span>
-        <span className={over ? 'text-amber-600 dark:text-amber-400 font-semibold' : 'text-muted'}>
+        <span className={over ? 'text-[color:var(--warning-fg)] font-semibold' : 'text-muted'}>
           {used.toLocaleString('en-ZA')}{unit ? ' ' + unit : ''}
           {unlimited ? ' / ∞' : ` / ${limit.toLocaleString('en-ZA')}`}
         </span>
       </div>
       {!unlimited && (
-        <div className="h-1.5 rounded-full bg-surface-2 overflow-hidden">
+        <div className="h-1.5 rounded-sm bg-surface-2 overflow-hidden">
           <div
-            className={`h-full rounded-full ${over ? 'bg-amber-500' : 'bg-accent'}`}
+            className={`h-full rounded-sm ${over ? 'bg-[color:var(--warning)]' : 'bg-[var(--ink)]'}`}
             style={{ width: `${over ? 100 : pct}%` }}
           />
         </div>
@@ -84,7 +84,7 @@ function CurrentCycleCard({ cycle }) {
   if (!cycle) return null
   const overage = Number(cycle.overage_total_zar ?? 0)
   return (
-    <section className="rounded-2xl border border-border bg-surface p-6 space-y-4">
+    <section className="rounded-sm border border-border bg-surface p-6 space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="font-display font-semibold text-lg text-fg flex items-center gap-2">
           <Gauge size={17} className="text-accent" /> This billing cycle
@@ -120,7 +120,7 @@ function CurrentCycleCard({ cycle }) {
 
 function InvoicesCard({ invoices, downloading, onDownload }) {
   return (
-    <section className="rounded-2xl border border-border bg-surface p-6 space-y-4">
+    <section className="rounded-sm border border-border bg-surface p-6 space-y-4">
       <h2 className="font-display font-semibold text-lg text-fg flex items-center gap-2">
         <FileText size={17} className="text-accent" /> Invoices
       </h2>
@@ -137,14 +137,14 @@ function InvoicesCard({ invoices, downloading, onDownload }) {
                   {Number(inv.vat_amount_zar) > 0 && <span className="text-muted/70"> (incl. VAT)</span>}
                 </p>
               </div>
-              <span className={`shrink-0 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${INVOICE_STATUS_STYLES[inv.status] ?? INVOICE_STATUS_STYLES.draft}`}>
+              <span className={`shrink-0 px-2 py-0.5 rounded-sm text-[10px] font-semibold uppercase tracking-wide ${INVOICE_STATUS_STYLES[inv.status] ?? INVOICE_STATUS_STYLES.draft}`}>
                 {inv.status?.replace('_', ' ')}
               </span>
               <button
                 onClick={() => onDownload(inv)}
                 disabled={downloading === inv.id}
                 title="Download PDF"
-                className="shrink-0 inline-flex items-center justify-center w-8 h-8 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors disabled:opacity-50"
+                className="shrink-0 inline-flex items-center justify-center w-8 h-8 rounded-sm text-muted hover:text-fg hover:bg-surface-2 transition-colors disabled:opacity-50"
               >
                 {downloading === inv.id ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
               </button>
@@ -169,12 +169,12 @@ const TIER_LABELS = {
 function TierBadge({ tier }) {
   const styles = {
     free: 'bg-surface-2 text-muted',
-    pro: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
-    enterprise: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+    pro: 'bg-[var(--ink)] text-[var(--ink-fg)] border border-[var(--ink)]',
+    enterprise: 'border border-[var(--frame-line)] text-fg',
   }
   return (
     <span
-      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wide ${styles[tier] ?? styles.free}`}
+      className={`inline-flex items-center px-2.5 py-0.5 rounded-sm text-xs font-semibold uppercase tracking-wide ${styles[tier] ?? styles.free}`}
     >
       {TIER_LABELS[tier] ?? tier}
     </span>
@@ -192,7 +192,7 @@ function CurrentPlanCard({ status, onManage, managing }) {
       : `${status.seats_used} seats`
 
   return (
-    <section className="rounded-2xl border border-border bg-surface p-6 space-y-4">
+    <section className="rounded-sm border border-border bg-surface p-6 space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="font-display font-semibold text-lg text-fg">Current plan</h2>
         <TierBadge tier={status.tier} />
@@ -210,7 +210,7 @@ function CurrentPlanCard({ status, onManage, managing }) {
         {status.trial_ends_at && (
           <>
             <span className="text-border">·</span>
-            <span className="text-amber-600 dark:text-amber-400">
+            <span className="text-[color:var(--warning-fg)]">
               Trial ends {new Date(status.trial_ends_at).toLocaleDateString('en-ZA')}
             </span>
           </>
@@ -249,14 +249,14 @@ function TierCard({ tier, currentTier, onUpgrade, loading }) {
 
   return (
     <div
-      className={`relative flex flex-col rounded-2xl border p-6 gap-4 transition-shadow ${
+      className={`relative flex flex-col rounded-sm border p-6 gap-4 ${
         tier.highlight
-          ? 'border-accent bg-surface shadow-lg shadow-accent/10'
+          ? 'border-[var(--ink)] bg-surface shadow-[inset_0_3px_0_var(--accent)]'
           : 'border-border bg-surface'
       }`}
     >
       {tier.highlight && (
-        <span className="absolute -top-3 left-1/2 -translate-x-1/2 bg-accent text-white text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full">
+        <span className="absolute -top-3 left-1/2 -translate-x-1/2 bg-[var(--ink)] text-[var(--ink-fg)] font-mono text-[10px] font-medium uppercase tracking-[0.08em] px-2.5 py-1 rounded-sm">
           Most popular
         </span>
       )}
@@ -270,7 +270,7 @@ function TierCard({ tier, currentTier, onUpgrade, loading }) {
       <ul className="space-y-2 flex-1">
         {tier.features.map((f) => (
           <li key={f} className="flex items-start gap-2 text-sm text-fg">
-            <CheckCircle size={14} className="mt-0.5 shrink-0 text-teal-500" />
+            <CheckCircle size={14} className="mt-0.5 shrink-0 text-fg" />
             {f}
           </li>
         ))}
@@ -279,11 +279,11 @@ function TierCard({ tier, currentTier, onUpgrade, loading }) {
       <button
         onClick={handleCta}
         disabled={isCurrent || (loading === tier.id)}
-        className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
+        className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-sm text-sm font-semibold transition-colors ${
           isCurrent
             ? 'bg-surface-2 text-muted cursor-default'
             : tier.highlight
-              ? 'bg-accent text-white hover:bg-accent/90'
+              ? 'bg-[var(--ink)] text-[var(--ink-fg)] hover:bg-[var(--ink-hover)]'
               : 'bg-surface-2 text-fg border border-border hover:bg-surface-3'
         } disabled:opacity-60`}
       >
@@ -404,10 +404,10 @@ export default function BillingPage() {
       {/* Page header */}
       <header className="flex items-center gap-3">
         <div
-          className="flex items-center justify-center w-11 h-11 rounded-2xl shrink-0"
-          style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
+          className="flex items-center justify-center w-11 h-11 rounded-sm shrink-0"
+          style={{ background: 'var(--ink)' }}
         >
-          <CreditCard size={22} className="text-white" />
+          <CreditCard size={22} className="text-[var(--ink-fg)]" />
         </div>
         <div>
           <h1 className="font-display font-semibold text-2xl text-fg">Billing</h1>
@@ -417,13 +417,13 @@ export default function BillingPage() {
 
       {/* Checkout feedback banner */}
       {checkoutStatus === 'success' && (
-        <div role="status" className="flex items-center gap-3 rounded-xl bg-teal-50 dark:bg-teal-900/20 border border-teal-200 dark:border-teal-800 px-4 py-3 text-sm text-teal-800 dark:text-teal-200">
+        <div role="status" className="nubi-notice nubi-notice-success">
           <CheckCircle size={16} className="shrink-0" />
           Payment successful — your plan has been updated.
         </div>
       )}
       {checkoutStatus === 'cancelled' && (
-        <div role="status" className="flex items-center gap-3 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+        <div role="status" className="nubi-notice nubi-notice-warning">
           <AlertCircle size={16} className="shrink-0" />
           Checkout was cancelled — no charge was made.
         </div>
@@ -431,7 +431,7 @@ export default function BillingPage() {
 
       {/* Upgrade error */}
       {upgradeError && (
-        <div role="alert" className="flex items-center gap-3 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-4 py-3 text-sm text-red-800 dark:text-red-200">
+        <div role="alert" className="nubi-notice nubi-notice-error">
           <AlertCircle size={16} className="shrink-0" />
           {upgradeError}
         </div>
@@ -444,7 +444,7 @@ export default function BillingPage() {
           Loading billing status…
         </div>
       ) : statusError ? (
-        <div role="alert" className="flex items-center gap-3 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-4 py-3 text-sm text-red-800 dark:text-red-200">
+        <div role="alert" className="nubi-notice nubi-notice-error">
           <AlertCircle size={16} className="shrink-0" />
           {statusError}
         </div>

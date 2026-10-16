@@ -2,7 +2,7 @@
  * pricing.js — marketing pricing model + grounded competitor comparison data.
  *
  * This is PRESENTATION data for the public /pricing page only. Billing
- * ENFORCEMENT (metering, Paystack checkout, tier gating) lives in the EE tree
+ * ENFORCEMENT (metering, payment checkout, tier gating) lives in the EE tree
  * (src/ee/billing/* + backend) per the open-core split and is intentionally
  * NOT imported here.
  *
@@ -28,7 +28,7 @@ export const BILLING_MODEL = {
 }
 
 // ── Overage rates (the "buy more when you need it" usage-wallet model) ───────
-// Prices are anchored in USD (ZAR is just the currency we bill in). Each tier
+// Prices are anchored in USD. Each tier
 // includes a monthly quota; usage beyond it draws from your prepaid wallet
 // first, then lands on your monthly invoice. No per-viewer / per-seat overage.
 //
@@ -51,7 +51,7 @@ export const OVERAGE_NOTE =
   'Top up your usage wallet and pay only for what you use: AI tokens are billed ' +
   'in real time at the provider\'s actual cost plus a small markup (7.5%), never a ' +
   'flat per-call fee. Overdraw and it’s simply added to your next invoice. ' +
-  'Prices are in USD; we bill in ZAR at the daily rate.'
+  'All prices are in USD.'
 
 // ── Tiers (USD / month) ──────────────────────────────────────────────────────
 // Source of truth: backend/app/ee/billing/tiers.py

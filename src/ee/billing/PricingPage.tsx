@@ -73,14 +73,14 @@ const TIER_LABELS = {
 
 const TIER_BADGE_STYLES = {
   free:       'bg-surface-2 text-muted',
-  starter:    'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300',
-  team:       'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
-  pro:        'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
-  enterprise: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+  starter:    'border border-[var(--frame-line)] text-fg',
+  team:       'border border-[var(--frame-line)] text-fg',
+  pro:        'bg-[var(--ink)] text-[var(--ink-fg)] border border-[var(--ink)]',
+  enterprise: 'border border-[var(--frame-line)] text-fg',
   // Legacy
-  launch: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300',
-  growth: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
-  scale:  'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+  launch: 'border border-[var(--frame-line)] text-fg',
+  growth: 'border border-[var(--frame-line)] text-fg',
+  scale:  'border border-[var(--frame-line)] text-fg',
 }
 
 // ---------------------------------------------------------------------------
@@ -92,8 +92,8 @@ function CurrentPlanStrip({ status, onManage, managing }) {
   const badgeStyle = TIER_BADGE_STYLES[status.tier] ?? TIER_BADGE_STYLES.free
 
   return (
-    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-surface-2 px-5 py-3">
-      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wide ${badgeStyle}`}>
+    <div className="flex flex-wrap items-center gap-3 rounded-sm border border-border bg-surface-2 px-5 py-3">
+      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-sm text-xs font-semibold uppercase tracking-wide ${badgeStyle}`}>
         {tierLabel}
       </span>
       <span className="flex items-center gap-1.5 text-sm text-muted">
@@ -106,7 +106,7 @@ function CurrentPlanStrip({ status, onManage, managing }) {
         </span>
       )}
       {status.trial_ends_at && (
-        <span className="text-sm text-amber-600 dark:text-amber-400">
+        <span className="text-sm text-[color:var(--warning-fg)]">
           · Trial ends {new Date(status.trial_ends_at).toLocaleDateString('en-ZA')}
         </span>
       )}
@@ -205,10 +205,10 @@ export default function PricingPage() {
       {/* Page header */}
       <header className="flex items-center gap-3">
         <div
-          className="flex items-center justify-center w-11 h-11 rounded-2xl shrink-0"
-          style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
+          className="flex items-center justify-center w-11 h-11 rounded-sm shrink-0"
+          style={{ background: 'var(--ink)' }}
         >
-          <CreditCard size={22} className="text-white" />
+          <CreditCard size={22} className="text-[var(--ink-fg)]" />
         </div>
         <div>
           <h1 className="font-display font-semibold text-2xl text-fg">Plans &amp; Billing</h1>
@@ -220,13 +220,13 @@ export default function PricingPage() {
 
       {/* Checkout result banners (EE-specific) */}
       {checkoutStatus === 'success' && (
-        <div role="status" className="flex items-center gap-3 rounded-xl bg-teal-50 dark:bg-teal-900/20 border border-teal-200 dark:border-teal-800 px-4 py-3 text-sm text-teal-800 dark:text-teal-200">
+        <div role="status" className="nubi-notice nubi-notice-success">
           <CheckCircle size={16} className="shrink-0" />
           Payment successful — your plan has been updated.
         </div>
       )}
       {checkoutStatus === 'cancelled' && (
-        <div role="status" className="flex items-center gap-3 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+        <div role="status" className="nubi-notice nubi-notice-warning">
           <AlertCircle size={16} className="shrink-0" />
           Checkout was cancelled — no charge was made.
         </div>
@@ -234,7 +234,7 @@ export default function PricingPage() {
 
       {/* Upgrade error */}
       {upgradeError && (
-        <div role="alert" className="flex items-center gap-3 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-4 py-3 text-sm text-red-800 dark:text-red-200">
+        <div role="alert" className="nubi-notice nubi-notice-error">
           <AlertCircle size={16} className="shrink-0" />
           {upgradeError}
         </div>
@@ -249,8 +249,8 @@ export default function PricingPage() {
       ) : status ? (
         <CurrentPlanStrip status={status} onManage={handleManage} managing={managing} />
       ) : statusError ? (
-        <div role="status" className="flex items-center gap-3 rounded-xl bg-surface-2 border border-border px-4 py-3 text-sm text-muted">
-          <AlertCircle size={15} className="shrink-0 text-amber-500" />
+        <div role="status" className="flex items-center gap-3 rounded-sm bg-surface-2 border border-border px-4 py-3 text-sm text-muted">
+          <AlertCircle size={15} className="shrink-0 text-[color:var(--warning-fg)]" />
           {statusError}
         </div>
       ) : null}

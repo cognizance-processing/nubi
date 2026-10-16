@@ -1,212 +1,147 @@
-import { Link } from 'react-router-dom'
-import { Github, Twitter, Linkedin } from 'lucide-react'
-import Logo from './Logo'
+/**
+ * Footer — the shared site footer (public pages and the landing).
+ *
+ * A ruled sitemap in hairline cells: lockup and one line on the left, four
+ * columns of links, then a bar with the license and the theme switch.
+ * Colours come from global tokens only, so it also reads correctly inside the
+ * landing's `.nl` scope.
+ */
 
-// ─── Navigation columns ───────────────────────────────────────────────────────
-//
-// Link kinds:
-//   internal: true   → react-router <Link to={to}>
-//   scroll: 'id'     → smooth-scroll to #id on the landing page (href="/#id")
-//   external: true   → plain <a> with target="_blank"
-//   (none / #)       → removed or replaced
-//
+import { Link } from 'react-router-dom'
+import { useTheme } from '../contexts/ThemeContext.jsx'
+import Logo from './Logo.jsx'
+import Brand from './marketing/Brand.jsx'
+
 const GITHUB_URL = 'https://github.com/nu-bi/nubi'
 
-const NAV_COLUMNS = [
+type FooterLink = { text: string; to?: string; href?: string }
+
+const COLUMNS: { label: string; links: FooterLink[] }[] = [
   {
     label: 'Product',
     links: [
-      { text: 'Dashboards', href: '/#features',    scroll: 'features' },
-      { text: 'Embedding',  href: '/#embedding',   scroll: 'embedding' },
-      { text: 'Connectors', href: '/#sources',     scroll: 'sources' },
-      { text: 'Pricing',    href: '/#pricing',     scroll: 'pricing' },
+      { text: 'Overview', to: '/' },
+      { text: 'Live demo', to: '/#live' },
+      { text: 'Dashboards', to: '/docs/dashboards' },
+      { text: 'Embedding', to: '/docs/embedding' },
+      { text: 'AI and MCP', to: '/docs/ai-and-mcp' },
     ],
   },
   {
     label: 'Developers',
     links: [
-      { text: 'Docs',        to: '/docs',                internal: true },
-      { text: 'SDK & CLI',   to: '/docs/sdk-and-cli',    internal: true },
-      { text: 'AI & MCP',    to: '/docs/ai-and-mcp',     internal: true },
-      { text: 'Self-host',   to: '/docs/self-host',      internal: true },
-    ],
-  },
-  {
-    label: 'Compare',
-    links: [
-      { text: 'Overview',     to: '/compare',    internal: true },
-      { text: 'vs Hex',       to: '/compare',    internal: true },
-      { text: 'vs Cube',      to: '/compare',    internal: true },
-      { text: 'vs Metabase',  to: '/compare',    internal: true },
-    ],
-  },
-  {
-    label: 'Company',
-    links: [
-      { text: 'About',       href: '/#about',        scroll: 'about' },
-      { text: 'Open core',   to: '/docs/open-core',  internal: true },
-      { text: 'Sign up',     to: '/register',        internal: true },
+      { text: 'Docs', to: '/docs' },
+      { text: 'Quickstart', to: '/docs/quickstart' },
+      { text: 'API reference', to: '/docs/api-reference' },
+      { text: 'SDK and CLI', to: '/docs/sdk-and-cli' },
+      { text: 'Self-host', to: '/docs/self-host' },
     ],
   },
   {
     label: 'Resources',
     links: [
-      { text: 'GitHub',          href: GITHUB_URL,                external: true },
-      { text: 'Changelog',       href: `${GITHUB_URL}/releases`,  external: true },
-      { text: 'Getting started', to: '/docs/getting-started',     internal: true },
+      { text: 'Pricing', to: '/pricing' },
+      { text: 'Compare', to: '/compare' },
+      { text: 'Reporting', to: '/reporting' },
+      { text: 'GitHub', href: GITHUB_URL },
+      { text: 'Releases', href: `${GITHUB_URL}/releases` },
+    ],
+  },
+  {
+    label: 'Legal',
+    links: [
+      { text: 'Privacy', to: '/privacy' },
+      { text: 'Terms', to: '/terms' },
+      { text: 'Apache-2.0 license', href: `${GITHUB_URL}/blob/main/LICENSE` },
+      { text: 'Open core', to: '/docs/open-core' },
     ],
   },
 ]
 
-const SOCIAL = [
-  { Icon: Github,   href: 'https://github.com/nu-bi/nubi', label: 'GitHub' },
-  { Icon: Twitter,  href: 'https://twitter.com/nubi_dev',         label: 'X (Twitter)' },
-  { Icon: Linkedin, href: 'https://linkedin.com/company/nubi-dev', label: 'LinkedIn' },
-]
+const CSS = `
+.mk-foot { border-top: 2px solid var(--ink); background: var(--surface); color: var(--text); font-family: var(--font-ui); }
+.mk-foot-grid { display: grid; gap: 1px; background: var(--border); border-inline: 1px solid var(--border); grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.mk-foot-grid > * { background: var(--surface); padding: 20px 16px 24px; min-width: 0; }
+.mk-foot-brand { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 14px; }
+@media (min-width: 900px) {
+  .mk-foot-grid { grid-template-columns: minmax(0, 1.4fr) repeat(4, minmax(0, 1fr)); }
+  .mk-foot-brand { grid-column: auto; padding: 24px 24px 28px; }
+  .mk-foot-grid > * { padding: 24px 20px 28px; }
+}
+.mk-foot h2 { margin: 0 0 12px; font: 500 11px/1.4 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-muted); }
+.mk-foot ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.mk-foot li a { display: inline-block; padding: 4px 0; font-size: 14px; color: var(--text); text-decoration: none; }
+.mk-foot li a:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.mk-foot-tag { font-size: 15px; font-weight: 600; letter-spacing: -.015em; line-height: 1.35; max-width: 24ch; margin: 0; }
+.mk-foot-sub { font-size: 13px; line-height: 1.5; color: var(--text-muted); max-width: 32ch; margin: 0; }
+.mk-foot-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; padding-block: 14px 18px; border-top: 1px solid var(--border); font: 12px/1.4 var(--font-mono); color: var(--text-muted); }
+.mk-foot-bar > div { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.mk-foot-bar a { color: var(--text-muted); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+.mk-foot-bar a:hover { color: var(--text); }
+.mk-foot-theme { display: inline-flex; border: 1px solid var(--frame-line); border-radius: 2px; }
+.mk-foot-theme button { height: 26px; padding: 0 10px; font: 500 11px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); background: transparent; border: 0; cursor: pointer; }
+.mk-foot-theme button + button { border-left: 1px solid var(--frame-line); }
+.mk-foot-theme button[aria-pressed="true"] { background: var(--ink); color: var(--ink-fg); }
+.mk-foot-theme button:not([aria-pressed="true"]):hover { color: var(--text); background: var(--frame-hover); }
+.mk-foot :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.mk-foot-wrap { width: 100%; max-width: 1320px; margin: 0 auto; padding-inline: 16px; }
+@media (min-width: 640px) { .mk-foot-wrap { padding-inline: 24px; } }
+@media (min-width: 1024px) { .mk-foot-wrap { padding-inline: 32px; } }
+`
 
-// ─── Utility: nav link ────────────────────────────────────────────────────────
-function NavLink({ text, to, href, internal, external, scroll }) {
-  const cls =
-    'text-sm text-muted hover:text-fg transition-colors duration-150 leading-relaxed'
-
-  if (internal) {
-    return <Link to={to} className={cls}>{text}</Link>
+function FootLink({ link }: { link: FooterLink }) {
+  if (link.to) {
+    // Anchors on the landing need a real navigation; everything else is client-side.
+    return link.to.includes('#')
+      ? <a href={link.to}>{link.text}</a>
+      : <Link to={link.to}>{link.text}</Link>
   }
-
-  if (external) {
-    return (
-      <a href={href} className={cls} target="_blank" rel="noopener noreferrer">
-        {text}
-      </a>
-    )
-  }
-
-  // scroll-to-section link — uses /#id href so it works on fresh loads too
-  if (scroll) {
-    return (
-      <a
-        href={href}
-        className={cls}
-        onClick={(e) => {
-          const el = document.getElementById(scroll)
-          if (el) {
-            e.preventDefault()
-            el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-          }
-          // else: let the browser follow href="/#id" naturally
-        }}
-      >
-        {text}
-      </a>
-    )
-  }
-
-  // Fallback — plain anchor
-  return <a href={href ?? '#'} className={cls}>{text}</a>
+  return <a href={link.href} target="_blank" rel="noopener noreferrer">{link.text}</a>
 }
 
-// ─── Main component ───────────────────────────────────────────────────────────
 export default function Footer() {
   const year = new Date().getFullYear()
+  const { theme, setTheme } = useTheme()
 
   return (
-    <footer className="bg-surface-2 border-t border-border">
-
-      {/* Brand-gradient accent rule */}
-      <div className="nubi-footer-brand-rule" />
-
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-
-        {/* ── Upper section: brand block + link columns ──────────────────── */}
-        <div className="py-14 grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-12 lg:gap-16">
-
-          {/* Brand block */}
-          <div className="flex flex-col gap-5">
-
-            {/* Logo with wordmark */}
-            <Link to="/" aria-label="Nubi home" className="w-fit group">
-              <Logo size={34} showName className="group-hover:opacity-90 transition-opacity duration-150" />
+    <footer className="mk-foot" aria-label="Site">
+      <style href="nubi-footer" precedence="default">{CSS}</style>
+      <div className="mk-foot-wrap">
+        <div className="mk-foot-grid">
+          <div className="mk-foot-brand">
+            <Link to="/" aria-label="Nubi home" style={{ width: 'fit-content', color: 'inherit', marginBottom: 6 }}>
+              <Logo size={28} showName />
             </Link>
+            <p className="mk-foot-tag">BI that runs in your browser. Viewers are free.</p>
+            <p className="mk-foot-sub">Open source under Apache-2.0. Self-host it or use Nubi Cloud.</p>
+          </div>
+          {COLUMNS.map(col => (
+            <nav key={col.label} aria-label={col.label}>
+              <h2>{col.label}</h2>
+              <ul>
+                {col.links.map(l => (<li key={l.text}><FootLink link={l} /></li>))}
+              </ul>
+            </nav>
+          ))}
+        </div>
 
-            {/* Tagline */}
-            <p className="text-sm font-display font-medium text-fg leading-snug max-w-[200px]">
-              BI that runs in the browser.
-            </p>
-
-            {/* Short descriptor */}
-            <p className="text-sm text-muted leading-relaxed max-w-[220px]">
-              Embeddable analytics with near-zero marginal cost per view.
-              Powered by DuckDB-WASM and Arrow IPC.
-            </p>
-
-            {/* Social icons */}
-            <div className="flex items-center gap-2.5 mt-1">
-              {SOCIAL.map(({ Icon, href, label }) => (
-                <a
-                  key={label}
-                  href={href}
-                  aria-label={label}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="
-                    flex items-center justify-center w-8 h-8 rounded-md
-                    text-muted hover:text-fg
-                    ring-1 ring-border hover:ring-border
-                    bg-surface hover:bg-surface-2
-                    transition-all duration-150
-                  "
-                >
-                  <Icon size={15} strokeWidth={1.75} />
-                </a>
-              ))}
+        <div className="mk-foot-bar">
+          <div>
+            <span>&copy; {year} Nubi</span>
+            <span aria-hidden="true">/</span>
+            <span>Apache-2.0</span>
+          </div>
+          <div>
+            <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer" aria-label="Nubi on GitHub">
+              <Brand slug="github" name="GitHub" size={14} mode="mono" />
+              {/* the mark alone is unlabeled text for sighted users */}
+            </a>
+            <div className="mk-foot-theme" role="group" aria-label="Colour theme">
+              <button type="button" aria-pressed={theme === 'light'} onClick={() => setTheme('light')}>Light</button>
+              <button type="button" aria-pressed={theme === 'dark'} onClick={() => setTheme('dark')}>Dark</button>
             </div>
           </div>
-
-          {/* Nav columns */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-8">
-            {NAV_COLUMNS.map(({ label, links }) => (
-              <div key={label} className="flex flex-col gap-3">
-                <span className="text-xs font-display font-semibold uppercase tracking-widest text-muted">
-                  {label}
-                </span>
-                <ul className="flex flex-col gap-2">
-                  {links.map((link) => (
-                    <li key={link.text}>
-                      <NavLink {...link} />
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </div>
         </div>
-
-        {/* ── Divider ───────────────────────────────────────────────────── */}
-        <div className="h-px bg-border" />
-
-        {/* ── Bottom bar ────────────────────────────────────────────────── */}
-        <div className="py-5 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <p className="text-xs text-muted tracking-wide">
-            &copy; {year} Nubi &middot;{' '}
-            <span className="text-muted">Apache-2.0</span>
-          </p>
-
-          <nav className="flex items-center gap-4" aria-label="Footer navigation">
-            <Link to="/docs" className="text-xs text-muted hover:text-fg transition-colors duration-150">
-              Docs
-            </Link>
-            <Link to="/compare" className="text-xs text-muted hover:text-fg transition-colors duration-150">
-              Compare
-            </Link>
-            <Link to="/privacy" className="text-xs text-muted hover:text-fg transition-colors duration-150">
-              Privacy
-            </Link>
-            <Link to="/terms" className="text-xs text-muted hover:text-fg transition-colors duration-150">
-              Terms
-            </Link>
-          </nav>
-        </div>
-
       </div>
     </footer>
   )

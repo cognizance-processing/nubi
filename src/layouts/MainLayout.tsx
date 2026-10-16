@@ -1,12 +1,9 @@
 /**
- * MainLayout — app shell: Navbar + page content + Footer.
+ * MainLayout — the public site shell: Navbar + page + Footer.
  *
- * Uses the Nubi design-system tokens (bg-bg, text-fg, etc.).
- * Footer is rendered ONLY on marketing / auth routes.
- * It is hidden on app and docs surfaces so as not to clutter the UI.
- *
- * Routes that show the footer : /  /login  /register  /compare  (and 404)
- * Routes that hide the footer : /docs  /editor  /playground  /dashboard  /d/
+ * Footer is rendered on marketing and auth-adjacent routes and hidden on the
+ * docs (which carry their own sidebar and scroll). The landing page brings its
+ * own header and renders the shared Footer itself.
  */
 
 import { Outlet, useLocation } from 'react-router-dom'
@@ -16,33 +13,25 @@ import ScrollToTop from '../components/ScrollToTop.jsx'
 import { CurrencyProvider } from '../contexts/CurrencyContext.jsx'
 
 /** Prefixes whose pages should NOT display the marketing footer. */
-const APP_PREFIXES = ['/docs', '/editor', '/playground', '/dashboard', '/d/']
-
-function useHideFooter() {
-  const { pathname } = useLocation()
-  return APP_PREFIXES.some(
-    (prefix) =>
-      pathname === prefix ||
-      pathname.startsWith(prefix + '/') ||
-      pathname.startsWith(prefix),
-  )
-}
+const NO_FOOTER = ['/docs', '/editor', '/playground', '/dashboard', '/d/']
 
 export default function MainLayout() {
-  const hideFooter = useHideFooter()
+  const { pathname } = useLocation()
+  const isLanding = pathname === '/'
+  const hideFooter = NO_FOOTER.some(p => pathname === p || pathname.startsWith(p + '/') || pathname.startsWith(p))
 
   return (
     <CurrencyProvider>
-      <div className="min-h-screen flex flex-col bg-bg text-fg">
+      <div className="min-h-screen flex flex-col bg-surface text-fg">
         {/* Reset window scroll on route change (public pages use window scroll) */}
         <ScrollToTop />
-        <Navbar />
+        {!isLanding && <Navbar />}
 
-        <main className="flex-1">
+        <main id="main" className="flex-1" tabIndex={-1}>
           <Outlet />
         </main>
 
-        {!hideFooter && <Footer />}
+        {!hideFooter && !isLanding && <Footer />}
       </div>
     </CurrencyProvider>
   )

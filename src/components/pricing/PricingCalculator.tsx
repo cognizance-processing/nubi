@@ -25,6 +25,7 @@
  * competitorsOrch       array | null     Orchestration competitor models; falls back to FALLBACK_COMPETITORS_ORCHESTRATION
  */
 
+import MarketingStyles from '../marketing/MarketingStyles.jsx'
 import { useState, useMemo, useCallback } from 'react'
 import {
   ChevronDown, ChevronUp, Info, Users, Zap, Globe, Cpu, Sparkles,
@@ -64,7 +65,7 @@ function UsageInput({ label, icon: Icon = undefined, value, onChange, min = 0, m
           step={step}
           value={value}
           onChange={(e) => onChange(Number(e.target.value))}
-          className="flex-1 h-1.5 rounded-full accent-accent cursor-pointer"
+          className="mk-range flex-1"
         />
         <span className="w-20 text-right text-sm font-mono font-medium text-fg shrink-0">
           {value.toLocaleString()}{unit}
@@ -107,7 +108,7 @@ function TokenUsageInput({ label, icon: Icon, value, onChange }) {
           step={1}
           value={idx}
           onChange={(e) => onChange(AI_TOKEN_STEPS[Number(e.target.value)])}
-          className="flex-1 h-1.5 rounded-full accent-accent cursor-pointer"
+          className="mk-range flex-1"
         />
         <span className="w-20 text-right text-sm font-mono font-medium text-fg shrink-0">
           {formatTokens(value)}
@@ -126,9 +127,9 @@ function Tab({ active, onClick, icon: Icon, children }) {
     <button
       onClick={onClick}
       className={[
-        'flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-xl transition-colors',
+        'flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-sm transition-colors',
         active
-          ? 'bg-accent text-white shadow-sm'
+          ? 'bg-accent text-[var(--ink-fg)]'
           : 'bg-surface-2 text-muted hover:text-fg border border-border',
       ].join(' ')}
     >
@@ -144,10 +145,10 @@ function Tab({ active, onClick, icon: Icon, children }) {
 
 const TIER_COLORS = {
   free:       'bg-surface-2 text-muted',
-  starter:    'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300',
-  team:       'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
-  pro:        'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
-  enterprise: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+  starter:    'border border-[var(--frame-line)] text-fg',
+  team:       'border border-[var(--frame-line)] text-fg',
+  pro:        'bg-[var(--ink)] text-[var(--ink-fg)] border border-[var(--ink)]',
+  enterprise: 'border border-[var(--frame-line)] text-fg',
 }
 
 function NubiRecommendation({ recommendation, fxRate, seats }) {
@@ -155,17 +156,17 @@ function NubiRecommendation({ recommendation, fxRate, seats }) {
   const tierIsFree = recommendation.tier.id === 'free'
 
   return (
-    <div className="rounded-xl border-2 border-accent/30 bg-accent/5 px-5 py-4 space-y-3">
+    <div className="rounded-sm border border-border border-l-2 border-l-[var(--accent)] bg-surface-2 px-5 py-4 space-y-3">
       {/* Tier + total price */}
       <div className="flex flex-wrap items-center gap-3">
-        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wide ${TIER_COLORS[recommendation.tier.id] ?? TIER_COLORS.free}`}>
+        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-sm text-xs font-bold uppercase tracking-wide ${TIER_COLORS[recommendation.tier.id] ?? TIER_COLORS.free}`}>
           {recommendation.tier.name}
         </span>
         <span className="font-display font-semibold text-xl text-fg">
           ${recommendation.tier.usd_monthly}<span className="text-sm font-normal text-muted"> / month USD</span>
         </span>
         {recommendation.tier.id !== 'free' && (
-          <span className="inline-flex items-center gap-1 text-xs text-muted bg-surface border border-border rounded-full px-2 py-0.5">
+          <span className="inline-flex items-center gap-1 text-xs text-muted bg-surface border border-border rounded-sm px-2 py-0.5">
             ≈ {formatZar(recommendation.total_zar)} billed in ZAR
           </span>
         )}
@@ -175,19 +176,19 @@ function NubiRecommendation({ recommendation, fxRate, seats }) {
       <div className="flex flex-wrap gap-4 text-sm text-muted">
         <span>Flat plan: ${recommendation.tier.usd_monthly} USD{recommendation.tier.id !== 'free' ? ` (≈ ${formatZar(recommendation.base_zar)})` : ''}</span>
         {hasOverages && (
-          <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400">
+          <span className="flex items-center gap-1 text-[color:var(--warning-fg)]">
             <Wallet size={12} />
             + {formatZar(recommendation.overage_zar)} wallet overage
           </span>
         )}
-        <span className="font-medium text-teal-600 dark:text-teal-400">
+        <span className="font-medium text-[color:var(--success-fg)]">
           No per-seat charges
         </span>
       </div>
 
       {/* Overage line items */}
       {recommendation.overages.length > 0 && (
-        <ul className="text-xs text-muted space-y-0.5 rounded-lg bg-surface border border-border px-3 py-2">
+        <ul className="text-xs text-muted space-y-0.5 rounded-sm bg-surface border border-border px-3 py-2">
           <li className="font-semibold text-fg mb-1">Wallet overage breakdown:</li>
           {recommendation.overages.map((item) => (
             <li key={item.label} className="flex justify-between">
@@ -200,7 +201,7 @@ function NubiRecommendation({ recommendation, fxRate, seats }) {
 
       {/* Wallet explainer — shown when there are overages or on paid tiers */}
       {!tierIsFree && (
-        <div className="rounded-lg bg-surface border border-border px-3 py-2.5 text-xs text-muted space-y-1">
+        <div className="rounded-sm bg-surface border border-border px-3 py-2.5 text-xs text-muted space-y-1">
           <p className="flex items-center gap-1.5 font-semibold text-fg">
             <Wallet size={12} className="text-accent" />
             How usage wallet works
@@ -266,7 +267,7 @@ function BiComparisonSection({ competitors, usage, seats, fxRate, recommendation
         Nubi's cost is identical at any team size.
       </p>
 
-      <div className="overflow-x-auto rounded-xl border border-border">
+      <div className="overflow-x-auto rounded-sm border border-border">
         <table className="min-w-full text-sm">
           <thead>
             <tr className="border-b border-border bg-surface-2">
@@ -277,10 +278,10 @@ function BiComparisonSection({ competitors, usage, seats, fxRate, recommendation
           </thead>
           <tbody>
             {/* Nubi row pinned first */}
-            <tr className="border-b border-border bg-accent/5">
+            <tr className="border-b border-border bg-[var(--accent-soft)]">
               <td className="px-4 py-2.5">
                 <span className="font-semibold text-sm text-fg">Nubi {recommendation.tier.name}</span>
-                <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300 text-[9px] font-bold uppercase tracking-wide">
+                <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-sm border border-[var(--frame-line)] text-fg font-mono text-[10px] font-medium uppercase tracking-[0.06em]">
                   no seat charges
                 </span>
               </td>
@@ -302,7 +303,7 @@ function BiComparisonSection({ competitors, usage, seats, fxRate, recommendation
                   <td className="px-4 py-2.5">
                     <span className="font-medium text-sm text-fg">{comp.name}</span>
                     {comp.highlight_seat_penalty && (
-                      <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 text-[9px] font-bold uppercase tracking-wide">
+                      <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-sm border border-[var(--frame-line)] text-fg font-mono text-[10px] font-medium uppercase tracking-[0.06em]">
                         seat-based
                       </span>
                     )}
@@ -323,7 +324,7 @@ function BiComparisonSection({ competitors, usage, seats, fxRate, recommendation
 
       {/* Seat penalty callout */}
       {seats.editors > 5 && (
-        <div className="rounded-xl bg-teal-50 dark:bg-teal-900/20 border border-teal-200 dark:border-teal-800 px-4 py-3 text-xs text-teal-800 dark:text-teal-200">
+        <div className="nubi-notice nubi-notice-success text-xs">
           With {seats.editors} editors and {seats.viewers} viewers, seat-priced tools
           like Metabase and Hex charge for every person on your team.
           Nubi's cost stays flat at 1 editor or 1,000.
@@ -358,7 +359,7 @@ function OrchComparisonSection({ competitors, orchUsage, onOrchUsage, fxRate, re
   return (
     <div className="space-y-4">
       {/* Context note */}
-      <div className="rounded-xl bg-surface-2 border border-border px-4 py-3 text-xs text-muted space-y-1">
+      <div className="rounded-sm bg-surface-2 border border-border px-4 py-3 text-xs text-muted space-y-1">
         <p className="font-semibold text-fg text-sm">
           Nubi Flows has no per-run, per-credit, or always-on environment fee.
         </p>
@@ -370,7 +371,7 @@ function OrchComparisonSection({ competitors, orchUsage, onOrchUsage, fxRate, re
       </div>
 
       {/* Orchestration-specific usage inputs */}
-      <div className="rounded-xl border border-border px-4 py-4 space-y-4 bg-surface">
+      <div className="rounded-sm border border-border px-4 py-4 space-y-4 bg-surface">
         <p className="text-xs font-semibold text-muted uppercase tracking-wide">Orchestration usage inputs</p>
         <div className="grid gap-4 sm:grid-cols-2">
           <UsageInput
@@ -412,7 +413,7 @@ function OrchComparisonSection({ competitors, orchUsage, onOrchUsage, fxRate, re
         </div>
       </div>
 
-      <div className="overflow-x-auto rounded-xl border border-border">
+      <div className="overflow-x-auto rounded-sm border border-border">
         <table className="min-w-full text-sm">
           <thead>
             <tr className="border-b border-border bg-surface-2">
@@ -424,14 +425,14 @@ function OrchComparisonSection({ competitors, orchUsage, onOrchUsage, fxRate, re
           </thead>
           <tbody>
             {/* Nubi row */}
-            <tr className="border-b border-border bg-accent/5">
+            <tr className="border-b border-border bg-[var(--accent-soft)]">
               <td className="px-4 py-2.5">
                 <span className="font-semibold text-sm text-fg">Nubi Flows ({recommendation.tier.name})</span>
                 <div className="mt-0.5 flex flex-wrap gap-1">
-                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300 text-[9px] font-bold uppercase tracking-wide">
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm border border-[var(--frame-line)] text-fg font-mono text-[10px] font-medium uppercase tracking-[0.06em]">
                     no per-run fee
                   </span>
-                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300 text-[9px] font-bold uppercase tracking-wide">
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm border border-[var(--frame-line)] text-fg font-mono text-[10px] font-medium uppercase tracking-[0.06em]">
                     no idle env cost
                   </span>
                 </div>
@@ -465,17 +466,17 @@ function OrchComparisonSection({ competitors, orchUsage, onOrchUsage, fxRate, re
                   <td className="px-4 py-2.5">
                     <span className="font-medium text-sm text-fg">{comp.name}</span>
                     {comp.model_type === 'infra' && (
-                      <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 text-[9px] font-bold uppercase tracking-wide">
+                      <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-sm border border-[var(--frame-line)] text-fg font-mono text-[10px] font-medium uppercase tracking-[0.06em]">
                         always-on cost
                       </span>
                     )}
                     {comp.model_type === 'per-run' && (
-                      <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300 text-[9px] font-bold uppercase tracking-wide">
+                      <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-sm bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300 text-[9px] font-bold uppercase tracking-wide">
                         per-run metered
                       </span>
                     )}
                     {comp.model_type === 'per-action' && (
-                      <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300 text-[9px] font-bold uppercase tracking-wide">
+                      <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-sm border border-[var(--frame-line)] text-fg font-mono text-[10px] font-medium uppercase tracking-[0.06em]">
                         per-action metered
                       </span>
                     )}
@@ -547,14 +548,15 @@ export default function PricingCalculator({
   const recommendation = useMemo(() => recommendNubi(usage, fxRate), [usage, fxRate])
 
   return (
-    <section className="rounded-2xl border border-border bg-surface overflow-hidden">
+    <section className="mk rounded-sm border border-border border-t-2 border-t-[var(--ink)] bg-surface overflow-hidden">
+      <MarketingStyles />
       {/* Section header */}
       <div className="px-6 py-5 border-b border-border bg-surface-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="font-display font-semibold text-base text-fg">
             Estimate your monthly cost
           </h2>
-          <span className="inline-flex items-center gap-1.5 text-xs text-muted bg-surface border border-border rounded-full px-2.5 py-1">
+          <span className="inline-flex items-center gap-1.5 text-xs text-muted bg-surface border border-border rounded-sm px-2.5 py-1">
             <Info size={11} className="text-muted/70" />
             Prices in <strong className="text-fg font-semibold">USD</strong> — billed in ZAR
           </span>
@@ -606,7 +608,7 @@ export default function PricingCalculator({
         </div>
 
         {/* Team-size inputs — affects competitor comparison */}
-        <div className="rounded-xl bg-surface-2 border border-border px-4 py-4 space-y-3">
+        <div className="rounded-sm bg-surface-2 border border-border px-4 py-4 space-y-3">
           <div className="flex items-center gap-2">
             <Users size={13} className="text-muted" />
             <span className="text-xs font-semibold text-muted uppercase tracking-wide">
@@ -661,7 +663,7 @@ export default function PricingCalculator({
             <div className="mt-4 space-y-4">
               {/* Tab row */}
               <div
-                className="flex gap-2 p-1 rounded-xl bg-surface-2 border border-border w-fit"
+                className="flex gap-2 p-1 rounded-sm bg-surface-2 border border-border w-fit"
                 role="tablist"
                 aria-label="Competitor comparison category"
               >

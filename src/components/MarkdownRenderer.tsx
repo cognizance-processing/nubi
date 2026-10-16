@@ -2,20 +2,17 @@ import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
-import mermaid from 'mermaid'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import {
   Children, cloneElement, isValidElement,
   useEffect, useId, useMemo, useState,
   type ReactElement,
 } from 'react'
-import {
-  Copy, Check, Link2, Info, Lightbulb, AlertTriangle,
-} from 'lucide-react'
+import { Copy, Check, Link2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { resolveDocIllustration } from './illustrations/docMap.js'
 import { useTheme } from '../contexts/ThemeContext.jsx'
+import './marketing/code.css'
 
 /**
  * Sanitize schema for raw HTML embedded in *docs* markdown (opt-in via
@@ -28,7 +25,17 @@ import { useTheme } from '../contexts/ThemeContext.jsx'
  * repo-controlled. The default schema already allow-lists table/img/br/sub
  * elements and the width/alt/etc attributes docs use.
  */
-const docsHtmlSchema = defaultSchema
+// `illustration:Name` is our own allow-listed image scheme (resolved to a fixed
+// set of components by docMap), so it must survive sanitising alongside http(s).
+// Without this the sanitiser blanked every illustration src and docs showed
+// broken images.
+const docsHtmlSchema = {
+  ...defaultSchema,
+  protocols: {
+    ...defaultSchema.protocols,
+    src: [...(defaultSchema.protocols?.src ?? ['http', 'https']), 'illustration'],
+  },
+}
 
 /**
  * Renders a ```mermaid fenced block to inline SVG. mermaid.render() runs
@@ -47,14 +54,19 @@ function MermaidDiagram({ code }) {
 
   useEffect(() => {
     let cancelled = false
-    mermaid.initialize({
-      startOnLoad: false,
-      securityLevel: 'strict',
-      theme: theme === 'dark' ? 'dark' : 'default',
-      fontFamily: 'inherit',
-    })
-    mermaid
-      .render(diagramId, code)
+    // Loaded on demand: the library only ships when a page actually has a
+    // ```mermaid fence, not with every docs, legal or consent page.
+    import('mermaid')
+      .then(m => {
+        const mermaid = m.default
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: 'strict',
+          theme: theme === 'dark' ? 'dark' : 'default',
+          fontFamily: 'inherit',
+        })
+        return mermaid.render(diagramId, code)
+      })
       .then(({ svg: rendered }) => {
         if (!cancelled) {
           setSvg(rendered)
@@ -71,21 +83,21 @@ function MermaidDiagram({ code }) {
 
   if (error) {
     return (
-      <div className="my-5 rounded-xl border border-border bg-surface-2 p-4 text-sm text-muted">
+      <div className="my-5 border border-border bg-surface-2 p-4 text-sm text-muted">
         Diagram failed to render: {error}
       </div>
     )
   }
   if (!svg) {
     return (
-      <div className="my-5 h-32 animate-pulse rounded-xl border border-border bg-surface-2" />
+      <div className="my-5 h-32 border border-border bg-surface-2" aria-hidden="true" />
     )
   }
   // dangerouslySetInnerHTML here is the output of mermaid's own renderer
   // (securityLevel: 'strict' sanitizes it), not raw user HTML.
   return (
     <div
-      className="my-5 overflow-x-auto rounded-xl border border-border bg-surface p-4 [&_svg]:mx-auto"
+      className="my-5 overflow-x-auto border border-border bg-surface p-4 [&_svg]:mx-auto"
       dangerouslySetInnerHTML={{ __html: svg }}
     />
   )
@@ -147,7 +159,7 @@ function ThemedDocImage({ src, alt }) {
   return (
     <img src={resolved} alt={alt || ''} loading="lazy"
       onError={() => { if (resolved !== src) setDarkMissing(true) }}
-      className="my-6 rounded-xl border border-border max-w-full h-auto" />
+      className="my-6 border border-border max-w-full h-auto" />
   )
 }
 
@@ -164,13 +176,50 @@ function extractText(node) {
 }
 
 /**
- * Fenced code block: theme-aware Prism style (oneLight in light mode, oneDark
- * in dark) on site-token chrome, plus a hover copy-to-clipboard button. The
- * highlighter background is made transparent so the surrounding `bg-surface`
- * token shows through and the block reads as part of the page in both themes.
+ * Prism theme on the ink surface. Every colour is a --code-* token (see
+ * marketing/code.css), so the block is ink in both themes and the comment
+ * colour holds 4.5:1.
+ */
+const INK_THEME: Record<string, Record<string, string | number>> = {
+  'code[class*="language-"]': { color: 'var(--code-fg)', background: 'none', textShadow: 'none' },
+  'pre[class*="language-"]': { color: 'var(--code-fg)', background: 'none', textShadow: 'none' },
+  comment: { color: 'var(--code-cm)' },
+  prolog: { color: 'var(--code-cm)' },
+  doctype: { color: 'var(--code-cm)' },
+  cdata: { color: 'var(--code-cm)' },
+  punctuation: { color: 'var(--code-punc)' },
+  operator: { color: 'var(--code-punc)' },
+  entity: { color: 'var(--code-punc)' },
+  url: { color: 'var(--code-punc)' },
+  tag: { color: 'var(--code-tag)' },
+  'attr-name': { color: 'var(--code-str)' },
+  property: { color: 'var(--code-num)' },
+  boolean: { color: 'var(--code-num)' },
+  number: { color: 'var(--code-num)' },
+  constant: { color: 'var(--code-num)' },
+  symbol: { color: 'var(--code-num)' },
+  deleted: { color: 'var(--code-num)' },
+  selector: { color: 'var(--code-str)' },
+  string: { color: 'var(--code-str)' },
+  char: { color: 'var(--code-str)' },
+  builtin: { color: 'var(--code-str)' },
+  inserted: { color: 'var(--code-str)' },
+  regex: { color: 'var(--code-str)' },
+  variable: { color: 'var(--code-str)' },
+  'attr-value': { color: 'var(--code-kw)' },
+  keyword: { color: 'var(--code-kw)' },
+  atrule: { color: 'var(--code-kw)' },
+  function: { color: 'var(--code-fn)' },
+  'class-name': { color: 'var(--code-fn)' },
+  important: { color: 'var(--code-kw)' },
+}
+
+/**
+ * Fenced code block on the ink surface: a mono language label and an always
+ * visible Copy button in the bar, then the highlighted code. The bar and the
+ * copy button are keyboard reachable.
  */
 function CodeBlock({ language, value, showLineNumbers }) {
-  const { theme } = useTheme()
   const [copied, setCopied] = useState(false)
 
   const copy = () => {
@@ -185,34 +234,33 @@ function CodeBlock({ language, value, showLineNumbers }) {
   }
 
   return (
-    <div className="group relative my-5 overflow-hidden rounded-xl border border-border bg-surface shadow-nubi-sm">
-      <button
-        type="button"
-        onClick={copy}
-        aria-label={copied ? 'Copied to clipboard' : 'Copy code'}
-        className="absolute right-2 top-2 z-10 inline-flex items-center gap-1 rounded-md border border-border bg-surface-2/90 px-2 py-1 text-[11px] font-medium text-muted opacity-0 backdrop-blur-sm transition-all hover:text-fg focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100"
-      >
-        {copied ? <Check size={13} className="text-brand-teal" /> : <Copy size={13} />}
-        <span className={copied ? 'text-brand-teal' : ''}>{copied ? 'Copied' : 'Copy'}</span>
-      </button>
+    <figure className="mk-code my-6" style={{ marginInline: 0 }}>
+      <figcaption className="mk-code-bar">
+        <span>{language === 'text' ? 'plain text' : language}</span>
+        <button type="button" onClick={copy} className="mk-copy" aria-label={copied ? 'Copied to clipboard' : `Copy ${language} code`}>
+          {copied ? <Check size={12} strokeWidth={1.75} aria-hidden="true" /> : <Copy size={12} strokeWidth={1.75} aria-hidden="true" />}
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </figcaption>
       <SyntaxHighlighter
-        style={theme === 'dark' ? oneDark : oneLight}
+        style={INK_THEME as any}
         language={language}
         PreTag="div"
         showLineNumbers={showLineNumbers}
         customStyle={{
           margin: 0,
           background: 'transparent',
-          padding: '0.9rem 1rem',
-          fontSize: '0.8125rem',
+          padding: '14px 16px',
+          fontSize: '13px',
           lineHeight: 1.65,
+          overflowX: 'auto',
         }}
-        codeTagProps={{ style: { fontFamily: "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace" } }}
-        lineNumberStyle={{ minWidth: '2.25em', color: 'var(--text-subtle)', opacity: 0.7 }}
+        codeTagProps={{ style: { fontFamily: 'var(--font-mono)', fontVariantLigatures: 'none' } }}
+        lineNumberStyle={{ minWidth: '2.25em', color: 'var(--code-ln)', paddingRight: '1em' }}
       >
         {value}
       </SyntaxHighlighter>
-    </div>
+    </figure>
   )
 }
 
@@ -222,25 +270,19 @@ function CodeBlock({ language, value, showLineNumbers }) {
  * boxes with an icon + accent. Everything else stays a normal blockquote.
  */
 const CALLOUT_KINDS = {
-  note:      { label: 'Note',      tone: 'teal',  Icon: Info },
-  tip:       { label: 'Tip',       tone: 'teal',  Icon: Lightbulb },
-  info:      { label: 'Info',      tone: 'teal',  Icon: Info },
-  important: { label: 'Important', tone: 'amber', Icon: AlertTriangle },
-  warning:   { label: 'Warning',   tone: 'amber', Icon: AlertTriangle },
-  caution:   { label: 'Caution',   tone: 'amber', Icon: AlertTriangle },
+  note:      { label: 'Note',      tone: 'accent' },
+  tip:       { label: 'Tip',       tone: 'accent' },
+  info:      { label: 'Info',      tone: 'accent' },
+  important: { label: 'Important', tone: 'ink' },
+  warning:   { label: 'Warning',   tone: 'warning' },
+  caution:   { label: 'Caution',   tone: 'warning' },
 }
 
-const CALLOUT_TONES = {
-  teal: {
-    box: 'border-brand-teal/30 bg-brand-teal/[0.06]',
-    icon: 'text-brand-teal',
-    title: 'text-brand-teal',
-  },
-  amber: {
-    box: 'border-amber-500/30 bg-amber-500/[0.08]',
-    icon: 'text-amber-500',
-    title: 'text-amber-600 dark:text-amber-400',
-  },
+// A callout is a 2px rule on the left and a mono label: no tinted box, no icon.
+const CALLOUT_RULE = {
+  accent: 'var(--accent)',
+  ink: 'var(--ink)',
+  warning: 'var(--warning)',
 }
 
 // Strip the leading marker (`[!NOTE]` or `**Note:**`) from a paragraph's nodes.
@@ -289,20 +331,17 @@ function detectCallout(children) {
 }
 
 function Callout({ kind, children }) {
-  const { label, tone, Icon } = CALLOUT_KINDS[kind]
-  const styles = CALLOUT_TONES[tone]
+  const { label, tone } = CALLOUT_KINDS[kind]
   return (
-    <div className={`my-6 rounded-xl border px-4 py-3.5 ${styles.box}`}>
-      <div className="mb-1 flex items-center gap-2">
-        <Icon size={16} className={styles.icon} />
-        <span className={`text-xs font-semibold uppercase tracking-wide ${styles.title}`}>
-          {label}
-        </span>
-      </div>
-      <div className="text-sm leading-7 text-fg [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+    <aside className="my-6 py-1 pl-4" style={{ borderLeft: `2px solid ${CALLOUT_RULE[tone]}` }} role="note" aria-label={label}>
+      <p className="mb-1.5 flex items-center gap-2 font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-muted">
+        {tone === 'warning' && <span aria-hidden="true" className="inline-block h-1.5 w-1.5" style={{ background: 'var(--warning)' }} />}
+        {label}
+      </p>
+      <div className="text-[15px] leading-[1.65] text-fg [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
         {children}
       </div>
-    </div>
+    </aside>
   )
 }
 
@@ -313,7 +352,7 @@ const components = {
     return (
       <h1
         id={id}
-        className="mt-0 mb-6 text-3xl font-bold tracking-tight font-display text-fg border-b border-border pb-3"
+        className="mt-0 mb-6 text-3xl font-semibold tracking-[-0.03em] font-display text-fg"
       >
         {children}
       </h1>
@@ -324,12 +363,12 @@ const components = {
     return (
       <h2
         id={id}
-        className="mt-10 mb-4 text-2xl font-semibold font-display text-fg scroll-mt-20"
+        className="mt-12 mb-4 pt-5 text-2xl font-semibold tracking-[-0.02em] font-display text-fg scroll-mt-28 border-t border-border"
       >
         <a href={`#${id}`} onClick={() => copyHeadingLink(id)} className="group no-underline">
           {children}
-          <span className="ml-2 inline-flex align-middle opacity-0 group-hover:opacity-60 text-brand-teal transition-opacity">
-            <Link2 size={18} />
+          <span className="ml-2 inline-flex align-middle opacity-0 group-hover:opacity-60 group-focus-visible:opacity-60 text-accent transition-opacity">
+            <Link2 size={16} strokeWidth={1.5} />
           </span>
         </a>
       </h2>
@@ -340,12 +379,12 @@ const components = {
     return (
       <h3
         id={id}
-        className="mt-8 mb-3 text-xl font-semibold font-display text-fg scroll-mt-20"
+        className="mt-9 mb-3 text-xl font-semibold tracking-[-0.015em] font-display text-fg scroll-mt-28"
       >
         <a href={`#${id}`} onClick={() => copyHeadingLink(id)} className="group no-underline">
           {children}
-          <span className="ml-1.5 inline-flex align-middle opacity-0 group-hover:opacity-60 text-brand-teal transition-opacity">
-            <Link2 size={15} />
+          <span className="ml-1.5 inline-flex align-middle opacity-0 group-hover:opacity-60 group-focus-visible:opacity-60 text-accent transition-opacity">
+            <Link2 size={14} strokeWidth={1.5} />
           </span>
         </a>
       </h3>
@@ -353,28 +392,32 @@ const components = {
   },
   h4({ children }) {
     return (
-      <h4 className="mt-6 mb-2 text-base font-semibold font-display text-fg uppercase tracking-wide">
+      <h4 className="mt-6 mb-2 font-mono text-[12px] font-medium text-muted uppercase tracking-[0.08em]">
         {children}
       </h4>
     )
   },
 
   // ── Paragraphs ───────────────────────────────────────────────────────────
-  p({ children }) {
+  p({ node, children }) {
+    // A paragraph holding only an illustration renders the figure bare — a
+    // <figure> inside a <p> is invalid and browsers split the paragraph.
+    const only = node?.children?.length === 1 ? (node.children[0] as any) : null
+    if (only?.tagName === 'img' && String(only.properties?.src ?? '').startsWith('illustration:')) return <>{children}</>
     return <p className="my-4 leading-7 text-fg">{children}</p>
   },
 
   // ── Lists ────────────────────────────────────────────────────────────────
   ul({ children }) {
     return (
-      <ul className="my-4 ml-6 list-disc space-y-1.5 text-fg marker:text-brand-teal">
+      <ul className="my-4 ml-6 list-[square] space-y-1.5 text-fg marker:text-muted">
         {children}
       </ul>
     )
   },
   ol({ children }) {
     return (
-      <ol className="my-4 ml-6 list-decimal space-y-1.5 text-fg marker:text-accent">
+      <ol className="my-4 ml-6 list-decimal space-y-1.5 text-fg marker:font-mono marker:text-muted">
         {children}
       </ol>
     )
@@ -390,7 +433,7 @@ const components = {
       return <Callout kind={callout.kind}>{callout.body}</Callout>
     }
     return (
-      <blockquote className="my-6 border-l-4 border-brand-teal bg-surface-2 pl-5 pr-4 py-3 rounded-r-lg text-fg italic">
+      <blockquote className="my-6 border-l-2 border-[var(--ink)] pl-5 py-1 text-fg">
         {children}
       </blockquote>
     )
@@ -398,14 +441,14 @@ const components = {
 
   // ── Horizontal rule ──────────────────────────────────────────────────────
   hr() {
-    return <hr className="my-8 border-border" />
+    return <hr className="my-10 border-border" />
   },
 
   // ── Links ────────────────────────────────────────────────────────────────
   a({ href, children }) {
     const isExternal = href && (href.startsWith('http') || href.startsWith('//'))
     const isInternal = href && href.startsWith('/')
-    const cls = "text-accent hover:text-brand-teal underline underline-offset-2 decoration-accent/40 hover:decoration-brand-teal transition-colors"
+    const cls = "text-accent underline underline-offset-[3px] decoration-1 decoration-accent/50 hover:decoration-accent"
     if (isInternal) {
       return <Link to={href} className={cls}>{children}</Link>
     }
@@ -450,7 +493,7 @@ const components = {
     // Inline code
     return (
       <code
-        className="px-1.5 py-0.5 text-[0.875em] font-mono bg-surface-2 text-brand-teal rounded border border-border"
+        className="px-1 py-px text-[0.875em] font-mono bg-surface-2 text-fg border border-border"
         {...props}
       >
         {children}
@@ -467,14 +510,23 @@ const components = {
   // are theme-aware (see ThemedDocImage); else a plain image ─────────────────
   img({ src, alt }) {
     const Illo = resolveDocIllustration(src)
+    if (Illo && (Illo as any).live) {
+      // Interactive figures take the full column and carry their own frame.
+      return (
+        <figure className="my-10">
+          <Illo />
+          {alt ? <figcaption className="mt-3 font-mono text-[12px] text-muted">{alt}</figcaption> : null}
+        </figure>
+      )
+    }
     if (Illo) {
       return (
         <figure className="my-8">
-          <div className="rounded-2xl border border-border bg-surface-2 px-5 py-6 sm:px-8 sm:py-8">
-            <Illo className="w-full h-auto max-w-xl mx-auto" />
+          <div className="rounded-sm border border-border bg-transparent px-5 py-6 sm:px-8 sm:py-8">
+            <Illo className="w-full h-auto max-w-xl mx-auto" title={alt || undefined} />
           </div>
           {alt ? (
-            <figcaption className="mt-3 text-center text-xs text-muted">{alt}</figcaption>
+            <figcaption className="mt-3 font-mono text-[12px] text-muted">{alt}</figcaption>
           ) : null}
         </figure>
       )
@@ -485,29 +537,29 @@ const components = {
   // ── Tables (GFM) ─────────────────────────────────────────────────────────
   table({ children }) {
     return (
-      <div className="my-6 overflow-x-auto rounded-xl border border-border shadow-sm">
-        <table className="min-w-full divide-y divide-border text-sm">
+      <div className="my-6 overflow-x-auto border border-border" tabIndex={0} role="region" aria-label="Table (scrolls sideways)">
+        <table className="min-w-full text-[14px]">
           {children}
         </table>
       </div>
     )
   },
   thead({ children }) {
-    return <thead className="sticky top-0 z-10 bg-surface-2">{children}</thead>
+    return <thead className="border-b-2 border-[var(--ink)] bg-surface">{children}</thead>
   },
   tbody({ children }) {
     return <tbody className="divide-y divide-border bg-surface">{children}</tbody>
   },
   tr({ children }) {
     return (
-      <tr className="even:bg-surface-2/40 hover:bg-surface-2 transition-colors">
+      <tr className="hover:bg-surface-2">
         {children}
       </tr>
     )
   },
   th({ children }) {
     return (
-      <th className="px-4 py-3 text-left text-xs font-semibold text-muted uppercase tracking-wider">
+      <th className="px-4 py-3 text-left font-mono text-[11px] font-medium text-muted uppercase tracking-[0.08em] whitespace-nowrap">
         {children}
       </th>
     )
@@ -521,7 +573,7 @@ const components = {
     return <strong className="font-semibold text-fg">{children}</strong>
   },
   em({ children }) {
-    return <em className="italic text-muted">{children}</em>
+    return <em className="italic text-fg">{children}</em>
   },
 
   // ── sub — used as an image caption inside raw <table> screenshot blocks ───

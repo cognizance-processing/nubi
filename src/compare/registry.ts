@@ -121,7 +121,7 @@ function parseYamlBlock(yaml: string): YamlData {
           const itemInline = trimmed.slice(2).trim()
           // A list item can be a scalar (- foo) or a mapping
           // (- key: value\n  label: value\n  description: value).
-          const inlineMap = itemInline.match(/^([a-zA-Z_][a-zA-Z0-9_\s/]*):\s*(.*)$/)
+          const inlineMap = itemInline.match(/^([a-zA-Z_][a-zA-Z0-9_\s/]*):(?=\s|$)\s*(.*)$/)
           if (inlineMap) {
             const obj: YamlData = { [inlineMap[1].trim()]: parseScalar(inlineMap[2].trim()) }
             i++
@@ -132,7 +132,7 @@ function parseYamlBlock(yaml: string): YamlData {
               const contIndent = contLine.match(/^(\s+)/)?.[1]?.length ?? 0
               const contTrimmed = contLine.trim()
               if (contIndent <= dashIndent || contTrimmed.startsWith('- ')) break
-              const contMatch = contTrimmed.match(/^([a-zA-Z_][a-zA-Z0-9_\s/]*):\s*(.*)$/)
+              const contMatch = contTrimmed.match(/^([a-zA-Z_][a-zA-Z0-9_\s/]*):(?=\s|$)\s*(.*)$/)
               if (contMatch) obj[contMatch[1].trim()] = parseScalar(contMatch[2].trim())
               i++
             }
@@ -145,7 +145,7 @@ function parseYamlBlock(yaml: string): YamlData {
         }
 
         // Nested mapping
-        const nestedKeyMatch = trimmed.match(/^([a-zA-Z_][a-zA-Z0-9_\s/]*):\s*(.*)$/)
+        const nestedKeyMatch = trimmed.match(/^([a-zA-Z_][a-zA-Z0-9_\s/]*):(?=\s|$)\s*(.*)$/)
         if (nestedKeyMatch) {
           isMapping = true
           const nKey = nestedKeyMatch[1].trim()
@@ -164,7 +164,7 @@ function parseYamlBlock(yaml: string): YamlData {
               const deepIndent = deepLine.match(/^(\s+)/)?.[1]?.length ?? 0
               if (deepIndent <= indent) break
               const deepTrimmed = deepLine.trim()
-              const deepMatch = deepTrimmed.match(/^([a-zA-Z_][a-zA-Z0-9_\s/]*):\s*(.*)$/)
+              const deepMatch = deepTrimmed.match(/^([a-zA-Z_][a-zA-Z0-9_\s/]*):(?=\s|$)\s*(.*)$/)
               if (deepMatch) {
                 deepNested[deepMatch[1].trim()] = parseScalar(deepMatch[2].trim())
               }

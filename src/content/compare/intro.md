@@ -1,7 +1,7 @@
 ---
 title: How Nubi Compares
 eyebrow: "Competitive overview · 2026"
-subtitle: "An honest comparison against Hex, Cube, Metabase, Looker, Sigma, Tableau, Power BI, and Apache Superset."
+subtitle: "An honest comparison against 14 platforms, from Hex and Cube to Looker, Tableau and Power BI. Where a tool is stronger than Nubi, we say so."
 ---
 
 ## The structural edge

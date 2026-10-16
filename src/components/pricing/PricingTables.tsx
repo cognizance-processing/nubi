@@ -39,21 +39,21 @@ export function BillingToggle({ value, onChange }) {
         aria-checked={value === 'annual'}
         onClick={() => onChange(value === 'monthly' ? 'annual' : 'monthly')}
         className={[
-          'relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200',
+          'relative inline-flex h-6 w-11 shrink-0 rounded-sm border-2 border-transparent transition-colors duration-200',
           'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2',
           value === 'annual' ? 'bg-accent' : 'bg-border',
         ].join(' ')}
       >
         <span
           className={[
-            'pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow ring-0 transition-transform duration-200',
+            'pointer-events-none inline-block h-5 w-5 rounded-sm bg-surface ring-0 transition-transform duration-200',
             value === 'annual' ? 'translate-x-5' : 'translate-x-0',
           ].join(' ')}
         />
       </button>
       <span className={`text-sm font-medium ${value === 'annual' ? 'text-fg' : 'text-muted'}`}>
         Annual
-        <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300 text-[10px] font-bold uppercase tracking-wide">
+        <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-sm border border-[var(--frame-line)] text-fg font-mono text-[10px] font-medium uppercase tracking-[0.06em]">
           2 months free
         </span>
       </span>
@@ -68,36 +68,36 @@ export function BillingToggle({ value, onChange }) {
 const WALLET_STEPS = [
   {
     icon: CreditCard,
-    color: 'text-accent',
-    bg: 'bg-accent/10',
+    color: 'text-fg',
+    bg: 'bg-surface-2',
     title: 'Flat plan subscription',
     body: 'Pay a fixed monthly or annual fee for your tier. Your included quota — embedded sessions, AI tokens, agent runs — is consumed first at no extra charge.',
   },
   {
     icon: Wallet,
-    color: 'text-teal-600 dark:text-teal-400',
-    bg: 'bg-teal-50 dark:bg-teal-900/20',
+    color: 'text-fg',
+    bg: 'bg-surface-2',
     title: 'Usage wallet (prepaid credits)',
     body: 'Each paid org has a prepaid credit balance (in USD, displayed in ZAR). Metered usage beyond your plan\'s included quota is drawn down from the wallet — only on successful operations.',
   },
   {
     icon: Zap,
-    color: 'text-amber-600 dark:text-amber-400',
-    bg: 'bg-amber-50 dark:bg-amber-900/20',
+    color: 'text-fg',
+    bg: 'bg-surface-2',
     title: 'Auto-topup when balance is low',
     body: 'Set a threshold and a topup amount. When your wallet balance dips below the threshold, your saved card is charged automatically — like Anthropic\'s auto-reload. A monthly spend cap prevents surprise charges.',
   },
   {
     icon: RotateCcw,
-    color: 'text-violet-600 dark:text-violet-400',
-    bg: 'bg-violet-50 dark:bg-violet-900/20',
+    color: 'text-fg',
+    bg: 'bg-surface-2',
     title: 'Manual top-up & spend controls',
     body: 'Top up on demand at any time. Set a hard monthly spend cap so usage stops (not auto-charged) if you hit your ceiling. Full ledger history — every credit and debit is logged.',
   },
   {
     icon: ShieldOff,
-    color: 'text-red-500 dark:text-red-400',
-    bg: 'bg-red-50 dark:bg-red-900/20',
+    color: 'text-fg',
+    bg: 'bg-surface-2',
     title: 'Zero-balance hard stop',
     body: 'If wallet balance hits zero and auto-topup is off (or capped), metered usage beyond your plan quota stops immediately. Flat-plan features inside your quota always keep working.',
   },
@@ -144,7 +144,7 @@ export function WalletBillingExplainer({ compact = false }) {
 
 function WalletExplainerBody() {
   return (
-    <div className="mt-4 rounded-2xl border border-border bg-surface overflow-hidden">
+    <div className="mt-4 rounded-sm border border-border bg-surface overflow-hidden">
       {/* Summary row */}
       <div className="px-5 py-4 border-b border-border bg-surface-2">
         <p className="text-sm text-fg leading-relaxed">
@@ -159,7 +159,7 @@ function WalletExplainerBody() {
       <div className="divide-y divide-border">
         {WALLET_STEPS.map(({ icon: Icon, color, bg, title, body }) => (
           <div key={title} className="flex gap-4 px-5 py-4">
-            <div className={`flex-none w-8 h-8 rounded-xl flex items-center justify-center ${bg}`}>
+            <div className={`flex-none w-8 h-8 rounded-sm flex items-center justify-center ${bg}`}>
               <Icon size={15} className={color} />
             </div>
             <div className="min-w-0">
@@ -179,7 +179,7 @@ function WalletExplainerBody() {
             { label: 'AI tokens', note: 'real-time, cost + 7.5%' },
             { label: 'Agent / kernel runs', note: 'per run' },
           ].map(({ label, note }) => (
-            <div key={label} className="rounded-lg border border-border bg-surface px-3 py-2">
+            <div key={label} className="rounded-sm border border-border bg-surface px-3 py-2">
               <p className="text-xs font-semibold text-fg">{label}</p>
               <p className="text-[11px] text-muted">{note}</p>
             </div>
@@ -222,7 +222,7 @@ export function OverageTable({ overages = DEFAULT_OVERAGES, defaultOpen = false 
 
       {open && (
         <div className="mt-3">
-          <div className="overflow-x-auto rounded-xl border border-border">
+          <div className="overflow-x-auto rounded-sm border border-border">
             <table className="min-w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-surface-2">
@@ -313,7 +313,7 @@ export function FxDisclosure({
 
   return (
     <aside
-      className={`rounded-xl border border-border bg-surface-2 px-5 py-4 space-y-2 ${className ?? ''}`}
+      className={`rounded-sm border border-border bg-surface-2 px-5 py-4 space-y-2 ${className ?? ''}`}
       aria-label="ZAR pricing disclosure"
     >
       <p className="text-xs font-semibold text-muted uppercase tracking-wider">About ZAR pricing</p>
@@ -327,7 +327,7 @@ export function FxDisclosure({
             </>
           )}
           {isFallback && (
-            <span className="ml-1 text-amber-600 dark:text-amber-400">
+            <span className="ml-1 text-[color:var(--warning-fg)]">
               — Using a reference estimate; live rate unavailable.
             </span>
           )}

@@ -1,61 +1,48 @@
 /**
- * PricingPage — dedicated /pricing page.
+ * PricingPage — /pricing.
  *
  * Public marketing page. Renders the customer-facing billing model and
- * grounded competitor comparisons (BI viewer-tax + orchestration) from
- * src/data/pricing.js. Billing enforcement lives in the EE tree, not here.
+ * grounded competitor comparisons (BI viewer tax + orchestration) from
+ * src/data/pricing.ts. Billing enforcement lives in the EE tree, not here.
  *
- * Live data: fetches GET /api/v1/pricing on mount and updates the tier grid
- * with server-computed ZAR prices (using the daily FX rate).  Falls back to
- * the corrected static TIERS from src/data/pricing.js on any error so the
- * page never goes blank.
+ * Live data: GET /api/v1/pricing on mount refreshes the tier grid with
+ * live SLA figures. On any error the static TIERS from
+ * src/data/pricing.ts stay, so the page never goes blank.
  *
- * Design language: shares the marketing observatory system with the landing
- * page (MarketingStyles + useReveal) — hero/CTA panels, glass cards with
- * per-tier accents, mono data styling, terminal-framed calculators.
+ * Swiss: one section recipe (2px rule, mono index, headline, hairline cells),
+ * ink checks, the Pro plan on an accent top rule, bars in ink against accent.
  */
-import { useState, useEffect, type CSSProperties } from 'react'
+import { useState, useEffect, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
-import {
-  Check, X, ArrowRight, ChevronRight, Headset, Star,
-  Zap, Database, Bot, Server, Users, XCircle, CheckCircle2,
-  SlidersHorizontal, TrendingDown, Shield, Wallet, GitFork, Gauge,
-  Construction,
-} from 'lucide-react'
+import { ArrowRight, X, TrendingDown } from 'lucide-react'
 import {
   TIERS, BILLING_MODEL, BI_COMPARISON, ORCH_COMPARISON, PRICING_FAQ, ENTERPRISE_NOTE,
   CALC_OPTIONS, ORCH_CALC_OPTIONS, OVERAGE_RATES, OVERAGE_NOTE,
 } from '../data/pricing.js'
 import { fetchPricingData } from '../lib/pricing.js'
 import MarketingStyles from '../components/marketing/MarketingStyles.jsx'
-import useReveal from '../components/marketing/useReveal.js'
-import CalcShell from '../components/marketing/CalcShell.jsx'
 import { SliderField } from '../components/marketing/SliderField.jsx'
+import {
+  Reveal, Section, PageHero, Facts, Tag, Checks, Faq, Seg, CostBars, useSeen, TableScroll,
+} from '../components/marketing/kit.jsx'
+import Figure from '../components/marketing/Figure.jsx'
+import CurrencyPicker from '../components/pricing/CurrencyPicker.jsx'
 import { useCurrency } from '../contexts/CurrencyContext.jsx'
 import { CURRENCIES, convertFromUsd } from '../lib/currency.js'
-import CurrencySelector from '../components/CurrencySelector.jsx'
 
-/**
- * Compact money in the visitor's selected DISPLAY currency (mirrors the old
- * fmtUSD's k/M scaling so calculator bars stay short). These are USD-anchored
- * comparison figures (competitor list prices), so we convert with the display
- * FX rate — NOT the billed-in-ZAR formula. USD renders identically to before.
- */
-const compactMoney = (usd, currency, rates) => {
+/* ── Money helpers (display currency; USD returns byte-identical) ─────────── */
+
+/** Compact money in the visitor's display currency, for calculator bars. */
+const compactMoney = (usd: number, currency: string, rates: Record<string, number>) => {
   const amount = convertFromUsd(usd, currency, rates)
-  const sym = CURRENCIES[currency]?.symbol ?? ''
+  const sym = (CURRENCIES as any)[currency]?.symbol ?? ''
   if (!amount) return `${sym}0`
   if (amount >= 1e6) return `${sym}${(amount / 1e6).toFixed(amount >= 1e7 ? 0 : 1)}M`
   if (amount >= 1e3) return `${sym}${Math.round(amount / 1e3)}k`
   return `${sym}${Math.round(amount)}`
 }
 
-/**
- * Format an already-converted amount as a compact money token, mirroring
- * compactMoney's k/M scaling. Sub-unit rates (e.g. a converted $0.12) keep the
- * precision they need; whole figures show no cents.
- */
-const fmtMoneyCompact = (amount, sym) => {
+const fmtMoneyCompact = (amount: number, sym: string) => {
   const a = Math.abs(amount)
   if (a === 0) return `${sym}0`
   if (a >= 1e6) return `${sym}${(amount / 1e6).toFixed(a >= 1e7 ? 0 : 1)}M`
@@ -65,18 +52,13 @@ const fmtMoneyCompact = (amount, sym) => {
 }
 
 /**
- * Rewrite every USD amount inside a display string into the selected display
- * currency, preserving all surrounding text — ranges ("$90k–$210k"), "≈", "+
- * platform", and per-unit suffixes ("/viewer/yr", "/mo"). Matches "$1,000",
- * "$200k", "$8.4k", "$0.12", and each "$" in a range. Non-money numbers (viewer
- * counts, "500", years, "2–3×", percentages) carry no "$" and are untouched.
- *
- * USD returns byte-identical (early return), so nothing shifts for the default
- * currency. Other currencies use k/M compaction consistent with compactMoney.
+ * Rewrite every USD amount inside a display string into the display currency,
+ * keeping the text around it ("$90k–$210k", "≈ $0", "/viewer/yr"). Strings
+ * without a "$" and USD itself pass through untouched.
  */
-const convertMoneyString = (str, currency, rates) => {
-  if (typeof str !== 'string' || currency === 'USD' || !str.includes('$')) return str
-  const sym = CURRENCIES[currency]?.symbol ?? ''
+const convertMoneyString = (str: unknown, currency: string, rates: Record<string, number>) => {
+  if (typeof str !== 'string' || currency === 'USD' || !str.includes('$')) return str as string
+  const sym = (CURRENCIES as any)[currency]?.symbol ?? ''
   return str.replace(/\$(\d[\d,]*(?:\.\d+)?)([kKmM])?/g, (match, num, suffix) => {
     let usd = Number(String(num).replace(/,/g, ''))
     if (!Number.isFinite(usd)) return match
@@ -87,698 +69,378 @@ const convertMoneyString = (str, currency, rates) => {
   })
 }
 
-/** Parse the USD anchor out of a tier price string ("$1,000" → 1000); NaN if non-numeric. */
-const parseUsd = (price) => {
+const parseUsd = (price: unknown) => {
   const n = Number(String(price ?? '').replace(/[^0-9.]/g, ''))
   return Number.isFinite(n) && String(price).match(/\d/) ? n : NaN
 }
 
-const fmtNum = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`)
+const fmtNum = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`)
 
-const METER_ICONS = [Users, Zap, Database, Bot, Server]
+/* ── Page styles ──────────────────────────────────────────────────────────── */
 
-/* ── Scroll reveal wrapper (one-shot, shares lp-reveal from MarketingStyles) ── */
-function Reveal({ children, className = '', delay = 0 }) {
-  const [ref, seen] = useReveal()
-  return (
-    <div
-      ref={ref}
-      className={`lp-reveal ${seen ? 'lp-in' : ''} ${className}`}
-      style={delay ? { transitionDelay: `${delay}ms` } : undefined}
-    >
-      {children}
-    </div>
-  )
-}
+const CSS = `
+.pp-tiers { grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 640px) { .pp-tiers { grid-template-columns: repeat(2, minmax(0, 1fr)); } .pp-tiers > :last-child:nth-child(odd) { grid-column: 1 / -1; } }
+@media (min-width: 1180px) { .pp-tiers { grid-template-columns: repeat(5, minmax(0, 1fr)); } .pp-tiers > :last-child:nth-child(odd) { grid-column: auto; } }
+.pp-tier { padding: 22px 20px 26px; display: flex; flex-direction: column; gap: 0; }
+.pp-pop { box-shadow: inset 0 3px 0 var(--accent); }
+.pp-tier-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 22px; }
+.pp-tier-h h3 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.015em; }
+.pp-idx { font: 500 11px var(--font-mono); letter-spacing: .06em; color: var(--text-muted); }
+.pp-price { display: flex; align-items: baseline; gap: 8px; margin-top: 18px; }
+.pp-price b { font-weight: 600; font-size: 40px; line-height: 1; letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
+.pp-price span { font: 12px var(--font-mono); color: var(--text-muted); }
+.pp-tag { margin-top: 10px; font-size: 14px; line-height: 1.45; color: var(--text-muted); text-wrap: pretty; }
+@media (min-width: 1180px) { .pp-tag { min-height: 4.35em; } }
+.pp-cta { margin-top: 18px; width: 100%; }
+.pp-feats { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--border); }
+.pp-ledger { border-top: 1px solid var(--ink); align-self: end; }
+.pp-ledger-h, .pp-ledger-r { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); font-size: 15px; }
+.pp-ledger-h { font: 500 11px/1.4 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-muted); padding-block: 10px; }
+.pp-calc { border: 1px solid var(--ink); }
+.pp-calc-in { display: grid; gap: 28px; padding: 24px 20px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+@media (min-width: 720px) { .pp-calc-in { grid-template-columns: 1fr 1fr; gap: 48px; padding: 28px 28px; } }
+.pp-calc-head { display: flex; align-items: flex-start; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--border); font-size: 15px; line-height: 1.5; }
+.pp-calc-head svg { flex: none; margin-top: 3px; }
+.pp-calc-head b { font-family: var(--font-mono); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--accent); }
+.pp-calc-body { padding: 8px 20px 4px; }
+@media (min-width: 720px) { .pp-calc-head { padding-inline: 28px; } .pp-calc-body { padding-inline: 28px; } }
+.pp-foot { padding: 14px 20px 20px; font: 12px/1.6 var(--font-mono); color: var(--text-muted); }
+@media (min-width: 720px) { .pp-foot { padding-inline: 28px; } }
+.pp-rate { font: 600 28px/1.1 var(--font-mono); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.pp-rate small { font: 12px var(--font-mono); color: var(--text-muted); letter-spacing: 0; margin-left: 6px; }
+.pp-split { display: grid; gap: 40px; align-items: center; }
+@media (min-width: 960px) { .pp-split { grid-template-columns: minmax(0, 6fr) minmax(0, 5fr); gap: 64px; } }
+.pp-field { color: var(--text); }
+.pp-field rect { fill: currentColor; }
+.pp-field rect.pp-acc { fill: var(--accent); }
+.pp-result { border-top: 2px solid var(--ink); padding-top: 14px; display: flex; flex-direction: column; gap: 6px; }
+.pp-result b { font: 600 clamp(56px, 7vw, 96px)/.9 var(--font-ui); letter-spacing: -.05em; color: var(--accent); }
+.pp-vt { display: grid; gap: 28px 56px; align-items: end; margin-bottom: 40px; }
+@media (min-width: 900px) { .pp-vt { grid-template-columns: minmax(0, 7fr) minmax(0, 3fr); } }
+.pp-two { display: grid; gap: 1px; background: var(--border); border: 1px solid var(--border); }
+@media (min-width: 800px) { .pp-two { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.pp-two > div { background: var(--surface); padding: 24px 24px 28px; }
+.pp-two .pp-never-cell { box-shadow: inset 0 3px 0 var(--ink); }
+.pp-never li { display: flex; gap: 10px; align-items: flex-start; font-size: 15px; line-height: 1.45; }
+.pp-never li svg { flex: none; margin-top: 3px; }
+.pp-list { list-style: none; margin: 16px 0 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.pp-list b { color: var(--text); font-weight: 600; }
+.mk-pick { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mk-select { height: 34px; padding: 0 10px; font: 500 13px var(--font-mono); color: var(--text); background: var(--surface); border: 1px solid var(--border-control, color-mix(in srgb, var(--ink) 48%, var(--surface))); border-radius: 2px; cursor: pointer; }
+.mk-select:hover { border-color: var(--ink); }
+`
 
-function Eyebrow({ children }) {
-  return (
-    <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-4 text-brand-teal">
-      {children}
-    </p>
-  )
-}
+/* ── Tier cell ────────────────────────────────────────────────────────────── */
 
-/* ─────────────────────────────────────────────────────────────────────────── */
-/*  Tier cards — glass cards with per-tier accents; Pro gets gradient border   */
-/* ─────────────────────────────────────────────────────────────────────────── */
-
-const TIER_ACCENTS = {
-  free: '#94a3b8',
-  starter: '#4d8de0',
-  team: '#8b5cf6',
-  pro: '#17b3a3',
-  enterprise: '#f59e0b',
-}
-
-function TierCard({ tier, idx }) {
-  const hi = tier.highlight
-  const hasSla = !!tier.sla
-  const { isBilling, format, billedZar } = useCurrency()
-  const accent = TIER_ACCENTS[tier.id] || '#17b3a3'
+function TierCell({ tier, idx }: { tier: any; idx: number }) {
+  const hi = !!tier.highlight
+  const { format } = useCurrency()
   const cadence = tier.cadence === 'per month' ? '/ mo' : tier.cadence
 
-  // Price is USD-anchored: show it in the selected display currency. When ZAR is
-  // selected, show the authoritative billed amount directly (don't double-convert).
+  // Prices are USD-anchored; the display currency is an opt-in convenience.
   const usd = parseUsd(tier.price)
-  const hasUsd = Number.isFinite(usd)
-  const bigPrice = !hasUsd ? tier.price : isBilling ? billedZar(usd) : format(usd)
-  // The billed-in-ZAR note: prefer the live server ZAR (daily FX, set by
-  // mergeLiveTiers) so we never re-apply a display rate to it; fall back to the
-  // client billed-ZAR estimate before live data arrives. Hidden when ZAR is the
-  // display currency (the big price is already ZAR).
-  const serverZar = /R/.test(tier.price_zar_label ?? '') ? tier.price_zar_label : null
-  const zarNote = !isBilling && hasUsd && usd > 0
-    ? `≈ ${serverZar ?? `${billedZar(usd)} / mo`}`
-    : null
+  const bigPrice = Number.isFinite(usd) ? format(usd) : tier.price
 
-  const inner = (
-    <div className={`relative flex flex-col h-full p-5 sm:p-6 ${hi ? 'rounded-[1.15rem] bg-surface' : ''}`}>
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="font-display text-lg font-bold text-fg">{tier.name}</h3>
-        <span className="font-mono text-[11px] font-bold" style={{ color: accent }}>
-          /{String(idx + 1).padStart(2, '0')}
-        </span>
-      </div>
-      <div className="flex items-baseline gap-2">
-        <span className="font-display text-[2.4rem] leading-none font-bold tracking-tight text-fg tabular-nums">
-          {bigPrice}
-        </span>
-        <span className="font-mono text-[11px] text-muted">{cadence}</span>
-      </div>
-      {zarNote && (
-        <p className="mt-1.5 font-mono text-[11px] text-primary tabular-nums">{zarNote}</p>
-      )}
-      <p className="mt-2.5 text-[13px] text-muted leading-relaxed min-h-[52px]">{tier.tagline}</p>
+  const feats = (tier.features as string[]).map(f => {
+    const head = f.endsWith('plus:')
+    const soon = !head && /coming soon/i.test(f)
+    const text = soon ? f.replace(/\s*[(·]?\s*coming soon[)\s]*/gi, '').replace(/\s*·\s*$/, '').trim() : f
+    return { text, head, soon }
+  })
 
-      {/* SLA badges for Enterprise */}
-      {hasSla && tier.sla && (
-        <div className="mt-3 flex flex-wrap gap-1.5">
-          {tier.sla.uptime && (
-            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg font-mono text-[10px] font-semibold bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 text-amber-700 dark:text-amber-300">
-              <Shield size={9} strokeWidth={2.5} />
-              {tier.sla.uptime} SLA
-            </span>
-          )}
-          {tier.sla.p1_response_minutes != null && (
-            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg font-mono text-[10px] font-semibold bg-surface-2 border border-border text-muted">
-              P1 &lt;{tier.sla.p1_response_minutes}min
-            </span>
-          )}
-        </div>
-      )}
+  return (
+    <article className={hi ? 'pp-tier pp-pop' : 'pp-tier'} aria-labelledby={`tier-${tier.id}`}>
+      <div className="pp-tier-h">
+        <h3 id={`tier-${tier.id}`}>{tier.name}</h3>
+        {hi
+          ? <Tag tone="ink">{tier.badge || 'Most popular'}</Tag>
+          : <span className="pp-idx">{String(idx + 1).padStart(2, '0')}</span>}
+      </div>
+      <div className="pp-price">
+        <b>{bigPrice}</b><span>{cadence}</span>
+      </div>
+      <p className="pp-tag">{tier.tagline}</p>
 
       <Link
         to={tier.href}
-        className={`mt-4 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all min-h-[44px]
-          ${hi
-            ? 'lp-cta-glow bg-brand-gradient text-white hover:-translate-y-0.5'
-            : 'bg-surface-2 border border-border text-fg hover:border-brand-blue hover:text-primary'}`}
+        className={`nubi-btn nubi-btn-lg pp-cta ${hi ? 'nubi-btn-primary' : 'nubi-btn-secondary'}`}
       >
         {tier.cta}
-        <ArrowRight size={14} strokeWidth={2.5} />
       </Link>
 
-      <ul className="mt-5 flex flex-col gap-2">
-        {tier.features.map((f, i) => {
-          const isHeader = f.endsWith('plus:')
-          const isComingSoon = !isHeader && /coming soon/i.test(f)
-          const cleanText = isComingSoon
-            ? f.replace(/\s*[(·]?\s*coming soon[)\s]*/gi, '').replace(/\s*·\s*$/, '').trim()
-            : f
-          return (
-            <li
-              key={i}
-              className={`flex items-start gap-2 ${isHeader
-                ? 'font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted pt-1.5'
-                : isComingSoon
-                  ? 'text-[13px] text-muted/70'
-                  : 'text-[13px] text-fg'}`}
-            >
-              {!isHeader && (
-                isComingSoon ? (
-                  <Construction size={14} strokeWidth={2.25} className="mt-0.5 shrink-0 text-amber-400" />
-                ) : (
-                  <Check size={14} strokeWidth={2.75} className="mt-0.5 shrink-0" style={{ color: accent }} />
-                )
-              )}
-              <span className={isHeader ? '' : 'leading-snug'}>
-                {cleanText}
-                {isComingSoon && (
-                  <span className="ml-1.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 text-[10px] font-semibold uppercase tracking-wide whitespace-nowrap">
-                    Coming soon
-                  </span>
-                )}
-              </span>
-            </li>
-          )
-        })}
-      </ul>
-    </div>
-  )
-
-  // Equal column per tier — the highlighted card pops via translate, not size.
-  const gridPlace = ''
-
-  if (hi) {
-    return (
-      <Reveal delay={(idx % 5) * 70} className={`h-full ${gridPlace}`}>
-        <div className="relative h-full lg:-translate-y-3 z-10">
-          <div className="pp-pop relative h-full rounded-[1.3rem] p-[1.5px] bg-brand-gradient">
-            <span className="absolute -top-3 left-1/2 -translate-x-1/2 z-20 inline-flex items-center gap-1.5 px-3 py-1 rounded-full font-mono text-[10px] font-bold uppercase tracking-[0.14em] whitespace-nowrap bg-brand-gradient text-white shadow-lg">
-              <Star size={10} strokeWidth={2.5} />
-              {tier.badge || 'Most popular'}
-            </span>
-            {inner}
+      <div className="pp-feats">
+        {tier.sla && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
+            {tier.sla.uptime && <Tag>{tier.sla.uptime} SLA</Tag>}
+            {tier.sla.p1_response_minutes != null && <Tag>P1 &lt; {tier.sla.p1_response_minutes} min</Tag>}
           </div>
-        </div>
-      </Reveal>
-    )
-  }
-
-  return (
-    <Reveal delay={(idx % 5) * 70} className={`h-full ${gridPlace}`}>
-      <div className="pp-card h-full" style={{ '--pp-accent': accent } as CSSProperties}>
-        {tier.badge && (
-          <span
-            className="absolute -top-3 left-1/2 -translate-x-1/2 z-20 inline-flex items-center gap-1.5 px-3 py-1 rounded-full font-mono text-[10px] font-bold uppercase tracking-[0.14em] whitespace-nowrap bg-surface shadow-sm border"
-            style={{ color: accent, borderColor: `${accent}55` }}
-          >
-            <Headset size={10} strokeWidth={2.5} />
-            {tier.badge}
-          </span>
         )}
-        {inner}
+        <Checks items={feats} />
       </div>
-    </Reveal>
+    </article>
   )
 }
 
-/* ─────────────────────────────────────────────────────────────────────────── */
-/*  Comparison table                                                           */
-/* ─────────────────────────────────────────────────────────────────────────── */
+ /* ── Hero ledger: what is billed and what is not ─────────────────────────── */
 
-function ComparisonTable({ rows, columns }) {
+function Ledger() {
+  const rows: [string, 'billed' | 'free'][] = [
+    ['Embedded sessions', 'billed'],
+    ['AI tokens', 'billed'],
+    ['Agent and kernel runs', 'billed'],
+    ['Dashboard viewers', 'free'],
+    ['Seats and editors', 'free'],
+    ['Dashboard views', 'free'],
+  ]
   return (
-    <div className="overflow-x-auto overflow-y-clip overscroll-x-contain rounded-2xl border border-border bg-surface shadow-[0_18px_44px_-26px_rgba(27,35,99,0.4)]">
-      <table className="border-collapse w-full" style={{ minWidth: 720 }}>
-        <thead className="sticky top-0 z-10">
-          <tr>
-            {columns.map((c, i) => (
-              <th key={i}
-                className={`px-5 py-3.5 text-left bg-surface-2 border-b border-border ${i > 0 ? 'border-l' : ''}`}
-                style={i === 0 ? { minWidth: 150 } : { minWidth: 180 }}>
-                <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.14em] text-muted">{c}</span>
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r, ri) => (
-            <tr key={ri}
-              className={`border-b border-border last:border-0 transition-colors
-                ${r.isNubi ? '' : 'hover:bg-brand-blue/[0.04]'}`}>
-              {r.cells.map((cell, ci) => (
-                <td key={ci}
-                  className={`px-5 py-4 align-top text-[13px] leading-snug border-border ${ci > 0 ? 'border-l' : ''}
-                    ${r.isNubi
-                      ? 'bg-brand-teal/[0.08] ' + (ci === 0
-                          ? 'font-bold text-brand-teal shadow-[inset_3px_0_0_#17b3a3]'
-                          : 'text-fg font-medium')
-                      : ((ri % 2 === 1 ? 'bg-slate-500/[0.05] ' : 'bg-surface ') +
-                          (ci === 0 ? 'font-semibold text-fg' : 'text-muted'))}`}>
-                  {cell}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="pp-ledger" role="table" aria-label="What is billed on every plan">
+      <div className="pp-ledger-h" role="row"><span role="columnheader">Line item</span><span role="columnheader">Billing</span></div>
+      {rows.map(([label, kind]) => (
+        <div className="pp-ledger-r" role="row" key={label}>
+          <span role="cell">{label}</span>
+          <span role="cell">{kind === 'billed' ? <Tag>Metered</Tag> : <Tag tone="accent" dot>Free</Tag>}</span>
+        </div>
+      ))}
     </div>
   )
 }
 
+/* ── Calculators ──────────────────────────────────────────────────────────── */
 
-/* ─────────────────────────────────────────────────────────────────────────── */
-/*  "What 500 viewers cost" — always-dark observatory panel.                    */
-/*  The viewer tax drawn TO SCALE: a wall of competitor cost bars vs Nubi's     */
-/*  glowing $0 sliver, headed by the 500-dots → 1-cached-query motif.           */
-/* ─────────────────────────────────────────────────────────────────────────── */
+type CalcRow = { name: string; note?: string; estimate?: boolean; isNubi?: boolean; cost: number }
 
-/** 500 literal dots — one per viewer — in a deterministic shimmer. */
-function ViewerDotField() {
-  const dots = []
-  for (let row = 0; row < 10; row++) {
-    for (let col = 0; col < 50; col++) {
-      const i = row * 50 + col
-      dots.push(
-        <circle
-          key={i}
-          cx={col * 10 + 5}
-          cy={row * 9 + 5}
-          r="1.9"
-          fill={i % 11 === 0 ? '#5fd6c8' : '#8db4f5'}
-          opacity={0.22 + ((i * 37) % 55) / 100}
-        />,
-      )
-    }
-  }
-  return (
-    <svg viewBox="0 0 500 95" className="w-full h-auto" aria-hidden="true">
-      {dots}
-    </svg>
-  )
-}
-
-const VTAX_MAX_ANNUAL = 260000 // Looker's high end — the chart's full scale
-
-function ViewerTaxPanel() {
-  const [ref, seen] = useReveal()
+function CalcBars({ rows }: { rows: CalcRow[] }) {
   const { currency, rates } = useCurrency()
-  const money = (s) => convertMoneyString(s, currency, rates)
-
-  const priced = BI_COMPARISON
-    .filter(p => !p.isNubi && p.annual_hi != null)
-    .sort((a, b) => b.annual_hi - a.annual_hi)
-  const unpriced = BI_COMPARISON.filter(p => !p.isNubi && p.annual_hi == null)
-  const nubi = BI_COMPARISON.find(p => p.isNubi)
-  const pct = (n) => `${Math.max(2, (n / VTAX_MAX_ANNUAL) * 100)}%`
-
-  // fixed light-on-dark gradient text — the panel is dark in BOTH themes
-  const gradientText = {
-    background: 'linear-gradient(105deg, #8db4f5 0%, #5fd6c8 60%, #2dd4bf 100%)',
-    WebkitBackgroundClip: 'text',
-    backgroundClip: 'text',
-    WebkitTextFillColor: 'transparent',
-    color: 'transparent',
-  }
-
+  const max = Math.max(...rows.map(r => r.cost), 1)
   return (
-    <div
-      ref={ref}
-      className="relative rounded-[1.5rem] sm:rounded-[2rem] overflow-hidden border border-white/[0.08] shadow-[0_44px_90px_-32px_rgba(7,11,33,0.75)]"
-      style={{
-        background:
-          'radial-gradient(ellipse 60% 50% at 12% 0%, rgba(46,96,186,0.32) 0%, transparent 62%),' +
-          'radial-gradient(ellipse 50% 55% at 95% 100%, rgba(20,160,146,0.16) 0%, transparent 60%),' +
-          '#070b21',
-      }}
-    >
-      <div className="lp-noise pointer-events-none absolute inset-0" aria-hidden="true" />
-
-      {/* ── 500 viewers → 1 cached query ── */}
-      <div className="relative px-6 sm:px-10 pt-7 sm:pt-9">
-        <div className="flex items-center gap-4 sm:gap-7">
-          <div className="flex-1 min-w-0">
-            <ViewerDotField />
-            <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.16em] text-slate-400">
-              500 viewers, one dashboard
-            </p>
-          </div>
-          <ArrowRight size={18} className="shrink-0 text-teal-300/70" aria-hidden="true" />
-          <div className="shrink-0 text-center">
-            <div className="inline-flex flex-col items-center gap-1.5 rounded-2xl border border-teal-400/25 bg-teal-400/[0.07] px-4 sm:px-6 py-3.5">
-              <span className="font-display text-2xl sm:text-3xl font-bold leading-none text-teal-300">1</span>
-              <span className="font-mono text-[9.5px] uppercase tracking-[0.16em] text-teal-300/80 whitespace-nowrap">
-                cached query
-              </span>
-            </div>
-            <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.16em] text-slate-400 whitespace-nowrap">
-              ≈ {money('$0')} compute
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* ── chart header ── */}
-      <div className="relative flex flex-wrap items-baseline justify-between gap-2 px-6 sm:px-10 mt-8 pb-3 border-b border-white/[0.07]">
-        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-teal-300/90">
-          annual cost · ~500 dashboard viewers
-        </span>
-        <span className="font-mono text-[10px] text-slate-400">
-          bars drawn to scale · max ≈ {money('$260k')}/yr
-        </span>
-      </div>
-
-      {/* ── cost bars ── */}
-      <div className="relative px-6 sm:px-10 py-7 flex flex-col gap-5">
-        {priced.map((p, i) => (
-          <div key={p.name} className="group">
-            <div className="flex items-baseline justify-between gap-3 mb-1.5">
-              <a
-                href={p.sourceUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-sm font-semibold text-slate-100 hover:text-teal-300 transition-colors"
-              >
-                {p.name}{p.estimate ? <sup className="text-slate-400">†</sup> : null}
-              </a>
-              <span className="font-mono text-[12px] font-bold text-slate-200 tabular-nums whitespace-nowrap">
-                {money(p.cost500)}
-              </span>
-            </div>
-            <div className="relative h-5 rounded-md bg-white/[0.05] group-hover:bg-white/[0.08] overflow-hidden transition-colors">
-              {/* "up to" range extension */}
-              {p.annual_hi > p.annual_lo && (
-                <div
-                  className="absolute inset-y-0 left-0 rounded-md bg-gradient-to-r from-[#3d62c4]/35 to-[#7e9fe8]/25 transition-[width,filter] duration-1000 ease-out motion-reduce:transition-none group-hover:brightness-125"
-                  style={{ width: seen ? pct(p.annual_hi) : '0%', transitionDelay: `${i * 110}ms` }}
-                />
-              )}
-              <div
-                className="absolute inset-y-0 left-0 rounded-md bg-gradient-to-r from-[#3d62c4] to-[#7e9fe8] transition-[width,filter] duration-1000 ease-out motion-reduce:transition-none group-hover:brightness-125"
-                style={{ width: seen ? pct(p.annual_lo) : '0%', transitionDelay: `${i * 110}ms` }}
-              />
-            </div>
-            <p className="mt-1.5 font-mono text-[10px] text-slate-400/90 truncate">
-              {money(p.model)} · {money(p.computeExtra)}
-            </p>
-          </div>
-        ))}
-
-        {unpriced.map((p, i) => (
-          <div key={p.name}>
-            <div className="flex items-baseline justify-between gap-3 mb-1.5">
-              <a
-                href={p.sourceUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-sm font-semibold text-slate-100 hover:text-teal-300 transition-colors"
-              >
-                {p.name}{p.estimate ? <sup className="text-slate-400">†</sup> : null}
-              </a>
-              <span className="font-mono text-[12px] font-bold text-slate-300 whitespace-nowrap">{money(p.cost500)}</span>
-            </div>
-            <div className="relative h-5 rounded-md bg-white/[0.05] overflow-hidden">
-              <div
-                className="absolute inset-y-0 left-0 rounded-md border border-white/10 transition-[width] duration-1000 ease-out motion-reduce:transition-none"
-                style={{
-                  width: seen ? '38%' : '0%',
-                  transitionDelay: `${(priced.length + i) * 110}ms`,
-                  background:
-                    'repeating-linear-gradient(45deg, rgba(255,255,255,0.10) 0 6px, transparent 6px 12px)',
-                }}
-              />
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 font-mono text-[9.5px] uppercase tracking-[0.12em] text-slate-400">
-                {p.barNote}
-              </span>
-            </div>
-            <p className="mt-1.5 font-mono text-[10px] text-slate-400/90 truncate">
-              {money(p.model)} · {money(p.computeExtra)}
-            </p>
-          </div>
-        ))}
-
-        {/* ── Nubi — the punchline ── */}
-        <div className="mt-1 pt-6 border-t border-white/[0.08]">
-          <div className="flex items-baseline justify-between gap-3 mb-1.5">
-            <span className="inline-flex items-center gap-1.5 text-sm font-bold text-white">
-              <Star size={13} className="text-teal-300" strokeWidth={2.5} />
-              {nubi.name}
-            </span>
-            <span className="font-display text-xl sm:text-2xl font-bold tabular-nums" style={gradientText}>
-              {money(nubi.cost500)}
-            </span>
-          </div>
-          <div className="relative h-5 rounded-md bg-white/[0.05] overflow-hidden">
-            <div
-              className="absolute inset-y-0 left-0 w-[3px] rounded bg-teal-300 shadow-[0_0_14px_3px_rgba(45,212,191,0.75)] transition-opacity duration-700 motion-reduce:transition-none"
-              style={{ opacity: seen ? 1 : 0, transitionDelay: `${(priced.length + unpriced.length) * 110}ms` }}
-            />
-            <span className="absolute left-4 top-1/2 -translate-y-1/2 font-mono text-[10px] text-slate-400/80">
-              ← the whole bar, drawn to scale
-            </span>
-          </div>
-          <p className="mt-1.5 font-mono text-[10px] text-teal-300/80 truncate">
-            {money(nubi.model)} · {money(nubi.computeExtra)}
-          </p>
-        </div>
-      </div>
-    </div>
+    <CostBars
+      max={max}
+      rows={rows.map(r => ({
+        name: <>{r.name}{r.estimate ? <sup aria-label="estimate"> †</sup> : null}</>,
+        note: r.note,
+        value: r.isNubi ? Math.max(r.cost, max * 0.006) : Math.max(r.cost, max * 0.02),
+        label: compactMoney(r.cost, currency, rates),
+        nubi: r.isNubi,
+      }))}
+    />
   )
 }
-
-/* Competitor-vs-Nubi result bar row */
-function ResultBar({ r, max, nameColsClass }) {
-  const { currency, rates } = useCurrency()
-  return (
-    <div className={`grid ${nameColsClass} items-center gap-3`}>
-      <div className="min-w-0">
-        <div className={`text-sm font-semibold truncate ${r.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
-          {r.isNubi && <Star size={12} className="inline mr-1 -mt-0.5 text-brand-teal" strokeWidth={2.5} />}
-          {r.name}{r.estimate ? <sup className="text-muted">†</sup> : null}
-        </div>
-        <div className="font-mono text-[10px] text-muted truncate hidden sm:block">{r.note}</div>
-      </div>
-      <div className="h-7 rounded-md bg-surface-2 overflow-hidden">
-        <div
-          className={`h-full rounded-md transition-[width] duration-500 ease-out ${r.isNubi ? 'pp-bar-nubi' : 'bg-brand-blue/25 dark:bg-brand-blue/40'}`}
-          style={{ width: `${Math.max(r.isNubi ? 0.6 : 2, (r.cost / max) * 100)}%` }}
-        />
-      </div>
-      <div className={`font-mono text-[13px] font-bold tabular-nums text-right w-16 ${r.isNubi ? 'text-brand-teal' : 'text-fg'}`}>
-        {compactMoney(r.cost, currency, rates)}
-      </div>
-    </div>
-  )
-}
-
-/* ─────────────────────────────────────────────────────────────────────────── */
-/*  Calculator 1 — BI & embedded analytics                                     */
-/* ─────────────────────────────────────────────────────────────────────────── */
 
 function CostCalculator() {
   const { currency, rates } = useCurrency()
-  const [sv, setSv] = useState(50)      // slider 0–100 → viewers (log scale)
+  const [sv, setSv] = useState(50) // slider 0–100 → viewers (log scale)
   const [editors, setEditors] = useState(5)
   const viewers = Math.round(10 * Math.pow(2500, sv / 100)) // 10 → 25,000
 
-  const results = CALC_OPTIONS
-    .map(o => ({ ...o, cost: Math.round(o.annual(viewers, editors)) }))
-    .sort((a, b) => a.cost - b.cost)
-  const max = Math.max(...results.map(r => r.cost), 1)
-  const nubi = results.find(r => r.isNubi)
-  const cheapestComp = Math.min(...results.filter(r => !r.isNubi).map(r => r.cost))
+  const rows: CalcRow[] = CALC_OPTIONS
+    .map((o: any) => ({ ...o, cost: Math.round(o.annual(viewers, editors)) }))
+    .sort((a: CalcRow, b: CalcRow) => a.cost - b.cost)
+  const nubi = rows.find(r => r.isNubi)
+  const cheapestComp = Math.min(...rows.filter(r => !r.isNubi).map(r => r.cost))
   const savings = Math.max(0, cheapestComp - (nubi?.cost ?? 0))
   const multiple = nubi && nubi.cost > 0 ? cheapestComp / nubi.cost : null
 
   return (
-    <CalcShell index="01" slug="bi-embedded-analytics">
-      {/* Inputs */}
-      <div className="grid md:grid-cols-2 gap-6 p-5 sm:p-8 border-b border-border bg-surface-2">
+    <div className="pp-calc" id="calc-bi">
+      <div className="pp-calc-in">
         <SliderField
           id="calc-viewers" label="Dashboard viewers" display={fmtNum(viewers)}
-          min="0" max="100" value={sv} onChange={e => setSv(Number(e.target.value))}
+          min="0" max="100" value={sv} onChange={(e: any) => setSv(Number(e.target.value))}
           lo="10" hi="25k" ariaLabel="Dashboard viewers"
         />
         <SliderField
-          id="calc-editors" label="Editors (creators)" display={editors}
-          min="1" max="50" value={editors} onChange={e => setEditors(Number(e.target.value))}
+          id="calc-editors" label="Editors" display={editors}
+          min="1" max="50" value={editors} onChange={(e: any) => setEditors(Number(e.target.value))}
           lo="1" hi="50" ariaLabel="Editors"
         />
       </div>
-
-      {/* Savings headline */}
-      <div className="flex flex-wrap items-center justify-center gap-2 px-5 sm:px-6 py-4 text-center bg-brand-teal/[0.06] border-b border-border">
-        <TrendingDown size={18} className="text-brand-teal shrink-0" />
-        <span className="text-sm sm:text-base text-fg">
-          Nubi costs <strong className="font-mono font-bold text-brand-teal">{compactMoney(nubi?.cost ?? 0, currency, rates)}/yr</strong>
-          {savings > 0 && (
-            <> — that’s <strong className="font-mono font-bold text-brand-teal">{compactMoney(savings, currency, rates)}/yr less</strong>
-              {multiple && multiple >= 2 && <> ({Math.round(multiple)}× cheaper)</>} than the next option.</>
-          )}
+      <p className="pp-calc-head" aria-live="polite">
+        <TrendingDown size={18} strokeWidth={1.75} aria-hidden="true" />
+        <span>
+          Nubi costs <b>{compactMoney(nubi?.cost ?? 0, currency, rates)}/yr</b>
+          {savings > 0 && (<>, <b>{compactMoney(savings, currency, rates)}/yr</b> less than the next option{multiple && multiple >= 2 ? <> ({Math.round(multiple)}× cheaper)</> : null}.</>)}
         </span>
-      </div>
-
-      {/* Bars */}
-      <div className="p-5 sm:p-8 flex flex-col gap-3">
-        {results.map(r => (
-          <ResultBar key={r.name} r={r} max={max} nameColsClass="grid-cols-[100px_1fr_auto] sm:grid-cols-[150px_1fr_auto]" />
-        ))}
-      </div>
-      <p className="px-5 sm:px-8 pb-6 font-mono text-[10.5px] text-muted opacity-70 leading-relaxed">
-        Estimated annual cost from each vendor’s public model (before your own warehouse compute).
-        † Looker is quote-only; figure is directional. Your actual cost depends on contract terms — verify before switching.
       </p>
-    </CalcShell>
-  )
-}
-
-/* ─────────────────────────────────────────────────────────────────────────── */
-/*  Overage / usage-wallet showcase — bento grid                               */
-/* ─────────────────────────────────────────────────────────────────────────── */
-
-const OVERAGE_ICONS = [Database, Zap, Bot, Server, Gauge]
-const OVERAGE_ACCENTS = ['#4d8de0', '#f59e0b', '#8b5cf6', '#ec4899', '#17b3a3']
-
-function OverageShowcase() {
-  const { currency, rates } = useCurrency()
-  const money = (s) => convertMoneyString(s, currency, rates)
-  return (
-    <div className="flex flex-col gap-4 sm:gap-5">
-      {/* Wallet intro — gradient banner card */}
-      <Reveal>
-        <div className="relative rounded-[1.25rem] p-6 sm:p-7 text-white bg-brand-gradient shadow-[0_24px_50px_-20px_rgba(23,179,163,0.55)] overflow-hidden">
-          <div className="lp-noise pointer-events-none absolute inset-0" aria-hidden="true" />
-          <div className="relative flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6">
-            <span className="shrink-0 w-12 h-12 rounded-2xl bg-white/15 border border-white/25 flex items-center justify-center">
-              <Wallet size={22} strokeWidth={2} />
-            </span>
-            <div className="flex-1">
-              <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-white/70 mb-1">
-                the usage wallet
-              </p>
-              <h3 className="font-display text-xl sm:text-2xl font-bold leading-snug">
-                Pay only for what you use.
-              </h3>
-              <p className="mt-1.5 text-sm leading-relaxed text-white/85 max-w-3xl">{OVERAGE_NOTE}</p>
-            </div>
-            <span className="self-start sm:self-center shrink-0 inline-flex items-center gap-1.5 font-mono text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-white/25 bg-white/10 whitespace-nowrap">
-              <Check size={11} strokeWidth={3} /> same rate, every paid tier
-            </span>
-          </div>
-        </div>
-      </Reveal>
-
-      {/* Rate cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
-        {OVERAGE_RATES.map((o, i) => {
-          const Icon = OVERAGE_ICONS[i % OVERAGE_ICONS.length]
-          const accent = OVERAGE_ACCENTS[i % OVERAGE_ACCENTS.length]
-          return (
-            <Reveal key={o.label} delay={(i % 3) * 80} className="h-full">
-              <div className="pp-card h-full p-5 sm:p-6" style={{ '--pp-accent': accent } as CSSProperties}>
-                <div className="flex items-center justify-between mb-3">
-                  <span
-                    className="inline-flex w-9 h-9 rounded-xl items-center justify-center text-white shadow-sm"
-                    style={{ background: `linear-gradient(135deg, ${accent}, ${accent}cc)` }}
-                  >
-                    <Icon size={16} strokeWidth={2} />
-                  </span>
-                  <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
-                    metered
-                  </span>
-                </div>
-                <div className="flex items-baseline gap-1.5">
-                  <span className="font-mono text-2xl font-bold text-fg tabular-nums">{money(o.rate)}</span>
-                  <span className="font-mono text-[11px] text-muted">{money(o.unit)}</span>
-                </div>
-                <p className="text-[13px] font-semibold text-fg mt-1">{o.label}</p>
-                <p className="text-xs text-muted leading-snug mt-1">{o.desc}</p>
-              </div>
-            </Reveal>
-          )
-        })}
-        {/* the wedge cell — never per-seat */}
-        <Reveal delay={160} className="h-full">
-          <div className="pp-card h-full p-5 sm:p-6 bg-brand-teal/[0.05]" style={{ '--pp-accent': '#17b3a3' } as CSSProperties}>
-            <div className="flex items-center justify-between mb-3">
-              <span className="inline-flex w-9 h-9 rounded-xl items-center justify-center bg-brand-teal/10 border border-brand-teal/30 text-brand-teal">
-                <X size={16} strokeWidth={2.5} />
-              </span>
-              <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-brand-teal">
-                never metered
-              </span>
-            </div>
-            <p className="font-display text-base font-bold text-fg leading-snug">
-              No per-viewer or per-seat overage — ever.
-            </p>
-            <p className="text-xs text-muted leading-snug mt-1.5">
-              Top up once, draw from your wallet, and anything beyond simply lands on your
-              next invoice. Viewers stay free at any usage level.
-            </p>
-          </div>
-        </Reveal>
-      </div>
+      <div className="pp-calc-body"><CalcBars rows={rows} /></div>
+      <p className="pp-foot">
+        Estimated annual cost from each vendor's public model, before your own warehouse compute.
+        † Looker is quote-only, so its figure is directional. Check contract terms before you switch.
+      </p>
     </div>
   )
 }
-
-/* ─────────────────────────────────────────────────────────────────────────── */
-/*  Calculator 2 — orchestration                                               */
-/* ─────────────────────────────────────────────────────────────────────────── */
 
 function OrchCalculator() {
   const { currency, rates } = useCurrency()
   const [envs, setEnvs] = useState(2)
   const [gb, setGb] = useState(1000)
 
-  const results = ORCH_CALC_OPTIONS
-    .map(o => ({ ...o, cost: Math.round(o.annual(envs, gb)) }))
-    .sort((a, b) => a.cost - b.cost)
-  const max = Math.max(...results.map(r => r.cost), 1)
-  const nubi = results.find(r => r.isNubi)
-  const cheapestComp = Math.min(...results.filter(r => !r.isNubi).map(r => r.cost))
+  const rows: CalcRow[] = ORCH_CALC_OPTIONS
+    .map((o: any) => ({ ...o, cost: Math.round(o.annual(envs, gb)) }))
+    .sort((a: CalcRow, b: CalcRow) => a.cost - b.cost)
+  const nubi = rows.find(r => r.isNubi)
+  const cheapestComp = Math.min(...rows.filter(r => !r.isNubi).map(r => r.cost))
   const savings = Math.max(0, cheapestComp - (nubi?.cost ?? 0))
 
   return (
-    <CalcShell index="02" slug="orchestration">
-      {/* Inputs */}
-      <div className="grid md:grid-cols-2 gap-6 p-5 sm:p-8 border-b border-border bg-surface-2">
+    <div className="pp-calc" id="calc-orch">
+      <div className="pp-calc-in">
         <SliderField
-          id="orch-envs" label="Environments (dev / staging / prod)" display={envs}
-          min="1" max="6" value={envs} onChange={e => setEnvs(Number(e.target.value))}
+          id="orch-envs" label="Environments (dev, staging, prod)" display={envs}
+          min="1" max="6" value={envs} onChange={(e: any) => setEnvs(Number(e.target.value))}
           lo="1" hi="6" ariaLabel="Environments"
         />
         <SliderField
-          id="orch-gb" label="Data processed (GB / mo)" display={gb.toLocaleString()}
-          min="0" max="10000" step="100" value={gb} onChange={e => setGb(Number(e.target.value))}
+          id="orch-gb" label="Data processed (GB / month)" display={gb.toLocaleString()}
+          min="0" max="10000" step="100" value={gb} onChange={(e: any) => setGb(Number(e.target.value))}
           lo="0" hi="10 TB" ariaLabel="Data processed in GB per month"
         />
       </div>
-
-      {/* Headline — honest: Flows is metered on compute, not free. */}
-      <div className="flex flex-wrap items-center justify-center gap-2 px-5 sm:px-6 py-4 text-center bg-brand-teal/[0.06] border-b border-border">
-        <GitFork size={18} className="text-brand-teal shrink-0" />
-        <span className="text-sm sm:text-base text-fg">
-          Flows costs <strong className="font-mono font-bold text-brand-teal">{nubi?.cost ? `${compactMoney(nubi.cost, currency, rates)}/yr` : compactMoney(0, currency, rates)}</strong>{' '}
-          metered on data processed — no per-environment bill.
-          {savings > 0 && (
-            <> That&rsquo;s <strong className="font-mono font-bold text-brand-teal">{compactMoney(savings, currency, rates)}/yr</strong> less than the cheapest standalone orchestrator.</>
-          )}
+      <p className="pp-calc-head" aria-live="polite">
+        <TrendingDown size={18} strokeWidth={1.75} aria-hidden="true" />
+        <span>
+          Flows adds <b>{compactMoney(nubi?.cost ?? 0, currency, rates)}/yr</b> for orchestration: no per-environment bill.
+          {savings > 0 && (<> The cheapest standalone orchestrator costs <b>{compactMoney(savings, currency, rates)}/yr</b> more.</>)}
         </span>
-      </div>
-
-      {/* Bars */}
-      <div className="p-5 sm:p-8 flex flex-col gap-3">
-        {results.map(r => (
-          <ResultBar key={r.name} r={r} max={max} nameColsClass="grid-cols-[110px_1fr_auto] sm:grid-cols-[190px_1fr_auto]" />
-        ))}
-      </div>
-      <p className="px-5 sm:px-8 pb-6 font-mono text-[10.5px] text-muted opacity-70 leading-relaxed">
-        Apples-to-apples: data volume is converted to compute at ~50 GB / compute-hour, then each vendor is
-        priced as its published always-on floor (per environment / capacity / seats) plus compute for the work.
-        Directional estimates, not quotes. Managed orchestrators are floor-dominated; Nubi Flows has no floor.
-        † Self-host Airflow is OSS-free but carries real infra + on-call cost.
       </p>
-    </CalcShell>
+      <div className="pp-calc-body"><CalcBars rows={rows} /></div>
+      <p className="pp-foot">
+        Same basis for every row: data volume converts to compute at about 50 GB per compute-hour, and each vendor
+        is priced as its published always-on floor plus compute for the work. Directional estimates, not quotes.
+        † Self-hosted Airflow is free software but carries real infrastructure and on-call cost.
+      </p>
+    </div>
   )
 }
 
+/* ── The viewer tax ───────────────────────────────────────────────────────── */
+
+/** 500 squares, one per viewer, resolving into one accent square: one cached query. */
+function ViewerField() {
+  const cols = 50
+  const rows = 10
+  const cell = 10
+  const s = 6
+  const sq = []
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const i = r * cols + c
+      sq.push(<rect key={i} x={c * cell} y={r * cell} width={s} height={s} opacity={i === 0 ? 1 : [1, 0.55, 0.2][(i * 7) % 3]} className={i === 0 ? 'pp-acc' : undefined} />)
+    }
+  }
+  return (
+    <svg viewBox={`0 0 ${cols * cell} ${rows * cell}`} className="pp-field" style={{ width: '100%', height: 'auto' }} aria-hidden="true">
+      {sq}
+    </svg>
+  )
+}
+
+const VTAX_MAX_ANNUAL = 260000 // the chart's full scale (Looker's high end)
+
+function ViewerTax() {
+  const [ref, seen] = useSeen<HTMLDivElement>()
+  const { currency, rates } = useCurrency()
+  const money = (s: unknown) => convertMoneyString(s, currency, rates)
+
+  const priced = (BI_COMPARISON as any[]).filter(p => !p.isNubi && p.annual_hi != null).sort((a, b) => b.annual_hi - a.annual_hi)
+  const unpriced = (BI_COMPARISON as any[]).filter(p => !p.isNubi && p.annual_hi == null)
+  const nubi = (BI_COMPARISON as any[]).find(p => p.isNubi)
+
+  const rows = [
+    ...priced.map(p => ({
+      name: <a className="mk-link" href={p.sourceUrl} target="_blank" rel="noopener noreferrer">{p.name}{p.estimate ? ' †' : ''}</a>,
+      note: `${money(p.model)} · ${money(p.computeExtra)}`,
+      value: p.annual_lo,
+      ext: p.annual_hi,
+      label: p.annual_hi > p.annual_lo
+        ? `${compactMoney(p.annual_lo, currency, rates)}–${compactMoney(p.annual_hi, currency, rates)}`
+        : compactMoney(p.annual_lo, currency, rates),
+    })),
+    ...unpriced.map(p => ({
+      name: <a className="mk-link" href={p.sourceUrl} target="_blank" rel="noopener noreferrer">{p.name}{p.estimate ? ' †' : ''}</a>,
+      note: `${money(p.model)} · ${money(p.computeExtra)}`,
+      value: VTAX_MAX_ANNUAL * 0.12,
+      label: 'quote only',
+    })),
+    {
+      name: nubi.name,
+      note: `${money(nubi.model)} · ${money(nubi.computeExtra)}`,
+      value: VTAX_MAX_ANNUAL * 0.004,
+      label: money('$0'),
+      nubi: true,
+    },
+  ]
+
+  return (
+    <div ref={ref}>
+      <div className="pp-vt">
+        <div style={{ display: 'grid', gap: 12 }}>
+          <ViewerField />
+          <p className="mk-label">500 viewers, one dashboard</p>
+        </div>
+        <div className="pp-result">
+          <b>1</b>
+          <p className="mk-label" style={{ color: 'var(--text)' }}>cached query</p>
+          <p className="mk-small mk-mono">≈ {money('$0')} compute</p>
+        </div>
+      </div>
+      <p className="mk-label" style={{ marginBottom: 8 }}>
+        Annual cost, about 500 dashboard viewers · bars to scale · max ≈ {money('$260k')}/yr
+      </p>
+      <CostBars rows={rows} max={VTAX_MAX_ANNUAL} seen={seen} />
+      <p className="pp-foot" style={{ paddingInline: 0 }}>
+        † Looker and Sigma are quote-only; their figures are reconstructed from reseller and analyst data and shown as
+        estimates. Everything else comes from public pricing pages (mid-2026). Check current pricing before you switch.
+      </p>
+    </div>
+  )
+}
+
+/* ── Orchestrator table ───────────────────────────────────────────────────── */
+
+function OrchTable() {
+  const { currency, rates } = useCurrency()
+  const money = (s: unknown) => convertMoneyString(s, currency, rates)
+  return (
+    <TableScroll min={760} cue="Scroll to compare">
+      <table className="mk-table">
+        <thead>
+          <tr>
+            <th scope="col">Orchestrator</th>
+            <th scope="col">Cost floor</th>
+            <th scope="col">Infra you operate</th>
+            <th scope="col">Metering</th>
+          </tr>
+        </thead>
+        <tbody>
+          {(ORCH_COMPARISON as any[]).map(p => (
+            <tr key={p.name}>
+              <td className={p.isNubi ? 'mk-col-nubi' : undefined}>{p.name}{p.estimate ? ' †' : ''}</td>
+              <td className={p.isNubi ? 'mk-col-nubi' : undefined}>{money(p.floor)}</td>
+              <td className={p.isNubi ? 'mk-col-nubi' : undefined}>{p.infra}</td>
+              <td className={p.isNubi ? 'mk-col-nubi' : undefined}>{money(p.meter)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </TableScroll>
+  )
+}
+
+/* ── Live tier merge ──────────────────────────────────────────────────────── */
+
 /**
- * Merge live tier data from the /api/v1/pricing endpoint into the static TIERS
- * array.  The live data provides the up-to-date ZAR price (computed with the
- * daily FX rate).  All other presentation fields (tagline, CTA, SLA badge, etc.)
- * come from the corrected static TIERS so the page never goes blank.
- *
- * @param {object[]} liveTiers  - Array of tier objects from GET /api/v1/pricing
- * @param {object[]} staticTiers - The TIERS array from src/data/pricing.js
- * @returns {object[]}
+ * Merge live tier data from /api/v1/pricing into the static TIERS: the live
+ * response carries the up-to-date SLA figures; every
+ * presentation field stays from the static data.
  */
-function mergeLiveTiers(liveTiers, staticTiers) {
-  return staticTiers.map((st) => {
-    const live = liveTiers.find((lt) => lt.tier === st.id)
+function mergeLiveTiers(liveTiers: any[], staticTiers: any[]) {
+  return staticTiers.map(st => {
+    const live = liveTiers.find(lt => lt.tier === st.id)
     if (!live) return st
-    // Build a ZAR price label from the live monthly_price_zar string
-    const zarCents = Number(live.monthly_price_zar)
-    const priceLabel = zarCents > 0
-      ? `R ${Math.round(zarCents).toLocaleString('en-ZA')} / mo`
-      : st.price
     return {
       ...st,
-      // Override with live ZAR price; keep USD price from static for display
-      price_zar_label: priceLabel,
-      // SLA fields from live response (Enterprise)
       sla: live.features?.sla_uptime_pct != null ? {
         uptime: `${live.features.sla_uptime_pct}%`,
         p1_response_minutes: live.features.sla_response_time_p1_minutes ?? st.sla?.p1_response_minutes,
@@ -789,516 +451,207 @@ function mergeLiveTiers(liveTiers, staticTiers) {
   })
 }
 
+/* ── Page ─────────────────────────────────────────────────────────────────── */
+
 export default function PricingPage() {
   const { currency, rates } = useCurrency()
-  const money = (s) => convertMoneyString(s, currency, rates)
-  // Fetch live pricing data; fall back to static TIERS on error
-  const [liveTiers, setLiveTiers] = useState(null)
+  const money = (s: unknown) => convertMoneyString(s, currency, rates)
+  const [calc, setCalc] = useState<'bi' | 'orch'>('bi')
+
+  const [liveTiers, setLiveTiers] = useState<any[] | null>(null)
   useEffect(() => {
     let cancelled = false
     fetchPricingData()
-      .then((data) => {
-        if (!cancelled && Array.isArray(data?.tiers) && data.tiers.length >= 4) {
-          setLiveTiers(data.tiers)
-        }
-      })
-      .catch(() => { /* silently fall back to static */ })
+      .then((data: any) => { if (!cancelled && Array.isArray(data?.tiers) && data.tiers.length >= 4) setLiveTiers(data.tiers) })
+      .catch(() => { /* keep the static tiers */ })
     return () => { cancelled = true }
   }, [])
-
-  const displayTiers = liveTiers ? mergeLiveTiers(liveTiers, TIERS) : TIERS
-
-  const orchRows = ORCH_COMPARISON.map(p => ({
-    isNubi: p.isNubi,
-    cells: [
-      <span className="inline-flex items-center gap-1.5">
-        {p.isNubi && <Star size={13} className="text-brand-teal" strokeWidth={2.5} />}
-        {p.name}
-      </span>,
-      money(p.floor),
-      money(p.infra),
-      money(p.meter),
-    ],
-  }))
+  const displayTiers = liveTiers ? mergeLiveTiers(liveTiers, TIERS as any[]) : (TIERS as any[])
 
   return (
-    <>
+    <div className="mk">
       <MarketingStyles />
-      {/* Page-scoped pricing styles — pp- prefixed so nothing leaks */}
-      <style>{`
-        /* glass card with per-card accent (set --pp-accent inline) */
-        .pp-card {
-          position: relative;
-          border-radius: 1.25rem;
-          border: 1px solid var(--border);
-          background: var(--surface);
-          box-shadow: 0 1px 2px rgba(27,35,99,0.05);
-          transition: transform 0.28s cubic-bezier(0.34,1.4,0.64,1),
-                      box-shadow 0.28s ease, border-color 0.28s ease;
-        }
-        .pp-card::before {
-          content: '';
-          position: absolute; left: 18px; right: 18px; top: -1px; height: 2px;
-          border-radius: 2px;
-          background: linear-gradient(90deg, transparent, var(--pp-accent, #17b3a3), transparent);
-          opacity: 0.45;
-          transition: opacity 0.28s ease;
-        }
-        .pp-card:hover {
-          transform: translateY(-4px);
-          border-color: color-mix(in srgb, var(--pp-accent, #17b3a3) 45%, var(--border));
-          box-shadow: 0 22px 44px -18px color-mix(in srgb, var(--pp-accent, #17b3a3) 38%, transparent);
-        }
-        .pp-card:hover::before { opacity: 0.85; }
-        /* highlighted (most popular) tier — gradient border + lift */
-        .pp-pop {
-          box-shadow: 0 30px 70px -28px rgba(23,179,163,0.55), 0 8px 30px -14px rgba(36,86,166,0.4);
-          transition: transform 0.28s cubic-bezier(0.34,1.4,0.64,1), box-shadow 0.28s ease;
-        }
-        .pp-pop:hover {
-          transform: translateY(-4px);
-          box-shadow: 0 38px 80px -28px rgba(23,179,163,0.65), 0 10px 34px -14px rgba(36,86,166,0.5);
-        }
-        /* Nubi result bar — brand gradient with glow */
-        .pp-bar-nubi {
-          background: linear-gradient(90deg, #2456a6, #17b3a3);
-          box-shadow: 0 0 16px rgba(23,179,163,0.5), 0 0 3px rgba(23,179,163,0.7);
-        }
-        @media (prefers-reduced-motion: reduce) {
-          .pp-card, .pp-pop { transition: none; }
-          .pp-card:hover, .pp-pop:hover { transform: none; }
-        }
-      `}</style>
+      <style href="nubi-pricing-page" precedence="default">{CSS}</style>
 
-      <div className="nubi-lp overflow-x-hidden bg-bg text-fg font-sans">
+      <PageHero
+        eyebrow="PRICING"
+        meta="UNLIMITED SEATS ON EVERY PLAN"
+        aside={<Ledger />}
+        title={<>Pricing that doesn&rsquo;t tax your <em>viewers.</em></>}
+        lead={<>Dashboards compute in <b>your users&rsquo; browsers</b>, so an extra viewer costs us about {money('$0')} and we never charge you for one. Pay for embeds, AI and throughput. Not for people looking at charts.</>}
+        actions={
+          <>
+            <Link to="/register" className="nubi-btn nubi-btn-primary nubi-btn-xl">Start free</Link>
+            <a href="#calculators" className="nubi-btn nubi-btn-ghost nubi-btn-xl">See what you&rsquo;d pay</a>
+          </>
+        }
+      >
+        <div style={{ marginTop: 56 }}>
+          <Facts items={[
+            { v: money('$0'), l: 'marginal cost per dashboard view' },
+            { v: '∞', l: 'editors and viewers on every plan' },
+            { v: money('$9'), l: 'first paid plan, per month' },
+            { v: '10–50×', l: 'fewer warehouse scans than naive use' },
+          ]} />
+        </div>
+      </PageHero>
 
-        {/* ════════════════════════════════════════════════════════════════════
-            HERO — observatory panel: the pricing thesis + trust strip + stats
-        ════════════════════════════════════════════════════════════════════ */}
-        <section className="relative bg-bg px-3 sm:px-5 pt-3 sm:pt-5">
-          <div className="lp-hero-panel relative max-w-[1440px] mx-auto rounded-[1.5rem] sm:rounded-[2rem] overflow-hidden border border-border dark:border-white/[0.06]">
-            {/* drifting mesh blobs */}
-            <div
-              className="lp-mesh-a lp-mesh-blob pointer-events-none absolute -top-40 -left-40 w-[42rem] h-[42rem] rounded-full"
-              style={{ background: 'radial-gradient(circle, rgba(72,124,214,0.28) 0%, transparent 65%)' }}
-              aria-hidden="true"
-            />
-            <div
-              className="lp-mesh-b lp-mesh-blob pointer-events-none absolute top-1/4 -right-48 w-[38rem] h-[38rem] rounded-full"
-              style={{ background: 'radial-gradient(circle, rgba(45,212,191,0.16) 0%, transparent 65%)' }}
-              aria-hidden="true"
-            />
-            {/* film grain */}
-            <div className="lp-noise pointer-events-none absolute inset-0" aria-hidden="true" />
+      {/* 01 · Plans */}
+      <Section
+        id="pricing" index="01" label="PLANS"
+        title={<>Five plans. <em>Zero seat math.</em></>}
+        lead={<>Every plan, Free included, has <b>unlimited editors and viewers</b>. You move up for embed volume, AI, connectors and governance. Never for people.</>}
+      >
+        <Reveal>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px 24px', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+            <p className="mk-label">{currency === 'USD' ? 'Prices in USD' : `Prices set in USD · ${currency} shown at indicative rates`}</p>
+            <CurrencyPicker />
+          </div>
+          <div className="mk-cells pp-tiers">
+            {displayTiers.map((t, i) => <TierCell key={t.id} tier={t} idx={i} />)}
+          </div>
+          <div className="mk-note mk-ink" style={{ marginTop: 28, maxWidth: '78ch' }}>
+            <p>{ENTERPRISE_NOTE}{' '}<Link to="/register" className="mk-link">Contact us</Link>.</p>
+          </div>
+        </Reveal>
+      </Section>
 
-            <div className="relative px-5 sm:px-10 lg:px-14 pt-14 sm:pt-20 text-center">
-              {/* terminal-flavoured eyebrow */}
-              <p className="inline-flex items-center gap-2 font-mono text-[10px] sm:text-xs font-medium tracking-wide text-brand-teal dark:text-teal-300/90 border border-border dark:border-white/10 bg-white/60 dark:bg-white/[0.04] rounded-full px-3 sm:px-3.5 py-1.5 mb-6 sm:mb-8 whitespace-nowrap">
-                <span className="relative flex h-1.5 w-1.5 shrink-0">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-60" />
-                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-teal-300" />
-                </span>
-                pricing · unlimited seats on every plan
-              </p>
-
-              <h1 className="font-display text-[2rem] sm:text-5xl lg:text-[4.2rem] font-bold leading-[1.06] tracking-tight text-fg">
-                Pricing that doesn&rsquo;t
-                <br />
-                <span className="lp-hero-gradient-text">tax your viewers.</span>
-              </h1>
-
-              <p className="mt-5 sm:mt-7 text-base sm:text-lg leading-relaxed text-muted dark:text-slate-300/90 max-w-2xl mx-auto">
-                Dashboards compute in <strong className="text-fg font-semibold">your users’ browsers</strong>,
-                so an extra viewer costs us <strong className="text-fg font-semibold">≈ {money('$0')}</strong> — and we{' '}
-                <strong className="text-fg font-semibold">never charge you for one</strong>. Pay for editors,
-                AI, and throughput. Not for people looking at charts.
-              </p>
-
-              {/* CTAs */}
-              <div className="flex flex-col sm:flex-row flex-wrap gap-3 justify-center mt-8 sm:mt-9">
-                <Link
-                  to="/register"
-                  className="lp-cta-glow inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-xl text-base font-semibold transition-all bg-brand-gradient text-white hover:-translate-y-0.5 min-h-[48px]"
-                >
-                  Start free
-                  <ArrowRight size={16} strokeWidth={2.5} />
-                </Link>
-                <a
-                  href="#calc-bi"
-                  className="inline-flex items-center justify-center gap-1.5 px-5 py-3.5 rounded-xl text-sm font-medium transition-all text-muted hover:text-fg min-h-[48px]"
-                >
-                  See what you’d pay <ChevronRight size={13} className="rotate-90" />
-                </a>
+      {/* 02 · Metered */}
+      <Section
+        id="usage" index="02" label="USAGE WALLET" sunk
+        title={<>Metered overages, <em>not surprise bills.</em></>}
+        lead={<>Every paid plan includes a monthly quota. Need a burst for one busy month? Don&rsquo;t jump a whole plan. Use more, at the same rate.</>}
+      >
+        <div className="pp-split">
+          <Reveal>
+            <p className="mk-p" style={{ maxWidth: '58ch' }}>{OVERAGE_NOTE}</p>
+          </Reveal>
+          <Reveal delay={60}>
+            <Figure name="MeteringWallet" title="A prepaid wallet drawing down against metered usage" className="w-full h-auto" />
+          </Reveal>
+        </div>
+        <Reveal>
+          <div className="mk-cells mk-cells-4" style={{ marginTop: 40 }}>
+            {(OVERAGE_RATES as any[]).map(o => (
+              <div key={o.label} className="mk-cell">
+                <p className="mk-label">Metered</p>
+                <p className="pp-rate">{money(o.rate)}<small>{money(o.unit)}</small></p>
+                <h3>{o.label}</h3>
+                <p>{o.desc}</p>
               </div>
-
-              {/* trust strip — the "never charge for" wedge, mono */}
-              <div className="flex flex-wrap justify-center gap-x-4 sm:gap-x-5 gap-y-2 font-mono text-[10px] sm:text-[11px] font-medium text-muted mt-8 sm:mt-9">
-                {[
-                  'dashboard views — free',
-                  'no per-viewer seats',
-                  'cached reads — free',
-                  'unlimited editors',
-                ].map(f => (
-                  <span key={f} className="flex items-center gap-1.5">
-                    <Check size={11} strokeWidth={2.5} className="text-teal-400" />
-                    {f}
-                  </span>
-                ))}
-              </div>
-
-              {/* proof stats — fused into the panel */}
-              <div className="relative mt-10 sm:mt-14 border-t border-border dark:border-white/10 py-8 sm:py-10">
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-y-8 divide-x divide-y lg:divide-y-0 divide-border dark:divide-white/[0.07]">
-                  {[
-                    { v: '$0', l: 'marginal cost per dashboard view' },
-                    { v: '∞', l: 'editors & viewers on every plan' },
-                    { v: '$9', l: 'first paid tier — usd, billed in zar' },
-                    { v: '10–50×', l: 'fewer warehouse scans vs naive use' },
-                  ].map(s => (
-                    <div key={s.l} className="px-4 sm:px-8 py-2 lg:py-0 text-center">
-                      <div className="lp-hero-gradient-text font-display text-3xl sm:text-4xl lg:text-[2.6rem] font-bold tracking-tight">
-                        {money(s.v)}
-                      </div>
-                      <div className="mt-1.5 font-mono text-[10px] sm:text-[11px] leading-snug text-muted">
-                        {s.l}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+            ))}
+            <div className="mk-cell" style={{ boxShadow: 'inset 0 3px 0 var(--ink)' }}>
+              <p className="mk-label">Never metered</p>
+              <h3>No per-viewer or per-seat overage. Ever.</h3>
+              <p>Top up once and draw from your wallet. Anything beyond lands on your next invoice. Viewers stay free at any usage level.</p>
             </div>
           </div>
-        </section>
+        </Reveal>
+      </Section>
 
-        {/* ════════════════════════════════════════════════════════════════════
-            TIERS — five glass cards, Pro highlighted with gradient border
-        ════════════════════════════════════════════════════════════════════ */}
-        <section id="pricing" className="py-14 sm:py-20 scroll-mt-14">
-          <div className="max-w-[88rem] 2xl:max-w-[110rem] mx-auto px-4 sm:px-6 lg:px-8">
-            <Reveal className="text-center mb-10 sm:mb-12">
-              <Eyebrow>tiers · usd anchored · billed in zar</Eyebrow>
-              <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight text-fg">
-                Five tiers. <span className="lp-hero-gradient-text">Zero seat math.</span>
-              </h2>
-              <p className="mt-4 text-sm sm:text-base text-muted max-w-2xl mx-auto">
-                Every tier — including Free — has <strong className="text-fg font-semibold">unlimited
-                editors and viewers</strong>. You move up for throughput, embed volume, AI, and
-                governance. Never for people.
-              </p>
-              <div className="mt-6 flex items-center justify-center gap-2.5">
-                <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-muted">
-                  Show prices in
-                </span>
-                <CurrencySelector />
-              </div>
-            </Reveal>
-            {/* One equal-width row from xl up (popular tier pops above the line);
-                2-up on tablets, stacked on mobile. */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-5 items-stretch pt-6 lg:pt-8">
-              {displayTiers.map((t, i) => <TierCard key={t.id} tier={t} idx={i} />)}
-            </div>
-            <p className="mt-10 mx-auto max-w-3xl text-center text-sm text-muted leading-relaxed">
-              {ENTERPRISE_NOTE}{' '}
-              <Link to="/register" className="text-brand-teal font-medium hover:underline inline-flex items-center gap-1">
-                Contact us <ChevronRight size={13} />
-              </Link>
-            </p>
+      {/* 03 · Calculators */}
+      <Section
+        id="calculators" index="03" label="ESTIMATE"
+        title={<>What would <em>you</em> pay?</>}
+        lead={<>Set your scale and watch the gap. <b>Everyone else bills the viewer. We don&rsquo;t.</b></>}
+      >
+        <Reveal>
+          <div style={{ marginBottom: 20 }}>
+            <Seg<'bi' | 'orch'>
+              tabs label="Calculator" value={calc} onChange={setCalc}
+              options={[{ value: 'bi', label: 'BI and embedded analytics' }, { value: 'orch', label: 'Orchestration' }]}
+            />
           </div>
-        </section>
-
-        {/* ════════════════════════════════════════════════════════════════════
-            OVERAGE — usage-wallet bento
-        ════════════════════════════════════════════════════════════════════ */}
-        <section className="pb-14 sm:pb-20 scroll-mt-14">
-          <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-            <Reveal className="text-center mb-8 sm:mb-10">
-              <Eyebrow>buy more when you need it</Eyebrow>
-              <h2 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-fg mb-3">
-                Metered overages, <span className="lp-hero-gradient-text">not surprise bills</span>
-              </h2>
-              <p className="text-sm sm:text-base text-muted max-w-2xl mx-auto">
-                Every paid tier includes a monthly quota. Need a burst of AI tokens or embed sessions for one
-                busy month? <strong className="text-fg font-semibold">Don’t jump a whole tier</strong> — just
-                use more, metered to the same rate.
-              </p>
-            </Reveal>
-            <OverageShowcase />
-          </div>
-        </section>
-
-        {/* ════════════════════════════════════════════════════════════════════
-            CALCULATOR 1 — BI & embedded analytics
-        ════════════════════════════════════════════════════════════════════ */}
-        <section id="calc-bi" className="pb-14 sm:pb-20 scroll-mt-14">
-          <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
-            <Reveal className="text-center mb-8 sm:mb-10">
-              <Eyebrow>
-                <span className="inline-flex items-center gap-1.5">
-                  <SlidersHorizontal size={12} /> calculator 01 · bi &amp; embedded analytics
-                </span>
-              </Eyebrow>
-              <h2 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-fg mb-3">
-                What would <span className="lp-hero-gradient-text">you</span> pay?
-              </h2>
-              <p className="text-sm sm:text-base text-muted max-w-2xl mx-auto">
-                Drag the sliders to your scale and watch the gap.{' '}
-                <strong className="text-fg font-semibold">Everyone else bills the viewer — we don’t.</strong>
-              </p>
-            </Reveal>
-            <Reveal delay={80}>
-              <CostCalculator />
-            </Reveal>
-          </div>
-        </section>
-
-        {/* ════════════════════════════════════════════════════════════════════
-            BILLING MODEL — what we charge for / what we never charge for
-        ════════════════════════════════════════════════════════════════════ */}
-        <section className="py-14 sm:py-20 bg-surface-2 border-y border-border">
-          <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-            <Reveal className="text-center mb-10">
-              <Eyebrow>how billing works</Eyebrow>
-              <h2 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-fg">
-                Billed for value, <span className="lp-hero-gradient-text">not for views</span>
-              </h2>
-            </Reveal>
-            <div className="grid md:grid-cols-2 gap-5">
-              {/* what we charge for */}
-              <Reveal className="h-full">
-                <div className="pp-card h-full p-6 sm:p-7" style={{ '--pp-accent': '#4d8de0' } as CSSProperties}>
-                  <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-primary mb-1.5">
-                    metered
+          {calc === 'bi' ? <CostCalculator /> : (
+            <>
+              <OrchCalculator />
+              <div className="mk-sec-h" style={{ marginTop: 56, marginBottom: 20 }}>
+                <div className="mk-idx" style={{ border: 0, padding: 0 }}><b>FLOWS</b><span>INCLUDED</span></div>
+                <div>
+                  <h3 className="mk-h3">No separate orchestrator bill</h3>
+                  <p className="mk-p" style={{ marginTop: 10, maxWidth: '62ch' }}>
+                    Flows runs on <b>the Postgres you already have</b>: no Redis, no Celery, no separate control plane.
+                    Retries, timeouts, result caching and RLS-aware execution are built in.
                   </p>
-                  <h3 className="flex items-center gap-2 font-display font-bold text-lg text-fg mb-4">
-                    <CheckCircle2 size={18} className="text-primary" /> What we charge for
-                  </h3>
-                  <ul className="flex flex-col gap-3">
-                    {BILLING_MODEL.metered.map((m, i) => {
-                      const Icon = METER_ICONS[i % METER_ICONS.length]
-                      return (
-                        <li key={m.label} className="flex items-start gap-3">
-                          <span className="shrink-0 mt-0.5 w-7 h-7 rounded-lg bg-surface-2 border border-border flex items-center justify-center text-primary">
-                            <Icon size={14} strokeWidth={2} />
-                          </span>
-                          <span className="text-sm text-muted leading-snug">
-                            <strong className="text-fg font-semibold">{m.label}.</strong> {m.desc}
-                          </span>
-                        </li>
-                      )
-                    })}
-                  </ul>
                 </div>
-              </Reveal>
-              {/* what we never charge for — the wedge, teal gradient border */}
-              <Reveal delay={90} className="h-full">
-                <div className="h-full rounded-[1.3rem] p-[1.5px] bg-gradient-to-br from-brand-teal via-brand-blue to-brand-navy shadow-[0_24px_50px_-22px_rgba(23,179,163,0.45)]">
-                  <div className="h-full rounded-[1.2rem] bg-surface p-6 sm:p-7">
-                    <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-brand-teal mb-1.5">
-                      never billed · the wedge
-                    </p>
-                    <h3 className="flex items-center gap-2 font-display font-bold text-lg text-fg mb-4">
-                      <XCircle size={18} className="text-brand-teal" /> What we never charge for
-                    </h3>
-                    <ul className="flex flex-col gap-3">
-                      {BILLING_MODEL.neverBilled.map((m) => (
-                        <li key={m} className="flex items-start gap-3">
-                          <span className="shrink-0 mt-0.5 w-7 h-7 rounded-lg bg-brand-teal/10 border border-brand-teal/25 flex items-center justify-center">
-                            <X size={14} strokeWidth={2.5} className="text-brand-teal" />
-                          </span>
-                          <span className="text-sm text-fg leading-snug">{m}</span>
-                        </li>
-                      ))}
-                    </ul>
-                    <p className="mt-5 font-mono text-[11px] text-muted leading-relaxed border-t border-border pt-4">
-                      Competitors meter the viewer — per-seat or per-query. That’s the cost we designed away.
-                    </p>
-                  </div>
-                </div>
-              </Reveal>
-            </div>
-          </div>
-        </section>
-
-        {/* ════════════════════════════════════════════════════════════════════
-            BI COMPARISON — the viewer tax
-        ════════════════════════════════════════════════════════════════════ */}
-        <section className="py-14 sm:py-20">
-          <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-            <Reveal className="text-center mb-10">
-              <Eyebrow>the viewer tax</Eyebrow>
-              <h2 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-fg mb-3">
-                What <span className="lp-hero-gradient-text">500 viewers</span> cost
-              </h2>
-              <p className="text-sm sm:text-base text-muted max-w-2xl mx-auto">
-                Illustrative annual cost to serve ~500 dashboard viewers (before your own warehouse compute),
-                derived from each vendor’s public model.{' '}
-                <strong className="text-fg font-semibold">Everyone else scales with viewers or queries. We don’t.</strong>
-              </p>
-            </Reveal>
-            <Reveal delay={80}>
-              <ViewerTaxPanel />
-            </Reveal>
-            <p className="mt-4 font-mono text-[10.5px] text-muted opacity-70">
-              † Looker and Sigma are quote-only; figures reconstructed from reseller/analyst data and shown as estimates.
-              All others from public pricing pages (mid-2026). Verify current pricing before switching.
-            </p>
-          </div>
-        </section>
-
-        {/* ════════════════════════════════════════════════════════════════════
-            ORCHESTRATION — comparison table + Calculator 2
-        ════════════════════════════════════════════════════════════════════ */}
-        <section className="py-14 sm:py-20 bg-surface-2 border-y border-border">
-          <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-            <Reveal className="text-center mb-10">
-              <Eyebrow>
-                <span className="inline-flex items-center gap-1.5">
-                  <GitFork size={12} /> flows is included
-                </span>
-              </Eyebrow>
-              <h2 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-fg mb-3">
-                No separate <span className="lp-hero-gradient-text">orchestrator bill</span>
-              </h2>
-              <p className="text-sm sm:text-base text-muted max-w-2xl mx-auto">
-                Flows runs on <strong className="text-fg font-semibold">the Postgres you already have</strong> —
-                no Redis, no Celery, no separate control plane.
-                Retries, timeouts, result caching, and RLS-aware execution are built in.
-              </p>
-            </Reveal>
-            <Reveal delay={80}>
-              <ComparisonTable
-                rows={orchRows}
-                columns={['Orchestrator', 'Cost floor', 'Infra you operate', 'Metering']}
-              />
-            </Reveal>
-
-            {/* Calculator 2 — orchestration */}
-            <div className="mt-14 sm:mt-16">
-              <Reveal className="text-center mb-8 sm:mb-10">
-                <Eyebrow>
-                  <span className="inline-flex items-center gap-1.5">
-                    <SlidersHorizontal size={12} /> calculator 02 · orchestration
-                  </span>
-                </Eyebrow>
-                <h2 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-fg mb-3">
-                  What a standalone <span className="lp-hero-gradient-text">orchestrator adds</span>
-                </h2>
-                <p className="text-sm sm:text-base text-muted max-w-2xl mx-auto">
-                  Most orchestrators bill per environment or per seat. With Nubi,{' '}
-                  <strong className="text-fg font-semibold">that line item is zero</strong>.
-                </p>
-              </Reveal>
-              <Reveal delay={80}>
-                <OrchCalculator />
-              </Reveal>
-            </div>
-          </div>
-        </section>
-
-        {/* ════════════════════════════════════════════════════════════════════
-            BYO WAREHOUSE — pushdown note
-        ════════════════════════════════════════════════════════════════════ */}
-        <section className="py-10 sm:py-14">
-          <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-            <Reveal>
-              <p className="text-sm sm:text-base text-muted">
-                Already run BigQuery or Snowflake? <strong className="text-fg font-semibold">Point Nubi at it and go</strong> —
-                Nubi pushes queries down to your engine while dashboards, RLS, and caching stay in Nubi.
-              </p>
-            </Reveal>
-          </div>
-        </section>
-
-        {/* ════════════════════════════════════════════════════════════════════
-            FAQ
-        ════════════════════════════════════════════════════════════════════ */}
-        <section className="py-14 sm:py-20">
-          <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">
-            <Reveal className="text-center mb-10">
-              <Eyebrow>faq</Eyebrow>
-              <h2 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-fg">
-                Questions, <span className="lp-hero-gradient-text">answered</span>
-              </h2>
-            </Reveal>
-            <div className="flex flex-col gap-3">
-              {PRICING_FAQ.map(({ q, a }, i) => (
-                <Reveal key={q} delay={(i % 3) * 60}>
-                  <details className="group rounded-xl border border-border bg-surface px-5 py-4 transition-colors hover:border-brand-teal/40 open:border-brand-teal/40 open:shadow-[0_12px_30px_-18px_rgba(23,179,163,0.35)]">
-                    <summary className="flex items-center justify-between gap-4 cursor-pointer list-none">
-                      <span className="flex items-baseline gap-3 min-w-0">
-                        <span className="font-mono text-[11px] font-bold text-brand-teal shrink-0">
-                          /{String(i + 1).padStart(2, '0')}
-                        </span>
-                        <span className="font-display font-semibold text-fg">{q}</span>
-                      </span>
-                      <ChevronRight size={16} className="shrink-0 text-muted transition-transform group-open:rotate-90" />
-                    </summary>
-                    <p className="mt-3 pl-8 text-sm leading-relaxed text-muted">{a}</p>
-                  </details>
-                </Reveal>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        {/* ════════════════════════════════════════════════════════════════════
-            CTA — observatory bookend
-        ════════════════════════════════════════════════════════════════════ */}
-        <section className="relative bg-bg px-3 sm:px-5 pb-8 sm:pb-12">
-          <div className="lp-hero-panel relative max-w-[1440px] mx-auto rounded-[1.5rem] sm:rounded-[2rem] overflow-hidden border border-border dark:border-white/[0.06]">
-            <div className="lp-noise pointer-events-none absolute inset-0" aria-hidden="true" />
-            <div
-              className="lp-mesh-blob pointer-events-none absolute -bottom-40 -left-32 w-[38rem] h-[38rem] rounded-full"
-              style={{ background: 'radial-gradient(circle, rgba(72,124,214,0.22) 0%, transparent 65%)' }}
-              aria-hidden="true"
-            />
-            <div
-              className="lp-mesh-blob pointer-events-none absolute -top-32 -right-40 w-[34rem] h-[34rem] rounded-full"
-              style={{ background: 'radial-gradient(circle, rgba(45,212,191,0.14) 0%, transparent 65%)' }}
-              aria-hidden="true"
-            />
-            <div className="relative max-w-3xl mx-auto px-5 sm:px-10 py-16 sm:py-24 text-center">
-              <p className="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase mb-5 text-brand-teal dark:text-teal-300/90">
-                no credit card · free forever tier
-              </p>
-              <h2 className="font-display text-3xl sm:text-5xl font-bold leading-tight tracking-tight mb-4 text-fg">
-                Start free.<br />
-                <span className="lp-hero-gradient-text">Scale without the viewer tax.</span>
-              </h2>
-              <p className="text-sm sm:text-base text-muted dark:text-slate-300/90 mb-8 max-w-lg mx-auto">
-                Unlimited dashboard views on every plan, including Free. Upgrade for seats, embed volume,
-                governance, and dedicated support.
-              </p>
-              <div className="flex flex-col sm:flex-row gap-3 justify-center">
-                <Link
-                  to="/register"
-                  className="lp-cta-glow inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-xl text-base font-semibold bg-brand-gradient text-white hover:-translate-y-0.5 transition-all min-h-[48px]"
-                >
-                  Get started free <ArrowRight size={16} strokeWidth={2.5} />
-                </Link>
-                <Link
-                  to="/compare"
-                  className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl text-base font-semibold transition-all bg-surface border border-border text-fg hover:border-brand-blue dark:bg-white/[0.06] dark:border-white/15 dark:text-white dark:hover:bg-white/[0.12] dark:hover:border-white/25 min-h-[48px]"
-                >
-                  See the full comparison
-                </Link>
               </div>
-              <div className="flex flex-wrap justify-center gap-x-5 gap-y-2 font-mono text-[11px] font-medium text-muted mt-8">
-                {[
-                  'unlimited seats & viewers',
-                  'usage wallet — no surprise bills',
-                  'apache-2.0 open core',
-                ].map(f => (
-                  <span key={f} className="flex items-center gap-1.5">
-                    <Check size={11} strokeWidth={2.5} className="text-teal-400" />
-                    {f}
-                  </span>
+              <OrchTable />
+              <p className="pp-foot" style={{ paddingInline: 0 }}>† Estimate. Sources are linked in the comparison on the compare page.</p>
+            </>
+          )}
+        </Reveal>
+      </Section>
+
+      {/* 04 · Viewer tax */}
+      <Section
+        id="viewer-tax" index="04" label="THE VIEWER TAX" sunk
+        title={<>What <em>500 viewers</em> cost.</>}
+        lead={<>Illustrative annual cost to serve about 500 dashboard viewers, before your own warehouse compute, derived from each vendor&rsquo;s public model. <b>Everyone else scales with viewers or queries. We don&rsquo;t.</b></>}
+      >
+        <ViewerTax />
+      </Section>
+
+      {/* 05 · Billing model */}
+      <Section
+        id="billing" index="05" label="HOW BILLING WORKS"
+        title={<>Billed for value, <em>not for views.</em></>}
+      >
+        <Reveal>
+          <div className="pp-two">
+            <div>
+              <p className="mk-label">Metered</p>
+              <h3 className="mk-h3" style={{ marginTop: 8 }}>What we charge for</h3>
+              <ul className="pp-list mk-p">
+                {(BILLING_MODEL.metered as any[]).map(m => (
+                  <li key={m.label}><b>{m.label}.</b> {m.desc}</li>
                 ))}
-              </div>
+              </ul>
+            </div>
+            <div className="pp-never-cell">
+              <p className="mk-label">Never billed</p>
+              <h3 className="mk-h3" style={{ marginTop: 8 }}>What we never charge for</h3>
+              <ul className="pp-list pp-never">
+                {(BILLING_MODEL.neverBilled as string[]).map(m => (
+                  <li key={m}><X size={16} strokeWidth={1.75} aria-hidden="true" /><span>{m}</span></li>
+                ))}
+              </ul>
+              <p className="mk-small" style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+                Competitors meter the viewer, per seat or per query. That is the cost we designed away.
+              </p>
             </div>
           </div>
-        </section>
-      </div>
-    </>
+          <p className="mk-p" style={{ marginTop: 28, maxWidth: '70ch' }}>
+            Already run BigQuery or Snowflake? <b>Point Nubi at it and go.</b> Nubi pushes queries down to your engine
+            while dashboards, row-level security and caching stay in Nubi.
+          </p>
+        </Reveal>
+      </Section>
+
+      {/* 06 · FAQ */}
+      <Section id="faq" index="06" label="FAQ" sunk title={<>Questions, <em>answered.</em></>}>
+        <Reveal>
+          <div style={{ maxWidth: 920 }}>
+            <Faq items={(PRICING_FAQ as any[]).map(f => ({ q: f.q, a: f.a }))} />
+          </div>
+        </Reveal>
+      </Section>
+
+      {/* CTA */}
+      <section className="mk-sec mk-ink-band">
+        <div className="mk-wrap">
+          <div className="mk-idx" style={{ borderBottomColor: 'var(--ink-fg)', color: 'inherit' }}><b style={{ color: 'inherit' }}>START</b><span>NO CREDIT CARD</span></div>
+          <div style={{ display: 'grid', gap: 28, marginTop: 40, maxWidth: 820 }}>
+            <h2 className="mk-h2" style={{ fontSize: 'clamp(36px, 5vw, 72px)', lineHeight: 1 }}>
+              Start free. Scale without <em>the viewer tax.</em>
+            </h2>
+            <p className="mk-lead">Unlimited dashboard views on every plan, Free included. Upgrade for embed volume, governance and dedicated support.</p>
+            <div className="mk-ctas">
+              <Link to="/register" className="nubi-btn nubi-btn-primary nubi-btn-xl">Start free <ArrowRight size={16} strokeWidth={1.75} aria-hidden="true" /></Link>
+              <Link to="/compare" className="nubi-btn nubi-btn-secondary nubi-btn-xl">See the full comparison</Link>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
   )
 }

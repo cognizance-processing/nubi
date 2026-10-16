@@ -15,10 +15,10 @@ import { fetchBillingStatus } from '../../lib/ee/billing.js'
 
 const BADGE_STYLES = {
   free:       'bg-surface-2 text-muted',
-  starter:    'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300',
-  pro:        'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
-  business:   'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
-  enterprise: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+  starter:    'border border-[var(--frame-line)] text-fg',
+  pro:        'bg-[var(--ink)] text-[var(--ink-fg)] border border-[var(--ink)]',
+  business:   'border border-[var(--frame-line)] text-fg',
+  enterprise: 'border border-[var(--frame-line)] text-fg',
 }
 
 const TIER_LABELS = {
@@ -44,7 +44,7 @@ export default function BillingNavBadge() {
 
   return (
     <span
-      className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${BADGE_STYLES[tier] ?? BADGE_STYLES.free}`}
+      className={`inline-flex items-center px-2 py-0.5 rounded-sm text-[10px] font-semibold uppercase tracking-wide ${BADGE_STYLES[tier] ?? BADGE_STYLES.free}`}
       title={`Current plan: ${TIER_LABELS[tier] ?? tier}`}
     >
       {TIER_LABELS[tier] ?? tier}

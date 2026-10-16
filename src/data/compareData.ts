@@ -55,7 +55,7 @@ export const NUBI = {
   ai:
     "Lineage-indexed retrieval + LLM generation grounded on real catalog. POST /ai/ask. MCP server (9 tools): agents author dashboards via HTML/CSS + <nubi-*> custom elements. AI calls metered per-call ($0.30/call overage; quota included in each paid tier). LLM-authorable dashboard output is HTML/CSS sanitised by DOMPurify.",
   pricing:
-    "Usage-based: connector throughput (bytes/queries) + embedded sessions (per 10,000) + AI calls (per-call) + on-demand kernel time (scale-to-zero) + flows/scheduled jobs included in plan (no separate SKU). Genuine free tier structurally viable — browser compute is free to Nubi, so Hex can't match it without bleeding kernel cost. Billed in ZAR via Paystack.",
+    "Usage-based: connector throughput (bytes/queries) + embedded sessions (per 10,000) + AI calls (per-call) + on-demand kernel time (scale-to-zero) + flows/scheduled jobs included in plan (no separate SKU). Genuine free tier structurally viable — browser compute is free to Nubi, so Hex can't match it without bleeding kernel cost.",
   selfHost:
     "Yes — Docker Compose stack ships in the repo. Self-host the full stack (Postgres + MinIO + backend + frontend) or use hosted cloud with a self-hosted connector so warehouse credentials never leave the customer's network.",
   strength:
@@ -476,7 +476,7 @@ export const MATRIX = {
     "Preset / Superset": "NL-to-SQL via optional LLM plugin; Preset AI roadmap unverified; limited GA AI",
   },
   pricing: {
-    Nubi:    "Usage-based: connector bytes + embedded sessions/10k + AI calls (per-call) + kernel-seconds; flows included (no separate SKU); genuine free tier (browser compute is free to Nubi); billed ZAR via Paystack",
+    Nubi:    "Usage-based: connector bytes + embedded sessions/10k + AI calls (per-call) + kernel-seconds; flows included (no separate SKU); genuine free tier (browser compute is free to Nubi)",
     Hex:     "Per-seat: Community free; Professional $36/editor/month; Team $75/editor/month; compute add-on",
     Cube:    "Per-developer + hourly infra: Free hobbyist; Starter $40/dev/month; Premium $80/dev/month",
     Metabase:"Tiered: OSS free; Starter $100+$6/user/month; Pro $575+$12/user/month; Enterprise $20k+/year",

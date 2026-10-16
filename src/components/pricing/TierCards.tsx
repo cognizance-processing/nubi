@@ -58,20 +58,20 @@ function priceDisplay(tier, fxRate, billing) {
 
 function SlaBadge({ sla }) {
   return (
-    <div className="rounded-lg border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 space-y-1.5">
+    <div className="border border-[var(--frame-line)] border-l-2 border-l-[var(--ink)] bg-surface-2 px-3 py-2 space-y-1.5">
       <div className="flex items-center gap-1.5">
-        <ShieldCheck size={12} className="text-amber-600 dark:text-amber-400 shrink-0" />
-        <span className="text-xs font-bold text-amber-700 dark:text-amber-300 uppercase tracking-wide">
+        <ShieldCheck size={12} className="text-[color:var(--warning-fg)] shrink-0" />
+        <span className="text-xs font-bold text-[color:var(--warning-fg)] uppercase tracking-wide">
           SLA included
         </span>
       </div>
       <div className="space-y-0.5">
         <p className="text-xs text-amber-800 dark:text-amber-200 font-semibold">{sla.uptime} uptime guarantee</p>
         <div className="flex items-start gap-1">
-          <Clock size={10} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
-          <p className="text-[11px] text-amber-700 dark:text-amber-300 leading-tight">{sla.response_time}</p>
+          <Clock size={10} className="text-[color:var(--warning-fg)] mt-0.5 shrink-0" />
+          <p className="text-[11px] text-[color:var(--warning-fg)] leading-tight">{sla.response_time}</p>
         </div>
-        <p className="text-[11px] text-amber-700 dark:text-amber-300 leading-tight">{sla.support}</p>
+        <p className="text-[11px] text-[color:var(--warning-fg)] leading-tight">{sla.support}</p>
       </div>
     </div>
   )
@@ -120,21 +120,21 @@ export function TierCard({
   return (
     <div
       className={[
-        'relative flex flex-col rounded-2xl border p-6 gap-5 transition-shadow',
+        'relative flex flex-col rounded-sm border p-6 gap-5',
         tier.highlight
-          ? 'border-accent bg-surface shadow-lg shadow-accent/10'
+          ? 'border-[var(--ink)] bg-surface shadow-[inset_0_3px_0_var(--accent)]'
           : tier.has_sla
-            ? 'border-amber-300 dark:border-amber-700 bg-surface shadow-md shadow-amber-100 dark:shadow-amber-900/20'
+            ? 'border-[var(--ink)] bg-surface'
             : 'border-border bg-surface',
       ].join(' ')}
     >
       {tier.highlight && (
-        <span className="absolute -top-3 left-1/2 -translate-x-1/2 bg-accent text-white text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full shadow">
+        <span className="absolute -top-3 left-1/2 -translate-x-1/2 bg-[var(--ink)] text-[var(--ink-fg)] font-mono text-[10px] font-medium uppercase tracking-[0.08em] px-2.5 py-1 rounded-sm">
           Most popular
         </span>
       )}
       {tier.has_sla && !tier.highlight && (
-        <span className="absolute -top-3 left-1/2 -translate-x-1/2 bg-amber-500 text-white text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full shadow">
+        <span className="absolute -top-3 left-1/2 -translate-x-1/2 bg-[var(--ink)] text-[var(--ink-fg)] font-mono text-[10px] font-medium uppercase tracking-[0.08em] px-2.5 py-1 rounded-sm">
           Enterprise SLA
         </span>
       )}
@@ -157,8 +157,8 @@ export function TierCard({
       </div>
 
       {/* Unlimited seats — headline differentiator */}
-      <div className="flex items-center gap-1.5 rounded-lg bg-teal-50 dark:bg-teal-900/20 border border-teal-200 dark:border-teal-800 px-3 py-1.5">
-        <Users size={12} className="text-teal-600 dark:text-teal-400 shrink-0" />
+      <div className="flex items-center gap-1.5 rounded-sm bg-surface-2 border border-border px-3 py-1.5">
+        <Users size={12} className="text-[color:var(--success-fg)] shrink-0" />
         <span className="text-xs font-semibold text-teal-700 dark:text-teal-300">
           Unlimited users — no per-seat charges
         </span>
@@ -177,14 +177,14 @@ export function TierCard({
           return (
             <li key={f} className={`flex items-start gap-2 text-sm ${isComingSoon ? 'opacity-70' : 'text-fg'}`}>
               {isComingSoon ? (
-                <Construction size={13} className="mt-0.5 shrink-0 text-amber-400" aria-hidden="true" />
+                <Construction size={13} className="mt-0.5 shrink-0 text-muted" aria-hidden="true" />
               ) : (
-                <CheckCircle size={13} className="mt-0.5 shrink-0 text-teal-500" aria-hidden="true" />
+                <CheckCircle size={13} className="mt-0.5 shrink-0 text-fg" aria-hidden="true" />
               )}
               <span className={isComingSoon ? 'text-muted' : ''}>
                 {cleanText}
                 {isComingSoon && (
-                  <span className="ml-1.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 text-[10px] font-semibold uppercase tracking-wide whitespace-nowrap">
+                  <span className="ml-1.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-sm border border-[var(--frame-line)] text-fg font-mono text-[10px] font-medium uppercase tracking-[0.06em] whitespace-nowrap">
                     Coming soon
                   </span>
                 )}
@@ -201,13 +201,13 @@ export function TierCard({
           disabled={isCurrent || isLoading}
           aria-label={ctaLabel}
           className={[
-            'w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors',
+            'w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-sm text-sm font-semibold transition-colors',
             isCurrent
               ? 'bg-surface-2 text-muted cursor-default'
               : tier.highlight
-                ? 'bg-accent text-white hover:bg-accent/90'
+                ? 'bg-[var(--ink)] text-[var(--ink-fg)] hover:bg-[var(--ink-hover)]'
                 : tier.has_sla
-                  ? 'bg-amber-500 text-white hover:bg-amber-600'
+                  ? 'bg-[var(--ink)] text-[var(--ink-fg)] hover:bg-[var(--ink-hover)]'
                   : 'bg-surface-2 text-fg border border-border hover:bg-surface-3',
             'disabled:opacity-60',
           ].join(' ')}
