@@ -33,6 +33,7 @@ import { Code2, Download, Upload, Copy, Check, X, FileUp, AlertCircle } from 'lu
 import yaml from 'js-yaml'
 import { get, post } from '../lib/api.js'
 import CodeEditor from './CodeEditor.jsx'
+import Button from './ui/Button.jsx'
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -270,7 +271,7 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
   }
 
   const itemCls =
-    'w-full flex items-center gap-2.5 px-3 py-2 text-sm text-fg rounded-lg hover:bg-surface-2 disabled:opacity-50 transition-colors text-left'
+    'w-full flex items-center gap-2.5 px-3 h-8 text-[13px] text-fg rounded-[var(--radius-control)] hover:bg-frame-hover disabled:opacity-50 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
 
   // The slide-over panel. Portaled to <body> as a `position: fixed` element
   // so it can NEVER be clipped by an ancestor's overflow. WHY this matters:
@@ -284,7 +285,7 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
     <aside
       data-testid="query-code-panel"
       aria-label="Query code editor"
-      className="fixed right-0 top-14 bottom-0 z-40 w-[min(42rem,100vw)] bg-surface border-l border-border shadow-2xl flex flex-col"
+      className="fixed right-0 top-14 bottom-0 z-40 w-[min(42rem,100vw)] bg-surface border-l-2 border-ink shadow-pop flex flex-col"
     >
       {/* Header: title + mode + format toggles */}
       <div className="flex items-center gap-2 px-3 h-11 border-b border-border shrink-0">
@@ -292,7 +293,7 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
             <span className="text-xs font-semibold text-fg whitespace-nowrap hidden sm:inline">
               {kind === 'query' ? 'Query code' : 'Resource code'}
             </span>
-            <div className="flex items-center rounded-lg border border-border overflow-hidden ml-1">
+            <div className="flex items-center rounded-[var(--radius-control)] border border-border overflow-hidden ml-1">
               {[
                 { v: 'view', l: 'View' },
                 { v: 'edit', l: 'Edit / Import' },
@@ -301,8 +302,8 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
                   key={opt.v}
                   type="button"
                   onClick={() => { setMode(opt.v); setError(null); setNotice(null) }}
-                  className={`h-7 px-2.5 text-[11px] font-medium transition-colors ${
-                    mode === opt.v ? 'bg-primary/10 text-primary' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2'
+                  className={`h-7 px-2.5 text-[11px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${
+                    mode === opt.v ? 'bg-ink text-ink-fg' : 'bg-surface text-muted hover:text-fg hover:bg-frame-hover'
                   } ${opt.v === 'edit' ? 'border-l border-border' : ''}`}
                 >
                   {opt.l}
@@ -312,14 +313,14 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
 
             <div className="flex-1" />
 
-            <div className="flex items-center rounded-lg border border-border overflow-hidden">
+            <div className="flex items-center rounded-[var(--radius-control)] border border-border overflow-hidden">
               {['yaml', 'json'].map(f => (
                 <button
                   key={f}
                   type="button"
                   onClick={() => setFormat(f)}
-                  className={`h-7 px-2.5 text-[11px] font-medium uppercase transition-colors ${
-                    format === f ? 'bg-primary/10 text-primary' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2'
+                  className={`h-7 px-2.5 text-[11px] font-mono font-medium uppercase focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${
+                    format === f ? 'bg-ink text-ink-fg' : 'bg-surface text-muted hover:text-fg hover:bg-frame-hover'
                   } ${f === 'json' ? 'border-l border-border' : ''}`}
                 >
                   {f}
@@ -331,8 +332,9 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
               type="button"
               data-testid="query-code-panel-close"
               onClick={() => setOpen(false)}
-              className="h-7 w-7 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+              className="h-7 w-7 flex items-center justify-center rounded-[var(--radius-control)] text-muted hover:text-fg hover:bg-frame-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               title="Close (Esc)"
+              aria-label="Close code panel"
             >
               <X size={14} />
             </button>
@@ -358,7 +360,7 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
                 />
                 {/* Problems badge — shown when there are errors */}
                 {viewMarkerCount > 0 && (
-                  <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-500/15 border border-rose-500/30 text-rose-500 text-[10px] font-semibold pointer-events-none select-none">
+                  <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1.5 px-1.5 h-5 rounded-[2px] bg-surface border border-border border-l-2 border-l-danger text-fg text-[11px] font-mono pointer-events-none select-none">
                     <AlertCircle size={9} />
                     {viewMarkerCount} problem{viewMarkerCount !== 1 ? 's' : ''}
                   </div>
@@ -367,10 +369,11 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
                 <button
                   type="button"
                   onClick={copyCode}
-                  className="absolute top-1.5 right-1.5 p-1.5 rounded-lg border border-border bg-surface hover:text-primary hover:border-primary text-muted transition-colors z-10"
+                  className="absolute top-1.5 right-1.5 p-1.5 rounded-[var(--radius-control)] border border-border bg-surface hover:text-fg hover:border-ink text-muted z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   title="Copy to clipboard"
+                  aria-label="Copy to clipboard"
                 >
-                  {copied ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}
+                  {copied ? <Check size={13} className="text-success" /> : <Copy size={13} />}
                 </button>
               </div>
               <div className="flex items-center gap-2 shrink-0">
@@ -388,11 +391,11 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
                   onClick={copyCode}
                   className={itemCls + ' border border-border !w-auto flex-1 justify-center'}
                 >
-                  {copied ? <Check size={15} className="text-emerald-500" /> : <Copy size={15} className="text-muted" />}
+                  {copied ? <Check size={15} className="text-success" /> : <Copy size={15} className="text-muted" />}
                   Copy
                 </button>
               </div>
-              <p className="text-[10px] text-muted/70 leading-relaxed shrink-0">
+              <p className="text-[11px] text-muted leading-relaxed shrink-0">
                 The <span className="font-mono">{API_VERSION}</span> envelope above reflects your current
                 {savedId ? ' saved' : ' unsaved'} edits — portable & LLM-editable.
               </p>
@@ -404,7 +407,7 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
                 onChange={e => { setDraft(e.target.value); setError(null); setNotice(null) }}
                 placeholder={`Paste a ${format.toUpperCase()} envelope (or bare spec) here…`}
                 spellCheck={false}
-                className="w-full flex-1 min-h-[12rem] text-[11px] leading-relaxed font-mono bg-surface-2 border border-border rounded-lg p-2.5 text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60 focus:border-ring/40 resize-none"
+                className="w-full flex-1 min-h-[12rem] text-[12px] leading-relaxed font-mono bg-surface-2 border border-border rounded-[var(--radius-control)] p-2.5 text-fg placeholder:text-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:border-ink resize-none"
               />
 
               <div className="flex items-center gap-2">
@@ -434,27 +437,28 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
               </div>
 
               <div className="flex items-center gap-2">
-                <button
-                  type="button"
+                <Button
+                  size="sm"
+                  className="flex-1"
                   onClick={applyDraft}
-                  className="flex-1 h-8 px-3 text-xs font-semibold rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-60 transition-opacity flex items-center justify-center gap-1.5"
                   title="Apply this spec to the in-editor state (does not save)"
                 >
-                  <Upload size={13} /> Apply to editor
-                </button>
-                <button
-                  type="button"
+                  <Upload size={13} aria-hidden="true" /> Apply to editor
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="flex-1"
                   onClick={importDraft}
                   disabled={busy === 'import'}
-                  className="flex-1 h-8 px-3 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors flex items-center justify-center gap-1.5"
                   title="Create or update this resource on the server"
                 >
-                  <Download size={13} className="rotate-180" />
+                  <Download size={13} className="rotate-180" aria-hidden="true" />
                   {busy === 'import' ? 'Importing…' : 'Create from file'}
-                </button>
+                </Button>
               </div>
 
-              <p className="text-[10px] text-muted/70 leading-relaxed">
+              <p className="text-[11px] text-muted leading-relaxed">
                 <span className="font-medium text-fg/80">Apply to editor</span> loads the spec into this editor (review, then Save).
                 <span className="font-medium text-fg/80"> Create from file</span> upserts it server-side via <span className="font-mono">/import</span>.
               </p>
@@ -463,8 +467,8 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
 
       {(error || notice) && (
         <div className="px-3 pb-3 -mt-1 shrink-0" data-testid="query-code-panel-status">
-          {error && <p className="text-[11px] text-rose-500">{error}</p>}
-          {notice && <p className="text-[11px] text-emerald-600 dark:text-emerald-400">{notice}</p>}
+          {error && <p role="alert" className="text-[12px] text-fg border-l-2 border-danger pl-2">{error}</p>}
+          {notice && <p role="status" className="text-[12px] text-fg border-l-2 border-success pl-2">{notice}</p>}
         </div>
       )}
     </aside>
@@ -479,8 +483,8 @@ export default function SpecIO({ kind, spec, onApply, board = null, query = null
         data-testid="query-code-btn"
         onClick={() => setOpen(o => !o)}
         aria-pressed={open}
-        className={`px-2.5 h-8 text-xs font-medium rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/60 flex items-center gap-1.5 whitespace-nowrap ${
-          open ? 'bg-surface-2 border-primary text-primary' : 'bg-surface text-fg border-border hover:bg-surface-2'
+        className={`px-2.5 h-8 text-xs font-medium rounded-[var(--radius-control)] border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring flex items-center gap-1.5 whitespace-nowrap ${
+          open ? 'bg-surface-2 border-ink text-fg' : 'bg-surface text-fg border-border hover:border-ink'
         }`}
         title="View as code, export or import this resource"
       >

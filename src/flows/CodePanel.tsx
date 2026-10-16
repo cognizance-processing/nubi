@@ -23,6 +23,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import '../components/app/monacoSetup'
 import Editor from '@monaco-editor/react'
 import {
   X,
@@ -195,18 +196,18 @@ export default function CodePanel({ flowId, spec, onSpecChange, onClose }) {
       {/* ── Header ──────────────────────────────────────────────────────── */}
       <div className="shrink-0 flex items-center justify-between px-3 py-2.5 border-b border-border">
         <div className="flex items-center gap-2 min-w-0">
-          <Code2 size={14} className="text-violet-500 shrink-0" />
+          <Code2 size={14} className="text-muted shrink-0" />
           <div className="min-w-0">
             <h3 className="text-xs font-semibold text-fg truncate leading-tight">
               Flow code
               {dirty && (
                 <span
-                  className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 ml-1.5 mb-0.5"
+                  className="nubi-dot nubi-dot-warning ml-1.5"
                   title="Unsaved edits"
                 />
               )}
             </h3>
-            <p className="text-[10px] text-muted leading-tight">nubi.flows Python SDK</p>
+            <p className="text-[11px] text-muted leading-tight">nubi.flows Python SDK</p>
           </div>
         </div>
 
@@ -218,7 +219,7 @@ export default function CodePanel({ flowId, spec, onSpecChange, onClose }) {
               className="flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-md border border-border bg-surface-2 hover:bg-surface text-fg transition-colors"
               title="Copy to clipboard"
             >
-              {copied ? <Check size={11} className="text-green-500" /> : <Copy size={11} />}
+              {copied ? <Check size={11} className="text-success" /> : <Copy size={11} />}
               {copied ? 'Copied!' : 'Copy'}
             </button>
           )}
@@ -247,16 +248,11 @@ export default function CodePanel({ flowId, spec, onSpecChange, onClose }) {
       </div>
 
       {/* ── Apply code bar ───────────────────────────────────────────────── */}
-      <div className="shrink-0 px-3 py-2 border-b border-border bg-violet-500/5 flex items-center gap-2">
+      <div className="shrink-0 px-3 py-2 border-b border-border bg-surface-2 flex items-center gap-2">
         <button
           onClick={handleApply}
           disabled={applying || loading}
-          className={[
-            'flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-md transition-all',
-            applySuccess
-              ? 'bg-green-500/15 border border-green-500/30 text-green-600 dark:text-green-400'
-              : 'bg-violet-500 hover:bg-violet-600 text-white disabled:opacity-50 disabled:cursor-not-allowed',
-          ].join(' ')}
+          className={['nubi-btn nubi-btn-sm', applySuccess ? 'nubi-btn-secondary' : 'nubi-btn-primary'].join(' ')}
           title="Compile code → apply FlowSpec to canvas"
         >
           {applying
@@ -267,14 +263,14 @@ export default function CodePanel({ flowId, spec, onSpecChange, onClose }) {
           }
           {applying ? 'Compiling…' : applySuccess ? 'Applied!' : 'Apply code'}
         </button>
-        <p className="text-[10px] text-muted leading-tight">
+        <p className="text-[11px] text-muted leading-tight">
           Compile &amp; apply to canvas
         </p>
       </div>
 
       {/* ── Error banner ─────────────────────────────────────────────────── */}
       {applyError && (
-        <div className="shrink-0 flex items-start gap-2 mx-3 mt-2 mb-0 p-2.5 rounded-lg border border-rose-500/20 bg-rose-500/5 text-[11px] text-rose-600 dark:text-rose-400">
+        <div className="shrink-0 flex items-start gap-2 mx-3 mt-2 mb-0   border nubi-notice nubi-notice-error text-xs">
           <AlertCircle size={12} className="shrink-0 mt-0.5" />
           <span className="flex-1 min-w-0 break-words font-mono leading-snug whitespace-pre-wrap">{applyError}</span>
           <button
@@ -296,7 +292,7 @@ export default function CodePanel({ flowId, spec, onSpecChange, onClose }) {
         )}
 
         {!loading && error && (
-          <div className="flex items-start gap-2 m-4 p-3 rounded-xl border border-rose-500/20 bg-rose-500/5 text-xs text-rose-600 dark:text-rose-400">
+          <div className="flex items-start gap-2 m-4   border nubi-notice nubi-notice-error text-xs">
             <AlertCircle size={13} className="shrink-0 mt-0.5" />
             <span>{error}</span>
           </div>

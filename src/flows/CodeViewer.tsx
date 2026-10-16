@@ -16,6 +16,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
+import '../components/app/monacoSetup'
 import Editor from '@monaco-editor/react'
 import { X, Copy, Check, Loader2, AlertCircle, Code2 } from 'lucide-react'
 import { post } from '../lib/api.js'
@@ -81,7 +82,7 @@ export default function CodeViewer({ flowId, spec, onClose }) {
       {/* Header */}
       <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-border">
         <div className="flex items-center gap-2">
-          <Code2 size={15} className="text-violet-500 shrink-0" />
+          <Code2 size={15} className="text-muted shrink-0" />
           <div>
             <h3 className="text-sm font-semibold text-fg">Generated SDK code</h3>
             <p className="text-[11px] text-muted mt-0.5">nubi.flows Python SDK</p>
@@ -94,7 +95,7 @@ export default function CodeViewer({ flowId, spec, onClose }) {
               className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-border bg-surface-2 hover:bg-surface text-fg transition-colors"
               title="Copy to clipboard"
             >
-              {copied ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
+              {copied ? <Check size={12} className="text-success" /> : <Copy size={12} />}
               {copied ? 'Copied!' : 'Copy'}
             </button>
           )}
@@ -118,7 +119,7 @@ export default function CodeViewer({ flowId, spec, onClose }) {
         )}
 
         {!loading && error && (
-          <div className="flex items-start gap-2 m-4 p-3 rounded-xl border border-rose-500/20 bg-rose-500/5 text-xs text-rose-600 dark:text-rose-400">
+          <div className="flex items-start gap-2 m-4   border nubi-notice nubi-notice-error text-xs">
             <AlertCircle size={13} className="shrink-0 mt-0.5" />
             <span>{error}</span>
           </div>

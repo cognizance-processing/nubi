@@ -91,16 +91,16 @@ export default function AdminOrgsPage() {
                 tabIndex={0}
                 className="cursor-pointer hover:bg-surface-2/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset transition-colors"
               >
-                <td className="px-4 py-3 max-w-[220px]">
+                <td className="px-4 py-2 max-w-[220px]">
                   <div className="flex items-center gap-2.5 min-w-0">
                     <Avatar icon={Building2} />
                     <span className="truncate text-fg font-medium" title={o.name}>{o.name}</span>
                   </div>
                 </td>
-                <td className="px-4 py-3 max-w-[160px] truncate text-muted" title={o.slug || undefined}>{o.slug || '—'}</td>
-                <td className="px-4 py-3 whitespace-nowrap text-muted tabular-nums">{o.member_count}</td>
-                <td className="px-4 py-3 whitespace-nowrap text-muted tabular-nums">{o.project_count}</td>
-                <td className="px-4 py-3 whitespace-nowrap text-muted tabular-nums">{fmtDate(o.created_at)}</td>
+                <td className="px-4 py-2 max-w-[160px] truncate text-muted" title={o.slug || undefined}>{o.slug || '—'}</td>
+                <td className="px-4 py-2 whitespace-nowrap text-muted tabular-nums">{o.member_count}</td>
+                <td className="px-4 py-2 whitespace-nowrap text-muted tabular-nums">{o.project_count}</td>
+                <td className="px-4 py-2 whitespace-nowrap text-muted tabular-nums">{fmtDate(o.created_at)}</td>
               </tr>
             ))}
           </AdminTable>

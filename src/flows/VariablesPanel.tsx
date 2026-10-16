@@ -122,7 +122,7 @@ export default function VariablesPanel({ onInsert = null, readOnly = false }) {
 
   return (
     <div className="space-y-3">
-      <p className="text-[10px] text-muted/70">
+      <p className="text-[11px] text-muted/70">
         Persistent org/project values referenced in cells as{' '}
         <code className="font-mono bg-surface-2 px-0.5 rounded">{'{{ vars.NAME }}'}</code>{' '}
         and writable from python cells via{' '}
@@ -146,11 +146,11 @@ export default function VariablesPanel({ onInsert = null, readOnly = false }) {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
                   <span className="font-mono text-xs text-fg truncate">{v.name}</span>
-                  <span className="shrink-0 text-[9px] uppercase tracking-wide text-muted/60 border border-border rounded px-1 py-px">
+                  <span className="shrink-0 text-[11px] uppercase tracking-wide text-muted/60 border border-border rounded px-1 py-px">
                     {v.type}
                   </span>
                 </div>
-                <p className="font-mono text-[10px] text-muted/70 truncate">{fmtValue(v)}</p>
+                <p className="font-mono text-[11px] text-muted/70 truncate">{fmtValue(v)}</p>
               </div>
               {onInsert && (
                 <button
@@ -158,7 +158,7 @@ export default function VariablesPanel({ onInsert = null, readOnly = false }) {
                   onClick={() => !readOnly && onInsert(v.name)}
                   disabled={readOnly}
                   title={`Insert {{ vars.${v.name} }} into this cell`}
-                  className="shrink-0 px-1.5 py-1 text-[10px] font-medium rounded border border-border bg-surface hover:bg-surface-2 text-muted hover:text-fg transition-colors disabled:opacity-50"
+                  className="shrink-0 px-1.5 py-1 text-[11px] font-medium rounded border border-border bg-surface hover:bg-surface-2 text-muted hover:text-fg transition-colors disabled:opacity-50"
                 >
                   Insert
                 </button>
@@ -178,7 +178,7 @@ export default function VariablesPanel({ onInsert = null, readOnly = false }) {
                 onClick={() => remove(v.name)}
                 disabled={readOnly || busy}
                 title="Delete variable"
-                className="shrink-0 w-6 h-6 flex items-center justify-center rounded text-muted/60 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors disabled:opacity-50"
+                className="shrink-0 w-6 h-6 flex items-center justify-center rounded text-muted/60 hover:text-danger hover:bg-frame-hover transition-colors disabled:opacity-50"
                 aria-label="Delete variable"
               >
                 <Trash2 size={11} />
@@ -190,7 +190,7 @@ export default function VariablesPanel({ onInsert = null, readOnly = false }) {
 
       {/* Add / edit form */}
       <div className="rounded-lg border border-border bg-surface-2/20 p-3 space-y-2">
-        <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-wider">
+        <p className="text-[11px] font-semibold text-muted/70 uppercase tracking-wider">
           {draftName && vars?.some(v => v.name === draftName) ? 'Edit / overwrite' : 'Add variable'}
         </p>
         <div className="grid grid-cols-[1fr_auto] gap-2">
@@ -240,13 +240,13 @@ export default function VariablesPanel({ onInsert = null, readOnly = false }) {
             disabled={readOnly}
           />
         )}
-        {error && <p className="text-[10px] text-red-500">{error}</p>}
+        {error && <p className="text-xs text-danger">{error}</p>}
         <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={save}
             disabled={readOnly || busy || !draftName.trim()}
-            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 transition-opacity disabled:opacity-50"
+            className="nubi-btn nubi-btn-primary nubi-btn-xs"
           >
             <Check size={11} />
             Save

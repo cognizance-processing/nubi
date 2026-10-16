@@ -79,9 +79,16 @@ import { checkpoint, restoreVersion } from '../../lib/versions.js'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import { toast } from '../../components/ui/Toast.jsx'
 import Skeleton from '../../components/ui/Skeleton.jsx'
-import Badge from '../../components/ui/Badge.jsx'
+import Tag from '../../components/ui/Tag.jsx'
+import Button from '../../components/ui/Button.jsx'
+import Modal from '../../components/ui/Modal.jsx'
+import Input from '../../components/ui/Input.jsx'
+import SegmentedControl from '../../components/ui/SegmentedControl.jsx'
 import EmptyState from '../../components/ui/EmptyState.jsx'
-import { SearchBar } from '../../components/app/PageShell.jsx'
+import PageShell, { SearchBar } from '../../components/app/PageShell.jsx'
+import { EmptyFlows, EmptySearch } from '../../components/illustrations'
+import { ListSkeleton } from './appShared.jsx'
+import '../../components/app/appPatterns.css'
 import {
   listFlows,
   getFlow,
@@ -208,69 +215,69 @@ function humanSchedule(schedule) {
 }
 
 // ---------------------------------------------------------------------------
-// Run state badge
+// Run state tag
 // ---------------------------------------------------------------------------
 
 const RUN_STATE_VARIANT = {
-  pending:   'default',
+  pending:   'neutral',
   running:   'warning',
   success:   'success',
   failed:    'danger',
-  cancelled: 'default',
+  cancelled: 'neutral',
 }
 
-function RunStateBadge({ state, size = 'sm' }) {
+function RunStateBadge({ state, size = 'sm' as 'sm' | 'md' }) {
   return (
-    <Badge variant={RUN_STATE_VARIANT[state] ?? 'default'} size={size} dot
-      className={state === 'running' ? 'animate-pulse' : ''}>
+    <Tag variant={RUN_STATE_VARIANT[state] ?? 'neutral'} dot size={size}>
       {state ?? 'pending'}
-    </Badge>
+    </Tag>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Flow status — the single dot/label shown on rail rows + overview cards.
+// Flow status — the single dot/label shown on rail rows + overview rows.
 // Priority: draft → last-run failed → scheduled → paused → manual.
 // ---------------------------------------------------------------------------
 
 function flowStatusMeta(flow) {
-  if (flow?._isNew) return { dot: 'bg-amber-400', ring: 'ring-amber-400/30', label: 'Unsaved draft' }
-  if (flow?.last_run_state === 'failed') return { dot: 'bg-red-500', ring: 'ring-red-500/30', label: 'Last run failed' }
-  if (flow?.schedule && flow?.enabled) return { dot: 'bg-emerald-500', ring: 'ring-emerald-500/30', label: 'Scheduled' }
-  if (flow?.schedule && !flow?.enabled) return { dot: 'bg-amber-400', ring: 'ring-amber-400/30', label: 'Schedule paused' }
-  return { dot: 'bg-muted/40', ring: 'ring-border', label: 'Runs manually' }
+  if (flow?._isNew) return { tone: 'warning', label: 'Unsaved draft' }
+  if (flow?.last_run_state === 'failed') return { tone: 'danger', label: 'Last run failed' }
+  if (flow?.schedule && flow?.enabled) return { tone: 'success', label: 'Scheduled' }
+  if (flow?.schedule && !flow?.enabled) return { tone: 'warning', label: 'Schedule paused' }
+  return { tone: 'muted', label: 'Runs manually' }
 }
 
-/** Small status dot for rail rows — colour keyed by flowStatusMeta. */
+/** Small square status dot for rows, keyed by flowStatusMeta. */
 function FlowStatusDot({ flow, className = '' }) {
   const s = flowStatusMeta(flow)
   return (
     <span
       title={s.label}
+      role="img"
       aria-label={s.label}
-      className={['inline-block h-2 w-2 rounded-full shrink-0 ring-2', s.dot, s.ring, className].join(' ')}
+      className={`nubi-dot nubi-dot-${s.tone} ${className}`}
     />
   )
 }
 
 // ---------------------------------------------------------------------------
-// FlowListItem — entry in the left rail
+// FlowListItem — entry in the right rail
 // ---------------------------------------------------------------------------
 
 function FlowListItem({ flow, isActive, onClick, onDelete, canWrite, strictEnv }) {
   const [deleting, setDeleting] = useState(false)
+  const [confirming, setConfirming] = useState(false)
 
-  const handleDelete = useCallback(async (e) => {
-    e.stopPropagation()
-    if (!window.confirm(`Delete flow "${flow.name}"?`)) return
+  const handleDelete = useCallback(async () => {
     setDeleting(true)
     const ok = await deleteFlow(flow.id)
     setDeleting(false)
     if (ok) {
+      setConfirming(false)
       toast.success(`Deleted "${flow.name}".`)
       onDelete(flow.id)
     } else {
-      toast.error('Delete failed — check the console.')
+      toast.error('Couldn’t delete this flow. Try again.')
     }
   }, [flow, onDelete])
 
@@ -280,33 +287,28 @@ function FlowListItem({ flow, isActive, onClick, onDelete, canWrite, strictEnv }
     && !flow.pinned_envs.includes(strictEnv)
 
   return (
-    <button
-      onClick={() => onClick(flow)}
-      className={[
-        'w-full text-left px-2.5 py-2.5 rounded-lg transition-all group relative min-h-[44px]',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        isActive
-          ? 'bg-primary/10 border border-primary/20 text-fg'
-          : 'hover:bg-surface-2 border border-transparent text-fg/80 hover:text-fg',
-      ].join(' ')}
-    >
-      <div className="flex items-start gap-2.5 min-w-0 pr-6">
-        <FlowStatusDot flow={flow} className="mt-[5px]" />
+    <div className="relative group">
+      <button
+        type="button"
+        onClick={() => onClick(flow)}
+        aria-current={isActive ? 'true' : undefined}
+        className={`qr-row nubi-focus-inset ${isActive ? 'is-active' : ''} ${!flow._isNew && canWrite ? 'pr-10' : ''}`}
+      >
+        <FlowStatusDot flow={flow} className="mt-[5px] shrink-0" />
         <div className="min-w-0 flex-1">
-          <p className="text-[13px] font-semibold truncate leading-tight">{flow.name}</p>
+          <p className="qr-name">{flow.name}</p>
 
-          {/* Metadata row: schedule + last run, aligned as small labelled chips */}
           {(scheduleSummary || lastRunRel) && (
-            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 mt-1 text-[10px] text-muted">
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 ap-meta">
               {scheduleSummary && (
                 <span className="inline-flex items-center gap-1" title={`Schedule: ${scheduleSummary}`}>
-                  <CalendarClock size={9} className="shrink-0" />
+                  <CalendarClock size={11} className="shrink-0" aria-hidden="true" />
                   <span className="truncate">{scheduleSummary}</span>
                 </span>
               )}
               {lastRunRel && (
                 <span className="inline-flex items-center gap-1" title="Last run">
-                  <History size={9} className="shrink-0" />
+                  <History size={11} className="shrink-0" aria-hidden="true" />
                   {lastRunRel}
                 </span>
               )}
@@ -314,37 +316,54 @@ function FlowListItem({ flow, isActive, onClick, onDelete, canWrite, strictEnv }
           )}
 
           {(flow._isNew || notInEnv) && (
-            <div className="flex flex-wrap items-center gap-1 mt-1.5">
-              {flow._isNew && <Badge variant="warning" size="sm">Unsaved</Badge>}
+            <div className="ap-tags mt-1.5">
+              {flow._isNew && <Tag variant="warning" dot>Unsaved</Tag>}
               {/* Strict-env visibility: the active env is protected and this flow
                   has no pinned version there (pinned_envs from the list API). */}
               {notInEnv && (
-                <Badge
-                  variant="danger"
-                  size="sm"
-                  title={`No version is pinned to ${strictEnv} — promote one to make it visible there.`}
+                <Tag
+                  variant="warning"
+                  dot
+                  caps={false}
+                  title={`No version is pinned to ${strictEnv}. Promote one to make it visible there.`}
                 >
                   not in {strictEnv}
-                </Badge>
+                </Tag>
               )}
             </div>
           )}
         </div>
-      </div>
+      </button>
 
-      {/* Delete button (visible on hover, not for drafts; writers only) */}
+      {/* Delete (revealed on hover / focus; not for drafts; writers only) */}
       {!flow._isNew && canWrite && (
-        <button
-          onClick={handleDelete}
-          disabled={deleting}
-          className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-md text-muted hover:text-danger hover:bg-danger-bg opacity-0 group-hover:opacity-100 transition-all disabled:opacity-40"
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          onClick={() => setConfirming(true)}
+          className="absolute right-1.5 top-2 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
           title="Delete flow"
           aria-label={`Delete flow "${flow.name}"`}
         >
-          {deleting ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
-        </button>
+          <Trash2 size={14} aria-hidden="true" />
+        </Button>
       )}
-    </button>
+
+      {confirming && (
+        <Modal open onClose={deleting ? undefined : () => setConfirming(false)} title="Delete this flow?" size="sm">
+          <Modal.Body>
+            <p className="m-0 text-sm text-muted leading-relaxed">
+              <b className="font-semibold text-fg">{flow.name}</b> and its run history will be deleted.
+              Anything that triggers it on a schedule stops. This cannot be undone.
+            </p>
+          </Modal.Body>
+          <Modal.Footer>
+            <Button variant="secondary" onClick={() => setConfirming(false)} disabled={deleting}>Cancel</Button>
+            <Button variant="danger" onClick={handleDelete} loading={deleting}>Delete flow</Button>
+          </Modal.Footer>
+        </Modal>
+      )}
+    </div>
   )
 }
 
@@ -372,74 +391,56 @@ function FlowList({ flows, activeId, loading, onSelect, onNew, onRefresh, onDele
     <>
       {/* Header — hidden when the host (desktop aside) already shows a title. */}
       {showHeader && (
-        <div className="shrink-0 flex items-center justify-between px-3 py-2.5 border-b border-border">
-          <span className="text-xs font-semibold text-muted uppercase tracking-wider">Flows</span>
-          <button
-            onClick={onRefresh}
-            disabled={loading}
-            className="h-7 w-7 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors"
-            title="Refresh flows"
-            aria-label="Refresh flows"
-          >
-            <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
-          </button>
+        <div className="shrink-0 flex items-center justify-between pl-3 pr-1.5 h-10 border-b border-border">
+          <span className="t-label">Flows</span>
+          <Button variant="ghost" size="icon-sm" onClick={onRefresh} disabled={loading} title="Refresh flows" aria-label="Refresh flows">
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
+          </Button>
         </div>
       )}
 
       {/* New button — writers only */}
       {canWrite && (
-        <div className="shrink-0 px-2 py-2">
-          <button
-            onClick={handleNew}
-            className="w-full h-11 flex items-center justify-center gap-1.5 text-sm font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:border-border hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <Plus size={14} />
+        <div className="shrink-0 px-3 pt-3 pb-2">
+          <Button onClick={handleNew} size="sm" className="w-full">
+            <Plus size={14} aria-hidden="true" />
             New flow
-          </button>
+          </Button>
         </div>
       )}
 
       {/* Search — only worth showing once there's something to filter */}
       {flows.length > 0 && (
-        <div className="shrink-0 px-2 pb-2">
-          <SearchBar value={query} onChange={setQuery} placeholder="Search flows…" />
+        <div className="shrink-0 px-3 pb-2">
+          <SearchBar value={query} onChange={setQuery} placeholder="Search flows" />
         </div>
       )}
 
       {/* List */}
-      <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-0.5">
-        {loading && flows.length === 0 && (
-          <div className="space-y-1.5 px-1 py-1" aria-label="Loading flows">
-            {[0, 1, 2, 3].map(i => (
-              <div key={i} className="flex items-center gap-2 px-2 py-2.5 rounded-lg">
-                <Skeleton className="w-3.5 h-3.5 rounded" />
-                <div className="flex-1 space-y-1.5">
-                  <Skeleton className="h-2.5 w-3/4" />
-                  <Skeleton className="h-2 w-1/3" />
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+      <div className="flex-1 overflow-y-auto pb-2">
+        {loading && flows.length === 0 && <ListSkeleton rows={4} tile={false} />}
         {!loading && flows.length === 0 && (
           <EmptyState
             compact
-            icon={<GitBranch size={20} />}
+            art={<EmptyFlows />}
             title="No flows yet"
-            description="Build a pipeline once, then run it on demand or on a schedule."
+            description="Chain SQL, Python and exports once, then run it on demand or on a schedule."
             action={canWrite ? (
-              <button
-                onClick={handleNew}
-                className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Plus size={13} />
-                Create your first flow
-              </button>
+              <Button size="sm" onClick={handleNew}>
+                <Plus size={14} aria-hidden="true" />
+                New flow
+              </Button>
             ) : undefined}
           />
         )}
         {!loading && flows.length > 0 && filtered.length === 0 && (
-          <p className="text-[11px] text-muted text-center py-6">No flows match “{query}”.</p>
+          <EmptyState
+            compact
+            kind="none-match"
+            art={<EmptySearch />}
+            title={`No flow matches “${query}”`}
+            action={<Button size="sm" variant="secondary" onClick={() => setQuery('')}>Clear search</Button>}
+          />
         )}
         {filtered.map(f => (
           <FlowListItem
@@ -474,40 +475,29 @@ function MobileFlowsSheet({ open, onClose, flows, activeId, loading, onSelect, o
     <>
       {/* Backdrop */}
       {open && (
-        <div
-          className="fixed inset-0 z-40 bg-black/40"
-          onClick={onClose}
-          aria-hidden="true"
-        />
+        <div className="ap-backdrop" onClick={onClose} aria-hidden="true" />
       )}
 
       {/* Sheet */}
       <div
-        className={[
-          'fixed bottom-0 left-0 right-0 z-50 flex flex-col',
-          'bg-surface border-t border-border rounded-t-2xl',
-          'transition-transform duration-300 ease-out',
-          'max-h-[75dvh]',
-          open ? 'translate-y-0' : 'translate-y-full',
-        ].join(' ')}
+        className="fixed bottom-0 left-0 right-0 flex flex-col bg-surface max-h-[75dvh] border-t-2 border-ink"
+        style={{
+          zIndex: 'var(--z-modal)' as any,
+          transform: open ? 'translateY(0)' : 'translateY(100%)',
+          visibility: open ? 'visible' : 'hidden',
+          transition: 'transform var(--dur-3) var(--ease-out), visibility 0s linear ' + (open ? '0s' : 'var(--dur-3)'),
+          boxShadow: 'var(--shadow-pop)',
+        }}
         aria-label="Flows list"
         aria-modal="true"
+        aria-hidden={!open}
         role="dialog"
       >
-        {/* Pull handle */}
-        <div className="shrink-0 flex justify-center pt-3 pb-1">
-          <div className="w-10 h-1 rounded-full bg-border" />
-        </div>
-
-        {/* Close */}
-        <div className="absolute top-3 right-3">
-          <button
-            onClick={onClose}
-            className="w-9 h-9 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-            aria-label="Close flows list"
-          >
-            <X size={16} />
-          </button>
+        <div className="shrink-0 flex items-center justify-between pl-4 pr-2 h-12 border-b border-border">
+          <span className="t-label">Flows</span>
+          <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close flows list">
+            <X size={16} aria-hidden="true" />
+          </Button>
         </div>
 
         <FlowList
@@ -519,6 +509,7 @@ function MobileFlowsSheet({ open, onClose, flows, activeId, loading, onSelect, o
           onRefresh={onRefresh}
           onDelete={onDelete}
           onItemClick={onClose}
+          showHeader={false}
           canWrite={canWrite}
           strictEnv={strictEnv}
         />
@@ -553,66 +544,42 @@ function RunsTab({ flow, currentRunId, onSelectRun }) {
   return (
     <div className="flex flex-col h-full">
       {/* Sub-toolbar */}
-      <div className="shrink-0 flex items-center justify-between px-4 py-2 border-b border-border bg-surface-2/20">
-        <p className="text-xs font-semibold text-muted uppercase tracking-wider">Run history</p>
-        <button
-          onClick={load}
-          disabled={loading}
-          title="Refresh runs"
-          aria-label="Refresh runs"
-          className="h-7 w-7 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
-        </button>
+      <div className="shrink-0 flex items-center justify-between pl-4 pr-2 h-10 border-b border-border">
+        <p className="t-label m-0">Run history</p>
+        <Button variant="ghost" size="icon-sm" onClick={load} disabled={loading} title="Refresh runs" aria-label="Refresh runs">
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
+        </Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 sm:px-4 py-3 space-y-2">
-        {loading && runs.length === 0 && (
-          <div className="space-y-2" aria-label="Loading run history">
-            {[0, 1, 2].map(i => (
-              <div key={i} className="flex items-center gap-2 px-3 py-3 rounded-lg border border-border">
-                <Skeleton className="w-2 h-2 rounded-full" />
-                <div className="flex-1 space-y-1.5">
-                  <Skeleton className="h-2.5 w-1/2" />
-                  <Skeleton className="h-2 w-1/3" />
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+      <div className="flex-1 overflow-y-auto">
+        {loading && runs.length === 0 && <ListSkeleton rows={3} tile={false} />}
         {!loading && runs.length === 0 && (
           <EmptyState
             compact
-            icon={<Play size={20} />}
+            art={<EmptyFlows />}
             title="No runs yet"
-            description="Run this flow from the Builder and its history shows up here."
+            description="Run this flow from the Builder and each run is listed here with its state and trigger."
           />
         )}
         {runs.map(run => {
           const isCurrent = run.id === currentRunId
           return (
             <button
+              type="button"
               key={run.id}
               onClick={() => onSelectRun(run.id)}
-              className={[
-                'w-full text-left px-3 py-3 rounded-lg border transition-colors min-h-[44px]',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                isCurrent
-                  ? 'bg-primary/10 border-primary/20 text-fg'
-                  : 'bg-surface border-border hover:bg-surface-2 text-fg/80 hover:text-fg',
-              ].join(' ')}
+              aria-current={isCurrent ? 'true' : undefined}
+              className={`qr-row nubi-focus-inset items-center ${isCurrent ? 'is-active' : ''}`}
             >
-              <div className="flex items-center gap-2.5">
-                <RunStateBadge state={run.state} />
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-mono truncate">{run.id.slice(0, 12)}…</p>
-                  <p className="text-[10px] text-muted mt-0.5 truncate">
-                    {run.trigger}
-                    {run.created_at && ` · ${new Date(run.created_at).toLocaleString()}`}
-                  </p>
-                </div>
-                {isCurrent && <Badge variant="primary" size="sm" dot className="shrink-0">live</Badge>}
+              <RunStateBadge state={run.state} />
+              <div className="min-w-0 flex-1">
+                <p className="m-0 ap-mono truncate text-[13px]">{run.id.slice(0, 12)}</p>
+                <p className="m-0 mt-0.5 ap-meta truncate">
+                  {run.trigger}
+                  {run.created_at && ` · ${new Date(run.created_at).toLocaleString()}`}
+                </p>
               </div>
+              {isCurrent && <Tag variant="accent" dot className="shrink-0">live</Tag>}
             </button>
           )
         })}
@@ -647,7 +614,7 @@ function ScheduleControl({ flow, onSaved }) {
   const [enabled, setEnabled] = useState(Boolean(flow?.enabled))
   const [schedule, setSchedule] = useState(flow?.schedule || 'interval:1h')
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState(null)
+  const [error, setError] = useState<string | null>(null)
 
   // Re-sync when the active flow changes.
   useEffect(() => {
@@ -655,6 +622,13 @@ function ScheduleControl({ flow, onSaved }) {
     setSchedule(flow?.schedule || 'interval:1h')
     setError(null)
   }, [flow?.id, flow?.schedule, flow?.enabled])
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
 
   const isActive = Boolean(flow?.enabled && flow?.schedule)
   const summary = describeSchedule(flow?.schedule)
@@ -674,14 +648,14 @@ function ScheduleControl({ flow, onSaved }) {
         schedule: enabled ? trimmed : null,
       })
       if (!updated) {
-        setError('Save failed — check the console.')
+        setError('Couldn’t save the schedule. Try again.')
         setSaving(false)
         return
       }
       onSaved?.(updated)
       setOpen(false)
     } catch (e) {
-      setError(e?.message || 'Save failed.')
+      setError(e?.message || 'Couldn’t save the schedule.')
     } finally {
       setSaving(false)
     }
@@ -689,33 +663,27 @@ function ScheduleControl({ flow, onSaved }) {
 
   return (
     <div className="relative shrink-0">
-      <button
+      <Button
+        variant={isActive ? 'outline' : 'secondary'}
+        size="sm"
         onClick={() => setOpen(v => !v)}
+        aria-expanded={open}
+        aria-haspopup="dialog"
         title={isActive ? `Scheduled: ${summary}` : 'Schedule this flow to run automatically'}
-        className={[
-          'flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border transition-colors',
-          isActive
-            ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-            : 'border-border bg-surface text-fg hover:bg-surface-2',
-        ].join(' ')}
+        aria-label={isActive ? `Schedule: ${summary}` : 'Schedule'}
       >
-        <CalendarClock size={13} className={isActive ? 'text-emerald-500' : ''} />
+        {isActive ? <span className="nubi-dot nubi-dot-success" aria-hidden="true" /> : <CalendarClock size={14} aria-hidden="true" />}
         <span className="hidden lg:inline">{isActive ? summary : 'Schedule'}</span>
-      </button>
+      </Button>
 
       {open && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-9 z-50 w-72 rounded-xl border border-border bg-surface shadow-lg p-3 text-fg">
-            <div className="flex items-center justify-between mb-2">
-              <p className="text-xs font-semibold">Schedule flow</p>
-              <label className="flex items-center gap-1.5 text-xs cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={enabled}
-                  onChange={e => setEnabled(e.target.checked)}
-                  className="accent-emerald-500"
-                />
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} aria-hidden="true" />
+          <div role="dialog" aria-label="Schedule flow" className="nubi-dropdown right-0 top-[calc(100%+6px)] z-50 w-80 p-3 text-fg">
+            <div className="flex items-center justify-between mb-3">
+              <p className="m-0 text-[13px] font-semibold">Schedule flow</p>
+              <label className="flex cursor-pointer items-center gap-2 text-xs">
+                <Switch on={enabled} onToggle={() => setEnabled(v => !v)} label={enabled ? 'Disable schedule' : 'Enable schedule'} />
                 Enabled
               </label>
             </div>
@@ -723,14 +691,17 @@ function ScheduleControl({ flow, onSaved }) {
               <div className="grid grid-cols-2 gap-1.5 mb-2">
                 {SCHEDULE_PRESETS.map(p => (
                   <button
+                    type="button"
                     key={p.value}
                     onClick={() => setSchedule(p.value)}
-                    className={[
-                      'px-2 py-1 text-[11px] rounded-lg border transition-colors text-left',
-                      schedule === p.value
-                        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-                        : 'border-border bg-surface-2 hover:bg-surface',
-                    ].join(' ')}
+                    aria-pressed={schedule === p.value}
+                    className="px-2 py-1.5 text-left text-xs transition-colors"
+                    style={{
+                      borderRadius: 2,
+                      border: `1px solid ${schedule === p.value ? 'var(--accent)' : 'var(--border)'}`,
+                      background: schedule === p.value ? 'var(--accent-soft)' : 'var(--surface)',
+                      color: 'var(--text)',
+                    }}
                   >
                     {p.label}
                   </button>
@@ -740,23 +711,18 @@ function ScheduleControl({ flow, onSaved }) {
                 type="text"
                 value={schedule}
                 onChange={e => setSchedule(e.target.value)}
-                placeholder="interval:30m or cron: 0 9 * * *"
-                className="w-full px-2 py-1.5 text-xs font-mono rounded-lg border border-border bg-surface-2 focus:outline-none focus:ring-1 focus:ring-emerald-500/40"
+                placeholder="interval:30m or 0 9 * * *"
+                aria-label="Schedule expression"
+                className="nubi-input nubi-input-sm font-mono"
               />
-              <p className="text-[10px] text-muted mt-1">
-                Interval (e.g. <code>interval:30m</code>, <code>interval:6h</code>) or a 5-field cron expression.
+              <p className="nubi-hint mt-1.5">
+                Interval (<code className="font-mono">interval:30m</code>, <code className="font-mono">interval:6h</code>) or a 5-field cron expression.
               </p>
             </div>
-            {error && <p className="text-[11px] text-danger mt-2">{error}</p>}
-            <div className="flex items-center justify-end gap-2 mt-3">
-              <button onClick={() => setOpen(false)} className="px-2.5 h-7 text-xs rounded-lg border border-border bg-surface hover:bg-surface-2">
-                Cancel
-              </button>
-              <button onClick={save} disabled={saving}
-                className="flex items-center gap-1.5 px-2.5 h-7 text-xs font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-50">
-                {saving ? <Loader2 size={12} className="animate-spin" /> : null}
-                Save
-              </button>
+            {error && <p className="nubi-field-error mt-2" role="alert">{error}</p>}
+            <div className="mt-3 flex items-center justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>Cancel</Button>
+              <Button size="sm" onClick={save} loading={saving}>Save schedule</Button>
             </div>
           </div>
         </>
@@ -802,18 +768,17 @@ function AutoRebuildToggle({ flow, spec, onSaved }) {
 
   return (
     <button
+      type="button"
+      role="menuitemcheckbox"
+      aria-checked={isOn}
       onClick={toggle}
       disabled={saving}
-      title={isOn ? 'Auto-rebuild downstream enabled — click to disable' : 'Enable auto-rebuild downstream flows when this flow completes'}
-      className={[
-        'flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border transition-colors disabled:opacity-50',
-        isOn
-          ? 'border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400'
-          : 'border-border bg-surface text-fg hover:bg-surface-2',
-      ].join(' ')}
+      title={isOn ? 'Auto-rebuild downstream is on. Click to turn it off.' : 'Rebuild downstream flows automatically when this flow completes'}
+      className="nubi-dropdown-item"
     >
-      {saving ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} className={isOn ? 'text-blue-500' : ''} />}
-      <span className="hidden lg:inline">Auto-rebuild</span>
+      {saving ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={14} className="text-muted" aria-hidden="true" />}
+      <span className="flex-1 text-left">Auto-rebuild downstream</span>
+      <span className="nubi-dot" style={{ background: isOn ? 'var(--success)' : 'var(--border-control)' }} aria-hidden="true" />
     </button>
   )
 }
@@ -825,9 +790,8 @@ function AutoRebuildToggle({ flow, spec, onSaved }) {
 /**
  * Overflow menu that collects the secondary builder toolbar actions (Validate,
  * Checkpoint, Version history, Auto-rebuild) so the top bar fits at narrow
- * widths. Mirrors ``ScheduleControl``'s popover pattern: a small icon button
- * opening an ``absolute right-0`` dropdown behind a ``fixed inset-0``
- * click-catcher, closing on Escape / outside-click / selection.
+ * widths. A small icon button opening a dropdown behind a click-catcher,
+ * closing on Escape / outside-click / selection.
  *
  * Every guard is applied by the caller-passed booleans so this stays identical
  * to the standalone buttons it replaces.
@@ -857,63 +821,51 @@ function MoreActionsMenu({
   const showHistory = canRun
   const showAutoRebuild = canWrite && activeFlow?.id && !activeFlow?._isNew
 
-  const itemClass =
-    'flex w-full items-center gap-2 px-2.5 h-8 text-xs font-medium rounded-lg text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring text-left'
-
   return (
     <div className="relative shrink-0">
-      <button
+      <Button
+        variant="secondary"
+        size="icon-sm"
         onClick={() => setOpen(v => !v)}
         title="More actions"
         aria-label="More actions"
         aria-haspopup="menu"
         aria-expanded={open}
-        className="flex items-center justify-center w-8 h-8 rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <MoreHorizontal size={15} />
-      </button>
+        <MoreHorizontal size={15} aria-hidden="true" />
+      </Button>
 
       {open && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div
-            role="menu"
-            aria-label="More actions"
-            className="absolute right-0 top-9 z-50 w-56 rounded-xl border border-border bg-surface shadow-lg p-1.5 text-fg"
-          >
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} aria-hidden="true" />
+          <div role="menu" aria-label="More actions" className="nubi-dropdown right-0 top-[calc(100%+6px)] z-50 w-60">
             <button
+              type="button"
               role="menuitem"
               onClick={() => { setOpen(false); triggerValidate() }}
               disabled={validating}
-              className={itemClass}
+              className="nubi-dropdown-item"
             >
-              {validating ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />}
+              {validating ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <ShieldCheck size={14} className="text-muted" aria-hidden="true" />}
               Validate
             </button>
             {showCheckpoint && (
-              <button
-                role="menuitem"
-                onClick={() => { setOpen(false); triggerCheckpoint() }}
-                className={itemClass}
-              >
-                <GitCommitHorizontal size={13} />
+              <button type="button" role="menuitem" onClick={() => { setOpen(false); triggerCheckpoint() }} className="nubi-dropdown-item">
+                <GitCommitHorizontal size={14} className="text-muted" aria-hidden="true" />
                 Checkpoint
               </button>
             )}
             {showHistory && (
-              <button
-                role="menuitem"
-                onClick={() => { setOpen(false); setHistoryOpen(true) }}
-                className={itemClass}
-              >
-                <History size={13} />
+              <button type="button" role="menuitem" onClick={() => { setOpen(false); setHistoryOpen(true) }} className="nubi-dropdown-item">
+                <History size={14} className="text-muted" aria-hidden="true" />
                 Version history
               </button>
             )}
             {showAutoRebuild && (
-              <div className="mt-1 pt-1 border-t border-border">
+              <>
+                <div className="nubi-dropdown-divider" role="separator" />
                 <AutoRebuildToggle flow={activeFlow} spec={activeSpec} onSaved={onSaved} />
-              </div>
+              </>
             )}
           </div>
         </>
@@ -923,10 +875,10 @@ function MoreActionsMenu({
 }
 
 // ---------------------------------------------------------------------------
-// MiniToggle — enable / disable switch used in the schedules overview
+// Switch — enable / disable switch (square, ink when on)
 // ---------------------------------------------------------------------------
 
-function MiniToggle({ on, busy, onToggle, label }) {
+function Switch({ on, busy = false, onToggle, label }) {
   return (
     <button
       type="button"
@@ -936,28 +888,19 @@ function MiniToggle({ on, busy, onToggle, label }) {
       aria-checked={on}
       aria-label={label}
       title={label}
-      className={[
-        'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-        'disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
-        on ? 'bg-emerald-500 dark:bg-emerald-500' : 'bg-surface-2 border border-border',
-      ].join(' ')}
+      className="ap-switch disabled:opacity-50"
     >
-      <span
-        className={[
-          'inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform',
-          on ? 'translate-x-[18px]' : 'translate-x-0.5',
-        ].join(' ')}
-      />
+      <span className="ap-switch-knob" />
     </button>
   )
 }
 
 // ---------------------------------------------------------------------------
-// FlowScheduleRow — one row in the "Schedules & runs" overview
+// FlowScheduleRow — one row in the Flows overview
 // ---------------------------------------------------------------------------
 
 function FlowScheduleRow({ flow, canWrite, onOpen, onPatched }) {
-  const [lastRun, setLastRun] = useState(null)     // newest run {state, ...} | null
+  const [lastRun, setLastRun] = useState<any>(null)     // newest run {state, ...} | null
   const [runsLoaded, setRunsLoaded] = useState(false)
   const [runRefresh, setRunRefresh] = useState(0)
   const [running, setRunning] = useState(false)
@@ -967,7 +910,7 @@ function FlowScheduleRow({ flow, canWrite, onOpen, onPatched }) {
   const scheduled = Boolean(flow.schedule)
   const description = flow.spec?.description ?? null
 
-  // Fetch the newest run to show a status chip — only when the flow has ever run.
+  // Fetch the newest run to show a status tag — only when the flow has ever run.
   useEffect(() => {
     if (!flow.id || !flow.last_run_at) { setRunsLoaded(true); return undefined }
     let alive = true
@@ -989,7 +932,7 @@ function FlowScheduleRow({ flow, canWrite, onOpen, onPatched }) {
       toast.success(`Started “${flow.name}”.`)
       setRunRefresh(v => v + 1)
     } else {
-      toast.error('Run failed to start.')
+      toast.error('The run didn’t start. Try again.')
     }
   }, [flow.id, flow.name])
 
@@ -1002,7 +945,7 @@ function FlowScheduleRow({ flow, canWrite, onOpen, onPatched }) {
     if (updated) {
       onPatched?.(updated)
     } else {
-      toast.error('Update failed — check the console.')
+      toast.error('Couldn’t update the schedule. Try again.')
     }
   }, [flow.id, enabled, canWrite, onPatched])
 
@@ -1010,65 +953,62 @@ function FlowScheduleRow({ flow, canWrite, onOpen, onPatched }) {
   const lastRel = fmtRelative(flow.last_run_at)
 
   return (
-    <div className="bg-surface rounded-xl border border-border transition-all duration-150 hover:border-primary/30 hover:shadow-nubi-sm">
-      <div className="flex flex-col sm:flex-row sm:items-center gap-3 p-4">
+    <li className="list-none">
+      <div className="ap-row">
         {/* Clickable name + metadata — opens the builder */}
         <button
           type="button"
           onClick={() => onOpen(flow)}
-          className="group flex-1 min-w-0 text-left rounded-lg -m-1 p-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="ap-row-main group text-left nubi-focus-inset"
+          style={{ background: 'none', border: 0, padding: 0 }}
         >
-          <div className="flex flex-wrap items-center gap-2 mb-0.5">
-            <FlowStatusDot flow={flow} className="mt-px" />
-            <h3 className="font-semibold text-sm text-fg truncate group-hover:text-primary transition-colors">
-              {flow.name}
-            </h3>
+          <div className="ap-row-title">
+            <FlowStatusDot flow={flow} />
+            <span className="ap-trunc group-hover:underline underline-offset-4">{flow.name}</span>
             {scheduled && (
-              <Badge variant={enabled ? 'success' : 'default'} size="sm" dot>
+              <Tag variant={enabled ? 'success' : 'neutral'} dot>
                 {enabled ? 'Scheduled' : 'Paused'}
-              </Badge>
+              </Tag>
             )}
           </div>
 
-          {description && (
-            <p className="text-xs text-muted truncate mb-1.5 ml-[18px]">{description}</p>
-          )}
+          {description && <div className="ap-row-sub">{description}</div>}
 
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted ml-[18px]">
-            <span className="inline-flex items-center gap-1" title={flow.schedule || 'No schedule — runs manually'}>
-              <Clock size={11} className="shrink-0" />
+          <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 ap-meta">
+            <span className="inline-flex items-center gap-1" title={flow.schedule || 'No schedule. Runs manually.'}>
+              <Clock size={12} className="shrink-0" aria-hidden="true" />
               {humanSchedule(flow.schedule)}
             </span>
 
             {scheduled && enabled && flow.next_run_at && (
               <span className="inline-flex items-center gap-1" title={fmtAbs(flow.next_run_at) ?? undefined}>
-                <CalendarClock size={11} className="shrink-0" />
+                <CalendarClock size={12} className="shrink-0" aria-hidden="true" />
                 Next {nextRel}
               </span>
             )}
 
             <span className="inline-flex items-center gap-1.5" title={fmtAbs(flow.last_run_at) ?? undefined}>
-              <History size={11} className="shrink-0" />
+              <History size={12} className="shrink-0" aria-hidden="true" />
               {!flow.last_run_at ? (
-                <span className="text-muted/70">Never run</span>
+                <span>Never run</span>
               ) : !runsLoaded ? (
-                <Skeleton className="h-3.5 w-16 rounded-full" />
+                <Skeleton className="h-4 w-16" />
               ) : lastRun ? (
                 <>
                   <RunStateBadge state={lastRun.state} />
-                  {lastRel && <span className="text-muted/70">{lastRel}</span>}
+                  {lastRel && <span>{lastRel}</span>}
                 </>
               ) : (
-                <span className="text-muted/70">Ran {lastRel}</span>
+                <span>Ran {lastRel}</span>
               )}
             </span>
           </div>
         </button>
 
         {/* Actions — not nested in the row button */}
-        <div className="flex items-center gap-2 shrink-0 self-start sm:self-center ml-[18px] sm:ml-0">
+        <div className="ap-actions">
           {scheduled && (
-            <MiniToggle
+            <Switch
               on={enabled}
               busy={toggling || !canWrite}
               onToggle={handleToggle}
@@ -1077,136 +1017,80 @@ function FlowScheduleRow({ flow, canWrite, onOpen, onPatched }) {
           )}
 
           {canWrite && (
-            <button
-              type="button"
-              onClick={handleRun}
-              disabled={running}
-              title="Run now"
-              className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs font-medium border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {running ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} strokeWidth={2.2} />}
-              <span className="hidden sm:inline">{running ? 'Running…' : 'Run now'}</span>
-            </button>
+            <Button variant="ghost" size="sm" onClick={handleRun} loading={running} title="Run now">
+              {!running && <Play size={14} aria-hidden="true" />}
+              <span className="hidden sm:inline">{running ? 'Running' : 'Run now'}</span>
+            </Button>
           )}
 
-          <button
-            type="button"
-            onClick={() => onOpen(flow)}
-            title="Open in builder"
-            aria-label={`Open “${flow.name}” in builder`}
-            className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <ChevronRight size={15} />
-          </button>
+          <Button variant="ghost" size="icon-sm" onClick={() => onOpen(flow)} title="Open in builder" aria-label={`Open “${flow.name}” in builder`}>
+            <ChevronRight size={16} aria-hidden="true" />
+          </Button>
         </div>
       </div>
-    </div>
+    </li>
   )
 }
 
 // ---------------------------------------------------------------------------
-// FlowsLanding — the /flows landing: flows-first. A welcoming header, a
-// prominent "Create a flow" action, and every flow as a card the user can
-// open to build. Scheduling is folded INTO each card (schedule + last-run
-// status + enable toggle + Run now via FlowScheduleRow) rather than being a
-// separate front page.
+// FlowsLanding — the /flows landing: PageShell header, every flow as a ruled
+// row. Scheduling is folded INTO each row (schedule + last-run status + enable
+// switch + Run now via FlowScheduleRow) rather than a separate front page.
 // ---------------------------------------------------------------------------
 
-function FlowsLanding({ flows, loading, canWrite, onOpen, onNew, onPatched }) {
+function FlowsLanding({ flows, loading, canWrite, onOpen, onNew, onPatched, onRefresh, secretsOpen, onToggleSecrets }) {
   const scheduledCount = flows.filter(f => f.schedule && f.enabled).length
   const pausedCount = flows.filter(f => f.schedule && !f.enabled).length
+  const eyebrow = loading || flows.length === 0
+    ? 'Build'
+    : `Build · ${flows.length} ${flows.length === 1 ? 'flow' : 'flows'}`
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="px-4 sm:px-6 lg:px-8 py-6 sm:py-8 max-w-3xl w-full mx-auto">
-        {/* Header — flows-first, not schedules-first */}
-        <header className="mb-6">
-          <p className="text-[11px] font-mono uppercase tracking-[0.14em] text-muted mb-1.5">Automation</p>
-          <h1 className="font-display font-semibold text-xl sm:text-2xl text-fg">Flows</h1>
-          <p className="text-sm text-muted mt-1.5 max-w-lg leading-relaxed">
-            Build a pipeline once — chain SQL, Python and exports — then run it on demand or put it on a schedule. Open a flow to build it, or start a new one.
-          </p>
-        </header>
-
-        {/* Loading */}
-        {loading && flows.length === 0 && (
-          <div className="space-y-3" aria-label="Loading flows">
-            {[0, 1, 2].map(i => (
-              <div key={i} className="bg-surface rounded-xl border border-border p-4 flex items-center gap-3">
-                <div className="flex-1 space-y-2">
-                  <Skeleton className="h-4 w-40" />
-                  <Skeleton className="h-3 w-56" />
-                </div>
-                <Skeleton className="h-8 w-20 rounded-lg" />
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Empty — strong "create your first flow" centrepiece */}
-        {!loading && flows.length === 0 && (
-          <div className="flex flex-col items-center justify-center text-center py-16 px-6 rounded-2xl border border-dashed border-border">
-            <div
-              className="flex items-center justify-center w-14 h-14 rounded-2xl mb-4 shadow-sm"
-              style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
-            >
-              <GitBranch size={26} className="text-white" />
-            </div>
-            <h2 className="font-display font-semibold text-lg text-fg mb-1">Create your first flow</h2>
-            <p className="text-sm text-muted max-w-sm leading-relaxed mb-5">
-              A flow chains SQL, Python and exports into one pipeline — reports, syncs and multi-step jobs. Run it whenever you like, or hand it a schedule and let it run itself.
-            </p>
+      <PageShell
+        eyebrow={eyebrow}
+        title="Flows"
+        description="Chain SQL, Python and exports into one pipeline, then run it on demand or on a schedule."
+        actions={
+          <>
+            <Button variant="ghost" size="icon-sm" onClick={onRefresh} disabled={loading} aria-label="Refresh flows" title="Refresh">
+              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
+            </Button>
+            <Button variant="secondary" onClick={onToggleSecrets} aria-pressed={secretsOpen}>
+              <KeyRound size={14} aria-hidden="true" /> Secrets
+            </Button>
             {canWrite && (
-              <button
-                type="button"
-                onClick={onNew}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Plus size={16} strokeWidth={2.4} />
-                Create your first flow
-              </button>
+              <Button onClick={onNew}>
+                <Plus size={14} aria-hidden="true" /> New flow
+              </Button>
             )}
-          </div>
+          </>
+        }
+      >
+        {/* Loading: rows that match the real ones */}
+        {loading && flows.length === 0 && <ListSkeleton rows={3} tile={false} />}
+
+        {/* Empty */}
+        {!loading && flows.length === 0 && (
+          <EmptyState
+            art={<EmptyFlows />}
+            title="No flows yet"
+            description={canWrite
+              ? 'A flow chains SQL, Python and exports into one job: a report, a sync or a multi-step refresh. Run it by hand or give it a schedule.'
+              : 'Flows are built by editors. Ask one to set up a pipeline for you.'}
+            action={canWrite ? <Button onClick={onNew}><Plus size={14} aria-hidden="true" /> New flow</Button> : undefined}
+          />
         )}
 
-        {/* Populated — prominent create action, then the flows themselves */}
+        {/* Populated */}
         {!loading && flows.length > 0 && (
           <>
-            {canWrite && (
-              <button
-                type="button"
-                onClick={onNew}
-                className="group w-full flex items-center gap-4 text-left rounded-2xl border border-primary/30 bg-primary/[0.04] p-4 sm:p-5 hover:border-primary/50 hover:bg-primary/[0.07] hover:shadow-nubi-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <div
-                  className="flex items-center justify-center w-11 h-11 rounded-xl shrink-0 shadow-sm"
-                  style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
-                >
-                  <Plus size={22} className="text-white" strokeWidth={2.4} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="font-display font-semibold text-sm text-fg">Create a flow</p>
-                  <p className="text-xs text-muted mt-0.5">Start from a blank canvas and wire queries, transforms and exports into a pipeline.</p>
-                </div>
-                <ChevronRight size={18} className="text-muted shrink-0 group-hover:text-primary group-hover:translate-x-0.5 transition-all" />
-              </button>
-            )}
-
-            {/* Section label + at-a-glance schedule summary (integrated, not the headline) */}
-            <div className="flex flex-wrap items-center justify-between gap-2 mt-6 mb-3">
-              <p className="text-[11px] font-mono uppercase tracking-[0.14em] text-muted">Your flows</p>
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge variant="default" size="sm">{flows.length} flow{flows.length === 1 ? '' : 's'}</Badge>
-                {scheduledCount > 0 && (
-                  <Badge variant="success" size="sm" dot>{scheduledCount} scheduled</Badge>
-                )}
-                {pausedCount > 0 && (
-                  <Badge variant="warning" size="sm" dot>{pausedCount} paused</Badge>
-                )}
-              </div>
+            <div className="ap-filterbar">
+              <span className="ap-count">{flows.length} flow{flows.length === 1 ? '' : 's'}</span>
+              {scheduledCount > 0 && <Tag variant="success" dot>{scheduledCount} scheduled</Tag>}
+              {pausedCount > 0 && <Tag variant="warning" dot>{pausedCount} paused</Tag>}
             </div>
-
-            <div className="space-y-2.5">
+            <ul className="ap-list m-0 p-0" aria-label="Flows">
               {flows.map(flow => (
                 <FlowScheduleRow
                   key={flow.id}
@@ -1216,10 +1100,10 @@ function FlowsLanding({ flows, loading, canWrite, onOpen, onNew, onPatched }) {
                   onPatched={onPatched}
                 />
               ))}
-            </div>
+            </ul>
           </>
         )}
-      </div>
+      </PageShell>
     </div>
   )
 }
@@ -1655,77 +1539,53 @@ export default function FlowsPage() {
   //    One bar, not a stacked second one — the notebook's old in-page toolbar
   //    was merged in here (its controls drive NotebookView via the ref). ─────
   const flowsToolbar = (
-    <div className="flex items-center gap-1.5 w-full min-w-0 overflow-x-auto">
+    <div className="flex items-center gap-2 w-full min-w-0 overflow-x-auto">
       {/* Mobile: open the flow list */}
-      <button
+      <Button
+        variant="secondary"
+        size="icon-sm"
         onClick={() => setMobileSheetOpen(true)}
-        className="md:hidden flex items-center justify-center w-8 h-8 rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="md:hidden shrink-0"
         aria-label="Open flow list" title="Flow list"
       >
-        <List size={16} />
-      </button>
+        <List size={16} aria-hidden="true" />
+      </Button>
 
       {/* Main-pane switcher: Flows | Builder | Runs.
           'Flows' is the landing (list + create, scheduling folded into each
           flow) and is always available; Builder/Runs light up once a flow is
-          open. Scheduling is reachable per-flow — never a headline mode here. */}
-      <div role="tablist" aria-label="Flows view" className="flex h-8 rounded-lg border border-border overflow-hidden shrink-0">
-        {[
-          { id: 'flows',   label: 'Flows',   Icon: GitBranch, enabled: true },
-          { id: 'builder', label: 'Builder', Icon: Share2,    enabled: hasFlow },
-          { id: 'runs',    label: 'Runs',    Icon: History,   enabled: hasFlow },
-        ].map((tab, i) => {
-          const selected = tab.id === 'flows' ? showLanding : (!showLanding && activeTab === tab.id)
-          return (
-            <button
-              key={tab.id}
-              role="tab"
-              aria-selected={selected}
-              disabled={!tab.enabled}
-              onClick={() => tab.enabled && setActiveTab(tab.id)}
-              title={tab.enabled ? tab.label : 'Open a flow first'}
-              className={[
-                'flex items-center gap-1.5 px-2.5 sm:px-3 text-xs font-medium transition-colors whitespace-nowrap',
-                'focus-visible:outline-none focus-visible:relative focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-ring',
-                'disabled:opacity-40 disabled:cursor-not-allowed',
-                i > 0 ? 'border-l border-border' : '',
-                selected ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
-              ].join(' ')}
-            >
-              <tab.Icon size={13} className="shrink-0" />
-              <span>{tab.label}</span>
-              {tab.id === 'runs' && activeRunId && (
-                <span className="inline-flex w-1.5 h-1.5 rounded-full bg-warning animate-pulse" />
-              )}
-            </button>
-          )
-        })}
+          open. */}
+      <div className="shrink-0" role="presentation">
+        <SegmentedControl
+          size="sm"
+          value={showLanding ? 'flows' : activeTab}
+          onChange={(id) => { if (id === 'flows' || hasFlow) setActiveTab(id) }}
+          options={[
+            { value: 'flows',   label: <span className="inline-flex items-center gap-1.5" title="All flows"><GitBranch size={13} aria-hidden="true" /> Flows</span> },
+            { value: 'builder', label: <span className="inline-flex items-center gap-1.5" title={hasFlow ? 'Builder' : 'Open a flow first'}><Share2 size={13} aria-hidden="true" /> Builder</span>, disabled: !hasFlow },
+            { value: 'runs',    label: (
+              <span className="inline-flex items-center gap-1.5" title={hasFlow ? 'Runs' : 'Open a flow first'}>
+                <History size={13} aria-hidden="true" /> Runs
+                {activeRunId && <span className="nubi-dot nubi-dot-warning" aria-label="A run is in progress" />}
+              </span>
+            ), disabled: !hasFlow },
+          ]}
+        />
       </div>
 
       {/* Canvas / Notebook view switcher (icons) — builder tab only */}
       {builderBar && (
-        <div className="flex h-8 rounded-lg border border-border overflow-hidden shrink-0">
-          {[
-            { id: 'canvas', Icon: Share2, title: 'Canvas / DAG view' },
-            { id: 'notebook', Icon: LayoutList, title: 'Notebook / cell view' },
-            { id: 'code', Icon: FileCode2, title: 'Code / Files view' },
-          ].map((v, i) => (
-            <button
-              key={v.id}
-              onClick={() => flowBuilderRef.current?.setView(v.id)}
-              title={v.title}
-              aria-label={v.title}
-              aria-pressed={flowView === v.id}
-              className={[
-                'flex items-center justify-center w-8 transition-colors',
-                'focus-visible:outline-none focus-visible:relative focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-ring',
-                i > 0 ? 'border-l border-border' : '',
-                flowView === v.id ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
-              ].join(' ')}
-            >
-              <v.Icon size={14} />
-            </button>
-          ))}
+        <div className="shrink-0">
+          <SegmentedControl
+            size="sm"
+            value={flowView}
+            onChange={(id) => flowBuilderRef.current?.setView(id)}
+            options={[
+              { value: 'canvas', label: <Share2 size={14} aria-hidden="true" />, ariaLabel: 'Canvas / DAG view' },
+              { value: 'notebook', label: <LayoutList size={14} aria-hidden="true" />, ariaLabel: 'Notebook / cell view' },
+              { value: 'code', label: <FileCode2 size={14} aria-hidden="true" />, ariaLabel: 'Code / Files view' },
+            ]}
+          />
         </div>
       )}
 
@@ -1735,99 +1595,35 @@ export default function FlowsPage() {
           type="text"
           value={activeSpec?.name ?? ''}
           onChange={e => setActiveSpec({ ...activeSpec, name: e.target.value })}
-          placeholder={flowView === 'notebook' ? 'Notebook name…' : 'Flow name…'}
+          placeholder={flowView === 'notebook' ? 'Notebook name' : 'Flow name'}
           disabled={!canWrite}
           aria-label="Flow name"
           className={[
-            'h-8 px-2.5 text-xs font-medium border border-border rounded-lg bg-surface text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60 shrink-0 disabled:opacity-50',
-            // Notebook view packs more controls into the bar — keep the input compact.
-            flowView === 'notebook' ? 'w-24 sm:w-28 2xl:w-40' : 'w-24 sm:w-40',
+            'nubi-input nubi-input-sm shrink-0 font-semibold',
+            flowView === 'notebook' ? 'w-28 2xl:w-40' : 'w-32 sm:w-44',
           ].join(' ')}
         />
       )}
 
       {/* Notebook-only: add-cell buttons (was the notebook toolbar) */}
       {builderBar && flowView === 'notebook' && (
-        <div className="flex items-center gap-1 shrink-0">
-          <button
-            onClick={() => flowBuilderRef.current?.addCell('sql')}
-            title="Add SQL cell"
-            className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <Database size={12} className="text-blue-500" />
+        <div className="flex shrink-0 items-center gap-1">
+          <Button variant="ghost" size="xs" onClick={() => flowBuilderRef.current?.addCell('sql')} title="Add SQL cell" aria-label="Add SQL cell">
+            <Database size={13} aria-hidden="true" />
             <span className="hidden sm:inline">+ SQL</span>
-          </button>
-          <button
-            onClick={() => flowBuilderRef.current?.addCell('python')}
-            title="Add Python cell"
-            className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <Code2 size={12} className="text-violet-500" />
+          </Button>
+          <Button variant="ghost" size="xs" onClick={() => flowBuilderRef.current?.addCell('python')} title="Add Python cell" aria-label="Add Python cell">
+            <Code2 size={13} aria-hidden="true" />
             <span className="hidden sm:inline">+ Python</span>
-          </button>
-          <button
-            onClick={() => flowBuilderRef.current?.addCell('markdown')}
-            title="Add Note (markdown) cell"
-            className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <FileText size={12} className="text-slate-400" />
+          </Button>
+          <Button variant="ghost" size="xs" onClick={() => flowBuilderRef.current?.addCell('markdown')} title="Add Note (markdown) cell" aria-label="Add note cell">
+            <FileText size={13} aria-hidden="true" />
             <span className="hidden sm:inline">+ Note</span>
-          </button>
+          </Button>
         </div>
       )}
 
-      <div className="flex items-center gap-1 ml-auto shrink-0">
-        {/* Flows landing: refresh · secrets · new flow · rail toggle */}
-        {showLanding && (
-          <>
-            <button
-              onClick={loadFlows}
-              disabled={loadingFlows}
-              title="Refresh flows"
-              aria-label="Refresh flows"
-              className="flex items-center justify-center w-8 h-8 rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <RefreshCw size={14} className={loadingFlows ? 'animate-spin' : ''} />
-            </button>
-            <button
-              onClick={() => togglePanel('secrets')}
-              title="Secrets"
-              aria-pressed={rightPanel === 'secrets' && !rightCollapsed}
-              className={[
-                'flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                rightPanel === 'secrets' && !rightCollapsed
-                  ? 'bg-primary text-primary-fg border-primary'
-                  : 'border-border bg-surface text-fg hover:bg-surface-2',
-              ].join(' ')}
-            >
-              <KeyRound size={13} />
-              <span className="hidden sm:inline">Secrets</span>
-            </button>
-            {canWrite && (
-              <button
-                onClick={handleNew}
-                title="New flow"
-                className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-primary text-primary-fg text-xs font-medium hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Plus size={13} strokeWidth={2.5} />
-                <span className="hidden sm:inline">New flow</span>
-              </button>
-            )}
-            <button
-              onClick={() => setCollapsed(!rightCollapsed)}
-              title={rightCollapsed ? 'Show flow list' : 'Hide flow list'}
-              aria-label={rightCollapsed ? 'Show flow list' : 'Hide flow list'}
-              aria-pressed={!rightCollapsed}
-              className={[
-                'hidden md:flex w-8 h-8 items-center justify-center rounded-lg border transition-colors ml-0.5',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                !rightCollapsed ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2',
-              ].join(' ')}
-            >
-              <List size={15} />
-            </button>
-          </>
-        )}
+      <div className="flex items-center gap-1.5 ml-auto shrink-0">
         {/* Builder-only actions */}
         {builderBar && (
           <>
@@ -1837,11 +1633,10 @@ export default function FlowsPage() {
             {/* Unsaved / autosave status — sits next to the Save button */}
             <SaveStatusBadge dirty={dirty} saving={saving} autosaveStatus={autosaveStatus} className="hidden sm:flex px-1" />
             {canWrite && (
-              <button onClick={triggerSave} disabled={saving} title="Save flow"
-                className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 text-xs font-medium rounded-lg border border-border bg-surface text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+              <Button variant="secondary" size="sm" onClick={triggerSave} loading={saving} title="Save flow" aria-label="Save flow">
+                {!saving && <Save size={14} aria-hidden="true" />}
                 <span className="hidden lg:inline">Save</span>
-              </button>
+              </Button>
             )}
             {/* Secondary actions (Validate · Checkpoint · Version history ·
                 Auto-rebuild) live in an overflow menu so the bar fits at
@@ -1861,11 +1656,10 @@ export default function FlowsPage() {
               <ScheduleControl flow={activeFlow} onSaved={handleSaved} />
             )}
             {canWrite && (
-              <button onClick={triggerRun} disabled={running || !canRun} title={!canRun ? 'Save the flow first' : 'Run flow'}
-                className="flex items-center gap-1.5 px-2.5 h-8 text-xs font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                {running ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
+              <Button size="sm" onClick={triggerRun} disabled={!canRun} loading={running} title={!canRun ? 'Save the flow first' : 'Run flow'} aria-label="Run flow">
+                {!running && <Play size={14} aria-hidden="true" />}
                 <span className="hidden lg:inline">Run</span>
-              </button>
+              </Button>
             )}
             {/* Editing the flow as code now lives in the dedicated "Code" view
                 (the third view-switcher option) — the old canvas-side code
@@ -1877,7 +1671,7 @@ export default function FlowsPage() {
             active panel to fully collapse. Add task / Inspector are canvas tools;
             in the notebook/code view only Flows + Variables are offered. */}
         {!showLanding && (
-        <div className="hidden md:flex items-center gap-0.5 pl-1.5 ml-0.5 border-l border-border">
+        <div className="hidden md:flex items-center gap-1 pl-2 ml-1 border-l border-frame-line">
           {[
             { id: 'flows',     Icon: List,              title: 'Flows' },
             { id: 'variables', Icon: Variable,          title: 'Variables' },
@@ -1887,14 +1681,9 @@ export default function FlowsPage() {
           ].filter(p => !(builderBar && (flowView === 'notebook' || flowView === 'code') && p.id !== 'flows' && p.id !== 'variables' && p.id !== 'secrets')).map(p => {
             const active = rightPanel === p.id && !rightCollapsed
             return (
-              <button key={p.id} onClick={() => togglePanel(p.id)} title={p.title} aria-label={p.title} aria-pressed={active}
-                className={[
-                  'w-8 h-8 flex items-center justify-center rounded-lg border transition-colors',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  active ? 'bg-primary text-primary-fg border-primary' : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2',
-                ].join(' ')}>
-                <p.Icon size={15} />
-              </button>
+              <Button key={p.id} variant={active ? 'primary' : 'secondary'} size="icon-sm" onClick={() => togglePanel(p.id)} title={p.title} aria-label={p.title} aria-pressed={active}>
+                <p.Icon size={15} aria-hidden="true" />
+              </Button>
             )
           })}
         </div>
@@ -1909,13 +1698,13 @@ export default function FlowsPage() {
     // without causing page scroll — critical for the ReactFlow canvas height.
     <div className="flex flex-col h-full overflow-hidden">
       {/* Outer wrapper that fills available space */}
-      <div className="flex flex-1 min-h-0 overflow-hidden bg-bg">
+      <div className="flex flex-1 min-h-0 overflow-hidden bg-surface">
 
         {/* ── Main area ──────────────────────────────────────────────────── */}
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
 
           {/* One unified toolbar in the app top bar, whichever view is showing. */}
-          {topbarSlot && createPortal(flowsToolbar, topbarSlot)}
+          {topbarSlot && hasFlow && createPortal(flowsToolbar, topbarSlot)}
 
           {showLanding ? (
             /* ── Flows-first landing (list + create; scheduling per-flow) ─── */
@@ -1926,67 +1715,52 @@ export default function FlowsPage() {
               onOpen={handleSelectFlow}
               onNew={handleNew}
               onPatched={handleFlowPatched}
+              onRefresh={loadFlows}
+              secretsOpen={rightPanel === 'secrets' && !rightCollapsed}
+              onToggleSecrets={() => togglePanel('secrets')}
             />
           ) : (
             /* ── Flow workspace (Builder / Runs) ─────────────────────────── */
             <>
-              {/* Action banners (validate / save / run) */}
+              {/* Action banners (validate / save / run): a 2px rule says ok / failed */}
               {validationIssues && (
-                <div className={[
-                  'shrink-0 flex items-start gap-2 px-4 py-2.5 text-xs border-b',
-                  validationIssues.length === 0
-                    ? 'bg-success-bg border-success/20 text-success'
-                    : 'bg-danger-bg border-danger/20 text-danger',
-                ].join(' ')}>
-                  {validationIssues.length === 0
-                    ? <CheckCircle2 size={14} className="shrink-0 mt-0.5" />
-                    : <AlertCircle size={14} className="shrink-0 mt-0.5" />}
+                <div
+                  role={validationIssues.length === 0 ? 'status' : 'alert'}
+                  className={`nubi-notice shrink-0 mx-4 mt-3 text-xs ${validationIssues.length === 0 ? 'nubi-notice-success' : 'nubi-notice-error'}`}
+                >
                   <div className="flex-1">
                     {validationIssues.length === 0
                       ? 'Flow spec is valid.'
-                      : <><strong>Validation issues:</strong><ul className="mt-1 space-y-0.5 list-disc list-inside">{validationIssues.map((i, idx) => <li key={idx}>{i}</li>)}</ul></>}
+                      : <><strong>Validation issues</strong><ul className="mt-1 space-y-0.5 list-disc list-inside">{validationIssues.map((i, idx) => <li key={idx}>{i}</li>)}</ul></>}
                   </div>
-                  <button onClick={() => setValidationIssues(null)} aria-label="Dismiss validation result" className="shrink-0 opacity-60 hover:opacity-100 transition-opacity"><X size={13} /></button>
+                  <button type="button" onClick={() => setValidationIssues(null)} aria-label="Dismiss validation result" className="shrink-0 opacity-70 hover:opacity-100"><X size={14} aria-hidden="true" /></button>
                 </div>
               )}
               {saveError && (
-                <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-danger-bg border-b border-danger/20 text-xs text-danger">
-                  <AlertCircle size={13} />
-                  <span className="flex-1 min-w-0">{saveError}</span>
-                  <button onClick={() => setSaveError(null)} aria-label="Dismiss save error" className="ml-auto opacity-60 hover:opacity-100 shrink-0"><X size={12} /></button>
+                <div role="alert" className="nubi-notice nubi-notice-error shrink-0 mx-4 mt-3 text-xs">
+                  <span className="flex-1 min-w-0"><b>Couldn&rsquo;t save.</b> {saveError}</span>
+                  <Button size="xs" variant="secondary" onClick={triggerSave}>Retry</Button>
+                  <button type="button" onClick={() => setSaveError(null)} aria-label="Dismiss save error" className="shrink-0 opacity-70 hover:opacity-100"><X size={14} aria-hidden="true" /></button>
                 </div>
               )}
               {runError && (
-                <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-danger-bg border-b border-danger/20 text-xs text-danger">
-                  <AlertCircle size={13} />
-                  <span className="flex-1 min-w-0">{runError}</span>
-                  <button onClick={() => setRunError(null)} aria-label="Dismiss run error" className="ml-auto opacity-60 hover:opacity-100 shrink-0"><X size={12} /></button>
+                <div role="alert" className="nubi-notice nubi-notice-error shrink-0 mx-4 mt-3 text-xs">
+                  <span className="flex-1 min-w-0"><b>Run failed.</b> {runError}</span>
+                  <button type="button" onClick={() => setRunError(null)} aria-label="Dismiss run error" className="shrink-0 opacity-70 hover:opacity-100"><X size={14} aria-hidden="true" /></button>
                 </div>
               )}
 
               {/* Read-only version-view banner — builder shows the version's
                   spec; the draft is untouched until Restore. */}
               {viewingVersion && activeTab === 'builder' && (
-                <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-info-bg border-b border-info/20 text-xs text-info">
-                  <History size={13} className="shrink-0" />
+                <div className="nubi-notice nubi-notice-info shrink-0 mx-4 mt-3 text-xs" role="status">
+                  <History size={14} className="shrink-0" aria-hidden="true" />
                   <span className="flex-1 min-w-0 truncate">
                     Viewing <span className="font-mono font-semibold">v{viewingVersion.version}</span> (read-only)
-                    {viewingVersion.message ? <span className="text-muted"> — {viewingVersion.message}</span> : null}
+                    {viewingVersion.message ? <span className="text-muted"> · {viewingVersion.message}</span> : null}
                   </span>
-                  {canWrite && (
-                    <button
-                      onClick={restoreViewedVersion}
-                      className="shrink-0 px-2 h-6 rounded-md border border-info/30 font-medium hover:bg-info/10 transition-colors"
-                    >
-                      Restore
-                    </button>
-                  )}
-                  <button
-                    onClick={() => setViewingVersion(null)}
-                    className="shrink-0 px-2 h-6 rounded-md border border-border text-fg font-medium hover:bg-surface-2 transition-colors"
-                  >
-                    Back to draft
-                  </button>
+                  {canWrite && <Button size="xs" variant="secondary" onClick={restoreViewedVersion}>Restore</Button>}
+                  <Button size="xs" variant="secondary" onClick={() => setViewingVersion(null)}>Back to draft</Button>
                 </div>
               )}
 
@@ -2034,15 +1808,15 @@ export default function FlowsPage() {
             Dashboards rails). In the builder/runs workspace the same rail also
             hosts the Add task / Inspector / Variables panels via the top-bar
             toggles. Collapsible; re-open from the top bar. */}
-        {!rightCollapsed && (
-          <aside className="hidden md:flex shrink-0 w-64 lg:w-72 flex-col border-l border-border bg-surface">
-            <div className="shrink-0 flex items-center justify-between px-3 h-9 border-b border-border">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted truncate">
+        {!rightCollapsed && (!showLanding || rightPanel === 'secrets') && (
+          <aside className="hidden md:flex shrink-0 w-64 lg:w-80 flex-col border-l border-frame-line bg-surface">
+            <div className="shrink-0 flex items-center justify-between pl-3 pr-1.5 h-10 border-b border-border" style={{ borderTop: '2px solid var(--ink)' }}>
+              <span className="t-label truncate">
                 {effectivePanel === 'flows' ? 'Flows' : effectivePanel === 'variables' ? 'Variables' : effectivePanel === 'secrets' ? 'Secrets' : effectivePanel === 'add' ? 'Add task' : (
                   <>
                     Inspector
                     {selectedTask?.key && (
-                      <span className="ml-1.5 font-mono normal-case tracking-normal text-fg/80">
+                      <span className="ml-1.5 font-mono normal-case tracking-normal text-fg">
                         · {selectedTask.key}
                       </span>
                     )}
@@ -2051,23 +1825,13 @@ export default function FlowsPage() {
               </span>
               <div className="flex items-center gap-0.5">
                 {effectivePanel === 'flows' && (
-                  <button
-                    onClick={loadFlows}
-                    disabled={loadingFlows}
-                    title="Refresh flows"
-                    className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors"
-                  >
-                    <RefreshCw size={13} className={loadingFlows ? 'animate-spin' : ''} />
-                  </button>
+                  <Button variant="ghost" size="icon-sm" onClick={loadFlows} disabled={loadingFlows} title="Refresh flows" aria-label="Refresh flows">
+                    <RefreshCw size={14} className={loadingFlows ? 'animate-spin' : ''} aria-hidden="true" />
+                  </Button>
                 )}
-                <button
-                  onClick={() => setCollapsed(true)}
-                  title="Collapse panel"
-                  aria-label="Collapse side panel"
-                  className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-                >
-                  <PanelRightClose size={16} />
-                </button>
+                <Button variant="ghost" size="icon-sm" onClick={() => setCollapsed(true)} title="Collapse panel" aria-label="Collapse side panel">
+                  <PanelRightClose size={16} aria-hidden="true" />
+                </Button>
               </div>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
@@ -2111,7 +1875,7 @@ export default function FlowsPage() {
                     showHeader={false}
                   />
                 ) : (
-                  <p className="text-xs text-muted/70 m-3 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-4 text-center">
+                  <p className="m-3 border border-dashed border-frame-line px-3 py-4 text-center text-xs text-muted" style={{ borderRadius: 2 }}>
                     Select a task on the canvas to configure it.
                   </p>
                 )

@@ -44,7 +44,15 @@ import { normalizeColumnMeta } from '../../components/app/editableGridUtils.js'
 import * as api from '../../lib/api.js'
 import DatasetProfileView from './DatasetProfileView.jsx'
 import EmptyState from '../../components/ui/EmptyState.jsx'
-import Badge from '../../components/ui/Badge.jsx'
+import Tag from '../../components/ui/Tag.jsx'
+import Button from '../../components/ui/Button.jsx'
+import Input from '../../components/ui/Input.jsx'
+import Skeleton from '../../components/ui/Skeleton.jsx'
+import { Tabs, TabsList, TabsTrigger } from '../../components/ui/Tabs.jsx'
+import ConnectorLogo from '../../components/app/ConnectorLogo.jsx'
+import { getTypeInfo } from '../../data/connectors.js'
+import { EmptyData, EmptySearch, ErrorFigure } from '../../components/illustrations'
+import '../../components/app/appPatterns.css'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -70,18 +78,14 @@ async function fetchTables(datastoreId) {
 function TableItem({ name, active, onClick, indented = false }) {
   return (
     <button
+      type="button"
       onClick={onClick}
-      className={[
-        'w-full flex items-center gap-2 py-1.5 rounded-lg text-[13px] font-mono text-left transition-colors duration-100',
-        indented ? 'pl-5 pr-2.5' : 'px-2.5',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        active
-          ? 'bg-primary/10 text-primary'
-          : 'text-muted hover:bg-surface-2 hover:text-fg',
-      ].join(' ')}
+      aria-current={active ? 'true' : undefined}
+      className="ap-rail-item"
+      style={indented ? { paddingLeft: 28 } : undefined}
     >
-      <Table2 size={13} className={active ? 'text-primary shrink-0' : 'text-muted/70 shrink-0'} />
-      <span className="truncate">{name}</span>
+      <Table2 size={13} className="shrink-0 text-subtle" aria-hidden="true" />
+      <span className="ap-trunc">{name}</span>
     </button>
   )
 }
@@ -99,17 +103,16 @@ function TableItem({ name, active, onClick, indented = false }) {
 function DatasetGroupHeader({ schema, count, collapsed, onToggle }) {
   return (
     <button
+      type="button"
       onClick={onToggle}
       aria-expanded={!collapsed}
-      className="w-full flex items-center gap-1 px-1.5 py-1 mt-1 first:mt-0 rounded-lg text-left text-muted hover:bg-surface-2 hover:text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="nubi-focus-inset flex w-full items-center gap-1.5 border-b border-border px-3 py-1.5 text-left text-subtle transition-colors hover:bg-frame-hover hover:text-fg"
     >
       {collapsed
-        ? <ChevronRight size={11} className="shrink-0" />
-        : <ChevronDown size={11} className="shrink-0" />}
-      <span className="truncate text-[10px] font-semibold uppercase tracking-wide" title={schema}>
-        {schema}
-      </span>
-      <span className="ml-auto shrink-0 text-[10px] tabular-nums text-muted/70">{count}</span>
+        ? <ChevronRight size={12} className="shrink-0" aria-hidden="true" />
+        : <ChevronDown size={12} className="shrink-0" aria-hidden="true" />}
+      <span className="t-label truncate" title={schema}>{schema}</span>
+      <span className="ap-meta ml-auto shrink-0">{count}</span>
     </button>
   )
 }
@@ -118,19 +121,8 @@ function DatasetGroupHeader({ schema, count, collapsed, onToggle }) {
 // Connector picker (mobile dropdown or desktop label)
 // ---------------------------------------------------------------------------
 
-function ConnectorAvatar({ name, active }) {
-  const letter = (name ?? '?').trim().charAt(0).toUpperCase() || '?'
-  return (
-    <span
-      className={[
-        'flex items-center justify-center w-6 h-6 rounded-lg text-[11px] font-display font-semibold shrink-0',
-        active ? 'bg-primary text-primary-fg' : 'bg-surface-2 text-muted border border-border',
-      ].join(' ')}
-      aria-hidden="true"
-    >
-      {letter}
-    </span>
-  )
+function ConnectorAvatar({ connector }) {
+  return <ConnectorLogo info={getTypeInfo(connector?.config?.connector_type)} size={16} />
 }
 
 function ConnectorDropdown({ connectors, selectedId, onSelect }) {
@@ -142,8 +134,13 @@ function ConnectorDropdown({ connectors, selectedId, onSelect }) {
     const onDown = (e) => {
       if (ref.current && !ref.current.contains(e.target)) setOpen(false)
     }
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
     document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
   }, [open])
 
   const selected = connectors.find((c) => c.id === selectedId) ?? connectors[0]
@@ -151,41 +148,36 @@ function ConnectorDropdown({ connectors, selectedId, onSelect }) {
   return (
     <div ref={ref} className="relative">
       <button
+        type="button"
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-2 px-2.5 py-2 rounded-xl border border-border bg-surface-2 hover:bg-surface text-sm font-medium text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex w-full items-center gap-2 border border-control bg-surface px-2 py-1.5 text-left text-sm font-medium text-fg transition-colors hover:border-ink"
+        style={{ borderRadius: 2, borderColor: 'var(--border-control)' }}
         aria-haspopup="listbox"
         aria-expanded={open}
       >
-        <ConnectorAvatar name={selected?.name} active />
-        <span className="flex-1 truncate text-left">{selected?.name ?? 'Select connector'}</span>
-        <ChevronDown size={13} className={`text-muted shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`} />
+        <ConnectorAvatar connector={selected} />
+        <span className="flex-1 truncate">{selected?.name ?? 'Select connector'}</span>
+        <ChevronDown size={14} className="shrink-0 text-muted" aria-hidden="true" style={{ transform: open ? 'rotate(180deg)' : 'none' }} />
       </button>
       {open && (
-        <div
-          className="absolute left-0 right-0 top-full mt-1.5 z-50 rounded-xl border border-border bg-surface shadow-nubi-xl p-1 max-h-72 overflow-y-auto nubi-animate-scale-in"
-          role="listbox"
-        >
+        <div className="nubi-dropdown left-0 right-0 top-[calc(100%+6px)] max-h-72 overflow-y-auto" role="listbox">
           {connectors.map((c) => (
             <button
+              type="button"
               key={c.id ?? 'demo'}
               role="option"
               aria-selected={c.id === selectedId}
               onClick={() => { onSelect(c.id); setOpen(false) }}
-              className={[
-                'w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm text-left transition-colors duration-100',
-                c.id === selectedId ? 'text-primary bg-primary/5' : 'text-fg hover:bg-surface-2',
-              ].join(' ')}
+              className="nubi-dropdown-item"
+              style={c.id === selectedId ? { background: 'var(--accent-soft)' } : undefined}
             >
-              <ConnectorAvatar name={c.name} active={c.id === selectedId} />
-              <span className="flex-1 min-w-0">
+              <ConnectorAvatar connector={c} />
+              <span className="min-w-0 flex-1 text-left">
                 <span className="block truncate">{c.name}</span>
                 {c.config?.connector_type && (
-                  <span className="block truncate text-[10px] font-mono text-muted/70 leading-tight">
-                    {c.config.connector_type}
-                  </span>
+                  <span className="ap-meta block truncate">{c.config.connector_type}</span>
                 )}
               </span>
-              {c.id === selectedId && <ChevronRight size={12} className="text-primary shrink-0" />}
             </button>
           ))}
         </div>
@@ -238,17 +230,27 @@ export default function DataExplorerPage() {
   // Profile tab
   const [mainTab, setMainTab] = useState('data') // 'data' | 'profile'
   const [datasets, setDatasets] = useState([])
+  const [datasetsLoaded, setDatasetsLoaded] = useState(false)
 
-  // Load org datasets list (for Profile tab dataset_id lookup)
+  // Load the org datasets list only when the Profile tab is opened (it maps a
+  // table to a dataset id). A 404 means this deployment has no dataset-profile
+  // service; say so in the tab instead of failing silently on every page load.
+  const [profileAvailable, setProfileAvailable] = useState(true)
   useEffect(() => {
+    if (mainTab !== 'profile' || datasetsLoaded) return
     let cancelled = false
     api.get('/datasets').then(data => {
       if (cancelled) return
       const list = Array.isArray(data) ? data : (data?.datasets ?? [])
       setDatasets(list)
-    }).catch(() => {})
+      setDatasetsLoaded(true)
+    }).catch(err => {
+      if (cancelled) return
+      if (err?.status === 404) setProfileAvailable(false)
+      setDatasetsLoaded(true)
+    })
     return () => { cancelled = true }
-  }, [])
+  }, [mainTab, datasetsLoaded])
 
   // ── Load connectors ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -420,53 +422,49 @@ export default function DataExplorerPage() {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div className="flex h-full overflow-hidden bg-bg">
+    <div className="relative flex h-full overflow-hidden bg-surface">
+      <h1 className="sr-only">Data</h1>
 
       {/* ── Mobile rail toggle ──────────────────────────────────────────── */}
-      <div className="md:hidden shrink-0 flex items-center border-b border-border bg-surface px-3 py-2 gap-2 absolute top-0 left-0 right-0 z-30">
-        <button
+      <div className="absolute left-0 right-0 top-0 z-30 flex shrink-0 items-center gap-2 border-b border-border bg-surface px-3 py-2 md:hidden">
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={() => setRailOpen((v) => !v)}
-          className="flex items-center gap-2 text-sm font-medium text-fg border border-border rounded-lg px-2.5 py-1.5 bg-surface-2 hover:bg-surface transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-expanded={railOpen}
           aria-label="Toggle connector and table list"
         >
-          <SlidersHorizontal size={14} className="text-muted shrink-0" />
+          <SlidersHorizontal size={14} className="shrink-0" aria-hidden="true" />
           {selectedTable ? (
-            <span className="font-mono truncate max-w-[50vw]">
+            <span className="max-w-[50vw] truncate font-mono">
               {selectedSchema && <span className="text-muted">{selectedSchema}.</span>}
               {selectedTable}
             </span>
           ) : (
             <span className="text-muted">Select table</span>
           )}
-          <ChevronDown size={12} className={`text-muted shrink-0 transition-transform duration-150 ${railOpen ? 'rotate-180' : ''}`} />
-        </button>
+          <ChevronDown size={13} className="shrink-0 text-muted" aria-hidden="true" style={{ transform: railOpen ? 'rotate(180deg)' : 'none' }} />
+        </Button>
       </div>
 
       {/* ── Mobile rail overlay ──────────────────────────────────────────── */}
-      {railOpen && (
-        <div
-          className="md:hidden fixed inset-0 z-40 bg-black/40 backdrop-blur-sm nubi-animate-fade-in"
-          onClick={() => setRailOpen(false)}
-        />
-      )}
+      {railOpen && <div className="ap-backdrop md:hidden" onClick={() => setRailOpen(false)} aria-hidden="true" />}
 
       {/* ── Left rail ───────────────────────────────────────────────────── */}
       <aside
         className={[
-          'flex flex-col shrink-0 border-r border-border bg-surface',
+          'flex shrink-0 flex-col border-r border-frame-line bg-surface',
           // Desktop: always visible, fixed width
-          'md:relative md:flex md:w-[220px]',
+          'md:relative md:flex md:w-[240px]',
           // Mobile: absolute overlay drawer
-          'fixed inset-y-0 left-0 z-50 w-[260px] transition-transform duration-200',
+          'fixed inset-y-0 left-0 w-[280px]',
           railOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0',
         ].join(' ')}
+        style={{ zIndex: railOpen ? 'var(--z-modal)' as any : undefined, transition: 'transform var(--dur-3) var(--ease-out)' }}
       >
         {/* Connector picker */}
-        <div className="p-3 border-b border-border">
-          <p className="text-[10px] font-semibold text-muted uppercase tracking-wider mb-2 px-1">
-            Connector
-          </p>
+        <div className="border-b border-border p-3" style={{ borderTop: '2px solid var(--ink)' }}>
+          <p className="t-label mb-2">Connector</p>
           <ConnectorDropdown
             connectors={connectors}
             selectedId={selectedConnectorId}
@@ -475,48 +473,58 @@ export default function DataExplorerPage() {
         </div>
 
         {/* Table search */}
-        <div className="px-3 py-2 border-b border-border">
-          <div className="relative">
-            <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
-            <input
-              type="text"
-              className="w-full h-7 pl-6 pr-2 text-xs bg-surface-2 border border-border rounded-lg text-fg placeholder:text-muted/50 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent"
-              placeholder="Search tables or datasets…"
-              value={tableSearch}
-              onChange={(e) => setTableSearch(e.target.value)}
-              aria-label="Search tables or datasets"
-            />
-          </div>
+        <div className="border-b border-border px-3 py-2">
+          <Input
+            type="search"
+            size="sm"
+            icon={<Search size={14} />}
+            placeholder="Search tables"
+            value={tableSearch}
+            onChange={(e) => setTableSearch(e.target.value)}
+            aria-label="Search tables or datasets"
+          />
         </div>
 
         {/* Table list */}
-        <div className="flex-1 overflow-y-auto py-2 px-2">
+        <div className="flex-1 overflow-y-auto py-1">
           {tablesLoading ? (
-            <div className="space-y-1 px-1" aria-hidden="true">
-              {Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="h-7 rounded-lg nubi-shimmer" />
-              ))}
+            <div className="space-y-1 px-3 py-2" aria-hidden="true">
+              {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-6 w-full" />)}
             </div>
           ) : tablesError ? (
-            <div className="flex flex-col items-center gap-2.5 p-4 text-center">
-              <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-danger-bg">
-                <AlertCircle size={15} className="text-danger" />
-              </div>
-              <p className="text-xs text-danger leading-relaxed">{tablesError}</p>
-              <button
-                onClick={() => setTablesReloadKey((k) => k + 1)}
-                className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
-              >
-                <RefreshCw size={11} />
-                Retry
-              </button>
-            </div>
+            <EmptyState
+              compact
+              kind="error"
+              art={<ErrorFigure />}
+              title="Tables didn’t load"
+              description={tablesError}
+              action={
+                <Button variant="secondary" size="sm" onClick={() => setTablesReloadKey((k) => k + 1)}>
+                  <RefreshCw size={14} aria-hidden="true" />
+                  Retry
+                </Button>
+              }
+            />
           ) : filteredTables.length === 0 ? (
-            <p className="text-xs text-muted px-3 py-4 text-center leading-relaxed">
-              {tableSearch ? 'No tables match your search.' : 'No tables found.'}
-            </p>
+            tableSearch ? (
+              <EmptyState
+                compact
+                kind="none-match"
+                art={<EmptySearch />}
+                title={`No table matches “${tableSearch}”`}
+                description="Search covers table and dataset names."
+                action={<Button variant="secondary" size="sm" onClick={() => setTableSearch('')}>Clear search</Button>}
+              />
+            ) : (
+              <EmptyState
+                compact
+                art={<EmptyData />}
+                title="No tables here"
+                description="This connector has no tables the current role can read."
+              />
+            )
           ) : (
-            <div className="space-y-0.5">
+            <div>
               {tableGroups.map(({ schema, tables: groupTables }) => {
                 // While searching, always reveal matches — a collapsed dataset
                 // must not hide a table the user just searched for.
@@ -552,75 +560,61 @@ export default function DataExplorerPage() {
           )}
         </div>
 
-        {/* Rail footer: connector type badge */}
-        <div className="px-3 py-2.5 border-t border-border">
-          <Badge variant="default" size="sm" className="font-mono">
-            <Database size={9} aria-hidden="true" />
+        {/* Rail footer: engine tag + table count */}
+        <div className="flex items-center justify-between border-t border-border px-3 py-2.5">
+          <Tag caps={false}>
+            <Database size={10} aria-hidden="true" />
             {connectorType}
-          </Badge>
+          </Tag>
+          {!tablesLoading && !tablesError && <span className="ap-count">{tables.length} tables</span>}
         </div>
       </aside>
 
       {/* ── Main panel ──────────────────────────────────────────────────── */}
-      <main className="flex flex-col flex-1 min-w-0 overflow-hidden md:pt-0 pt-[44px]">
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden pt-[52px] md:pt-0">
         {!selectedTable ? (
           /* Empty state — no table selected */
-          <div className="flex flex-col items-center justify-center h-full p-8">
+          <div className="flex h-full flex-col items-center justify-center p-8">
             <EmptyState
-              icon={<Database size={24} />}
-              title="Browse your connector data"
-              description="Pick a connector and select a table from the left rail to view and edit its data."
-              action={tables.length > 0 && (
-                <div className="flex flex-wrap gap-2 justify-center max-w-sm">
+              art={<EmptyData />}
+              title="Pick a table"
+              description="Choose a connector and a table in the left rail to browse its rows. Where the table has a primary key, cells are editable."
+              action={tables.length > 0 ? (
+                <div className="flex max-w-sm flex-wrap justify-center gap-2">
                   {tables.slice(0, 6).map((t) => (
-                    <button
+                    <Tag
+                      as="button"
+                      type="button"
+                      size="md"
+                      caps={false}
                       key={`${t.schema ?? ''}.${t.name}`}
                       onClick={() => handleSelectTable(t.name, t.schema)}
-                      className="px-3 py-1.5 text-xs font-mono rounded-lg border border-border bg-surface-2 hover:border-primary/40 hover:text-primary transition-colors text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="font-mono"
                     >
                       {t.name}
-                    </button>
+                    </Tag>
                   ))}
                 </div>
-              )}
+              ) : undefined}
             />
           </div>
         ) : (
-          <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             {/* Tab bar */}
-            <div className="shrink-0 flex items-center gap-1 px-4 border-b border-border bg-surface">
-              <button
-                onClick={() => setMainTab('data')}
-                className={[
-                  'flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium border-b-2 transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
-                  mainTab === 'data'
-                    ? 'border-primary text-primary'
-                    : 'border-transparent text-muted hover:text-fg',
-                ].join(' ')}
-              >
-                <Table2 size={13} />
-                Data
-              </button>
-              <button
-                onClick={() => setMainTab('profile')}
-                className={[
-                  'flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium border-b-2 transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
-                  mainTab === 'profile'
-                    ? 'border-primary text-primary'
-                    : 'border-transparent text-muted hover:text-fg',
-                ].join(' ')}
-                title={!profileDatasetId ? 'No matching dataset found for profiling' : undefined}
-              >
-                <BarChart2 size={13} />
-                Profile
-                {!profileDatasetId && (
-                  <span className="text-[9px] text-muted/50 font-normal ml-0.5">(no dataset)</span>
-                )}
-              </button>
+            <div className="shrink-0 border-b border-border bg-surface px-4">
+              <Tabs value={mainTab} onValueChange={setMainTab}>
+                <TabsList aria-label="Table views" className="border-b-0">
+                  <TabsTrigger value="data"><Table2 size={14} aria-hidden="true" /> Data</TabsTrigger>
+                  <TabsTrigger value="profile" title={!profileDatasetId ? 'No matching dataset found for profiling' : undefined}>
+                    <BarChart2 size={14} aria-hidden="true" /> Profile
+                    {!profileDatasetId && <span className="ap-meta ml-1">no dataset</span>}
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
             </div>
 
             {/* Tab content */}
-            <div className="flex-1 min-h-0 overflow-hidden">
+            <div className="min-h-0 flex-1 overflow-hidden">
               {mainTab === 'data' ? (
                 <EditableDataGrid
                   key={`${selectedConnectorId ?? 'demo'}:${selectedSchema ?? ''}.${selectedTable}`}
@@ -638,7 +632,7 @@ export default function DataExplorerPage() {
                   onTotalChange={handleTotalChange}
                 />
               ) : (
-                <DatasetProfileView datasetId={profileDatasetId} />
+                <DatasetProfileView datasetId={profileDatasetId} unavailable={!profileAvailable} />
               )}
             </div>
           </div>

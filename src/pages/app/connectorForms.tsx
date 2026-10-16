@@ -19,6 +19,8 @@ import { getTypeInfo } from '../../data/connectors.js'
 import { listBridges } from '../../lib/bridges.js'
 import { useOrg } from '../../contexts/OrgContext.jsx'
 import BridgeQuickConnect from '../../components/app/BridgeQuickConnect.jsx'
+import Input, { Select, Textarea } from '../../components/ui/Input.jsx'
+import '../../components/app/appPatterns.css'
 
 const MANAGE_ROLES = ['owner', 'admin']
 
@@ -26,36 +28,27 @@ const MANAGE_ROLES = ['owner', 'admin']
 // Shared field primitives
 // ---------------------------------------------------------------------------
 
-function Label({ htmlFor = undefined, children, optional = false }) {
+function Label({ htmlFor = undefined, children, optional = false, required = false }) {
   return (
-    <label htmlFor={htmlFor} className="block text-xs font-medium text-fg mb-1">
+    <label htmlFor={htmlFor} className="nubi-label">
       {children}
-      {optional && <span className="ml-1 text-muted font-normal">(optional)</span>}
+      {required && <span className="text-danger ml-0.5" aria-hidden="true">*</span>}
+      {optional && <span className="ml-1.5 font-normal text-subtle">Optional</span>}
     </label>
   )
 }
 
-// Matches the `nubi-input` primitive's chrome (bg-bg well, rounded-xl, ring
-// focus) — the same convention used by SettingsUI.jsx's `inputCls` — so
-// connector fields read like every other form field in the app.
-const inputCls = `
-  w-full rounded-xl border border-border bg-bg
-  px-3 py-2 text-sm text-fg placeholder:text-muted
-  focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent
-  transition-colors
-`
-
 function SecretNote() {
   return (
-    <p className="text-[11px] text-muted mt-1 flex items-center gap-1">
-      <span className="inline-block w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
-      Encrypted at rest with AES-256-GCM — never shown after save
+    <p className="nubi-hint flex items-center gap-1.5">
+      <span className="nubi-dot nubi-dot-live" aria-hidden="true" />
+      Encrypted at rest with AES-256-GCM. Never shown after save.
     </p>
   )
 }
 
 function HelpNote({ children }) {
-  return <p className="text-[11px] text-muted mt-1 leading-relaxed">{children}</p>
+  return <p className="nubi-hint">{children}</p>
 }
 
 // ---------------------------------------------------------------------------
@@ -71,25 +64,27 @@ function normaliseOptions(options) {
 function Segmented({ field, value, onChange }) {
   const opts = field.options ?? []
   return (
-    <div className="flex gap-3">
+    <div className="flex gap-2" role="radiogroup" aria-label={field.label}>
       {opts.map((opt) => {
         const active = value === opt.value
         return (
           <button
             key={String(opt.value)}
             type="button"
+            role="radio"
+            aria-checked={active}
             onClick={() => onChange(opt.value)}
-            className={`
-              flex-1 rounded-xl border px-3 py-3 text-left text-sm
-              transition-all duration-150
-              focus:outline-none focus:ring-2 focus:ring-ring
-              ${active
-                ? 'border-primary bg-primary/10 text-primary'
-                : 'border-border text-muted hover:text-fg hover:bg-surface-2'}
-            `}
+            className="flex-1 px-3 py-2.5 text-left text-sm transition-colors"
+            style={{
+              borderRadius: 2,
+              border: `1px solid ${active ? 'var(--accent)' : 'var(--border-control)'}`,
+              boxShadow: active ? 'inset 0 0 0 1px var(--accent)' : 'none',
+              background: active ? 'var(--accent-soft)' : 'var(--surface)',
+              color: 'var(--text)',
+            }}
           >
-            <div className="font-medium">{opt.label}</div>
-            {opt.desc && <div className="text-[11px] opacity-70 mt-0.5">{opt.desc}</div>}
+            <div className="font-semibold">{opt.label}</div>
+            {opt.desc && <div className="text-xs mt-0.5 text-muted">{opt.desc}</div>}
           </button>
         )
       })}
@@ -107,24 +102,19 @@ function SaJson({ field, value, onChange }) {
   }
   return (
     <div className="space-y-2">
-      <label
-        className="
-          flex items-center justify-center gap-2 h-9 px-3 rounded-lg
-          border border-dashed border-border text-xs text-muted cursor-pointer
-          hover:border-primary hover:text-primary transition-colors
-        "
-      >
+      <label className="nubi-btn nubi-btn-secondary nubi-btn-sm cursor-pointer w-full justify-center">
         <input type="file" accept=".json,application/json" onChange={handleFile} className="sr-only" />
         Upload .json key file
       </label>
-      <p className="text-[11px] text-muted text-center">— or paste below —</p>
-      <textarea
+      <p className="text-xs text-subtle text-center">or paste the key below</p>
+      <Textarea
         id={`f-${field.key}`}
         placeholder={'{\n  "type": "service_account",\n  ...\n}'}
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value)}
         rows={6}
-        className={`${inputCls} font-mono resize-y`}
+        className="font-mono"
+        spellCheck={false}
       />
       <SecretNote />
     </div>
@@ -136,7 +126,7 @@ function SaJson({ field, value, onChange }) {
  * "connect a local/private database" quick-start (BridgeQuickConnect). See
  * the 'bridge_select' field type doc in src/data/connectors.js.
  */
-function BridgeSelect({ value, onChange }) {
+function BridgeSelect({ value, onChange, invalid = false }) {
   const { activeOrg } = useOrg()
   const canManage = MANAGE_ROLES.includes(activeOrg?.role)
   const [bridges, setBridges] = useState([])
@@ -176,35 +166,34 @@ function BridgeSelect({ value, onChange }) {
 
   return (
     <div className="space-y-1.5">
-      <select
+      <Select
+        id="f-bridge_id"
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value || undefined)}
-        className={inputCls}
+        aria-invalid={invalid ? 'true' : undefined}
+        error={invalid}
       >
-        <option value="">{loading ? 'Loading bridges…' : '— select a bridge —'}</option>
+        <option value="">{loading ? 'Loading bridges…' : 'Select a bridge'}</option>
         {bridges.map((b) => (
           <option key={b.id} value={b.id}>
             {b.name} · {b.status === 'online' ? 'online' : 'offline'}
           </option>
         ))}
-      </select>
+      </Select>
       {!loading && bridges.length === 0 && (
-        <p className="text-[11px] text-muted">No bridges yet — connect one below.</p>
+        <p className="nubi-hint">No bridges yet. Connect one below.</p>
       )}
-      <button
-        type="button"
-        onClick={() => setQuickConnect(true)}
-        className="text-[11px] text-primary hover:underline underline-offset-2"
-      >
-        + Connect a local or private database
+      <button type="button" onClick={() => setQuickConnect(true)} className="ap-link-btn">
+        Connect a local or private database
       </button>
     </div>
   )
 }
 
-function FieldControl({ field, value, onChange }) {
+function FieldControl({ field, value, onChange, invalid = false, onBlur = undefined }) {
   const id = `f-${field.key}`
   const isSecret = (field.group ?? 'config') === 'secret'
+  const aria = { 'aria-invalid': invalid ? ('true' as const) : undefined }
 
   switch (field.type) {
     case 'segmented':
@@ -212,29 +201,30 @@ function FieldControl({ field, value, onChange }) {
     case 'sa_json':
       return <SaJson field={field} value={value} onChange={onChange} />
     case 'bridge_select':
-      return <BridgeSelect value={value} onChange={onChange} />
+      return <BridgeSelect value={value} onChange={onChange} invalid={invalid} />
     case 'select':
       return (
-        <select
+        <Select
           id={id}
           value={value ?? field.default ?? ''}
           onChange={(e) => onChange(e.target.value)}
-          className={inputCls}
-        >
-          {normaliseOptions(field.options).map((o) => (
-            <option key={String(o.value)} value={o.value}>{o.label}</option>
-          ))}
-        </select>
+          onBlur={onBlur}
+          error={invalid}
+          options={normaliseOptions(field.options).map((o) => ({ value: o.value, label: o.label }))}
+        />
       )
     case 'textarea':
       return (
-        <textarea
+        <Textarea
           id={id}
           placeholder={field.placeholder}
           value={value ?? ''}
           onChange={(e) => onChange(e.target.value)}
+          onBlur={onBlur}
           rows={field.rows ?? 3}
-          className={`${inputCls} font-mono resize-y`}
+          className="font-mono"
+          error={invalid}
+          spellCheck={false}
         />
       )
     default: {
@@ -245,7 +235,7 @@ function FieldControl({ field, value, onChange }) {
         : field.type === 'url' ? 'url'
         : 'text'
       return (
-        <input
+        <Input
           id={id}
           type={htmlType}
           placeholder={field.placeholder ?? (field.default != null ? String(field.default) : '')}
@@ -253,8 +243,11 @@ function FieldControl({ field, value, onChange }) {
           onChange={(e) =>
             onChange(field.type === 'number' ? (e.target.value ? Number(e.target.value) : undefined) : e.target.value)
           }
+          onBlur={onBlur}
           autoComplete={isSecret ? 'off' : undefined}
-          className={inputCls}
+          error={invalid}
+          className={field.type === 'number' ? 'ap-mono' : undefined}
+          {...aria}
         />
       )
     }
@@ -263,29 +256,50 @@ function FieldControl({ field, value, onChange }) {
 
 const WIDTH_CLS = { full: 'sm:col-span-2', half: 'sm:col-span-1', third: 'sm:col-span-1' }
 
+/** Keys of required visible fields that are empty. Pure: used by the form to gate submit. */
+export function missingRequired(type, config = {}, secret = {}, editing = false) {
+  const info = getTypeInfo(type)
+  return (info.fields ?? [])
+    .filter((f) => f.required && (!f.showIf || f.showIf(config)))
+    .filter((f) => {
+      const group = f.group ?? 'config'
+      const v = group === 'secret' ? secret[f.key] : config[f.key]
+      // A saved secret is never returned: when editing, blank means "keep".
+      if (group === 'secret' && editing) return false
+      return v === undefined || v === null || String(v).trim() === ''
+    })
+    .map((f) => f.key)
+}
+
 // ---------------------------------------------------------------------------
 // DynamicForm — renders all fields for a connector type from its schema
 // ---------------------------------------------------------------------------
 
-export function DynamicForm({ type, config = {}, secret = {}, onChange }) {
+export function DynamicForm({ type, config = {}, secret = {}, onChange, errors = {}, onFieldBlur = undefined }) {
   const info = getTypeInfo(type)
   const fields = (info.fields ?? []).filter((f) => !f.showIf || f.showIf(config))
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-5">
       {fields.map((field) => {
         const group = field.group ?? 'config'
         const value = group === 'secret' ? secret[field.key] : config[field.key]
         const isSecret = group === 'secret'
+        const err = errors[field.key]
+        const labelled = field.type !== 'segmented' && field.type !== 'sa_json'
         return (
           <div key={field.key} className={WIDTH_CLS[field.width] ?? 'sm:col-span-2'}>
-            {field.type !== 'segmented' && field.type !== 'sa_json' && (
-              <Label htmlFor={`f-${field.key}`} optional={field.optional}>{field.label}</Label>
-            )}
-            {(field.type === 'segmented' || field.type === 'sa_json') && (
-              <Label optional={field.optional}>{field.label}</Label>
-            )}
-            <FieldControl field={field} value={value} onChange={(v) => onChange(group, field.key, v)} />
+            <Label htmlFor={labelled ? `f-${field.key}` : undefined} optional={field.optional} required={field.required}>
+              {field.label}
+            </Label>
+            <FieldControl
+              field={field}
+              value={value}
+              invalid={Boolean(err)}
+              onBlur={() => onFieldBlur?.(field.key)}
+              onChange={(v) => onChange(group, field.key, v)}
+            />
+            {err && <p role="alert" className="nubi-field-error">{err}</p>}
             {field.help && <HelpNote>{field.help}</HelpNote>}
             {isSecret && field.type !== 'sa_json' && <SecretNote />}
           </div>

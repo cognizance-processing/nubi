@@ -43,7 +43,8 @@
  * ThemeContext is absent (e.g. in Storybook), defaults to 'light'.
  */
 
-import { useRef, useCallback, useEffect, useContext } from 'react'
+import { useRef, useCallback, useEffect, useState, useContext } from 'react'
+import './app/monacoSetup'
 import Editor from '@monaco-editor/react'
 import { ThemeContext } from '../contexts/ThemeContext.jsx'
 
@@ -163,18 +164,54 @@ export default function CodeEditor({
     onChange?.(val ?? '')
   }, [onChange])
 
+  // Monaco is fetched at runtime. If it has not mounted after 4s (offline,
+  // blocked, slow), show a plain textarea so the person can always edit. If
+  // Monaco arrives later it takes over again.
+  const [monacoReady, setMonacoReady] = useState(false)
+  const [loadTimedOut, setLoadTimedOut] = useState(false)
+  useEffect(() => {
+    if (monacoReady) return
+    const t = setTimeout(() => setLoadTimedOut(true), 4000)
+    return () => clearTimeout(t)
+  }, [monacoReady])
+  const showFallback = loadTimedOut && !monacoReady
+  const mountWithReady = useCallback((editor, monaco) => {
+    setMonacoReady(true)
+    handleMount(editor, monaco)
+  }, [handleMount])
+
   return (
     <div
-      className="rounded-lg border border-border overflow-hidden"
+      className="rounded-[var(--radius-control)] border border-border overflow-hidden"
       style={{ height }}
     >
+      {showFallback && (
+        <div className="flex h-full flex-col">
+          <p className="m-0 shrink-0 border-b border-border bg-surface-2 px-3 py-1.5 text-xs text-muted" role="status">
+            The code editor is taking a while to load. You can keep writing here.
+          </p>
+          <textarea
+            value={value}
+            onChange={(e) => onChange?.(e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && onRun) { e.preventDefault(); onRun() }
+            }}
+            readOnly={readOnly}
+            spellCheck={false}
+            aria-label={`${language} code`}
+            className="min-h-0 w-full flex-1 resize-none bg-surface p-3 text-[13px] leading-relaxed text-fg outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            style={{ fontFamily: 'var(--font-mono)', tabSize: language === 'python' ? 4 : 2 }}
+          />
+        </div>
+      )}
+      <div style={{ height: showFallback ? 0 : height, visibility: showFallback ? 'hidden' : 'visible' }}>
       <Editor
         height={height}
         language={language}
         theme={monacoTheme}
         value={value}
         onChange={handleChange}
-        onMount={handleMount}
+        onMount={mountWithReady}
         options={{
           readOnly,
           minimap: { enabled: minimap },
@@ -195,11 +232,12 @@ export default function CodeEditor({
           overviewRulerBorder: false,
         }}
         loading={
-          <div className="flex items-center justify-center h-full text-xs text-muted">
-            Loading editor…
+          <div className="flex items-center justify-center h-full text-xs text-muted" role="status">
+            Loading editor
           </div>
         }
       />
+      </div>
     </div>
   )
 }

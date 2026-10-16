@@ -8,40 +8,29 @@
  * explanation and dispatches it to a connected notify channel (Email). This
  * page is the full CRUD + manual-evaluate surface:
  *
- *  - lists watches (name, metric, condition summary, enabled, last state).
+ *  - lists watches as ruled rows (name, metric, condition summary, last state).
  *  - create / edit form (modal): pick a metric, choose dimensions / time grain,
  *    set a threshold (op + value) OR a change_pct rule, pick a connected
- *    integration to alert, enabled toggle.
- *  - "Evaluate now" per watch → POST /evaluate, shows {breached, value,
- *    explanation}.
+ *    integration to alert, enabled switch.
+ *  - "Evaluate" per watch → POST /evaluate, shows {breached, value,
+ *    explanation} inline under the row.
  *  - delete (inline confirm).
  *
- * Styling/conventions mirror AutomationsPage / FlowsPage: the page toolbar is
- * portaled into the single AppShell topbar (useUi().topbarSlot); writes are
- * gated on useCanWrite(); Tailwind design tokens (bg-surface, border-border,
- * text-fg/text-muted, bg-primary/text-primary-fg) are used throughout.
+ * Presentation follows the Swiss app-page pattern (PageShell + .ap-row list,
+ * Tags for state, EmptyWatches art). Writes are gated on useCanWrite().
  */
 
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
-import { createPortal } from 'react-dom'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import {
-  Bell,
   Plus,
   RefreshCw,
-  Loader2,
   Trash2,
-  X,
-  Check,
   Pencil,
   Zap,
-  AlertTriangle,
   TrendingUp,
   Gauge,
-  CheckCircle2,
-  AlertCircle,
 } from 'lucide-react'
 
-import { useUi } from '../../contexts/UiContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
 import {
   listWatches,
@@ -53,8 +42,16 @@ import {
 } from '../../lib/watches.js'
 import { listIntegrations } from '../../lib/integrationsApi.js'
 import { toast } from '../../components/ui/Toast.jsx'
-import Skeleton from '../../components/ui/Skeleton.jsx'
-import Badge from '../../components/ui/Badge.jsx'
+import Button from '../../components/ui/Button.jsx'
+import Tag from '../../components/ui/Tag.jsx'
+import Modal from '../../components/ui/Modal.jsx'
+import Input, { Select, Field } from '../../components/ui/Input.jsx'
+import SegmentedControl from '../../components/ui/SegmentedControl.jsx'
+import EmptyState from '../../components/ui/EmptyState.jsx'
+import PageShell from '../../components/app/PageShell.jsx'
+import { EmptyWatches } from '../../components/illustrations'
+import { ListSkeleton, LoadError } from './appShared.jsx'
+import '../../components/app/appPatterns.css'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -107,25 +104,18 @@ function isEnabled(watch) {
 }
 
 // ---------------------------------------------------------------------------
-// Last-state pill
+// Last-state tag
 // ---------------------------------------------------------------------------
 
-function StatePill({ state }) {
+function StateTag({ state }) {
   const map = {
-    breached: { variant: 'danger', label: 'Breached', Icon: AlertCircle },
-    ok:       { variant: 'success', label: 'OK', Icon: CheckCircle2 },
-    error:    { variant: 'warning', label: 'Error', Icon: AlertTriangle },
+    breached: { variant: 'danger', label: 'Breached' },
+    ok:       { variant: 'success', label: 'OK' },
+    error:    { variant: 'warning', label: 'Error' },
   }
   const m = map[state]
-  if (!m) {
-    return <Badge size="sm">Not evaluated</Badge>
-  }
-  const { Icon } = m
-  return (
-    <Badge variant={m.variant} size="sm">
-      <Icon size={11} /> {m.label}
-    </Badge>
-  )
+  if (!m) return <Tag>Not evaluated</Tag>
+  return <Tag variant={m.variant} dot>{m.label}</Tag>
 }
 
 // ---------------------------------------------------------------------------
@@ -136,7 +126,7 @@ function WatchRow({ watch, metricName, canWrite, onEdit, onDeleted }) {
   const [evaluating, setEvaluating] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const [result, setResult] = useState(null)
+  const [result, setResult] = useState<any>(null)
 
   const handleEvaluate = useCallback(async () => {
     setEvaluating(true)
@@ -159,7 +149,7 @@ function WatchRow({ watch, metricName, canWrite, onEdit, onDeleted }) {
       toast.success(`Deleted "${watch.name}".`)
       onDeleted?.(watch.id)
     } else {
-      toast.error('Delete failed — check the console.')
+      toast.error('Couldn’t delete this watch. Try again.')
       setConfirmDelete(false)
     }
   }, [watch.id, watch.name, onDeleted])
@@ -167,127 +157,90 @@ function WatchRow({ watch, metricName, canWrite, onEdit, onDeleted }) {
   // Last state: prefer the live evaluate result, else the watch's stored state.
   const lastState = result?.state ?? watch.last_state ?? watch.config?.last_state ?? null
 
+  const detail = [
+    metricName || watch.metric_id || '—',
+    conditionSummary(watch),
+    watch.config?.time_grain ? `per ${watch.config.time_grain}` : null,
+    Array.isArray(watch.config?.dimensions) && watch.config.dimensions.length > 0
+      ? `by ${watch.config.dimensions.join(', ')}`
+      : null,
+  ].filter(Boolean)
+
   return (
-    <div className="rounded-xl border border-border bg-surface p-4 transition-all duration-150 hover:border-border/80 hover:shadow-nubi-sm">
-      <div className="flex items-start gap-3">
-        <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-          <Bell size={16} className="text-primary" strokeWidth={2} />
-        </div>
-
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <p className="text-sm font-semibold text-fg truncate">{watch.name}</p>
-            {!isEnabled(watch) && <Badge size="sm">Disabled</Badge>}
-            <StatePill state={lastState} />
+    <li className="list-none">
+      <div className="ap-row">
+        <div className="ap-row-main">
+          <div className="ap-row-title">
+            <span className="ap-trunc">{watch.name}</span>
+            <StateTag state={lastState} />
+            {!isEnabled(watch) && <Tag>Disabled</Tag>}
           </div>
-          <p className="text-xs text-muted mt-1.5 truncate">
-            <span className="font-medium text-fg/80">Metric:</span>{' '}
-            {metricName || watch.metric_id || '—'}
-          </p>
-          <p className="text-xs text-muted mt-0.5">
-            <span className="font-medium text-fg/80">When:</span> {conditionSummary(watch)}
-            {watch.config?.time_grain ? ` · per ${watch.config.time_grain}` : ''}
-            {Array.isArray(watch.config?.dimensions) && watch.config.dimensions.length > 0
-              ? ` · by ${watch.config.dimensions.join(', ')}`
-              : ''}
-          </p>
+          <div className="ap-row-sub ap-mono" style={{ fontSize: 12 }}>
+            {detail.join('  ·  ')}
+          </div>
         </div>
 
-        <div className="flex items-center gap-1.5 shrink-0">
-          <button
-            onClick={handleEvaluate}
-            disabled={evaluating}
-            title="Evaluate now"
-            className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs font-medium border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            {evaluating ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} strokeWidth={2.2} />}
-            {evaluating ? 'Evaluating…' : 'Evaluate'}
-          </button>
+        <div className="ap-actions">
+          <Button variant="ghost" size="sm" onClick={handleEvaluate} loading={evaluating} title="Evaluate now">
+            {!evaluating && <Zap size={14} aria-hidden="true" />}
+            {evaluating ? 'Evaluating' : 'Evaluate'}
+          </Button>
 
           {canWrite && (
-            <button
-              onClick={() => onEdit?.(watch)}
-              title="Edit"
-              aria-label={`Edit "${watch.name}"`}
-              className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <Pencil size={13} />
-            </button>
+            <Button variant="ghost" size="icon-sm" onClick={() => onEdit?.(watch)} title="Edit" aria-label={`Edit "${watch.name}"`}>
+              <Pencil size={14} aria-hidden="true" />
+            </Button>
           )}
 
           {!canWrite ? null : confirmDelete ? (
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={handleDelete}
-                disabled={deleting}
-                aria-label={`Confirm delete "${watch.name}"`}
-                className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-danger text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity"
-              >
-                {deleting ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
-                Confirm
-              </button>
-              <button
-                onClick={() => setConfirmDelete(false)}
-                title="Cancel"
-                aria-label="Cancel delete"
-                className="h-8 w-8 flex items-center justify-center rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-              >
-                <X size={14} />
-              </button>
-            </div>
+            <span className="inline-flex items-center gap-1.5" role="group" aria-label={`Delete "${watch.name}"?`}>
+              <span className="text-xs text-muted">Delete this watch?</span>
+              <Button variant="danger" size="xs" onClick={handleDelete} loading={deleting} aria-label={`Confirm delete "${watch.name}"`}>
+                Delete
+              </Button>
+              <Button variant="ghost" size="xs" onClick={() => setConfirmDelete(false)} disabled={deleting}>
+                Keep
+              </Button>
+            </span>
           ) : (
-            <button
-              onClick={() => setConfirmDelete(true)}
-              title="Delete"
-              aria-label={`Delete "${watch.name}"`}
-              className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border text-muted hover:text-danger hover:border-danger/30 hover:bg-danger-bg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <Trash2 size={13} />
-            </button>
+            <Button variant="ghost" size="icon-sm" onClick={() => setConfirmDelete(true)} title="Delete" aria-label={`Delete "${watch.name}"`}>
+              <Trash2 size={14} aria-hidden="true" />
+            </Button>
           )}
         </div>
       </div>
 
-      {/* Evaluate result */}
+      {/* Evaluate result — a 2px rule says ok / breached / error */}
       {result && (
-        <div
-          className={[
-            'mt-3 rounded-lg border p-3 text-xs',
-            result.state === 'breached'
-              ? 'border-danger/20 bg-danger-bg'
-              : result.state === 'error'
-                ? 'border-warning/20 bg-warning-bg'
-                : 'border-success/20 bg-success-bg',
-          ].join(' ')}
-        >
-          <div className="flex items-center gap-2">
-            <StatePill state={result.state} />
-            {result.value !== undefined && result.value !== null && (
-              <span className="text-muted">
-                value <span className="font-mono text-fg">{fmtNum(result.value)}</span>
-              </span>
-            )}
-            {typeof result.sent === 'number' && result.sent > 0 && (
-              <span className="text-muted">· alerted {result.sent} channel{result.sent === 1 ? '' : 's'}</span>
+        <div className="py-2 border-b border-border">
+          <div
+            className={`ap-result ${result.state === 'breached' || result.state === 'error' ? 'is-bad' : 'is-ok'}`}
+            style={{ marginLeft: 12 }}
+            role="status"
+          >
+            <div className="ap-result-head">
+              <StateTag state={result.state} />
+              {result.value !== undefined && result.value !== null && (
+                <span className="ap-meta">value <b className="font-medium" style={{ color: 'var(--text)' }}>{fmtNum(result.value)}</b></span>
+              )}
+              {typeof result.sent === 'number' && result.sent > 0 && (
+                <span className="ap-meta">alerted {result.sent} channel{result.sent === 1 ? '' : 's'}</span>
+              )}
+            </div>
+            {result.explanation && <div className="ap-result-msg">{result.explanation}</div>}
+            {result.error && <div className="ap-result-msg">{result.error}</div>}
+            {result.state === 'ok' && !result.explanation && (
+              <div className="ap-result-msg">Within threshold. No alert was sent.</div>
             )}
           </div>
-          {result.explanation && (
-            <p className="mt-2 text-fg/90 leading-relaxed">{result.explanation}</p>
-          )}
-          {result.error && (
-            <p className="mt-2 text-warning">{result.error}</p>
-          )}
-          {result.state === 'ok' && !result.explanation && (
-            <p className="mt-2 text-muted">Within threshold — no alert sent.</p>
-          )}
         </div>
       )}
-    </div>
+    </li>
   )
 }
 
 // ---------------------------------------------------------------------------
-// WatchModal — create / edit form
+// Draft helpers (create / edit form state)
 // ---------------------------------------------------------------------------
 
 function blankDraft() {
@@ -373,32 +326,19 @@ function bodyFromDraft(draft: Record<string, any>) {
   return { body: { name, metric_id: draft.metric_id, config } }
 }
 
-const FIELD_CLS =
-  'w-full h-9 px-2.5 text-sm rounded-lg border border-border bg-surface text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60'
-const LABEL_CLS = 'block text-xs font-medium text-fg/80 mb-1'
-
-/** Small pill toggle switch — mirrors the Enabled toggle used on AutomationsPage. */
-function ModalToggle({ checked, onChange, label }) {
+/** Square switch (role=switch): ink when on. */
+function Switch({ checked, onChange, label }) {
   return (
     <button
       type="button"
-      onClick={() => onChange?.(!checked)}
       role="switch"
       aria-checked={checked}
       aria-label={label}
       title={label}
-      className={[
-        'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-        'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
-        checked ? 'bg-primary' : 'bg-surface-2 border border-border',
-      ].join(' ')}
+      onClick={() => onChange?.(!checked)}
+      className="ap-switch"
     >
-      <span
-        className={[
-          'inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform',
-          checked ? 'translate-x-[18px]' : 'translate-x-0.5',
-        ].join(' ')}
-      />
+      <span className="ap-switch-knob" />
     </button>
   )
 }
@@ -406,8 +346,7 @@ function ModalToggle({ checked, onChange, label }) {
 function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) {
   const [draft, setDraft] = useState(blankDraft)
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState(null)
-  const dialogRef = useRef(null)
+  const [error, setError] = useState<string | null>(null)
 
   // Re-seed the draft each time the modal opens (create vs edit).
   useEffect(() => {
@@ -442,243 +381,145 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
     }
   }, [draft, onSaved, onClose])
 
-  // Close on Escape.
-  useEffect(() => {
-    if (!open) return undefined
-    const handler = (e) => { if (e.key === 'Escape') onClose?.() }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [open, onClose])
-
-  if (!open) return null
+  const ruleHint = RULE_KINDS.find(k => k.id === draft.ruleKind)?.hint
+  const opId = draft.ruleKind === 'threshold' ? 'watch-threshold-op' : 'watch-change-op'
+  const opVal = draft.ruleKind === 'threshold' ? draft.thresholdOp : draft.changeOp
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="watch-modal-title"
-        tabIndex={-1}
-        className="relative w-full sm:max-w-lg max-h-[92dvh] flex flex-col bg-surface border border-border rounded-t-2xl sm:rounded-2xl shadow-nubi-xl overflow-hidden outline-none"
-      >
-        {/* Header */}
-        <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-border">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
-              <Bell size={15} className="text-primary" strokeWidth={2.2} />
-            </div>
-            <h2 id="watch-modal-title" className="text-sm font-semibold text-fg">
-              {draft.id ? 'Edit watch' : 'New watch'}
-            </h2>
-          </div>
-          <button
-            onClick={onClose}
-            className="h-8 w-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label="Close"
+    <Modal
+      open={open}
+      onClose={saving ? undefined : onClose}
+      title={draft.id ? 'Edit watch' : 'New watch'}
+      description="Watches a governed metric and alerts a channel when a rule is breached."
+      size="lg"
+    >
+      <form onSubmit={(e) => { e.preventDefault(); handleSave() }}>
+        <Modal.Body className="flex flex-col gap-5">
+          <Input
+            id="watch-name"
+            label="Name"
+            value={draft.name}
+            onChange={e => set({ name: e.target.value })}
+            placeholder="Revenue dropped"
+            autoFocus
+          />
+
+          <Select
+            id="watch-metric"
+            label="Metric to monitor"
+            value={draft.metric_id}
+            onChange={e => set({ metric_id: e.target.value })}
+            hint={metrics.length === 0 ? 'No metrics found. Expose a query as a metric first, then create a watch on it.' : undefined}
           >
-            <X size={16} />
-          </button>
-        </div>
+            <option value="">Select a metric</option>
+            {metrics.map(m => <option key={m.id} value={m.id}>{m.name || m.id}</option>)}
+          </Select>
 
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-          {/* Name */}
-          <div>
-            <label htmlFor="watch-name" className={LABEL_CLS}>Name</label>
-            <input
-              id="watch-name"
-              type="text"
-              value={draft.name}
-              onChange={e => set({ name: e.target.value })}
-              placeholder="Revenue dropped"
-              className={FIELD_CLS}
-              autoFocus
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Input
+              id="watch-dimensions"
+              label="Dimensions"
+              value={draft.dimensions}
+              onChange={e => set({ dimensions: e.target.value })}
+              placeholder="region, plan"
+              hint={selectedMetric?.dimensions?.length > 0 ? `Available: ${selectedMetric.dimensions.join(', ')}` : 'Comma-separated. Optional.'}
             />
-          </div>
-
-          {/* Metric */}
-          <div>
-            <label htmlFor="watch-metric" className={LABEL_CLS}>Metric to monitor</label>
-            <select
-              id="watch-metric"
-              value={draft.metric_id}
-              onChange={e => set({ metric_id: e.target.value })}
-              className={FIELD_CLS}
+            <Select
+              id="watch-time-grain"
+              label="Time grain"
+              value={draft.time_grain}
+              onChange={e => set({ time_grain: e.target.value })}
             >
-              <option value="">Select a metric…</option>
-              {metrics.map(m => (
-                <option key={m.id} value={m.id}>
-                  {m.name || m.id}
-                </option>
-              ))}
-            </select>
-            {metrics.length === 0 && (
-              <p className="text-[11px] text-muted mt-1">
-                No metrics found. Define a metric first, then create a watch on it.
-              </p>
-            )}
-          </div>
-
-          {/* Dimensions + grain */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label htmlFor="watch-dimensions" className={LABEL_CLS}>Dimensions</label>
-              <input
-                id="watch-dimensions"
-                type="text"
-                value={draft.dimensions}
-                onChange={e => set({ dimensions: e.target.value })}
-                placeholder="region, plan"
-                className={FIELD_CLS}
-              />
-              {selectedMetric?.dimensions?.length > 0 && (
-                <p className="text-[11px] text-muted mt-1 truncate">
-                  Available: {selectedMetric.dimensions.join(', ')}
-                </p>
-              )}
-            </div>
-            <div>
-              <label htmlFor="watch-time-grain" className={LABEL_CLS}>Time grain</label>
-              <select
-                id="watch-time-grain"
-                value={draft.time_grain}
-                onChange={e => set({ time_grain: e.target.value })}
-                className={FIELD_CLS}
-              >
-                {TIME_GRAINS.map(g => (
-                  <option key={g || 'none'} value={g}>{g || 'none'}</option>
-                ))}
-              </select>
-            </div>
+              {TIME_GRAINS.map(g => <option key={g || 'none'} value={g}>{g || 'none'}</option>)}
+            </Select>
           </div>
 
           {/* Rule kind switcher */}
-          <div>
-            <label className={LABEL_CLS}>Breach rule</label>
-            <div className="flex rounded-lg border border-border overflow-hidden">
-              {RULE_KINDS.map((k, i) => {
-                const active = draft.ruleKind === k.id
-                const { Icon } = k
-                return (
-                  <button
-                    key={k.id}
-                    type="button"
-                    onClick={() => set({ ruleKind: k.id })}
-                    className={[
-                      'flex-1 flex items-center justify-center gap-1.5 h-9 text-xs font-medium transition-colors',
-                      i > 0 ? 'border-l border-border' : '',
-                      active ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
-                    ].join(' ')}
-                  >
-                    <Icon size={13} /> {k.label}
-                  </button>
-                )
-              })}
-            </div>
-            <p className="text-[11px] text-muted mt-1">
-              {RULE_KINDS.find(k => k.id === draft.ruleKind)?.hint}
-            </p>
+          <div className="flex flex-col gap-2">
+            <span className="nubi-label">Breach rule</span>
+            <SegmentedControl
+              size="md"
+              value={draft.ruleKind}
+              onChange={(v) => set({ ruleKind: v })}
+              options={RULE_KINDS.map(k => ({
+                value: k.id,
+                label: <span className="inline-flex items-center gap-1.5"><k.Icon size={14} aria-hidden="true" /> {k.label}</span>,
+              }))}
+              className="w-fit"
+            />
+            <p className="nubi-hint m-0">{ruleHint}</p>
           </div>
 
           {/* Rule inputs */}
-          {draft.ruleKind === 'threshold' ? (
-            <div className="grid grid-cols-[auto_1fr] gap-3 items-end">
-              <div>
-                <label htmlFor="watch-threshold-op" className={LABEL_CLS}>Operator</label>
-                <select
-                  id="watch-threshold-op"
-                  value={draft.thresholdOp}
-                  onChange={e => set({ thresholdOp: e.target.value })}
-                  className={[FIELD_CLS, 'font-mono'].join(' ')}
-                >
-                  {THRESHOLD_OPS.map(op => <option key={op} value={op}>{op}</option>)}
-                </select>
-              </div>
-              <div>
-                <label htmlFor="watch-threshold-value" className={LABEL_CLS}>Value</label>
-                <input
-                  id="watch-threshold-value"
-                  type="number"
-                  value={draft.thresholdValue}
-                  onChange={e => set({ thresholdValue: e.target.value })}
-                  placeholder="1000"
-                  className={FIELD_CLS}
-                />
-              </div>
-            </div>
-          ) : (
-            <div className="grid grid-cols-[auto_1fr] gap-3 items-end">
-              <div>
-                <label htmlFor="watch-change-op" className={LABEL_CLS}>Operator</label>
-                <select
-                  id="watch-change-op"
-                  value={draft.changeOp}
-                  onChange={e => set({ changeOp: e.target.value })}
-                  className={[FIELD_CLS, 'font-mono'].join(' ')}
-                >
-                  {THRESHOLD_OPS.map(op => <option key={op} value={op}>{op}</option>)}
-                </select>
-              </div>
-              <div>
-                <label htmlFor="watch-change-value" className={LABEL_CLS}>Change %</label>
-                <input
-                  id="watch-change-value"
-                  type="number"
-                  value={draft.changeValue}
-                  onChange={e => set({ changeValue: e.target.value })}
-                  placeholder="-10"
-                  className={FIELD_CLS}
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Channel config — pick a connected integration (Email). */}
-          <div className="rounded-lg border border-border bg-surface-2/30 p-3 space-y-3">
-            <p className="text-xs font-semibold text-fg/80">Alert channel</p>
-
-            {integrations.length > 0 ? (
-              <>
-                <div>
-                  <label htmlFor="watch-integration" className={LABEL_CLS}>Connected integration</label>
-                  <select
-                    id="watch-integration"
-                    value={draft.integrationId}
-                    onChange={e => set({ integrationId: e.target.value })}
-                    className={FIELD_CLS}
-                  >
-                    <option value="">No notification (test mode)</option>
-                    {integrations.map(it => (
-                      <option key={it.id} value={it.id}>
-                        {(it.name || it.kind)}
-                        {it.enabled === false ? ' (disabled)' : ''}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <p className="text-[11px] text-muted">
-                  Manage channels in{' '}
-                  <span className="font-medium text-fg/80">Settings → Integrations</span>.
-                </p>
-              </>
+          <div className="grid grid-cols-[120px_1fr] gap-4 items-start">
+            <Select
+              id={opId}
+              label="Operator"
+              value={opVal}
+              onChange={e => set(draft.ruleKind === 'threshold' ? { thresholdOp: e.target.value } : { changeOp: e.target.value })}
+              className="font-mono"
+              options={THRESHOLD_OPS}
+            />
+            {draft.ruleKind === 'threshold' ? (
+              <Input
+                id="watch-threshold-value"
+                label="Value"
+                type="number"
+                value={draft.thresholdValue}
+                onChange={e => set({ thresholdValue: e.target.value })}
+                placeholder="1000"
+                className="font-mono"
+              />
             ) : (
-              <p className="text-[11px] text-muted">
-                No integrations connected — connect an email channel in{' '}
-                <span className="font-medium text-fg/80">Settings → Integrations</span>{' '}
-                to be alerted, or leave this watch to evaluate in test mode (no notification sent).
-              </p>
+              <Input
+                id="watch-change-value"
+                label="Change %"
+                type="number"
+                value={draft.changeValue}
+                onChange={e => set({ changeValue: e.target.value })}
+                placeholder="-10"
+                className="font-mono"
+                hint="Compared with the previous period."
+              />
             )}
           </div>
 
-          {/* Enabled toggle */}
-          <div className="flex items-center justify-between py-1">
+          {/* Channel config — pick a connected integration (Email). */}
+          <fieldset className="ap-note" style={{ display: 'block', margin: 0 }}>
+            <legend className="sr-only">Alert channel</legend>
+            <span className="t-label block mb-2">Alert channel</span>
+            {integrations.length > 0 ? (
+              <>
+                <Select
+                  id="watch-integration"
+                  label="Connected integration"
+                  value={draft.integrationId}
+                  onChange={e => set({ integrationId: e.target.value })}
+                >
+                  <option value="">No notification (test mode)</option>
+                  {integrations.map(it => (
+                    <option key={it.id} value={it.id}>
+                      {(it.name || it.kind)}{it.enabled === false ? ' (disabled)' : ''}
+                    </option>
+                  ))}
+                </Select>
+                <p className="nubi-hint mt-2 mb-0">Manage channels in Settings, Integrations.</p>
+              </>
+            ) : (
+              <p className="m-0">
+                No integrations connected. Connect an email channel in Settings, Integrations to be
+                alerted, or leave this watch in test mode (no notification is sent).
+              </p>
+            )}
+          </fieldset>
+
+          {/* Enabled switch */}
+          <div className="flex items-center justify-between gap-4">
             <div>
-              <p className="text-sm font-medium text-fg">Enabled</p>
-              <p className="text-xs text-muted">Included in scheduled sweeps</p>
+              <p className="m-0 text-sm font-semibold text-fg">Enabled</p>
+              <p className="m-0 text-xs text-muted">Included in scheduled sweeps.</p>
             </div>
-            <ModalToggle
+            <Switch
               checked={draft.enabled}
               onChange={(v) => set({ enabled: v })}
               label={`${draft.enabled ? 'Disable' : 'Enable'} this watch`}
@@ -686,32 +527,15 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
           </div>
 
           {error && (
-            <div className="flex items-start gap-2 text-xs text-danger">
-              <AlertTriangle size={14} className="shrink-0 mt-0.5" />
-              <span>{error}</span>
-            </div>
+            <div className="nubi-notice nubi-notice-error text-xs" role="alert"><span>{error}</span></div>
           )}
-        </div>
-
-        {/* Footer */}
-        <div className="shrink-0 flex items-center justify-end gap-2 px-4 py-3 border-t border-border">
-          <button
-            onClick={onClose}
-            className="h-9 px-4 text-sm font-medium rounded-xl border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="inline-flex items-center gap-1.5 h-9 px-4 text-sm font-semibold rounded-xl bg-primary text-primary-fg hover:opacity-90 disabled:opacity-50 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-          >
-            {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
-            {draft.id ? 'Save changes' : 'Create watch'}
-          </button>
-        </div>
-      </div>
-    </div>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button type="button" variant="secondary" onClick={onClose} disabled={saving}>Cancel</Button>
+          <Button type="submit" loading={saving}>{draft.id ? 'Save changes' : 'Create watch'}</Button>
+        </Modal.Footer>
+      </form>
+    </Modal>
   )
 }
 
@@ -720,17 +544,16 @@ function WatchModal({ open, initial, metrics, integrations, onClose, onSaved }) 
 // ---------------------------------------------------------------------------
 
 export default function WatchesPage() {
-  const { topbarSlot } = useUi()
   const canWrite = useCanWrite()
 
-  const [watches, setWatches] = useState([])
-  const [metrics, setMetrics] = useState([])
-  const [integrations, setIntegrations] = useState([])
+  const [watches, setWatches] = useState<any[]>([])
+  const [metrics, setMetrics] = useState<any[]>([])
+  const [integrations, setIntegrations] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [error, setError] = useState<any>(null)
 
   const [modalOpen, setModalOpen] = useState(false)
-  const [editing, setEditing] = useState(null)
+  const [editing, setEditing] = useState<any>(null)
 
   const metricNameById = useMemo(() => {
     const map = {}
@@ -741,11 +564,16 @@ export default function WatchesPage() {
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
-    const [w, m, ints] = await Promise.all([listWatches(), listMetrics(), listIntegrations()])
-    setWatches(Array.isArray(w) ? w : [])
-    setMetrics(Array.isArray(m) ? m : [])
-    setIntegrations(Array.isArray(ints) ? ints : [])
-    setLoading(false)
+    try {
+      const [w, m, ints] = await Promise.all([listWatches(), listMetrics(), listIntegrations()])
+      setWatches(Array.isArray(w) ? w : [])
+      setMetrics(Array.isArray(m) ? m : [])
+      setIntegrations(Array.isArray(ints) ? ints : [])
+    } catch (err) {
+      setError(err)
+    } finally {
+      setLoading(false)
+    }
   }, [])
 
   // Defer the initial load so it isn't a synchronous setState in the effect body.
@@ -775,102 +603,57 @@ export default function WatchesPage() {
     setWatches(prev => prev.filter(w => w.id !== id))
   }, [])
 
+  const eyebrow = loading || error ? 'Operate' : `Operate · ${watches.length} ${watches.length === 1 ? 'watch' : 'watches'}`
+
   return (
-    <div className="flex flex-col min-h-full bg-bg">
-      {/* Page toolbar — portaled into the single AppShell topbar */}
-      {topbarSlot && createPortal(
-        <div className="flex items-center gap-2 w-full min-w-0">
-          <Bell size={15} className="text-muted shrink-0 hidden sm:block" strokeWidth={2.2} />
-          <span className="text-sm font-semibold font-display text-fg truncate">Watches</span>
-          <div className="flex-1" />
-          <button
-            onClick={load}
-            disabled={loading}
-            title="Refresh"
-            aria-label="Refresh watches"
-            className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0 border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
-          >
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} strokeWidth={2} />
-          </button>
+    <PageShell
+      eyebrow={eyebrow}
+      title="Watches"
+      description="A watch monitors a metric and fires when a threshold or change rule is breached. It composes an explanation and notifies your channel."
+      actions={
+        <>
+          <Button variant="ghost" size="icon-sm" onClick={load} disabled={loading} aria-label="Refresh watches" title="Refresh">
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
+          </Button>
           {canWrite && (
-            <button
-              onClick={handleNew}
-              title="New watch"
-              className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg shrink-0 bg-primary text-primary-fg text-xs font-medium hover:opacity-90 transition-opacity focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              <Plus size={13} strokeWidth={2.5} />
-              <span className="hidden sm:inline">New watch</span>
-            </button>
+            <Button onClick={handleNew}>
+              <Plus size={14} aria-hidden="true" /> New watch
+            </Button>
           )}
-        </div>,
-        topbarSlot
+        </>
+      }
+    >
+      {loading && <ListSkeleton rows={3} tile={false} />}
+
+      {!loading && error && (
+        <LoadError title="Watches didn’t load" error={error} onRetry={load} />
       )}
 
-      {/* Content */}
-      <div className="flex-1 px-4 sm:px-6 py-4 max-w-4xl w-full mx-auto">
-        <p className="text-sm text-muted mb-5 max-w-2xl leading-relaxed">
-          A watch monitors a metric and fires when a threshold or change rule is
-          breached — it composes an explanation and notifies your channel. Use
-          <span className="font-medium text-fg/80"> Evaluate</span> to test a watch right now.
-        </p>
+      {!loading && !error && watches.length === 0 && (
+        <EmptyState
+          art={<EmptyWatches />}
+          title="No watches yet"
+          description={canWrite
+            ? 'A watch checks a metric on a schedule and emails your team the moment it crosses a threshold or moves sharply against the previous period.'
+            : 'Watches are created by editors. Ask one to set up an alert for a metric you care about.'}
+          action={canWrite ? <Button onClick={handleNew}><Plus size={14} aria-hidden="true" /> Create watch</Button> : undefined}
+        />
+      )}
 
-        {loading && (
-          <div className="space-y-3" aria-label="Loading watches">
-            {[0, 1, 2].map(i => <Skeleton.Card key={i} rows={2} />)}
-          </div>
-        )}
-
-        {!loading && error && (
-          <div className="flex flex-col items-center justify-center py-12 gap-3 rounded-xl border border-dashed border-danger/30">
-            <div className="w-11 h-11 rounded-xl bg-danger-bg flex items-center justify-center">
-              <AlertTriangle size={20} className="text-danger" />
-            </div>
-            <p className="text-sm text-danger">{error}</p>
-            <button onClick={load} className="text-xs text-muted hover:text-fg underline">Retry</button>
-          </div>
-        )}
-
-        {!loading && !error && watches.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-14 px-6 text-center rounded-xl border border-dashed border-border">
-            <div className="relative mb-5">
-              <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-brand-gradient shadow-nubi-lg">
-                <Bell size={28} className="text-white" />
-              </div>
-              <div className="absolute -top-1 -right-1 flex items-center justify-center w-6 h-6 rounded-full bg-accent text-white shadow-nubi-md">
-                <Plus size={12} />
-              </div>
-            </div>
-            <h3 className="font-display font-semibold text-xl text-fg mb-2">No watches yet</h3>
-            <p className="text-sm text-muted max-w-sm leading-relaxed mb-6">
-              Create a watch to get proactively alerted when a metric crosses a
-              threshold or moves sharply versus the previous period.
-            </p>
-            {canWrite && (
-              <button
-                onClick={handleNew}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring shadow-nubi-sm"
-              >
-                <Plus size={15} /> Create your first watch
-              </button>
-            )}
-          </div>
-        )}
-
-        {!loading && !error && watches.length > 0 && (
-          <div className="space-y-3">
-            {watches.map(w => (
-              <WatchRow
-                key={w.id}
-                watch={w}
-                metricName={metricNameById[w.metric_id]}
-                canWrite={canWrite}
-                onEdit={handleEdit}
-                onDeleted={handleDeleted}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+      {!loading && !error && watches.length > 0 && (
+        <ul className="ap-list m-0 p-0" aria-label="Watches">
+          {watches.map(w => (
+            <WatchRow
+              key={w.id}
+              watch={w}
+              metricName={metricNameById[w.metric_id]}
+              canWrite={canWrite}
+              onEdit={handleEdit}
+              onDeleted={handleDeleted}
+            />
+          ))}
+        </ul>
+      )}
 
       <WatchModal
         open={modalOpen}
@@ -880,7 +663,6 @@ export default function WatchesPage() {
         onClose={() => setModalOpen(false)}
         onSaved={handleSaved}
       />
-
-    </div>
+    </PageShell>
   )
 }

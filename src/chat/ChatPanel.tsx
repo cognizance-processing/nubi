@@ -16,13 +16,16 @@
 
 import { useState, useRef, useEffect, useCallback, type KeyboardEvent } from 'react'
 import {
-  X, Sparkles, Send, Square, AlertCircle, Clock,
-  Check, Loader2, Bot, Pin, ExternalLink,
+  X, Send, Square, Clock,
+  Check, Pin, ExternalLink,
 } from 'lucide-react'
+import Button from '../components/ui/Button.jsx'
 import MarkdownRenderer from '../components/MarkdownRenderer.jsx'
+import '../components/app/appPatterns.css'
 import ToolCard from './ToolCard.jsx'
 import { toolLabel } from './toolMeta.js'
 import { streamChatMessage, sendChatMessageAsync, pinAnswer } from './chatApi.js'
+import { useUi } from '../contexts/UiContext.jsx'
 import ModelPicker, { MODEL_DEFAULT_VALUE } from '../components/ai/ModelPicker.jsx'
 
 // ---------------------------------------------------------------------------
@@ -139,33 +142,22 @@ function PinButton({ tool, result }: { tool: string; result: Record<string, any>
   if (state === 'pinned') {
     const href = boardId ? `/d/${boardId}` : '/dashboards'
     return (
-      <a
-        href={href}
-        className="inline-flex items-center gap-1.5 text-[11px] font-medium text-brand-teal hover:underline focus:outline-none focus:ring-2 focus:ring-ring rounded-md px-1.5 py-1"
-      >
-        <Check size={12} className="shrink-0" />
-        Pinned — open dashboard
-        <ExternalLink size={11} className="shrink-0 opacity-70" />
+      <a href={href} className="inline-flex items-center gap-1.5 text-xs font-medium text-accent underline underline-offset-4">
+        <Check size={12} className="shrink-0" aria-hidden="true" />
+        Pinned. Open dashboard
+        <ExternalLink size={11} className="shrink-0 opacity-70" aria-hidden="true" />
       </a>
     )
   }
 
   return (
     <div className="space-y-1">
-      <button
-        onClick={onPin}
-        disabled={state === 'pinning'}
-        className="inline-flex items-center gap-1.5 text-[11px] font-medium text-primary bg-primary/10 hover:bg-primary/15 border border-primary/20 rounded-lg px-2 py-1 disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
-      >
-        {state === 'pinning'
-          ? <Loader2 size={12} className="animate-spin shrink-0" />
-          : <Pin size={12} className="shrink-0" />}
-        {state === 'pinning' ? 'Pinning…' : 'Pin to dashboard'}
-      </button>
+      <Button variant="secondary" size="xs" onClick={onPin} loading={state === 'pinning'}>
+        {state !== 'pinning' && <Pin size={12} aria-hidden="true" />}
+        {state === 'pinning' ? 'Pinning' : 'Pin to dashboard'}
+      </Button>
       {state === 'error' && error && (
-        <p className="text-[10px] text-red-500 flex items-start gap-1">
-          <AlertCircle size={11} className="shrink-0 mt-0.5" />{error}
-        </p>
+        <p className="nubi-field-error m-0" role="alert">{error}</p>
       )}
     </div>
   )
@@ -197,43 +189,44 @@ function ToolBlock({ action }: { action: StreamAction }) {
 }
 
 // ---------------------------------------------------------------------------
-// Message bubble
+// Transcript — a ruled agent log: one turn per block, a mono role label, tool
+// calls as mono rows, then prose. No bubbles, no avatars.
 // ---------------------------------------------------------------------------
 
 function StatusLine({ text }: { text: string }) {
   return (
-    <div className="flex items-center gap-2 text-[12px] text-muted">
-      <span className="block w-1.5 h-1.5 rounded-full bg-brand-teal" style={{ animation: 'nubiChatPulse 1s ease-in-out infinite' }} />
+    <div className="flex items-center gap-2 font-mono text-xs text-muted" role="status">
+      <span className="nubi-dot nubi-dot-live animate-pulse" aria-hidden="true" />
       <span>{text}</span>
     </div>
+  )
+}
+
+function Turn({ label, children, tone = 'assistant' }: { label: string; children: React.ReactNode; tone?: 'user' | 'assistant' }) {
+  return (
+    <article className="border-b border-border px-4 py-3" data-role={tone}>
+      <p className="t-label m-0 mb-1.5" style={tone === 'assistant' ? { color: 'var(--text)' } : undefined}>{label}</p>
+      {children}
+    </article>
   )
 }
 
 function MessageBubble({ message }: { message: ChatUiMessage }) {
   if (message.role === 'user') {
     return (
-      <div className="flex justify-end px-3 py-1">
-        <div className="max-w-[82%] px-3.5 py-2.5 rounded-2xl rounded-br-sm bg-primary text-primary-fg text-[13px] leading-relaxed font-sans shadow-sm whitespace-pre-wrap">
-          {message.content}
-        </div>
-      </div>
+      <Turn label="You" tone="user">
+        <p className="m-0 whitespace-pre-wrap text-sm leading-relaxed text-fg">{message.content}</p>
+      </Turn>
     )
   }
 
   // assistant
   const hasTools = message.actions && message.actions.length > 0
   return (
-    <div className="flex items-start gap-2.5 px-3 py-1 max-w-full">
-      <div
-        className="flex items-center justify-center w-6 h-6 rounded-full shrink-0 mt-0.5"
-        style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
-      >
-        <Bot size={12} className="text-white" />
-      </div>
-
-      <div className="flex-1 min-w-0 space-y-2">
+    <Turn label="Nubi">
+      <div className="min-w-0 space-y-2">
         {hasTools && (
-          <div className="space-y-1.5">
+          <div className="border-t border-border">
             {message.actions.map((a) => <ToolBlock key={a.id} action={a} />)}
           </div>
         )}
@@ -241,38 +234,44 @@ function MessageBubble({ message }: { message: ChatUiMessage }) {
         {message.status && !message.content && <StatusLine text={message.status} />}
 
         {message.content && (
-          <div className="prose-chat text-[13px] leading-relaxed text-fg bg-surface-2 border border-border px-3.5 py-2.5 rounded-2xl rounded-bl-sm overflow-hidden">
+          <div className="prose-chat overflow-hidden text-sm leading-relaxed text-fg">
             <MarkdownRenderer content={message.content} />
             {message.streaming && (
-              <span className="inline-block w-[7px] h-[14px] -mb-0.5 ml-0.5 bg-brand-teal rounded-[1px] align-middle"
-                style={{ animation: 'nubiChatCaret 1s step-end infinite' }} />
+              <span
+                className="ml-0.5 inline-block h-[14px] w-[7px] -mb-0.5 align-middle"
+                style={{ background: 'var(--ink)', animation: 'nubiChatCaret 1s step-end infinite' }}
+                aria-hidden="true"
+              />
             )}
           </div>
         )}
 
         {message.error && (
-          <div className="flex items-start gap-2">
-            <AlertCircle size={14} className="text-red-500 shrink-0 mt-0.5" />
-            <p className="text-[13px] text-red-500 leading-relaxed">{message.error}</p>
+          <div className="nubi-notice nubi-notice-error text-xs" role="alert">
+            <span>{message.error}</span>
           </div>
         )}
       </div>
-    </div>
+    </Turn>
   )
 }
 
-function SuggestionChip({ text, onClick, disabled }: {
+/** A starter prompt as a ruled row (not a pill). */
+function SuggestionRow({ text, index, onClick, disabled }: {
   text: string
+  index: number
   onClick: (text: string) => void
   disabled?: boolean
 }) {
   return (
     <button
+      type="button"
       onClick={() => onClick(text)}
       disabled={disabled}
-      className="px-3 py-1.5 rounded-full border border-border bg-surface-2 text-[12px] text-muted font-sans hover:border-primary hover:text-primary hover:bg-primary/5 disabled:opacity-40 disabled:cursor-not-allowed transition-all focus:outline-none focus:ring-2 focus:ring-ring text-left"
+      className="nubi-focus-inset flex w-full items-baseline gap-3 border-b border-border px-4 py-2 text-left text-sm text-fg transition-colors hover:bg-frame-hover disabled:cursor-not-allowed disabled:opacity-45"
     >
-      {text}
+      <span className="ap-meta shrink-0" aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
+      <span>{text}</span>
     </button>
   )
 }
@@ -287,6 +286,7 @@ export function ChatPanel({ onClose }: { onClose: () => void }) {
   const [loading, setLoading]     = useState(false)
   const [queuing, setQueuing]     = useState(false)
   const [selectedModel, setModel] = useState(loadStoredModel)
+  const { chatDraft, setChatDraft } = useUi()
 
   const listRef     = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -299,6 +299,19 @@ export function ChatPanel({ onClose }: { onClose: () => void }) {
   }, [messages, loading])
 
   useEffect(() => { textareaRef.current?.focus() }, [])
+  // Another surface (Spotlight "Ask AI about this") handed us text: seed the
+  // composer with it, focus, then clear the hand-off so it is not re-applied.
+  useEffect(() => {
+    if (!chatDraft) return
+    setDraft(chatDraft)
+    setChatDraft('')
+    requestAnimationFrame(() => {
+      const el = textareaRef.current
+      if (!el) return
+      el.focus()
+      el.setSelectionRange(el.value.length, el.value.length)
+    })
+  }, [chatDraft, setChatDraft])
   // Abort any in-flight stream on unmount
   useEffect(() => () => abortRef.current?.abort(), [])
 
@@ -437,45 +450,31 @@ export function ChatPanel({ onClose }: { onClose: () => void }) {
   const isEmpty = messages.length === 0
 
   return (
-      <div className="flex flex-col h-full bg-surface overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between px-3 py-2.5 border-b border-border shrink-0">
-          <div className="flex items-center gap-2">
-            <div className="flex items-center justify-center w-7 h-7 rounded-lg shrink-0"
-              style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}>
-              <Sparkles size={13} className="text-white" />
-            </div>
-            <span className="font-display font-semibold text-sm text-fg leading-none">Nubi AI</span>
-          </div>
+      <div className="flex h-full flex-col overflow-hidden bg-surface">
+        {/* Header: a 2px ink rule opens the panel */}
+        <div className="flex h-11 shrink-0 items-center justify-between border-b border-border pl-4 pr-2" style={{ borderTop: '2px solid var(--ink)' }}>
+          <span className="t-label" style={{ color: 'var(--text)' }}>Nubi AI</span>
 
           <div className="flex items-center gap-1.5">
             <ModelPicker value={selectedModel} onChange={setModel} disabled={loading} />
-            <button
-              onClick={onClose}
-              aria-label="Close chat panel"
-              className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              <X size={14} />
-            </button>
+            <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close chat panel">
+              <X size={14} aria-hidden="true" />
+            </Button>
           </div>
         </div>
 
-        {/* Message list */}
-        <div ref={listRef} className="flex-1 overflow-y-auto py-3 scroll-smooth" role="log" aria-live="polite" aria-label="Chat messages">
+        {/* Transcript */}
+        <div ref={listRef} className="flex-1 overflow-y-auto" role="log" aria-live="polite" aria-label="Chat messages">
           {isEmpty && (
-            <div className="flex flex-col items-center justify-center h-full px-6 text-center gap-5 pb-4">
-              <div className="flex items-center justify-center w-14 h-14 rounded-2xl shadow-lg"
-                style={{ background: 'linear-gradient(135deg, #1b2363 0%, #2456a6 50%, #17b3a3 100%)' }}>
-                <Sparkles size={24} className="text-white" />
-              </div>
-              <div>
-                <p className="font-display font-semibold text-fg text-[14px] mb-1">Ask Nubi anything</p>
-                <p className="text-[12px] text-muted leading-relaxed max-w-[210px]">
-                  I build dashboards, write &amp; run SQL, and explore your data — watch each tool run live.
+            <div className="pb-2">
+              <div className="px-4 pb-3 pt-5">
+                <p className="m-0 text-[15px] font-semibold text-fg">Ask about your data</p>
+                <p className="mb-0 mt-1 max-w-[260px] text-[13px] leading-relaxed text-muted">
+                  I build dashboards, write and run SQL, and explore your connectors. Each tool call shows up as a line you can open.
                 </p>
               </div>
-              <div className="flex flex-wrap gap-2 justify-center">
-                {SUGGESTIONS.map(s => <SuggestionChip key={s} text={s} onClick={sendMessage} disabled={loading} />)}
+              <div className="border-t border-border">
+                {SUGGESTIONS.map((s, i) => <SuggestionRow key={s} text={s} index={i} onClick={sendMessage} disabled={loading} />)}
               </div>
             </div>
           )}
@@ -484,52 +483,53 @@ export function ChatPanel({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* Composer */}
-        <div className="shrink-0 px-3 py-3 border-t border-border bg-surface">
-          <div className={`flex items-end gap-2 bg-surface-2 border rounded-xl px-3 py-2 transition-colors ${loading ? 'border-border' : 'border-border focus-within:border-primary focus-within:ring-1 focus-within:ring-ring'}`}>
+        <div className="shrink-0 border-t border-frame-line bg-surface px-3 pb-2 pt-3">
+          <div className="flex items-end gap-2">
             <textarea
               ref={textareaRef}
               value={draft}
               onChange={e => setDraft(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={loading ? 'Streaming…' : 'Ask anything… (Enter to send)'}
+              placeholder={loading ? 'Streaming' : 'Ask anything about your data'}
               rows={1}
               aria-label="Chat input"
-              className="flex-1 resize-none bg-transparent text-[13px] text-fg font-sans leading-relaxed placeholder:text-muted focus:outline-none min-h-[22px] max-h-32 py-0.5"
+              className="nubi-input min-h-[36px] max-h-32 flex-1 resize-none py-[7px] text-[13px] leading-relaxed"
               style={{ overflowY: draft.split('\n').length > 4 ? 'auto' : 'hidden' }}
               onInput={e => { e.currentTarget.style.height = 'auto'; e.currentTarget.style.height = Math.min(e.currentTarget.scrollHeight, 128) + 'px' }}
             />
             {loading ? (
-              <button
-                onClick={stopStreaming}
-                aria-label="Stop"
-                className="flex items-center justify-center w-7 h-7 rounded-lg shrink-0 bg-surface border border-border text-fg hover:bg-surface-2 active:scale-95 transition-all focus:outline-none focus:ring-2 focus:ring-ring"
-              >
-                <Square size={12} className="fill-current" />
-              </button>
+              <Button variant="secondary" size="icon" onClick={stopStreaming} aria-label="Stop" title="Stop">
+                <Square size={12} className="fill-current" aria-hidden="true" />
+              </Button>
             ) : (
               <>
-                <button
+                <Button
+                  variant="secondary"
+                  size="icon"
                   onClick={sendMessageBackground}
-                  disabled={!draft.trim() || queuing}
-                  title="Build in the background — I'll notify you when it's ready"
-                  aria-label="Build in background"
-                  className="flex items-center justify-center w-7 h-7 rounded-lg shrink-0 bg-surface border border-border text-fg hover:bg-surface-2 active:scale-95 disabled:opacity-35 disabled:cursor-not-allowed transition-all focus:outline-none focus:ring-2 focus:ring-ring"
-                >
-                  {queuing ? <Loader2 size={13} className="animate-spin" /> : <Clock size={13} />}
-                </button>
-                <button
-                  onClick={() => sendMessage()}
                   disabled={!draft.trim()}
-                  aria-label="Send message"
-                  className="flex items-center justify-center w-7 h-7 rounded-lg shrink-0 bg-primary text-primary-fg hover:opacity-90 active:scale-95 disabled:opacity-35 disabled:cursor-not-allowed transition-all focus:outline-none focus:ring-2 focus:ring-ring"
+                  loading={queuing}
+                  title="Build in the background. You get a notification when it is ready."
+                  aria-label="Build in background"
                 >
-                  <Send size={13} />
-                </button>
+                  {!queuing && <Clock size={14} aria-hidden="true" />}
+                </Button>
+                <Button size="icon" onClick={() => sendMessage()} disabled={!draft.trim()} aria-label="Send message" title="Send">
+                  <Send size={14} aria-hidden="true" />
+                </Button>
               </>
             )}
           </div>
-          <p className="text-[10px] text-muted/60 text-center mt-1.5 leading-none">
-            {loading ? 'Streaming — click ◼ to stop' : <>Shift+Enter for newline · <Clock size={9} className="inline -mt-0.5" /> builds in the background</>}
+          <p className="m-0 mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-subtle">
+            {loading ? (
+              <span>Streaming. Press stop to cancel.</span>
+            ) : (
+              <>
+                <span><kbd className="nubi-kbd">Enter</kbd> send</span>
+                <span><kbd className="nubi-kbd">Shift</kbd> <kbd className="nubi-kbd">Enter</kbd> new line</span>
+                <span className="inline-flex items-center gap-1"><Clock size={11} aria-hidden="true" /> background build</span>
+              </>
+            )}
           </p>
         </div>
       </div>

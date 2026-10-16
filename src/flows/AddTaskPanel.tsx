@@ -16,6 +16,7 @@
  */
 
 import { Database, Code2, FileText } from 'lucide-react'
+import '../components/app/appPatterns.css'
 
 // The ONLY palette items — the three user-facing cell types.
 const PRIMARY_ITEMS = [
@@ -23,27 +24,24 @@ const PRIMARY_ITEMS = [
     kind: 'query',
     cellType: 'sql',
     label: 'SQL query',
-    hint: 'A SELECT — the everyday data block',
+    hint: 'A SELECT. The everyday data block.',
     Icon: Database,
-    color: 'text-blue-500',
     defaultConfig: { sql: '' },
   },
   {
     kind: 'python',
     cellType: 'python',
     label: 'Python',
-    hint: 'Transform rows, call an API or an agent',
+    hint: 'Transform rows, call an API or an agent.',
     Icon: Code2,
-    color: 'text-violet-500',
     defaultConfig: { code: '# Write your task code here\nresult = {}' },
   },
   {
     kind: 'noop',
     cellType: 'markdown',
     label: 'Note',
-    hint: 'Markdown prose — never executes',
+    hint: 'Markdown prose. Never executes.',
     Icon: FileText,
-    color: 'text-slate-400',
     defaultConfig: { markdown: '' },
   },
 ]
@@ -57,9 +55,9 @@ const PRIMARY_ITEMS = [
  */
 export function AddTaskPanel({ onAdd, disabled = false }) {
   return (
-    <div className="p-2 space-y-1.5">
+    <div className="flex flex-col gap-2 p-3">
       {disabled && (
-        <p className="text-[11px] text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-3 text-center mb-1">
+        <p className="m-0 border border-dashed border-frame-line px-3 py-3 text-center text-xs text-muted" style={{ borderRadius: 2 }}>
           Open a flow to add tasks.
         </p>
       )}
@@ -68,23 +66,30 @@ export function AddTaskPanel({ onAdd, disabled = false }) {
         const ItemIcon = item.Icon
         return (
           <button
+            type="button"
             key={item.cellType}
             disabled={disabled}
             onClick={() => onAdd(item.kind, item.defaultConfig, item.cellType)}
-            className="w-full flex items-start gap-2.5 px-2.5 py-2.5 rounded-lg text-sm font-semibold text-fg border border-border bg-surface-2/40 hover:bg-surface-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-left"
+            className="ap-tile disabled:cursor-not-allowed disabled:opacity-45"
           >
-            <ItemIcon size={18} className={[item.color, 'shrink-0 mt-0.5'].join(' ')} />
-            <span className="flex-1 min-w-0">
-              <span className="block">{item.label}</span>
-              <span className="block text-[10px] font-normal text-muted/70 mt-0.5">{item.hint}</span>
+            <span
+              className="flex h-8 w-8 shrink-0 items-center justify-center border border-frame-line bg-surface text-fg"
+              style={{ borderRadius: 2 }}
+              aria-hidden="true"
+            >
+              <ItemIcon size={16} strokeWidth={1.75} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="ap-tile-name block">{item.label}</span>
+              <span className="ap-tile-desc block">{item.hint}</span>
             </span>
           </button>
         )
       })}
 
-      <p className="text-[10px] text-muted/60 leading-relaxed px-1 pt-1.5">
-        Advanced behaviour — materialize a table, fan out (for-each), or gate a
-        cell (run-when) — is a setting on a SQL or Python cell, in the inspector.
+      <p className="m-0 px-0.5 pt-1 text-xs leading-relaxed text-subtle">
+        Advanced behaviour (materialize a table, fan out with for-each, or gate a cell with
+        run-when) is a setting on a SQL or Python cell, in the inspector.
       </p>
     </div>
   )

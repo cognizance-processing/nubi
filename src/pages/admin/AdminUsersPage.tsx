@@ -80,29 +80,38 @@ export default function AdminUsersPage() {
         ) : (
           <AdminTable headers={['Email', 'Name', 'Created', 'Last login', 'Last location', 'Orgs']}>
             {users.map((u) => (
-              <tr key={u.id} className="hover:bg-surface-2/50 transition-colors">
-                <td className="px-4 py-3 max-w-[240px]">
+              <tr key={u.id} className="">
+                <td className="px-4 py-2 max-w-[240px]">
                   <div className="flex items-center gap-2.5 min-w-0">
                     <Avatar label={u.name || u.email} />
                     <span className="text-fg font-medium truncate" title={u.email}>{u.email}</span>
                     {u.is_superadmin && <SuperadminBadge />}
                   </div>
                 </td>
-                <td className="px-4 py-3 max-w-[160px] truncate text-muted" title={u.name || undefined}>{u.name || '—'}</td>
-                <td className="px-4 py-3 whitespace-nowrap text-muted tabular-nums">{fmtDate(u.created_at)}</td>
-                <td className="px-4 py-3 whitespace-nowrap text-muted tabular-nums">{fmtDateTime(u.last_login_at)}</td>
-                <td className="px-4 py-3 whitespace-nowrap text-muted">{u.last_location || '—'}</td>
-                <td className="px-4 py-3">
-                  <div className="flex flex-wrap gap-1">
+                <td className="px-4 py-2 max-w-[160px] truncate text-muted" title={u.name || undefined}>{u.name || '—'}</td>
+                <td className="px-4 py-2 whitespace-nowrap text-muted tabular-nums">{fmtDate(u.created_at)}</td>
+                <td className="px-4 py-2 whitespace-nowrap text-muted tabular-nums">{fmtDateTime(u.last_login_at)}</td>
+                <td className="px-4 py-2 whitespace-nowrap text-muted">{u.last_location || '—'}</td>
+                <td className="px-4 py-2">
+                  <div className="flex flex-nowrap items-center gap-1">
                     {(u.orgs ?? []).length === 0
                       ? <span className="text-muted">—</span>
-                      : u.orgs.map((o) => (
-                          <RoleChip key={o.id}>
-                            <span className="max-w-[120px] truncate inline-block align-bottom" title={`${o.name} · ${o.role}`}>
-                              {o.name} · {o.role}
+                      : (
+                        <>
+                          {u.orgs.slice(0, 2).map((o) => (
+                            <RoleChip key={o.id}>
+                              <span className="max-w-[120px] truncate inline-block align-bottom" title={`${o.name} · ${o.role}`}>
+                                {o.name} · {o.role}
+                              </span>
+                            </RoleChip>
+                          ))}
+                          {u.orgs.length > 2 && (
+                            <span title={u.orgs.slice(2).map((o) => `${o.name} · ${o.role}`).join('\n')}>
+                              <RoleChip>+{u.orgs.length - 2}</RoleChip>
                             </span>
-                          </RoleChip>
-                        ))}
+                          )}
+                        </>
+                      )}
                   </div>
                 </td>
               </tr>

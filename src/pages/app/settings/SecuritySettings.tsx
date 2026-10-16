@@ -48,6 +48,8 @@ import {
   inputCls,
 } from './SettingsUI.jsx'
 import { toast } from '../../../components/ui/Toast.jsx'
+import Button from '../../../components/ui/Button.jsx'
+import Tag from '../../../components/ui/Tag.jsx'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -75,16 +77,7 @@ function IssuerRow({ issuer, onEdit, onDelete, deleting }) {
       <div className="min-w-0 flex-1 space-y-0.5">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-fg truncate">{issuer.name}</span>
-          {issuer.enabled ? (
-            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
-              enabled
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-surface-2 text-muted">
-              disabled
-            </span>
-          )}
+          {issuer.enabled ? <Tag variant="success" dot>enabled</Tag> : <Tag>disabled</Tag>}
         </div>
         <p className="text-xs text-muted font-mono truncate">{issuer.issuer}</p>
         <div className="flex items-center gap-3 flex-wrap">
@@ -111,27 +104,20 @@ function IssuerRow({ issuer, onEdit, onDelete, deleting }) {
       </div>
 
       <div className="flex items-center gap-1.5 shrink-0">
-        <button
-          type="button"
-          onClick={() => onEdit(issuer)}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-muted hover:text-fg hover:bg-surface-2 border border-border transition-colors"
-        >
-          <Pencil size={12} />
+        <Button variant="secondary" size="xs" onClick={() => onEdit(issuer)}>
+          <Pencil size={13} aria-hidden="true" />
           Edit
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="outline"
+          size="xs"
           onClick={() => onDelete(issuer.id)}
-          disabled={deleting === issuer.id}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 border border-red-200 dark:border-red-800 transition-colors disabled:opacity-40"
+          loading={deleting === issuer.id}
+          style={{ borderColor: 'var(--danger)', color: 'var(--danger-fg)' }}
         >
-          {deleting === issuer.id ? (
-            <Loader2 size={12} className="animate-spin" />
-          ) : (
-            <Trash2 size={12} />
-          )}
+          {deleting !== issuer.id && <Trash2 size={13} aria-hidden="true" />}
           Delete
-        </button>
+        </Button>
       </div>
     </div>
   )
@@ -185,7 +171,7 @@ function IssuerForm({ initial, onSave, onCancel, saving, saveError }) {
         {/* Name */}
         <div className="space-y-1.5">
           <label className="block text-xs font-medium text-muted" htmlFor="issuer-name">
-            Name <span className="text-red-500">*</span>
+            Name <span className="text-danger">*</span>
           </label>
           <input
             id="issuer-name"
@@ -201,8 +187,8 @@ function IssuerForm({ initial, onSave, onCancel, saving, saveError }) {
         {/* Issuer (iss claim) */}
         <div className="space-y-1.5">
           <label className="block text-xs font-medium text-muted" htmlFor="issuer-iss">
-            Issuer (<code className="text-[10px]">iss</code> claim){' '}
-            <span className="text-red-500">*</span>
+            Issuer (<code className="text-[11px]">iss</code> claim){' '}
+            <span className="text-danger">*</span>
           </label>
           <input
             id="issuer-iss"
@@ -264,7 +250,7 @@ function IssuerForm({ initial, onSave, onCancel, saving, saveError }) {
         {/* Algorithms */}
         <div className="space-y-2">
           <p className="text-xs font-medium text-muted">
-            Algorithms <span className="text-red-500">*</span>
+            Algorithms <span className="text-danger">*</span>
           </p>
           <div className="flex flex-wrap gap-1.5">
             {ALGORITHM_OPTIONS.map((algo) => {
@@ -275,12 +261,13 @@ function IssuerForm({ initial, onSave, onCancel, saving, saveError }) {
                   type="button"
                   aria-pressed={active}
                   onClick={() => toggleAlgo(algo)}
-                  className={[
-                    'px-2.5 py-1 rounded-lg text-xs font-mono font-medium border transition-colors',
-                    active
-                      ? 'bg-primary/10 border-primary/40 text-primary dark:bg-primary/15'
-                      : 'bg-surface-2 border-border text-muted hover:text-fg hover:border-border/80',
-                  ].join(' ')}
+                  className="border px-2.5 py-1 font-mono text-xs font-medium transition-colors"
+                  style={{
+                    borderRadius: 2,
+                    borderColor: active ? 'var(--accent)' : 'var(--border-control)',
+                    background: active ? 'var(--accent-soft)' : 'var(--surface)',
+                    color: active ? 'var(--text)' : 'var(--text-muted)',
+                  }}
                 >
                   {algo}
                 </button>
@@ -292,7 +279,7 @@ function IssuerForm({ initial, onSave, onCancel, saving, saveError }) {
         {/* Audience */}
         <div className="space-y-1.5">
           <label className="block text-xs font-medium text-muted" htmlFor="issuer-audience">
-            Audience (<code className="text-[10px]">aud</code> claim){' '}
+            Audience (<code className="text-[11px]">aud</code> claim){' '}
             <span className="text-muted/60 font-normal">optional</span>
           </label>
           <input
@@ -315,7 +302,7 @@ function IssuerForm({ initial, onSave, onCancel, saving, saveError }) {
       />
 
       {saveError && (
-        <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-400">
+        <div className="nubi-notice nubi-notice-error flex items-start gap-2  .5  text-sm text-danger-fg">
           <AlertCircle size={15} className="shrink-0 mt-0.5" />
           {saveError}
         </div>

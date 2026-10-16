@@ -21,6 +21,10 @@ import {
   inputCls,
 } from './SettingsUI.jsx'
 import { toast } from '../../../components/ui/Toast.jsx'
+import Button from '../../../components/ui/Button.jsx'
+import Tag from '../../../components/ui/Tag.jsx'
+import EmptyState from '../../../components/ui/EmptyState.jsx'
+import Skeleton from '../../../components/ui/Skeleton.jsx'
 
 // ---------------------------------------------------------------------------
 // Exported pure validator (tested in accessGrants.test.mjs)
@@ -48,7 +52,7 @@ export function validateGrant(grant) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const LABEL_CLS = 'block text-xs font-medium text-muted mb-1'
+const LABEL_CLS = 'nubi-label'
 
 const DEFAULT_FORM = { subject_type: 'user', subject_id: '', dimension: '', value: '' }
 
@@ -140,27 +144,17 @@ function AddGrantForm({ onSaved, onCancel }) {
       </div>
 
       {error && (
-        <div className="flex items-start gap-2 text-xs text-red-600 dark:text-red-400">
-          <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+        <div className="nubi-notice nubi-notice-error text-xs" role="alert">
           <span>{error}</span>
         </div>
       )}
 
       <div className="flex items-center gap-2 pt-1">
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="inline-flex items-center gap-1.5 h-9 px-4 text-sm font-semibold rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-50 transition-opacity"
-        >
-          {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+        <Button onClick={handleSave} loading={saving}>
+          {!saving && <Check size={14} aria-hidden="true" />}
           Add grant
-        </button>
-        <button
-          onClick={onCancel}
-          className="h-9 px-3 text-sm rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-        >
-          Cancel
-        </button>
+        </Button>
+        <Button variant="secondary" onClick={onCancel}>Cancel</Button>
       </div>
     </div>
   )
@@ -197,61 +191,37 @@ function GrantRow({ grant, canWrite, onDeleted }) {
   }, [grant, onDeleted])
 
   return (
-    <div className="rounded-2xl border border-border bg-surface p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-start gap-3 min-w-0">
-          <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-primary/10 text-primary shrink-0">
-            <Key size={16} />
-          </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <p className="text-sm font-semibold text-fg truncate">
-                {grant.subject_type}:<span className="font-mono">{grant.subject_id}</span>
-              </p>
-              <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-surface-2 text-muted border border-border">
-                {grant.subject_type}
-              </span>
-            </div>
-            <p className="text-xs text-muted mt-1 font-mono truncate">
-              {grant.dimension} = <span className="text-fg font-semibold">{formatGrantValue(grant.value)}</span>
-            </p>
-          </div>
+    <div className="ap-row" style={{ flexWrap: 'wrap' }}>
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center border border-frame-line bg-surface text-fg" style={{ borderRadius: 2 }} aria-hidden="true">
+        <Key size={15} strokeWidth={1.75} />
+      </span>
+      <div className="ap-row-main">
+        <div className="ap-row-title">
+          <span className="ap-trunc">
+            {grant.subject_type}:<span className="font-mono">{grant.subject_id}</span>
+          </span>
+          <Tag caps={false}>{grant.subject_type}</Tag>
         </div>
-
-        {canWrite && (
-          <div className="flex items-center gap-1.5 shrink-0">
-            {confirmDelete ? (
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={handleDelete}
-                  disabled={busy}
-                  aria-label="Confirm delete"
-                  className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-50 transition-colors"
-                >
-                  {busy ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
-                  Confirm
-                </button>
-                <button
-                  onClick={() => setConfirmDelete(false)}
-                  aria-label="Cancel delete"
-                  className="h-8 w-8 flex items-center justify-center rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-                >
-                  <X size={14} />
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => setConfirmDelete(true)}
-                title="Delete"
-                aria-label="Delete access grant"
-                className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border text-muted hover:text-red-600 hover:border-red-200 hover:bg-red-50 dark:hover:text-red-400 dark:hover:border-red-900/40 dark:hover:bg-red-900/10 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
-              >
-                <Trash2 size={13} />
-              </button>
-            )}
-          </div>
-        )}
+        <div className="ap-row-sub ap-mono" style={{ fontSize: 12 }}>
+          {grant.dimension} = <span style={{ color: 'var(--text)', fontWeight: 500 }}>{formatGrantValue(grant.value)}</span>
+        </div>
       </div>
+
+      {canWrite && (
+        <div className="ap-actions">
+          {confirmDelete ? (
+            <span className="inline-flex items-center gap-1.5" role="group" aria-label="Confirm delete">
+              <span className="text-xs text-muted">Remove this grant?</span>
+              <Button variant="danger" size="xs" onClick={handleDelete} loading={busy} aria-label="Confirm delete">Remove</Button>
+              <Button variant="ghost" size="xs" onClick={() => setConfirmDelete(false)} aria-label="Cancel delete">Keep</Button>
+            </span>
+          ) : (
+            <Button variant="ghost" size="icon-sm" onClick={() => setConfirmDelete(true)} title="Delete" aria-label="Delete access grant">
+              <Trash2 size={14} aria-hidden="true" />
+            </Button>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -309,26 +279,24 @@ export default function AccessGrantsSettings() {
         description="Dimension-level row access grants for this organisation."
       >
         {loading ? (
-          <div className="flex items-center gap-2 text-sm text-muted py-6 justify-center">
-            <Loader2 size={16} className="animate-spin" /> Loading grants…
+          <div className="space-y-2" aria-hidden="true">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
           </div>
         ) : error ? (
           <div className="py-2 flex items-center gap-3">
             <ErrorText>{error}</ErrorText>
-            <button onClick={load} className="text-xs text-muted hover:text-fg underline shrink-0">
-              Retry
-            </button>
+            <Button variant="secondary" size="xs" onClick={load}>Retry</Button>
           </div>
         ) : grants.length === 0 ? (
-          <div className="flex flex-col items-center justify-center text-center py-8 px-6 gap-2">
-            <Key size={26} className="text-muted/40" />
-            <p className="text-sm font-medium text-fg">No access grants yet</p>
-            <p className="text-xs text-muted max-w-sm">
-              Add a grant below to restrict dimension-level row access for a user, group, or role.
-            </p>
-          </div>
+          <EmptyState
+            compact
+            icon={<Key size={18} />}
+            title="No access grants yet"
+            description="A grant limits which rows a user, group or role can see for one dimension, for example country = ZA. Add the first one below."
+          />
         ) : (
-          <div className="space-y-3">
+          <div className="-my-2 border-t border-border">
             {grants.map((g) => (
               <GrantRow
                 key={g.id}
@@ -346,13 +314,10 @@ export default function AccessGrantsSettings() {
           {showForm ? (
             <AddGrantForm onSaved={handleSaved} onCancel={() => setShowForm(false)} />
           ) : (
-            <button
-              onClick={() => setShowForm(true)}
-              className="inline-flex items-center gap-2 h-9 px-4 text-sm font-medium rounded-xl border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-            >
-              <Plus size={15} />
+            <Button variant="secondary" onClick={() => setShowForm(true)}>
+              <Plus size={14} aria-hidden="true" />
               Add grant
-            </button>
+            </Button>
           )}
         </SettingsCard>
       )}

@@ -13,23 +13,22 @@
 
 import { Link } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext.jsx'
+import Button from '../../components/ui/Button.jsx'
+import EmptyState from '../../components/ui/EmptyState.jsx'
+import Spinner from '../../components/ui/Spinner.jsx'
+import { NotFoundFigure } from '../../components/illustrations'
 
 /** Generic not-found view rendered inside the app shell. */
 export function AdminNotFound() {
   return (
-    <div className="min-h-full flex flex-col items-center justify-center text-center px-4 py-24">
-      <p className="font-display font-extrabold text-6xl text-primary mb-4">404</p>
-      <h1 className="font-display font-semibold text-2xl text-fg mb-2">Page not found</h1>
-      <p className="text-sm text-muted mb-8">
-        The page you&apos;re looking for doesn&apos;t exist or has been moved.
-      </p>
-      <Link
-        to="/home"
-        className="inline-flex items-center px-5 py-2.5 rounded-xl bg-primary text-primary-fg
-          text-sm font-medium hover:opacity-90 transition-opacity"
-      >
-        Back to home
-      </Link>
+    <div className="flex min-h-full flex-col items-center justify-center px-4 py-24">
+      <EmptyState
+        art={<NotFoundFigure />}
+        label="404"
+        title="Page not found"
+        description="The page you're looking for doesn't exist or has been moved."
+        action={<Button asChild><Link to="/home">Back to home</Link></Button>}
+      />
     </div>
   )
 }
@@ -39,12 +38,8 @@ export default function RequireSuperadmin({ children }) {
 
   if (loading) {
     return (
-      <div className="min-h-full flex items-center justify-center py-24">
-        <div
-          className="h-8 w-8 rounded-full border-4 border-primary border-t-transparent animate-spin"
-          role="status"
-          aria-label="Loading"
-        />
+      <div className="flex min-h-full items-center justify-center py-24">
+        <Spinner size="lg" label="Loading" />
       </div>
     )
   }

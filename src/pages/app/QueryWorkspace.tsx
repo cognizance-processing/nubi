@@ -73,6 +73,14 @@ import {
 } from 'lucide-react'
 
 import SqlEditor from '../../components/SqlEditor.jsx'
+import Button from '../../components/ui/Button.jsx'
+import Tag from '../../components/ui/Tag.jsx'
+import Modal from '../../components/ui/Modal.jsx'
+import Input, { Select } from '../../components/ui/Input.jsx'
+import SegmentedControl from '../../components/ui/SegmentedControl.jsx'
+import Tooltip from '../../components/ui/Tooltip.jsx'
+import { Tabs, TabsList, TabsTrigger } from '../../components/ui/Tabs.jsx'
+import '../../components/app/appPatterns.css'
 import ChatPanel from '../../editor/ChatPanel.jsx'
 import MetricExposePanel from '../../components/app/MetricExposePanel.jsx'
 import ConnectorCombobox from '../../components/app/ConnectorCombobox.jsx'
@@ -201,17 +209,16 @@ function ParamInputRow({ param, value, onChange }) {
   const hasOptions = Boolean(param.options_query_id)
 
   const label = (
-    <label className="text-[11px] font-semibold text-muted uppercase tracking-wide flex items-center gap-1">
-      <span className="font-mono normal-case text-fg/80">{param.name}</span>
-      <span className="text-muted/60 normal-case">({param.type})</span>
+    <label className="t-label flex items-center gap-1">
+      <span className="font-mono normal-case text-fg">{param.name}</span>
+      <span className="normal-case text-subtle">({param.type})</span>
       {param.required && (
-        <span className="text-danger text-[10px]" title="Required">*</span>
+        <span className="text-danger" title="Required" aria-label="required">*</span>
       )}
     </label>
   )
 
-  const inputCls =
-    'h-8 px-2.5 text-xs bg-surface border border-border rounded-lg text-fg placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-ring transition-colors'
+  const inputCls = 'nubi-input nubi-input-sm'
 
   // A daterange is a {from, to} OBJECT, not a string. Rendering it through the
   // generic text input stringified it to "[object Object]", which then went to
@@ -232,7 +239,7 @@ function ParamInputRow({ param, value, onChange }) {
             aria-label={`${param.name} from`}
             className={inputCls}
           />
-          <span className="text-[10px] text-muted/60">to</span>
+          <span className="text-xs text-subtle">to</span>
           <input
             type="date"
             value={v.to ?? ''}
@@ -259,7 +266,7 @@ function ParamInputRow({ param, value, onChange }) {
             const parts = e.target.value.split(',').map(s => s.trim()).filter(Boolean)
             onChange(param.name, parts)
           }}
-          placeholder="comma-separated — empty uses the default"
+          placeholder="Comma-separated. Empty uses the default."
           className={inputCls}
         />
       </div>
@@ -275,7 +282,7 @@ function ParamInputRow({ param, value, onChange }) {
           value={value ?? ''}
           onChange={e => onChange(param.name, e.target.value)}
           placeholder={param.default != null ? `default: ${param.default}` : 'value…'}
-          className="h-8 px-2.5 text-xs bg-surface border border-border rounded-lg text-fg placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
+          className="nubi-input nubi-input-sm"
         />
       ) : (
         <input
@@ -283,7 +290,7 @@ function ParamInputRow({ param, value, onChange }) {
           value={value ?? ''}
           onChange={e => onChange(param.name, e.target.value)}
           placeholder={param.default != null ? `default: ${param.default}` : param.required ? 'required' : 'optional'}
-          className="h-8 px-2.5 text-xs bg-surface border border-border rounded-lg text-fg placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
+          className="nubi-input nubi-input-sm"
         />
       )}
     </div>
@@ -332,43 +339,37 @@ function AddFilterParamPopover({ existingNames, onAdd }) {
 
   return (
     <div className="relative" ref={ref}>
-      <button
+      <Button
         type="button"
+        variant={open ? 'outline' : 'secondary'}
+        size="xs"
         onClick={() => setOpen(o => !o)}
         aria-haspopup="dialog"
         aria-expanded={open}
-        className={[
-          'inline-flex items-center gap-1.5 h-7 px-2.5 text-xs font-medium rounded-md border transition-colors',
-          open
-            ? 'bg-surface-2 border-border text-fg'
-            : 'bg-surface border-border text-muted hover:text-fg hover:bg-surface-2',
-        ].join(' ')}
-        title="Add a filter parameter — drops a guarded snippet at your cursor"
+        title="Add a filter parameter. Drops a guarded snippet at your cursor."
       >
-        <ArrowLeftRight size={12} className="text-primary/70" />
+        <ArrowLeftRight size={13} aria-hidden="true" />
         Add filter parameter
-      </button>
+      </Button>
 
       {open && (
         <form
           onSubmit={handleSubmit}
           role="dialog"
           aria-label="Add filter parameter"
-          className="absolute left-0 top-full mt-1.5 z-30 w-72 rounded-lg border border-border bg-surface shadow-xl p-3 flex flex-col gap-2.5"
+          className="nubi-dropdown absolute left-0 top-full mt-1.5 z-30 w-72 p-3 flex flex-col gap-3"
         >
           <div>
-            <p className="text-xs font-semibold text-fg">Add filter parameter</p>
-            <p className="text-[11px] text-muted mt-0.5 leading-snug">
+            <p className="m-0 text-[13px] font-semibold text-fg">Add filter parameter</p>
+            <p className="mt-0.5 mb-0 text-xs text-muted leading-snug">
               Inserts a guarded snippet at your cursor and selects{' '}
-              <code className="px-1 py-0.5 rounded bg-surface-2 font-mono text-[10px]">{'<column>'}</code>{' '}
+              <code className="px-1 bg-surface-2 font-mono text-[11px]" style={{ borderRadius: 2 }}>{'<column>'}</code>{' '}
               so you just type the column name.
             </p>
           </div>
 
           <div className="flex flex-col gap-1">
-            <label htmlFor="new-param-name" className="text-[10px] font-semibold text-muted uppercase tracking-wide">
-              Name
-            </label>
+            <label htmlFor="new-param-name" className="t-label">Name</label>
             <input
               id="new-param-name"
               ref={nameInputRef}
@@ -376,20 +377,19 @@ function AddFilterParamPopover({ existingNames, onAdd }) {
               value={name}
               onChange={e => setName(e.target.value)}
               placeholder="region"
-              className="h-8 px-2.5 text-xs bg-surface border border-border rounded-lg text-fg font-mono placeholder:text-muted/40 placeholder:font-sans focus:outline-none focus:ring-1 focus:ring-ring"
+              aria-invalid={error ? 'true' : undefined}
+              className={`nubi-input nubi-input-sm font-mono ${error ? 'nubi-input-error' : ''}`}
             />
-            {error && <p className="text-[10px] text-danger">{error}</p>}
+            {error && <p className="nubi-field-error" role="alert">{error}</p>}
           </div>
 
           <div className="flex flex-col gap-1">
-            <label htmlFor="new-param-type" className="text-[10px] font-semibold text-muted uppercase tracking-wide">
-              Type
-            </label>
+            <label htmlFor="new-param-type" className="t-label">Type</label>
             <select
               id="new-param-type"
               value={uiType}
               onChange={e => setUiType(e.target.value)}
-              className="h-8 px-2.5 text-xs bg-surface border border-border rounded-lg text-fg focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer"
+              className="nubi-input nubi-input-sm nubi-select"
             >
               {FILTER_PARAM_TYPES.map(t => (
                 <option key={t.value} value={t.value}>{t.label}</option>
@@ -397,21 +397,9 @@ function AddFilterParamPopover({ existingNames, onAdd }) {
             </select>
           </div>
 
-          <div className="flex items-center gap-2 justify-end pt-0.5">
-            <button
-              type="button"
-              onClick={() => setOpen(false)}
-              className="h-7 px-2.5 text-xs text-muted hover:text-fg border border-border rounded-lg bg-surface hover:bg-surface-2 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={!name.trim() || Boolean(error)}
-              className="h-7 px-3 text-xs font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
-            >
-              Insert
-            </button>
+          <div className="flex items-center gap-2 justify-end">
+            <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button type="submit" size="sm" disabled={!name.trim() || Boolean(error)}>Insert snippet</Button>
           </div>
         </form>
       )}
@@ -436,18 +424,21 @@ function CellNameBadge({ name }) {
   }, [name])
 
   return (
-    <button
+    <Tag
+      as="button"
+      type="button"
+      caps={false}
       onClick={handleCopy}
-      title={`Reference this cell as ${name} in later cells — click to copy`}
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-mono text-[10px] font-semibold bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 hover:bg-indigo-500/20 transition-colors group shrink-0"
+      title={`Reference this cell as ${name} in later cells. Click to copy.`}
+      className="group shrink-0 font-semibold"
     >
-      <Hash size={8} />
+      <Hash size={10} aria-hidden="true" />
       {name}
       {copied
-        ? <Check size={8} className="text-success" />
-        : <Copy size={8} className="opacity-0 group-hover:opacity-100 transition-opacity" />
+        ? <Check size={10} className="text-success" aria-hidden="true" />
+        : <Copy size={10} className="opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" aria-hidden="true" />
       }
-    </button>
+    </Tag>
   )
 }
 
@@ -457,19 +448,6 @@ function CellNameBadge({ name }) {
 
 function SaveDialog({ query, onConfirm, onCancel, saving }) {
   const [name, setName] = useState(query?.name ?? '')
-  const inputRef = useRef(null)
-
-  useEffect(() => {
-    inputRef.current?.focus()
-    inputRef.current?.select()
-  }, [])
-
-  // Close on Escape.
-  useEffect(() => {
-    const handler = (e) => { if (e.key === 'Escape') onCancel?.() }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [onCancel])
 
   const handleSubmit = (e) => {
     e.preventDefault()
@@ -478,49 +456,33 @@ function SaveDialog({ query, onConfirm, onCancel, saving }) {
   }
 
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-bg/60 backdrop-blur-sm rounded-xl">
-      <form
-        onSubmit={handleSubmit}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Save query"
-        className="bg-surface border border-border rounded-xl shadow-2xl p-5 w-80 flex flex-col gap-4"
-      >
-        <div>
-          <h3 className="text-sm font-semibold text-fg font-display">Save query</h3>
-          <p className="text-[11px] text-muted mt-0.5">Give this query a name to save it to the registry.</p>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label htmlFor="save-query-name" className="text-[11px] font-semibold text-muted uppercase tracking-wide">Name</label>
-          <input
+    <Modal
+      open
+      onClose={saving ? undefined : onCancel}
+      title="Save query"
+      description="Give this query a name to save it to the registry. Boards and flows reference it by id."
+      size="sm"
+    >
+      <form onSubmit={handleSubmit} aria-label="Save query">
+        <Modal.Body>
+          <Input
             id="save-query-name"
-            ref={inputRef}
-            type="text"
+            label="Name"
+            autoFocus
+            onFocus={(e) => e.currentTarget.select()}
             value={name}
             onChange={e => setName(e.target.value)}
-            placeholder="My query…"
-            className="h-9 px-3 text-sm bg-surface border border-border rounded-lg text-fg placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-ring"
+            placeholder="Revenue by region"
           />
-        </div>
-        <div className="flex items-center gap-2 justify-end">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="h-8 px-3 text-xs text-muted hover:text-fg border border-border rounded-lg bg-surface hover:bg-surface-2 transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            disabled={saving || !name.trim()}
-            className="h-8 px-4 text-xs font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity flex items-center gap-1.5"
-          >
-            {saving ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />}
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>Cancel</Button>
+          <Button type="submit" disabled={!name.trim()} loading={saving}>
+            {saving ? 'Saving' : 'Save query'}
+          </Button>
+        </Modal.Footer>
       </form>
-    </div>
+    </Modal>
   )
 }
 
@@ -600,177 +562,126 @@ function ScheduleDialog({ query, params, onConfirm, onCancel, scheduling, status
   }
 
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-bg/60 backdrop-blur-sm rounded-xl p-4">
-      <form
-        onSubmit={handleSubmit}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Schedule query"
-        className="bg-surface border border-border rounded-xl shadow-2xl p-5 w-[26rem] max-w-full flex flex-col gap-4"
-      >
-        <div className="flex items-start gap-2">
-          <CalendarClock size={16} className="text-primary shrink-0 mt-0.5" />
-          <div>
-            <h3 className="text-sm font-semibold text-fg font-display">Schedule query</h3>
-            <p className="text-[11px] text-muted mt-0.5">
-              Run <span className="font-mono text-fg/80">{query?.name}</span> on a schedule as a 1-task flow.
-            </p>
-          </div>
-        </div>
-
+    <Modal
+      open
+      onClose={scheduling ? undefined : onCancel}
+      title="Schedule query"
+      description={<>Run <span className="font-mono text-fg">{query?.name}</span> on a schedule as a one-task flow.</>}
+      size="md"
+    >
+      <form onSubmit={handleSubmit} aria-label="Schedule query">
         {status === 'ok' ? (
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-2 text-sm text-success">
-              <CheckCircle2 size={16} />
-              Scheduled — manage it in Flows.
-            </div>
-            {createdFlow?.name && (
-              <p className="text-[11px] text-muted">
-                Created flow <span className="font-mono text-fg/80">{createdFlow.name}</span>.
+          <>
+            <Modal.Body className="flex flex-col gap-2">
+              <p className="m-0 flex items-center gap-2 text-sm font-semibold text-fg">
+                <span className="nubi-dot nubi-dot-success" aria-hidden="true" />
+                Scheduled. Manage it in Flows.
               </p>
-            )}
-            <div className="flex items-center gap-2 justify-end">
-              <Link
-                to="/flows"
-                className="h-8 px-3 text-xs font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 transition-opacity flex items-center gap-1.5"
-              >
-                <ExternalLink size={11} />
-                Open Flows
-              </Link>
-              <button
-                type="button"
-                onClick={onCancel}
-                className="h-8 px-3 text-xs text-muted hover:text-fg border border-border rounded-lg bg-surface hover:bg-surface-2 transition-colors"
-              >
-                Close
-              </button>
-            </div>
-          </div>
+              {createdFlow?.name && (
+                <p className="m-0 text-xs text-muted">
+                  Created flow <span className="font-mono text-fg">{createdFlow.name}</span>.
+                </p>
+              )}
+            </Modal.Body>
+            <Modal.Footer>
+              <Button type="button" variant="secondary" onClick={onCancel}>Close</Button>
+              <Button asChild>
+                <Link to="/flows"><ExternalLink size={14} aria-hidden="true" /> Open Flows</Link>
+              </Button>
+            </Modal.Footer>
+          </>
         ) : (
           <>
-            <div className="flex flex-col gap-1">
-              <label htmlFor="schedule-query-name" className="text-[11px] font-semibold text-muted uppercase tracking-wide">Name</label>
-              <input
+            <Modal.Body className="flex flex-col gap-4">
+              <Input
                 id="schedule-query-name"
-                ref={inputRef}
-                type="text"
+                label="Name"
+                autoFocus
                 value={name}
                 onChange={e => setName(e.target.value)}
-                placeholder="Scheduled query name…"
-                className="h-9 px-3 text-sm bg-surface border border-border rounded-lg text-fg placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-ring"
+                placeholder="Scheduled query name"
               />
-            </div>
 
-            <div className="flex flex-col gap-2">
-              <label className="text-[11px] font-semibold text-muted uppercase tracking-wide">Schedule</label>
-              <div className="flex items-center rounded-lg border border-border overflow-hidden w-fit">
-                {[
-                  { v: 'interval', l: 'Interval' },
-                  { v: 'cron', l: 'Cron' },
-                ].map(opt => (
-                  <button
-                    key={opt.v}
-                    type="button"
-                    onClick={() => setMode(opt.v)}
-                    className={[
-                      'h-7 px-3 text-[11px] font-medium transition-colors',
-                      mode === opt.v
-                        ? 'bg-primary/10 text-primary'
-                        : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
-                      opt.v === 'cron' ? 'border-l border-border' : '',
-                    ].join(' ')}
-                  >
-                    {opt.l}
-                  </button>
-                ))}
+              <div className="flex flex-col gap-2">
+                <span className="nubi-label">Schedule</span>
+                <SegmentedControl
+                  size="sm"
+                  value={mode}
+                  onChange={setMode}
+                  options={[{ value: 'interval', label: 'Interval' }, { value: 'cron', label: 'Cron' }]}
+                  className="w-fit"
+                />
+
+                {mode === 'interval' ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-muted">Every</span>
+                    <input
+                      type="number"
+                      min="1"
+                      value={intervalN}
+                      onChange={e => setIntervalN(e.target.value)}
+                      aria-label="Interval count"
+                      className="nubi-input nubi-input-sm w-20 font-mono"
+                    />
+                    <Select
+                      size="sm"
+                      value={intervalUnit}
+                      onChange={e => setIntervalUnit(e.target.value)}
+                      aria-label="Interval unit"
+                      options={INTERVAL_UNITS}
+                      className="w-32"
+                    />
+                    <span className="ap-meta">{schedule}</span>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-1">
+                    <input
+                      type="text"
+                      value={cron}
+                      onChange={e => setCron(e.target.value)}
+                      placeholder="0 9 * * *"
+                      aria-label="Cron expression"
+                      aria-invalid={cronInvalid || undefined}
+                      className={`nubi-input nubi-input-sm font-mono ${cronInvalid ? 'nubi-input-error' : ''}`}
+                    />
+                    <p className="nubi-hint">
+                      Standard 5-field cron: <span className="font-mono">min hour day month weekday</span>
+                    </p>
+                  </div>
+                )}
               </div>
 
-              {mode === 'interval' ? (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted">Every</span>
-                  <input
-                    type="number"
-                    min="1"
-                    value={intervalN}
-                    onChange={e => setIntervalN(e.target.value)}
-                    className="h-8 w-16 px-2 text-xs bg-surface border border-border rounded-lg text-fg focus:outline-none focus:ring-1 focus:ring-ring"
-                  />
-                  <select
-                    value={intervalUnit}
-                    onChange={e => setIntervalUnit(e.target.value)}
-                    className="h-8 px-2 text-xs bg-surface border border-border rounded-lg text-fg focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer"
-                  >
-                    {INTERVAL_UNITS.map(u => (
-                      <option key={u.value} value={u.value}>{u.label}</option>
-                    ))}
-                  </select>
-                  <span className="text-[10px] font-mono text-muted/70">→ {schedule}</span>
-                </div>
-              ) : (
-                <div className="flex flex-col gap-1">
-                  <input
-                    type="text"
-                    value={cron}
-                    onChange={e => setCron(e.target.value)}
-                    placeholder="0 9 * * *"
-                    aria-invalid={cronInvalid || undefined}
-                    className={[
-                      'h-8 px-2.5 text-xs font-mono bg-surface border rounded-lg text-fg placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-ring',
-                      cronInvalid ? 'border-danger/50' : 'border-border',
-                    ].join(' ')}
-                  />
-                  <p className="text-[10px] text-muted/70">
-                    Standard 5-field cron: <span className="font-mono">min hour day month weekday</span>
-                  </p>
+              {preview && !cronInvalid && (
+                <p className="m-0 flex items-center gap-1.5 text-xs text-muted">
+                  <Clock size={12} aria-hidden="true" />
+                  {preview}
+                </p>
+              )}
+              {cronInvalid && <p className="nubi-field-error" role="alert">Cron expression must have 5 fields.</p>}
+
+              {params.length > 0 && (
+                <p className="m-0 text-xs text-subtle">
+                  Current parameter values ({params.map(p => p.name).join(', ')}) will be captured for each run.
+                </p>
+              )}
+
+              {status === 'err' && (
+                <div className="nubi-notice nubi-notice-error text-xs" role="alert">
+                  <span>Couldn&rsquo;t schedule this query. Check the schedule and try again.</span>
                 </div>
               )}
-            </div>
-
-            {preview && !cronInvalid && (
-              <p className="text-[11px] text-muted flex items-center gap-1.5">
-                <Clock size={11} className="text-primary/70" />
-                {preview}
-              </p>
-            )}
-            {cronInvalid && (
-              <p className="text-[11px] text-danger flex items-center gap-1">
-                <AlertCircle size={10} /> Cron expression must have 5 fields.
-              </p>
-            )}
-
-            {params.length > 0 && (
-              <p className="text-[10px] text-muted/70">
-                Current parameter values ({params.map(p => p.name).join(', ')}) will be captured for each run.
-              </p>
-            )}
-
-            {status === 'err' && (
-              <p className="text-[11px] text-danger flex items-center gap-1">
-                <AlertCircle size={10} /> Failed to schedule — please try again.
-              </p>
-            )}
-
-            <div className="flex items-center gap-2 justify-end">
-              <button
-                type="button"
-                onClick={onCancel}
-                className="h-8 px-3 text-xs text-muted hover:text-fg border border-border rounded-lg bg-surface hover:bg-surface-2 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={!canSubmit}
-                className="h-8 px-4 text-xs font-medium bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity flex items-center gap-1.5"
-              >
-                {scheduling ? <Loader2 size={11} className="animate-spin" /> : <CalendarClock size={11} />}
-                {scheduling ? 'Scheduling…' : 'Schedule'}
-              </button>
-            </div>
+            </Modal.Body>
+            <Modal.Footer>
+              <Button type="button" variant="secondary" onClick={onCancel} disabled={scheduling}>Cancel</Button>
+              <Button type="submit" disabled={!canSubmit} loading={scheduling}>
+                {!scheduling && <CalendarClock size={14} aria-hidden="true" />}
+                {scheduling ? 'Scheduling' : 'Schedule query'}
+              </Button>
+            </Modal.Footer>
           </>
         )}
       </form>
-    </div>
+    </Modal>
   )
 }
 
@@ -781,24 +692,12 @@ function ScheduleDialog({ query, params, onConfirm, onCancel, scheduling, status
 function CacheBadge({ status }) {
   if (!status || status === 'MISS') return null
   if (status === 'SAMPLE') {
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full bg-warning-bg text-warning border border-warning/20">
-        <Database size={8} /> SAMPLE
-      </span>
-    )
+    return <Tag variant="warning" dot title="Showing a sample of the result"><Database size={10} aria-hidden="true" /> Sample</Tag>
   }
   if (status === 'LOCAL') {
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20">
-        <Database size={8} /> LOCAL
-      </span>
-    )
+    return <Tag title="Computed in this browser tab"><Database size={10} aria-hidden="true" /> Local</Tag>
   }
-  return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full bg-success-bg text-success border border-success/20">
-      <Zap size={8} /> {status}
-    </span>
-  )
+  return <Tag variant="success" dot title="Served from cache"><Zap size={10} aria-hidden="true" /> {status}</Tag>
 }
 
 // ---------------------------------------------------------------------------
@@ -881,26 +780,28 @@ function buildDemoWidget(previewType, profile) {
 function SuggestionCard({ suggestion, icon: Icon, label, active, best, onClick }) {
   return (
     <button
+      type="button"
       onClick={onClick}
-      className={`w-full text-left flex items-start gap-2 p-2 rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
-        active
-          ? 'bg-primary/10 border-primary text-fg'
-          : 'bg-surface border-border hover:border-primary/60'
-      }`}
+      aria-pressed={active}
+      className="flex w-full items-start gap-2 border p-2 text-left transition-colors nubi-focus-inset"
+      style={{
+        borderRadius: 2,
+        borderColor: active ? 'var(--accent)' : 'var(--border)',
+        background: active ? 'var(--accent-soft)' : 'var(--surface)',
+      }}
     >
-      <span className={`mt-0.5 shrink-0 w-6 h-6 rounded-md flex items-center justify-center ${active ? 'bg-primary text-primary-fg' : 'bg-surface-2 text-muted'}`}>
-        <Icon size={13} />
+      <span
+        className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center"
+        style={{ borderRadius: 2, background: active ? 'var(--ink)' : 'var(--surface-2)', color: active ? 'var(--ink-fg)' : 'var(--text-muted)' }}
+      >
+        <Icon size={14} aria-hidden="true" />
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-1.5">
-          <span className="text-[11px] font-semibold leading-tight truncate">{label}</span>
-          {best && (
-            <span className="text-[8px] font-semibold uppercase tracking-wider px-1 py-px rounded bg-primary/15 text-primary leading-none">
-              Best
-            </span>
-          )}
+          <span className="truncate text-xs font-semibold leading-tight">{label}</span>
+          {best && <Tag variant="ink">Best</Tag>}
         </span>
-        <span className="block text-[10px] text-muted leading-snug mt-0.5">{suggestion.reason}</span>
+        <span className="mt-0.5 block text-[11px] leading-snug text-muted">{suggestion.reason}</span>
       </span>
     </button>
   )
@@ -910,16 +811,20 @@ function SuggestionCard({ suggestion, icon: Icon, label, active, best, onClick }
 function PreviewTypeButton({ icon: Icon, label, active, onClick }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       title={label}
-      className={`flex flex-col items-center justify-center gap-1 h-[52px] px-1 text-[10px] font-medium rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
-        active
-          ? 'bg-primary text-primary-fg border-primary shadow-sm'
-          : 'bg-surface text-muted border-border hover:border-primary/60 hover:text-primary'
-      }`}
+      aria-pressed={active}
+      className="flex h-[52px] flex-col items-center justify-center gap-1 border px-1 text-[11px] font-medium transition-colors nubi-focus-inset"
+      style={{
+        borderRadius: 2,
+        borderColor: active ? 'var(--ink)' : 'var(--border)',
+        background: active ? 'var(--ink)' : 'var(--surface)',
+        color: active ? 'var(--ink-fg)' : 'var(--text-muted)',
+      }}
     >
-      <Icon size={15} className={active ? '' : 'text-muted'} />
-      <span className="truncate max-w-full leading-none">{label}</span>
+      <Icon size={15} aria-hidden="true" />
+      <span className="max-w-full truncate leading-none">{label}</span>
     </button>
   )
 }
@@ -993,7 +898,7 @@ function QueryPreviewTab({ table }) {
         <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2 space-y-2">
           {!needle && suggestions.length > 0 && (
             <div>
-              <p className="text-[9px] font-semibold text-muted uppercase tracking-wider mb-1 px-0.5 flex items-center gap-1">
+              <p className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-1 px-0.5 flex items-center gap-1">
                 <Sparkles size={9} /> Suggested for this data
               </p>
               <div className="space-y-1">
@@ -1013,7 +918,7 @@ function QueryPreviewTab({ table }) {
           )}
           {baseShown.length > 0 && (
             <div>
-              <p className="text-[9px] font-semibold text-muted uppercase tracking-wider mb-1 px-0.5">Data</p>
+              <p className="t-label mb-1">Data</p>
               <div className="grid grid-cols-3 gap-1.5">
                 {baseShown.map(t => (
                   <PreviewTypeButton
@@ -1029,7 +934,7 @@ function QueryPreviewTab({ table }) {
           )}
           {chartsShown.length > 0 && (
             <div>
-              <p className="text-[9px] font-semibold text-muted uppercase tracking-wider mb-1 px-0.5">Charts</p>
+              <p className="t-label mb-1">Charts</p>
               <div className="grid grid-cols-3 gap-1.5">
                 {chartsShown.map(t => (
                   <PreviewTypeButton
@@ -1044,7 +949,7 @@ function QueryPreviewTab({ table }) {
             </div>
           )}
           {baseShown.length === 0 && chartsShown.length === 0 && (
-            <p className="text-[11px] text-muted text-center py-6">No widget matches “{search}”.</p>
+            <p className="text-xs text-muted text-center py-6">No widget matches “{search}”.</p>
           )}
         </div>
       </div>
@@ -1052,9 +957,9 @@ function QueryPreviewTab({ table }) {
       {/* ── Stage — the widget rendered exactly as a board tile would ── */}
       <div className="flex-1 min-w-0 flex flex-col p-3 gap-2">
         <div className="flex items-center gap-2 shrink-0">
-          <span className="text-[11px] font-semibold text-fg">{activeLabel}</span>
+          <span className="text-xs font-semibold text-fg">{activeLabel}</span>
           {missing.length === 0 && (
-            <span className="text-[10px] text-muted truncate">
+            <span className="ap-meta truncate">
               {Object.entries(demoWidget.encoding ?? {})
                 .filter(([, v]) => v != null && v !== '' && (!Array.isArray(v) || v.length))
                 .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
@@ -1064,15 +969,15 @@ function QueryPreviewTab({ table }) {
         </div>
 
         {missing.length > 0 ? (
-          <div className="flex-1 min-h-0 rounded-xl border border-dashed border-border flex flex-col items-center justify-center gap-1.5 text-center px-6">
-            <AlertCircle size={16} className="text-muted" />
+          <div className="flex-1 min-h-0 border border-dashed border-frame-line flex flex-col items-center justify-center gap-1.5 text-center px-6" style={{ borderRadius: 2 }}>
+            <AlertCircle size={16} className="text-muted" aria-hidden="true" />
             <p className="text-xs text-fg">
               This result doesn't have the columns a {activeLabel} widget needs.
             </p>
             <p className="text-[11px] text-muted">
               Missing: {missing.join(', ')}
             </p>
-            <p className="text-[11px] text-muted/70">
+            <p className="m-0 text-xs text-subtle">
               Adjust the SQL above, or pick another widget type.
             </p>
           </div>
@@ -1082,7 +987,7 @@ function QueryPreviewTab({ table }) {
           // unconditionally (hooks can't be conditional), and that hook throws
           // outside a VariableProvider ancestor.
           <VariableProvider>
-            <div className="flex-1 min-h-0 rounded-xl border border-border bg-bg overflow-hidden">
+            <div className="flex-1 min-h-0 border border-border bg-surface overflow-hidden" style={{ borderRadius: 2 }}>
               {demoWidget.type === 'table' && <TableWidget widget={demoWidget} providerTable={table} />}
               {demoWidget.type === 'pivot' && <PivotWidget widget={demoWidget} providerTable={table} />}
               {demoWidget.type === 'chart' && <ChartWidget widget={demoWidget} providerTable={table} />}
@@ -1111,20 +1016,20 @@ function ConnectedWidgetsTab({ queryId }) {
   }, [queryId])
 
   if (!queryId) {
-    return <p className="text-[11px] text-muted text-center py-10 px-3">Save this query to see which widgets use it.</p>
+    return <p className="m-0 text-sm text-muted text-center py-10 px-3">Save this query to see which widgets use it.</p>
   }
   if (usages === null) {
     return (
-      <div className="flex items-center gap-2 text-[11px] text-muted py-10 justify-center">
-        <Loader2 size={11} className="animate-spin" /> Loading connected widgets…
+      <div className="flex items-center gap-2 text-xs text-muted py-10 justify-center" role="status">
+        <Loader2 size={12} className="animate-spin" aria-hidden="true" /> Loading connected widgets
       </div>
     )
   }
   if (loadError) {
-    return <p className="text-[11px] text-muted text-center py-10">Failed to load: {loadError}</p>
+    return <p className="m-0 text-sm text-muted text-center py-10" role="alert">Couldn&rsquo;t load connected widgets: {loadError}</p>
   }
   if (usages.length === 0) {
-    return <p className="text-[11px] text-muted text-center py-10">Not used by any widgets yet.</p>
+    return <p className="m-0 text-sm text-muted text-center py-10">Not used by any widgets yet. Add it to a board and it appears here.</p>
   }
   return (
     <ul className="divide-y divide-border px-3 pb-3">
@@ -1135,17 +1040,15 @@ function ConnectedWidgetsTab({ queryId }) {
               a manual hunt through the dashboard list. */}
           <Link
             to={`/d/${u.board_id}/edit`}
-            className="py-2 flex items-center justify-between gap-3 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+            className="py-2 flex items-center justify-between gap-3 group nubi-focus-inset"
           >
             <div className="min-w-0">
-              <p className="text-xs text-fg truncate group-hover:text-primary group-hover:underline">
+              <p className="m-0 text-[13px] text-fg truncate group-hover:underline underline-offset-4">
                 {u.board_name || u.board_id}
               </p>
-              <p className="text-[10px] font-mono text-muted truncate">{u.widget_id}</p>
+              <p className="m-0 ap-meta truncate">{u.widget_id}</p>
             </div>
-            <span className="shrink-0 text-[10px] px-2 py-0.5 rounded-full bg-surface-2 text-muted">
-              {u.widget_type}
-            </span>
+            <Tag caps={false} className="shrink-0">{u.widget_type}</Tag>
           </Link>
         </li>
       ))}
@@ -1184,8 +1087,8 @@ function QueryHistoryTab({ entries, onRestore, onClear }) {
 
   if (entries.length === 0) {
     return (
-      <p className="text-[11px] text-muted text-center py-10 px-4 leading-relaxed">
-        Nothing run yet in this browser. Every query you Run here is kept locally
+      <p className="m-0 text-sm text-muted text-center py-10 px-4 leading-relaxed">
+        Nothing run yet in this browser. Every query you run here is kept locally
         (up to 50), so you can get back to an earlier attempt without saving a version.
       </p>
     )
@@ -1194,41 +1097,34 @@ function QueryHistoryTab({ entries, onRestore, onClear }) {
   return (
     <div className="px-3 pb-3">
       <div className="flex items-center justify-between py-2">
-        <span className="text-[10px] text-muted">{entries.length} run{entries.length !== 1 ? 's' : ''} · this browser only</span>
-        <button
-          onClick={onClear}
-          className="text-[11px] text-muted hover:text-danger transition-colors"
-        >
-          Clear
-        </button>
+        <span className="ap-count">{entries.length} run{entries.length !== 1 ? 's' : ''} · this browser only</span>
+        <button type="button" onClick={onClear} className="ap-clear">Clear history</button>
       </div>
       <ul className="space-y-1.5">
         {entries.map(entry => (
-          <li key={entry.id} className="rounded-lg border border-border bg-surface-2/30 p-2.5">
+          <li key={entry.id} className="border border-border bg-surface-2 p-2.5" style={{ borderRadius: 2 }}>
             <div className="flex items-center gap-1.5 mb-1">
-              {entry.ok
-                ? <CheckCircle2 size={10} className="text-success shrink-0" />
-                : <AlertCircle size={10} className="text-danger shrink-0" />}
-              <span className="text-[10px] text-muted font-mono">{relativeTime(entry.ranAt)}</span>
+              <span className={`nubi-dot ${entry.ok ? 'nubi-dot-success' : 'nubi-dot-danger'}`} aria-label={entry.ok ? 'Succeeded' : 'Failed'} />
+              <span className="ap-meta">{relativeTime(entry.ranAt)}</span>
               {entry.ok && entry.rowCount != null && (
-                <span className="text-[10px] text-muted">· {entry.rowCount.toLocaleString()} row{entry.rowCount !== 1 ? 's' : ''}</span>
+                <span className="ap-meta">· {entry.rowCount.toLocaleString()} row{entry.rowCount !== 1 ? 's' : ''}</span>
               )}
               {entry.ok && entry.elapsedMs != null && (
-                <span className="text-[10px] text-muted/80">· {entry.elapsedMs}ms</span>
+                <span className="ap-meta">· {entry.elapsedMs} ms</span>
               )}
               <div className="flex-1" />
-              <button onClick={() => copy(entry)} title="Copy SQL" className="text-muted hover:text-fg transition-colors">
-                {copiedId === entry.id ? <Check size={11} /> : <Copy size={11} />}
-              </button>
-              <button onClick={() => onRestore(entry.sql)} title="Restore into editor" className="text-muted hover:text-primary transition-colors">
-                <ArrowLeftRight size={11} />
-              </button>
+              <Button variant="ghost" size="icon-xs" onClick={() => copy(entry)} title="Copy SQL" aria-label="Copy SQL">
+                {copiedId === entry.id ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+              </Button>
+              <Button variant="ghost" size="icon-xs" onClick={() => onRestore(entry.sql)} title="Restore into editor" aria-label="Restore into editor">
+                <ArrowLeftRight size={13} aria-hidden="true" />
+              </Button>
             </div>
-            <pre className="text-[10.5px] font-mono text-fg whitespace-pre-wrap break-words leading-snug max-h-24 overflow-hidden">
+            <pre className="text-[11px] font-mono text-fg whitespace-pre-wrap break-words leading-snug max-h-24 overflow-hidden">
               {entry.sql.length > 240 ? `${entry.sql.slice(0, 240)}…` : entry.sql}
             </pre>
             {!entry.ok && entry.error && (
-              <p className="text-[10px] text-danger mt-1 line-clamp-2">{entry.error}</p>
+              <p className="text-[11px] text-danger mt-1 line-clamp-2">{entry.error}</p>
             )}
           </li>
         ))}
@@ -1244,12 +1140,9 @@ function QueryHistoryTab({ entries, onRestore, onClear }) {
 function ConnectorPicker({ datastores, value, onChange }) {
   const hasDatastores = datastores.length > 0
   return (
-    <div className="flex items-center gap-1.5 shrink-0">
-      <label
-        htmlFor="primary-connector"
-        className="inline-flex items-center gap-1 text-[11px] font-semibold text-fg"
-      >
-        <Database size={12} className="text-primary shrink-0" />
+    <div className="flex items-center gap-2 shrink-0">
+      <label htmlFor="primary-connector" className="inline-flex items-center gap-1.5 t-label">
+        <Database size={12} className="shrink-0" aria-hidden="true" />
         Connector
       </label>
       {hasDatastores ? (
@@ -1263,14 +1156,12 @@ function ConnectorPicker({ datastores, value, onChange }) {
           onChange={onChange}
         />
       ) : (
-        <Link
-          to="/connectors"
-          className="inline-flex items-center gap-1 h-7 px-2 rounded-md border border-dashed border-border bg-surface text-[11px] text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-          title="This project has no connectors yet — add one"
-        >
-          <Plus size={11} />
-          No connectors yet — add one
-        </Link>
+        <Button asChild variant="secondary" size="xs">
+          <Link to="/connectors" title="This project has no connectors yet. Add one.">
+            <Plus size={13} aria-hidden="true" />
+            Add a connector
+          </Link>
+        </Button>
       )}
     </div>
   )
@@ -1312,47 +1203,21 @@ function useResizableHeight(initial = DEFAULT_EDITOR_H) {
 // ---------------------------------------------------------------------------
 
 function AddCellDivider({ onAddSql, onAddPython }) {
-  const [hovered, setHovered] = useState(false)
-
+  // Revealed on hover and on keyboard focus (focus-within), never display:none.
   return (
-    <div
-      className="relative flex items-center gap-2 py-2 group"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
-      <div className={[
-        'flex-1 h-px transition-colors duration-150',
-        hovered ? 'bg-primary/30' : 'bg-border/40',
-      ].join(' ')} />
-
-      <div className={[
-        'flex items-center gap-1.5 shrink-0 transition-all duration-150',
-        hovered ? 'opacity-100 scale-100' : 'opacity-0 scale-95',
-      ].join(' ')}>
-        <button
-          onClick={onAddSql}
-          className="inline-flex items-center gap-1 h-6 px-2.5 text-[10px] font-semibold text-primary bg-primary/10 border border-primary/20 rounded-full hover:bg-primary/20 transition-colors"
-          title="Add SQL cell here"
-        >
-          <Plus size={9} />
-          <Code2 size={9} />
+    <div className="group relative flex items-center gap-2 py-2">
+      <div className="h-px flex-1 bg-border transition-colors group-hover:bg-frame-line group-focus-within:bg-frame-line" />
+      <div className="flex shrink-0 items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+        <Button variant="secondary" size="xs" onClick={onAddSql} title="Add SQL cell here">
+          <Plus size={12} aria-hidden="true" />
           SQL
-        </button>
-        <button
-          onClick={onAddPython}
-          className="inline-flex items-center gap-1 h-6 px-2.5 text-[10px] font-semibold text-violet-600 dark:text-violet-400 bg-violet-500/10 border border-violet-500/20 rounded-full hover:bg-violet-500/20 transition-colors"
-          title="Add Python cell here"
-        >
-          <Plus size={9} />
-          <Terminal size={9} />
+        </Button>
+        <Button variant="secondary" size="xs" onClick={onAddPython} title="Add Python cell here">
+          <Plus size={12} aria-hidden="true" />
           Python
-        </button>
+        </Button>
       </div>
-
-      <div className={[
-        'flex-1 h-px transition-colors duration-150',
-        hovered ? 'bg-primary/30' : 'bg-border/40',
-      ].join(' ')} />
+      <div className="h-px flex-1 bg-border transition-colors group-hover:bg-frame-line group-focus-within:bg-frame-line" />
     </div>
   )
 }
@@ -1364,16 +1229,16 @@ function AddCellDivider({ onAddSql, onAddPython }) {
 function CellRunStatus({ running, result, error }) {
   if (running) {
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] text-muted font-mono">
-        <Loader2 size={9} className="animate-spin" />
-        running…
+      <span className="inline-flex items-center gap-1.5 ap-meta" role="status">
+        <Loader2 size={11} className="animate-spin" aria-hidden="true" />
+        running
       </span>
     )
   }
   if (error) {
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] text-danger font-mono">
-        <AlertCircle size={9} />
+      <span className="inline-flex items-center gap-1.5 ap-meta" style={{ color: 'var(--danger-fg)' }} role="status">
+        <span className="nubi-dot nubi-dot-danger" aria-hidden="true" />
         error
       </span>
     )
@@ -1381,18 +1246,40 @@ function CellRunStatus({ running, result, error }) {
   if (result) {
     const rows = result.table?.numRows ?? 0
     return (
-      <span className="inline-flex items-center gap-1.5 text-[10px] text-success font-mono">
-        <CheckCircle2 size={9} />
+      <span className="inline-flex items-center gap-1.5 ap-meta" role="status">
+        <span className="nubi-dot nubi-dot-success" aria-hidden="true" />
         {rows.toLocaleString()} row{rows !== 1 ? 's' : ''}
-        {result.elapsedMs != null && (
-          <span className="text-muted/80">· {result.elapsedMs}ms</span>
-        )}
+        {result.elapsedMs != null && <span className="text-subtle">· {result.elapsedMs} ms</span>}
       </span>
     )
   }
   // Not run yet. The cell's reference name already has one home — the
   // CellNameBadge next to it — so there's nothing useful to say here.
   return null
+}
+
+// ---------------------------------------------------------------------------
+// CellControls — collapse / reorder / remove, shared by every scratch cell
+// ---------------------------------------------------------------------------
+
+function CellControls({ collapsed, onToggle, onMoveUp, onMoveDown, onRemove, first, last }) {
+  return (
+    <div className="flex shrink-0 items-center gap-0.5">
+      <Button variant="ghost" size="icon-sm" onClick={onToggle} aria-expanded={!collapsed}
+        title={collapsed ? 'Expand cell' : 'Collapse cell'} aria-label={collapsed ? 'Expand cell' : 'Collapse cell'}>
+        {collapsed ? <ChevronRight size={14} aria-hidden="true" /> : <ChevronDown size={14} aria-hidden="true" />}
+      </Button>
+      <Button variant="ghost" size="icon-sm" onClick={onMoveUp} disabled={first} title="Move up" aria-label="Move cell up">
+        <ArrowUp size={14} aria-hidden="true" />
+      </Button>
+      <Button variant="ghost" size="icon-sm" onClick={onMoveDown} disabled={last} title="Move down" aria-label="Move cell down">
+        <ArrowDown size={14} aria-hidden="true" />
+      </Button>
+      <Button variant="ghost" size="icon-sm" onClick={onRemove} title="Remove cell" aria-label="Remove cell">
+        <Trash2 size={14} aria-hidden="true" />
+      </Button>
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -1494,22 +1381,17 @@ function ScratchSqlCell({
     <div
       ref={cellElRef}
       data-cell-ref={cellRef}
-      className="rounded-xl border border-border bg-surface overflow-hidden shadow-sm transition-shadow hover:shadow-md"
-      style={{ scrollMarginTop: '1rem' }}
+      className="overflow-hidden border border-frame-line bg-surface transition-colors hover:border-ink"
+      style={{ scrollMarginTop: '1rem', borderRadius: 2 }}
     >
       {/* Cell header */}
-      <div className="flex items-center gap-1.5 px-3 py-2 border-b border-border bg-surface-2/60 flex-wrap gap-y-1.5 min-h-[44px]">
-        <div className="text-muted/30 cursor-grab shrink-0 hidden sm:block">
-          <GripVertical size={14} />
-        </div>
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-surface-2 flex-wrap gap-y-1.5 min-h-[44px]">
 
         {/* Cell number badge */}
         <CellNameBadge name={cellRef} />
 
         {/* Type badge */}
-        <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-muted bg-surface border border-border rounded px-1.5 py-0.5 shrink-0">
-          <Code2 size={9} /> SQL
-        </span>
+        <Tag className="shrink-0"><Code2 size={10} aria-hidden="true" /> SQL</Tag>
 
         {/* Run status */}
         <CellRunStatus running={running} result={result} error={runError} />
@@ -1520,39 +1402,15 @@ function ScratchSqlCell({
 
         <div className="flex-1" />
 
-        {/* Controls — ≥44px tap targets */}
-        <div className="flex items-center gap-0.5 shrink-0">
-          <button
-            onClick={() => setCollapsed(c => !c)}
-            className="h-9 w-9 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-surface transition-colors"
-            title={collapsed ? 'Expand' : 'Collapse'}
-          >
-            {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
-          </button>
-          <button
-            onClick={onMoveUp}
-            disabled={index === 0}
-            className="h-9 w-9 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-surface disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
-            title="Move up"
-          >
-            <ArrowUp size={12} />
-          </button>
-          <button
-            onClick={onMoveDown}
-            disabled={index === total - 1}
-            className="h-9 w-9 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-surface disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
-            title="Move down"
-          >
-            <ArrowDown size={12} />
-          </button>
-          <button
-            onClick={onRemove}
-            className="h-9 w-9 flex items-center justify-center rounded text-muted hover:text-danger hover:bg-danger-bg transition-colors"
-            title="Remove cell"
-          >
-            <Trash2 size={12} />
-          </button>
-        </div>
+        <CellControls
+          collapsed={collapsed}
+          onToggle={() => setCollapsed(c => !c)}
+          onMoveUp={onMoveUp}
+          onMoveDown={onMoveDown}
+          onRemove={onRemove}
+          first={index === 0}
+          last={index === total - 1}
+        />
       </div>
 
       {!collapsed && (
@@ -1566,22 +1424,18 @@ function ScratchSqlCell({
               dialect={dialect}
             />
             {isEmpty && (
-              <p className="mt-1.5 text-[11px] text-muted flex items-center gap-1.5 flex-wrap">
-                <FileCode2 size={11} className="text-primary/60 shrink-0" />
-                <span>Tip: earlier results are queryable here, e.g.</span>
-                <code className="font-mono text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 px-1 rounded">SELECT * FROM cell_1</code>
+              <p className="mt-1.5 mb-0 text-xs text-muted flex items-center gap-1.5 flex-wrap">
+                <FileCode2 size={12} className="text-subtle shrink-0" aria-hidden="true" />
+                <span>Earlier results are queryable here, e.g.</span>
+                <code className="ap-meta px-1 border border-border" style={{ borderRadius: 2 }}>SELECT * FROM cell_1</code>
               </p>
             )}
             <div className="mt-2 flex items-center gap-2 flex-wrap">
-              <button
-                onClick={handleRun}
-                disabled={running || isEmpty}
-                className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
-              >
-                {running ? <Loader2 size={11} className="animate-spin" /> : <Play size={11} />}
-                {running ? 'Running…' : 'Run'}
-              </button>
-              <span className="text-[11px] text-muted select-none">⌘/Ctrl+Enter</span>
+              <Button size="sm" onClick={handleRun} disabled={isEmpty} loading={running}>
+                {!running && <Play size={13} aria-hidden="true" />}
+                {running ? 'Running' : 'Run cell'}
+              </Button>
+              <span className="select-none text-xs text-subtle"><kbd className="nubi-kbd">{MOD_KEY}</kbd> <kbd className="nubi-kbd">Enter</kbd></span>
             </div>
           </div>
 
@@ -1591,7 +1445,7 @@ function ScratchSqlCell({
             onMouseDown={startDrag}
             title="Drag to resize editor"
           >
-            <GripVertical size={12} className="rotate-90 text-muted/30 group-hover:text-muted/60 transition-colors" />
+            <GripVertical size={12} className="rotate-90 text-subtle opacity-50 group-hover:opacity-100 transition-opacity" aria-hidden="true" />
           </div>
 
           {/* Results area */}
@@ -1608,8 +1462,8 @@ function ScratchSqlCell({
             </div>
           ) : (
             <div className="px-4 py-6 text-center text-xs text-muted border-t border-border">
-              Run a query to see results here. Results will be available downstream as{' '}
-              <code className="font-mono text-indigo-600 dark:text-indigo-400">{cellRef}</code>.
+              Run this cell to see rows here. Its result is then available downstream as{' '}
+              <code className="ap-meta px-1 border border-border" style={{ borderRadius: 2 }}>{cellRef}</code>.
             </div>
           )}
         </>
@@ -1628,57 +1482,29 @@ function ScratchPythonCell({ index, total, onRemove, onMoveUp, onMoveDown, cellR
   return (
     <div
       data-cell-ref={cellRef}
-      className="rounded-xl border border-border bg-surface overflow-hidden shadow-sm transition-shadow hover:shadow-md"
-      style={{ scrollMarginTop: '1rem' }}
+      className="overflow-hidden border border-frame-line bg-surface transition-colors hover:border-ink"
+      style={{ scrollMarginTop: '1rem', borderRadius: 2 }}
     >
-      <div className="flex items-center gap-1.5 px-3 py-2 border-b border-border bg-surface-2/60 flex-wrap gap-y-1.5 min-h-[44px]">
-        <div className="text-muted/30 cursor-grab shrink-0 hidden sm:block">
-          <GripVertical size={14} />
-        </div>
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-surface-2 flex-wrap gap-y-1.5 min-h-[44px]">
 
         {/* Cell reference badge */}
         <CellNameBadge name={cellRef} />
 
-        <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-muted bg-surface border border-border rounded px-1.5 py-0.5 shrink-0">
-          <Terminal size={9} /> Python
-        </span>
+        <Tag className="shrink-0"><Terminal size={10} aria-hidden="true" /> Python</Tag>
 
-        <span className="text-[10px] text-muted/70 italic shrink-0">on-demand kernel</span>
+        <span className="ap-meta shrink-0">on-demand kernel</span>
 
         <div className="flex-1" />
 
-        <div className="flex items-center gap-0.5 shrink-0">
-          <button
-            onClick={() => setCollapsed(c => !c)}
-            className="h-9 w-9 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-surface transition-colors"
-            title={collapsed ? 'Expand' : 'Collapse'}
-          >
-            {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
-          </button>
-          <button
-            onClick={onMoveUp}
-            disabled={index === 0}
-            className="h-9 w-9 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-surface disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
-            title="Move up"
-          >
-            <ArrowUp size={12} />
-          </button>
-          <button
-            onClick={onMoveDown}
-            disabled={index === total - 1}
-            className="h-9 w-9 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-surface disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
-            title="Move down"
-          >
-            <ArrowDown size={12} />
-          </button>
-          <button
-            onClick={onRemove}
-            className="h-9 w-9 flex items-center justify-center rounded text-muted hover:text-danger hover:bg-danger-bg transition-colors"
-            title="Remove cell"
-          >
-            <Trash2 size={12} />
-          </button>
-        </div>
+        <CellControls
+          collapsed={collapsed}
+          onToggle={() => setCollapsed(c => !c)}
+          onMoveUp={onMoveUp}
+          onMoveDown={onMoveDown}
+          onRemove={onRemove}
+          first={index === 0}
+          last={index === total - 1}
+        />
       </div>
 
       {!collapsed && (
@@ -1700,15 +1526,34 @@ function ScratchPythonCell({ index, total, onRemove, onMoveUp, onMoveDown, cellR
 // toolbar); falls back to an inline bar when no slot exists.
 // ---------------------------------------------------------------------------
 
+/** True below the md breakpoint, where the shell topbar has no room for a toolbar. */
+function useNarrow() {
+  const [narrow, setNarrow] = useState(() => {
+    try { return window.matchMedia('(max-width: 767px)').matches } catch { return false }
+  })
+  useEffect(() => {
+    let mq
+    try { mq = window.matchMedia('(max-width: 767px)') } catch { return }
+    const on = () => setNarrow(mq.matches)
+    mq.addEventListener('change', on)
+    return () => mq.removeEventListener('change', on)
+  }, [])
+  return narrow
+}
+
+/** The platform's run chord, spelled out (no glyph the mono font may lack). */
+const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || '')
+const MOD_KEY = IS_MAC ? '⌘' : 'Ctrl'
+
 function WorkspaceToolbar({ slot, children }) {
   if (slot) {
     return createPortal(
-      <div className="flex items-center gap-1.5 w-full min-w-0">{children}</div>,
+      <div className="flex items-center gap-2 w-full min-w-0">{children}</div>,
       slot
     )
   }
   return (
-    <div className="shrink-0 flex items-center gap-1.5 px-3 py-2 border-b border-border bg-surface-2/60 flex-wrap gap-y-2 min-h-[48px]">
+    <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-b border-border bg-surface flex-wrap gap-y-2 min-h-[48px]">
       {children}
     </div>
   )
@@ -1717,7 +1562,7 @@ function WorkspaceToolbar({ slot, children }) {
 // Vertical divider between toolbar clusters — hidden on the narrowest widths
 // where every pixel of horizontal space is precious.
 function ToolbarDivider() {
-  return <div className="hidden sm:block w-px h-5 bg-border shrink-0" aria-hidden="true" />
+  return <div className="hidden sm:block w-px h-5 bg-frame-line shrink-0" aria-hidden="true" />
 }
 
 // ---------------------------------------------------------------------------
@@ -1744,34 +1589,32 @@ function ToolbarKebabMenu({ items }) {
 
   return (
     <div className="relative shrink-0" ref={ref}>
-      <button
+      <Button
+        variant={open ? 'outline' : 'secondary'}
+        size="icon-sm"
         onClick={() => setOpen(o => !o)}
         aria-label="More actions"
         aria-expanded={open}
+        aria-haspopup="menu"
         title="More actions"
         data-testid="query-toolbar-more"
-        className={[
-          'w-8 h-8 flex items-center justify-center rounded-lg border transition-all duration-150',
-          'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
-          open
-            ? 'bg-surface-2 border-primary text-primary'
-            : 'bg-surface text-muted border-border hover:text-fg hover:bg-surface-2',
-        ].join(' ')}
       >
-        <MoreHorizontal size={15} />
-      </button>
+        <MoreHorizontal size={15} aria-hidden="true" />
+      </Button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1.5 z-50 w-56 bg-surface border border-border rounded-xl shadow-xl p-1">
+        <div role="menu" className="nubi-dropdown right-0 top-[calc(100%+6px)] w-56">
           {visible.map(item => (
             <button
+              type="button"
+              role="menuitem"
               key={item.key}
               onClick={() => { setOpen(false); item.onClick() }}
               disabled={item.disabled}
               title={item.title}
-              className="w-full flex items-center gap-2.5 px-2.5 py-2 text-xs font-medium text-fg rounded-lg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-left"
+              className="nubi-dropdown-item"
             >
-              <item.icon size={14} className="text-muted shrink-0" />
+              <item.icon size={14} className="shrink-0 text-muted" aria-hidden="true" />
               <span className="flex-1 truncate">{item.label}</span>
             </button>
           ))}
@@ -1783,6 +1626,7 @@ function ToolbarKebabMenu({ items }) {
 
 export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, toolbarExtra = null }) {
   const canWrite = useCanWrite()
+  const narrow = useNarrow()
   // Active workspace — the connector list is org/project-scoped, so switching
   // either must refetch it (see the listConnectors effect below).
   const { activeOrg } = useOrg()
@@ -2361,21 +2205,13 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
     <div className="flex flex-col h-full overflow-hidden relative">
 
       {/* ── Top toolbar — portaled into the AppShell top bar when available ── */}
-      <WorkspaceToolbar slot={topbarSlot}>
+      <WorkspaceToolbar slot={narrow ? null : topbarSlot}>
         <div className="flex items-center gap-2 min-w-0 flex-1">
-          <span className="text-sm font-semibold font-display text-fg truncate">
+          <span className="text-sm font-semibold text-fg truncate">
             {query?.name ?? (isNew ? 'New query' : 'Ad-hoc query')}
           </span>
-          {isRegistered && (
-            <span className="shrink-0 inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-primary/10 text-primary border border-primary/20">
-              registered
-            </span>
-          )}
-          {isNew && (
-            <span className="shrink-0 inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-warning-bg text-warning border border-warning/20">
-              unsaved
-            </span>
-          )}
+          {isRegistered && <Tag variant="success" dot className="shrink-0">Saved</Tag>}
+          {isNew && <Tag variant="warning" dot className="shrink-0 hidden sm:inline-flex">Unsaved</Tag>}
         </div>
 
         <ToolbarDivider />
@@ -2383,47 +2219,26 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
         {/* View switcher — Notebook / Code (VS Code-style files view). Mirrors
             the flows view switcher; Code replaces the notebook body with the
             <slug>.sql + <slug>.meta.json file view. */}
-        <div className="flex h-8 rounded-lg border border-border overflow-hidden shrink-0" data-testid="query-view-switcher">
-          {[
-            { id: 'notebook', Icon: Terminal, title: 'Notebook / editor view' },
-            { id: 'code', Icon: FileCode2, title: 'Code / Files view (.sql + .meta.json)' },
-          ].map((v, i) => {
-            const active = v.id === 'code' ? codeView : !codeView
-            return (
-              <button
-                key={v.id}
-                onClick={() => setCodeView(v.id === 'code')}
-                title={v.title}
-                aria-label={v.title}
-                aria-pressed={active}
-                className={[
-                  'flex items-center justify-center w-8 transition-colors',
-                  i > 0 ? 'border-l border-border' : '',
-                  active ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
-                ].join(' ')}
-              >
-                <v.Icon size={14} />
-              </button>
-            )
-          })}
+        <div data-testid="query-view-switcher" className="shrink-0">
+          <SegmentedControl
+            size="sm"
+            value={codeView ? 'code' : 'notebook'}
+            onChange={(v) => setCodeView(v === 'code')}
+            options={[
+              { value: 'notebook', label: <Terminal size={14} aria-hidden="true" />, ariaLabel: 'Notebook / editor view' },
+              { value: 'code', label: <FileCode2 size={14} aria-hidden="true" />, ariaLabel: 'Code / Files view (.sql + .meta.json)' },
+            ]}
+          />
         </div>
 
         {/* Add cells — always visible; labels collapse to icon-only below sm. */}
-        <div className="flex items-center rounded-lg border border-border overflow-hidden shrink-0">
-          <button
-            onClick={addSqlCell}
-            className="h-8 px-2 sm:px-2.5 flex items-center gap-1.5 text-[11px] font-medium bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-            title="Add a SQL scratch cell"
-          >
-            <Plus size={12} /> <span className="hidden sm:inline">SQL</span>
-          </button>
-          <button
-            onClick={addPythonCell}
-            className="h-8 px-2 sm:px-2.5 flex items-center gap-1.5 text-[11px] font-medium border-l border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-            title="Add a Python scratch cell (on-demand kernel)"
-          >
-            <Plus size={12} /> <span className="hidden sm:inline">Python</span>
-          </button>
+        <div className="flex items-center gap-1 shrink-0">
+          <Button variant="ghost" size="xs" onClick={addSqlCell} title="Add a SQL scratch cell" aria-label="Add a SQL cell">
+            <Plus size={13} aria-hidden="true" /> <span className="hidden sm:inline">SQL</span>
+          </Button>
+          <Button variant="ghost" size="xs" onClick={addPythonCell} title="Add a Python scratch cell (on-demand kernel)" aria-label="Add a Python cell">
+            <Plus size={13} aria-hidden="true" /> <span className="hidden sm:inline">Python</span>
+          </Button>
         </div>
 
         <ToolbarDivider />
@@ -2483,44 +2298,45 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
 
         {/* Save — mutating (registerQuery); writers only */}
         {canWrite ? (
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={handleSaveClick}
             disabled={saving || viewing}
             data-testid="query-save-btn"
-            className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50 transition-colors"
             title={isRegistered ? 'Update saved query (primary cell)' : 'Save query (primary cell)'}
+            aria-label={saving ? 'Saving' : isRegistered ? 'Update saved query' : 'Save query'}
           >
             {saving ? (
-              <Loader2 size={12} className="animate-spin" />
+              <Loader2 size={14} className="animate-spin" aria-hidden="true" />
             ) : saveStatus === 'ok' ? (
-              <CheckCircle2 size={12} className="text-success" />
+              <CheckCircle2 size={14} className="text-success" aria-hidden="true" />
             ) : saveStatus === 'err' ? (
-              <AlertCircle size={12} className="text-danger" />
+              <AlertCircle size={14} className="text-danger" aria-hidden="true" />
             ) : (
-              <Save size={12} />
+              <Save size={14} aria-hidden="true" />
             )}
             <span className="hidden sm:inline">
-              {saving ? 'Saving…' : isRegistered ? 'Update' : 'Save'}
+              {saving ? 'Saving' : isRegistered ? 'Update' : 'Save'}
             </span>
-          </button>
+          </Button>
         ) : (
-          <span className="h-8 px-2.5 hidden sm:flex items-center text-[11px] font-medium text-muted/70 select-none" title="Read-only access">
-            Read-only
-          </span>
+          <Tag className="hidden sm:inline-flex" title="Read-only access">Read-only</Tag>
         )}
 
-        {/* Run (primary) */}
-        <button
+        {/* Run (primary, ink) */}
+        <Button
+          size="sm"
           onClick={handleRun}
           disabled={running || viewing}
+          loading={running}
           data-testid="query-run-btn"
-          className="h-8 px-3 flex items-center gap-1.5 text-[11px] font-semibold rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity shadow-sm"
-          title="Run query (⌘/Ctrl+Enter)"
+          title={`Run query (${MOD_KEY}+Enter)`}
         >
-          {running ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
-          <span>{running ? 'Running…' : 'Run'}</span>
-          <kbd className="hidden sm:inline text-[9px] opacity-50 font-mono ml-0.5">⌘↵</kbd>
-        </button>
+          {!running && <Play size={13} aria-hidden="true" />}
+          <span>{running ? 'Running' : 'Run'}</span>
+          <kbd className="nubi-kbd hidden sm:inline-flex" style={{ background: 'transparent', color: 'inherit', borderColor: 'currentColor', opacity: .7 }}>{MOD_KEY} Enter</kbd>
+        </Button>
 
         {/* Page-level extras (view toggle + side-panel buttons from QueriesPage) */}
         {toolbarExtra && (
@@ -2550,26 +2366,16 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
         {/* Read-only version-view banner — the editor below shows the
             version's SQL/params; the draft is untouched until Restore. */}
         {viewing && (
-          <div className="flex items-center gap-2 px-4 py-2 bg-info-bg border-b border-info/20 text-xs text-info">
-            <History size={13} className="shrink-0" />
+          <div className="nubi-notice nubi-notice-info mx-3 mt-3 text-xs" role="status">
+            <History size={14} className="shrink-0" aria-hidden="true" />
             <span className="flex-1 min-w-0 truncate">
               Viewing <span className="font-mono font-semibold">v{viewingVersion.version}</span> (read-only)
-              {viewingVersion.message ? <span className="text-muted"> — {viewingVersion.message}</span> : null}
+              {viewingVersion.message ? <span className="text-muted"> · {viewingVersion.message}</span> : null}
             </span>
             {canWrite && (
-              <button
-                onClick={restoreViewedVersion}
-                className="shrink-0 px-2 h-6 rounded-md border border-info/30 font-medium hover:bg-info-bg transition-colors"
-              >
-                Restore
-              </button>
+              <Button size="xs" variant="secondary" onClick={restoreViewedVersion}>Restore</Button>
             )}
-            <button
-              onClick={() => setViewingVersion(null)}
-              className="shrink-0 px-2 h-6 rounded-md border border-border text-fg font-medium hover:bg-surface-2 transition-colors"
-            >
-              Back to draft
-            </button>
+            <Button size="xs" variant="secondary" onClick={() => setViewingVersion(null)}>Back to draft</Button>
           </div>
         )}
 
@@ -2577,20 +2383,17 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
         <div className="px-3 pt-3">
           <div
             data-cell-ref="cell_1"
-            className="rounded-xl border-2 border-primary/30 bg-surface overflow-hidden shadow-sm"
-            style={{ scrollMarginTop: '1rem' }}
+            className="overflow-hidden border border-frame-line bg-surface"
+            style={{ scrollMarginTop: '1rem', borderTop: '2px solid var(--ink)', borderRadius: '0 0 2px 2px' }}
           >
             {/* Primary cell header */}
-            <div className="flex items-center gap-1.5 px-3 py-2 border-b border-border bg-primary/5 flex-wrap gap-y-1.5 min-h-[44px]">
+            <div className="flex items-center gap-2 px-3 py-2 border-b border-border flex-wrap gap-y-1.5 min-h-[44px]">
               {/* Cell_1 badge */}
               <CellNameBadge name="cell_1" />
 
-              <span
-                className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-primary bg-primary/10 border border-primary/20 rounded px-1.5 py-0.5 shrink-0"
-                title="This is the query that Save persists to the registry."
-              >
-                <Star size={9} /> Primary query
-              </span>
+              <Tag variant="ink" className="shrink-0" title="This is the query that Save persists to the registry.">
+                <Star size={10} aria-hidden="true" /> Primary query
+              </Tag>
 
               <CellRunStatus
                 running={running}
@@ -2605,16 +2408,16 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
               <div className="flex-1" />
 
               {!viewing && (
-                <button
+                <Button
+                  variant={builderOpen ? 'outline' : 'secondary'}
+                  size="xs"
                   onClick={() => setBuilderOpen(o => !o)}
-                  className={`inline-flex items-center gap-1.5 h-7 px-2.5 text-xs font-medium rounded-md border transition-colors ${
-                    builderOpen ? 'bg-primary/10 border-primary text-primary' : 'border-border bg-surface text-muted hover:text-fg hover:bg-surface-2'
-                  }`}
+                  aria-pressed={builderOpen}
                   title="Build a query without writing SQL"
                 >
-                  <Wand2 size={12} className={builderOpen ? 'text-primary' : 'text-primary/70'} />
+                  <Wand2 size={13} aria-hidden="true" />
                   Build
-                </button>
+                </Button>
               )}
 
               {!viewing && (
@@ -2625,16 +2428,16 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
               )}
 
               {!viewing && query?.id && !isNew && (
-                <button
+                <Button
+                  variant={showRendered ? 'outline' : 'secondary'}
+                  size="xs"
                   onClick={handleToggleRendered}
-                  className={`inline-flex items-center gap-1.5 h-7 px-2.5 text-xs font-medium rounded-md border transition-colors ${
-                    showRendered ? 'bg-primary/10 border-primary text-primary' : 'border-border bg-surface text-muted hover:text-fg hover:bg-surface-2'
-                  }`}
-                  title="Preview the SQL that will actually run — values stay bound placeholders, never text"
+                  aria-pressed={showRendered}
+                  title="Preview the SQL that will actually run. Values stay bound placeholders, never text."
                 >
-                  {showRendered ? <EyeOff size={12} /> : <Eye size={12} className="text-primary/70" />}
+                  {showRendered ? <EyeOff size={13} aria-hidden="true" /> : <Eye size={13} aria-hidden="true" />}
                   Rendered SQL
-                </button>
+                </Button>
               )}
 
               <ConnectorPicker
@@ -2654,20 +2457,17 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
 
             {/* Version-view params — static, read-only */}
             {viewing && Array.isArray(viewCfg.params) && viewCfg.params.length > 0 && (
-              <div className="px-3 py-2.5 border-b border-border bg-surface-2/40">
-                <p className="text-[10px] font-semibold text-muted uppercase tracking-wider mb-2">
+              <div className="px-3 py-2.5 border-b border-border bg-surface-2">
+                <p className="t-label mb-2">
                   Parameters (v{viewingVersion.version})
                 </p>
                 <div className="flex flex-wrap gap-1.5">
                   {viewCfg.params.map(p => (
-                    <span
-                      key={p.name}
-                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-surface border border-border text-muted"
-                    >
+                    <Tag key={p.name} caps={false}>
                       {p.name}
-                      <span className="text-muted/60">({p.type ?? 'text'})</span>
-                      {p.default != null && <span className="text-muted/60">= {String(p.default)}</span>}
-                    </span>
+                      <span className="text-subtle">({p.type ?? 'text'})</span>
+                      {p.default != null && <span className="text-subtle">= {String(p.default)}</span>}
+                    </Tag>
                   ))}
                 </div>
               </div>
@@ -2675,8 +2475,8 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
 
             {/* Param inputs */}
             {!viewing && hasParams && (
-              <div className="px-3 py-2.5 border-b border-border bg-surface-2/40">
-                <p className="text-[10px] font-semibold text-muted uppercase tracking-wider mb-2">Parameters</p>
+              <div className="px-3 py-2.5 border-b border-border bg-surface-2">
+                <p className="t-label mb-2">Parameters</p>
                 <div className="flex flex-wrap gap-3">
                   {params.map(param => (
                     <div key={param.name} className="flex flex-col gap-1 min-w-0">
@@ -2684,13 +2484,13 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                         <label className="text-[11px] font-semibold text-muted uppercase tracking-wide flex items-center gap-1">
                           <span className="font-mono normal-case text-fg/80">{param.name}</span>
                           {param.required && (
-                            <span className="text-danger text-[10px]" title="Required">*</span>
+                            <span className="text-danger text-[11px]" title="Required">*</span>
                           )}
                         </label>
                         <select
                           value={param.type ?? 'text'}
                           onChange={e => handleParamDescChange(param.name, 'type', e.target.value)}
-                          className="h-5 px-1 text-[9px] bg-surface border border-border rounded text-muted focus:outline-none focus:ring-1 focus:ring-ring"
+                          className="h-5 px-1 text-[11px] bg-surface border border-border rounded text-muted focus:outline-none focus:ring-1 focus:ring-ring"
                           title="Parameter type"
                         >
                           <option value="text">text</option>
@@ -2704,7 +2504,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                           <option value="select">select</option>
                           <option value="multiselect">multiselect</option>
                         </select>
-                        <label className="flex items-center gap-0.5 text-[9px] text-muted cursor-pointer select-none">
+                        <label className="flex items-center gap-0.5 text-[11px] text-muted cursor-pointer select-none">
                           <input
                             type="checkbox"
                             checked={param.required ?? false}
@@ -2756,8 +2556,8 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                 readOnly={viewing}
               />
               {!viewing && isEmptyPrimary && (
-                <p className="mt-1.5 text-[11px] text-muted flex items-center gap-1 flex-wrap">
-                  <FileCode2 size={11} className="text-primary/60 shrink-0" />
+                <p className="mt-1.5 mb-0 text-xs text-muted flex items-center gap-1.5 flex-wrap">
+                  <FileCode2 size={12} className="text-subtle shrink-0" aria-hidden="true" />
                   New here? Use the <span className="font-medium text-fg">Templates</span> menu above for starters, or
                   type <span className="font-mono">{' {{param}} '}</span> to declare a bindable parameter.
                 </p>
@@ -2769,11 +2569,11 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                 placeholders in the SQL text, RLS predicates are visible too. */}
             {!viewing && showRendered && query?.id && !isNew && (
               <div className="px-3 pb-3">
-                <div className="rounded-lg border border-border bg-surface-2/40 overflow-hidden">
-                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-border bg-surface-2/60">
-                    <Eye size={11} className="text-primary/70" />
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">
-                      Rendered SQL — what will actually run
+                <div className="border border-border bg-surface-2 overflow-hidden" style={{ borderRadius: 2 }}>
+                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-border">
+                    <Eye size={12} aria-hidden="true" />
+                    <span className="t-label">
+                      Rendered SQL: what will actually run
                     </span>
                     {renderedLoading && <Loader2 size={10} className="animate-spin text-muted ml-1" />}
                   </div>
@@ -2786,11 +2586,11 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                       </pre>
                       {Array.isArray(renderedPreview.params) && renderedPreview.params.length > 0 && (
                         <div className="flex flex-wrap items-center gap-1 pt-1 border-t border-border/60">
-                          <span className="text-[10px] text-muted uppercase tracking-wide">Bound values:</span>
+                          <span className="text-[11px] text-muted uppercase tracking-wide">Bound values:</span>
                           {renderedPreview.params.map((v, i) => (
                             <code
                               key={i}
-                              className="px-1.5 py-0.5 rounded bg-surface border border-border font-mono text-[10px] text-primary/90"
+                              className="px-1.5 py-0.5 bg-surface border border-border font-mono text-[11px] text-accent" style={{ borderRadius: 2 }}
                             >
                               {'$' + (i + 1)} = {JSON.stringify(v)}
                             </code>
@@ -2811,7 +2611,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
               onMouseDown={startDrag}
               title="Drag to resize editor"
             >
-              <GripVertical size={14} className="rotate-90 text-muted/30 group-hover:text-muted/60 transition-colors" />
+              <GripVertical size={14} className="rotate-90 text-subtle opacity-50 group-hover:opacity-100 transition-opacity" aria-hidden="true" />
             </div>
 
             </div>
@@ -2823,42 +2623,40 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                 full-width panel each gets the whole width, and there is only
                 ever one rendering of the result on screen. ── */}
             <div className="border-t border-border flex flex-col min-h-0">
-              <div className="flex items-center gap-1 px-3 py-2 shrink-0 border-b border-border flex-wrap">
-                {[
-                  { value: 'results', label: 'Results' },
-                  { value: 'preview', label: 'Preview', icon: Layers },
-                  { value: 'widgets', label: 'Connected' },
-                  { value: 'ai', label: 'Ask AI', icon: Sparkles },
-                  { value: 'history', label: 'History', icon: History },
-                ].map(t => (
-                  <button
-                    key={t.value}
-                    onClick={() => setRightPanelTab(t.value)}
-                    className={`flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider px-2 py-1 rounded-md transition-colors ${
-                      rightPanelTab === t.value ? 'bg-primary/10 text-primary' : 'text-muted hover:text-fg'
-                    }`}
-                  >
-                    {t.icon && <t.icon size={11} />}
-                    {t.label}
-                  </button>
-                ))}
+              <div className="flex items-center gap-3 px-3 shrink-0 border-b border-border flex-wrap">
+                <Tabs value={rightPanelTab} onValueChange={setRightPanelTab}>
+                  <TabsList aria-label="Result views" className="border-b-0">
+                    {[
+                      { value: 'results', label: 'Results' },
+                      { value: 'preview', label: 'Preview', icon: Layers },
+                      { value: 'widgets', label: 'Connected' },
+                      { value: 'ai', label: 'Ask AI', icon: Sparkles },
+                      { value: 'history', label: 'History', icon: History },
+                    ].map(t => (
+                      <TabsTrigger key={t.value} value={t.value}>
+                        {t.icon && <t.icon size={13} aria-hidden="true" />}
+                        {t.label}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                </Tabs>
 
                 {/* Result meta — always visible, whichever tab is open, so the
                     row count and timing don't vanish when previewing. */}
-                <div className="flex items-center gap-2 ml-auto">
+                <div className="flex items-center gap-2 ml-auto py-1">
                   {running && (
-                    <span className="inline-flex items-center gap-1.5 text-[11px] text-muted">
-                      <Loader2 size={11} className="animate-spin" /> Streaming…
+                    <span className="inline-flex items-center gap-1.5 ap-meta" role="status">
+                      <Loader2 size={12} className="animate-spin" aria-hidden="true" /> Streaming
                     </span>
                   )}
                   {result && !running && (
                     <>
-                      <span className="text-[11px] font-mono text-fg">
+                      <span className="ap-meta" style={{ color: 'var(--text)' }}>
                         {rowCount.toLocaleString()} row{rowCount !== 1 ? 's' : ''}
                       </span>
                       {result.elapsedMs != null && (
-                        <span className="inline-flex items-center gap-1 text-[10px] text-muted">
-                          <Clock size={9} /> {result.elapsedMs}ms
+                        <span className="inline-flex items-center gap-1 ap-meta">
+                          <Clock size={11} aria-hidden="true" /> {result.elapsedMs} ms
                         </span>
                       )}
                       <CacheBadge status={result.cacheStatus} />
@@ -2884,8 +2682,13 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                       />
                     </div>
                   ) : (
-                    <div className="px-4 py-10 flex flex-col items-center justify-center gap-1.5 text-center">
-                      <p className="text-xs text-muted">Run the query to see results here.</p>
+                    <div className="px-4 py-10 flex flex-col items-center justify-center gap-2 text-center">
+                      <p className="m-0 text-sm text-muted">
+                        Run the query to see rows here.
+                      </p>
+                      <p className="m-0 text-xs text-subtle">
+                        <kbd className="nubi-kbd">{MOD_KEY}</kbd> <kbd className="nubi-kbd">Enter</kbd> runs it from the editor.
+                      </p>
                     </div>
                   )
                 )}
@@ -2985,30 +2788,22 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
 
           {/* Explicit footer buttons */}
           <div className="flex items-center gap-3 pt-2 flex-wrap">
-            <button
-              onClick={addSqlCell}
-              className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-medium bg-surface border border-dashed border-border text-muted hover:text-fg hover:border-solid hover:border-primary/40 rounded-lg transition-all"
-            >
-              <Plus size={11} />
-              <Code2 size={11} />
+            <Button variant="secondary" size="sm" onClick={addSqlCell}>
+              <Plus size={14} aria-hidden="true" />
               SQL cell
-            </button>
-            <button
-              onClick={addPythonCell}
-              className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-medium bg-surface border border-dashed border-border text-muted hover:text-fg hover:border-solid hover:border-violet-400/50 rounded-lg transition-all"
-            >
-              <Plus size={11} />
-              <Terminal size={11} />
+            </Button>
+            <Button variant="secondary" size="sm" onClick={addPythonCell}>
+              <Plus size={14} aria-hidden="true" />
               Python cell
-            </button>
+            </Button>
             {scratchCells.length === 0 ? (
-              <span className="text-[11px] text-muted/70">
-                Add cells to build a notebook. Results from each cell are referenceable as{' '}
-                <code className="font-mono text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 px-1 rounded">cell_N</code>
+              <span className="text-xs text-subtle">
+                Add cells to build a notebook. Each result is referenceable as{' '}
+                <code className="ap-meta px-1 border border-border" style={{ borderRadius: 2 }}>cell_N</code>
                 {' '}in later SQL cells.
               </span>
             ) : (
-              <span className="text-[11px] text-muted/70">
+              <span className="text-xs text-subtle">
                 Scratch cells are session-only. Only the primary query is saved.
               </span>
             )}

@@ -27,9 +27,12 @@
  */
 
 import { useState, useCallback, useRef } from 'react'
+import '../../components/app/monacoSetup'
 import Editor from '@monaco-editor/react'
 import { ChevronDown, ChevronRight, AlertCircle, CheckCircle2, Clock } from 'lucide-react'
 import CellToolbar from './CellToolbar.jsx'
+import useMonacoTheme from './useMonacoTheme.js'
+import Button from '../../components/ui/Button.jsx'
 import CellConfigAnnotations from './CellConfigAnnotations.jsx'
 import SecretsMenu from './SecretsMenu.jsx'
 import DataTable from '../../components/DataTable.jsx'
@@ -75,6 +78,7 @@ export default function SqlCell({
   const [resultsOpen, setResultsOpen] = useState(true)
   const [snippetOpen, setSnippetOpen] = useState(false)
   const monacoRef = useRef(null)
+  const monacoTheme = useMonacoTheme()
 
   const sql = cell?.config?.sql ?? ''
 
@@ -127,7 +131,7 @@ export default function SqlCell({
   const editorH = editorHeight(sql)
 
   return (
-    <div className="rounded-xl border border-border bg-surface shadow-sm overflow-hidden">
+    <div className="overflow-hidden border border-frame-line bg-surface" style={{ borderRadius: 2 }}>
       {/* Toolbar */}
       <CellToolbar
         index={index}
@@ -143,30 +147,26 @@ export default function SqlCell({
       <CellConfigAnnotations config={cell?.config} />
 
       {/* Snippet picker sub-toolbar */}
-      <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-2/20 border-b border-border">
-        <p className="text-[10px] text-muted">
+      <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
+        <p className="m-0 text-xs text-muted">
           Reference an earlier cell by its{' '}
-          <code className="font-mono bg-surface-2 px-1 rounded">cell_key</code>.
+          <code className="font-mono bg-surface-2 px-1" style={{ borderRadius: 2 }}>cell_key</code>.
         </p>
         <div className="ml-auto">
           <SecretsMenu onInsert={insertSecret} />
         </div>
         <div className="relative">
-          <button
-            type="button"
-            onClick={() => setSnippetOpen(v => !v)}
-            className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded border border-border bg-surface hover:bg-surface-2 text-muted hover:text-fg transition-colors"
-          >
-            <ChevronDown size={10} className={`transition-transform ${snippetOpen ? 'rotate-180' : ''}`} />
+          <Button type="button" variant="secondary" size="xs" onClick={() => setSnippetOpen(v => !v)} aria-expanded={snippetOpen}>
+            <ChevronDown size={12} className={`transition-transform ${snippetOpen ? 'rotate-180' : ''}`} />
             Snippets
-          </button>
+          </Button>
           {snippetOpen && (
-            <div className="absolute z-20 top-full right-0 mt-1 min-w-[240px] p-1.5 rounded-xl bg-surface border border-border shadow-lg shadow-black/10">
+            <div className="nubi-dropdown right-0 top-[calc(100%+6px)] z-20 min-w-[240px]">
               {SQL_EXAMPLES.map(ex => (
                 <button
                   key={ex.label}
                   onClick={() => insertSnippet(ex.sql)}
-                  className="w-full text-left px-2.5 py-2 rounded-lg text-xs text-fg hover:bg-surface-2 transition-colors"
+                  className="nubi-dropdown-item"
                 >
                   {ex.label}
                 </button>
@@ -185,7 +185,7 @@ export default function SqlCell({
           language="sql"
           value={sql}
           onChange={handleSqlChange}
-          theme="vs-dark"
+          theme={monacoTheme}
           options={MONACO_SQL_OPTS}
           onMount={(editor) => { monacoRef.current = editor }}
         />
@@ -193,9 +193,9 @@ export default function SqlCell({
 
       {/* Error banner */}
       {runError && (
-        <div className="flex items-start gap-2 px-3 py-2 bg-red-500/5 border-b border-red-500/20 text-xs text-red-600 dark:text-red-400">
-          <AlertCircle size={12} className="shrink-0 mt-0.5" />
-          <span className="flex-1 font-mono whitespace-pre-wrap break-all">{runError}</span>
+        <div className="nubi-notice nubi-notice-error m-3 text-xs" role="alert">
+          <AlertCircle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+          <span className="flex-1 whitespace-pre-wrap break-all font-mono">{runError}</span>
         </div>
       )}
 
@@ -205,20 +205,21 @@ export default function SqlCell({
           {/* Results header */}
           <button
             onClick={() => setResultsOpen(v => !v)}
-            className="w-full flex items-center gap-2 px-3 py-1.5 bg-surface-2/30 hover:bg-surface-2/60 transition-colors border-b border-border text-left"
+            aria-expanded={resultsOpen}
+            className="nubi-focus-inset flex w-full items-center gap-2 border-b border-border bg-surface-2 px-3 py-1.5 text-left transition-colors hover:bg-frame-hover"
           >
             {resultsOpen
-              ? <ChevronDown size={12} className="text-muted shrink-0" />
-              : <ChevronRight size={12} className="text-muted shrink-0" />
+              ? <ChevronDown size={13} className="shrink-0 text-muted" aria-hidden="true" />
+              : <ChevronRight size={13} className="shrink-0 text-muted" aria-hidden="true" />
             }
-            <CheckCircle2 size={11} className="text-green-500 shrink-0" />
-            <span className="text-[11px] font-medium text-fg">
-              {result.row_count ?? tableRows.length} rows
+            <span className="nubi-dot nubi-dot-success" aria-hidden="true" />
+            <span className="ap-meta" style={{ color: 'var(--text)' }}>
+              {(result.row_count ?? tableRows.length).toLocaleString()} rows
             </span>
             {result.elapsed_ms != null && (
-              <span className="flex items-center gap-1 ml-auto text-[10px] text-muted">
-                <Clock size={10} />
-                {result.elapsed_ms}ms
+              <span className="ap-meta ml-auto flex items-center gap-1">
+                <Clock size={11} aria-hidden="true" />
+                {result.elapsed_ms} ms
               </span>
             )}
           </button>

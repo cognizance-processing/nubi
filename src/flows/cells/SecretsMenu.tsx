@@ -42,7 +42,7 @@ export default function SecretsMenu({ onInsert }) {
         type="button"
         onClick={toggleOpen}
         title="Insert a secret reference"
-        className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded border border-border bg-surface hover:bg-surface-2 text-muted hover:text-fg transition-colors"
+        className="flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded border border-border bg-surface hover:bg-surface-2 text-muted hover:text-fg transition-colors"
       >
         <KeyRound size={10} />
         Secrets
@@ -76,7 +76,7 @@ export default function SecretsMenu({ onInsert }) {
           ))}
 
           {!loading && names !== null && names.length > 0 && (
-            <p className="px-3 pt-1.5 pb-0.5 mt-1 border-t border-border text-[10px] text-muted/60">
+            <p className="px-3 pt-1.5 pb-0.5 mt-1 border-t border-border text-[11px] text-muted/60">
               Resolved server-side at run time. Values never reach the browser.
             </p>
           )}

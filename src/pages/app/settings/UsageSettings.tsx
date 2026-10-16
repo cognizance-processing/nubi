@@ -38,6 +38,12 @@ import {
 
 import { useOrg } from '../../../contexts/OrgContext.jsx'
 import { useTheme } from '../../../contexts/ThemeContext.jsx'
+import Button from '../../../components/ui/Button.jsx'
+import SegmentedControl from '../../../components/ui/SegmentedControl.jsx'
+import EmptyState from '../../../components/ui/EmptyState.jsx'
+import Skeleton from '../../../components/ui/Skeleton.jsx'
+import { ErrorFigure, MeteringWallet } from '../../../components/illustrations'
+import '../../../components/app/appPatterns.css'
 import { resolveSpaTheme } from '../../../lib/spaTheme.js'
 import { usageSummary, usageSeries, formatUsage } from '../../../lib/usage.js'
 import EChart from '../../../viz/EChart.jsx'
@@ -65,10 +71,10 @@ const METRIC_ICONS = {
 
 // Progress-bar colour by utilisation band.
 function barColor(pct) {
-  if (pct == null) return 'bg-primary/40'
-  if (pct >= 90) return 'bg-red-500'
-  if (pct >= 70) return 'bg-amber-500'
-  return 'bg-primary'
+  if (pct == null) return 'var(--text-subtle)'
+  if (pct >= 90) return 'var(--danger)'
+  if (pct >= 70) return 'var(--warning)'
+  return 'var(--accent)'
 }
 
 // ---------------------------------------------------------------------------
@@ -86,24 +92,19 @@ function UsageCard({ metric, selected, onSelect }) {
       type="button"
       onClick={() => onSelect(metric.id)}
       aria-pressed={selected}
-      className={`
-        text-left rounded-xl border p-4 bg-surface transition-colors
-        focus:outline-none focus:ring-2 focus:ring-ring
-        ${selected ? 'border-primary/50 ring-1 ring-primary/30' : 'border-border hover:border-primary/30'}
-      `}
+      className="border bg-surface p-4 text-left transition-colors hover:border-ink"
+      style={{ borderRadius: 2, borderColor: selected ? 'var(--accent)' : 'var(--border)', boxShadow: selected ? 'inset 0 0 0 1px var(--accent)' : 'none' }}
     >
       <div className="flex items-start justify-between gap-2 mb-3">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="flex items-center justify-center w-7 h-7 rounded-lg bg-surface-2 shrink-0">
-            <Icon size={15} className="text-muted" strokeWidth={2} />
-          </span>
-          <span className="text-sm font-medium text-fg truncate">{metric.label}</span>
+          <Icon size={15} className="shrink-0 text-muted" strokeWidth={1.75} aria-hidden="true" />
+          <span className="t-label truncate">{metric.label}</span>
         </div>
         {hasLimit && pct != null && (
           <span
-            className={`text-[11px] font-semibold tabular-nums shrink-0 ${
-              pct >= 90 ? 'text-red-600 dark:text-red-400'
-                : pct >= 70 ? 'text-amber-600 dark:text-amber-400'
+            className={`ap-mono shrink-0 text-[12px] font-medium ${
+              pct >= 90 ? 'text-danger-fg'
+                : pct >= 70 ? 'text-warning-fg'
                   : 'text-muted'
             }`}
           >
@@ -113,7 +114,7 @@ function UsageCard({ metric, selected, onSelect }) {
       </div>
 
       <div className="flex items-baseline gap-1.5 mb-2">
-        <span className="text-2xl font-display font-semibold text-fg tabular-nums">
+        <span className="ap-mono whitespace-nowrap text-[22px] font-semibold leading-none text-fg">
           {formatUsage(metric.used, metric.unit)}
         </span>
         {hasLimit ? (
@@ -127,11 +128,8 @@ function UsageCard({ metric, selected, onSelect }) {
 
       {/* Progress bar — only meaningful when a soft limit is configured. */}
       {hasLimit && (
-        <div className="h-1.5 w-full rounded-full bg-surface-2 overflow-hidden">
-          <div
-            className={`h-full rounded-full transition-all ${barColor(pct)}`}
-            style={{ width: `${pctClamped}%` }}
-          />
+        <div className="h-1.5 w-full bg-surface-3" role="presentation">
+          <div className="h-full" style={{ width: `${pctClamped}%`, background: barColor(pct) }} />
         </div>
       )}
     </button>
@@ -166,13 +164,13 @@ function buildSeriesOption(series, spaTheme) {
     xAxis: {
       type: 'category',
       data: x,
-      axisLabel: { color: spaTheme.fgMuted, fontSize: 10 },
+      axisLabel: { color: spaTheme.fgMuted, fontSize: 11 },
       axisLine: { lineStyle: { color: spaTheme.border } },
       boundaryGap: false,
     },
     yAxis: {
       type: 'value',
-      axisLabel: { color: spaTheme.fgMuted, fontSize: 10 },
+      axisLabel: { color: spaTheme.fgMuted, fontSize: 11 },
       splitLine: { lineStyle: { color: spaTheme.grid } },
     },
     series: [
@@ -196,9 +194,9 @@ function SeriesChart({ series, loading }) {
   const hasData = (series?.points ?? []).some((p) => Number(p.value) > 0)
 
   return (
-    <div className="rounded-xl border border-border bg-surface overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-        <span className="text-sm font-medium text-fg">
+    <div className="ap-panel overflow-hidden">
+      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+        <span className="ap-panel-title">
           {series?.label ?? 'Usage'} over time
         </span>
         {loading && <Loader2 size={14} className="animate-spin text-muted" />}
@@ -222,33 +220,15 @@ function SeriesChart({ series, loading }) {
 function PeriodSelector({ period, onChange, loading, onRefresh }) {
   return (
     <div className="flex items-center gap-2">
-      <div className="inline-flex items-center rounded-lg border border-border bg-surface p-0.5 shrink-0">
-        {PERIODS.map((p) => (
-          <button
-            key={p.id}
-            type="button"
-            onClick={() => onChange(p.id)}
-            aria-pressed={period === p.id}
-            className={`px-2.5 h-7 rounded-md text-xs font-medium transition-colors ${
-              period === p.id
-                ? 'bg-primary text-primary-fg'
-                : 'text-muted hover:text-fg'
-            }`}
-          >
-            {p.label}
-          </button>
-        ))}
-      </div>
-      <button
-        type="button"
-        onClick={onRefresh}
-        disabled={loading}
-        title="Refresh"
-        aria-label="Refresh usage"
-        className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0 border border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
-      >
-        <RefreshCw size={14} className={loading ? 'animate-spin' : ''} strokeWidth={2} />
-      </button>
+      <SegmentedControl
+        size="md"
+        value={period}
+        onChange={onChange}
+        options={PERIODS.map((p) => ({ value: p.id, label: p.label }))}
+      />
+      <Button variant="ghost" size="icon" onClick={onRefresh} disabled={loading} title="Refresh" aria-label="Refresh usage">
+        <RefreshCw size={14} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
+      </Button>
     </div>
   )
 }
@@ -335,30 +315,27 @@ export default function UsageSettings() {
       </SettingsPageHeader>
 
       {loading && (
-        <div className="flex items-center gap-2 text-sm text-muted py-12 justify-center">
-          <Loader2 size={16} className="animate-spin" /> Loading usage…
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2" aria-hidden="true">
+          {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-28 w-full" />)}
         </div>
       )}
 
       {!loading && error && (
-        <div className="flex flex-col items-center justify-center py-12 gap-3 rounded-xl border border-dashed border-red-200 dark:border-red-900/40">
-          <AlertTriangle size={20} className="text-red-500" />
-          <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
-          <button onClick={loadSummary} className="text-xs text-muted hover:text-fg underline">Retry</button>
-        </div>
+        <EmptyState
+          kind="error"
+          art={<ErrorFigure />}
+          title="Usage didn’t load"
+          description={`${error} Nothing was changed.`}
+          action={<Button variant="secondary" onClick={loadSummary}><RefreshCw size={14} aria-hidden="true" /> Retry</Button>}
+        />
       )}
 
       {!loading && !error && metrics.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-14 px-6 text-center rounded-xl border border-dashed border-border">
-          <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-brand-gradient shadow-lg mb-5">
-            <Gauge size={28} className="text-white" />
-          </div>
-          <h3 className="font-display font-semibold text-xl text-fg mb-2">No usage yet</h3>
-          <p className="text-sm text-muted max-w-sm leading-relaxed">
-            Once you run queries, flows, or AI generations, your consumption for
-            the period will appear here.
-          </p>
-        </div>
+        <EmptyState
+          art={<MeteringWallet />}
+          title="No usage yet"
+          description="Queries, flows and AI generations are counted here as they run. Viewers never count toward usage."
+        />
       )}
 
       {!loading && !error && metrics.length > 0 && (

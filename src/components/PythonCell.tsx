@@ -24,6 +24,9 @@
 import { useState, useCallback } from 'react'
 import { runPythonCell, SAMPLE_TABLE } from '../lib/wasmRuntime.js'
 import CodeEditor from './CodeEditor.jsx'
+import Button from './ui/Button.jsx'
+import Tag from './ui/Tag.jsx'
+import Spinner from './ui/Spinner.jsx'
 
 /**
  * Default scaffold for a new Python cell.
@@ -47,31 +50,15 @@ const MAX_ROWS = 100
 // ---------------------------------------------------------------------------
 
 /**
- * Renders a small coloured pill for the execution tier.
- *   local_kernel   → blue
- *   remote_kernel  → indigo
- *   sample         → gray  (fallback — no backend hit)
+ * Execution tier as a Tag: square, mono, a status dot (no tinted pill).
+ *   local_kernel / remote_kernel  → accent
+ *   sample                        → neutral (fallback, no backend hit)
  */
 function TierBadge({ tier }) {
   if (!tier) return null
 
-  const styles = {
-    local_kernel:  'bg-blue-100 text-blue-700',
-    remote_kernel: 'bg-indigo-100 text-indigo-700',
-    sample:        'bg-gray-100 text-gray-500',
-  }
-
-  const label = {
-    local_kernel:  'local_kernel',
-    remote_kernel: 'remote_kernel',
-    sample:        'sample',
-  }
-
-  const cls = `px-2 py-0.5 rounded-full text-xs font-semibold ${
-    styles[tier] ?? 'bg-gray-100 text-gray-500'
-  }`
-
-  return <span className={cls}>{label[tier] ?? tier}</span>
+  const variant = tier === 'sample' ? 'neutral' : 'accent'
+  return <Tag variant={variant} dot caps={false}>{tier}</Tag>
 }
 
 // ---------------------------------------------------------------------------
@@ -140,10 +127,10 @@ export default function PythonCell() {
     : []
 
   return (
-    <div className="rounded-xl border border-border bg-surface shadow-sm overflow-hidden">
+    <div className="rounded-[var(--radius-sheet)] border border-border bg-surface overflow-hidden">
       {/* Code input area */}
       <div className="p-3 border-b border-border">
-        <label className="block text-[10px] font-semibold text-muted uppercase tracking-wider mb-2">
+        <label className="block font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-subtle mb-2">
           Python
         </label>
         {/* Monaco editor with Python syntax highlighting */}
@@ -159,17 +146,17 @@ export default function PythonCell() {
 
         {/* Named inputs map: { name → query_id } */}
         <div className="mt-3">
-          <label className="block text-[10px] font-semibold text-muted uppercase tracking-wider mb-1.5">
+          <label className="block font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-subtle mb-1.5">
             Inputs
             <span className="ml-1 font-normal normal-case text-muted/70">
               (each row binds a query's rows as{' '}
-              <code className="font-mono bg-surface-2 px-1 rounded">inputs['&lt;name&gt;']</code>)
+              <code className="font-mono bg-surface-2 px-1 rounded-[2px]">inputs['&lt;name&gt;']</code>)
             </span>
           </label>
 
           <div className="space-y-1.5">
             {/* Column headers */}
-            <div className="flex items-center gap-2 text-[9px] font-semibold text-muted/60 uppercase tracking-wider">
+            <div className="flex items-center gap-2 font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-subtle">
               <span className="w-36">Name</span>
               <span className="flex-1">Query ID</span>
               <span className="w-7" aria-hidden="true" />
@@ -179,7 +166,7 @@ export default function PythonCell() {
               <div key={idx} className="flex items-center gap-2">
                 <input
                   type="text"
-                  className="w-36 font-mono text-xs text-fg bg-surface-2 border border-border rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
+                  className="w-36 font-mono text-xs text-fg bg-surface-2 border border-border rounded-[var(--radius-control)] px-2.5 py-1.5 focus-visible:outline-none focus-visible:border-ink focus-visible:ring-2 focus-visible:ring-ring"
                   value={row.name}
                   onChange={e => updateRow(idx, { name: e.target.value })}
                   placeholder="input"
@@ -187,7 +174,7 @@ export default function PythonCell() {
                 />
                 <input
                   type="text"
-                  className="flex-1 font-mono text-xs text-fg bg-surface-2 border border-border rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
+                  className="flex-1 font-mono text-xs text-fg bg-surface-2 border border-border rounded-[var(--radius-control)] px-2.5 py-1.5 focus-visible:outline-none focus-visible:border-ink focus-visible:ring-2 focus-visible:ring-ring"
                   value={row.queryId}
                   onChange={e => updateRow(idx, { queryId: e.target.value })}
                   placeholder="demo_all"
@@ -196,7 +183,7 @@ export default function PythonCell() {
                 <button
                   type="button"
                   onClick={() => removeRow(idx)}
-                  className="w-7 h-7 shrink-0 flex items-center justify-center text-muted hover:text-rose-500 hover:bg-rose-500/10 rounded-lg transition-colors"
+                  className="w-7 h-7 shrink-0 flex items-center justify-center text-muted hover:text-danger hover:bg-frame-hover rounded-[var(--radius-control)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label={`Remove input ${idx + 1}`}
                   title="Remove input"
                 >
@@ -209,7 +196,7 @@ export default function PythonCell() {
           <button
             type="button"
             onClick={addRow}
-            className="mt-1.5 text-[11px] font-medium text-primary hover:opacity-80 transition-opacity"
+            className="mt-1.5 text-[12px] font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             + Add input
           </button>
@@ -217,42 +204,33 @@ export default function PythonCell() {
 
         {/* Run button row */}
         <div className="mt-3 flex items-center gap-2.5">
-          <button
-            onClick={handleRun}
-            disabled={loading || !code.trim()}
-            className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
-          >
+          <Button onClick={handleRun} disabled={loading || !code.trim()} loading={loading}>
             {loading ? 'Running…' : 'Run'}
-          </button>
-          <span className="text-[11px] text-muted select-none">Ctrl+Enter</span>
+          </Button>
+          <kbd className="nubi-kbd select-none">Ctrl Enter</kbd>
         </div>
       </div>
 
       {/* Helper note */}
-      <div className="px-3 py-2 bg-primary/5 border-b border-border text-[11px] text-muted">
+      <div className="px-3 py-2 bg-surface-2 border-b border-border text-[12px] text-muted">
         Code runs server-side in an on-demand kernel. Bind{' '}
-        <code className="font-mono bg-surface-2 px-1 rounded text-fg/80">result</code>{' '}
+        <code className="font-mono bg-surface-2 px-1 rounded-[2px] text-fg/80">result</code>{' '}
         to a pyarrow Table;{' '}
         each input row binds that query's rows as{' '}
-        <code className="font-mono bg-surface-2 px-1 rounded text-fg/80">inputs['&lt;name&gt;']</code>.
+        <code className="font-mono bg-surface-2 px-1 rounded-[2px] text-fg/80">inputs['&lt;name&gt;']</code>.
       </div>
 
       {/* Loading spinner */}
       {loading && (
         <div className="p-6 flex items-center gap-3 text-xs text-muted">
-          <div
-            className="h-4 w-4 rounded-full border-2 border-primary border-t-transparent animate-spin"
-            role="status"
-            aria-label="Running kernel"
-          />
+          <Spinner size="sm" label="Running kernel" />
           <span>Running kernel…</span>
         </div>
       )}
 
       {/* Non-blocking fallback notice */}
       {!loading && notice && (
-        <div className="px-3 py-2 bg-amber-500/5 border-b border-amber-500/20 text-[11px] text-amber-600 dark:text-amber-400 flex items-start gap-2">
-          <span className="shrink-0 mt-0.5">&#9888;</span>
+        <div className="px-3 py-2 border-b border-border border-l-2 border-l-warning text-[12px] text-muted flex items-start gap-2">
           <span>{notice}</span>
         </div>
       )}
@@ -261,7 +239,7 @@ export default function PythonCell() {
       {!loading && result && (
         <div>
           {/* Metadata bar */}
-          <div className="px-3 py-2 bg-surface-2/60 border-b border-border flex items-center justify-between text-[11px] text-muted">
+          <div className="px-3 py-2 bg-surface-2 border-b border-border flex items-center justify-between text-[12px] text-muted">
             <span>
               rows:{' '}
               <span className="font-mono font-semibold text-fg">
@@ -285,11 +263,11 @@ export default function PythonCell() {
           <div className="overflow-x-auto">
             <table className="w-full text-xs border-collapse">
               <thead>
-                <tr className="bg-surface-2/40">
+                <tr className="bg-surface">
                   {columns.map(col => (
                     <th
                       key={col}
-                      className="px-3 py-2 text-left text-[10px] font-semibold text-muted border-b border-border whitespace-nowrap"
+                      className="h-9 px-3 text-left font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-subtle border-b-2 border-ink whitespace-nowrap"
                     >
                       {col}
                     </th>
@@ -300,16 +278,16 @@ export default function PythonCell() {
                 {rows.map((row, ri) => (
                   <tr
                     key={ri}
-                    className={ri % 2 === 0 ? 'bg-surface' : 'bg-surface-2/30'}
+                    className="hover:bg-frame-hover"
                   >
                     {row.map((cell, ci) => (
                       <td
                         key={ci}
-                        className="px-3 py-1.5 text-fg/80 border-b border-border/40 font-mono whitespace-nowrap max-w-xs truncate"
+                        className="h-9 px-3 text-fg border-b border-border font-mono tabular-nums whitespace-nowrap max-w-xs truncate"
                         title={cell}
                       >
                         {cell === 'NULL' ? (
-                          <span className="text-muted/40 italic">NULL</span>
+                          <span className="text-subtle">NULL</span>
                         ) : (
                           cell
                         )}

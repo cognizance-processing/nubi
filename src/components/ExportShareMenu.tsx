@@ -133,7 +133,7 @@ export default function ExportShareMenu({ board, spec }) {
     navigator.clipboard?.writeText(text).then(() => { setCopied(key); setTimeout(() => setCopied(null), 1500) })
   }
 
-  const itemCls = 'w-full flex items-center gap-2.5 px-3 py-2 text-sm text-fg rounded-lg hover:bg-surface-2 disabled:opacity-50 transition-colors text-left'
+  const itemCls = 'w-full flex items-center gap-2.5 px-3 h-9 text-[13px] text-fg rounded-[var(--radius-control)] hover:bg-frame-hover disabled:opacity-50 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring'
 
   return (
     <div className="relative" ref={ref}>
@@ -141,8 +141,9 @@ export default function ExportShareMenu({ board, spec }) {
         onClick={() => { setOpen(o => !o); if (!share && board) loadShare() }}
         aria-label="Export & share dashboard"
         aria-expanded={open}
-        className={`flex items-center justify-center w-8 h-8 rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 ${
-          open ? 'bg-surface-2 border-primary text-primary' : 'bg-surface text-fg border-border hover:bg-surface-2'
+        aria-haspopup="dialog"
+        className={`flex items-center justify-center w-8 h-8 rounded-[var(--radius-control)] border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 ${
+          open ? 'bg-surface-2 border-ink text-fg' : 'bg-surface text-fg border-border hover:border-ink'
         }`}
         title="Export & share dashboard"
       >
@@ -150,19 +151,19 @@ export default function ExportShareMenu({ board, spec }) {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 z-50 w-80 bg-surface border border-border rounded-xl shadow-xl overflow-hidden">
+        <div className="absolute right-0 top-full mt-2 z-50 w-80 max-w-[calc(100vw-2rem)] bg-surface border border-border rounded-[var(--radius-sheet)] shadow-pop overflow-hidden">
           <div className="flex border-b border-border">
             {['export', 'share'].map(t => (
-              <button key={t} onClick={() => setTab(t)}
-                className={`flex-1 py-2.5 text-xs font-medium capitalize transition-colors flex items-center justify-center gap-1.5 ${
-                  tab === t ? 'text-primary border-b-2 border-primary bg-surface-2' : 'text-muted hover:text-fg hover:bg-surface-2'
+              <button key={t} onClick={() => setTab(t)} aria-pressed={tab === t}
+                className={`flex-1 h-10 text-xs font-medium capitalize focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring flex items-center justify-center gap-1.5 ${
+                  tab === t ? 'text-fg border-b-2 border-ink' : 'text-muted hover:text-fg hover:bg-frame-hover'
                 }`}>
                 {t === 'export' ? <Download size={13} /> : <Link2 size={13} />} {t}
               </button>
             ))}
           </div>
 
-          {error && <div className="px-3 py-2 text-xs" style={{ color: '#dc2626' }}>{error}</div>}
+          {error && <div role="alert" className="mx-3 mt-3 py-2 px-3 text-xs text-fg border-l-2 border-danger bg-danger-bg">{error}</div>}
 
           {tab === 'export' ? (
             <div className="p-2 space-y-0.5">
@@ -175,7 +176,7 @@ export default function ExportShareMenu({ board, spec }) {
               <button onClick={exportCsv} disabled={busy === 'csv'} className={itemCls}>
                 <Table size={15} className="text-muted" /> {busy === 'csv' ? 'Fetching…' : 'Export data as CSV'}
               </button>
-              <p className="px-3 pt-1.5 text-[10px] text-muted/60">PNG/PDF capture the live dashboard; CSV pulls each widget's data from the server.</p>
+              <p className="px-3 pt-1.5 text-[11px] text-muted">PNG/PDF capture the live dashboard; CSV pulls each widget's data from the server.</p>
             </div>
           ) : (
             <div className="p-3 space-y-3 max-h-96 overflow-y-auto">
@@ -183,28 +184,28 @@ export default function ExportShareMenu({ board, spec }) {
               {share && (
                 <>
                   <div className="space-y-1">
-                    <label className="text-[10px] font-semibold text-muted uppercase tracking-wider">Embed link</label>
+                    <label className="font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-subtle">Embed link</label>
                     <div className="flex items-center gap-1.5">
-                      <input readOnly value={share.embed_url ?? ''} className="flex-1 text-xs font-mono bg-surface-2 border border-border rounded-lg px-2 py-1.5 text-fg" />
-                      <button onClick={() => copy('url', share.embed_url ?? '')} className="p-1.5 rounded-lg border border-border hover:border-primary text-muted hover:text-primary" title="Copy">
+                      <input readOnly value={share.embed_url ?? ''} className="flex-1 text-xs font-mono bg-surface-2 border border-border rounded-[var(--radius-control)] px-2 py-1.5 text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Embed link" />
+                      <button onClick={() => copy('url', share.embed_url ?? '')} className="p-1.5 rounded-[var(--radius-control)] border border-border hover:border-ink text-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" title="Copy" aria-label="Copy embed link">
                         {copied === 'url' ? <Check size={13} /> : <Copy size={13} />}
                       </button>
                     </div>
                   </div>
                   {share.snippet && (
                     <div className="space-y-1">
-                      <label className="text-[10px] font-semibold text-muted uppercase tracking-wider">Embed snippet</label>
+                      <label className="font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-subtle">Embed snippet</label>
                       <div className="relative">
-                        <pre className="text-[11px] font-mono bg-surface-2 border border-border rounded-lg p-2 overflow-x-auto text-fg whitespace-pre-wrap">{share.snippet}</pre>
-                        <button onClick={() => copy('snip', share.snippet)} className="absolute top-1.5 right-1.5 p-1 rounded border border-border bg-surface hover:text-primary text-muted">
+                        <pre className="text-[11px] font-mono bg-surface-2 border border-border rounded-[var(--radius-control)] p-2 overflow-x-auto text-fg whitespace-pre-wrap">{share.snippet}</pre>
+                        <button onClick={() => copy('snip', share.snippet)} className="absolute top-1.5 right-1.5 p-1 rounded-[2px] border border-border bg-surface hover:border-ink hover:text-fg text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Copy embed snippet" title="Copy">
                           {copied === 'snip' ? <Check size={12} /> : <Copy size={12} />}
                         </button>
                       </div>
                     </div>
                   )}
-                  <div className="rounded-lg border border-border bg-surface-2/50 p-2.5 space-y-1.5">
+                  <div className="border-l-2 border-ink bg-surface-2 p-2.5 space-y-1.5">
                     <div className="flex items-center gap-1.5 text-xs font-semibold text-fg">
-                      <ShieldCheck size={14} className="text-emerald-500" /> Row-level security
+                      <ShieldCheck size={14} className="text-success" /> Row-level security
                     </div>
                     <p className="text-[11px] text-muted leading-relaxed">
                       Embedding uses a <strong>short-lived, host-signed JWT</strong> whose claims carry RLS policies.
@@ -212,7 +213,7 @@ export default function ExportShareMenu({ board, spec }) {
                       tenant can never see rows their token doesn't permit. Nubi does not mint the token; your app signs it
                       (RS256/ES256, verified via JWKS), max {share.mint?.max_ttl_minutes ?? 15} min.
                     </p>
-                    {share._local && <p className="text-[10px] text-amber-600">Showing the documented snippet (offline/unsaved).</p>}
+                    {share._local && <p className="text-[11px] text-warning-fg">Showing the documented snippet (offline/unsaved).</p>}
                   </div>
                 </>
               )}

@@ -19,6 +19,8 @@
 import { useState, useCallback } from 'react'
 import { ChevronUp, ChevronDown, Trash2, FileText, Pencil, Check } from 'lucide-react'
 import MarkdownRenderer from '../../components/MarkdownRenderer.jsx'
+import Button from '../../components/ui/Button.jsx'
+import Tag from '../../components/ui/Tag.jsx'
 
 export default function NoteCell({
   index,
@@ -37,48 +39,31 @@ export default function NoteCell({
   }, [cell, onCellChange])
 
   return (
-    <div className="rounded-xl border border-border bg-surface shadow-sm overflow-hidden">
+    <div className="overflow-hidden border border-frame-line bg-surface" style={{ borderRadius: 2 }}>
       {/* Toolbar — no run button; Note never executes. */}
-      <div className="flex items-center gap-1.5 px-3 py-1.5 bg-surface-2/40 border-b border-border rounded-t-xl">
-        <span className="text-[10px] font-semibold text-muted/60 shrink-0">{index + 1}</span>
-        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold tracking-wide shrink-0 bg-slate-500/10 text-slate-600 dark:text-slate-300">
-          <FileText size={10} />
-          Note
-        </span>
-        <span className="flex-1 text-[10px] font-mono text-muted/50 truncate min-w-0">{cell?.key}</span>
+      <div className="flex items-center gap-1.5 border-b border-border bg-surface-2 px-3 py-1.5">
+        <span className="ap-meta shrink-0" aria-label={`Cell ${index + 1}`}>{index + 1}</span>
+        <Tag className="shrink-0"><FileText size={10} aria-hidden="true" /> Note</Tag>
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-subtle">{cell?.key}</span>
 
         {/* Edit / Done toggle */}
-        <button
+        <Button
+          variant="ghost" size="icon-xs"
           onClick={() => setEditing(v => !v)}
           title={editing ? 'Done editing' : 'Edit note'}
-          className="w-6 h-6 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+          aria-label={editing ? 'Done editing' : 'Edit note'}
         >
-          {editing ? <Check size={12} /> : <Pencil size={11} />}
-        </button>
-
-        <button
-          onClick={onMoveUp}
-          disabled={!onMoveUp}
-          title="Move cell up"
-          className="w-6 h-6 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
-        >
-          <ChevronUp size={12} />
-        </button>
-        <button
-          onClick={onMoveDown}
-          disabled={!onMoveDown}
-          title="Move cell down"
-          className="w-6 h-6 flex items-center justify-center rounded text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
-        >
-          <ChevronDown size={12} />
-        </button>
-        <button
-          onClick={onDelete}
-          title="Delete cell"
-          className="w-6 h-6 flex items-center justify-center rounded text-muted hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-        >
-          <Trash2 size={11} />
-        </button>
+          {editing ? <Check size={14} aria-hidden="true" /> : <Pencil size={13} aria-hidden="true" />}
+        </Button>
+        <Button variant="ghost" size="icon-xs" onClick={onMoveUp} disabled={!onMoveUp} title="Move cell up" aria-label="Move cell up">
+          <ChevronUp size={14} aria-hidden="true" />
+        </Button>
+        <Button variant="ghost" size="icon-xs" onClick={onMoveDown} disabled={!onMoveDown} title="Move cell down" aria-label="Move cell down">
+          <ChevronDown size={14} aria-hidden="true" />
+        </Button>
+        <Button variant="ghost" size="icon-xs" onClick={onDelete} title="Delete cell" aria-label="Delete cell">
+          <Trash2 size={13} aria-hidden="true" />
+        </Button>
       </div>
 
       {/* Body — editor or rendered markdown */}
@@ -95,7 +80,7 @@ export default function NoteCell({
         <button
           type="button"
           onClick={() => setEditing(true)}
-          className="block w-full text-left px-4 py-3 hover:bg-surface-2/30 transition-colors"
+          className="block w-full text-left px-4 py-3 hover:bg-frame-hover transition-colors"
           title="Click to edit"
         >
           {markdown.trim() ? (

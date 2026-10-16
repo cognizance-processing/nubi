@@ -36,6 +36,7 @@ import GitPanel from '../../../components/app/GitPanel.jsx'
 import DangerDeleteDialog from '../../../components/app/DangerDeleteDialog.jsx'
 import { updateProjectSettings, deleteProjectSettings, getProjectDeletionImpact } from '../../../lib/settings.js'
 import { toast } from '../../../components/ui/Toast.jsx'
+import Tag from '../../../components/ui/Tag.jsx'
 import {
   SettingsPageHeader,
   SettingsCard,
@@ -48,11 +49,7 @@ import {
 // Small ghost action button styling used in the project rows.
 // ---------------------------------------------------------------------------
 
-const ghostBtnCls =
-  'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium ' +
-  'text-muted hover:text-fg border border-border hover:bg-surface-2 transition-colors ' +
-  'disabled:opacity-40 disabled:cursor-not-allowed ' +
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+const ghostBtnCls = 'nubi-btn nubi-btn-secondary nubi-btn-sm'
 
 // ---------------------------------------------------------------------------
 // ProjectRow — one project in the "All projects" list.
@@ -123,13 +120,11 @@ function ProjectRow({
         {/* Name / identity */}
         <div className="flex items-center gap-3 min-w-0 flex-1">
           <span
-            className={[
-              'flex items-center justify-center w-8 h-8 rounded-lg shrink-0',
-              isActive ? 'bg-primary/10 text-primary' : 'bg-surface-2 text-muted',
-            ].join(' ')}
+            className="flex h-8 w-8 shrink-0 items-center justify-center border text-fg"
+            style={{ borderRadius: 2, borderColor: isActive ? 'var(--ink)' : 'var(--frame-line)' }}
             aria-hidden="true"
           >
-            {isActive ? <FolderGit2 size={15} /> : <Folder size={15} />}
+            {isActive ? <FolderGit2 size={15} strokeWidth={1.75} /> : <Folder size={15} strokeWidth={1.75} />}
           </span>
 
           {editing ? (
@@ -145,7 +140,7 @@ function ProjectRow({
               disabled={saving}
               placeholder="Project name"
               aria-label={`Rename ${project.name}`}
-              className={inputCls + ' max-w-xs py-1.5'}
+              className={inputCls + ' nubi-input-sm max-w-xs'}
             />
           ) : (
             <span className="truncate text-sm font-medium text-fg" title={project.name}>
@@ -154,9 +149,7 @@ function ProjectRow({
           )}
 
           {isActive && !editing && (
-            <span className="shrink-0 inline-flex items-center rounded-full bg-primary/10 text-primary px-2 py-0.5 text-[11px] font-semibold">
-              Current
-            </span>
+            <Tag variant="ink" className="shrink-0">Current</Tag>
           )}
         </div>
 
@@ -214,13 +207,8 @@ function ProjectRow({
                       : 'Delete project'
                   }
                   aria-label={`Delete ${project.name}`}
-                  className={[
-                    'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium',
-                    'text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800/70',
-                    'hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors',
-                    'disabled:opacity-40 disabled:cursor-not-allowed',
-                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/50',
-                  ].join(' ')}
+                  className="nubi-btn nubi-btn-outline nubi-btn-sm"
+                  style={{ borderColor: 'var(--danger)', color: 'var(--danger-fg)' }}
                 >
                   {deleteBusy ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
                   <span className="hidden sm:inline">Delete</span>

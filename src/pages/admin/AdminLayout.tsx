@@ -2,73 +2,54 @@
  * AdminLayout — chrome for the /admin portal (inside the authenticated
  * AppShell, gated by RequireSuperadmin).
  *
- * Renders:
- *   - a small "Admin" heading portaled into the shell topbar slot
- *     (same pattern as FlowsPage/DashboardEditor toolbars);
- *   - a page header + tab nav (Overview / Users / Organizations);
- *   - <Outlet /> for the child pages.
+ * Renders a PageShell header (title + section tabs) and an <Outlet /> for the
+ * child pages. The shell's breadcrumb carries the section name on sub-pages.
  */
 
-import { createPortal } from 'react-dom'
-import { NavLink, Outlet } from 'react-router-dom'
-import { ShieldCheck } from 'lucide-react'
-import { useUi } from '../../contexts/UiContext.jsx'
+import { Outlet, useLocation } from 'react-router-dom'
+import PageShell from '../../components/app/PageShell.jsx'
 import RequireSuperadmin from './RequireSuperadmin.jsx'
 
 const TABS = [
-  { to: '/admin', label: 'Overview', end: true },
-  { to: '/admin/users', label: 'Users' },
-  { to: '/admin/orgs', label: 'Organizations' },
-  { to: '/admin/audit', label: 'Audit log' },
+  { id: 'overview', href: '/admin', label: 'Overview' },
+  { id: 'users', href: '/admin/users', label: 'Users' },
+  { id: 'orgs', href: '/admin/orgs', label: 'Organizations' },
+  { id: 'audit', href: '/admin/audit', label: 'Audit log' },
 ]
 
+/** Which tab owns this path (org detail pages belong to Organizations). */
+function activeTabFor(pathname: string) {
+  if (pathname.startsWith('/admin/users')) return 'users'
+  if (pathname.startsWith('/admin/orgs')) return 'orgs'
+  if (pathname.startsWith('/admin/audit')) return 'audit'
+  return 'overview'
+}
+
+/** Each route owns its h1 (and description) so the heading matches the breadcrumb. */
+const HEAD: Record<string, { title: string; description: string }> = {
+  overview: { title: 'Overview', description: 'Totals and recent activity across this instance.' },
+  users: { title: 'Users', description: 'Everyone with an account on this instance.' },
+  orgs: { title: 'Organizations', description: 'Every organization, its members and its plan.' },
+  audit: { title: 'Audit log', description: 'Org-scoped audit events, newest first.' },
+}
+
 function AdminChrome() {
-  const { topbarSlot } = useUi()
-
-  const topbarHeading = (
-    <div className="flex items-center gap-1.5 text-sm font-medium font-display text-fg">
-      <ShieldCheck size={15} className="text-primary" />
-      Admin
-    </div>
-  )
-
+  const { pathname } = useLocation()
+  const tab = activeTabFor(pathname)
+  const isOrgDetail = /^\/admin\/orgs\/[^/]+/.test(pathname)
+  const head = isOrgDetail
+    ? { title: 'Organization', description: 'Plan, billing overrides and members for this organization.' }
+    : HEAD[tab]
   return (
-    <div className="min-h-full bg-bg">
-      {topbarSlot && createPortal(topbarHeading, topbarSlot)}
-
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
-        <header>
-          <h1 className="font-display font-semibold text-2xl text-fg">Admin</h1>
-          <p className="text-sm text-muted mt-1">
-            Instance-wide overview of users, organizations and activity.
-          </p>
-        </header>
-
-        <nav aria-label="Admin sections" className="flex items-center gap-1 border-b border-border overflow-x-auto">
-          {TABS.map((tab) => (
-            <NavLink
-              key={tab.to}
-              to={tab.to}
-              end={tab.end}
-              className={({ isActive }) =>
-                [
-                  'px-3.5 py-2.5 -mb-px text-sm font-medium font-display border-b-2 whitespace-nowrap',
-                  'transition-colors duration-150 rounded-t-md',
-                  'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
-                  isActive
-                    ? 'border-primary text-primary'
-                    : 'border-transparent text-muted hover:text-fg hover:bg-surface-2/60',
-                ].join(' ')
-              }
-            >
-              {tab.label}
-            </NavLink>
-          ))}
-        </nav>
-
-        <Outlet />
-      </div>
-    </div>
+    <PageShell
+      eyebrow="Instance"
+      title={head.title}
+      description={head.description}
+      tabs={TABS}
+      activeTab={tab}
+    >
+      <Outlet />
+    </PageShell>
   )
 }
 

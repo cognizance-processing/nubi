@@ -28,7 +28,7 @@
 
 import 'reactflow/dist/style.css'
 
-import { useState, useCallback, useMemo, useRef, useEffect, forwardRef, useImperativeHandle } from 'react'
+import { useState, useCallback, useMemo, useRef, useEffect, useContext, forwardRef, useImperativeHandle } from 'react'
 import ReactFlow, {
   Background,
   BackgroundVariant,
@@ -46,6 +46,11 @@ import {
   SlidersHorizontal,
 } from 'lucide-react'
 
+import Button from '../components/ui/Button.jsx'
+import EmptyState from '../components/ui/EmptyState.jsx'
+import { EmptyFlows } from '../components/illustrations'
+import '../components/app/appPatterns.css'
+
 import { specToGraph, graphToSpec } from './specGraph.js'
 import NotebookView from './NotebookView.jsx'
 import FlowCodeView from './FlowCodeView.jsx'
@@ -55,6 +60,7 @@ import BranchNode from './nodes/BranchNode.jsx'
 import NodeInspector from './NodeInspector.jsx'
 import CodePanel from './CodePanel.jsx'
 import { AddTaskPanel } from './AddTaskPanel.jsx'
+import { ThemeContext } from '../contexts/ThemeContext.jsx'
 
 // ---------------------------------------------------------------------------
 // Node types registration (must be stable — defined outside component)
@@ -131,39 +137,27 @@ function makeTaskNode(kind: string, position: { x: number; y: number }, defaultC
 function MobileBottomSheet({ open, onClose, title, children }) {
   return (
     <>
-      {open && (
-        <div
-          className="fixed inset-0 z-40 bg-black/40"
-          onClick={onClose}
-          aria-hidden="true"
-        />
-      )}
+      {open && <div className="ap-backdrop" onClick={onClose} aria-hidden="true" />}
       <div
-        className={[
-          'fixed bottom-0 left-0 right-0 z-50 flex flex-col',
-          'bg-surface border-t border-border rounded-t-2xl',
-          'transition-transform duration-300 ease-out',
-          'max-h-[80dvh]',
-          open ? 'translate-y-0' : 'translate-y-full',
-        ].join(' ')}
+        className="fixed bottom-0 left-0 right-0 flex max-h-[80dvh] flex-col border-t-2 border-ink bg-surface"
+        style={{
+          zIndex: 'var(--z-modal)' as any,
+          transform: open ? 'translateY(0)' : 'translateY(100%)',
+          visibility: open ? 'visible' : 'hidden',
+          transition: 'transform var(--dur-3) var(--ease-out), visibility 0s linear ' + (open ? '0s' : 'var(--dur-3)'),
+          boxShadow: 'var(--shadow-pop)',
+        }}
         role="dialog"
         aria-modal="true"
+        aria-hidden={!open}
         aria-label={title}
       >
-        {/* Drag handle */}
-        <div className="shrink-0 flex justify-center pt-3 pb-2">
-          <div className="w-10 h-1 rounded-full bg-border" />
-        </div>
         {/* Header */}
-        <div className="shrink-0 flex items-center justify-between px-4 pb-2 border-b border-border">
-          <span className="text-sm font-semibold text-fg">{title}</span>
-          <button
-            onClick={onClose}
-            className="w-9 h-9 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
-            aria-label="Close"
-          >
-            <X size={16} />
-          </button>
+        <div className="flex h-12 shrink-0 items-center justify-between border-b border-border pl-4 pr-2">
+          <span className="t-label">{title}</span>
+          <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close">
+            <X size={16} aria-hidden="true" />
+          </Button>
         </div>
         {/* Scrollable content */}
         <div className="flex-1 overflow-y-auto">
@@ -273,6 +267,16 @@ const FlowBuilder = forwardRef<FlowBuilderHandle, FlowBuilderProps>(function Flo
   // ── Detect mobile ─────────────────────────────────────────────────────────
   // Initialise from matchMedia so the useState lazy initialiser already has the
   // correct value; the effect only subscribes to future changes.
+  // React Flow takes plain colour strings (SVG attributes), so read the design
+  // tokens off :root and re-read when the theme flips.
+  const theme = useContext(ThemeContext)?.theme ?? 'light'
+  const { canvasDotColor, minimapInk, minimapAccent } = useMemo(() => {
+    const cs = getComputedStyle(document.documentElement)
+    const v = (name: string) => cs.getPropertyValue(name).trim() || 'currentColor'
+    return { canvasDotColor: v('--frame-line'), minimapInk: v('--text-subtle'), minimapAccent: v('--accent') }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [theme])
+
   const [isMobile, setIsMobile] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches
   )
@@ -536,16 +540,11 @@ const FlowBuilder = forwardRef<FlowBuilderHandle, FlowBuilderProps>(function Flo
 
       {/* ── Mobile-only add bar. The view switcher + actions live in the app
           top bar (FlowsPage); desktop adds via the top-bar "Add task" toggle. ─ */}
-      <div className="md:hidden shrink-0 flex items-center justify-end px-2 py-1.5 border-b border-border bg-surface-2/40">
-        <button
-          onClick={() => setMobilePaletteOpen(true)}
-          className="flex items-center gap-1.5 px-2 h-8 text-xs font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors shrink-0"
-          title="Add task"
-          aria-label="Add task"
-        >
-          <Plus size={13} />
+      <div className="md:hidden shrink-0 flex items-center justify-end px-3 py-1.5 border-b border-border bg-surface">
+        <Button variant="secondary" size="sm" onClick={() => setMobilePaletteOpen(true)} title="Add task" aria-label="Add task">
+          <Plus size={14} aria-hidden="true" />
           Add task
-        </button>
+        </Button>
       </div>
 
       {/* ── Canvas + inspector row ────────────────────────────────────────── */}
@@ -566,7 +565,7 @@ const FlowBuilder = forwardRef<FlowBuilderHandle, FlowBuilderProps>(function Flo
             fitView
             fitViewOptions={{ padding: 0.25 }}
             deleteKeyCode="Delete"
-            className="bg-bg"
+            className="fn-canvas"
             // Touch / pan / zoom support
             panOnDrag
             panOnScroll={false}
@@ -575,45 +574,51 @@ const FlowBuilder = forwardRef<FlowBuilderHandle, FlowBuilderProps>(function Flo
             preventScrolling
             defaultEdgeOptions={{
               type: 'smoothstep',
-              style: { strokeWidth: 1.5, stroke: '#64748b' },
+              style: { strokeWidth: 1.5 },
             }}
           >
             <Background
               variant={BackgroundVariant.Dots}
               gap={16}
               size={1}
-              color="var(--color-border, #e2e8f0)"
+              color={canvasDotColor}
             />
-            <Controls className="!shadow-md !border !border-border !rounded-xl overflow-hidden" />
+            <Controls showInteractive={false} />
             {/* MiniMap: hidden on small screens to save space */}
             <div className="hidden md:block">
               <MiniMap
-                className="!border !border-border !rounded-xl overflow-hidden !shadow-md"
-                nodeColor={(node) => {
-                  const kind = node.data?.task?.kind ?? 'noop'
-                  return {
-                    query:       '#3b82f6',
-                    python:      '#8b5cf6',
-                    agent:       '#10b981',
-                    bucket_load: '#f97316',
-                    noop:        '#94a3b8',
-                    map:         '#6366f1',
-                    branch:      '#f59e0b',
-                  }[kind] ?? '#94a3b8'
-                }}
-                maskColor="rgba(0,0,0,0.05)"
+                nodeColor={(node) => (node.type === 'branchNode' || node.data?.task?.kind === 'branch' ? minimapAccent : minimapInk)}
+                nodeStrokeWidth={0}
+                maskColor="rgba(11,12,14,0.06)"
+                pannable
+                zoomable
+                ariaLabel="Flow minimap"
               />
             </div>
           </ReactFlow>
+
+          {/* Empty canvas: say what to do next (pointer-events pass through) */}
+          {nodes.length === 0 && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
+              <EmptyState
+                compact
+                art={<EmptyFlows />}
+                title="This canvas is empty"
+                description={isMobile
+                  ? 'Choose Add task above to place a SQL query, Python step or note.'
+                  : 'Choose the plus in the top bar to place a SQL query, Python step or note, then drag between handles to connect them.'}
+              />
+            </div>
+          )}
 
           {/* Mobile: inspector trigger button (shown when node selected) */}
           {selectedTask && isMobile && !mobileInspectorOpen && (
             <button
               onClick={() => setMobileInspectorOpen(true)}
-              className="absolute bottom-20 right-3 z-10 flex items-center gap-2 px-3 py-2.5 rounded-xl bg-surface border border-border shadow-lg text-xs font-medium text-fg min-h-[44px]"
+              className="nubi-btn nubi-btn-secondary nubi-btn-md absolute bottom-20 right-3 z-10"
               aria-label="Open task inspector"
             >
-              <SlidersHorizontal size={14} className="text-primary" />
+              <SlidersHorizontal size={14} aria-hidden="true" />
               Inspect: {selectedTask.key}
             </button>
           )}

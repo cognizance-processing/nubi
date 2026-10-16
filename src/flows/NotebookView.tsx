@@ -45,40 +45,32 @@ import { previewCell, makeBlankCell } from '../lib/notebooks.js'
 import SqlCell from './cells/SqlCell.jsx'
 import PythonCell from './cells/PythonCell.jsx'
 import NoteCell from './cells/NoteCell.jsx'
+import Button from '../components/ui/Button.jsx'
+import EmptyState from '../components/ui/EmptyState.jsx'
+import { EmptyFlows } from '../components/illustrations'
+import '../components/app/appPatterns.css'
 
 // ---------------------------------------------------------------------------
 // AddCellBar — small inline add-cell row
 // ---------------------------------------------------------------------------
 
 function AddCellBar({ onAddSql, onAddPython, onAddNote }) {
+  // Quiet until hovered or focused (never display:none, so it stays tabbable).
   return (
-    <div className="flex items-center justify-center gap-2 py-2">
-      <div className="flex-1 border-t border-dashed border-border/40" />
-      <button
-        onClick={onAddSql}
-        className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium border border-dashed border-border text-muted hover:text-fg hover:border-border hover:bg-surface-2 transition-colors"
-        title="Add SQL cell"
-      >
-        <Database size={11} />
-        SQL
-      </button>
-      <button
-        onClick={onAddPython}
-        className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium border border-dashed border-border text-muted hover:text-fg hover:border-border hover:bg-surface-2 transition-colors"
-        title="Add Python cell"
-      >
-        <Code2 size={11} />
-        Python
-      </button>
-      <button
-        onClick={onAddNote}
-        className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium border border-dashed border-border text-muted hover:text-fg hover:border-border hover:bg-surface-2 transition-colors"
-        title="Add Note (markdown) cell"
-      >
-        <FileText size={11} />
-        Note
-      </button>
-      <div className="flex-1 border-t border-dashed border-border/40" />
+    <div className="group flex items-center justify-center gap-2 py-2">
+      <div className="flex-1 border-t border-border transition-colors group-hover:border-frame-line group-focus-within:border-frame-line" />
+      <div className="flex items-center gap-1 opacity-60 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+        <Button variant="secondary" size="xs" onClick={onAddSql} title="Add SQL cell" aria-label="Add SQL cell">
+          <Database size={12} aria-hidden="true" /> SQL
+        </Button>
+        <Button variant="secondary" size="xs" onClick={onAddPython} title="Add Python cell" aria-label="Add Python cell">
+          <Code2 size={12} aria-hidden="true" /> Python
+        </Button>
+        <Button variant="secondary" size="xs" onClick={onAddNote} title="Add Note (markdown) cell" aria-label="Add note cell">
+          <FileText size={12} aria-hidden="true" /> Note
+        </Button>
+      </div>
+      <div className="flex-1 border-t border-border transition-colors group-hover:border-frame-line group-focus-within:border-frame-line" />
     </div>
   )
 }
@@ -90,35 +82,35 @@ function AddCellBar({ onAddSql, onAddPython, onAddNote }) {
 // ---------------------------------------------------------------------------
 
 export function SaveStatusBadge({ dirty, saving, autosaveStatus, className = '' }) {
-  const base = ['flex items-center gap-1 text-[11px] whitespace-nowrap shrink-0', className].join(' ')
+  const base = ['flex items-center gap-1.5 ap-meta whitespace-nowrap shrink-0', className].join(' ')
   if (saving || autosaveStatus === 'saving') {
     return (
-      <span role="status" className={[base, 'text-muted'].join(' ')}>
-        <Loader2 size={11} className="animate-spin" />
-        Saving…
+      <span role="status" className={base}>
+        <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+        Saving
       </span>
     )
   }
   if (autosaveStatus === 'error') {
     return (
-      <span role="status" className={[base, 'text-rose-600 dark:text-rose-400'].join(' ')}>
-        <AlertCircle size={11} />
-        Autosave failed — Save manually
+      <span role="status" className={base} style={{ color: 'var(--danger-fg)' }}>
+        <span className="nubi-dot nubi-dot-danger" aria-hidden="true" />
+        Autosave failed. Save manually.
       </span>
     )
   }
   if (dirty) {
     return (
-      <span role="status" className={[base, 'text-amber-600 dark:text-amber-400'].join(' ')}>
-        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+      <span role="status" className={base} style={{ color: 'var(--warning-fg)' }}>
+        <span className="nubi-dot nubi-dot-warning" aria-hidden="true" />
         Unsaved
       </span>
     )
   }
   if (autosaveStatus === 'saved') {
     return (
-      <span role="status" className={[base, 'text-muted'].join(' ')}>
-        <Check size={11} className="text-green-500" />
+      <span role="status" className={base}>
+        <Check size={12} aria-hidden="true" />
         Saved
       </span>
     )
@@ -225,10 +217,9 @@ const NotebookView = forwardRef<NotebookViewHandle, NotebookViewProps>(function 
 
       {/* Error banner (save errors surface via the page-level banner) */}
       {runError && (
-        <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-rose-500/5 border-b border-rose-500/20 text-xs text-rose-600 dark:text-rose-400">
-          <AlertCircle size={13} />
-          <span className="flex-1 min-w-0">{runError}</span>
-          <button onClick={() => setRunError(null)} className="ml-auto opacity-60 hover:opacity-100 shrink-0"><X size={12} /></button>
+        <div className="nubi-notice nubi-notice-error m-3 shrink-0 text-xs" role="alert">
+          <span className="min-w-0 flex-1"><b>Run failed.</b> {runError}</span>
+          <button type="button" onClick={() => setRunError(null)} aria-label="Dismiss run error" className="shrink-0 opacity-70 hover:opacity-100"><X size={14} aria-hidden="true" /></button>
         </div>
       )}
 
@@ -237,40 +228,18 @@ const NotebookView = forwardRef<NotebookViewHandle, NotebookViewProps>(function 
 
         {/* Empty state */}
         {tasks.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-16 text-center">
-            <div className="w-12 h-12 rounded-2xl bg-surface-2 flex items-center justify-center mb-3">
-              <Database size={22} className="text-muted/50" />
-            </div>
-            <p className="text-sm font-medium text-fg/80 mb-1">Empty notebook</p>
-            <p className="text-xs text-muted max-w-xs">
-              Add a SQL or Python cell to get started. Cells share data — reference
-              an earlier cell&apos;s result as{' '}
-              <code className="font-mono bg-surface-2 px-1 rounded">cell_key</code>.
-            </p>
-            <div className="flex items-center gap-2 mt-4">
-              <button
-                onClick={() => handleAddCell('sql', null)}
-                className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 transition-colors"
-              >
-                <Database size={13} />
-                Add SQL cell
-              </button>
-              <button
-                onClick={() => handleAddCell('python', null)}
-                className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-violet-500/10 text-violet-600 dark:text-violet-400 border border-violet-500/20 hover:bg-violet-500/20 transition-colors"
-              >
-                <Code2 size={13} />
-                Add Python cell
-              </button>
-              <button
-                onClick={() => handleAddCell('markdown', null)}
-                className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-slate-500/10 text-slate-600 dark:text-slate-300 border border-slate-500/20 hover:bg-slate-500/20 transition-colors"
-              >
-                <FileText size={13} />
-                Add Note
-              </button>
-            </div>
-          </div>
+          <EmptyState
+            art={<EmptyFlows />}
+            title="This notebook is empty"
+            description="Cells share data: a later SQL cell can read an earlier result by its key, for example cell_key. Start with a query, a Python step or a note."
+            action={<Button onClick={() => handleAddCell('sql', null)}><Database size={14} aria-hidden="true" /> Add SQL cell</Button>}
+            secondaryAction={
+              <>
+                <Button variant="secondary" onClick={() => handleAddCell('python', null)}><Code2 size={14} aria-hidden="true" /> Add Python cell</Button>
+                <Button variant="ghost" onClick={() => handleAddCell('markdown', null)}><FileText size={14} aria-hidden="true" /> Add note</Button>
+              </>
+            }
+          />
         )}
 
         {/* Add bar before first cell */}

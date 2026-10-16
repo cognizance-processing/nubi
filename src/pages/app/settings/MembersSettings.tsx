@@ -32,22 +32,20 @@ import {
   inviteLink,
 } from '../../../lib/members.js'
 import { useAsyncLoad } from '../../../hooks/useAsyncLoad.js'
-import { SettingsPageHeader, SettingsCard, PrimaryButton, inputCls } from './SettingsUI.jsx'
+import { SettingsPageHeader, SettingsCard, PrimaryButton } from './SettingsUI.jsx'
 import { isValidEmail } from '../../../shell/shellLogic.js'
+import Button from '../../../components/ui/Button.jsx'
+import Tag from '../../../components/ui/Tag.jsx'
+import Input, { Select } from '../../../components/ui/Input.jsx'
+import EmptyState from '../../../components/ui/EmptyState.jsx'
+import Skeleton from '../../../components/ui/Skeleton.jsx'
 
 const MANAGE_ROLES = ['owner', 'admin']
-
-const ROLE_BADGE = {
-  owner: 'bg-brand-blue/10 text-brand-blue dark:bg-blue-500/15 dark:text-blue-300',
-  admin: 'bg-brand-teal/10 text-brand-teal dark:bg-teal-500/15 dark:text-teal-300',
-  member: 'bg-surface-2 text-muted',
-  viewer: 'bg-surface-2 text-muted',
-}
 
 function Avatar({ name = undefined, email = undefined }) {
   const initial = (name || email || '?').trim().charAt(0).toUpperCase()
   return (
-    <div className="w-8 h-8 rounded-full bg-surface-2 border border-border flex items-center justify-center text-xs font-semibold text-muted shrink-0">
+    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-frame-line bg-surface-2 text-xs font-semibold text-muted" aria-hidden="true">
       {initial}
     </div>
   )
@@ -131,8 +129,7 @@ export default function MembersSettings() {
     } catch { /* clipboard blocked */ }
   }
 
-  const selectCls =
-    'px-2 py-1 rounded-lg bg-bg border border-border text-xs text-fg focus:outline-none focus:border-primary disabled:opacity-50 disabled:cursor-not-allowed'
+  const selectCls = 'nubi-input nubi-select nubi-input-sm w-auto'
 
   if (isPersonal) {
     return (
@@ -159,7 +156,7 @@ export default function MembersSettings() {
       />
 
       {err && (
-        <p className="text-xs text-red-600 dark:text-red-400 rounded-xl bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 px-3 py-2">
+        <p className="nubi-notice nubi-notice-error m-0 text-xs" role="alert">
           {err}
         </p>
       )}
@@ -173,28 +170,24 @@ export default function MembersSettings() {
           <form onSubmit={sendInvite} className="flex flex-col sm:flex-row gap-2">
             <div className="relative flex-1">
               <label htmlFor="invite-email" className="sr-only">Teammate email address</label>
-              <Mail size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
-              <input
+              <Input
                 id="invite-email"
                 ref={inviteEmailRef}
                 type="email"
                 required
+                icon={<Mail size={14} />}
                 value={inviteEmail}
                 onChange={(e) => setInviteEmail(e.target.value)}
                 placeholder="teammate@example.com"
-                className={inputCls + ' !pl-9'}
               />
             </div>
-            <select
-              className={selectCls + ' !text-sm !py-2'}
+            <Select
+              className="w-full sm:w-36"
               value={inviteRole}
               onChange={(e) => setInviteRole(e.target.value)}
               aria-label="Invite role"
-            >
-              {ORG_ROLES.filter((r) => r !== 'owner' || currentRole === 'owner').map((r) => (
-                <option key={r} value={r}>{r}</option>
-              ))}
-            </select>
+              options={ORG_ROLES.filter((r) => r !== 'owner' || currentRole === 'owner')}
+            />
             <PrimaryButton type="submit" busy={inviting} disabled={inviting || !isValidEmail(inviteEmail)} className="shrink-0">
               {!inviting && <UserPlus size={14} />}
               Invite
@@ -211,34 +204,23 @@ export default function MembersSettings() {
           : 'View only — ask an owner or admin to manage members.'}
       >
         {loading ? (
-          <div className="flex items-center gap-2 text-xs text-muted py-2">
-            <Loader2 size={13} className="animate-spin" /> Loading members…
+          <div className="space-y-2" aria-hidden="true">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
           </div>
         ) : loadError ? (
           <div className="flex items-center justify-between gap-3 py-2">
             <p className="text-xs text-danger" role="alert">{loadError}</p>
-            <button
-              type="button"
-              onClick={refreshMembers}
-              className="text-xs text-muted hover:text-fg underline shrink-0"
-            >
-              Retry
-            </button>
+            <Button variant="secondary" size="xs" onClick={refreshMembers}>Retry</Button>
           </div>
         ) : members.length === 0 ? (
-          <div className="flex flex-col items-center justify-center text-center py-6 gap-2">
-            <Users size={24} className="text-muted/40" />
-            <p className="text-sm text-muted">No members yet.</p>
-            {canManage && (
-              <button
-                type="button"
-                onClick={focusInvite}
-                className="text-xs font-medium text-primary hover:underline"
-              >
-                Invite a member
-              </button>
-            )}
-          </div>
+          <EmptyState
+            compact
+            icon={<Users size={18} />}
+            title="No members yet"
+            description="Members can open and edit boards. Viewers are free and do not need a seat."
+            action={canManage ? <Button variant="secondary" onClick={focusInvite}>Invite a member</Button> : undefined}
+          />
         ) : (
           <ul className="divide-y divide-border -my-2">
             {members.map((m) => {
@@ -267,21 +249,19 @@ export default function MembersSettings() {
                       {ORG_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
                     </select>
                   ) : (
-                    <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-md capitalize ${ROLE_BADGE[m.role] ?? ROLE_BADGE.member}`}>
-                      {m.role}
-                    </span>
+                    <Tag variant={m.role === 'owner' ? 'ink' : 'neutral'}>{m.role}</Tag>
                   )}
                   {canManage && (
-                    <button
-                      type="button"
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
                       onClick={() => handleRemove(m)}
                       disabled={rowBusy || isLastOwner}
                       title={isLastOwner ? 'The last owner cannot be removed' : 'Remove member'}
                       aria-label={isLastOwner ? 'The last owner cannot be removed' : `Remove ${m.name || m.email}`}
-                      className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed shrink-0"
                     >
-                      {rowBusy ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
-                    </button>
+                      {rowBusy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Trash2 size={14} aria-hidden="true" />}
+                    </Button>
                   )}
                 </li>
               )
@@ -304,25 +284,25 @@ export default function MembersSettings() {
                   <p className="text-sm text-fg truncate" title={inv.email}>{inv.email}</p>
                   <p className="text-[11px] text-muted capitalize">role: {inv.role}</p>
                 </div>
-                <button
-                  type="button"
+                <Button
+                  variant="secondary"
+                  size="xs"
                   onClick={() => copyLink(inv.token)}
                   aria-label={copiedToken === inv.token ? 'Invite link copied' : `Copy invite link for ${inv.email}`}
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs text-muted hover:text-primary border border-border hover:border-primary/40 transition-colors shrink-0"
                 >
-                  {copiedToken === inv.token ? <Check size={12} /> : <Copy size={12} />}
+                  {copiedToken === inv.token ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
                   {copiedToken === inv.token ? 'Copied' : 'Copy link'}
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
                   onClick={() => handleRevoke(inv)}
                   disabled={busyRow === inv.id}
                   title="Revoke invite"
                   aria-label={`Revoke invite for ${inv.email}`}
-                  className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors disabled:opacity-30 shrink-0"
                 >
-                  {busyRow === inv.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-                </button>
+                  {busyRow === inv.id ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Trash2 size={13} aria-hidden="true" />}
+                </Button>
               </li>
             ))}
           </ul>

@@ -1,12 +1,13 @@
 /**
  * ConnectorsPage — list + manage data-source connectors.
  *
- * Layout:
- *   Header (title + "Add connector" CTA)
- *   Connector cards list (or empty state)
- *   Slide-over panel: type picker → type-specific form (Add / Edit)
+ * Layout (Swiss, ruled list):
+ *   PageShell header (title, description, Add connector)
+ *   Toolbar: search + sort, removable engine filter chip
+ *   Ruled rows: logo tile, name + summary, engine / dialect / network tags, status, actions
+ *   Inline test result under the row it belongs to (2px rule: ok / failed + layers)
+ *   Right drawer: type picker -> type-specific form (Add / Edit)
  *   Delete confirm dialog
- *   Test-result toast/inline panel
  *
  * API calls use src/lib/api.js helpers:
  *   GET    /connectors
@@ -17,38 +18,30 @@
  *
  * Secrets (password / service_account_json / token) are NEVER displayed after save.
  * A visible security note in the form reinforces this.
- *
- * Only this file and connectorForms.jsx are owned by this wave.
  */
 
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useAsyncLoad } from '../../hooks/useAsyncLoad.js'
-import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
 import {
   Plus,
-  Plug,
   Pencil,
   Trash2,
   Zap,
-  CheckCircle,
-  XCircle,
-  ChevronRight,
   X,
-  Loader2,
-  ShieldCheck,
-  AlertTriangle,
-  RefreshCw,
-  Table2,
   Search,
+  Table2,
   Lock,
+  RefreshCw,
+  ShieldCheck,
 } from 'lucide-react'
 import * as api from '../../lib/api.js'
 import Button from '../../components/ui/Button.jsx'
-import Badge from '../../components/ui/Badge.jsx'
+import Tag from '../../components/ui/Tag.jsx'
+import Input from '../../components/ui/Input.jsx'
+import EmptyState from '../../components/ui/EmptyState.jsx'
 import ConnectionStatusBadge from '../../components/ui/ConnectionStatusBadge.jsx'
-import { CardGrid, ErrorState } from '../../components/app/PageShell.jsx'
-import { useUi } from '../../contexts/UiContext.jsx'
+import PageShell, { Toolbar, SearchBar, SortMenu } from '../../components/app/PageShell.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
 import {
@@ -57,10 +50,13 @@ import {
   defaultsFor,
   dialectFor,
 } from '../../data/connectors.js'
-import { DynamicForm } from './connectorForms.jsx'
+import { DynamicForm, missingRequired } from './connectorForms.jsx'
 import { toast } from '../../components/ui/Toast.jsx'
 import ConnectorLogo from '../../components/app/ConnectorLogo.jsx'
 import DialectBadge from '../../components/app/DialectBadge.jsx'
+import { EmptyConnectors, EmptySearch } from '../../components/illustrations'
+import { LoadError, ListSkeleton, FilterBar } from './appShared.jsx'
+import '../../components/app/appPatterns.css'
 
 // ---------------------------------------------------------------------------
 // API helpers
@@ -72,283 +68,163 @@ const updateConnector   = (id, b)  => api.put(`/connectors/${id}`, b)
 const deleteConnector   = (id)     => api.del(`/connectors/${id}`)
 const testConnector     = (id)     => api.post(`/connectors/${id}/test`)
 
-// ---------------------------------------------------------------------------
-// Type badge + icon
-// ---------------------------------------------------------------------------
-//
-// ConnectorLogo (the brand-logo chip) now lives in
-// src/components/app/ConnectorLogo.jsx — shared with the connector-instance
-// combobox used in the Queries UI (QueryWorkspace / BlendBuilder) so every
-// place that shows a connector renders the exact same logo chip, with the
-// same graceful fallback to a generic DB icon when a logo is missing.
+const SORTS = [
+  { value: 'name', label: 'Name' },
+  { value: 'type', label: 'Engine' },
+  { value: 'status', label: 'Status' },
+]
 
-function TypeBadge({ type }) {
-  const info = getTypeInfo(type)
+// Worst first, so "needs attention" rises to the top when sorting by status.
+const STATUS_RANK = { error: 0, offline: 1, unknown: 2, degraded: 2, online: 3, connected: 3 }
+
+// ---------------------------------------------------------------------------
+// Inline test result: a 2px rule (ok / failed) under the row it belongs to
+// ---------------------------------------------------------------------------
+
+function LayerStep({ name, pass }) {
   return (
-    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium bg-surface-2 text-muted border border-border/60">
-      {info.label}
+    <span className={pass ? 'pass' : 'fail'}>
+      {name} <b>{pass ? 'pass' : 'fail'}</b>
     </span>
   )
 }
 
-// ---------------------------------------------------------------------------
-// Test result pill
-// ---------------------------------------------------------------------------
-
-function TestResultPill({ result }) {
+function TestResult({ result, onDismiss }) {
   if (!result) return null
   const ok = result.ok === true
-  // The round-trip time is the proof that a real socket was opened — a
+  // The round-trip time is the proof that a real socket was opened; a
   // structural check has no elapsed time worth showing.
-  const took = ok && Number.isFinite(result.elapsed_ms) ? ` · ${result.elapsed_ms} ms` : ''
-  // A driver's failure text is a whole sentence ("MySQL query failed: (1045,
-  // \"Access denied for user ...\")"), not a status word, so the pill has to
-  // wrap inside the card instead of running past its edge and clipping
-  // mid-word. `title` keeps the untruncated text available on hover.
+  const took = ok && Number.isFinite(result.elapsed_ms) ? ` in ${result.elapsed_ms} ms` : ''
+  const layers = result.layers
   return (
-    <Badge
-      variant={ok ? 'success' : 'danger'}
-      className="gap-1.5 max-w-full items-start text-left whitespace-normal break-words"
-      title={`${result.checked}${took}`}
-    >
-      {ok
-        ? <CheckCircle size={12} strokeWidth={2.2} className="mt-0.5 shrink-0" />
-        : <XCircle size={12} strokeWidth={2.2} className="mt-0.5 shrink-0" />
-      }
-      <span className="min-w-0">{result.checked}{took}</span>
-    </Badge>
+    <div className={`ap-result ${ok ? 'is-ok' : 'is-bad'}`} role="status">
+      <div className="ap-result-head">
+        <span className={`nubi-dot ${ok ? 'nubi-dot-success' : 'nubi-dot-danger'}`} aria-hidden="true" />
+        {ok ? `Connection verified${took}` : 'Connection failed'}
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Dismiss test result"
+          className="ml-auto text-subtle hover:text-fg"
+        >
+          <X size={14} aria-hidden="true" />
+        </button>
+      </div>
+      {/* A driver's failure text is a whole sentence, not a status word. */}
+      {(!ok || result.checked) && <div className="ap-result-msg">{result.checked}</div>}
+      {layers && (
+        <div className="ap-layers" aria-label="Test layers">
+          <LayerStep name="config" pass={!!layers.config} />
+          <LayerStep name="secret" pass={!!layers.secret} />
+          {/* Only present when the probe ran. It is the layer that matters most:
+              config + secret can both pass on a connector that cannot reach its
+              database at all. */}
+          {layers.connection !== undefined && <LayerStep name="connection" pass={!!layers.connection} />}
+        </div>
+      )}
+    </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Connector card
+// Connector row
 // ---------------------------------------------------------------------------
 
-function ConnectorCard({ connector, testResult, testingId, onEdit, onDelete, onTest, canWrite }) {
+function ConnectorRow({ connector, testResult, testingId, onEdit, onDelete, onTest, onDismissTest, onFilterType, canWrite }) {
   const cfg = connector.config ?? {}
   const info = getTypeInfo(cfg.connector_type)
   const networkMode = cfg.network_mode
   const isTesting = testingId === connector.id
   const myResult = testResult?.[connector.id]
-  // System connectors (e.g. the built-in demo dataset) are not editable —
+  // System connectors (e.g. the built-in demo dataset) are not editable:
   // they have no configurable fields. They can still be removed and re-added.
   const isSystem = info.system === true
   const summary = info.summary?.(cfg)
 
   return (
-    <div className="group nubi-resource-card nubi-resource-card-body">
-      {/* Brand accent rail — surfaces the connector's identity on hover. */}
-      <span
-        aria-hidden="true"
-        className="absolute inset-y-0 left-0 w-1 opacity-0 group-hover:opacity-100 transition-opacity"
-        style={{ background: info.color }}
-      />
-
-      {/* Header: logo/icon + name + badges */}
-      <div className="flex items-start gap-3 min-w-0">
-        <ConnectorLogo info={info} size={22} />
-        <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <h3 className="font-semibold text-fg text-sm truncate max-w-full">{connector.name}</h3>
-            <TypeBadge type={cfg.connector_type} />
-            <DialectBadge dialect={dialectFor(cfg.connector_type)} />
+    <li className="list-none">
+      <div className="ap-row">
+        <ConnectorLogo info={info} size={24} />
+        <div className="ap-row-main">
+          <div className="ap-row-title">
+            <span className="ap-trunc">{connector.name}</span>
             {connector.status && (
-              <ConnectionStatusBadge
-                state={connector.status.state}
-                detail={connector.status.detail}
-              />
+              <ConnectionStatusBadge state={connector.status.state} detail={connector.status.detail} />
+            )}
+          </div>
+          <div className="ap-tags mt-1">
+            <Tag
+              as="button"
+              type="button"
+              caps={false}
+              title={`Show only ${info.label} connectors`}
+              onClick={() => onFilterType(cfg.connector_type)}
+            >
+              {info.label}
+            </Tag>
+            {dialectFor(cfg.connector_type)?.toLowerCase() !== info.label.toLowerCase() && (
+              <DialectBadge dialect={dialectFor(cfg.connector_type)} />
             )}
             {isSystem && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-accent/10 text-accent border border-accent/20">
-                <Lock size={9} strokeWidth={2.4} />
-                Built-in
-              </span>
+              <Tag caps={false}><Lock size={10} aria-hidden="true" /> Built-in</Tag>
             )}
             {networkMode === 'bridge' ? (
-              <Link
-                to="/settings/bridges"
-                onClick={(e) => e.stopPropagation()}
-                title="Manage bridges"
-                className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium bg-surface-2 text-muted border border-border/60 hover:text-primary hover:border-primary/40 transition-colors"
-              >
-                {networkMode}
-              </Link>
+              <Tag as={Link} to="/settings/bridges" caps={false} title="Manage bridges">{networkMode}</Tag>
             ) : networkMode ? (
-              <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium bg-surface-2 text-muted border border-border/60">
-                {networkMode}
-              </span>
+              <Tag caps={false}>{networkMode}</Tag>
             ) : null}
+            {/* Config summary (BYO connectors): host:port / database / user */}
+            {summary && <span className="ap-meta truncate max-w-full">{summary}</span>}
           </div>
-
-          {/* Config summary (BYO connectors) */}
-          {summary && (
-            <p className="text-xs text-muted truncate mt-0.5">
-              {summary}
-            </p>
-          )}
         </div>
-      </div>
 
-      {/* Test result */}
-      {myResult && (
-        <div className="flex flex-wrap items-center gap-2">
-          <TestResultPill result={myResult} />
-          {myResult.layers && (
-            <span className="text-[10px] text-muted">
-              config:{myResult.layers.config ? '✓' : '✗'}
-              {' '}secret:{myResult.layers.secret ? '✓' : '✗'}
-              {/* Only present when the probe ran (?probe=false skips it). It is
-                  the layer that matters most — config+secret can both pass on a
-                  connector that cannot reach its database at all. */}
-              {myResult.layers.connection !== undefined && (
-                <>{' '}connection:{myResult.layers.connection ? '✓' : '✗'}</>
-              )}
-            </span>
-          )}
-        </div>
-      )}
-
-      {/* Actions */}
-      <div className="mt-auto pt-3 border-t border-border/60 flex items-center gap-1.5 flex-wrap">
-        <Link
-          to={`/data?connector=${connector.id}`}
-          title="View data"
-          className="
-            inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg
-            text-xs font-medium border border-border
-            text-muted hover:text-fg hover:bg-surface-2
-            transition-colors focus:outline-none focus:ring-2 focus:ring-ring
-          "
-        >
-          <Table2 size={12} strokeWidth={2.2} />
-          View data
-        </Link>
-
-        <button
-          onClick={() => onTest(connector.id)}
-          disabled={isTesting}
-          title="Test connection"
-          className="
-            inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg
-            text-xs font-medium border border-border
-            text-muted hover:text-fg hover:bg-surface-2
-            disabled:opacity-50 disabled:cursor-not-allowed
-            transition-colors focus:outline-none focus:ring-2 focus:ring-ring
-          "
-        >
-          {isTesting
-            ? <Loader2 size={12} className="animate-spin" />
-            : <Zap size={12} strokeWidth={2.2} />
-          }
-          {isTesting ? 'Testing…' : 'Test'}
-        </button>
-
-        {canWrite && (
-          <span className="ml-auto flex items-center gap-1.5">
-            {!isSystem && (
-              <button
-                onClick={() => onEdit(connector)}
-                title="Edit connector"
-                aria-label={`Edit ${connector.name}`}
-                className="
-                  inline-flex items-center justify-center w-8 h-8 rounded-lg
-                  border border-border text-muted
-                  hover:text-fg hover:bg-surface-2
-                  transition-colors focus:outline-none focus:ring-2 focus:ring-ring
-                "
-              >
-                <Pencil size={13} strokeWidth={2} />
-              </button>
-            )}
-
-            <button
-              onClick={() => onDelete(connector)}
-              title="Delete connector"
-              aria-label={`Delete ${connector.name}`}
-              className="
-                inline-flex items-center justify-center w-8 h-8 rounded-lg
-                border border-border text-muted
-                hover:text-danger hover:bg-danger-bg hover:border-danger/40
-                transition-colors focus:outline-none focus:ring-2 focus:ring-ring
-              "
+        <div className="ap-actions">
+          <Button asChild variant="ghost" size="sm">
+            <Link to={`/data?connector=${connector.id}`} title="View data">
+              <Table2 size={14} aria-hidden="true" /> <span className="hidden sm:inline">View data</span>
+              <span className="sm:hidden">Data</span>
+            </Link>
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => onTest(connector.id)}
+            loading={isTesting}
+            title="Test connection"
+          >
+            {!isTesting && <Zap size={14} aria-hidden="true" />}
+            {isTesting ? 'Testing' : 'Test'}
+          </Button>
+          {canWrite && !isSystem && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => onEdit(connector)}
+              aria-label={`Edit ${connector.name}`}
+              title="Edit connector"
             >
-              <Trash2 size={13} strokeWidth={2} />
-            </button>
-          </span>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Empty state
-// ---------------------------------------------------------------------------
-
-function EmptyState({ onAdd, canWrite }) {
-  return (
-    <div className="flex flex-col items-center justify-center py-20 px-6 text-center">
-      <div className="relative mb-5">
-        <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-brand-gradient shadow-nubi-lg">
-          <Plug size={28} className="text-white" />
+              <Pencil size={14} aria-hidden="true" />
+            </Button>
+          )}
+          {canWrite && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => onDelete(connector)}
+              aria-label={`${isSystem ? 'Remove' : 'Delete'} ${connector.name}`}
+              title={isSystem ? 'Remove connector' : 'Delete connector'}
+            >
+              <Trash2 size={14} aria-hidden="true" />
+            </Button>
+          )}
         </div>
-        {canWrite && (
-          <div className="absolute -top-1 -right-1 flex items-center justify-center w-6 h-6 rounded-full bg-accent text-white shadow-nubi-md">
-            <Plus size={12} />
-          </div>
-        )}
       </div>
-      <h2 className="font-display font-semibold text-xl text-fg mb-1.5">
-        No connectors yet
-      </h2>
-      <p className="text-muted text-sm max-w-xs leading-relaxed mb-6">
-        Add your first data source to start querying. Postgres, MySQL, SQL Server, BigQuery,
-        Snowflake, Redshift, Databricks, and 15+ more are supported.
-      </p>
-      {canWrite ? (
-        <button
-          onClick={onAdd}
-          className="
-            inline-flex items-center gap-2 px-5 py-2.5
-            bg-primary text-primary-fg
-            rounded-xl text-sm font-semibold
-            hover:opacity-90 transition-opacity
-            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2
-            shadow-nubi-md
-          "
-        >
-          <Plus size={16} strokeWidth={2.5} />
-          Add your first connector
-        </button>
-      ) : (
-        <p className="text-xs text-muted">Read-only — ask an admin to add a connector.</p>
+      {myResult && (
+        <div className="py-2 border-b border-border">
+          <TestResult result={myResult} onDismiss={() => onDismissTest(connector.id)} />
+        </div>
       )}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// List loading skeleton — shimmer placeholder matching ConnectorCard's shape
-// (no thumbnail, so it doesn't reuse PageShell's <CardSkeleton> as-is).
-// ---------------------------------------------------------------------------
-
-function ConnectorCardSkeleton() {
-  return (
-    <div className="nubi-resource-card nubi-resource-card-body" aria-hidden="true">
-      <div className="flex items-start gap-3">
-        <div className="nubi-shimmer w-[22px] h-[22px] rounded-lg shrink-0" />
-        <div className="flex-1 min-w-0 space-y-2 pt-0.5">
-          <div className="nubi-shimmer h-3.5 w-2/3 rounded" />
-          <div className="nubi-shimmer h-3 w-1/3 rounded" />
-        </div>
-      </div>
-      <div className="mt-auto pt-3 border-t border-border/60 flex items-center gap-1.5">
-        <div className="nubi-shimmer h-8 w-24 rounded-lg" />
-        <div className="nubi-shimmer h-8 w-16 rounded-lg" />
-        <div className="nubi-shimmer h-8 w-8 rounded-lg ml-auto" />
-        <div className="nubi-shimmer h-8 w-8 rounded-lg" />
-      </div>
-    </div>
+    </li>
   )
 }
 
@@ -375,76 +251,49 @@ function TypePicker({ onSelect }) {
       .filter((cat) => cat.connectors.length > 0)
   }, [query])
 
-  const empty = groups.length === 0
-
   return (
-    <div className="flex flex-col gap-5">
-      <p className="text-sm text-muted">
-        Choose the type of data source you want to connect.
-      </p>
-
-      {/* Search */}
-      <div className="relative">
-        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
-        <input
-          type="text"
+    <div>
+      <div className="mb-5">
+        <Input
+          type="search"
+          icon={<Search size={16} />}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search connectors…"
+          placeholder="Search 20+ connector types"
+          aria-label="Search connector types"
           autoFocus
-          className="
-            w-full rounded-xl border border-border bg-surface
-            pl-9 pr-3 py-2.5 text-sm text-fg placeholder:text-muted
-            focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent
-            transition-colors
-          "
         />
       </div>
 
-      {empty && (
-        <div className="text-center py-10 text-sm text-muted">
-          No connectors match “{query}”.
-        </div>
+      {groups.length === 0 && (
+        <EmptyState
+          compact
+          kind="none-match"
+          art={<EmptySearch />}
+          title={`No connector matches “${query}”`}
+          description="Search by engine name, like Postgres or Snowflake, or clear the filter to see every type."
+          action={<Button variant="secondary" size="sm" onClick={() => setQuery('')}>Clear search</Button>}
+        />
       )}
 
       {groups.map((cat) => (
-        <div key={cat.id} className="space-y-2.5">
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-              {cat.label}
-            </span>
-            <span className="h-px flex-1 bg-border" />
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+        <section key={cat.id} aria-label={cat.label}>
+          <h3 className="ap-group-label">{cat.label}</h3>
+          <div className="ap-tiles">
             {cat.connectors.map((info) => (
-              <button
-                key={info.id}
-                onClick={() => onSelect(info.id)}
-                className="
-                  flex items-start gap-3 p-3 rounded-xl border border-border bg-surface
-                  text-left hover:border-primary/40 hover:bg-surface-2 hover:shadow-sm
-                  transition-all duration-150 group
-                  focus:outline-none focus:ring-2 focus:ring-ring
-                "
-              >
-                <ConnectorLogo info={info} size={20} className="mt-0.5" />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <div className="text-sm font-semibold text-fg leading-tight">{info.label}</div>
+              <button key={info.id} type="button" onClick={() => onSelect(info.id)} className="ap-tile">
+                <ConnectorLogo info={info} size={24} />
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-1.5 flex-wrap">
+                    <span className="ap-tile-name">{info.label}</span>
                     <DialectBadge dialect={dialectFor(info.id)} />
-                  </div>
-                  <div className="text-[11px] text-muted mt-0.5 line-clamp-2 leading-snug">
-                    {info.description}
-                  </div>
-                </div>
-                <ChevronRight
-                  size={15}
-                  className="text-muted group-hover:text-primary group-hover:translate-x-0.5 transition-all shrink-0 mt-1"
-                />
+                  </span>
+                  <span className="ap-tile-desc block">{info.description}</span>
+                </span>
               </button>
             ))}
           </div>
-        </div>
+        </section>
       ))}
     </div>
   )
@@ -460,6 +309,7 @@ function ConnectorForm({ type, initialConfig, initialName, onBack, onSubmit, isE
   // those values are actually submitted even if the user never touches them.
   const [config, setConfig] = useState(() => ({ ...defaultsFor(type), ...(initialConfig ?? {}) }))
   const [secret, setSecret] = useState({})
+  const [touched, setTouched] = useState<Record<string, boolean>>({})
   const info = getTypeInfo(type)
 
   function handleFieldChange(fieldType, key, value) {
@@ -470,8 +320,22 @@ function ConnectorForm({ type, initialConfig, initialName, onBack, onSubmit, isE
     }
   }
 
+  // Inline validation: a required field shows its error once it was left (or on submit).
+  const missing = missingRequired(type, config, secret, isEditing)
+  const errors = Object.fromEntries(missing.filter(k => touched[k]).map(k => [k, 'Required']))
+  const nameError = touched.__name && !name.trim() ? 'Give this connector a name' : undefined
+
   function handleSubmit(e) {
     e.preventDefault()
+    if (!name.trim() || missing.length) {
+      setTouched({ __name: true, ...Object.fromEntries(missing.map(k => [k, true])) })
+      // Move focus to the first thing that needs attention.
+      requestAnimationFrame(() => {
+        const first = !name.trim() ? 'conn-name' : `f-${missing[0]}`
+        document.getElementById(first)?.focus()
+      })
+      return
+    }
 
     // Strip undefined/empty values
     const cleanConfig = Object.fromEntries(
@@ -487,11 +351,11 @@ function ConnectorForm({ type, initialConfig, initialName, onBack, onSubmit, isE
   const formProps = { config, secret, onChange: handleFieldChange }
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+    <form onSubmit={handleSubmit} className="ap-form" noValidate>
       {/* Type header */}
-      <div className="flex items-center gap-3 pb-4 border-b border-border">
-        <ConnectorLogo info={info} size={20} />
-        <div>
+      <div className="ap-form-id">
+        <ConnectorLogo info={info} size={24} />
+        <div className="min-w-0">
           <div className="flex items-center gap-1.5">
             <div className="text-sm font-semibold text-fg">{info.label}</div>
             <DialectBadge dialect={dialectFor(info.id)} />
@@ -499,63 +363,52 @@ function ConnectorForm({ type, initialConfig, initialName, onBack, onSubmit, isE
           <div className="text-xs text-muted">{info.description}</div>
         </div>
         {!isEditing && (
-          <button
-            type="button"
-            onClick={onBack}
-            className="ml-auto text-xs text-muted hover:text-fg underline underline-offset-2 focus:outline-none"
-          >
+          <button type="button" onClick={onBack} className="ap-link-btn ml-auto shrink-0">
             Change type
           </button>
         )}
       </div>
 
       {/* Name */}
-      <div>
-        <label htmlFor="conn-name" className="block text-xs font-medium text-fg mb-1">
-          Connector name
-        </label>
-        <input
-          id="conn-name"
-          type="text"
-          required
-          placeholder={`My ${info.label} connector`}
-          value={name}
-          onChange={e => setName(e.target.value)}
-          className="
-            w-full rounded-xl border border-border bg-bg
-            px-3 py-2 text-sm text-fg placeholder:text-muted
-            focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent
-            transition-colors
-          "
-        />
-      </div>
+      <Input
+        id="conn-name"
+        type="text"
+        label="Connector name"
+        required
+        placeholder={`My ${info.label} connector`}
+        value={name}
+        onChange={e => setName(e.target.value)}
+        onBlur={() => setTouched(t => ({ ...t, __name: true }))}
+        error={nameError}
+        hint="Shown in queries and pickers. You can rename it later."
+      />
 
       {/* Type-specific fields (schema-driven from the connector catalog) */}
-      <DynamicForm type={type} {...formProps} />
+      <DynamicForm
+        type={type}
+        {...formProps}
+        errors={errors}
+        onFieldBlur={(k) => setTouched(t => ({ ...t, [k]: true }))}
+      />
 
       {/* Security note */}
-      <div className="
-        flex items-start gap-2.5 px-3 py-2.5 rounded-xl
-        bg-surface-2 border border-border/50
-        text-xs text-muted
-      ">
-        <ShieldCheck size={14} className="shrink-0 text-accent mt-0.5" strokeWidth={2} />
+      <div className="ap-note">
+        <ShieldCheck size={14} className="shrink-0 mt-0.5 text-fg" aria-hidden="true" />
         <span>
-          Credentials are <strong className="text-fg">encrypted at rest</strong> with AES-256-GCM and
+          Credentials are <b className="text-fg font-semibold">encrypted at rest</b> with AES-256-GCM and
           are never returned by the API after save.
         </span>
       </div>
 
       {/* Error */}
       {error && (
-        <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl bg-danger-bg border border-danger/20 text-xs text-danger">
-          <AlertTriangle size={13} className="shrink-0 mt-0.5" strokeWidth={2} />
-          <span>{error}</span>
+        <div className="ap-note is-error" role="alert">
+          <span><b>Couldn&rsquo;t save.</b> {error}</span>
         </div>
       )}
 
       {/* Submit */}
-      <Button type="submit" disabled={!name.trim()} loading={loading} className="w-full">
+      <Button type="submit" loading={loading} className="w-full">
         {isEditing ? 'Save changes' : 'Add connector'}
       </Button>
     </form>
@@ -563,86 +416,82 @@ function ConnectorForm({ type, initialConfig, initialName, onBack, onSubmit, isE
 }
 
 // ---------------------------------------------------------------------------
-// Slide-over panel
+// Right drawer
 // ---------------------------------------------------------------------------
 
-function SlideOver({ open, onClose, title, children }) {
-  // Trap focus + ESC
-  const panelRef = useRef(null)
+function Drawer({ open, onClose, title, step, children }) {
+  const panelRef = useRef<HTMLDivElement>(null)
+  const returnFocus = useRef<HTMLElement | null>(null)
 
+  // Esc closes; focus moves in on open and returns to the trigger on close.
   useEffect(() => {
     if (!open) return
+    returnFocus.current = document.activeElement as HTMLElement
+    const t = setTimeout(() => {
+      panelRef.current?.querySelector<HTMLElement>('input, select, textarea, button:not([data-drawer-close])')?.focus()
+    }, 60)
     function onKeyDown(e) {
       if (e.key === 'Escape') onClose()
+      // Keep Tab inside the drawer while it is open.
+      if (e.key === 'Tab' && panelRef.current) {
+        const f = panelRef.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        )
+        if (!f.length) return
+        const first = f[0], last = f[f.length - 1]
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+      }
     }
     window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    return () => {
+      clearTimeout(t)
+      window.removeEventListener('keydown', onKeyDown)
+      returnFocus.current?.focus?.()
+    }
   }, [open, onClose])
 
   return (
     <>
-      {/* Backdrop — same rgba(0,0,0,0.5) + blur(2px) chrome as Modal.jsx's
-          .nubi-backdrop, kept as utilities here since this panel stays
-          mounted (opacity-animated) rather than portal-mounted on open. */}
-      <div
-        className={`
-          fixed inset-0 z-overlay bg-black/50 backdrop-blur-sm
-          transition-opacity duration-200
-          ${open ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}
-        `}
-        onClick={onClose}
-        aria-hidden="true"
-      />
-
-      {/* Panel */}
-      <div
+      {open && <div className="ap-backdrop" onClick={onClose} aria-hidden="true" />}
+      <aside
         ref={panelRef}
         role="dialog"
-        aria-modal="true"
+        aria-modal={open}
         aria-label={title}
-        className={`
-          fixed inset-y-0 right-0 z-modal
-          w-full sm:max-w-[480px]
-          bg-surface border-l border-border shadow-nubi-xl
-          flex flex-col
-          transition-transform duration-300 ease-in-out
-          ${open ? 'translate-x-0' : 'translate-x-full'}
-        `}
+        aria-hidden={!open}
+        data-open={open}
+        className="ap-drawer"
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
-          <h2 className="font-display font-semibold text-lg text-fg">{title}</h2>
-          <button
-            onClick={onClose}
-            aria-label="Close panel"
-            className="
-              flex items-center justify-center w-8 h-8 rounded-lg
-              text-muted hover:text-fg hover:bg-surface-2
-              transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring
-            "
-          >
-            <X size={16} strokeWidth={2} />
-          </button>
-        </div>
-
-        {/* Scrollable body */}
-        <div className="flex-1 overflow-y-auto px-6 py-5">
-          {children}
-        </div>
-      </div>
+        <header className="ap-drawer-head">
+          <div className="min-w-0 flex-1">
+            <div className="ap-steps" aria-hidden="true">
+              <span className={step === 'type' ? 'on' : ''}>01 Type</span>
+              <span className="sep" />
+              <span className={step === 'form' ? 'on' : ''}>02 Details</span>
+            </div>
+            <h2 className="ap-drawer-title mt-1 truncate">{title}</h2>
+          </div>
+          <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close panel" data-drawer-close>
+            <X size={16} aria-hidden="true" />
+          </Button>
+        </header>
+        <div className="ap-drawer-body">{open ? children : null}</div>
+      </aside>
     </>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Delete confirm dialog
+// Delete confirm dialog (Swiss: 2px danger rule, plain consequences, no icon tile)
 // ---------------------------------------------------------------------------
 
 function DeleteDialog({ connector, loading, error, onCancel, onConfirm }) {
   const isSystem = getTypeInfo(connector?.config?.connector_type).system === true
+  const cancelRef = useRef<HTMLButtonElement>(null)
 
-  // ESC to close (matches SlideOver's idiom above)
   useEffect(() => {
+    cancelRef.current?.focus()
     function onKeyDown(e) {
       if (e.key === 'Escape' && !loading) onCancel()
     }
@@ -651,59 +500,42 @@ function DeleteDialog({ connector, loading, error, onCancel, onConfirm }) {
   }, [loading, onCancel])
 
   return (
-    <>
-      {/* Backdrop */}
+    <div
+      className="fixed inset-0 flex items-center justify-center p-4"
+      style={{ zIndex: 'var(--z-modal)' as any, background: 'rgba(11,12,14,.5)' }}
+      onClick={loading ? undefined : onCancel}
+    >
       <div
-        className="fixed inset-0 z-modal bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
-        onClick={loading ? undefined : onCancel}
+        className="ap-confirm nubi-animate-scale-in"
+        onClick={e => e.stopPropagation()}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="del-conn-title"
+        aria-describedby="del-conn-desc"
       >
-        <div
-          className="bg-surface rounded-2xl border border-border shadow-nubi-xl p-6 w-full max-w-sm nubi-animate-scale-in"
-          onClick={e => e.stopPropagation()}
-          role="alertdialog"
-          aria-modal="true"
-        >
-          <div className="flex items-start gap-3 mb-4">
-            <div className="w-10 h-10 rounded-xl bg-danger-bg flex items-center justify-center shrink-0">
-              <Trash2 size={18} className="text-danger" strokeWidth={2} />
-            </div>
-            <div>
-              <h3 className="font-semibold text-fg text-sm">
-                {isSystem ? 'Remove connector?' : 'Delete connector?'}
-              </h3>
-              <p className="text-xs text-muted mt-1 leading-relaxed">
-                {isSystem ? (
-                  <>
-                    <strong className="text-fg">{connector?.name}</strong> will be removed from this
-                    workspace. You can add it back anytime from “Add connector”.
-                  </>
-                ) : (
-                  <>
-                    <strong className="text-fg">{connector?.name}</strong> will be permanently deleted,
-                    including its encrypted credentials. This cannot be undone.
-                  </>
-                )}
-              </p>
-            </div>
-          </div>
-
-          {error && (
-            <div className="mb-3 px-3 py-2 rounded-lg bg-danger-bg border border-danger/20 text-xs text-danger">
-              {error}
-            </div>
+        <h3 id="del-conn-title">{isSystem ? 'Remove this connector?' : 'Delete this connector?'}</h3>
+        <p id="del-conn-desc">
+          {isSystem ? (
+            <>
+              <b>{connector?.name}</b> will be removed from this workspace. You can add it back
+              from Add connector.
+            </>
+          ) : (
+            <>
+              <b>{connector?.name}</b> and its encrypted credentials will be deleted. Queries that
+              use it will stop running. This cannot be undone.
+            </>
           )}
-
-          <div className="flex gap-2 justify-end">
-            <Button variant="secondary" onClick={onCancel} disabled={loading}>
-              Cancel
-            </Button>
-            <Button variant="danger" onClick={onConfirm} loading={loading}>
-              {isSystem ? 'Remove' : 'Delete'}
-            </Button>
-          </div>
+        </p>
+        {error && <div className="ap-note is-error mt-3" role="alert"><span>{error}</span></div>}
+        <div className="ap-confirm-actions">
+          <Button ref={cancelRef} variant="secondary" onClick={onCancel} disabled={loading}>Cancel</Button>
+          <Button variant="danger" onClick={onConfirm} loading={loading}>
+            {isSystem ? 'Remove connector' : 'Delete connector'}
+          </Button>
         </div>
       </div>
-    </>
+    </div>
   )
 }
 
@@ -716,8 +548,6 @@ export default function ConnectorsPage() {
   const { activeProject } = useProject()
   const projectId = activeProject?.id
   const canWrite = useCanWrite()
-  // Single top bar — the page toolbar portals into the AppShell topbar slot.
-  const { topbarSlot } = useUi()
 
   // List state
   const { data: connectorsData, loading: listLoading, error: listError, reload: reloadConnectors } = useAsyncLoad(
@@ -726,7 +556,12 @@ export default function ConnectorsPage() {
   )
   const connectors = connectorsData ?? []
 
-  // Slide-over state
+  // List controls
+  const [search, setSearch] = useState('')
+  const [sort, setSort] = useState('name')
+  const [typeFilter, setTypeFilter] = useState<string | null>(null)
+
+  // Drawer state
   const [slideOpen, setSlideOpen]     = useState(false)
   const [slideStep, setSlideStep]     = useState('type')   // 'type' | 'form'
   const [selectedType, setSelectedType] = useState(null)
@@ -744,7 +579,40 @@ export default function ConnectorsPage() {
   const [testResults, setTestResults] = useState({}) // { [id]: result }
 
   // ---------------------------------------------------------------------------
-  // Slide-over open helpers
+  // Derived list
+  // ---------------------------------------------------------------------------
+
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    const rows = connectors.filter(c => {
+      const cfg = c.config ?? {}
+      if (typeFilter && cfg.connector_type !== typeFilter) return false
+      if (!q) return true
+      const info = getTypeInfo(cfg.connector_type)
+      return (
+        c.name?.toLowerCase().includes(q) ||
+        info.label.toLowerCase().includes(q) ||
+        (info.summary?.(cfg) ?? '').toLowerCase().includes(q)
+      )
+    })
+    const label = (c) => getTypeInfo(c.config?.connector_type).label
+    return [...rows].sort((a, b) => {
+      if (sort === 'type') return label(a).localeCompare(label(b)) || a.name.localeCompare(b.name)
+      if (sort === 'status') {
+        const ra = STATUS_RANK[a.status?.state] ?? 2
+        const rb = STATUS_RANK[b.status?.state] ?? 2
+        return ra - rb || a.name.localeCompare(b.name)
+      }
+      return a.name.localeCompare(b.name)
+    })
+  }, [connectors, search, sort, typeFilter])
+
+  const chips = typeFilter
+    ? [{ key: 'type', label: `Engine: ${getTypeInfo(typeFilter).label}`, onRemove: () => setTypeFilter(null) }]
+    : []
+
+  // ---------------------------------------------------------------------------
+  // Drawer open helpers
   // ---------------------------------------------------------------------------
 
   function openAdd() {
@@ -765,13 +633,13 @@ export default function ConnectorsPage() {
 
   function closeSlide() {
     setSlideOpen(false)
-    // Reset after animation
+    // Reset after the panel has slid out
     setTimeout(() => {
       setEditTarget(null)
       setSelectedType(null)
       setSlideStep('type')
       setFormError(null)
-    }, 320)
+    }, 260)
   }
 
   function handleTypePick(typeId) {
@@ -802,7 +670,7 @@ export default function ConnectorsPage() {
   // Create / Update connector
   // ---------------------------------------------------------------------------
 
-  async function handleFormSubmit({ name, type, config, secret, seed = undefined }) {
+  async function handleFormSubmit({ name, type, config, secret, seed = undefined }: { name: string; type: string; config: any; secret: any; seed?: string }) {
     setFormLoading(true)
     setFormError(null)
     try {
@@ -864,15 +732,15 @@ export default function ConnectorsPage() {
       if (result.ok) {
         toast.success(
           Number.isFinite(result.elapsed_ms)
-            ? `Connected — the database answered in ${result.elapsed_ms} ms`
-            : 'Connection verified successfully',
+            ? `Connected. The database answered in ${result.elapsed_ms} ms`
+            : 'Connection verified',
         )
       } else {
         toast.error(`Test failed: ${result.checked}`)
       }
       // Direct-mode connectors persist this result server-side (config.health) —
       // reload so the status badge in the header reflects it, not just this
-      // transient pill (which disappears on refresh; the badge doesn't).
+      // transient result (which disappears on refresh; the badge doesn't).
       reloadConnectors()
     } catch (err) {
       setTestResults(prev => ({
@@ -886,102 +754,105 @@ export default function ConnectorsPage() {
   }
 
   // ---------------------------------------------------------------------------
-  // Slide-over title
+  // Drawer title
   // ---------------------------------------------------------------------------
 
   const slideTitle = editTarget
-    ? `Edit — ${editTarget.name}`
+    ? `Edit ${editTarget.name}`
     : slideStep === 'type'
-    ? 'Add connector'
+    ? 'Add a connector'
     : selectedType
-    ? `Add ${getTypeInfo(selectedType).label} connector`
-    : 'Add connector'
+    ? `Connect ${getTypeInfo(selectedType).label}`
+    : 'Add a connector'
+
+  const showList = !listLoading && !listError && connectors.length > 0
 
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
 
   return (
-    <div className="flex flex-col min-h-full">
-      {/* Page toolbar — portaled into the single AppShell topbar */}
-      {topbarSlot && createPortal(
-        <div className="flex items-center gap-2 w-full min-w-0">
-          <Plug size={15} className="text-muted shrink-0 hidden sm:block" strokeWidth={2.2} />
-          <span className="text-sm font-semibold font-display text-fg truncate">Connectors</span>
-          <div className="flex-1" />
-          <button
+    <PageShell
+      eyebrow={listLoading || listError ? 'Data' : `Data · ${connectors.length} ${connectors.length === 1 ? 'connector' : 'connectors'}`}
+      title="Connectors"
+      description="The databases, warehouses and files your queries read from. Credentials are encrypted at rest and never returned by the API."
+      actions={
+        <>
+          <Button
+            variant="ghost"
+            size="icon-sm"
             onClick={reloadConnectors}
             disabled={listLoading}
-            title="Refresh"
             aria-label="Refresh connectors"
-            className="
-              flex items-center justify-center w-8 h-8 rounded-lg shrink-0
-              border border-border text-muted
-              hover:text-fg hover:bg-surface-2
-              disabled:opacity-40
-              transition-colors focus:outline-none focus:ring-2 focus:ring-ring
-            "
+            title="Refresh"
           >
-            <RefreshCw size={14} className={listLoading ? 'animate-spin' : ''} strokeWidth={2} />
-          </button>
+            <RefreshCw size={14} className={listLoading ? 'animate-spin' : ''} aria-hidden="true" />
+          </Button>
           {canWrite && (
-            <button
-              onClick={openAdd}
-              title="Add connector"
-              className="
-                inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg shrink-0
-                bg-primary text-primary-fg text-xs font-medium
-                hover:opacity-90 transition-opacity
-                focus:outline-none focus:ring-2 focus:ring-ring
-              "
-            >
-              <Plus size={13} strokeWidth={2.5} />
-              <span className="hidden sm:inline">Add connector</span>
-            </button>
+            <Button onClick={openAdd}>
+              <Plus size={14} aria-hidden="true" /> Add connector
+            </Button>
           )}
-        </div>,
-        topbarSlot
+        </>
+      }
+      toolbar={showList ? (
+        <Toolbar>
+          <SearchBar value={search} onChange={setSearch} placeholder="Search connectors" />
+          <SortMenu value={sort} onChange={setSort} options={SORTS} />
+        </Toolbar>
+      ) : undefined}
+    >
+      {/* Loading: rows that match the real ones (hidden for the first 300ms) */}
+      {listLoading && <ListSkeleton rows={3} />}
+
+      {/* Error state */}
+      {!listLoading && listError && (
+        <LoadError title="Connectors didn’t load" error={listError} onRetry={reloadConnectors} />
       )}
 
-      {/* Content */}
-      <div className="flex-1 px-4 sm:px-6 py-4">
-        {/* Loading skeleton */}
-        {listLoading && (
-          <CardGrid>
-            {[1, 2, 3].map(i => <ConnectorCardSkeleton key={i} />)}
-          </CardGrid>
-        )}
+      {/* Empty state */}
+      {!listLoading && !listError && connectors.length === 0 && (
+        <EmptyState
+          art={<EmptyConnectors />}
+          title="No connectors yet"
+          description={canWrite
+            ? 'Connect Postgres, MySQL, Snowflake, BigQuery or a folder of files. Queries read from a connector, and boards read from queries.'
+            : 'Connectors are added by workspace admins. Ask one to connect your first data source.'}
+          action={canWrite ? <Button onClick={openAdd}><Plus size={14} aria-hidden="true" /> Add connector</Button> : undefined}
+          secondaryAction={<Button asChild variant="ghost"><Link to="/docs/connectors">Read the guide</Link></Button>}
+        />
+      )}
 
-        {/* Error state */}
-        {!listLoading && listError && (
-          <ErrorState
-            icon={<AlertTriangle size={22} />}
-            title="Failed to load connectors"
-            message={listError?.message ?? String(listError)}
-            onRetry={reloadConnectors}
+      {/* Connector list */}
+      {showList && (
+        <>
+          <FilterBar
+            count={visible.length}
+            noun="connector"
+            chips={chips}
+            onClear={() => { setTypeFilter(null); setSearch('') }}
+            trailing={
+              <span className="inline-flex items-center gap-1.5 ap-count">
+                <Lock size={11} aria-hidden="true" /> Encrypted at rest
+              </span>
+            }
           />
-        )}
-
-        {/* Empty state */}
-        {!listLoading && !listError && connectors.length === 0 && (
-          <EmptyState onAdd={openAdd} canWrite={canWrite} />
-        )}
-
-        {/* Connector list */}
-        {!listLoading && !listError && connectors.length > 0 && (
-          <div>
-            <div className="flex items-center justify-between gap-2 mb-2.5">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-                {connectors.length} {connectors.length === 1 ? 'connector' : 'connectors'}
-              </span>
-              <span className="inline-flex items-center gap-1 text-[11px] text-muted">
-                <Lock size={10} strokeWidth={2.2} />
-                Credentials encrypted at rest
-              </span>
-            </div>
-            <CardGrid>
-              {connectors.map(connector => (
-                <ConnectorCard
+          {visible.length === 0 ? (
+            <EmptyState
+              kind="none-match"
+              art={<EmptySearch />}
+              title={search ? `No connector matches “${search}”` : 'No connectors with these filters'}
+              description="Search matches the name, the engine and the host. Clear the filters to see all connectors."
+              action={
+                <Button variant="secondary" onClick={() => { setSearch(''); setTypeFilter(null) }}>
+                  Clear filters
+                </Button>
+              }
+            />
+          ) : (
+            <ul className="ap-list m-0 p-0" aria-label="Connectors">
+              {visible.map(connector => (
+                <ConnectorRow
                   key={connector.id}
                   connector={connector}
                   testResult={testResults}
@@ -989,16 +860,18 @@ export default function ConnectorsPage() {
                   onEdit={openEdit}
                   onDelete={setDeleteTarget}
                   onTest={handleTest}
+                  onDismissTest={(id) => setTestResults(prev => { const n = { ...prev }; delete n[id]; return n })}
+                  onFilterType={setTypeFilter}
                   canWrite={canWrite}
                 />
               ))}
-            </CardGrid>
-          </div>
-        )}
-      </div>
+            </ul>
+          )}
+        </>
+      )}
 
-      {/* Slide-over */}
-      <SlideOver open={slideOpen} onClose={closeSlide} title={slideTitle}>
+      {/* Drawer */}
+      <Drawer open={slideOpen} onClose={closeSlide} title={slideTitle} step={slideStep}>
         {slideStep === 'type' && !editTarget && (
           <TypePicker onSelect={handleTypePick} />
         )}
@@ -1015,7 +888,7 @@ export default function ConnectorsPage() {
             error={formError}
           />
         )}
-      </SlideOver>
+      </Drawer>
 
       {/* Delete confirm */}
       {deleteTarget && (
@@ -1027,7 +900,6 @@ export default function ConnectorsPage() {
           onConfirm={handleDeleteConfirm}
         />
       )}
-
-    </div>
+    </PageShell>
   )
 }

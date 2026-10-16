@@ -15,7 +15,7 @@
 
 import 'reactflow/dist/style.css'
 
-import { useState, useEffect, useRef, useCallback, useMemo, useSyncExternalStore } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, useContext, useSyncExternalStore } from 'react'
 import ReactFlow, {
   Background,
   BackgroundVariant,
@@ -41,6 +41,11 @@ import {
 import { getFlowRun } from '../lib/flows.js'
 import { specToGraph } from './specGraph.js'
 import TaskNode from './nodes/TaskNode.jsx'
+import { StateDot } from './nodes/nodeChrome.jsx'
+import Tag from '../components/ui/Tag.jsx'
+import Button from '../components/ui/Button.jsx'
+import { ThemeContext } from '../contexts/ThemeContext.jsx'
+import '../components/app/appPatterns.css'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -54,29 +59,24 @@ const POLL_INTERVAL_MS = 1500
 // State badge
 // ---------------------------------------------------------------------------
 
-const STATE_BADGE = {
-  pending:         { cls: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300',    label: 'Pending'   },
-  ready:           { cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',     label: 'Ready'     },
-  running:         { cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400', label: 'Running…'  },
-  retrying:        { cls: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400', label: 'Retrying' },
-  success:         { cls: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400', label: 'Success'   },
-  failed:          { cls: 'bg-rose-100  text-rose-700  dark:bg-rose-900/30  dark:text-rose-400',  label: 'Failed'    },
-  timed_out:       { cls: 'bg-rose-100  text-rose-700  dark:bg-rose-900/30  dark:text-rose-400',  label: 'Timed out' },
-  upstream_failed: { cls: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400', label: 'Upstream failed' },
-  cancelled:       { cls: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400',    label: 'Cancelled' },
+const STATE_BADGE: Record<string, { variant: 'neutral' | 'warning' | 'success' | 'danger'; label: string }> = {
+  pending:         { variant: 'neutral', label: 'Pending' },
+  ready:           { variant: 'neutral', label: 'Ready' },
+  running:         { variant: 'warning', label: 'Running' },
+  retrying:        { variant: 'warning', label: 'Retrying' },
+  success:         { variant: 'success', label: 'Success' },
+  failed:          { variant: 'danger',  label: 'Failed' },
+  timed_out:       { variant: 'danger',  label: 'Timed out' },
+  upstream_failed: { variant: 'warning', label: 'Upstream failed' },
+  cancelled:       { variant: 'neutral', label: 'Cancelled' },
 }
 
 function StateBadge({ state }) {
-  const { cls, label } = STATE_BADGE[state] ?? STATE_BADGE.pending
-  const isSpinning = state === 'running' || state === 'retrying'
+  const { variant, label } = STATE_BADGE[state] ?? STATE_BADGE.pending
   return (
-    <span className={['inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold', cls].join(' ')}>
-      {isSpinning        && <Loader2   size={11} className="animate-spin" />}
-      {state === 'success'        && <CheckCircle2 size={11} />}
-      {(state === 'failed' || state === 'timed_out') && <XCircle  size={11} />}
-      {state === 'upstream_failed' && <AlertCircle size={11} />}
+    <Tag variant={variant} dot size="md">
       {label}
-    </span>
+    </Tag>
   )
 }
 
@@ -88,17 +88,19 @@ function LogsDrawer({ logs }) {
   const [open, setOpen] = useState(false)
   if (!logs || logs.length === 0) return null
   return (
-    <div className="border border-border rounded-lg overflow-hidden">
+    <div className="overflow-hidden border border-border" style={{ borderRadius: 2 }}>
       <button
+        type="button"
         onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+        aria-expanded={open}
+        className="nubi-focus-inset flex w-full items-center gap-2 px-3 py-2 text-xs font-medium text-muted transition-colors hover:bg-frame-hover hover:text-fg"
       >
         <Terminal size={11} className="shrink-0" />
         <span className="flex-1 text-left">Logs ({logs.length} lines)</span>
         {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
       </button>
       {open && (
-        <div className="border-t border-border bg-surface-2/30 px-3 py-2 overflow-x-auto max-h-48 overflow-y-auto">
+        <div className="max-h-48 overflow-x-auto overflow-y-auto border-t border-border bg-surface-2 px-3 py-2">
           <pre className="text-[11px] text-fg font-mono whitespace-pre-wrap break-all leading-relaxed">
             {logs.join('\n')}
           </pre>
@@ -156,9 +158,9 @@ function TaskResultContent({ taskRun }) {
         {/* Error */}
         {taskRun.error && (
           <div>
-            <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest mb-1.5">Error</p>
-            <div className="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/20 px-3 py-2">
-              <p className="text-xs text-rose-700 dark:text-rose-400 font-mono break-words whitespace-pre-wrap">
+            <p className="t-label mb-1.5">Error</p>
+            <div className="nubi-notice nubi-notice-error" role="alert">
+              <p className="m-0 break-words whitespace-pre-wrap font-mono text-xs">
                 {taskRun.error}
               </p>
             </div>
@@ -168,7 +170,7 @@ function TaskResultContent({ taskRun }) {
         {/* Logs */}
         {taskRun.logs && taskRun.logs.length > 0 && (
           <div>
-            <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest mb-1.5">Logs</p>
+            <p className="t-label mb-1.5">Logs</p>
             <LogsDrawer logs={taskRun.logs} />
           </div>
         )}
@@ -176,8 +178,8 @@ function TaskResultContent({ taskRun }) {
         {/* Result */}
         {taskRun.result != null && (
           <div>
-            <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest mb-1.5">Result</p>
-            <div className="rounded-lg border border-border bg-surface-2/30 px-3 py-2 overflow-x-auto">
+            <p className="t-label mb-1.5">Result</p>
+            <div className="overflow-x-auto border border-border bg-surface-2 px-3 py-2" style={{ borderRadius: 2 }}>
               <pre className="text-xs text-fg font-mono whitespace-pre-wrap break-all">
                 {JSON.stringify(taskRun.result, null, 2)}
               </pre>
@@ -187,10 +189,10 @@ function TaskResultContent({ taskRun }) {
 
         {/* Pending / running placeholder */}
         {!taskRun.error && taskRun.result == null && (!taskRun.logs || taskRun.logs.length === 0) && (
-          <div className="text-xs text-muted text-center py-6 rounded-lg border border-dashed border-border">
+          <div className="border border-dashed border-frame-line py-6 text-center text-xs text-muted" style={{ borderRadius: 2 }}>
             {taskRun.state === 'running' || taskRun.state === 'ready' || taskRun.state === 'retrying'
-              ? 'Running — result will appear when complete.'
-              : 'No result available.'}
+              ? 'Running. The result appears here when the task completes.'
+              : 'This task produced no result.'}
           </div>
         )}
       </div>
@@ -206,21 +208,18 @@ function TaskResultPanel({ taskRun, onClose }) {
   if (!taskRun) return null
 
   return (
-    <aside className="shrink-0 w-72 xl:w-80 flex flex-col border-l border-border bg-surface overflow-hidden">
+    <aside className="flex w-72 shrink-0 flex-col overflow-hidden border-l border-frame-line bg-surface xl:w-80">
       {/* Header */}
-      <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-border">
-        <div className="min-w-0 flex-1 mr-2">
-          <h3 className="text-sm font-semibold text-fg font-mono truncate">{taskRun.task_key}</h3>
+      <div className="flex shrink-0 items-center justify-between border-b border-border py-3 pl-4 pr-2" style={{ borderTop: '2px solid var(--ink)' }}>
+        <div className="mr-2 min-w-0 flex-1">
+          <h3 className="m-0 truncate font-mono text-sm font-semibold text-fg">{taskRun.task_key}</h3>
           <div className="mt-1">
             <StateBadge state={taskRun.state} />
           </div>
         </div>
-        <button
-          onClick={onClose}
-          className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors shrink-0"
-        >
-          <X size={14} />
-        </button>
+        <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close task result">
+          <X size={14} aria-hidden="true" />
+        </Button>
       </div>
 
       <div className="flex-1 overflow-y-auto">
@@ -237,42 +236,30 @@ function TaskResultPanel({ taskRun, onClose }) {
 function TaskResultSheet({ taskRun, open, onClose }) {
   return (
     <>
-      {open && (
-        <div
-          className="fixed inset-0 z-40 bg-black/40"
-          onClick={onClose}
-          aria-hidden="true"
-        />
-      )}
+      {open && <div className="ap-backdrop" onClick={onClose} aria-hidden="true" />}
       <div
-        className={[
-          'fixed bottom-0 left-0 right-0 z-50 flex flex-col',
-          'bg-surface border-t border-border rounded-t-2xl',
-          'transition-transform duration-300 ease-out',
-          'max-h-[75dvh]',
-          open ? 'translate-y-0' : 'translate-y-full',
-        ].join(' ')}
+        className="fixed bottom-0 left-0 right-0 flex max-h-[75dvh] flex-col border-t-2 border-ink bg-surface"
+        style={{
+          zIndex: 'var(--z-modal)' as any,
+          transform: open ? 'translateY(0)' : 'translateY(100%)',
+          visibility: open ? 'visible' : 'hidden',
+          transition: 'transform var(--dur-3) var(--ease-out), visibility 0s linear ' + (open ? '0s' : 'var(--dur-3)'),
+          boxShadow: 'var(--shadow-pop)',
+        }}
         role="dialog"
         aria-modal="true"
+        aria-hidden={!open}
         aria-label="Task result"
       >
-        {/* Drag handle */}
-        <div className="shrink-0 flex justify-center pt-3 pb-1">
-          <div className="w-10 h-1 rounded-full bg-border" />
-        </div>
         {/* Header */}
-        <div className="shrink-0 flex items-center justify-between px-4 py-2 border-b border-border">
-          <div className="min-w-0 flex-1 mr-2">
-            <h3 className="text-sm font-semibold text-fg font-mono truncate">{taskRun?.task_key}</h3>
+        <div className="flex shrink-0 items-center justify-between border-b border-border py-2 pl-4 pr-2">
+          <div className="mr-2 min-w-0 flex-1">
+            <h3 className="m-0 truncate font-mono text-sm font-semibold text-fg">{taskRun?.task_key}</h3>
             {taskRun && <div className="mt-1"><StateBadge state={taskRun.state} /></div>}
           </div>
-          <button
-            onClick={onClose}
-            className="w-9 h-9 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors shrink-0"
-            aria-label="Close"
-          >
-            <X size={16} />
-          </button>
+          <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close">
+            <X size={16} aria-hidden="true" />
+          </Button>
         </div>
         <div className="flex-1 overflow-y-auto pb-8">
           <TaskResultContent taskRun={taskRun} />
@@ -294,22 +281,15 @@ function TaskRunsSummary({ taskRuns }) {
     return acc
   }, {})
 
-  const badges = [
-    { state: 'success',         color: 'text-green-600 dark:text-green-400' },
-    { state: 'failed',          color: 'text-rose-600 dark:text-rose-400' },
-    { state: 'timed_out',       color: 'text-rose-600 dark:text-rose-400' },
-    { state: 'upstream_failed', color: 'text-orange-600 dark:text-orange-400' },
-    { state: 'retrying',        color: 'text-orange-600 dark:text-orange-400' },
-    { state: 'running',         color: 'text-amber-600 dark:text-amber-400' },
-    { state: 'ready',           color: 'text-blue-600 dark:text-blue-400' },
-    { state: 'pending',         color: 'text-slate-500 dark:text-slate-400' },
-  ].filter(b => counts[b.state])
+  const order = ['success', 'failed', 'timed_out', 'upstream_failed', 'retrying', 'running', 'ready', 'pending']
+  const badges = order.filter(state => counts[state])
 
   return (
-    <div className="hidden md:flex items-center gap-2 text-[11px] shrink-0">
-      {badges.map(b => (
-        <span key={b.state} className={['font-medium', b.color].join(' ')}>
-          {counts[b.state]} {b.state.replace('_', ' ')}
+    <div className="hidden shrink-0 items-center gap-3 md:flex">
+      {badges.map(state => (
+        <span key={state} className="inline-flex items-center gap-1.5 ap-meta">
+          <StateDot state={state} />
+          <span style={{ color: 'var(--text)' }}>{counts[state]}</span> {state.replace('_', ' ')}
         </span>
       ))}
     </div>
@@ -347,6 +327,24 @@ export default function FlowRunView({ runId, spec, onClose }) {
   const [error, setError] = useState(null)
   const [selectedTaskKey, setSelectedTaskKey] = useState(null)
   const pollingRef = useRef(null)
+
+  // React Flow takes plain colour strings (SVG attributes): read the tokens off
+  // :root and re-read when the theme flips.
+  const theme = useContext(ThemeContext)?.theme ?? 'light'
+  const { canvasDotColor, miniColors } = useMemo(() => {
+    const cs = getComputedStyle(document.documentElement)
+    const v = (name: string) => cs.getPropertyValue(name).trim() || 'currentColor'
+    const subtle = v('--text-subtle')
+    return {
+      canvasDotColor: v('--frame-line'),
+      miniColors: {
+        pending: subtle, ready: v('--accent'), running: v('--warning'), retrying: v('--warning'),
+        success: v('--success'), failed: v('--danger'), timed_out: v('--danger'),
+        upstream_failed: v('--warning'), cancelled: subtle,
+      } as Record<string, string>,
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [theme])
 
   // ── Detect mobile ─────────────────────────────────────────────────────────
   const isMobile = useSyncExternalStore(subscribeMobile, getMobileSnapshot, getMobileServerSnapshot)
@@ -410,25 +408,22 @@ export default function FlowRunView({ runId, spec, onClose }) {
     <div className="flex flex-col h-full overflow-hidden">
 
       {/* Banner */}
-      <div className="shrink-0 flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-2.5 border-b border-border bg-surface-2/40 overflow-x-auto">
+      <div className="flex shrink-0 items-center gap-2 overflow-x-auto border-b border-border bg-surface px-3 py-2 sm:gap-3 sm:px-4">
         <div className="shrink-0">
-          <span className="text-xs font-semibold text-fg">Run</span>
-          <span className="ml-1.5 sm:ml-2 text-xs text-muted font-mono">{runId?.slice(0, 8)}…</span>
+          <span className="t-label">Run</span>
+          <span className="ml-2 font-mono text-xs text-muted">{runId?.slice(0, 8)}</span>
         </div>
         {flowRun && <StateBadge state={flowRun.state} />}
         {flowRun?.env && (
-          <span
-            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400 shrink-0"
-            title="Environment this run targeted"
-          >
-            <Layers size={10} />
+          <Tag caps={false} className="shrink-0" title="Environment this run targeted">
+            <Layers size={10} aria-hidden="true" />
             {flowRun.env}
-          </span>
+          </Tag>
         )}
-        {!flowRun && !error && <Loader2 size={13} className="animate-spin text-muted shrink-0" />}
+        {!flowRun && !error && <Loader2 size={14} className="shrink-0 animate-spin text-muted" aria-label="Loading run" />}
         {error && (
-          <div className="flex items-center gap-1.5 text-xs text-rose-600 dark:text-rose-400 shrink-0">
-            <AlertCircle size={13} />
+          <div className="flex shrink-0 items-center gap-1.5 text-xs" role="alert" style={{ color: 'var(--danger-fg)' }}>
+            <AlertCircle size={14} aria-hidden="true" />
             <span className="hidden sm:inline">{error}</span>
           </div>
         )}
@@ -436,25 +431,21 @@ export default function FlowRunView({ runId, spec, onClose }) {
         <TaskRunsSummary taskRuns={taskRuns} />
         {/* Timing — hidden on mobile to save space */}
         {flowRun?.started_at && (
-          <span className="hidden sm:inline text-[11px] text-muted ml-1 shrink-0">
+          <span className="ap-meta ml-1 hidden shrink-0 sm:inline">
             Started {new Date(flowRun.started_at).toLocaleTimeString()}
           </span>
         )}
         <div className="flex-1 min-w-0" />
         {!TERMINAL_STATES.has(flowRun?.state) && (
-          <span className="text-[11px] text-muted flex items-center gap-1 shrink-0">
-            <Loader2 size={11} className="animate-spin" />
-            <span className="hidden sm:inline">Polling…</span>
+          <span className="ap-meta flex shrink-0 items-center gap-1" role="status">
+            <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+            <span className="hidden sm:inline">Live</span>
           </span>
         )}
         {onClose && (
-          <button
-            onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors shrink-0 min-h-[44px] min-w-[44px]"
-            title="Close run view"
-          >
-            <X size={14} />
-          </button>
+          <Button variant="ghost" size="icon-sm" onClick={onClose} title="Close run view" aria-label="Close run view">
+            <X size={14} aria-hidden="true" />
+          </Button>
         )}
       </div>
 
@@ -474,7 +465,7 @@ export default function FlowRunView({ runId, spec, onClose }) {
             onPaneClick={onPaneClick}
             fitView
             fitViewOptions={{ padding: 0.25 }}
-            className="bg-bg"
+            className="fn-canvas"
             panOnDrag
             panOnScroll={false}
             zoomOnScroll
@@ -482,35 +473,28 @@ export default function FlowRunView({ runId, spec, onClose }) {
             preventScrolling
             defaultEdgeOptions={{
               type: 'smoothstep',
-              style: { strokeWidth: 1.5, stroke: '#64748b' },
+              style: { strokeWidth: 1.5 },
             }}
           >
             <Background
               variant={BackgroundVariant.Dots}
               gap={16}
               size={1}
-              color="var(--color-border, #e2e8f0)"
+              color={canvasDotColor}
             />
-            <Controls className="!shadow-md !border !border-border !rounded-xl overflow-hidden" />
-            {/* MiniMap: hidden on mobile */}
+            <Controls showInteractive={false} />
+            {/* MiniMap: hidden on mobile. Fill follows the task's run state. */}
             <div className="hidden md:block">
               <MiniMap
-                className="!border !border-border !rounded-xl overflow-hidden !shadow-md"
                 nodeColor={(node) => {
                   const state = node.data?.taskRun?.state
-                  return {
-                    pending:         '#94a3b8',
-                    ready:           '#3b82f6',
-                    running:         '#f59e0b',
-                    retrying:        '#f97316',
-                    success:         '#22c55e',
-                    failed:          '#ef4444',
-                    timed_out:       '#ef4444',
-                    upstream_failed: '#f97316',
-                    cancelled:       '#6b7280',
-                  }[state] ?? '#94a3b8'
+                  return miniColors[state] ?? miniColors.pending
                 }}
-                maskColor="rgba(0,0,0,0.05)"
+                nodeStrokeWidth={0}
+                maskColor="rgba(11,12,14,0.06)"
+                pannable
+                zoomable
+                ariaLabel="Run minimap"
               />
             </div>
           </ReactFlow>

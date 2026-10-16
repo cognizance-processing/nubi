@@ -118,7 +118,7 @@ export default function SecretsPanel({ readOnly = false }) {
   return (
     <div className="space-y-3">
       <div className="flex items-start gap-2">
-        <p className="text-[10px] text-muted/70 flex-1">
+        <p className="text-[11px] text-muted/70 flex-1">
           Encrypted credentials referenced in cells as{' '}
           <code className="font-mono bg-surface-2 px-0.5 rounded">{'{{ secrets.NAME }}'}</code>.
           Values are write-only — never shown after save.
@@ -150,11 +150,11 @@ export default function SecretsPanel({ readOnly = false }) {
               className="rounded-lg border border-border bg-surface-2/20 px-2.5 py-1.5"
             >
               <div className="flex items-center gap-2">
-                <KeyRound size={12} className="shrink-0 text-primary" />
+                <KeyRound size={12} className="shrink-0 text-muted" />
                 <div className="min-w-0 flex-1">
                   <div className="font-mono text-xs text-fg truncate">{s.name}</div>
                   {fmtDate(s.created_at) && (
-                    <p className="text-[10px] text-muted/70">Added {fmtDate(s.created_at)}</p>
+                    <p className="text-[11px] text-muted/70">Added {fmtDate(s.created_at)}</p>
                   )}
                 </div>
                 {/* Value placeholder — never a real value. */}
@@ -168,7 +168,7 @@ export default function SecretsPanel({ readOnly = false }) {
                     disabled={busy}
                     title="Delete secret"
                     aria-label={`Delete ${s.name}`}
-                    className="shrink-0 w-6 h-6 flex items-center justify-center rounded text-muted/60 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors disabled:opacity-50"
+                    className="shrink-0 w-6 h-6 flex items-center justify-center rounded text-muted/60 hover:text-danger hover:bg-frame-hover transition-colors disabled:opacity-50"
                   >
                     <Trash2 size={11} />
                   </button>
@@ -178,7 +178,7 @@ export default function SecretsPanel({ readOnly = false }) {
               {/* Inline delete confirm */}
               {!readOnly && confirmDelete === s.name && (
                 <div className="mt-1.5 pt-1.5 border-t border-border/60 space-y-1.5">
-                  <p className="text-[10px] text-muted/80 leading-snug">
+                  <p className="text-[11px] text-muted/80 leading-snug">
                     Delete <span className="font-mono text-fg">{s.name}</span>? It can no longer be
                     referenced by flow tasks. This cannot be undone.
                   </p>
@@ -187,7 +187,7 @@ export default function SecretsPanel({ readOnly = false }) {
                       type="button"
                       onClick={() => remove(s.name)}
                       disabled={busy}
-                      className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded border border-red-500/30 bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/30 transition-colors disabled:opacity-50"
+                      className="nubi-btn nubi-btn-danger nubi-btn-xs"
                     >
                       <Trash2 size={10} />
                       Delete
@@ -196,7 +196,7 @@ export default function SecretsPanel({ readOnly = false }) {
                       type="button"
                       onClick={() => setConfirmDelete(null)}
                       disabled={busy}
-                      className="px-2 py-1 text-[10px] font-medium rounded border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors disabled:opacity-50"
+                      className="px-2 py-1 text-[11px] font-medium rounded border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors disabled:opacity-50"
                     >
                       Cancel
                     </button>
@@ -213,7 +213,7 @@ export default function SecretsPanel({ readOnly = false }) {
         adding ? (
           <div className="rounded-lg border border-border bg-surface-2/20 p-3 space-y-2">
             <div className="flex items-center justify-between">
-              <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-wider">
+              <p className="text-[11px] font-semibold text-muted/70 uppercase tracking-wider">
                 Add secret
               </p>
               <button
@@ -259,19 +259,19 @@ export default function SecretsPanel({ readOnly = false }) {
               </button>
             </div>
 
-            <div className="flex items-start gap-1.5 text-[10px] text-muted/70">
+            <div className="flex items-start gap-1.5 text-[11px] text-muted/70">
               <ShieldCheck size={11} className="shrink-0 text-accent mt-0.5" />
               <span>Encrypted at rest and never returned after save — store it securely.</span>
             </div>
 
-            {error && <p className="text-[10px] text-red-500">{error}</p>}
+            {error && <p className="text-xs text-danger">{error}</p>}
 
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={save}
                 disabled={busy || !draftName.trim() || !draftValue}
-                className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 transition-opacity disabled:opacity-50"
+                className="nubi-btn nubi-btn-primary nubi-btn-xs"
               >
                 <Check size={11} />
                 Save secret
@@ -299,7 +299,7 @@ export default function SecretsPanel({ readOnly = false }) {
       )}
 
       {/* Delete errors surface here when the form is closed. */}
-      {!adding && error && <p className="text-[10px] text-red-500">{error}</p>}
+      {!adding && error && <p className="text-xs text-danger">{error}</p>}
     </div>
   )
 }

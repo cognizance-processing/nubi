@@ -58,6 +58,11 @@ import {
   flexRender,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import Tag from './ui/Tag.jsx'
+import Button from './ui/Button.jsx'
+import EmptyState from './ui/EmptyState.jsx'
+import Skeleton from './ui/Skeleton.jsx'
+import { ErrorFigure, EmptyData } from './illustrations'
 
 declare module '@tanstack/react-table' {
   interface ColumnMeta<TData, TValue> {
@@ -178,22 +183,16 @@ function aggregate(kind, values) {
 
 function NullBadge() {
   return (
-    <span className="inline-block px-1.5 rounded text-[10px] font-mono leading-4 bg-surface-2 text-muted/60 border border-border/60 select-none">
+    <span className="inline-block select-none border border-border px-1.5 font-mono text-[11px] leading-4 text-subtle" style={{ borderRadius: 2 }}>
       NULL
     </span>
   )
 }
 
 function BoolPill({ value }) {
-  return value ? (
-    <span className="inline-flex items-center px-2 rounded-full text-[10px] font-semibold leading-5 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 select-none">
-      true
-    </span>
-  ) : (
-    <span className="inline-flex items-center px-2 rounded-full text-[10px] font-semibold leading-5 bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20 select-none">
-      false
-    </span>
-  )
+  return value
+    ? <Tag variant="success" dot caps={false} className="select-none">true</Tag>
+    : <Tag variant="danger" dot caps={false} className="select-none">false</Tag>
 }
 
 /** Default cell renderer (used when a column has no custom renderCell). */
@@ -218,17 +217,9 @@ function DefaultCell({ value, type }) {
 function CacheBadge({ cacheStatus }) {
   if (!cacheStatus || cacheStatus === 'MISS') return null
   if (cacheStatus === 'SAMPLE') {
-    return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
-        <Database size={9} /> SAMPLE
-      </span>
-    )
+    return <Tag variant="warning" dot title="Showing a sample of the result"><Database size={10} aria-hidden="true" /> Sample</Tag>
   }
-  return (
-    <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-      <Zap size={9} /> {cacheStatus}
-    </span>
-  )
+  return <Tag variant="success" dot title="Served from cache"><Zap size={10} aria-hidden="true" /> {cacheStatus}</Tag>
 }
 
 /** Toolbar dropdown panel (columns / pin / group config). */
@@ -247,7 +238,7 @@ function Popover({ open, onClose, children, align = 'right' }) {
     <div
       ref={ref}
       className={[
-        'absolute top-full mt-1 z-50 min-w-[200px] max-h-80 overflow-auto rounded-lg border border-border bg-surface shadow-xl p-1.5',
+        'nubi-dropdown top-full mt-1 z-50 min-w-[200px] max-h-80 overflow-auto p-1.5',
         align === 'right' ? 'right-0' : 'left-0',
       ].join(' ')}
     >
@@ -541,46 +532,46 @@ export default function DataGrid({
   if (error && !loading) {
     return (
       <div
-        className={`flex flex-col h-full rounded-xl border border-border overflow-hidden ${className}`}
-        style={style}
+        className={`flex h-full flex-col overflow-hidden border border-frame-line ${className}`}
+        style={{ borderRadius: 2, ...style }}
       >
-        <div className="flex-1 flex flex-col items-center justify-center gap-3 p-8 text-center min-h-0">
-          <div className="w-10 h-10 rounded-full bg-rose-500/10 border border-rose-500/20 flex items-center justify-center shrink-0">
-            <AlertCircle size={18} className="text-rose-500" />
-          </div>
-          <div className="min-w-0 max-w-xl w-full">
-            <p className="text-sm font-medium text-fg mb-1">Query error</p>
-            {/* Engine errors are multi-line and can contain very long SQL
-                fragments. Preserve the line breaks, wrap long tokens, and let a
-                big message scroll inside its own box instead of overflowing the
-                card or being clipped to an unreadable stub. */}
-            <p className="text-xs text-muted font-mono whitespace-pre-wrap break-words text-left max-h-48 overflow-auto">
-              {typeof error === 'string' ? error : (error?.message ?? String(error))}
-            </p>
-          </div>
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-auto p-6">
+          <EmptyState
+            kind="error"
+            compact
+            art={<ErrorFigure />}
+            title="This query failed"
+            description={
+              /* Engine errors are multi-line and can contain very long SQL
+                 fragments. Preserve the line breaks, wrap long tokens, and let a
+                 big message scroll inside its own box instead of overflowing. */
+              <span className="block max-h-48 max-w-xl overflow-auto whitespace-pre-wrap break-words text-left font-mono text-xs">
+                {typeof error === 'string' ? error : (error?.message ?? String(error))}
+              </span>
+            }
+          />
         </div>
       </div>
     )
   }
 
-  const toolbarBtn =
-    'h-7 px-2 flex items-center gap-1.5 text-[11px] text-muted hover:text-fg border border-border rounded-md bg-surface hover:border-border transition-colors'
+  const toolbarBtn = 'nubi-btn nubi-btn-secondary nubi-btn-xs'
 
   return (
     <div
-      className={`flex flex-col h-full rounded-xl border border-border overflow-hidden relative ${className}`}
-      style={style}
+      className={`relative flex h-full flex-col overflow-hidden border border-frame-line ${className}`}
+      style={{ borderRadius: 2, ...style }}
     >
       {/* ── Toolbar ──────────────────────────────────────────────────────── */}
       {toolbar && (
-        <div className="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border bg-surface-2/60 flex-wrap relative">
+        <div className="relative flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-surface px-3 py-2">
           {title && (
-            <span className="text-xs font-semibold text-fg font-display mr-1 shrink-0">{title}</span>
+            <span className="mr-1 shrink-0 text-xs font-semibold text-fg">{title}</span>
           )}
           {meta?.cacheStatus && <CacheBadge cacheStatus={meta.cacheStatus} />}
           {meta?.elapsedMs != null && (
-            <span className="inline-flex items-center gap-1 text-[10px] text-muted">
-              <Clock size={9} /> {meta.elapsedMs}ms
+            <span className="inline-flex items-center gap-1 font-mono text-[11px] text-muted">
+              <Clock size={11} aria-hidden="true" /> {meta.elapsedMs} ms
             </span>
           )}
 
@@ -591,36 +582,38 @@ export default function DataGrid({
             <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
             <input
               type="text"
-              className="h-7 pl-6 pr-2 text-[11px] bg-surface border border-border rounded-md text-fg placeholder:text-muted/60 focus:outline-none focus:ring-1 focus:ring-ring w-32 focus:w-48 transition-all"
-              placeholder="Search…"
+              className="nubi-input nubi-input-xs w-32 focus:w-48"
+              style={{ paddingLeft: 26 }}
+              placeholder="Search"
+              aria-label="Search rows"
               value={globalFilter}
               onChange={(e) => setGlobalFilter(e.target.value)}
             />
             {globalFilter && (
               <button
+                type="button"
                 className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted hover:text-fg"
                 onClick={() => setGlobalFilter('')}
+                aria-label="Clear search"
               >
-                <X size={10} />
+                <X size={12} aria-hidden="true" />
               </button>
             )}
           </div>
 
           {/* Filter toggle */}
           <button
+            type="button"
             data-export-hide
             onClick={() => setShowFilters((s) => !s)}
-            className={[
-              'h-7 px-2 flex items-center gap-1.5 text-[11px] font-medium rounded-md border transition-colors',
-              showFilters
-                ? 'bg-primary/10 border-primary/30 text-primary'
-                : 'bg-surface border-border text-muted hover:text-fg',
-            ].join(' ')}
+            className={`nubi-btn nubi-btn-xs ${showFilters ? 'nubi-btn-outline' : 'nubi-btn-secondary'}`}
+            aria-pressed={showFilters}
             title="Toggle column filters"
+            aria-label="Toggle column filters"
           >
-            <Filter size={12} />
+            <Filter size={13} aria-hidden="true" />
             {activeFilterCount > 0 && (
-              <span className="inline-flex items-center justify-center min-w-4 h-4 px-1 text-[9px] rounded-full bg-primary text-primary-fg font-bold">
+              <span className="ap-mono inline-flex h-4 min-w-4 items-center justify-center bg-ink px-1 text-[11px] font-semibold" style={{ background: 'var(--ink)', color: 'var(--ink-fg)', borderRadius: 2 }}>
                 {activeFilterCount}
               </span>
             )}
@@ -630,41 +623,39 @@ export default function DataGrid({
           {enableGrouping && (
             <div className="relative" data-export-hide>
               <button
+                type="button"
                 onClick={() => setOpenMenu((m) => (m === 'group' ? null : 'group'))}
-                className={[
-                  'h-7 px-2 flex items-center gap-1.5 text-[11px] font-medium rounded-md border transition-colors',
-                  grouping.length
-                    ? 'bg-primary/10 border-primary/30 text-primary'
-                    : 'bg-surface border-border text-muted hover:text-fg',
-                ].join(' ')}
+                className={`nubi-btn nubi-btn-xs ${grouping.length ? 'nubi-btn-outline' : 'nubi-btn-secondary'}`}
                 title="Group rows"
+                aria-label="Group rows"
+                aria-haspopup="menu"
               >
-                <Group size={12} />
+                <Group size={13} aria-hidden="true" />
                 {grouping.length > 0 && (
-                  <span className="inline-flex items-center justify-center min-w-4 h-4 px-1 text-[9px] rounded-full bg-primary text-primary-fg font-bold">
+                  <span className="ap-mono inline-flex h-4 min-w-4 items-center justify-center px-1 text-[11px] font-semibold" style={{ background: 'var(--ink)', color: 'var(--ink-fg)', borderRadius: 2 }}>
                     {grouping.length}
                   </span>
                 )}
               </button>
               <Popover open={openMenu === 'group'} onClose={() => setOpenMenu(null)}>
-                <p className="px-2 py-1 text-[10px] font-semibold text-muted uppercase tracking-wide">Group by</p>
+                <p className="t-label m-0 px-2 py-1">Group by</p>
                 {allColumns.map((col) => (
                   <label
                     key={col.id}
-                    className="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 cursor-pointer text-[11px] text-fg"
+                    className="flex cursor-pointer items-center gap-2 px-2 py-1 text-xs text-fg hover:bg-frame-hover"
                   >
                     <input
                       type="checkbox"
                       checked={col.getIsGrouped()}
                       onChange={() => col.toggleGrouping()}
-                      className="accent-[var(--primary)]"
+                      className="accent-[var(--ink)]"
                     />
                     {String(col.columnDef.header ?? col.id)}
                   </label>
                 ))}
                 {grouping.length > 0 && (
                   <button
-                    className="w-full mt-1 px-2 py-1 text-[11px] text-muted hover:text-fg text-left rounded hover:bg-surface-2"
+                    className="mt-1 w-full px-2 py-1 text-left text-xs text-muted hover:bg-frame-hover hover:text-fg"
                     onClick={() => setGrouping([])}
                   >
                     Clear grouping
@@ -684,32 +675,34 @@ export default function DataGrid({
               <Columns3 size={12} />
             </button>
             <Popover open={openMenu === 'columns'} onClose={() => setOpenMenu(null)}>
-              <p className="px-2 py-1 text-[10px] font-semibold text-muted uppercase tracking-wide">Columns</p>
+              <p className="t-label m-0 px-2 py-1">Columns</p>
               {allColumns.map((col) => {
                 const pinned = col.getIsPinned()
                 return (
                   <div
                     key={col.id}
-                    className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-surface-2 text-[11px] text-fg"
+                    className="flex items-center gap-1.5 px-2 py-1 text-xs text-fg hover:bg-frame-hover"
                   >
                     <label className="flex items-center gap-2 flex-1 cursor-pointer min-w-0">
                       <input
                         type="checkbox"
                         checked={col.getIsVisible()}
                         onChange={col.getToggleVisibilityHandler()}
-                        className="accent-[var(--primary)]"
+                        className="accent-[var(--ink)]"
                       />
                       <span className="truncate">{String(col.columnDef.header ?? col.id)}</span>
                     </label>
                     <button
-                      className={`p-0.5 rounded hover:bg-surface ${pinned === 'left' ? 'text-primary' : 'text-muted/50 hover:text-fg'}`}
+                      className={`p-0.5 hover:bg-surface ${pinned === 'left' ? 'text-accent' : 'text-subtle hover:text-fg'}`}
+                      aria-label="Pin left" aria-pressed={pinned === 'left'}
                       title="Pin left"
                       onClick={() => col.pin(pinned === 'left' ? false : 'left')}
                     >
                       <Pin size={11} />
                     </button>
                     <button
-                      className={`p-0.5 rounded hover:bg-surface ${pinned === 'right' ? 'text-primary' : 'text-muted/50 hover:text-fg'}`}
+                      className={`p-0.5 hover:bg-surface ${pinned === 'right' ? 'text-accent' : 'text-subtle hover:text-fg'}`}
+                      aria-label="Pin right" aria-pressed={pinned === 'right'}
                       title="Pin right"
                       onClick={() => col.pin(pinned === 'right' ? false : 'right')}
                     >
@@ -747,13 +740,13 @@ export default function DataGrid({
             <Popover open={openMenu === 'export'} onClose={() => setOpenMenu(null)}>
               <button
                 onClick={doExportCSV}
-                className="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-surface-2 text-[11px] text-fg text-left"
+                className="nubi-dropdown-item"
               >
                 <FileText size={13} className="text-muted" /> Export CSV
               </button>
               <button
                 onClick={doExportExcel}
-                className="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-surface-2 text-[11px] text-fg text-left"
+                className="nubi-dropdown-item"
               >
                 <FileSpreadsheet size={13} className="text-muted" /> Export Excel
               </button>
@@ -767,21 +760,15 @@ export default function DataGrid({
         {loading ? (
           <GridSkeleton cols={Math.min(columnDescriptors.length || 5, 7)} />
         ) : columnDescriptors.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full gap-3 p-8 text-center">
-            <div className="w-10 h-10 rounded-full bg-surface-2 border border-border flex items-center justify-center">
-              <Database size={18} className="text-muted" />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-fg mb-1">No data</p>
-              <p className="text-xs text-muted">Run a query to see results here.</p>
-            </div>
+          <div className="flex h-full flex-col items-center justify-center p-6">
+            <EmptyState compact art={<EmptyData />} title="No data" description="Run a query to see rows here." />
           </div>
         ) : (
           <table className="border-collapse w-full" style={{ minWidth: table.getTotalSize() }}>
             {/* Header */}
             <thead className="sticky top-0 z-20">
               {table.getHeaderGroups().map((hg) => (
-                <tr key={hg.id} className="bg-surface-2 border-b-2 border-border" style={headerStyle}>
+                <tr key={hg.id} className="bg-surface-2" style={{ boxShadow: 'inset 0 -2px 0 var(--ink)', ...headerStyle }}>
                   {hg.headers.map((header) => {
                     const col = header.column
                     const type = col.columnDef.meta?.type
@@ -792,7 +779,7 @@ export default function DataGrid({
                       <th
                         key={header.id}
                         colSpan={header.colSpan}
-                        className="relative select-none border-r border-border/40 last:border-r-0 group bg-surface-2"
+                        className="group relative select-none border-r border-border last:border-r-0 bg-surface-2"
                         style={{ width: header.getSize(), ...pinStyle(col), ...(headerStyle ?? {}) }}
                         draggable
                         onDragStart={() => (dragColRef.current = col.id)}
@@ -804,7 +791,7 @@ export default function DataGrid({
                           className={[
                             // An authored header colour is set on the <th>; the
                             // default muted ink must not override it.
-                            'w-full flex items-center gap-1 py-2 font-semibold',
+                            'flex w-full items-center gap-1 py-2 font-medium',
                             headerStyle?.color ? '' : 'text-muted',
                             cellPx,
                             type === 'number' ? 'flex-row-reverse' : '',
@@ -817,13 +804,13 @@ export default function DataGrid({
                             title={`Sort by ${String(col.columnDef.header)}`}
                           >
                             <span className="truncate">{flexRender(col.columnDef.header, header.getContext())}</span>
-                            <span data-export-hide className={sortDir ? 'text-primary shrink-0' : 'text-muted/30 group-hover:text-muted/60 shrink-0'}>
+                            <span data-export-hide className={sortDir ? 'shrink-0 text-fg' : 'shrink-0 text-subtle opacity-40 group-hover:opacity-100'}>
                               {sortDir === 'asc' && <ChevronUp size={12} />}
                               {sortDir === 'desc' && <ChevronDown size={12} />}
                               {!sortDir && <ChevronsUpDown size={11} />}
                             </span>
                             {isMultiSorted && (
-                              <span className="text-[9px] text-primary font-bold shrink-0">{sortIndex + 1}</span>
+                              <span className="ap-mono shrink-0 text-[11px] font-semibold text-accent">{sortIndex + 1}</span>
                             )}
                           </button>
                         </div>
@@ -835,7 +822,7 @@ export default function DataGrid({
                             onTouchStart={header.getResizeHandler()}
                             className="absolute right-0 top-0 bottom-0 w-2 flex items-center justify-center cursor-col-resize opacity-0 group-hover:opacity-100 z-10"
                           >
-                            <div className="w-0.5 h-4 rounded bg-primary/40 hover:bg-primary" />
+                            <div className="h-4 w-0.5 bg-frame-line hover:bg-accent" />
                           </div>
                         )}
                       </th>
@@ -846,7 +833,7 @@ export default function DataGrid({
 
               {/* Filter row */}
               {showFilters && (
-                <tr className="bg-surface-2/80 border-b border-border sticky top-[37px] z-10">
+                <tr className="sticky top-[37px] z-10 border-b border-border bg-surface-2">
                   {table.getVisibleLeafColumns().map((col) => {
                     const type = col.columnDef.meta?.type ?? 'string'
                     const ops = type === 'number' ? NUMERIC_OPS : type === 'bool' ? ['eq', 'ne'] : STRING_OPS
@@ -855,12 +842,12 @@ export default function DataGrid({
                     return (
                       <th
                         key={col.id}
-                        className="px-1 py-1 border-r border-border/40 last:border-r-0 bg-surface-2/90"
+                        className="border-r border-border bg-surface-2 px-1 py-1 last:border-r-0"
                         style={{ width: col.getSize(), ...pinStyle(col) }}
                       >
                         <div className="flex items-center gap-1">
                           <select
-                            className="text-[10px] bg-surface border border-border rounded px-0.5 py-0.5 text-muted focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer h-6"
+                            className="nubi-input nubi-input-xs cursor-pointer !px-0.5 text-[11px]"
                             value={fv.op}
                             onChange={(e) => col.setFilterValue({ ...fv, op: e.target.value, type })}
                             style={{ width: 30 }}
@@ -871,7 +858,7 @@ export default function DataGrid({
                           </select>
                           <input
                             type="text"
-                            className="flex-1 min-w-0 text-[11px] bg-surface border border-border rounded px-1.5 py-0.5 text-fg placeholder:text-muted/50 focus:outline-none focus:ring-1 focus:ring-ring h-6"
+                            className="nubi-input nubi-input-xs min-w-0 flex-1 text-xs"
                             placeholder="Filter…"
                             value={fv.value}
                             onChange={(e) => {
@@ -924,8 +911,8 @@ export default function DataGrid({
                           // An explicit stripe colour replaces the token
                           // classes entirely — leaving them on would win the
                           // cascade over the inline background.
-                          : stripeFor(vr.index) ? '' : (vr.index % 2 === 0 ? 'bg-surface' : 'bg-surface-2/40'),
-                        'hover:bg-primary/5',
+                          : stripeFor(vr.index) ? '' : 'bg-surface',
+                        'hover:bg-frame-hover',
                       ].join(' ')}
                       style={{
                         height: rowH,
@@ -951,7 +938,7 @@ export default function DataGrid({
                           <td
                             key={cell.id}
                             className={[
-                              'border-b border-border/30 border-r border-r-border/20 last:border-r-0 text-fg transition-colors',
+                              'border-b border-border text-fg transition-colors',
                               cellPx,
                               fontSize,
                               textAlign,
@@ -987,7 +974,7 @@ export default function DataGrid({
                                   className={`transition-transform ${row.getIsExpanded() ? 'rotate-90' : ''}`}
                                 />
                                 {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                                <span className="text-muted/60">({row.subRows.length})</span>
+                                <span className="text-subtle">({row.subRows.length})</span>
                               </button>
                             ) : cell.getIsAggregated() ? (
                               flexRender(
@@ -1013,16 +1000,16 @@ export default function DataGrid({
       </div>
 
       {/* ── Footer ───────────────────────────────────────────────────────── */}
-      <div className="shrink-0 flex items-center gap-3 px-3 py-2 border-t border-border bg-surface-2/60 flex-wrap">
-        <span className="text-[11px] text-muted">
+      <div className="flex shrink-0 flex-wrap items-center gap-3 border-t border-border bg-surface px-3 py-2">
+        <span className="ap-meta">
           {totalFilteredRows === 0 ? (
             '0 rows'
           ) : (
             <>
-              <span className="font-mono font-semibold text-fg">{totalFilteredRows.toLocaleString()}</span>{' '}
+              <span className="font-semibold" style={{ color: 'var(--text)' }}>{totalFilteredRows.toLocaleString()}</span>{' '}
               {totalFilteredRows === 1 ? 'row' : 'rows'}
               {totalFilteredRows !== rows.length && (
-                <span className="text-muted/60"> (of {rows.length.toLocaleString()})</span>
+                <span className="text-subtle"> (of {rows.length.toLocaleString()})</span>
               )}
             </>
           )}
@@ -1033,9 +1020,10 @@ export default function DataGrid({
         {paginateProp && (
           <>
             <div className="flex items-center gap-1.5" data-export-hide>
-              <span className="text-[11px] text-muted">Rows:</span>
+              <span className="ap-meta">Rows</span>
               <select
-                className="text-[11px] bg-surface border border-border rounded px-1.5 py-0.5 text-fg focus:outline-none focus:ring-1 focus:ring-ring h-6 cursor-pointer"
+                className="nubi-input nubi-input-xs nubi-select w-16 cursor-pointer"
+                aria-label="Rows per page"
                 value={pagination.pageSize}
                 onChange={(e) => table.setPageSize(Number(e.target.value))}
               >
@@ -1046,20 +1034,20 @@ export default function DataGrid({
             </div>
             <div className="flex items-center gap-1" data-export-hide>
               <button
-                className="h-6 w-6 flex items-center justify-center rounded border border-border text-muted hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                className="nubi-btn nubi-btn-secondary nubi-btn-icon-xs"
                 onClick={() => table.previousPage()}
                 disabled={!table.getCanPreviousPage()}
                 aria-label="Previous page"
               >
                 <ChevronLeft size={13} />
               </button>
-              <span className="text-[11px] text-muted px-1 font-mono">
+              <span className="ap-meta px-1">
                 {table.getPageCount() > 0
                   ? `${pagination.pageIndex + 1} / ${table.getPageCount()}`
                   : '—'}
               </span>
               <button
-                className="h-6 w-6 flex items-center justify-center rounded border border-border text-muted hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                className="nubi-btn nubi-btn-secondary nubi-btn-icon-xs"
                 onClick={() => table.nextPage()}
                 disabled={!table.getCanNextPage()}
                 aria-label="Next page"
@@ -1080,28 +1068,22 @@ export default function DataGrid({
 
 function GridSkeleton({ rows = 8, cols = 5 }) {
   return (
-    <table className="w-full text-xs">
-      <thead className="sticky top-0 z-10 bg-surface-2">
+    <table className="w-full text-xs" aria-hidden="true">
+      <thead className="sticky top-0 z-10 bg-surface-2" style={{ boxShadow: 'inset 0 -2px 0 var(--ink)' }}>
         <tr>
           {Array.from({ length: cols }).map((_, i) => (
-            <th key={i} className="px-3 py-2 border-b border-border">
-              <div className="h-3 rounded bg-border animate-pulse" style={{ width: `${60 + i * 15}px` }} />
+            <th key={i} className="px-3 py-2">
+              <Skeleton className="h-3" style={{ width: `${60 + i * 15}px` }} />
             </th>
           ))}
         </tr>
       </thead>
       <tbody>
         {Array.from({ length: rows }).map((_, ri) => (
-          <tr key={ri} className={ri % 2 === 0 ? 'bg-surface' : 'bg-surface-2'}>
+          <tr key={ri}>
             {Array.from({ length: cols }).map((_, ci) => (
-              <td key={ci} className="px-3 py-2 border-b border-border/40">
-                <div
-                  className="h-3 rounded bg-border/70 animate-pulse"
-                  style={{
-                    width: `${40 + Math.sin(ri + ci) * 30 + 40}px`,
-                    animationDelay: `${(ri * cols + ci) * 30}ms`,
-                  }}
-                />
+              <td key={ci} className="border-b border-border px-3 py-2.5">
+                <Skeleton className="h-3" style={{ width: `${40 + Math.sin(ri + ci) * 30 + 40}px` }} />
               </td>
             ))}
           </tr>

@@ -5,6 +5,7 @@
  * Calls GET /api/v1/audit?limit=50&offset=<n> (newest-first).
  * Shape: { items: [...], total: number }
  * Each item: { id, action, actor_email, resource_type, resource_id, resource_name, created_at, meta }
+ * (the API sends `at`, `actor_kind` and `summary` in place of created_at, actor_email and resource_name, so each row reads either)
  */
 
 import { useEffect, useState } from 'react'
@@ -17,7 +18,7 @@ import {
   ErrorState,
   EmptyState,
 } from './AdminUI.jsx'
-import { fmtDateTime } from './format.js'
+import { fmtDateTime, cellText } from './format.js'
 
 const LIMIT = 50
 
@@ -86,17 +87,17 @@ export default function AdminAuditPage() {
         ) : (
           <AdminTable headers={['Time', 'Action', 'Actor', 'Resource type', 'Resource', 'Resource ID']}>
             {items.map((ev) => (
-              <tr key={ev.id} className="hover:bg-surface-2/50 transition-colors">
-                <td className="px-4 py-3 whitespace-nowrap text-muted tabular-nums text-xs">
-                  {fmtDateTime(ev.created_at)}
+              <tr key={ev.id} className="">
+                <td className="px-4 py-2 whitespace-nowrap text-muted tabular-nums text-xs">
+                  {fmtDateTime(ev.created_at ?? ev.at)}
                 </td>
-                <td className="px-4 py-3 whitespace-nowrap">
-                  <ActionLabel action={ev.action} />
+                <td className="px-4 py-2 whitespace-nowrap">
+                  <ActionLabel action={cellText(ev.action)} />
                 </td>
-                <td className="px-4 py-3 max-w-[180px] truncate text-muted text-sm" title={ev.actor_email || undefined}>{ev.actor_email || '—'}</td>
-                <td className="px-4 py-3 whitespace-nowrap text-muted text-xs">{ev.resource_type || '—'}</td>
-                <td className="px-4 py-3 max-w-[200px] truncate text-fg text-sm" title={ev.resource_name || undefined}>{ev.resource_name || '—'}</td>
-                <td className="px-4 py-3 whitespace-nowrap text-muted font-mono text-xs">{ev.resource_id || '—'}</td>
+                <td className="px-4 py-2 max-w-[180px] truncate text-muted text-sm" title={cellText(ev.actor_email) || cellText(ev.actor_user_id) || undefined}>{cellText(ev.actor_email) || cellText(ev.actor_kind) || '—'}</td>
+                <td className="px-4 py-2 whitespace-nowrap text-muted text-xs">{cellText(ev.resource_type) || '—'}</td>
+                <td className="px-4 py-2 max-w-[200px] truncate text-fg text-sm" title={cellText(ev.resource_name || ev.summary, 400) || undefined}>{cellText(ev.resource_name || ev.summary) || '—'}</td>
+                <td className="px-4 py-2 whitespace-nowrap text-muted font-mono text-xs">{cellText(ev.resource_id) || '—'}</td>
               </tr>
             ))}
           </AdminTable>

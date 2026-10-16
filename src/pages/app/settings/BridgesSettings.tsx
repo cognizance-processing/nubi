@@ -36,6 +36,11 @@ import {
   Terminal,
 } from 'lucide-react'
 import { useOrg, useCanWrite } from '../../../contexts/OrgContext.jsx'
+import Button from '../../../components/ui/Button.jsx'
+import Tag from '../../../components/ui/Tag.jsx'
+import EmptyState from '../../../components/ui/EmptyState.jsx'
+import Skeleton from '../../../components/ui/Skeleton.jsx'
+import { BridgeTopology } from '../../../components/illustrations'
 import {
   listBridges,
   createBridge,
@@ -81,9 +86,9 @@ function fmtDate(iso) {
 }
 
 function tokenState(t) {
-  if (t.revoked_at) return { label: 'Revoked', cls: 'bg-red-500/10 text-red-600 dark:text-red-400' }
-  if (t.grace_until) return { label: 'Rotated', cls: 'bg-amber-500/10 text-amber-600 dark:text-amber-400' }
-  return { label: 'Active', cls: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' }
+  if (t.revoked_at) return { label: 'Revoked', variant: 'danger' as const }
+  if (t.grace_until) return { label: 'Rotated', variant: 'warning' as const }
+  return { label: 'Active', variant: 'success' as const }
 }
 
 /** One-time raw-token reveal box with copy + install snippet. */
@@ -102,26 +107,19 @@ function TokenReveal({ token, bridgeId, onDismiss }) {
   }
 
   return (
-    <div className="rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-4 space-y-3">
-      <div className="flex items-start gap-2">
-        <AlertTriangle size={15} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-        <p className="text-xs text-amber-800 dark:text-amber-300">
-          Copy this token now — it is shown <strong>only once</strong> and cannot be
-          retrieved again. Store it somewhere safe (e.g. a secret manager).
-        </p>
-      </div>
+    <div className="nubi-notice nubi-notice-warning space-y-3" style={{ display: 'block' }} role="alert">
+      <p className="m-0 text-xs">
+        <b>Copy this token now.</b> It is shown only once and cannot be
+        retrieved again. Store it somewhere safe, such as a secret manager.
+      </p>
 
       {/* Raw token */}
-      <div className="flex items-center gap-2 rounded-lg bg-bg border border-border px-3 py-2">
-        <code className="flex-1 min-w-0 text-xs text-fg font-mono break-all">{token}</code>
-        <button
-          type="button"
-          onClick={() => copy(token, 'token')}
-          className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-muted hover:text-primary border border-border hover:border-primary/40 transition-colors shrink-0"
-        >
-          {copied === 'token' ? <Check size={12} /> : <Copy size={12} />}
+      <div className="flex items-center gap-2 border border-border bg-surface px-3 py-2" style={{ borderRadius: 2 }}>
+        <code className="min-w-0 flex-1 break-all font-mono text-xs text-fg">{token}</code>
+        <Button variant="secondary" size="xs" onClick={() => copy(token, 'token')} className="shrink-0">
+          {copied === 'token' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
           {copied === 'token' ? 'Copied' : 'Copy'}
-        </button>
+        </Button>
       </div>
 
       {/* Install snippet */}
@@ -130,28 +128,20 @@ function TokenReveal({ token, bridgeId, onDismiss }) {
           <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-muted">
             <Terminal size={12} /> Run the agent
           </span>
-          <button
-            type="button"
-            onClick={() => copy(installSnippet, 'snippet')}
-            className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-muted hover:text-primary border border-border hover:border-primary/40 transition-colors"
-          >
-            {copied === 'snippet' ? <Check size={12} /> : <Copy size={12} />}
+          <Button variant="secondary" size="xs" onClick={() => copy(installSnippet, 'snippet')}>
+            {copied === 'snippet' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
             {copied === 'snippet' ? 'Copied' : 'Copy'}
-          </button>
+          </Button>
         </div>
-        <pre className="rounded-lg bg-bg border border-border px-3 py-2 text-[11px] text-fg font-mono overflow-x-auto whitespace-pre">
+        <pre className="m-0 overflow-x-auto whitespace-pre border border-border bg-surface px-3 py-2 font-mono text-[11px] text-fg" style={{ borderRadius: 2 }}>
 {installSnippet}
         </pre>
       </div>
 
       <div className="flex justify-end">
-        <button
-          type="button"
-          onClick={onDismiss}
-          className="px-3 py-1.5 rounded-lg text-xs font-medium text-muted hover:text-fg border border-border hover:bg-surface-2 transition-colors"
-        >
-          I&apos;ve saved it — dismiss
-        </button>
+        <Button variant="secondary" size="sm" onClick={onDismiss}>
+          I&apos;ve saved it. Dismiss
+        </Button>
       </div>
     </div>
   )
@@ -245,7 +235,7 @@ function BridgeTokens({ bridgeId, canManage }) {
   return (
     <div className="space-y-3">
       {err && (
-        <p className="text-xs text-red-600 dark:text-red-400 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 px-3 py-2">
+        <p className="nubi-notice nubi-notice-error m-0 text-xs" role="alert">
           {err}
         </p>
       )}
@@ -277,31 +267,15 @@ function BridgeTokens({ bridgeId, canManage }) {
                   </p>
                   <p className="text-[11px] text-muted">Created {fmtDate(t.created_at)}</p>
                 </div>
-                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-md shrink-0 ${st.cls}`}>
-                  {st.label}
-                </span>
+                <Tag variant={st.variant} dot className="shrink-0">{st.label}</Tag>
                 {!isRevoked && (
                   <>
-                    <button
-                      type="button"
-                      onClick={() => handleRotate(t)}
-                      disabled={rowBusy}
-                      title="Rotate token"
-                      aria-label="Rotate token"
-                      className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-primary hover:bg-surface-2 transition-colors disabled:opacity-30 shrink-0"
-                    >
-                      {rowBusy ? <Loader2 size={13} className="animate-spin" /> : <RotateCw size={13} />}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleRevoke(t)}
-                      disabled={rowBusy}
-                      title="Revoke token"
-                      aria-label="Revoke token"
-                      className="w-7 h-7 flex items-center justify-center rounded-lg text-muted hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors disabled:opacity-30 shrink-0"
-                    >
-                      <Ban size={13} />
-                    </button>
+                    <Button variant="ghost" size="icon-sm" onClick={() => handleRotate(t)} disabled={rowBusy} title="Rotate token" aria-label="Rotate token">
+                      {rowBusy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <RotateCw size={14} aria-hidden="true" />}
+                    </Button>
+                    <Button variant="ghost" size="icon-sm" onClick={() => handleRevoke(t)} disabled={rowBusy} title="Revoke token" aria-label="Revoke token">
+                      <Ban size={14} aria-hidden="true" />
+                    </Button>
                   </>
                 )}
               </li>
@@ -366,7 +340,7 @@ function BridgeCard({ bridge, canManage, onDeleted }) {
         {canManage && (
           <div className="border-t border-border pt-3 flex items-center justify-between gap-3">
             {err ? (
-              <span className="text-xs text-red-600 dark:text-red-400">{err}</span>
+              <span className="text-xs text-danger-fg">{err}</span>
             ) : (
               <span className="text-[11px] text-muted">Deleting removes the bridge and all its tokens.</span>
             )}
@@ -444,7 +418,7 @@ export default function BridgesSettings() {
       />
 
       {err && (
-        <p className="text-xs text-red-600 dark:text-red-400 rounded-xl bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 px-3 py-2">
+        <p className="nubi-notice nubi-notice-error text-xs text-danger-fg">
           {err}
         </p>
       )}
@@ -476,18 +450,19 @@ export default function BridgesSettings() {
       {/* List */}
       {loading ? (
         <SettingsCard>
-          <div className="flex items-center gap-2 text-xs text-muted py-2">
-            <Loader2 size={13} className="animate-spin" /> Loading bridges…
+          <div className="space-y-2" aria-hidden="true">
+            <Skeleton className="h-4 w-1/3" />
+            <Skeleton className="h-3 w-2/3" />
           </div>
         </SettingsCard>
       ) : bridges.length === 0 ? (
         <SettingsCard>
-          <div className="py-8 text-center">
-            <Network size={24} className="mx-auto text-muted/40 mb-2" />
-            <p className="text-sm text-muted">
-              No bridges yet — create one to ingest from inside your VPC.
-            </p>
-          </div>
+          <EmptyState
+            compact
+            art={<BridgeTopology />}
+            title="No bridges yet"
+            description="A bridge is a small agent you run inside your network. It lets Nubi query databases that are not reachable from the internet, with no inbound ports."
+          />
         </SettingsCard>
       ) : (
         bridges.map((b) => (

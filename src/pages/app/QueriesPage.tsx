@@ -33,21 +33,14 @@ import {
   FileCode2,
   Plus,
   RefreshCw,
-  CheckCircle2,
-  CheckSquare,
   ChevronDown,
-  ChevronRight,
-  Tag,
   ListChecks,
   AlertCircle,
-  AlertTriangle,
-  Database,
   List,
   Combine,
   Boxes,
   PanelRightClose,
   History,
-  Square,
   Trash2,
 } from 'lucide-react'
 
@@ -56,15 +49,22 @@ import {
   validateRegisteredQueries,
 } from '../../lib/api.js'
 import Button from '../../components/ui/Button.jsx'
-import Badge from '../../components/ui/Badge.jsx'
+import TagChip from '../../components/ui/Tag.jsx'
 import EmptyState from '../../components/ui/EmptyState.jsx'
-import { SearchBar, ListRowSkeleton } from '../../components/app/PageShell.jsx'
+import SegmentedControl from '../../components/ui/SegmentedControl.jsx'
+import Tooltip from '../../components/ui/Tooltip.jsx'
+import { Checkbox } from '../../components/ui/Input.jsx'
+import { EmptyQueries, EmptySearch } from '../../components/illustrations'
+import { SearchBar } from '../../components/app/PageShell.jsx'
+import { ListSkeleton } from './appShared.jsx'
+import '../../components/app/appPatterns.css'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import DangerConfirmDialog from '../../components/app/DangerConfirmDialog.jsx'
 import { useEnv } from '../../contexts/EnvContext.jsx'
 import { useProject } from '../../contexts/ProjectContext.jsx'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
 import { useUi } from '../../contexts/UiContext.jsx'
+import { usePageCrumb } from '../../components/app/PageShell.jsx'
 import QueryWorkspace from './QueryWorkspace.jsx'
 import PreaggregationsPanel from './PreaggregationsPanel.jsx'
 
@@ -87,7 +87,7 @@ function newAdHocQuery() {
 }
 
 // ---------------------------------------------------------------------------
-// QueryListItem — single entry in the left rail
+// QueryListItem — single ruled row in the right rail
 // ---------------------------------------------------------------------------
 
 function QueryListItem({ query, isActive, onClick, onHistory = undefined, strictEnv = null, manageMode = false, checked = false, onToggleCheck = undefined, health = undefined }) {
@@ -96,111 +96,78 @@ function QueryListItem({ query, isActive, onClick, onHistory = undefined, strict
   // `health` is undefined until POST /query/registry/validate has covered this
   // row, so only an explicit `valid: false` flags it — never a pending check.
   const broken = health?.valid === false
-
-  // In manage (multi-select) mode the whole row toggles its checkbox instead
-  // of opening the query, and the leading icon becomes the checkbox.
-  const CheckIcon = checked ? CheckSquare : Square
+  const notInEnv = !query.isNew && strictEnv && Array.isArray(query.pinned_envs) && !query.pinned_envs.includes(strictEnv)
 
   return (
     <div className="relative group">
       <button
+        type="button"
         onClick={() => (manageMode ? onToggleCheck?.(query) : onClick(query))}
         data-testid={manageMode ? 'query-manage-row' : undefined}
         data-query-id={query.id ?? undefined}
         aria-pressed={manageMode ? checked : undefined}
+        aria-current={isActive && !manageMode ? 'true' : undefined}
         className={[
-          'w-full text-left px-3 py-2.5 rounded-lg border transition-colors duration-100',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          'qr-row nubi-focus-inset',
           isSaved && onHistory && !manageMode ? 'pr-9' : '',
-          manageMode && checked
-            ? 'bg-danger-bg border-danger/30 text-fg'
-            : isActive && !manageMode
-            ? 'bg-primary/10 border-primary/20 text-fg'
-            : 'hover:bg-surface-2 border-transparent text-fg/80 hover:text-fg',
+          manageMode && checked ? 'is-checked' : '',
+          isActive && !manageMode ? 'is-active' : '',
         ].join(' ')}
       >
-        <div className="flex items-start gap-2 min-w-0">
-          {manageMode ? (
-            <CheckIcon
-              size={13}
-              className={[
-                'shrink-0 mt-0.5',
-                checked ? 'text-danger' : 'text-muted group-hover:text-fg/60',
-              ].join(' ')}
-            />
-          ) : (
-          <FileCode2
-            size={13}
-            className={[
-              'shrink-0 mt-0.5',
-              isActive ? 'text-primary' : 'text-muted group-hover:text-fg/60',
-            ].join(' ')}
-          />
+        {manageMode && (
+          <span className="mt-0.5 shrink-0" aria-hidden="true">
+            <Checkbox checked={checked} readOnly tabIndex={-1} aria-hidden="true" />
+          </span>
+        )}
+        <div className="min-w-0 flex-1">
+          <p className="qr-name">{query.name ?? query.id}</p>
+          {/* Every row gets the same second line — the id for a saved query,
+              or a plain-language status for a draft — so rows don't jump. */}
+          <p className="qr-id">{query.id ?? 'not saved yet'}</p>
+          {(hasParams || broken || query.isNew || notInEnv) && (
+            <div className="ap-tags mt-1.5">
+              {query.isNew && <TagChip variant="warning" dot>Draft</TagChip>}
+              {/* Stored SQL does not parse — running it can only 400. Say so
+                  here rather than letting the user find out on Run. */}
+              {broken && (
+                <TagChip variant="danger" dot title={health?.error ?? 'The stored SQL cannot be parsed.'}>
+                  won&apos;t run
+                </TagChip>
+              )}
+              {/* Strict-env visibility: the active env is protected and this
+                  query has no pinned version there. */}
+              {notInEnv && (
+                <TagChip
+                  variant="warning"
+                  dot
+                  caps={false}
+                  title={`No version is pinned to ${strictEnv}. Promote one to make it visible there.`}
+                >
+                  not in {strictEnv}
+                </TagChip>
+              )}
+              {hasParams && query.params.slice(0, 3).map(p => (
+                <TagChip key={p.name} caps={false}>{p.name}</TagChip>
+              ))}
+              {hasParams && query.params.length > 3 && (
+                <span className="ap-meta">+{query.params.length - 3}</span>
+              )}
+            </div>
           )}
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-medium truncate leading-tight">
-              {query.name ?? query.id}
-            </p>
-            {/* Every row gets the same second line — the id for a saved
-                query, or a plain-language status for a draft — so rows don't
-                jump around depending on which metadata happens to apply. */}
-            <p className="text-[10px] font-mono text-muted truncate mt-0.5">
-              {query.id ?? 'not saved yet'}
-            </p>
-            {(hasParams || broken || query.isNew || (!query.isNew && strictEnv && Array.isArray(query.pinned_envs) && !query.pinned_envs.includes(strictEnv))) && (
-              <div className="flex flex-wrap items-center gap-1 mt-1.5">
-                {query.isNew && (
-                  <Badge variant="warning" size="sm">Draft</Badge>
-                )}
-                {/* Stored SQL does not parse — running it can only 400. Say so
-                    here rather than letting the user find out on Run. */}
-                {broken && (
-                  <Badge
-                    variant="danger"
-                    size="sm"
-                    title={health?.error ?? 'The stored SQL cannot be parsed.'}
-                  >
-                    <AlertTriangle size={8} />
-                    won&apos;t run
-                  </Badge>
-                )}
-                {/* Strict-env visibility: the active env is protected and this
-                    query has no pinned version there (pinned_envs joined from
-                    the persisted GET /queries rows). */}
-                {!query.isNew && strictEnv && Array.isArray(query.pinned_envs)
-                  && !query.pinned_envs.includes(strictEnv) && (
-                  <Badge
-                    variant="danger"
-                    size="sm"
-                    title={`No version is pinned to ${strictEnv} — promote one to make it visible there.`}
-                  >
-                    not in {strictEnv}
-                  </Badge>
-                )}
-                {hasParams && query.params.slice(0, 3).map(p => (
-                  <Badge key={p.name} variant="default" size="sm" className="font-mono">
-                    <Tag size={8} />
-                    {p.name}
-                  </Badge>
-                ))}
-                {hasParams && query.params.length > 3 && (
-                  <span className="text-[9px] text-muted">+{query.params.length - 3}</span>
-                )}
-              </div>
-            )}
-          </div>
         </div>
       </button>
 
       {/* Version history — saved (registered) queries only */}
       {isSaved && onHistory && !manageMode && (
         <button
+          type="button"
           onClick={(e) => { e.stopPropagation(); onHistory(query) }}
           title="Version history"
           aria-label={`Version history for ${query.name ?? query.id}`}
-          className="absolute right-1.5 top-2 w-6 h-6 flex items-center justify-center rounded-md text-muted/60 hover:text-fg hover:bg-surface-2 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="absolute right-1.5 top-2 flex h-7 w-7 items-center justify-center text-subtle opacity-0 transition-colors hover:bg-frame-hover hover:text-fg focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+          style={{ borderRadius: 2 }}
         >
-          <History size={12} />
+          <History size={13} aria-hidden="true" />
         </button>
       )}
     </div>
@@ -235,106 +202,86 @@ function QueriesPanel({
   const draftFiltered = filtered.filter(q => q.isNew || q._localId?.startsWith('adhoc'))
 
   return (
-    <div className="flex flex-col h-full bg-surface-2/40">
+    <div className="flex flex-col h-full bg-surface">
       {/* New query / Blend buttons */}
       {canWrite ? (
-        <div className="shrink-0 px-2 py-2 space-y-1.5">
-          <button
-            onClick={onNewQuery}
-            className="w-full h-8 flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:border-border hover:bg-surface-2 transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <Plus size={13} />
+        <div className="shrink-0 px-3 pt-3 pb-2 flex gap-2">
+          <Button onClick={onNewQuery} size="sm" className="flex-1">
+            <Plus size={14} aria-hidden="true" />
             New query
-          </button>
-          <Link
-            to="/queries/blend"
-            className="w-full h-8 flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:border-border hover:bg-surface-2 transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <Combine size={13} className="text-primary/70" />
-            Blend sources
-          </Link>
+          </Button>
+          <Button asChild variant="secondary" size="sm" className="flex-1">
+            <Link to="/queries/blend">
+              <Combine size={14} aria-hidden="true" />
+              Blend
+            </Link>
+          </Button>
         </div>
       ) : (
-        <div className="shrink-0 px-2 py-2">
-          <p className="text-[10px] text-muted/70 text-center py-1.5 rounded-lg border border-dashed border-border">
-            Read-only access
-          </p>
+        <div className="shrink-0 px-3 pt-3 pb-2">
+          <p className="ap-count m-0">Read-only access</p>
         </div>
       )}
 
       {/* Search + registry refresh */}
-      <div className="shrink-0 px-2 pb-2 flex items-center gap-1.5">
+      <div className="shrink-0 px-3 pb-2 flex items-center gap-1.5">
         <SearchBar
           value={searchQuery}
           onChange={onSearchChange}
-          placeholder="Search queries…"
+          placeholder="Search queries"
         />
-        <button
+        <Button
+          variant="ghost"
+          size="icon"
           onClick={onRefresh}
           disabled={loading}
           aria-label="Refresh query registry"
-          className="h-9 w-9 shrink-0 flex items-center justify-center rounded-xl border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           title="Refresh query registry"
         >
-          <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
-        </button>
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
+        </Button>
         {/* Manage (multi-select) toggle — writers only */}
         {canWrite && onToggleManage && (
-          <button
+          <Button
+            variant={manageMode ? 'primary' : 'ghost'}
+            size="icon"
             onClick={onToggleManage}
             data-testid="queries-manage-toggle"
             aria-pressed={manageMode}
             aria-label={manageMode ? 'Exit manage mode' : 'Manage queries (multi-select)'}
             title={manageMode ? 'Exit manage mode' : 'Manage queries (multi-select)'}
-            className={[
-              'h-9 w-9 shrink-0 flex items-center justify-center rounded-xl border transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              manageMode
-                ? 'bg-primary text-primary-fg border-primary'
-                : 'border-border bg-surface text-muted hover:text-fg hover:bg-surface-2',
-            ].join(' ')}
           >
-            <ListChecks size={13} />
-          </button>
+            <ListChecks size={14} aria-hidden="true" />
+          </Button>
         )}
       </div>
 
       {/* Bulk-delete success notice */}
       {bulkNotice && (
-        <div
-          data-testid="queries-bulk-notice"
-          role="status"
-          className="shrink-0 mx-2 mb-2 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-success/30 bg-success-bg text-[11px] text-success"
-        >
-          <CheckCircle2 size={12} className="shrink-0" />
+        <div data-testid="queries-bulk-notice" role="status" className="nubi-notice nubi-notice-success shrink-0 mx-3 mb-2 text-xs">
           <span className="min-w-0 truncate">{bulkNotice}</span>
         </div>
       )}
 
       {/* Selection action bar — manage mode only */}
       {manageMode && canWrite && (
-        <div
-          data-testid="queries-selection-bar"
-          className="shrink-0 mx-2 mb-2 px-2.5 py-2 rounded-lg border border-primary/30 bg-primary/5 space-y-1.5"
-        >
-          <div className="flex items-center gap-2 text-[11px]">
-            <span className="font-medium text-fg">{selectedIds?.size ?? 0} selected</span>
+        <div data-testid="queries-selection-bar" className="shrink-0 mx-3 mb-2 px-3 py-2 space-y-2 bg-accent-soft" style={{ borderLeft: '2px solid var(--accent)' }}>
+          <div className="flex items-center gap-3 text-xs">
+            <span className="font-semibold text-fg ap-mono">{selectedIds?.size ?? 0} selected</span>
             <button
+              type="button"
               onClick={() => onSelectAll?.(registeredFiltered.map(q => q.id))}
               disabled={registeredFiltered.length === 0}
-              className="text-primary hover:underline disabled:opacity-40 disabled:no-underline"
+              className="ap-link-btn disabled:opacity-40"
+              style={{ color: 'var(--accent)' }}
             >
-              Select all ({registeredFiltered.length})
+              Select all {registeredFiltered.length}
             </button>
             {(selectedIds?.size ?? 0) > 0 && (
-              <button
-                onClick={onClearSelection}
-                className="text-muted hover:text-fg transition-colors"
-              >
-                Clear
-              </button>
+              <button type="button" onClick={onClearSelection} className="ap-link-btn">Clear</button>
             )}
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             <Button
               data-testid="queries-delete-selected"
               onClick={onDeleteSelected}
@@ -343,47 +290,40 @@ function QueriesPanel({
               size="xs"
               className="flex-1"
             >
-              <Trash2 size={11} />
+              <Trash2 size={12} aria-hidden="true" />
               Delete {(selectedIds?.size ?? 0) > 0 ? selectedIds.size : ''}
             </Button>
-            <button
+            <Button
               data-testid="queries-delete-all"
               onClick={() => onDeleteAll?.(registeredFiltered)}
               disabled={registeredFiltered.length === 0}
               title={searchQuery ? 'Delete all queries matching the search' : 'Delete all registered queries'}
-              className="flex-1 h-7 flex items-center justify-center gap-1 rounded-lg border border-danger/30 text-danger text-[11px] font-medium hover:bg-danger-bg disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              variant="outline"
+              size="xs"
+              className="flex-1"
             >
-              <Trash2 size={11} />
+              <Trash2 size={12} aria-hidden="true" />
               Delete all{searchQuery ? ' matching' : ''}
-            </button>
+            </Button>
           </div>
         </div>
       )}
 
       {/* Query list */}
-      <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-0.5">
-        {loading && allItems.length === 0 && (
-          <div className="space-y-0.5 py-1" aria-hidden="true">
-            <ListRowSkeleton />
-            <ListRowSkeleton />
-            <ListRowSkeleton />
-          </div>
-        )}
+      <div className="flex-1 overflow-y-auto pb-2">
+        {loading && allItems.length === 0 && <ListSkeleton rows={4} tile={false} />}
 
         {!loading && allItems.length === 0 && (
           <EmptyState
             compact
-            icon={<Database size={20} />}
-            title="No registered queries"
-            description={canWrite ? 'Create a new query to get started.' : 'Nothing has been registered here yet.'}
+            art={<EmptyQueries />}
+            title="No saved queries"
+            description={canWrite ? 'Write SQL in the editor, then save it to share it with boards and flows.' : 'Nothing has been saved to the registry yet.'}
             action={canWrite ? (
-              <button
-                onClick={onNewQuery}
-                className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium rounded-lg bg-primary text-primary-fg hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Plus size={13} />
+              <Button size="sm" onClick={onNewQuery}>
+                <Plus size={14} aria-hidden="true" />
                 New query
-              </button>
+              </Button>
             ) : undefined}
           />
         )}
@@ -391,7 +331,7 @@ function QueriesPanel({
         {/* Draft queries */}
         {draftFiltered.length > 0 && (
           <div>
-            <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-wider px-1 py-1.5">Drafts</p>
+            <p className="qr-group">Drafts</p>
             {draftFiltered.map(q => (
               <QueryListItem
                 key={q._localId ?? q.id}
@@ -406,9 +346,7 @@ function QueriesPanel({
         {/* Registered queries */}
         {registeredFiltered.length > 0 && (
           <div>
-            <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-wider px-1 py-1.5 mt-1">
-              Registry
-            </p>
+            <p className="qr-group">Registry <span className="ap-mono">{registeredFiltered.length}</span></p>
             {registeredFiltered.map(q => (
               <QueryListItem
                 key={q.id}
@@ -428,9 +366,14 @@ function QueriesPanel({
 
         {/* No results for search */}
         {searchQuery && filtered.length === 0 && (
-          <p className="text-[11px] text-muted text-center py-4">
-            No queries match "{searchQuery}"
-          </p>
+          <EmptyState
+            compact
+            kind="none-match"
+            art={<EmptySearch />}
+            title={`No query matches “${searchQuery}”`}
+            description="Search covers names and ids."
+            action={<Button size="sm" variant="secondary" onClick={() => onSearchChange('')}>Clear search</Button>}
+          />
         )}
       </div>
     </div>
@@ -451,82 +394,77 @@ function MobileQueryDropdown({ queries, localQueries, activeQuery, onSelect, onN
     const handler = (e) => {
       if (ref.current && !ref.current.contains(e.target)) setOpen(false)
     }
+    const key = (e) => { if (e.key === 'Escape') setOpen(false) }
     document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
+    document.addEventListener('keydown', key)
+    return () => {
+      document.removeEventListener('mousedown', handler)
+      document.removeEventListener('keydown', key)
+    }
   }, [open])
 
   return (
-    <div className="relative" ref={ref}>
-      <button
+    <div className="relative min-w-0" ref={ref}>
+      <Button
+        variant="secondary"
+        size="sm"
         onClick={() => setOpen(o => !o)}
         aria-expanded={open}
         aria-haspopup="listbox"
-        className="flex items-center gap-2 px-3 h-9 text-sm font-medium text-fg bg-surface border border-border rounded-lg hover:bg-surface-2 transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring max-w-full"
+        className="max-w-full"
       >
-        <List size={14} className="shrink-0" />
+        <List size={14} className="shrink-0" aria-hidden="true" />
         <span className="truncate max-w-[160px]">
           {activeQuery?.name ?? activeQuery?.id ?? 'Select query'}
         </span>
-        <ChevronDown
-          size={13}
-          className="text-muted shrink-0 transition-transform"
-          style={{ transform: open ? 'rotate(180deg)' : 'none' }}
-        />
-      </button>
+        <ChevronDown size={13} className="text-muted shrink-0" aria-hidden="true" style={{ transform: open ? 'rotate(180deg)' : 'none' }} />
+      </Button>
 
       {open && (
-        <div
-          role="listbox"
-          className="absolute top-full mt-1.5 left-0 z-50 w-64 max-w-[calc(100vw-2rem)] bg-surface border border-border rounded-xl shadow-nubi-xl overflow-hidden nubi-animate-scale-in"
-        >
+        <div role="listbox" className="nubi-dropdown left-0 top-[calc(100%+6px)] w-72 max-w-[calc(100vw-2rem)] p-0">
           {canWrite && (
             <div className="p-1.5 border-b border-border">
               <button
+                type="button"
                 onClick={() => { onNewQuery(); setOpen(false) }}
-                className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-fg hover:bg-surface-2 rounded-lg transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="nubi-dropdown-item"
               >
-                <Plus size={12} />
+                <Plus size={14} aria-hidden="true" />
                 New query
               </button>
-              <Link
-                to="/queries/blend"
-                onClick={() => setOpen(false)}
-                className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-fg hover:bg-surface-2 rounded-lg transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Combine size={12} className="text-primary/70" />
+              <Link to="/queries/blend" onClick={() => setOpen(false)} className="nubi-dropdown-item">
+                <Combine size={14} aria-hidden="true" />
                 Blend sources
               </Link>
             </div>
           )}
-          <div className="max-h-64 overflow-y-auto p-1.5 space-y-0.5">
+          <div className="max-h-64 overflow-y-auto p-1.5">
             {loading && (
-              <div className="flex items-center justify-center gap-2 text-[11px] text-muted py-3">
-                <RefreshCw size={11} className="animate-spin" />
-                Loading…
+              <div className="flex items-center justify-center gap-2 text-xs text-muted py-3">
+                <RefreshCw size={12} className="animate-spin" aria-hidden="true" />
+                Loading queries
               </div>
             )}
             {!loading && allItems.length === 0 && (
-              <div className="text-[11px] text-muted text-center py-3">No queries yet</div>
+              <div className="text-xs text-muted text-center py-3">No queries yet</div>
             )}
-            {allItems.map(q => (
-              <button
-                key={q._localId ?? q.id}
-                role="option"
-                aria-selected={(activeQuery?._localId ?? activeQuery?.id) === (q._localId ?? q.id)}
-                onClick={() => { onSelect(q); setOpen(false) }}
-                className={[
-                  'w-full text-left px-3 py-2 text-xs rounded-lg transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  (activeQuery?._localId ?? activeQuery?.id) === (q._localId ?? q.id)
-                    ? 'bg-primary/10 text-fg'
-                    : 'text-fg/80 hover:bg-surface-2 hover:text-fg',
-                ].join(' ')}
-              >
-                <span className="font-medium truncate block">{q.name ?? q.id}</span>
-                {q.isNew && (
-                  <Badge variant="warning" size="sm" className="mt-1">Draft</Badge>
-                )}
-              </button>
-            ))}
+            {allItems.map(q => {
+              const on = (activeQuery?._localId ?? activeQuery?.id) === (q._localId ?? q.id)
+              return (
+                <button
+                  type="button"
+                  key={q._localId ?? q.id}
+                  role="option"
+                  aria-selected={on}
+                  onClick={() => { onSelect(q); setOpen(false) }}
+                  className={`nubi-dropdown-item ${on ? 'font-semibold' : ''}`}
+                  style={on ? { background: 'var(--accent-soft)' } : undefined}
+                >
+                  <span className="truncate flex-1 text-left">{q.name ?? q.id}</span>
+                  {q.isNew && <TagChip variant="warning" dot>Draft</TagChip>}
+                </button>
+              )
+            })}
           </div>
         </div>
       )}
@@ -915,68 +853,58 @@ export default function QueriesPage() {
 
   // ── Derived ────────────────────────────────────────────────────────────
   const activeId = activeQuery?._localId ?? activeQuery?.id
+  // Label the last breadcrumb segment with the open query's name on /queries/:id.
+  usePageCrumb(routeQueryId ? (activeQuery?.name ?? null) : null)
 
-  // ── Topbar cluster (md+) — Editor/Rollups view toggle + RHS panel buttons,
-  //    dashboard-editor style. Rendered inside the QueryWorkspace toolbar, or
-  //    in the slim page bar when the workspace isn't mounted (rollups/empty).
+  // ── Topbar cluster (md+) — Editor/Rollups view toggle + RHS panel button.
+  //    Rendered inside the QueryWorkspace toolbar, or in the slim page bar when
+  //    the workspace isn't mounted (rollups/empty).
+  const viewSwitch = (
+    <SegmentedControl
+      size="sm"
+      value={view}
+      onChange={setView}
+      options={[
+        { value: 'editor', label: <span className="inline-flex items-center gap-1.5"><FileCode2 size={13} aria-hidden="true" /> Editor</span> },
+        { value: 'preagg', label: <span className="inline-flex items-center gap-1.5" title="Auto rollups mined from the query log"><Boxes size={13} aria-hidden="true" /> Rollups</span> },
+      ]}
+    />
+  )
   const toolbarCluster = (
-    <div className="hidden md:flex items-center gap-1.5 shrink-0">
-      {/* View toggle: SQL editor ↔ Pre-aggregations */}
-      <div className="flex items-center rounded-lg border border-border overflow-hidden">
-        <button
-          onClick={() => setView('editor')}
-          aria-pressed={view === 'editor'}
-          className={[
-            'h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
-            view === 'editor' ? 'bg-primary/10 text-primary' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
-          ].join(' ')}
-        >
-          <FileCode2 size={12} /> Editor
-        </button>
-        <button
-          onClick={() => setView('preagg')}
-          aria-pressed={view === 'preagg'}
-          title="Auto rollups mined from the query log"
-          className={[
-            'h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium border-l border-border transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
-            view === 'preagg' ? 'bg-primary/10 text-primary' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
-          ].join(' ')}
-        >
-          <Boxes size={12} /> Rollups
-        </button>
-      </div>
+    <div className="hidden md:flex items-center gap-2 shrink-0">
+      {viewSwitch}
 
       {/* Queries-panel toggle. Chat is opened via the shell's single global
           chat button (far right) — no second chat button here. The two panels
           still share the right edge: opening chat hides the Queries panel,
           and this toggle brings the Queries panel back (closing chat). */}
-      <button
-        data-testid="panel-toggle-queries"
-        title="Queries panel"
-        aria-label="Queries panel"
-        aria-pressed={queriesPanelVisible}
-        onClick={toggleQueriesPanel}
-        className={[
-          'w-9 h-8 flex items-center justify-center rounded-lg border border-border transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-          queriesPanelVisible
-            ? 'bg-primary text-primary-fg border-primary'
-            : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
-        ].join(' ')}
-      >
-        <List size={15} strokeWidth={2} />
-      </button>
+      <Tooltip content="Queries panel" side="bottom">
+        <Button
+          variant={queriesPanelVisible ? 'primary' : 'secondary'}
+          size="icon-sm"
+          data-testid="panel-toggle-queries"
+          aria-label="Queries panel"
+          aria-pressed={queriesPanelVisible}
+          onClick={toggleQueriesPanel}
+        >
+          <List size={14} aria-hidden="true" />
+        </Button>
+      </Tooltip>
     </div>
   )
 
   return (
-    <div className="flex h-[calc(100vh-var(--shell-header-h,56px))] overflow-hidden bg-bg">
+    <div className="flex h-[calc(100vh-var(--shell-header-h,56px))] overflow-hidden bg-surface">
 
       {/* ── Main content ───────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        <h1 className="sr-only">
+          {view === 'preagg' ? 'Rollups' : (activeQuery?.name || 'Queries')}
+        </h1>
 
         {/* Mobile top bar (<md): query dropdown + view toggle. md+ uses the
             toolbar cluster + right sidebar instead. */}
-        <div data-testid="queries-mobile-bar" className="md:hidden shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border bg-surface-2/40">
+        <div data-testid="queries-mobile-bar" className="md:hidden shrink-0 flex items-center gap-2 px-4 py-2 border-b border-border bg-surface">
           {view === 'editor' && (
             <MobileQueryDropdown
               queries={registeredQueries}
@@ -989,29 +917,7 @@ export default function QueriesPage() {
             />
           )}
           <div className="flex-1" />
-          {/* Mobile view toggle */}
-          <div className="flex items-center rounded-lg border border-border overflow-hidden shrink-0">
-            <button
-              onClick={() => setView('editor')}
-              aria-pressed={view === 'editor'}
-              className={[
-                'h-8 px-2.5 flex items-center gap-1 text-[11px] font-medium transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
-                view === 'editor' ? 'bg-primary/10 text-primary' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
-              ].join(' ')}
-            >
-              <FileCode2 size={12} /> Editor
-            </button>
-            <button
-              onClick={() => setView('preagg')}
-              aria-pressed={view === 'preagg'}
-              className={[
-                'h-8 px-2.5 flex items-center gap-1 text-[11px] font-medium border-l border-border transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
-                view === 'preagg' ? 'bg-primary/10 text-primary' : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
-              ].join(' ')}
-            >
-              <Boxes size={12} /> Rollups
-            </button>
-          </div>
+          {viewSwitch}
         </div>
 
         {/* Shell-topbar toolbar when the workspace toolbar isn't mounted
@@ -1019,10 +925,8 @@ export default function QueriesPage() {
             When the workspace IS mounted it portals its own toolbar (with
             this cluster appended) instead; the two are mutually exclusive. */}
         {(view === 'preagg' || !activeQuery) && topbarSlot && createPortal(
-          <div className="flex items-center gap-1.5 w-full min-w-0">
-            <span className="text-sm font-semibold font-display text-fg truncate">
-              {view === 'preagg' ? 'Rollups' : 'Queries'}
-            </span>
+          <div className="flex items-center gap-2 w-full min-w-0">
+            <span className="t-label">{view === 'preagg' ? 'Rollups' : 'Queries'}</span>
             <div className="flex-1" />
             {toolbarCluster}
           </div>,
@@ -1031,9 +935,12 @@ export default function QueriesPage() {
 
         {/* Registry error banner (editor view only) */}
         {view === 'editor' && registryError && (
-          <div role="alert" className="shrink-0 flex items-center gap-2 px-4 py-2 bg-danger-bg border-b border-danger/20 text-xs text-danger">
-            <AlertCircle size={12} />
-            Registry unavailable: {registryError}. Ad-hoc queries still work.
+          <div role="alert" className="nubi-notice nubi-notice-error shrink-0 m-3 text-xs">
+            <AlertCircle size={14} className="shrink-0" aria-hidden="true" />
+            <span className="flex-1">
+              Registry unavailable: {registryError}. Ad-hoc queries still work.
+            </span>
+            <Button size="xs" variant="secondary" onClick={loadRegistry}>Retry</Button>
           </div>
         )}
 
@@ -1058,28 +965,18 @@ export default function QueriesPage() {
           </div>
         ) : (
           /* Empty state */
-          <div className="flex-1 flex flex-col items-center justify-center gap-4 text-center px-6">
-            <div
-              className="flex items-center justify-center w-14 h-14 rounded-2xl shadow-nubi-md"
-              style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
-            >
-              <FileCode2 size={24} className="text-white" />
-            </div>
-            <div>
-              <h2 className="text-lg font-semibold font-display text-fg mb-1">SQL editor</h2>
-              <p className="text-sm text-muted max-w-xs">
-                Select a query from the Queries panel on the right (desktop) or the dropdown above (mobile), or create a new one to get started.
-              </p>
-            </div>
-            {canWrite && (
-              <button
-                onClick={handleNewQuery}
-                className="inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-primary text-primary-fg text-sm font-semibold hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Plus size={15} />
-                New query
-              </button>
-            )}
+          <div className="flex-1 flex items-center justify-center px-6">
+            <EmptyState
+              art={<EmptyQueries />}
+              title="No query open"
+              description="Pick a saved query from the panel (or the menu above on a phone), or start a new one. Queries run in your browser and are cached for every viewer."
+              action={canWrite ? (
+                <Button onClick={handleNewQuery}>
+                  <Plus size={14} aria-hidden="true" />
+                  New query
+                </Button>
+              ) : undefined}
+            />
           </div>
         ))}
       </div>
@@ -1092,25 +989,17 @@ export default function QueriesPage() {
         <aside
           data-testid="queries-side-panel"
           className={`
-            border-l border-border bg-surface flex-col overflow-hidden
+            border-l border-frame-line bg-surface flex-col overflow-hidden
             hidden md:flex
-            lg:static lg:w-72 lg:shrink-0
-            md:fixed md:top-[var(--shell-header-h,56px)] md:bottom-0 md:right-0 md:z-30 md:w-80 md:shadow-nubi-xl
-            lg:shadow-none
+            lg:static lg:w-80 lg:shrink-0
+            md:fixed md:top-[var(--shell-header-h,56px)] md:bottom-0 md:right-0 md:z-30 md:w-80 ap-pop-md
           `}
         >
-          <div className="flex items-center justify-between px-3 h-9 border-b border-border shrink-0">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-              Queries
-            </span>
-            <button
-              onClick={() => setQueriesPanelOpen(false)}
-              title="Collapse panel"
-              aria-label="Collapse side panel"
-              className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <PanelRightClose size={16} />
-            </button>
+          <div className="flex items-center justify-between pl-3 pr-1.5 h-10 border-b border-border shrink-0" style={{ borderTop: '2px solid var(--ink)' }}>
+            <span className="t-label">Queries</span>
+            <Button variant="ghost" size="icon-sm" onClick={() => setQueriesPanelOpen(false)} title="Collapse panel" aria-label="Collapse side panel">
+              <PanelRightClose size={16} aria-hidden="true" />
+            </Button>
           </div>
           {/* Body scrolls WITHIN the fixed-width sidebar; the sidebar itself is static. */}
           <div className="flex-1 min-h-0 overflow-hidden flex flex-col">

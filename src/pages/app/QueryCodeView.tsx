@@ -95,10 +95,10 @@ function FileRow({ Icon, name, active, dirty, readOnly, onSelect }) {
       ].join(' ')}
       title={name}
     >
-      <Icon size={13} className={active ? 'text-primary shrink-0' : 'text-muted/70 shrink-0'} />
+      <Icon size={13} className={active ? 'text-primary shrink-0' : 'text-muted shrink-0'} />
       <span className="truncate flex-1">{name}</span>
-      {dirty && <span className="w-1.5 h-1.5 rounded-full bg-warning shrink-0" title="Unsaved edits" />}
-      {readOnly && <span className="text-[9px] text-muted/60 shrink-0">ro</span>}
+      {dirty && <span className="w-1.5 h-1.5 bg-warning shrink-0" title="Unsaved edits" />}
+      {readOnly && <span className="text-[11px] font-mono text-subtle shrink-0">ro</span>}
     </button>
   )
 }
@@ -159,7 +159,7 @@ export default function QueryCodeView({ sql, params, datastoreId, query, onSqlCh
           />
         </div>
         <div className="shrink-0 px-3 py-2 border-t border-border">
-          <p className="text-[10px] leading-snug text-muted/70">
+          <p className="text-[11px] leading-snug text-muted/70">
             Edit <code className="text-muted">{sqlName}</code> — params, datastore &amp; output schema are in the read-only sidecar.
           </p>
         </div>
@@ -172,11 +172,11 @@ export default function QueryCodeView({ sql, params, datastoreId, query, onSqlCh
         <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-2 border-b border-border bg-surface">
           <div className="flex items-center gap-2 min-w-0">
             {isSql
-              ? <Database size={13} className="text-blue-500 shrink-0" />
-              : <FileJson size={13} className="text-amber-500 shrink-0" />}
+              ? <Database size={13} className="text-muted shrink-0" />
+              : <FileJson size={13} className="text-muted shrink-0" />}
             <span className="text-xs font-medium text-fg truncate">{activeName}</span>
             {!isSql && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 border border-border text-muted">read-only</span>
+              <span className="text-[11px] font-mono px-1.5 h-5 inline-flex items-center rounded-[2px] bg-surface-2 border border-border text-muted">read-only</span>
             )}
           </div>
 

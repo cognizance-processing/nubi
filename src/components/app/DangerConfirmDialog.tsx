@@ -27,7 +27,8 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { AlertTriangle, Trash2, Loader2, X } from 'lucide-react'
+import Modal from '../ui/Modal.jsx'
+import Button from '../ui/Button.jsx'
 
 // Unambiguous alphabet (no 0/O, 1/I/L) so the code is easy to re-type.
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
@@ -75,162 +76,89 @@ export default function DangerConfirmDialog({
     return () => clearTimeout(t)
   }, [])
 
-  // Escape cancels.
-  useEffect(() => {
-    function onKeyDown(e) {
-      if (e.key === 'Escape' && !loading) onCancel()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [loading, onCancel])
-
   return (
-    <>
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm"
-        onClick={loading ? undefined : onCancel}
-        aria-hidden="true"
-      />
+    <Modal
+      open
+      onClose={loading ? undefined : onCancel}
+      title={title}
+      description="This action is permanent and cannot be undone."
+      size="md"
+    >
+      <div data-testid="danger-confirm-dialog">
+        <Modal.Body className="space-y-4">
+          {description && <p className="m-0 text-sm leading-relaxed text-muted">{description}</p>}
 
-      {/* Dialog */}
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="danger-confirm-title"
-        className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none"
-      >
-        <div
-          data-testid="danger-confirm-dialog"
-          className="pointer-events-auto w-full max-w-md bg-surface rounded-2xl border border-red-200 dark:border-red-900/50 shadow-2xl flex flex-col"
-          onClick={e => e.stopPropagation()}
-        >
-          {/* Header */}
-          <div className="flex items-start gap-3 px-6 pt-6 pb-4 border-b border-border">
-            <div className="shrink-0 w-10 h-10 rounded-xl flex items-center justify-center bg-red-100 dark:bg-red-900/30">
-              <AlertTriangle size={20} className="text-red-600 dark:text-red-400" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <h2
-                id="danger-confirm-title"
-                className="font-display font-semibold text-base text-fg"
+          {/* What will be deleted */}
+          <div className="nubi-notice nubi-notice-error" style={{ display: 'block' }}>
+            <p className="m-0 mb-2 text-sm font-semibold">
+              This will permanently delete {total.toLocaleString()} {total === 1 ? itemNoun : (itemNounPlural ?? `${itemNoun}s`)}:
+            </p>
+            <ul className="m-0 list-none space-y-1 p-0">
+              {listed.map((name, i) => (
+                <li key={i} className="flex min-w-0 items-center gap-2 text-sm">
+                  <span className="nubi-dot nubi-dot-danger" aria-hidden="true" />
+                  <span className="truncate">{name}</span>
+                </li>
+              ))}
+              {remaining > 0 && (
+                <li className="flex items-center gap-2 text-sm">
+                  <span className="nubi-dot nubi-dot-danger" aria-hidden="true" />
+                  and {remaining.toLocaleString()} more
+                </li>
+              )}
+            </ul>
+          </div>
+
+          {/* Type-the-code confirmation */}
+          <div className="space-y-2">
+            <label htmlFor="danger-confirm-code-input" className="block text-sm text-muted">
+              To confirm, type{' '}
+              <span
+                data-testid="danger-confirm-code"
+                className="select-all bg-surface-2 px-1.5 py-0.5 font-mono font-semibold tracking-widest text-fg"
+                style={{ borderRadius: 2 }}
               >
-                {title}
-              </h2>
-              <p className="text-sm text-muted mt-0.5">
-                This action is <strong className="text-fg">permanent</strong> and cannot be undone.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={onCancel}
+                {code}
+              </span>{' '}
+              below:
+            </label>
+            <input
+              id="danger-confirm-code-input"
+              data-testid="danger-confirm-input"
+              ref={inputRef}
+              type="text"
+              value={typed}
+              onChange={e => setTyped(e.target.value.toUpperCase())}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && enabled) onConfirm()
+              }}
               disabled={loading}
-              aria-label="Close"
-              className="shrink-0 p-1.5 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors disabled:opacity-50"
-            >
-              <X size={16} />
-            </button>
+              placeholder={'·'.repeat(CODE_LENGTH)}
+              autoComplete="off"
+              spellCheck={false}
+              className="nubi-input font-mono tracking-widest"
+            />
           </div>
 
-          {/* Body */}
-          <div className="px-6 py-5 space-y-4">
-            {description && (
-              <p className="text-sm text-muted leading-relaxed">{description}</p>
-            )}
+          {/* Error from a failed delete */}
+          {error && <p className="nubi-field-error m-0 text-sm" role="alert">{error}</p>}
+        </Modal.Body>
 
-            {/* What will be deleted */}
-            <div className="rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-900/10 px-4 py-3 space-y-2">
-              <p className="text-sm font-medium text-red-700 dark:text-red-400">
-                This will permanently delete{' '}
-                <strong>{total}</strong>{' '}
-                {total === 1 ? itemNoun : (itemNounPlural ?? `${itemNoun}s`)}:
-              </p>
-              <ul className="space-y-1">
-                {listed.map((name, i) => (
-                  <li
-                    key={i}
-                    className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400 min-w-0"
-                  >
-                    <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0" />
-                    <span className="truncate">{name}</span>
-                  </li>
-                ))}
-                {remaining > 0 && (
-                  <li className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
-                    <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0" />
-                    …and {remaining} more
-                  </li>
-                )}
-              </ul>
-            </div>
-
-            {/* Type-the-code confirmation */}
-            <div className="space-y-2">
-              <label
-                htmlFor="danger-confirm-code-input"
-                className="block text-sm text-muted"
-              >
-                To confirm, type{' '}
-                <span
-                  data-testid="danger-confirm-code"
-                  className="font-mono font-semibold tracking-widest text-fg bg-surface-2 px-1.5 py-0.5 rounded-md select-all"
-                >
-                  {code}
-                </span>{' '}
-                below:
-              </label>
-              <input
-                id="danger-confirm-code-input"
-                data-testid="danger-confirm-input"
-                ref={inputRef}
-                type="text"
-                value={typed}
-                onChange={e => setTyped(e.target.value.toUpperCase())}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && enabled) onConfirm()
-                }}
-                disabled={loading}
-                placeholder={'·'.repeat(CODE_LENGTH)}
-                autoComplete="off"
-                spellCheck={false}
-                className="w-full px-3 py-2 rounded-xl text-sm font-mono tracking-widest bg-bg border border-border text-fg placeholder:text-muted focus:outline-none focus:border-red-400 dark:focus:border-red-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              />
-            </div>
-
-            {/* Error from a failed delete */}
-            {error && (
-              <p className="text-sm text-red-600 dark:text-red-400" role="alert">
-                {error}
-              </p>
-            )}
-          </div>
-
-          {/* Footer */}
-          <div className="flex items-center justify-end gap-3 px-6 pb-6">
-            <button
-              type="button"
-              onClick={onCancel}
-              disabled={loading}
-              className="px-4 py-2 rounded-xl text-sm font-medium border border-border text-fg hover:bg-surface-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              data-testid="danger-confirm-button"
-              onClick={onConfirm}
-              disabled={!enabled}
-              aria-disabled={!enabled}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-red-600 text-white hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2"
-            >
-              {loading
-                ? <Loader2 size={15} className="animate-spin" />
-                : <Trash2 size={15} />}
-              {loading ? 'Deleting…' : confirmLabel}
-            </button>
-          </div>
-        </div>
+        <Modal.Footer>
+          <Button type="button" variant="secondary" onClick={onCancel} disabled={loading}>Cancel</Button>
+          <Button
+            type="button"
+            variant="danger"
+            data-testid="danger-confirm-button"
+            onClick={onConfirm}
+            disabled={!enabled}
+            aria-disabled={!enabled}
+            loading={loading}
+          >
+            {loading ? 'Deleting' : confirmLabel}
+          </Button>
+        </Modal.Footer>
       </div>
-    </>
+    </Modal>
   )
 }

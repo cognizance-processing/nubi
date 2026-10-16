@@ -1,45 +1,53 @@
 /**
  * SettingsUI — shared building blocks for the settings pages.
  *
- * Gives every settings section the same anatomy (the pattern used by
- * Vercel/Linear settings):
+ * Gives every settings section the same anatomy:
  *
- *   <SettingsPageHeader>  — section title + one-line description
- *   <SettingsCard>        — bordered card, optional header, optional footer
- *                           bar (where the Save button lives)
- *   <Field>               — label + control + hint with consistent spacing
- *                           (single-column; used inside compact inline forms)
+ *   <SettingsPageHeader>  — the page's ONE h1: a mono scope eyebrow (from the
+ *                           layout), title, one-line description, optional
+ *                           actions, closed by the 2px ink rule
+ *   <SettingsCard>        — a hairline panel under a 2px ink rule, optional
+ *                           header, optional footer bar (where Save lives)
+ *   <Field>               — label + control + hint (single column)
  *   <FieldRowGroup>/
- *   <FieldRow>             — label + description on the left, control on the
- *                           right on wide screens (single column on mobile).
- *                           Use inside a <SettingsCard> for the "one setting
- *                           per row" pattern instead of Field when the card
- *                           has room to breathe.
- *   <PrimaryButton>       — brand-gradient action button with busy spinner
+ *   <FieldRow>            — label + description on the left, control on the
+ *                           right on wide screens, stacked on mobile
+ *   <PrimaryButton>       — the one ink primary, with a busy spinner
  *   <SavedBadge>          — transient "Saved" confirmation
  *   <ErrorText>           — inline error message
- *   <DangerZone>          — red-bordered card for destructive actions
- *   <DangerRow>           — title/description + action slot inside DangerZone
+ *   <Toggle>              — switch (role=switch)
+ *   <DangerZone>          — hairline panel with a 2px danger rule
+ *   <DangerRow>/<DangerButton>
  *
- * Purely presentational — no data fetching, no business logic.
+ * Purely presentational: no data fetching, no business logic. Exports and
+ * props are stable: other squads' settings pages import from here.
  */
 
-import { Loader2, CheckCircle, AlertTriangle } from 'lucide-react'
+import { createContext, useContext } from 'react'
+import { CheckCircle } from 'lucide-react'
+import Button from '../../../components/ui/Button.jsx'
+import '../../../components/app/appPatterns.css'
+import '../../../shell/shell.css'
+
+/** The layout publishes the current scope ("Organization · Acme") for the eyebrow. */
+export const SettingsScopeContext = createContext<string | undefined>(undefined)
 
 // ---------------------------------------------------------------------------
 // Page header
 // ---------------------------------------------------------------------------
 
 export function SettingsPageHeader({ title, description = undefined, children = undefined }) {
+  const scope = useContext(SettingsScopeContext)
   return (
-    <header className="flex flex-wrap items-start justify-between gap-4 mb-6">
-      <div className="min-w-0">
-        <h2 className="font-display font-semibold text-xl text-fg tracking-tight">{title}</h2>
-        {description && (
-          <p className="text-sm text-muted mt-1 max-w-2xl leading-relaxed">{description}</p>
-        )}
+    <header className="sh-head" style={{ marginBottom: 24 }}>
+      {scope && <p className="sh-eyebrow">{scope}</p>}
+      <div className="sh-head-row">
+        <div className="sh-head-text">
+          <h1 className="sh-title">{title}</h1>
+          {description && <p className="sh-desc">{description}</p>}
+        </div>
+        {children && <div className="sh-head-actions">{children}</div>}
       </div>
-      {children && <div className="shrink-0">{children}</div>}
     </header>
   )
 }
@@ -51,22 +59,16 @@ export function SettingsPageHeader({ title, description = undefined, children = 
 export function SettingsCard({ title = undefined, description = undefined, children = undefined, footer = undefined }) {
   const hasHeader = Boolean(title || description)
   return (
-    <section className="rounded-2xl border border-border bg-surface overflow-hidden">
+    <section className="ap-panel mb-6">
       {hasHeader && (
-        <div className="px-5 sm:px-6 pt-4 pb-3.5 border-b border-border bg-surface-2/30">
-          {title && (
-            <h3 className="font-display font-semibold text-[0.9375rem] text-fg leading-tight">
-              {title}
-            </h3>
-          )}
-          {description && (
-            <p className="text-xs text-muted mt-0.5 leading-relaxed">{description}</p>
-          )}
+        <div className="ap-panel-head" style={{ paddingInline: 20 }}>
+          {title && <h2 className="ap-panel-title">{title}</h2>}
+          {description && <p className="ap-panel-sub" style={{ lineHeight: 1.5 }}>{description}</p>}
         </div>
       )}
-      <div className="px-5 sm:px-6 py-5">{children}</div>
+      <div className="px-5 py-5">{children}</div>
       {footer && (
-        <div className="px-5 sm:px-6 py-3 bg-surface-2/40 border-t border-border flex items-center gap-3 min-h-[3rem]">
+        <div className="flex min-h-[3rem] items-center gap-3 border-t border-border bg-surface-2 px-5 py-3">
           {footer}
         </div>
       )}
@@ -78,19 +80,15 @@ export function SettingsCard({ title = undefined, description = undefined, child
 // Form bits
 // ---------------------------------------------------------------------------
 
-export const inputCls =
-  'w-full px-3 py-2 rounded-xl bg-bg border border-border text-sm text-fg placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-ring/50 focus:border-ring/60 transition-[border-color,box-shadow] duration-100'
+/** Class for a bare <input>/<select>/<textarea> in a settings form. */
+export const inputCls = 'nubi-input'
 
 export function Field({ label = undefined, htmlFor = undefined, hint = undefined, children }) {
   return (
-    <div className="space-y-1.5">
-      {label && (
-        <label className="block text-xs font-medium text-muted uppercase tracking-wide" htmlFor={htmlFor}>
-          {label}
-        </label>
-      )}
+    <div className="nubi-field">
+      {label && <label className="nubi-label" htmlFor={htmlFor}>{label}</label>}
       {children}
-      {hint && <p className="text-xs text-muted leading-relaxed">{hint}</p>}
+      {hint && <p className="nubi-hint m-0">{hint}</p>}
     </div>
   )
 }
@@ -101,8 +99,7 @@ export function Field({ label = undefined, htmlFor = undefined, hint = undefined
 
 /**
  * FieldRowGroup — wraps a set of <FieldRow> siblings inside a SettingsCard,
- * giving them a shared divider between rows (first/last rows lose their
- * outer padding so they sit flush with the card's own padding).
+ * giving them a shared hairline between rows.
  */
 export function FieldRowGroup({ children, className = '' }) {
   return <div className={['divide-y divide-border', className].join(' ')}>{children}</div>
@@ -110,56 +107,37 @@ export function FieldRowGroup({ children, className = '' }) {
 
 /**
  * FieldRow — label + description on the left, control on the right, on
- * screens wide enough to afford it (lg+). Stacks to a single column (label
- * above control, like <Field>) on narrower screens. Meant to live inside a
- * <FieldRowGroup> inside a <SettingsCard> so a wide card doesn't leave a
- * form stranded in a narrow column with empty space beside it.
+ * screens wide enough to afford it (lg+). Stacks to a single column on
+ * narrower screens.
  */
 export function FieldRow({ label = undefined, htmlFor = undefined, description = undefined, hint = undefined, children }) {
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,15rem)_1fr] gap-x-8 gap-y-2 py-5 first:pt-0 last:pb-0">
+    <div className="grid grid-cols-1 gap-x-8 gap-y-2 py-5 first:pt-0 last:pb-0 lg:grid-cols-[minmax(0,13rem)_1fr]">
       <div className="min-w-0">
-        {label && (
-          <label className="block text-sm font-medium text-fg" htmlFor={htmlFor}>
-            {label}
-          </label>
-        )}
-        {description && (
-          <p className="text-xs text-muted mt-1 leading-relaxed">{description}</p>
-        )}
+        {label && <label className="nubi-label" htmlFor={htmlFor}>{label}</label>}
+        {description && <p className="mb-0 mt-1 text-xs leading-relaxed text-muted">{description}</p>}
       </div>
       <div className="min-w-0 max-w-lg space-y-1.5">
         {children}
-        {hint && <p className="text-xs text-muted leading-relaxed">{hint}</p>}
+        {hint && <p className="nubi-hint m-0">{hint}</p>}
       </div>
     </div>
   )
 }
 
+/** The one ink primary. Native button props pass through. */
 export function PrimaryButton({ busy = false, children, className = '', ...props }) {
   return (
-    <button
-      {...props}
-      className={[
-        'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl',
-        'text-sm font-medium text-white',
-        'transition-opacity duration-150',
-        'disabled:opacity-50 disabled:cursor-not-allowed',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-        className,
-      ].join(' ')}
-      style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}
-    >
-      {busy && <Loader2 size={14} className="animate-spin" />}
+    <Button {...(props as any)} loading={busy} className={className}>
       {children}
-    </button>
+    </Button>
   )
 }
 
 export function SavedBadge({ show, label = 'Saved' }) {
   if (!show) return null
   return (
-    <span className="inline-flex items-center gap-1.5 text-sm text-success">
+    <span className="inline-flex items-center gap-1.5 text-sm" role="status" style={{ color: 'var(--success-fg)' }}>
       <CheckCircle size={14} aria-hidden="true" />
       {label}
     </span>
@@ -169,7 +147,7 @@ export function SavedBadge({ show, label = 'Saved' }) {
 export function ErrorText({ children }) {
   if (!children) return null
   return (
-    <p className="text-sm text-danger" role="alert">
+    <p className="nubi-field-error m-0 text-sm" role="alert">
       {children}
     </p>
   )
@@ -179,16 +157,10 @@ export function ErrorText({ children }) {
 // Toggle / switch
 // ---------------------------------------------------------------------------
 
-/**
- * Toggle — native checkbox styled as an accessible switch.
- * Wraps .nubi-switch + .nubi-switch-thumb from the design system CSS.
- */
+/** Toggle — a switch (role=switch): ink when on. */
 export function Toggle({ checked, onChange, disabled = false, id = undefined, label = undefined }) {
   return (
-    <label
-      className="inline-flex items-center gap-2.5 cursor-pointer select-none"
-      htmlFor={id}
-    >
+    <label className="inline-flex cursor-pointer select-none items-center gap-2.5" htmlFor={id}>
       <button
         id={id}
         type="button"
@@ -196,9 +168,9 @@ export function Toggle({ checked, onChange, disabled = false, id = undefined, la
         aria-checked={checked}
         disabled={disabled}
         onClick={() => !disabled && onChange?.(!checked)}
-        className="nubi-switch"
+        className="ap-switch disabled:opacity-50"
       >
-        <span className="nubi-switch-thumb" />
+        <span className="ap-switch-knob" />
       </button>
       {label && <span className="text-sm text-fg">{label}</span>}
     </label>
@@ -212,25 +184,26 @@ export function Toggle({ checked, onChange, disabled = false, id = undefined, la
 export function DangerZone({ children }) {
   return (
     <section
-      className="rounded-2xl border border-red-200 dark:border-red-900/60 bg-surface overflow-hidden"
+      className="mb-6 border border-border bg-surface"
+      style={{ borderTop: '2px solid var(--danger)', borderRadius: '0 0 2px 2px' }}
       aria-label="Danger zone"
     >
-      <div className="px-5 sm:px-6 py-3 bg-red-50 dark:bg-red-950/25 border-b border-red-200 dark:border-red-900/60 flex items-center gap-2">
-        <AlertTriangle size={13} className="text-red-600 dark:text-red-400 shrink-0" aria-hidden="true" />
-        <h3 className="font-display font-semibold text-sm text-red-700 dark:text-red-400">Danger zone</h3>
+      <div className="flex items-center gap-2 border-b border-border px-5 py-3">
+        <span className="nubi-dot nubi-dot-danger" aria-hidden="true" />
+        <h2 className="m-0 text-sm font-semibold" style={{ color: 'var(--danger-fg)' }}>Danger zone</h2>
       </div>
-      <div className="px-5 sm:px-6 py-4 divide-y divide-border">{children}</div>
+      <div className="divide-y divide-border px-5 py-4">{children}</div>
     </section>
   )
 }
 
 export function DangerRow({ title, description = undefined, children, extra = undefined }) {
   return (
-    <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 py-3 first:pt-0 last:pb-0">
+    <div className="flex flex-col gap-4 py-3 first:pt-0 last:pb-0 sm:flex-row sm:items-start sm:justify-between">
       <div className="min-w-0">
-        <p className="text-sm font-medium text-fg leading-tight">{title}</p>
+        <p className="m-0 text-sm font-semibold leading-tight text-fg">{title}</p>
         {description && (
-          <p className="text-xs text-muted mt-0.5 max-w-prose leading-relaxed">{description}</p>
+          <p className="mb-0 mt-1 max-w-prose text-xs leading-relaxed text-muted">{description}</p>
         )}
         {extra}
       </div>
@@ -239,24 +212,18 @@ export function DangerRow({ title, description = undefined, children, extra = un
   )
 }
 
+/** A destructive action: outlined in the danger colour, so one click cannot hurt. */
 export function DangerButton({ busy = false, children, className = '', ...props }) {
   return (
-    <button
+    <Button
       type="button"
-      {...props}
-      className={[
-        'inline-flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium',
-        'text-red-600 dark:text-red-400',
-        'border border-red-200 dark:border-red-800/70',
-        'hover:bg-red-50 dark:hover:bg-red-950/30',
-        'transition-colors duration-100',
-        'disabled:opacity-40 disabled:cursor-not-allowed',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/50',
-        className,
-      ].join(' ')}
+      variant="outline"
+      {...(props as any)}
+      loading={busy}
+      className={['text-danger', className].join(' ')}
+      style={{ borderColor: 'var(--danger)', color: 'var(--danger-fg)' }}
     >
-      {busy && <Loader2 size={14} className="animate-spin" />}
       {children}
-    </button>
+    </Button>
   )
 }

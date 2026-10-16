@@ -24,6 +24,8 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import Editor from '@monaco-editor/react'
 import { ChevronDown, ChevronRight, AlertCircle, CheckCircle2, Clock, ChevronDown as SnippetIcon } from 'lucide-react'
 import CellToolbar from './CellToolbar.jsx'
+import useMonacoTheme from './useMonacoTheme.js'
+import Button from '../../components/ui/Button.jsx'
 import CellConfigAnnotations from './CellConfigAnnotations.jsx'
 import SecretsMenu from './SecretsMenu.jsx'
 import DataTable from '../../components/DataTable.jsx'
@@ -83,6 +85,7 @@ export default function PythonCell({
   const [snippetOpen, setSnippetOpen] = useState(false)
   const [ingestTemplates, setIngestTemplates] = useState([])
   const monacoRef = useRef(null)
+  const monacoTheme = useMonacoTheme()
 
   // Fetch the backend ingest starter templates once (cached at module level).
   // setState lives inside the async callback, not the effect body, to satisfy
@@ -144,7 +147,7 @@ export default function PythonCell({
   const editorH = editorHeight(code)
 
   return (
-    <div className="rounded-xl border border-border bg-surface shadow-sm overflow-hidden">
+    <div className="overflow-hidden border border-frame-line bg-surface" style={{ borderRadius: 2 }}>
       {/* Toolbar */}
       <CellToolbar
         index={index}
@@ -160,14 +163,14 @@ export default function PythonCell({
       <CellConfigAnnotations config={cell?.config} />
 
       {/* Snippet picker sub-toolbar */}
-      <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-2/20 border-b border-border">
-        <p className="text-[10px] text-muted">
+      <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
+        <p className="m-0 text-xs text-muted">
           Bind output to{' '}
-          <code className="font-mono bg-surface-2 px-1 rounded">result</code>.
+          <code className="font-mono bg-surface-2 px-1" style={{ borderRadius: 2 }}>result</code>.
           Available:{' '}
-          <code className="font-mono bg-surface-2 px-1 rounded">inputs</code>,{' '}
-          <code className="font-mono bg-surface-2 px-1 rounded">params</code>,{' '}
-          <code className="font-mono bg-surface-2 px-1 rounded">secrets</code>.
+          <code className="font-mono bg-surface-2 px-1" style={{ borderRadius: 2 }}>inputs</code>,{' '}
+          <code className="font-mono bg-surface-2 px-1" style={{ borderRadius: 2 }}>params</code>,{' '}
+          <code className="font-mono bg-surface-2 px-1" style={{ borderRadius: 2 }}>secrets</code>.
         </p>
 
         {/* Secrets dropdown */}
@@ -177,35 +180,31 @@ export default function PythonCell({
 
         {/* Snippet dropdown */}
         <div className="relative">
-          <button
-            type="button"
-            onClick={() => setSnippetOpen(v => !v)}
-            className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded border border-border bg-surface hover:bg-surface-2 text-muted hover:text-fg transition-colors"
-          >
-            <SnippetIcon size={10} className={`transition-transform ${snippetOpen ? 'rotate-180' : ''}`} />
+          <Button type="button" variant="secondary" size="xs" onClick={() => setSnippetOpen(v => !v)} aria-expanded={snippetOpen}>
+            <SnippetIcon size={12} className={`transition-transform ${snippetOpen ? 'rotate-180' : ''}`} />
             Examples
-          </button>
+          </Button>
           {snippetOpen && (
-            <div className="absolute z-20 top-full right-0 mt-1 min-w-[220px] max-h-80 overflow-auto p-1.5 rounded-xl bg-surface border border-border shadow-lg shadow-black/10">
+            <div className="nubi-dropdown right-0 top-[calc(100%+6px)] z-20 max-h-80 min-w-[220px] overflow-auto">
               {PYTHON_EXAMPLES.map(ex => (
                 <button
                   key={ex.label}
                   onClick={() => insertSnippet(ex.code)}
-                  className="w-full text-left px-2.5 py-2 rounded-lg text-xs text-fg hover:bg-surface-2 transition-colors"
+                  className="nubi-dropdown-item"
                 >
                   {ex.label}
                 </button>
               ))}
               {ingestTemplates.length > 0 && (
                 <>
-                  <div className="px-3 pt-2 pb-1 mt-1 border-t border-border text-[10px] font-semibold uppercase tracking-wide text-muted/70">
+                  <div className="t-label mt-1 border-t border-border px-3 pb-1 pt-2">
                     Ingest starters
                   </div>
                   {ingestTemplates.map(ex => (
                     <button
                       key={ex.label}
                       onClick={() => insertSnippet(ex.code)}
-                      className="w-full text-left px-2.5 py-2 rounded-lg text-xs text-fg hover:bg-surface-2 transition-colors"
+                      className="nubi-dropdown-item"
                     >
                       {ex.label}
                     </button>
@@ -226,7 +225,7 @@ export default function PythonCell({
           language="python"
           value={code}
           onChange={handleCodeChange}
-          theme="vs-dark"
+          theme={monacoTheme}
           options={MONACO_PY_OPTS}
           onMount={(editor) => { monacoRef.current = editor }}
         />
@@ -234,9 +233,9 @@ export default function PythonCell({
 
       {/* Error banner */}
       {runError && (
-        <div className="flex items-start gap-2 px-3 py-2 bg-red-500/5 border-b border-red-500/20 text-xs text-red-600 dark:text-red-400">
-          <AlertCircle size={12} className="shrink-0 mt-0.5" />
-          <span className="flex-1 font-mono whitespace-pre-wrap break-all">{runError}</span>
+        <div className="nubi-notice nubi-notice-error m-3 text-xs" role="alert">
+          <AlertCircle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+          <span className="flex-1 whitespace-pre-wrap break-all font-mono">{runError}</span>
         </div>
       )}
 
@@ -246,20 +245,21 @@ export default function PythonCell({
           {/* Results header */}
           <button
             onClick={() => setResultsOpen(v => !v)}
-            className="w-full flex items-center gap-2 px-3 py-1.5 bg-surface-2/30 hover:bg-surface-2/60 transition-colors border-b border-border text-left"
+            aria-expanded={resultsOpen}
+            className="nubi-focus-inset flex w-full items-center gap-2 border-b border-border bg-surface-2 px-3 py-1.5 text-left transition-colors hover:bg-frame-hover"
           >
             {resultsOpen
-              ? <ChevronDown size={12} className="text-muted shrink-0" />
-              : <ChevronRight size={12} className="text-muted shrink-0" />
+              ? <ChevronDown size={13} className="shrink-0 text-muted" aria-hidden="true" />
+              : <ChevronRight size={13} className="shrink-0 text-muted" aria-hidden="true" />
             }
-            <CheckCircle2 size={11} className="text-green-500 shrink-0" />
-            <span className="text-[11px] font-medium text-fg">
-              {result.row_count ?? tableRows.length} rows
+            <span className="nubi-dot nubi-dot-success" aria-hidden="true" />
+            <span className="ap-meta" style={{ color: 'var(--text)' }}>
+              {(result.row_count ?? tableRows.length).toLocaleString()} rows
             </span>
             {result.elapsed_ms != null && (
-              <span className="flex items-center gap-1 ml-auto text-[10px] text-muted">
-                <Clock size={10} />
-                {result.elapsed_ms}ms
+              <span className="ap-meta ml-auto flex items-center gap-1">
+                <Clock size={11} aria-hidden="true" />
+                {result.elapsed_ms} ms
               </span>
             )}
           </button>
@@ -281,7 +281,7 @@ export default function PythonCell({
           {resultsOpen && tableColumns.length === 0 && (
             <div className="px-4 py-3 text-xs text-muted text-center">
               Cell returned no tabular output. Bind a dict or list to{' '}
-              <code className="font-mono bg-surface-2 px-1 rounded">result</code>.
+              <code className="font-mono bg-surface-2 px-1" style={{ borderRadius: 2 }}>result</code>.
             </div>
           )}
         </div>

@@ -24,10 +24,10 @@
  */
 
 import { useState, type ReactNode } from 'react'
-import {
-  ChevronDown, ChevronRight, AlertCircle, Check, Loader2, FileJson,
-} from 'lucide-react'
+import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
+import Tag from '../components/ui/Tag.jsx'
 import { getToolMeta, toolLabel, truncate, coerce, toolSummary } from './toolMeta.js'
+import '../components/app/appPatterns.css'
 
 export interface ToolAction {
   id: string
@@ -43,14 +43,14 @@ export interface ToolAction {
 
 function MiniTable({ columns = [], rows = [] }: { columns?: string[]; rows?: Record<string, any>[] }) {
   const cols = columns.length ? columns : (rows[0] ? Object.keys(rows[0]) : [])
-  if (!cols.length) return <p className="text-[11px] text-muted">No columns.</p>
+  if (!cols.length) return <p className="m-0 text-xs text-muted">No columns.</p>
   return (
-    <div className="overflow-x-auto rounded-lg border border-border">
-      <table className="w-full text-[11px] font-mono border-collapse">
+    <div className="overflow-x-auto border border-border" style={{ borderRadius: 2 }}>
+      <table className="w-full border-collapse font-mono text-[11px]">
         <thead>
-          <tr className="bg-surface-2">
+          <tr>
             {cols.map(c => (
-              <th key={c} className="text-left font-semibold text-muted px-2 py-1 border-b border-border whitespace-nowrap">
+              <th key={c} className="whitespace-nowrap px-2 py-1 text-left font-medium text-muted" style={{ borderBottom: '2px solid var(--ink)' }}>
                 {c}
               </th>
             ))}
@@ -58,9 +58,9 @@ function MiniTable({ columns = [], rows = [] }: { columns?: string[]; rows?: Rec
         </thead>
         <tbody>
           {rows.slice(0, 8).map((r, i) => (
-            <tr key={i} className="even:bg-surface-2/40">
+            <tr key={i}>
               {cols.map(c => (
-                <td key={c} className="px-2 py-1 text-fg whitespace-nowrap max-w-[160px] truncate border-b border-border/50">
+                <td key={c} className="max-w-[160px] truncate whitespace-nowrap border-b border-border px-2 py-1 text-fg">
                   {String(r?.[c] ?? '')}
                 </td>
               ))}
@@ -68,18 +68,16 @@ function MiniTable({ columns = [], rows = [] }: { columns?: string[]; rows?: Rec
           ))}
         </tbody>
       </table>
-      {rows.length > 8 && (
-        <p className="text-[10px] text-muted px-2 py-1 bg-surface-2/40">+{rows.length - 8} more rows</p>
-      )}
+      {rows.length > 8 && <p className="m-0 bg-surface-2 px-2 py-1 font-mono text-[11px] text-muted">+{rows.length - 8} more rows</p>}
     </div>
   )
 }
 
-/** A labelled section with an uppercase caption. */
+/** A labelled section with a mono caption. */
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div>
-      <p className="text-muted uppercase tracking-wider mb-1 text-[10px] font-semibold">{label}</p>
+      <p className="t-label m-0 mb-1">{label}</p>
       {children}
     </div>
   )
@@ -91,12 +89,12 @@ function ToolResultBody({ tool, result }: { tool: string; result: any }) {
 
   if (value == null) return null
   if (typeof value !== 'object') {
-    return <pre className="text-[11px] text-fg whitespace-pre-wrap break-words leading-relaxed">{String(value)}</pre>
+    return <pre className="m-0 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-fg">{String(value)}</pre>
   }
   if (value.error) {
     return (
-      <p className="text-[11px] text-red-500 flex items-start gap-1.5">
-        <AlertCircle size={12} className="shrink-0 mt-0.5" />{String(value.error)}
+      <p className="m-0 flex items-start gap-1.5 text-xs" role="alert" style={{ color: 'var(--danger-fg)' }}>
+        <span className="nubi-dot nubi-dot-danger mt-1.5" aria-hidden="true" />{String(value.error)}
       </p>
     )
   }
@@ -104,19 +102,15 @@ function ToolResultBody({ tool, result }: { tool: string; result: any }) {
   if (tool === 'generate_sql' && (value.sql || value.valid != null)) {
     return (
       <div className="space-y-1.5">
-        <pre className="text-[11px] leading-relaxed font-mono text-fg bg-surface-2 rounded-lg px-2.5 py-2 overflow-x-auto whitespace-pre-wrap break-words">
+        <pre className="m-0 overflow-x-auto whitespace-pre-wrap break-words bg-surface-2 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-fg" style={{ borderRadius: 2 }}>
           {value.sql || '—'}
         </pre>
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-medium ${value.valid ? 'bg-brand-teal/15 text-brand-teal' : 'bg-amber-500/15 text-amber-600'}`}>
-            {value.valid ? 'valid' : 'needs review'}
-          </span>
-          {(value.tables || []).slice(0, 4).map(t => (
-            <span key={t} className="text-[10px] px-1.5 py-0.5 rounded-md bg-surface-2 text-muted font-mono">{t}</span>
-          ))}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Tag variant={value.valid ? 'success' : 'warning'} dot>{value.valid ? 'valid' : 'needs review'}</Tag>
+          {(value.tables || []).slice(0, 4).map(t => <Tag key={t} caps={false}>{t}</Tag>)}
         </div>
         {(value.issues || []).length > 0 && (
-          <ul className="text-[10px] text-amber-600 list-disc ml-4">
+          <ul className="m-0 ml-4 list-disc text-[11px]" style={{ color: 'var(--warning-fg)' }}>
             {value.issues.slice(0, 3).map((iss, i) => <li key={i}>{iss}</li>)}
           </ul>
         )}
@@ -128,9 +122,9 @@ function ToolResultBody({ tool, result }: { tool: string; result: any }) {
     const colCount = (value.columns || (value.rows?.[0] ? Object.keys(value.rows[0]) : [])).length
     return (
       <div className="space-y-1.5">
-        <p className="text-[11px] text-muted">
-          <span className="font-semibold text-fg">{value.row_count ?? (value.rows || []).length}</span> rows ·{' '}
-          <span className="font-semibold text-fg">{colCount}</span> cols
+        <p className="ap-meta m-0">
+          <span style={{ color: 'var(--text)' }}>{(value.row_count ?? (value.rows || []).length).toLocaleString()}</span> rows ·{' '}
+          <span style={{ color: 'var(--text)' }}>{colCount}</span> cols
         </p>
         {(value.rows || []).length > 0 && <MiniTable columns={value.columns} rows={value.rows} />}
       </div>
@@ -141,15 +135,15 @@ function ToolResultBody({ tool, result }: { tool: string; result: any }) {
       (value.widgets || value.title || value.widget_count != null)) {
     return (
       <div className="space-y-1.5">
-        {value.title && <p className="text-[11px] text-fg font-medium">{value.title}</p>}
+        {value.title && <p className="m-0 text-xs font-semibold text-fg">{value.title}</p>}
         <div className="flex flex-wrap gap-1">
           {(value.widgets || []).slice(0, 12).map((w, i) => (
-            <span key={i} className="text-[10px] px-1.5 py-0.5 rounded-md bg-brand-blue/10 text-brand-blue font-mono">
+            <Tag key={i} caps={false}>
               {w.type}{w.title ? ` · ${truncate(w.title, 18)}` : ''}
-            </span>
+            </Tag>
           ))}
           {!value.widgets?.length && (
-            <span className="text-[10px] text-muted">{value.widget_count ?? 0} widget(s)</span>
+            <span className="ap-meta">{value.widget_count ?? 0} widget(s)</span>
           )}
         </div>
       </div>
@@ -158,14 +152,14 @@ function ToolResultBody({ tool, result }: { tool: string; result: any }) {
 
   // Fallback: pretty JSON, capped so a huge payload doesn't blow out the panel.
   return (
-    <pre className="text-[11px] text-fg whitespace-pre-wrap break-words leading-relaxed max-h-56 overflow-auto bg-surface-2 rounded-lg px-2.5 py-2">
+    <pre className="m-0 max-h-56 overflow-auto whitespace-pre-wrap break-words bg-surface-2 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-fg" style={{ borderRadius: 2 }}>
       {JSON.stringify(value, null, 2)}
     </pre>
   )
 }
 
 // ---------------------------------------------------------------------------
-// ToolCard — collapsible tool invocation
+// ToolCard — one ruled, collapsible tool call (mono, like a terminal log line)
 // ---------------------------------------------------------------------------
 
 export default function ToolCard({ action, footer = null, defaultOpen = false }: {
@@ -174,7 +168,7 @@ export default function ToolCard({ action, footer = null, defaultOpen = false }:
   defaultOpen?: boolean
 }) {
   const [open, setOpen] = useState(defaultOpen)
-  const { icon: Icon, color, bg } = getToolMeta(action.tool)
+  const { icon: Icon } = getToolMeta(action.tool)
   const running = action.status === 'running'
   const errored = action.status === 'error'
   const summary = !running ? toolSummary(action.tool, action.result) : ''
@@ -182,41 +176,37 @@ export default function ToolCard({ action, footer = null, defaultOpen = false }:
   const hasResult = action.result !== undefined && action.result !== null
 
   return (
-    <div className={`rounded-xl border overflow-hidden transition-shadow ${errored ? 'border-red-500/30' : 'border-border'} ${open ? 'shadow-sm' : ''}`}>
+    <div className="border-b border-border" data-state={action.status}>
       <button
         type="button"
         onClick={() => setOpen(v => !v)}
-        className="w-full flex items-center gap-2.5 px-2.5 py-2 bg-surface-2 hover:bg-surface-2/70 text-left transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-inset"
+        className="nubi-focus-inset flex w-full items-center gap-2 py-1.5 text-left transition-colors hover:bg-frame-hover"
         aria-expanded={open}
       >
-        <span className={`flex items-center justify-center w-6 h-6 rounded-lg ${bg} shrink-0`}>
-          <Icon size={13} className={color} />
-        </span>
-        <span className="flex-1 min-w-0">
-          <span className="block font-mono text-[11px] font-semibold text-fg leading-tight truncate">
-            {toolLabel(action.tool)}
-          </span>
+        <Icon size={14} className="shrink-0 text-subtle" aria-hidden="true" />
+        <span className="min-w-0 flex-1 truncate font-mono text-xs leading-tight">
+          <span className="font-semibold text-fg">{toolLabel(action.tool)}</span>
           {running ? (
-            <span className="block text-[10px] text-brand-teal font-mono">running…</span>
+            <span className="ml-2 text-muted">running</span>
           ) : summary ? (
-            <span className="block text-[10px] text-muted font-mono truncate">{summary}</span>
+            <span className="ml-2 text-muted">{summary}</span>
           ) : null}
         </span>
-        <span className="shrink-0 flex items-center">
-          {running && <Loader2 size={14} className="text-brand-teal animate-spin" />}
-          {action.status === 'done' && <Check size={14} className="text-brand-teal" />}
-          {errored && <AlertCircle size={14} className="text-red-500" />}
+        <span className="flex shrink-0 items-center" role="img" aria-label={running ? 'Running' : errored ? 'Failed' : 'Done'}>
+          {running
+            ? <Loader2 size={13} className="animate-spin text-muted" aria-hidden="true" />
+            : <span className={`nubi-dot ${errored ? 'nubi-dot-danger' : 'nubi-dot-success'}`} />}
         </span>
-        <span className="text-muted shrink-0">
-          {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        <span className="shrink-0 text-subtle">
+          {open ? <ChevronDown size={13} aria-hidden="true" /> : <ChevronRight size={13} aria-hidden="true" />}
         </span>
       </button>
 
       {open && (
-        <div className="px-2.5 py-2.5 bg-surface border-t border-border space-y-2">
+        <div className="mb-2 ml-1.5 space-y-2 border-l-2 border-frame-line py-1 pl-3">
           {hasArgs && (
             <Field label="Arguments">
-              <pre className="text-[11px] text-fg font-mono whitespace-pre-wrap break-words bg-surface-2 rounded-lg px-2 py-1.5 max-h-40 overflow-auto">
+              <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words bg-surface-2 px-2 py-1.5 font-mono text-[11px] text-fg" style={{ borderRadius: 2 }}>
                 {JSON.stringify(action.args, null, 2)}
               </pre>
             </Field>
@@ -227,11 +217,7 @@ export default function ToolCard({ action, footer = null, defaultOpen = false }:
               {footer}
             </Field>
           )}
-          {running && (
-            <p className="text-[11px] text-muted italic flex items-center gap-1.5">
-              <FileJson size={11} className="shrink-0" /> Executing…
-            </p>
-          )}
+          {running && <p className="ap-meta m-0">Executing</p>}
         </div>
       )}
     </div>

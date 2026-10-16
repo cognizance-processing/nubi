@@ -23,8 +23,10 @@
  *   onClose   {Function}             — called to deselect / close drawer
  */
 
+import SegmentedControl from '../components/ui/SegmentedControl.jsx'
 import { useState, useCallback, useEffect } from 'react'
 import { X, ChevronDown, Plus, Trash2 } from 'lucide-react'
+import '../components/app/monacoSetup'
 import Editor from '@monaco-editor/react'
 import { listSecrets } from '../lib/secrets.js'
 import { get } from '../lib/api.js'
@@ -101,24 +103,17 @@ function QueryConfig({ config, onChange }) {
   return (
     <div className="space-y-3">
       {/* Toggle: query_id vs raw SQL */}
-      <div className="flex h-8 rounded-lg border border-border overflow-hidden">
-        {[['query_id', 'Query ID'], ['sql', 'Raw SQL']].map(([m, label]) => (
-          <button
-            key={m}
-            onClick={() => {
-              if (m === mode) return
-              if (m === 'query_id') onChange({ ...config, query_id: config.query_id ?? '', sql: undefined })
-              else onChange({ ...config, sql: config.sql ?? '', query_id: undefined })
-            }}
-            className={[
-              'flex-1 text-xs font-medium transition-colors',
-              m === mode ? 'bg-primary text-primary-fg' : 'bg-surface text-muted hover:text-primary',
-            ].join(' ')}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <SegmentedControl
+        size="sm"
+        value={mode}
+        onChange={(m) => {
+          if (m === mode) return
+          if (m === 'query_id') onChange({ ...config, query_id: config.query_id ?? '', sql: undefined })
+          else onChange({ ...config, sql: config.sql ?? '', query_id: undefined })
+        }}
+        options={[{ value: 'query_id', label: 'Query ID' }, { value: 'sql', label: 'Raw SQL' }]}
+        className="w-full"
+      />
 
       {mode === 'query_id' ? (
         <div>
@@ -141,7 +136,7 @@ function QueryConfig({ config, onChange }) {
             placeholder="SELECT * FROM ..."
             onChange={e => onChange({ ...config, sql: e.target.value })}
           />
-          <p className="text-[10px] text-muted/60 mt-1">
+          <p className="text-[11px] text-muted/60 mt-1">
             <code className="font-mono bg-surface-2 px-0.5 rounded">{'{{ secrets.NAME }}'}</code>{' '}
             is resolved at run time.
           </p>
@@ -163,7 +158,7 @@ function QueryConfig({ config, onChange }) {
             </option>
           ))}
         </select>
-        <p className="text-[10px] text-muted/60 mt-1">
+        <p className="text-[11px] text-muted/60 mt-1">
           {mode === 'sql'
             ? 'Raw SQL runs against this connector. Leave as DuckDB to query the outputs of upstream tasks in-memory.'
             : 'Optionally override which connector this registered query runs against. Leave as DuckDB for the default.'}
@@ -209,7 +204,7 @@ function PythonConfig({ config, onChange }) {
       </div>
 
       {/* Help text */}
-      <p className="text-[10px] text-muted">
+      <p className="text-[11px] text-muted">
         Variables: <code className="font-mono bg-surface-2 px-1 rounded">inputs</code>, <code className="font-mono bg-surface-2 px-1 rounded">params</code>, <code className="font-mono bg-surface-2 px-1 rounded">secrets</code>. Bind output to <code className="font-mono bg-surface-2 px-1 rounded">result</code>.
         {' '}<code className="font-mono bg-surface-2 px-1 rounded">{'{{ secrets.NAME }}'}</code> is resolved at run time.
       </p>
@@ -305,7 +300,7 @@ function MaterializeConfig({ config, onChange }) {
           placeholder="SELECT * FROM source_a UNION ALL SELECT * FROM source_b"
           onChange={e => onChange({ ...config, combine_sql: e.target.value })}
         />
-        <p className="text-[10px] text-muted/60 mt-1">Reference each upstream source by its task key (registered as a DuckDB table).</p>
+        <p className="text-[11px] text-muted/60 mt-1">Reference each upstream source by its task key (registered as a DuckDB table).</p>
       </div>
       <div>
         <FieldLabel>Sources (task keys)</FieldLabel>
@@ -336,7 +331,7 @@ function MaterializeConfig({ config, onChange }) {
           placeholder="org_id, tenant_id"
           onChange={e => onChange({ ...config, rls_keys: parse(e.target.value) })}
         />
-        <p className="text-[10px] text-muted/60 mt-1">Columns that must survive the merge so RLS can filter rows at read time.</p>
+        <p className="text-[11px] text-muted/60 mt-1">Columns that must survive the merge so RLS can filter rows at read time.</p>
       </div>
 
       <MaterializedSection config={config} onChange={onChange} />
@@ -389,7 +384,7 @@ function MaterializedSection({ config, onChange }) {
 
   return (
     <div className="pt-1 mt-1 border-t border-border/60 space-y-3">
-      <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest">Materialization</p>
+      <p className="text-[11px] font-semibold text-muted/70 uppercase tracking-widest">Materialization</p>
 
       <div>
         <FieldLabel>Strategy</FieldLabel>
@@ -402,7 +397,7 @@ function MaterializedSection({ config, onChange }) {
           <option value="full">Full — overwrite target each run</option>
           <option value="incremental">Incremental — append/merge new rows</option>
         </select>
-        <p className="text-[10px] text-muted/60 mt-1">
+        <p className="text-[11px] text-muted/60 mt-1">
           {kind === 'view' && 'Registers an in-memory query only — nothing is persisted.'}
           {kind === 'full' && 'Overwrites the target table in object storage on every run.'}
           {kind === 'incremental' && 'Processes only rows newer than the stored watermark, then appends or merges.'}
@@ -419,7 +414,7 @@ function MaterializedSection({ config, onChange }) {
             placeholder="orders/daily"
             onChange={e => setMat({ target: e.target.value })}
           />
-          <p className="text-[10px] text-muted/60 mt-1">
+          <p className="text-[11px] text-muted/60 mt-1">
             Logical path without env prefix — written under <code className="font-mono bg-surface-2 px-0.5 rounded">{'<env>/<target>'}</code> so dev and prod never clobber each other.
           </p>
         </div>
@@ -436,7 +431,7 @@ function MaterializedSection({ config, onChange }) {
               placeholder="updated_at"
               onChange={e => setMat({ time_column: e.target.value })}
             />
-            <p className="text-[10px] text-muted/60 mt-1">Only rows where this column is newer than the stored watermark are processed.</p>
+            <p className="text-[11px] text-muted/60 mt-1">Only rows where this column is newer than the stored watermark are processed.</p>
           </div>
           <div>
             <FieldLabel>Unique key (optional)</FieldLabel>
@@ -447,7 +442,7 @@ function MaterializedSection({ config, onChange }) {
               placeholder="id, region"
               onChange={e => setMat({ unique_key: parse(e.target.value) })}
             />
-            <p className="text-[10px] text-muted/60 mt-1">Present ⇒ upsert/merge on these columns; blank ⇒ append.</p>
+            <p className="text-[11px] text-muted/60 mt-1">Present ⇒ upsert/merge on these columns; blank ⇒ append.</p>
           </div>
           <div>
             <FieldLabel>Lookback (optional)</FieldLabel>
@@ -458,7 +453,7 @@ function MaterializedSection({ config, onChange }) {
               placeholder="3 days"
               onChange={e => setMat({ lookback: e.target.value })}
             />
-            <p className="text-[10px] text-muted/60 mt-1">Reprocess a window before the watermark to catch late-arriving rows.</p>
+            <p className="text-[11px] text-muted/60 mt-1">Reprocess a window before the watermark to catch late-arriving rows.</p>
           </div>
         </>
       )}
@@ -502,7 +497,7 @@ function ForEachSection({ config, onChange }) {
 
   return (
     <div className="pt-1 mt-1 border-t border-border/60 space-y-3">
-      <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest">For each (fan-out)</p>
+      <p className="text-[11px] font-semibold text-muted/70 uppercase tracking-widest">For each (fan-out)</p>
 
       <div>
         <FieldLabel>Items (list expression)</FieldLabel>
@@ -513,7 +508,7 @@ function ForEachSection({ config, onChange }) {
           placeholder={`{{ inputs.get_regions.rows }}`}
           onChange={e => setFe({ items: e.target.value })}
         />
-        <p className="text-[10px] text-muted/60 mt-1">
+        <p className="text-[11px] text-muted/60 mt-1">
           Template expression or upstream ref that resolves to a list. The cell
           body runs once per item. Leave blank to disable fan-out.
         </p>
@@ -570,7 +565,7 @@ function RunWhenSection({ config, onChange }) {
 
   return (
     <div className="pt-1 mt-1 border-t border-border/60 space-y-3">
-      <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest">Run when (gate)</p>
+      <p className="text-[11px] font-semibold text-muted/70 uppercase tracking-widest">Run when (gate)</p>
 
       <div>
         <FieldLabel>Condition</FieldLabel>
@@ -581,7 +576,7 @@ function RunWhenSection({ config, onChange }) {
           placeholder={`inputs.classify.label == 'high_value'`}
           onChange={e => setRunWhen(e.target.value)}
         />
-        <p className="text-[10px] text-muted/60 mt-1">
+        <p className="text-[11px] text-muted/60 mt-1">
           Safe boolean over{' '}
           <code className="font-mono bg-surface-2 px-0.5 rounded">inputs</code>,{' '}
           <code className="font-mono bg-surface-2 px-0.5 rounded">params</code>,{' '}
@@ -616,7 +611,7 @@ function PreaggRefreshConfig({ config, onChange }) {
           placeholder="org whose query log is mined"
           onChange={e => onChange({ ...config, org_id: e.target.value })}
         />
-        <p className="text-[10px] text-muted/60 mt-1">Mines this org's query log and rebuilds pre-aggregation rollups — usually your current org id.</p>
+        <p className="text-[11px] text-muted/60 mt-1">Mines this org's query log and rebuilds pre-aggregation rollups — usually your current org id.</p>
       </div>
     </div>
   )
@@ -693,7 +688,7 @@ function BucketLoadConfig({ config, onChange }) {
           placeholder="s3://bucket/data.parquet"
           onChange={e => onChange({ ...config, uri: e.target.value })}
         />
-        <p className="text-[10px] text-muted mt-1">
+        <p className="text-[11px] text-muted mt-1">
           Supports <code className="font-mono bg-surface-2 px-0.5 rounded">s3://</code>,{' '}
           <code className="font-mono bg-surface-2 px-0.5 rounded">gs://</code>,{' '}
           <code className="font-mono bg-surface-2 px-0.5 rounded">az://</code>, and{' '}
@@ -708,7 +703,7 @@ function BucketLoadConfig({ config, onChange }) {
           value={config.secret ?? ''}
           onChange={name => onChange({ ...config, secret: name })}
         />
-        <p className="text-[10px] text-muted mt-1">
+        <p className="text-[11px] text-muted mt-1">
           Secret holding cloud credentials. Resolved server-side at run time.
         </p>
       </div>
@@ -739,7 +734,7 @@ function BucketLoadConfig({ config, onChange }) {
           placeholder="e.g. connector_id or table name"
           onChange={e => onChange({ ...config, source: e.target.value })}
         />
-        <p className="text-[10px] text-muted mt-1">
+        <p className="text-[11px] text-muted mt-1">
           Optional: connector ID, destination table, or other loader hint.
         </p>
       </div>
@@ -797,7 +792,7 @@ function MapConfig({ config, onChange }) {
           placeholder={`{{ inputs.task_key.rows }}`}
           onChange={e => onChange({ ...config, item_expr: e.target.value })}
         />
-        <p className="text-[10px] text-muted mt-1">
+        <p className="text-[11px] text-muted mt-1">
           Template expression that resolves to a list at runtime.{' '}
           E.g. <code className="font-mono bg-surface-2 px-0.5 rounded">{`{{ inputs.get_regions.rows }}`}</code>
         </p>
@@ -813,7 +808,7 @@ function MapConfig({ config, onChange }) {
           placeholder="item"
           onChange={e => onChange({ ...config, item_var: e.target.value || 'item' })}
         />
-        <p className="text-[10px] text-muted mt-1">
+        <p className="text-[11px] text-muted mt-1">
           Bound as <code className="font-mono bg-surface-2 px-0.5 rounded">{'{{ item.<field> }}'}</code> in body task configs.
         </p>
       </div>
@@ -854,7 +849,7 @@ function MapConfig({ config, onChange }) {
           placeholder="last body task key (default)"
           onChange={e => onChange({ ...config, collect_key: e.target.value || undefined })}
         />
-        <p className="text-[10px] text-muted mt-1">
+        <p className="text-[11px] text-muted mt-1">
           Which body task key&apos;s result is collected into the output list.
           Leave blank to use the last task in the body.
         </p>
@@ -863,11 +858,11 @@ function MapConfig({ config, onChange }) {
       {/* body JSON editor */}
       <div>
         <FieldLabel>Body tasks (JSON)</FieldLabel>
-        <p className="text-[10px] text-muted mb-1.5">
+        <p className="text-[11px] text-muted mb-1.5">
           Array of TaskSpec objects forming the sub-DAG executed per item.{' '}
           Body tasks may reference <code className="font-mono bg-surface-2 px-0.5 rounded">{'{{ item.<field> }}'}</code>.
         </p>
-        <div className={['rounded-lg border overflow-hidden', bodyError ? 'border-red-400' : 'border-border'].join(' ')} style={{ height: 200 }}>
+        <div className={['rounded-lg border overflow-hidden', bodyError ? 'border-danger' : 'border-border'].join(' ')} style={{ height: 200 }}>
           <Editor
             defaultLanguage="json"
             value={bodyText}
@@ -885,7 +880,7 @@ function MapConfig({ config, onChange }) {
           />
         </div>
         {bodyError && (
-          <p className="text-[10px] text-red-500 mt-1">{bodyError}</p>
+          <p className="text-xs text-danger mt-1">{bodyError}</p>
         )}
       </div>
     </div>
@@ -945,7 +940,7 @@ function BranchConfig({ config, onChange }) {
           <FieldLabel>Conditions (ordered — first match wins)</FieldLabel>
           <button
             onClick={addCondition}
-            className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-md border border-dashed border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+            className="flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-md border border-dashed border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
             title="Add condition"
           >
             <Plus size={10} />
@@ -967,12 +962,12 @@ function BranchConfig({ config, onChange }) {
             >
               {/* Condition header: index + remove */}
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-semibold text-muted/70 uppercase tracking-wider">
+                <span className="text-[11px] font-semibold text-muted/70 uppercase tracking-wider">
                   Condition {i} {i === 0 ? '(then)' : i === 1 ? '(else)' : ''}
                 </span>
                 <button
                   onClick={() => removeCondition(i)}
-                  className="w-5 h-5 flex items-center justify-center rounded text-muted/60 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                  className="w-5 h-5 flex items-center justify-center rounded text-muted/60 hover:text-danger hover:bg-frame-hover transition-colors"
                   title="Remove condition"
                   aria-label="Remove condition"
                 >
@@ -990,7 +985,7 @@ function BranchConfig({ config, onChange }) {
                   placeholder={`{{ inputs.task.field == 'value' }}`}
                   onChange={e => updateCondition(i, 'when', e.target.value)}
                 />
-                <p className="text-[10px] text-muted mt-1">
+                <p className="text-[11px] text-muted mt-1">
                   Template expression evaluated as a Python boolean after{' '}
                   <code className="font-mono bg-surface-2 px-0.5 rounded">{'{{ }}'}</code> substitution.
                 </p>
@@ -1022,7 +1017,7 @@ function BranchConfig({ config, onChange }) {
           placeholder="task_key (optional — leave blank to fail on no match)"
           onChange={e => setDefault(e.target.value)}
         />
-        <p className="text-[10px] text-muted mt-1">
+        <p className="text-[11px] text-muted mt-1">
           Task keys to activate when no condition matches.
           Leave blank to mark downstream tasks <code className="font-mono bg-surface-2 px-0.5 rounded">upstream_failed</code>.
         </p>
@@ -1109,7 +1104,7 @@ function HttpCallConfig({ config, onChange }) {
     <div className="space-y-3">
       {/* URL */}
       <div>
-        <FieldLabel>URL <span className="text-red-400">*</span></FieldLabel>
+        <FieldLabel>URL <span className="text-danger">*</span></FieldLabel>
         <input
           type="url"
           className={inputCls}
@@ -1117,7 +1112,7 @@ function HttpCallConfig({ config, onChange }) {
           placeholder="https://api.example.com/webhook"
           onChange={e => onChange({ ...config, url: e.target.value })}
         />
-        <p className="text-[10px] text-muted/60 mt-1">
+        <p className="text-[11px] text-muted/60 mt-1">
           SSRF-guarded server-side — private IP ranges are blocked.
         </p>
       </div>
@@ -1138,14 +1133,14 @@ function HttpCallConfig({ config, onChange }) {
       <div>
         <FieldLabel>Headers (JSON, non-secret)</FieldLabel>
         <textarea
-          className={[textareaCls, headersError ? 'border-red-400' : ''].join(' ')}
+          className={[textareaCls, headersError ? 'border-danger' : ''].join(' ')}
           rows={3}
           value={headersText}
           placeholder={'{\n  "Content-Type": "application/json"\n}'}
           onChange={e => handleHeadersChange(e.target.value)}
         />
-        {headersError && <p className="text-[10px] text-red-500 mt-1">{headersError}</p>}
-        <p className="text-[10px] text-muted/60 mt-1">Non-secret headers only — put auth credentials in the Auth section below.</p>
+        {headersError && <p className="text-xs text-danger mt-1">{headersError}</p>}
+        <p className="text-[11px] text-muted/60 mt-1">Non-secret headers only — put auth credentials in the Auth section below.</p>
       </div>
 
       {/* JSON body */}
@@ -1166,7 +1161,7 @@ function HttpCallConfig({ config, onChange }) {
               }
             }}
           />
-          <p className="text-[10px] text-muted/60 mt-1">
+          <p className="text-[11px] text-muted/60 mt-1">
             Template expressions <code className="font-mono bg-surface-2 px-0.5 rounded">{'{{ inputs.task.field }}'}</code> are resolved at run time.
           </p>
         </div>
@@ -1174,7 +1169,7 @@ function HttpCallConfig({ config, onChange }) {
 
       {/* Auth */}
       <div className="pt-1 border-t border-border/60 space-y-2">
-        <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest">Auth</p>
+        <p className="text-[11px] font-semibold text-muted/70 uppercase tracking-widest">Auth</p>
         <div>
           <FieldLabel>Auth kind</FieldLabel>
           <select
@@ -1198,7 +1193,7 @@ function HttpCallConfig({ config, onChange }) {
                 {secrets.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
               </select>
             </div>
-            <p className="text-[10px] text-muted/60 mt-1">
+            <p className="text-[11px] text-muted/60 mt-1">
               Secret resolved server-side at run time. Never embed raw credentials here.
             </p>
             {auth.kind === 'header' && (
@@ -1284,7 +1279,7 @@ function AssertConfig({ config, onChange }) {
           placeholder="schema.table or upstream task key"
           onChange={e => onChange({ ...config, target: e.target.value || undefined })}
         />
-        <p className="text-[10px] text-muted/60 mt-1">
+        <p className="text-[11px] text-muted/60 mt-1">
           Leave blank to assert on the last upstream task's output.
         </p>
       </div>
@@ -1295,7 +1290,7 @@ function AssertConfig({ config, onChange }) {
           <FieldLabel>Expectations</FieldLabel>
           <button
             onClick={addExpectation}
-            className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-md border border-dashed border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+            className="flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-md border border-dashed border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors"
           >
             <Plus size={10} />
             Add
@@ -1315,7 +1310,7 @@ function AssertConfig({ config, onChange }) {
                 <FieldLabel>Expectation {i + 1}</FieldLabel>
                 <button
                   onClick={() => removeExpectation(i)}
-                  className="w-5 h-5 flex items-center justify-center rounded text-muted/60 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                  className="w-5 h-5 flex items-center justify-center rounded text-muted/60 hover:text-danger hover:bg-frame-hover transition-colors"
                   title="Remove"
                 >
                   <Trash2 size={10} />
@@ -1496,19 +1491,19 @@ export default function NodeInspector({ task, onChange, onClose, readOnly = fals
 
         {/* ── Identity ─────────────────────────────────────────── */}
         <section className="space-y-3">
-          <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest">Identity</p>
+          <p className="text-[11px] font-semibold text-muted/70 uppercase tracking-widest">Identity</p>
 
           <div>
             <FieldLabel>Key</FieldLabel>
             <input
               type="text"
-              className={[inputCls, keyError ? 'border-red-400 focus:ring-red-300/60' : ''].join(' ')}
+              className={[inputCls, keyError ? 'border-danger ' : ''].join(' ')}
               value={task.key ?? ''}
               onChange={e => setField('key', e.target.value)}
               onBlur={e => validateKey(e.target.value)}
               placeholder="e.g. pull_data"
             />
-            {keyError && <p className="text-[10px] text-red-500 mt-1">{keyError}</p>}
+            {keyError && <p className="text-xs text-danger mt-1">{keyError}</p>}
           </div>
 
           <div>
@@ -1554,14 +1549,14 @@ export default function NodeInspector({ task, onChange, onClose, readOnly = fals
                   </span>
                 ))}
               </div>
-              <p className="text-[10px] text-muted/60 mt-1">Connect / disconnect edges on the canvas to change dependencies.</p>
+              <p className="text-[11px] text-muted/60 mt-1">Connect / disconnect edges on the canvas to change dependencies.</p>
             </div>
           )}
         </section>
 
         {/* ── Kind-specific config ─────────────────────────────── */}
         <section className="space-y-3">
-          <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest">Config</p>
+          <p className="text-[11px] font-semibold text-muted/70 uppercase tracking-widest">Config</p>
           {task.kind === 'query'       && <QueryConfig      config={config} onChange={setConfig} />}
           {task.kind === 'python'      && <PythonConfig     config={config} onChange={setConfig} />}
           {task.kind === 'agent'       && <AgentConfig      config={config} onChange={setConfig} />}
@@ -1581,7 +1576,7 @@ export default function NodeInspector({ task, onChange, onClose, readOnly = fals
             materialize/map/branch kinds. Shown only for the two cell kinds. */}
         {(task.kind === 'query' || task.kind === 'python') && (
           <section className="space-y-3">
-            <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest">Cell behaviour</p>
+            <p className="text-[11px] font-semibold text-muted/70 uppercase tracking-widest">Cell behaviour</p>
             {task.kind === 'query' && <MaterializedSection config={config} onChange={setConfig} />}
             <ForEachSection config={config} onChange={setConfig} />
             <RunWhenSection config={config} onChange={setConfig} />
@@ -1594,7 +1589,7 @@ export default function NodeInspector({ task, onChange, onClose, readOnly = fals
             into the active cell (SQL/python/agent text fields). Always shown —
             the store is org/project-scoped, not cell-specific. */}
         <section className="space-y-3">
-          <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest">Variables</p>
+          <p className="text-[11px] font-semibold text-muted/70 uppercase tracking-widest">Variables</p>
           {(() => {
             // Insert a `{{ vars.NAME }}` token into the cell's text field. SQL →
             // config.sql, python → config.code, agent → config.prompt; other
@@ -1617,7 +1612,7 @@ export default function NodeInspector({ task, onChange, onClose, readOnly = fals
 
         {/* ── Execution settings ───────────────────────────────── */}
         <section className="space-y-3">
-          <p className="text-[10px] font-semibold text-muted/70 uppercase tracking-widest">Execution</p>
+          <p className="text-[11px] font-semibold text-muted/70 uppercase tracking-widest">Execution</p>
 
           <div className="grid grid-cols-2 gap-3">
             <NumberField

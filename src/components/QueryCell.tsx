@@ -16,6 +16,9 @@
 
 import { useState, useCallback, useRef } from 'react'
 import { runArrowQuery, SAMPLE_TABLE } from '../lib/wasmRuntime.js'
+import Tag from './ui/Tag.jsx'
+import Button from './ui/Button.jsx'
+import Spinner from './ui/Spinner.jsx'
 
 const DEFAULT_SQL = 'SELECT 1 AS n'
 const MAX_ROWS = 100
@@ -25,25 +28,14 @@ const MAX_ROWS = 100
 // ---------------------------------------------------------------------------
 
 /**
- * Renders a small coloured pill for the cache status.
- *   HIT    → green
- *   MISS   → amber
- *   SAMPLE → gray (fallback data, no backend hit)
+ * Cache status as a Tag: square, mono, a status dot (no tinted pill).
+ *   HIT → success, MISS → warning, SAMPLE → neutral (fallback, no backend hit)
  */
 function CacheBadge({ status }) {
   if (!status) return null
 
-  const styles = {
-    HIT:    'bg-green-100 text-green-700',
-    MISS:   'bg-amber-100 text-amber-700',
-    SAMPLE: 'bg-gray-100 text-gray-500',
-  }
-
-  const className = `px-2 py-0.5 rounded-full text-xs font-semibold ${
-    styles[status] ?? 'bg-gray-100 text-gray-500'
-  }`
-
-  return <span className={className}>{status}</span>
+  const variant = status === 'HIT' ? 'success' : status === 'MISS' ? 'warning' : 'neutral'
+  return <Tag variant={variant} dot>{status}</Tag>
 }
 
 // ---------------------------------------------------------------------------
@@ -114,14 +106,15 @@ export default function QueryCell() {
     : (streamedRows !== null ? streamedRows : null)
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+    <div className="border border-border bg-surface rounded-[var(--radius-sheet)] overflow-hidden">
       {/* SQL input area */}
-      <div className="p-4 border-b border-gray-100">
-        <label className="block text-xs font-medium text-gray-500 mb-2 uppercase tracking-wide">
+      <div className="p-4 border-b border-border">
+        <label htmlFor="query-cell-sql" className="block font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-subtle mb-2">
           SQL
         </label>
         <textarea
-          className="w-full font-mono text-sm text-gray-800 bg-gray-50 border border-gray-200 rounded-lg p-3 resize-y min-h-[80px] focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+          id="query-cell-sql"
+          className="w-full font-mono text-[13px] text-fg bg-surface-2 border border-border rounded-[var(--radius-control)] p-3 resize-y min-h-[80px] focus-visible:outline-none focus-visible:border-ink focus-visible:ring-2 focus-visible:ring-ring"
           value={sql}
           onChange={e => setSql(e.target.value)}
           onKeyDown={e => {
@@ -136,29 +129,21 @@ export default function QueryCell() {
           aria-label="SQL input"
         />
         <div className="mt-2 flex items-center gap-3">
-          <button
-            onClick={handleRun}
-            disabled={loading || !sql.trim()}
-            className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-1"
-          >
+          <Button onClick={handleRun} disabled={loading || !sql.trim()} loading={loading}>
             {loading ? 'Running…' : 'Run'}
-          </button>
-          <span className="text-xs text-gray-400">Ctrl+Enter</span>
+          </Button>
+          <kbd className="nubi-kbd select-none">Ctrl Enter</kbd>
         </div>
       </div>
 
       {/* Loading state — shows live streamed-rows counter */}
       {loading && (
-        <div className="p-6 flex items-center gap-3 text-sm text-gray-500">
-          <div
-            className="h-4 w-4 rounded-full border-2 border-indigo-600 border-t-transparent animate-spin"
-            role="status"
-            aria-label="Running query"
-          />
+        <div className="p-6 flex items-center gap-3 text-sm text-muted" role="status" aria-live="polite">
+          <Spinner size="sm" label="Running query" />
           <span>
             Streaming…
             {streamedRows !== null && (
-              <span className="ml-2 font-mono text-xs text-indigo-600">
+              <span className="ml-2 font-mono tabular-nums text-xs text-fg">
                 rows: {streamedRows.toLocaleString()}
               </span>
             )}
@@ -168,15 +153,14 @@ export default function QueryCell() {
 
       {/* Non-blocking fallback notice */}
       {!loading && notice && (
-        <div className="px-4 py-2 bg-amber-50 border-b border-amber-100 text-xs text-amber-700 flex items-start gap-2">
-          <span className="shrink-0 mt-0.5">&#9888;</span>
+        <div className="px-4 py-2 border-b border-border border-l-2 border-l-warning text-xs text-muted flex items-start gap-2">
           <span>{notice}</span>
         </div>
       )}
 
       {/* Hard error (shouldn't happen after fallback, kept for safety) */}
       {!loading && error && (
-        <div className="px-4 py-3 bg-red-50 border-b border-red-100 text-sm text-red-700">
+        <div role="alert" className="px-4 py-3 border-b border-border border-l-2 border-l-danger text-sm text-fg">
           {error}
         </div>
       )}
@@ -184,25 +168,25 @@ export default function QueryCell() {
       {/* Results */}
       {!loading && result && (
         <div>
-          {/* Metadata bar — cache badge + elapsed + row count */}
-          <div className="px-4 py-2 bg-gray-50 border-b border-gray-100 flex items-center justify-between text-xs text-gray-500">
+          {/* Metadata bar: row count, elapsed, cache status */}
+          <div className="px-4 py-2 bg-surface-2 border-b border-border flex items-center justify-between text-xs text-muted">
             <span>
               {rowCount !== null && (
                 <>
-                  rows:{' '}
-                  <span className="font-mono font-semibold text-gray-700">
+                  rows{' '}
+                  <span className="font-mono tabular-nums font-semibold text-fg">
                     {rowCount.toLocaleString()}
                   </span>
                   {result.numRows > MAX_ROWS && (
-                    <span className="ml-1 text-gray-400">(showing first {MAX_ROWS})</span>
+                    <span className="ml-1 text-subtle">(showing first {MAX_ROWS})</span>
                   )}
                 </>
               )}
             </span>
             <div className="flex items-center gap-2">
               {elapsedMs !== null && (
-                <span className="font-mono text-gray-400">
-                  elapsed: {elapsedMs.toLocaleString()} ms
+                <span className="font-mono tabular-nums text-muted">
+                  {elapsedMs.toLocaleString()} ms
                 </span>
               )}
               <CacheBadge status={cacheStatus} />
@@ -213,11 +197,12 @@ export default function QueryCell() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse">
               <thead>
-                <tr className="bg-gray-50">
+                <tr className="bg-surface">
                   {columns.map(col => (
                     <th
                       key={col}
-                      className="px-4 py-2 text-left text-xs font-semibold text-gray-600 border-b border-gray-200 whitespace-nowrap"
+                      scope="col"
+                      className="h-9 px-4 text-left font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-subtle border-b-2 border-ink whitespace-nowrap"
                     >
                       {col}
                     </th>
@@ -226,18 +211,15 @@ export default function QueryCell() {
               </thead>
               <tbody>
                 {rows.map((row, ri) => (
-                  <tr
-                    key={ri}
-                    className={ri % 2 === 0 ? 'bg-white' : 'bg-gray-50/60'}
-                  >
+                  <tr key={ri} className="hover:bg-frame-hover">
                     {row.map((cell, ci) => (
                       <td
                         key={ci}
-                        className="px-4 py-2 text-gray-700 border-b border-gray-100 font-mono text-xs whitespace-nowrap max-w-xs truncate"
+                        className="h-9 px-4 text-fg border-b border-border font-mono tabular-nums text-xs whitespace-nowrap max-w-xs truncate"
                         title={cell}
                       >
                         {cell === 'NULL' ? (
-                          <span className="text-gray-300 italic">NULL</span>
+                          <span className="text-subtle">NULL</span>
                         ) : (
                           cell
                         )}
@@ -249,7 +231,7 @@ export default function QueryCell() {
                   <tr>
                     <td
                       colSpan={columns.length || 1}
-                      className="px-4 py-6 text-center text-sm text-gray-400"
+                      className="px-4 py-6 text-center text-sm text-muted"
                     >
                       No rows returned.
                     </td>
@@ -263,9 +245,8 @@ export default function QueryCell() {
 
       {/* Empty initial state */}
       {!loading && !result && !error && (
-        <div className="px-4 py-8 text-center text-sm text-gray-400">
-          Enter a SQL query above and click{' '}
-          <span className="font-medium text-gray-500">Run</span>.
+        <div className="px-4 py-8 text-center text-sm text-muted">
+          Enter a SQL query above and press <span className="font-medium text-fg">Run</span>.
         </div>
       )}
     </div>

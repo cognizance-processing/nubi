@@ -47,8 +47,12 @@
  */
 
 import { useRef, useCallback, useState, useEffect, useContext, forwardRef, useImperativeHandle } from 'react'
+import './app/monacoSetup'
 import Editor from '@monaco-editor/react'
 import { FileCode2, ChevronDown, HelpCircle, Braces, Database, Sparkles } from 'lucide-react'
+import Button from './ui/Button.jsx'
+import Tag from './ui/Tag.jsx'
+import { Select } from './ui/Input.jsx'
 
 import { ThemeContext } from '../contexts/ThemeContext.jsx'
 import { validateSql, fetchSchema, completeSql } from '../lib/api.js'
@@ -165,11 +169,11 @@ function TemplatingHelp({ open, onClose }) {
   if (!open) return null
   return (
     <div
-      className="absolute right-0 top-full mt-1.5 z-40 w-72 rounded-lg border border-border bg-surface shadow-xl p-3 text-xs text-fg"
+      className="nubi-dropdown absolute right-0 top-full mt-1.5 z-40 w-72 p-3 text-xs text-fg"
       onMouseLeave={onClose}
     >
       <p className="font-semibold mb-1.5 flex items-center gap-1.5">
-        <HelpCircle size={12} className="text-primary" />
+        <HelpCircle size={13} aria-hidden="true" />
         Templates &amp; params
       </p>
       <p className="text-muted leading-relaxed">
@@ -177,14 +181,14 @@ function TemplatingHelp({ open, onClose }) {
         query at your cursor — pick one, then tweak it.
       </p>
       <p className="text-muted leading-relaxed mt-2">
-        Use <code className="px-1 py-0.5 rounded bg-surface-2 font-mono">{'{{name}}'}</code> to
+        Use <code className="px-1 py-0.5 bg-surface-2 font-mono" style={{ borderRadius: 2 }}>{'{{name}}'}</code> to
         declare a <span className="font-medium text-fg">named parameter</span>. When the
         query is saved and used on a dashboard, each placeholder becomes a bindable
         param (filters / variables).
       </p>
       <p className="text-muted leading-relaxed mt-2">
         Example:{' '}
-        <code className="px-1 py-0.5 rounded bg-surface-2 font-mono">
+        <code className="px-1 py-0.5 bg-surface-2 font-mono" style={{ borderRadius: 2 }}>
           WHERE region = {'{{region}}'}
         </code>{' '}
         → a <code className="font-mono">region</code> param. Values are bound safely
@@ -219,42 +223,36 @@ function TemplatesMenu({ onInsert }) {
 
   return (
     <div className="relative" ref={ref}>
-      <button
+      <Button
         type="button"
+        variant="secondary"
+        size="xs"
         onClick={() => setOpen(o => !o)}
         aria-haspopup="menu"
         aria-expanded={open}
-        className={[
-          'inline-flex items-center gap-1.5 h-7 px-2.5 text-xs font-medium rounded-md border transition-colors',
-          open
-            ? 'bg-surface-2 border-border text-fg'
-            : 'bg-surface border-border text-muted hover:text-fg hover:bg-surface-2',
-        ].join(' ')}
         title="Insert a starter query"
       >
-        <FileCode2 size={12} className="text-primary/70" />
+        <FileCode2 size={13} aria-hidden="true" />
         Templates
-        <ChevronDown size={11} className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />
-      </button>
+        <ChevronDown size={12} aria-hidden="true" className={open ? 'rotate-180' : ''} />
+      </Button>
 
       {open && (
-        <div className="absolute left-0 top-full mt-1.5 z-30 w-80 rounded-lg border border-border bg-surface shadow-xl overflow-visible">
-          <div className="flex items-center justify-between px-3 py-2 border-b border-border bg-surface-2/60">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-              Starter queries
-            </span>
+        <div className="nubi-dropdown absolute left-0 top-full mt-1.5 z-30 w-80 p-0 overflow-visible">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-border">
+            <span className="t-label">Starter queries</span>
             <button
               type="button"
               onMouseEnter={() => setHelpOpen(true)}
               onClick={() => setHelpOpen(o => !o)}
-              className="inline-flex items-center gap-1 text-[10px] font-medium text-muted hover:text-primary transition-colors"
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-muted hover:text-fg transition-colors"
               title="What are templates & params?"
             >
-              <HelpCircle size={12} />
+              <HelpCircle size={12} aria-hidden="true" />
               What&apos;s this?
             </button>
           </div>
-          <ul role="menu" className="max-h-80 overflow-y-auto py-1">
+          <ul role="menu" className="max-h-80 overflow-y-auto py-1 m-0 list-none">
             {QUERY_TEMPLATES.map((tpl, i) => {
               const ps = templateParams(tpl.sql)
               return (
@@ -263,27 +261,22 @@ function TemplatesMenu({ onInsert }) {
                     type="button"
                     role="menuitem"
                     onClick={() => { onInsert(tpl.sql); setOpen(false); setHelpOpen(false) }}
-                    className="group w-full text-left px-3 py-2 hover:bg-primary/5 focus:bg-primary/5 focus:outline-none transition-colors"
+                    className="w-full text-left px-3 py-2 hover:bg-frame-hover focus-visible:bg-frame-hover nubi-focus-inset transition-colors"
                   >
                     <span className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-medium text-fg group-hover:text-primary transition-colors">
-                        {tpl.label}
-                      </span>
+                      <span className="text-[13px] font-semibold text-fg">{tpl.label}</span>
                       {ps.length > 0 && (
-                        <span className="inline-flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wide text-primary/80 shrink-0">
-                          <Braces size={9} />
+                        <Tag className="shrink-0">
+                          <Braces size={10} aria-hidden="true" />
                           {ps.length} param{ps.length > 1 ? 's' : ''}
-                        </span>
+                        </Tag>
                       )}
                     </span>
-                    <span className="block text-[11px] text-muted mt-0.5 leading-snug">{tpl.description}</span>
+                    <span className="block text-xs text-muted mt-0.5 leading-snug">{tpl.description}</span>
                     {ps.length > 0 && (
                       <span className="flex flex-wrap gap-1 mt-1.5">
                         {ps.map(p => (
-                          <code
-                            key={p}
-                            className="px-1 py-0.5 rounded bg-surface-2 border border-border/60 font-mono text-[10px] text-primary/90"
-                          >
+                          <code key={p} className="px-1 border border-border font-mono text-[11px] text-muted" style={{ borderRadius: 2 }}>
                             {`{{${p}}}`}
                           </code>
                         ))}
@@ -294,10 +287,10 @@ function TemplatesMenu({ onInsert }) {
               )
             })}
           </ul>
-          <div className="px-3 py-2 border-t border-border bg-surface-2/40">
-            <p className="text-[10px] text-muted leading-relaxed">
+          <div className="px-3 py-2 border-t border-border">
+            <p className="text-[11px] text-muted leading-relaxed m-0">
               Inserts at your cursor. Use{' '}
-              <code className="px-1 py-0.5 rounded bg-surface font-mono text-[10px]">{'{{name}}'}</code>{' '}
+              <code className="font-mono text-[11px] text-fg">{'{{name}}'}</code>{' '}
               to declare a bindable param.
             </p>
           </div>
@@ -311,6 +304,10 @@ function TemplatesMenu({ onInsert }) {
 // ---------------------------------------------------------------------------
 // SqlEditor
 // ---------------------------------------------------------------------------
+
+// Providers are registered once per page. (Not flagged on the monaco namespace:
+// the locally bundled build exposes it as a frozen ES module.)
+const registeredProviders = new Set<string>()
 
 function SqlEditor({
   value,
@@ -345,6 +342,20 @@ function SqlEditor({
     fetchSchema().then(s => { if (alive) setSchema(s) })
     return () => { alive = false }
   }, [schemaProp])
+
+  // Monaco is loaded from a CDN by @monaco-editor/react. If it has not mounted
+  // after 4s (offline, blocked, slow), fall back to a plain textarea so the
+  // user can always write and run SQL. If Monaco arrives later it takes over.
+  const [monacoReady, setMonacoReady] = useState(false)
+  const [loadTimedOut, setLoadTimedOut] = useState(false)
+  useEffect(() => {
+    if (monacoReady) return
+    const t = setTimeout(() => setLoadTimedOut(true), 4000)
+    return () => clearTimeout(t)
+  }, [monacoReady])
+  const showFallback = loadTimedOut && !monacoReady
+  const fallbackRef = useRef<HTMLTextAreaElement | null>(null)
+  const escapedRef = useRef(false) // Esc then Tab leaves the textarea (keyboard-trap escape hatch)
 
   // Refs to the Monaco editor + monaco namespace (set on mount).
   const editorRef = useRef(null)
@@ -406,6 +417,7 @@ function SqlEditor({
     editorRef.current = editor
     monacoRef.current = monaco
     modelUriRef.current = editor.getModel()?.uri?.toString() ?? null
+    setMonacoReady(true)
 
     // Ctrl/Cmd+Enter → run
     if (onRun) {
@@ -413,8 +425,8 @@ function SqlEditor({
     }
 
     // Register a schema-aware (static) completion provider ONCE per monaco instance.
-    if (!monaco.__nubiSqlCompletionRegistered) {
-      monaco.__nubiSqlCompletionRegistered = true
+    if (!registeredProviders.has('completion')) {
+      registeredProviders.add('completion')
       monaco.languages.registerCompletionItemProvider('sql', {
         triggerCharacters: ['.', ' '],
         provideCompletionItems: (model, position) => {
@@ -484,8 +496,8 @@ function SqlEditor({
     // EXPLICIT trigger (Alt+\, or the toolbar button below) — never
     // automatically as the user types, which would call the LLM on every
     // pause with no budget guard.
-    if (!monaco.__nubiSqlInlineCompletionRegistered) {
-      monaco.__nubiSqlInlineCompletionRegistered = true
+    if (!registeredProviders.has('inline')) {
+      registeredProviders.add('inline')
       monaco.languages.registerInlineCompletionsProvider('sql', {
         provideInlineCompletions: async (model, position, context) => {
           if (context.triggerKind !== monaco.languages.InlineCompletionTriggerKind.Explicit) {
@@ -521,13 +533,28 @@ function SqlEditor({
   }, [onChange, scheduleValidation])
 
   // ── Insert a template at the cursor (replacing selection) ───────────────
+  const insertIntoFallback = useCallback((text) => {
+    const ta = fallbackRef.current
+    if (!ta) { onChange?.(text); return }
+    const from = ta.selectionStart ?? ta.value.length
+    const to = ta.selectionEnd ?? from
+    const next = ta.value.slice(0, from) + text + ta.value.slice(to)
+    onChange?.(next)
+    requestAnimationFrame(() => {
+      ta.focus()
+      const ph = text.indexOf('<column>')
+      if (ph >= 0) ta.setSelectionRange(from + ph, from + ph + '<column>'.length)
+      else ta.setSelectionRange(from + text.length, from + text.length)
+    })
+  }, [onChange])
+
   const insertTemplate = useCallback((sql) => {
     const editor = editorRef.current
-    if (!editor) { onChange?.(sql); return }
+    if (!editor) { insertIntoFallback(sql); return }
     const selection = editor.getSelection()
     editor.executeEdits('insert-template', [{ range: selection, text: sql, forceMoveMarkers: true }])
     editor.focus()
-  }, [onChange])
+  }, [onChange, insertIntoFallback])
 
   // ── Imperative handle: insert a snippet at the cursor, multi-selecting
   //    every `<column>` placeholder it contains ───────────────────────────
@@ -535,7 +562,7 @@ function SqlEditor({
     insertSnippetAtCursor(text) {
       const editor = editorRef.current
       const monaco = monacoRef.current
-      if (!editor) { onChange?.(text); return }
+      if (!editor) { insertIntoFallback(text); return }
 
       const selection = editor.getSelection()
       const startLine = selection.startLineNumber
@@ -560,49 +587,47 @@ function SqlEditor({
         editor.revealRangeInCenter(selections[0])
       }
     },
-  }), [onChange])
+  }), [onChange, insertIntoFallback])
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-2">
       {toolbar && (
         <div className="flex items-center gap-2 flex-wrap">
           <TemplatesMenu onInsert={insertTemplate} />
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="xs"
             onClick={() => {
               editorRef.current?.focus()
               editorRef.current?.trigger('nubi', 'editor.action.inlineSuggest.trigger', {})
             }}
+            disabled={showFallback}
             title="Suggest what comes next, from your schema (Alt+\)"
-            className="inline-flex items-center gap-1.5 h-7 px-2.5 text-xs font-medium rounded-md border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 transition-colors"
           >
-            <Sparkles size={12} className="text-primary/70" />
+            <Sparkles size={13} aria-hidden="true" />
             AI suggest
-          </button>
+            <kbd className="nubi-kbd hidden md:inline-flex">Alt \</kbd>
+          </Button>
 
           <div className="flex-1" />
 
-          <div className="inline-flex items-center gap-1.5">
-            <label
-              htmlFor="sql-dialect"
-              className="inline-flex items-center gap-1 text-[11px] font-medium text-muted"
-            >
-              <Database size={11} className="text-primary/70" />
+          <div className="inline-flex items-center gap-2">
+            <label htmlFor="sql-dialect" className="inline-flex items-center gap-1.5 t-label">
+              <Database size={12} aria-hidden="true" />
               Dialect
             </label>
-            <select
+            <Select
               id="sql-dialect"
+              size="xs"
               value={dialect}
               onChange={e => setDialect(e.target.value)}
-              className="h-7 rounded-md border border-border bg-surface text-fg text-xs px-2 focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer transition-colors hover:bg-surface-2"
+              options={SQL_DIALECTS}
               title={dialectHint ? `Auto-detected ${dialectHint}. You can override it here.` : 'SQL dialect for validation and hints'}
-            >
-              {SQL_DIALECTS.map(d => (
-                <option key={d.value} value={d.value}>{d.label}</option>
-              ))}
-            </select>
+              className="w-32"
+            />
             {dialectHint && (
-              <span className="hidden md:inline text-[10px] text-muted/70 italic whitespace-nowrap">
+              <span className="hidden md:inline text-[11px] text-subtle whitespace-nowrap">
                 from {dialectHint}
               </span>
             )}
@@ -610,35 +635,68 @@ function SqlEditor({
         </div>
       )}
 
-      <div className="rounded-lg border border-border overflow-hidden" style={{ height }}>
-        <Editor
-          height={height}
-          language="sql"
-          theme={monacoTheme}
-          value={value}
-          onChange={handleChange}
-          onMount={handleMount}
-          options={{
-            readOnly,
-            minimap: { enabled: false },
-            scrollBeyondLastLine: false,
-            fontSize: 13,
-            lineNumbers: 'on',
-            wordWrap: 'on',
-            tabSize: 2,
-            automaticLayout: true,
-            padding: { top: 8, bottom: 8 },
-            overviewRulerLanes: 0,
-            quickSuggestions: true,
-            suggestOnTriggerCharacters: true,
-            scrollbar: { vertical: 'auto', horizontal: 'auto' },
-          }}
-          loading={
-            <div className="flex items-center justify-center h-full text-xs text-muted">
-              Loading editor…
-            </div>
-          }
-        />
+      <div className="overflow-hidden border border-frame-line" style={{ height, borderRadius: 2 }}>
+        {showFallback && (
+          <div className="flex h-full flex-col">
+            <p className="m-0 shrink-0 border-b border-border bg-surface-2 px-3 py-1.5 text-xs text-muted" role="status">
+              The code editor is taking a while to load. You can keep writing here. Autocomplete and syntax checks switch on when it arrives.
+            </p>
+            <textarea
+              ref={fallbackRef}
+              value={value}
+              onChange={(e) => onChange?.(e.target.value)}
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); onRun?.() }
+                // Tab inserts two spaces instead of leaving the field (Esc then Tab moves on).
+                if (e.key === 'Tab' && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && !e.nativeEvent.isComposing) {
+                  if (escapedRef.current) { escapedRef.current = false; return }
+                  e.preventDefault()
+                  const ta = e.currentTarget
+                  const from = ta.selectionStart, to = ta.selectionEnd
+                  onChange?.(ta.value.slice(0, from) + '  ' + ta.value.slice(to))
+                  requestAnimationFrame(() => ta.setSelectionRange(from + 2, from + 2))
+                }
+                if (e.key === 'Escape') escapedRef.current = true
+              }}
+              readOnly={readOnly}
+              spellCheck={false}
+              aria-label="SQL"
+              className="min-h-0 w-full flex-1 resize-none bg-surface p-3 text-[13px] leading-relaxed text-fg outline-none"
+              style={{ fontFamily: 'var(--font-mono)', tabSize: 2 }}
+            />
+          </div>
+        )}
+        <div style={{ height: showFallback ? 0 : height, visibility: showFallback ? 'hidden' : 'visible' }}>
+          <Editor
+            height={height}
+            language="sql"
+            theme={monacoTheme}
+            value={value}
+            onChange={handleChange}
+            onMount={handleMount}
+            options={{
+              readOnly,
+              minimap: { enabled: false },
+              scrollBeyondLastLine: false,
+              fontSize: 13,
+              fontFamily: "'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
+              lineNumbers: 'on',
+              wordWrap: 'on',
+              tabSize: 2,
+              automaticLayout: true,
+              padding: { top: 8, bottom: 8 },
+              overviewRulerLanes: 0,
+              quickSuggestions: true,
+              suggestOnTriggerCharacters: true,
+              scrollbar: { vertical: 'auto', horizontal: 'auto' },
+            }}
+            loading={
+              <div className="flex h-full items-center justify-center text-xs text-muted" role="status">
+                Loading editor
+              </div>
+            }
+          />
+        </div>
       </div>
     </div>
   )

@@ -24,6 +24,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import '../components/app/monacoSetup'
 import Editor from '@monaco-editor/react'
 import {
   Code2,
@@ -116,13 +117,13 @@ function FileRow({ file, active, dirty, onSelect }) {
       onClick={() => onSelect(file.id)}
       className={[
         'group w-full flex items-center gap-2 pl-6 pr-2 py-1 text-left text-xs rounded-md transition-colors',
-        active ? 'bg-primary/10 text-fg' : 'text-muted hover:text-fg hover:bg-surface-2',
+        active ? 'bg-accent-soft text-fg' : 'text-muted hover:text-fg hover:bg-frame-hover',
       ].join(' ')}
       title={file.name}
     >
-      <Icon size={13} className={active ? 'text-primary shrink-0' : 'text-muted/70 shrink-0'} />
+      <Icon size={13} className={active ? 'text-fg shrink-0' : 'text-subtle shrink-0'} />
       <span className="truncate flex-1">{file.name}</span>
-      {dirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Unsaved edits" />}
+      {dirty && <span className="nubi-dot nubi-dot-warning shrink-0" title="Unsaved edits" />}
     </button>
   )
 }
@@ -283,13 +284,13 @@ export default function FlowCodeView({ flow, spec, onSpecChange }) {
             onClick={() => setSelectedId(FLOW_PY_ID)}
             className={[
               'group w-full flex items-center gap-2 px-2 py-1 text-left text-xs rounded-md transition-colors',
-              isFlowPy ? 'bg-primary/10 text-fg' : 'text-muted hover:text-fg hover:bg-surface-2',
+              isFlowPy ? 'bg-accent-soft text-fg' : 'text-muted hover:text-fg hover:bg-frame-hover',
             ].join(' ')}
             title="Generated nubi.flows Python SDK"
           >
-            <Code2 size={13} className={isFlowPy ? 'text-violet-500 shrink-0' : 'text-muted/70 shrink-0'} />
+            <Code2 size={13} className={isFlowPy ? 'text-muted shrink-0' : 'text-muted/70 shrink-0'} />
             <span className="truncate flex-1">flow.py</span>
-            {pyDirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Unsaved edits" />}
+            {pyDirty && <span className="nubi-dot nubi-dot-warning shrink-0" title="Unsaved edits" />}
           </button>
 
           {/* cells/ folder */}
@@ -301,7 +302,7 @@ export default function FlowCodeView({ flow, spec, onSpecChange }) {
               >
                 {cellsOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                 <span className="truncate">cells</span>
-                <span className="ml-auto text-[10px] text-muted/60">{cellFiles.length}</span>
+                <span className="ml-auto text-[11px] text-muted/60">{cellFiles.length}</span>
               </button>
               {cellsOpen && cellFiles.map(file => (
                 <FileRow
@@ -316,7 +317,7 @@ export default function FlowCodeView({ flow, spec, onSpecChange }) {
           )}
         </div>
         <div className="shrink-0 px-3 py-2 border-t border-border">
-          <p className="text-[10px] leading-snug text-muted/70">
+          <p className="text-[11px] leading-snug text-muted/70">
             Edit cells as files — changes sync to the canvas. <code className="text-muted">flow.py</code> needs Apply.
           </p>
         </div>
@@ -329,14 +330,14 @@ export default function FlowCodeView({ flow, spec, onSpecChange }) {
         <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-2 border-b border-border bg-surface">
           <div className="flex items-center gap-2 min-w-0">
             {isFlowPy
-              ? <Code2 size={13} className="text-violet-500 shrink-0" />
+              ? <Code2 size={13} className="text-muted shrink-0" />
               : selectedCell && <selectedCell.Icon size={13} className="text-muted shrink-0" />}
             <span className="text-xs font-medium text-fg truncate">{activeName}</span>
             {isFlowPy && pyDirty && (
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="Unsaved edits" />
+              <span className="nubi-dot nubi-dot-warning shrink-0" title="Unsaved edits" />
             )}
             {readOnlyCell && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 border border-border text-muted">read-only</span>
+              <span className="text-[11px] px-1.5 py-0.5 rounded bg-surface-2 border border-border text-muted">read-only</span>
             )}
           </div>
 
@@ -347,7 +348,7 @@ export default function FlowCodeView({ flow, spec, onSpecChange }) {
                 className="flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-md border border-border bg-surface-2 hover:bg-surface text-fg transition-colors"
                 title="Copy to clipboard"
               >
-                {copied ? <Check size={11} className="text-green-500" /> : <Copy size={11} />}
+                {copied ? <Check size={11} className="text-success" /> : <Copy size={11} />}
                 {copied ? 'Copied!' : 'Copy'}
               </button>
             )}
@@ -365,12 +366,7 @@ export default function FlowCodeView({ flow, spec, onSpecChange }) {
               <button
                 onClick={handleApply}
                 disabled={applying || pyState.loading}
-                className={[
-                  'flex items-center gap-1.5 px-3 py-1 text-[11px] font-semibold rounded-md transition-all',
-                  applySuccess
-                    ? 'bg-green-500/15 border border-green-500/30 text-green-600 dark:text-green-400'
-                    : 'bg-violet-500 hover:bg-violet-600 text-white disabled:opacity-50 disabled:cursor-not-allowed',
-                ].join(' ')}
+                className={['nubi-btn nubi-btn-xs', applySuccess ? 'nubi-btn-secondary' : 'nubi-btn-primary'].join(' ')}
                 title="Compile flow.py → apply FlowSpec to the canvas"
               >
                 {applying ? <Loader2 size={11} className="animate-spin" /> : applySuccess ? <Check size={11} /> : <Play size={11} />}
@@ -382,7 +378,7 @@ export default function FlowCodeView({ flow, spec, onSpecChange }) {
 
         {/* Apply error banner (flow.py) */}
         {isFlowPy && applyError && (
-          <div className="shrink-0 flex items-start gap-2 mx-3 mt-2 p-2.5 rounded-lg border border-rose-500/20 bg-rose-500/5 text-[11px] text-rose-600 dark:text-rose-400">
+          <div className="shrink-0 flex items-start gap-2 mx-3 mt-2   border nubi-notice nubi-notice-error text-xs">
             <AlertCircle size={12} className="shrink-0 mt-0.5" />
             <span className="flex-1 min-w-0 break-words font-mono leading-snug whitespace-pre-wrap">{applyError}</span>
             <button onClick={() => setApplyError(null)} className="shrink-0 opacity-60 hover:opacity-100 mt-0.5">
@@ -415,7 +411,7 @@ export default function FlowCodeView({ flow, spec, onSpecChange }) {
                       flow is valid.
                     </p>
                     {pyState.error && (
-                      <p className="mt-2 text-[11px] font-mono text-amber-600 dark:text-amber-400 break-words whitespace-pre-wrap">
+                      <p className="mt-2 text-[11px] font-mono text-warning-fg break-words whitespace-pre-wrap">
                         {pyState.error}
                       </p>
                     )}
@@ -423,7 +419,7 @@ export default function FlowCodeView({ flow, spec, onSpecChange }) {
                 </div>
               )}
               {!pyState.loading && !pyState.invalidSpec && pyState.error && (
-                <div className="flex items-start gap-2 m-4 p-3 rounded-xl border border-rose-500/20 bg-rose-500/5 text-xs text-rose-600 dark:text-rose-400">
+                <div className="flex items-start gap-2 m-4   border nubi-notice nubi-notice-error text-xs">
                   <AlertCircle size={13} className="shrink-0 mt-0.5" />
                   <span>{pyState.error}</span>
                 </div>

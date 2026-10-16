@@ -40,9 +40,7 @@ import {
   X,
   Copy,
   Check,
-  CheckCircle2,
   AlertCircle,
-  Loader2,
   ArrowLeft,
   ExternalLink,
 } from 'lucide-react'
@@ -51,6 +49,9 @@ import { get, post } from '../../lib/api.js'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
 import SqlEditor from '../../components/SqlEditor.jsx'
 import ConnectorCombobox from '../../components/app/ConnectorCombobox.jsx'
+import PageShell from '../../components/app/PageShell.jsx'
+import Button from '../../components/ui/Button.jsx'
+import '../../components/app/appPatterns.css'
 
 // ---------------------------------------------------------------------------
 // Source limits
@@ -126,17 +127,17 @@ function RlsKeysInput({ keys, onChange }) {
   }, [keys, onChange])
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5 min-h-8 px-2 py-1.5 rounded-lg border border-border bg-surface focus-within:ring-1 focus-within:ring-ring">
+    <div className="flex flex-wrap items-center gap-1.5 min-h-8 px-2 py-1.5 rounded-[var(--radius-control)] border border-border bg-surface focus-within:ring-1 focus-within:ring-ring">
       {keys.map(k => (
         <span
           key={k}
-          className="inline-flex items-center gap-1 pl-2 pr-1 h-6 rounded-md bg-primary/10 text-primary text-[11px] font-mono"
+          className="inline-flex items-center gap-1 pl-2 pr-1 h-6 rounded-[var(--radius-control)] bg-surface-2 border border-border text-fg text-[11px] font-mono"
         >
           {k}
           <button
             type="button"
             onClick={() => remove(k)}
-            className="flex items-center justify-center w-4 h-4 rounded hover:bg-primary/20"
+            className="flex items-center justify-center w-4 h-4 rounded hover:bg-frame-hover"
             aria-label={`Remove ${k}`}
           >
             <X size={10} />
@@ -170,9 +171,9 @@ function SourceRow({
   const set = (patch) => onChange({ ...source, ...patch })
 
   return (
-    <div className="rounded-xl border border-border bg-surface p-3 flex flex-col gap-3">
+    <div className="rounded-[var(--radius-sheet)] border border-border bg-surface p-3 flex flex-col gap-3">
       <div className="flex items-center gap-2">
-        <span className="flex items-center justify-center w-6 h-6 rounded-md bg-surface-2 text-[11px] font-semibold text-muted shrink-0">
+        <span className="flex items-center justify-center w-6 h-6 rounded-[var(--radius-control)] bg-surface-2 text-[11px] font-semibold text-muted shrink-0">
           {index + 1}
         </span>
 
@@ -186,14 +187,14 @@ function SourceRow({
             onChange={e => set({ key: e.target.value.replace(/\s+/g, '_') })}
             placeholder="alias (used as table name)"
             className={[
-              'h-8 px-2.5 text-xs font-mono bg-surface border rounded-lg text-fg placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-ring',
+              'h-8 px-2.5 text-xs font-mono bg-surface border rounded-[var(--radius-control)] text-fg placeholder:text-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:border-ink',
               duplicateKey ? 'border-danger/60' : 'border-border',
             ].join(' ')}
           />
         </div>
 
         {/* Source type toggle */}
-        <div className="flex items-center rounded-lg border border-border overflow-hidden shrink-0">
+        <div className="flex items-center rounded-[var(--radius-control)] border border-border overflow-hidden shrink-0">
           {[
             { v: 'query', l: 'Query', icon: FileCode2 },
             { v: 'sql', l: 'SQL', icon: Code2 },
@@ -207,7 +208,7 @@ function SourceRow({
                 className={[
                   'h-8 px-2.5 text-[11px] font-medium inline-flex items-center gap-1 transition-colors',
                   source.mode === opt.v
-                    ? 'bg-primary/10 text-primary'
+                    ? 'bg-ink text-ink-fg'
                     : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
                   opt.v === 'sql' ? 'border-l border-border' : '',
                 ].join(' ')}
@@ -226,7 +227,7 @@ function SourceRow({
             disabled={!canRemove}
             title={canRemove ? 'Remove source' : `At least ${MIN_SOURCES} sources required`}
             aria-label={canRemove ? 'Remove source' : `At least ${MIN_SOURCES} sources required`}
-            className="flex items-center justify-center w-8 h-8 rounded-lg border border-border text-muted hover:text-danger hover:border-danger/40 disabled:opacity-30 disabled:hover:text-muted disabled:hover:border-border transition-colors shrink-0"
+            className="flex items-center justify-center w-8 h-8 rounded-[var(--radius-control)] border border-border text-muted hover:text-danger hover:border-danger/40 disabled:opacity-30 disabled:hover:text-muted disabled:hover:border-border transition-colors shrink-0"
           >
             <Trash2 size={13} />
           </button>
@@ -234,7 +235,7 @@ function SourceRow({
       </div>
 
       {duplicateKey && (
-        <p className="text-[10px] text-danger flex items-center gap-1 -mt-1">
+        <p className="text-[11px] text-danger flex items-center gap-1 -mt-1">
           <AlertCircle size={10} /> Aliases must be unique — referenced as table names in the combine SQL.
         </p>
       )}
@@ -244,7 +245,7 @@ function SourceRow({
         <select
           value={source.query_id}
           onChange={e => set({ query_id: e.target.value })}
-          className="h-8 px-2 text-xs bg-surface border border-border rounded-lg text-fg focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer"
+          className="h-8 px-2 text-xs bg-surface border border-border rounded-[var(--radius-control)] text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:border-ink cursor-pointer"
         >
           <option value="">Select a registered query…</option>
           {registeredQueries.map(q => (
@@ -430,13 +431,8 @@ export default function BlendBuilder() {
   // ── Success view ─────────────────────────────────────────────────────────
   if (result) {
     return (
-      <div className="flex flex-col h-full bg-bg overflow-y-auto">
-        <div className="px-6 py-6 max-w-2xl w-full mx-auto">
-          <div className="rounded-2xl border border-border bg-surface p-6 flex flex-col gap-4">
-            <div className="flex items-center gap-2 text-success">
-              <CheckCircle2 size={20} />
-              <h1 className="font-display font-semibold text-lg text-fg">Blend created</h1>
-            </div>
+      <PageShell eyebrow="Blend" title="Blend created" width="narrow">
+          <div className="flex flex-col gap-5">
             <p className="text-sm text-muted">
               <span className="font-medium text-fg">{name.trim()}</span> will materialize{' '}
               {scheduleEnabled && schedulePreview
@@ -448,88 +444,57 @@ export default function BlendBuilder() {
 
             {materializedQueryId && (
               <div className="flex flex-col gap-1.5">
-                <label className="text-[11px] font-semibold text-muted uppercase tracking-wide">
-                  Materialized query id
-                </label>
+                <span className="ap-count">Materialized query id</span>
                 <div className="flex items-center gap-2">
-                  <code className="flex-1 h-9 px-3 flex items-center text-xs font-mono bg-surface-2 border border-border rounded-lg text-fg truncate">
+                  <code className="flex-1 h-9 px-3 flex items-center text-xs font-mono tabular-nums bg-surface-2 border border-border rounded-[var(--radius-control)] text-fg truncate">
                     {materializedQueryId}
                   </code>
-                  <button
-                    type="button"
-                    onClick={copyQueryId}
-                    className="flex items-center gap-1.5 h-9 px-3 text-xs font-medium border border-border rounded-lg bg-surface hover:bg-surface-2 text-fg transition-colors"
-                  >
-                    {copied ? <Check size={13} className="text-success" /> : <Copy size={13} />}
+                  <Button type="button" variant="secondary" onClick={copyQueryId}>
+                    {copied ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
                     {copied ? 'Copied' : 'Copy'}
-                  </button>
+                  </Button>
                 </div>
               </div>
             )}
 
-            <div className="rounded-lg bg-surface-2/60 border border-border p-3 text-[12px] text-muted leading-relaxed">
+            <div className="border-l-2 border-ink bg-surface-2 py-2 px-3 text-[13px] text-muted leading-relaxed">
               <p className="font-medium text-fg mb-1">Next steps</p>
               Bind a dashboard widget to this query, or manage the refresh schedule in{' '}
-              <Link to="/flows" className="text-primary hover:underline">Flows</Link>.
+              <Link to="/flows" className="text-primary underline-offset-2 hover:underline">Flows</Link>.
             </div>
 
-            <div className="flex items-center gap-2 justify-end pt-1">
-              <Link
-                to="/flows"
-                className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-medium border border-border rounded-lg bg-surface hover:bg-surface-2 text-fg transition-colors"
-              >
-                <ExternalLink size={13} /> Open Flows
+            <div className="flex items-center gap-2 pt-1">
+              <Button type="button" onClick={() => { setResult(null); setError(null) }}>
+                <Plus size={14} aria-hidden="true" /> New blend
+              </Button>
+              <Link to="/flows" className="nubi-btn nubi-btn-md nubi-btn-secondary">
+                <ExternalLink size={14} aria-hidden="true" /> Open Flows
               </Link>
-              <button
-                type="button"
-                onClick={() => { setResult(null); setError(null) }}
-                className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary text-primary-fg rounded-lg hover:opacity-90 transition-opacity"
-              >
-                <Plus size={13} /> New blend
-              </button>
             </div>
           </div>
-        </div>
-      </div>
+      </PageShell>
     )
   }
 
   // ── Builder form ─────────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col h-full bg-bg overflow-y-auto">
-      {/* Header */}
-      <div className="flex items-center gap-3 px-6 pt-6 pb-4 border-b border-border bg-surface">
-        <button
-          type="button"
-          onClick={() => navigate('/queries')}
-          title="Back to queries"
-          aria-label="Back to queries"
-          className="flex items-center justify-center w-9 h-9 rounded-xl border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors shrink-0"
-        >
-          <ArrowLeft size={15} />
-        </button>
-        <div>
-          <h1 className="font-display font-semibold text-2xl text-fg flex items-center gap-2">
-            <Combine size={22} className="text-primary" />
-            Blend sources
-          </h1>
-          <p className="text-sm text-muted mt-0.5">
-            Combine 2–3 sources into one materialized dataset your dashboards can query cheaply.
-          </p>
-        </div>
-      </div>
-
-      <form onSubmit={handleSubmit} className="flex-1 px-6 py-6 max-w-3xl w-full mx-auto flex flex-col gap-7">
+    <PageShell
+      eyebrow="Blend"
+      title="Blend sources"
+      description="Combine 2 to 3 sources into one materialized dataset your dashboards can query cheaply."
+      actions={<Button variant="ghost" onClick={() => navigate('/queries')}><ArrowLeft size={14} aria-hidden="true" /> Back to queries</Button>}
+    >
+      <form onSubmit={handleSubmit} className="flex flex-col gap-8 max-w-3xl">
         {/* Name */}
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="blend-name" className="text-[11px] font-semibold text-muted uppercase tracking-wide">Name</label>
+          <label htmlFor="blend-name" className="font-mono text-[11px] font-medium text-subtle uppercase tracking-[0.06em]">Name</label>
           <input
             id="blend-name"
             type="text"
             value={name}
             onChange={e => setName(e.target.value)}
             placeholder="Orders + Analytics"
-            className="h-9 px-3 text-sm bg-surface border border-border rounded-lg text-fg placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-ring"
+            className="h-9 px-3 text-sm bg-surface border border-border rounded-[var(--radius-control)] text-fg placeholder:text-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:border-ink"
           />
         </div>
 
@@ -537,7 +502,7 @@ export default function BlendBuilder() {
         <section className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-fg flex items-center gap-1.5">
-              <Layers size={15} className="text-primary" />
+              <Layers size={15} className="text-muted" aria-hidden="true" />
               Sources
               <span className="text-[11px] font-normal text-muted">({sources.length}/{MAX_SOURCES})</span>
             </h2>
@@ -546,7 +511,7 @@ export default function BlendBuilder() {
                 type="button"
                 onClick={addSource}
                 disabled={sources.length >= MAX_SOURCES}
-                className="inline-flex items-center gap-1.5 h-8 px-2.5 text-xs font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors"
+                className="inline-flex items-center gap-1.5 h-8 px-2.5 text-xs font-medium rounded-[var(--radius-control)] border border-dashed border-border text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors"
               >
                 <Plus size={13} /> Add source
               </button>
@@ -576,7 +541,7 @@ export default function BlendBuilder() {
         {/* Combine SQL */}
         <section className="flex flex-col gap-2">
           <h2 className="text-sm font-semibold text-fg flex items-center gap-1.5">
-            <GitMerge size={15} className="text-primary" />
+            <GitMerge size={15} className="text-muted" aria-hidden="true" />
             Combine SQL
           </h2>
           <p className="text-[11px] text-muted">
@@ -584,9 +549,9 @@ export default function BlendBuilder() {
           </p>
           {availableKeys.length > 0 && (
             <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-[10px] text-muted">Available tables:</span>
+              <span className="text-[11px] text-muted">Available tables:</span>
               {availableKeys.map(k => (
-                <code key={k} className="px-1.5 py-0.5 rounded bg-surface-2 border border-border/60 font-mono text-[10px] text-primary/90">
+                <code key={k} className="px-1.5 py-0.5 rounded bg-surface-2 border border-border/60 font-mono text-[11px] text-fg">
                   {k}
                 </code>
               ))}
@@ -605,7 +570,7 @@ export default function BlendBuilder() {
         <section className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-fg flex items-center gap-1.5">
-              <CalendarClock size={15} className="text-primary" />
+              <CalendarClock size={15} className="text-muted" aria-hidden="true" />
               Schedule
               <span className="text-[11px] font-normal text-muted">(optional)</span>
             </h2>
@@ -614,7 +579,7 @@ export default function BlendBuilder() {
                 type="checkbox"
                 checked={scheduleEnabled}
                 onChange={e => setScheduleEnabled(e.target.checked)}
-                className="accent-[var(--color-primary,#2456a6)]"
+                className="accent-[var(--color-primary,#1f4fd1)]"
               />
               Refresh on a schedule
             </label>
@@ -625,8 +590,8 @@ export default function BlendBuilder() {
           </p>
 
           {scheduleEnabled && (
-            <div className="flex flex-col gap-2 rounded-xl border border-border bg-surface p-3">
-              <div className="flex items-center rounded-lg border border-border overflow-hidden w-fit">
+            <div className="flex flex-col gap-2 rounded-[var(--radius-sheet)] border border-border bg-surface p-3">
+              <div className="flex items-center rounded-[var(--radius-control)] border border-border overflow-hidden w-fit">
                 {[
                   { v: 'interval', l: 'Interval' },
                   { v: 'cron', l: 'Cron' },
@@ -638,7 +603,7 @@ export default function BlendBuilder() {
                     className={[
                       'h-7 px-3 text-[11px] font-medium transition-colors',
                       scheduleMode === opt.v
-                        ? 'bg-primary/10 text-primary'
+                        ? 'bg-ink text-ink-fg'
                         : 'bg-surface text-muted hover:text-fg hover:bg-surface-2',
                       opt.v === 'cron' ? 'border-l border-border' : '',
                     ].join(' ')}
@@ -656,18 +621,18 @@ export default function BlendBuilder() {
                     min="1"
                     value={intervalN}
                     onChange={e => setIntervalN(e.target.value)}
-                    className="h-8 w-16 px-2 text-xs bg-surface border border-border rounded-lg text-fg focus:outline-none focus:ring-1 focus:ring-ring"
+                    className="h-8 w-16 px-2 text-xs bg-surface border border-border rounded-[var(--radius-control)] text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:border-ink"
                   />
                   <select
                     value={intervalUnit}
                     onChange={e => setIntervalUnit(e.target.value)}
-                    className="h-8 px-2 text-xs bg-surface border border-border rounded-lg text-fg focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer"
+                    className="h-8 px-2 text-xs bg-surface border border-border rounded-[var(--radius-control)] text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:border-ink cursor-pointer"
                   >
                     {INTERVAL_UNITS.map(u => (
                       <option key={u.value} value={u.value}>{u.label}</option>
                     ))}
                   </select>
-                  <span className="text-[10px] font-mono text-muted/70">→ {schedule}</span>
+                  <span className="text-[11px] font-mono text-muted/70">→ {schedule}</span>
                 </div>
               ) : (
                 <div className="flex flex-col gap-1">
@@ -678,11 +643,11 @@ export default function BlendBuilder() {
                     placeholder="0 9 * * *"
                     aria-invalid={cronInvalid || undefined}
                     className={[
-                      'h-8 px-2.5 text-xs font-mono bg-surface border rounded-lg text-fg placeholder:text-muted/40 focus:outline-none focus:ring-1 focus:ring-ring',
+                      'h-8 px-2.5 text-xs font-mono bg-surface border rounded-[var(--radius-control)] text-fg placeholder:text-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:border-ink',
                       cronInvalid ? 'border-danger/50' : 'border-border',
                     ].join(' ')}
                   />
-                  <p className="text-[10px] text-muted/70">
+                  <p className="text-[11px] text-muted/70">
                     Standard 5-field cron: <span className="font-mono">min hour day month weekday</span>
                   </p>
                 </div>
@@ -719,36 +684,28 @@ export default function BlendBuilder() {
 
         {/* Error */}
         {error && (
-          <div role="alert" className="flex items-center gap-2 px-3 py-2 rounded-lg bg-danger-bg border border-danger/20 text-xs text-danger">
-            <AlertCircle size={14} /> {error}
+          <div role="alert" className="flex items-start gap-2 py-2 px-3 border-l-2 border-danger bg-danger-bg text-[13px] text-fg">
+            <AlertCircle size={14} className="mt-0.5 shrink-0 text-danger" aria-hidden="true" /> {error}
           </div>
         )}
 
         {/* Submit */}
         <div className="flex items-center justify-end gap-2 border-t border-border pt-4">
-          <button
-            type="button"
-            onClick={() => navigate('/queries')}
-            className="h-9 px-4 text-xs font-medium text-muted hover:text-fg border border-border rounded-lg bg-surface hover:bg-surface-2 transition-colors"
-          >
+          <Button type="button" variant="secondary" onClick={() => navigate('/queries')}>
             Cancel
-          </button>
+          </Button>
           {canWrite ? (
-            <button
-              type="submit"
-              disabled={!canSubmit}
-              className="inline-flex items-center gap-2 h-9 px-5 text-sm font-semibold bg-primary text-primary-fg rounded-lg hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
-            >
-              {submitting ? <Loader2 size={15} className="animate-spin" /> : <Combine size={15} />}
+            <Button type="submit" disabled={!canSubmit} loading={submitting}>
+              {!submitting && <Combine size={15} aria-hidden="true" />}
               {submitting ? 'Creating…' : 'Create blend'}
-            </button>
+            </Button>
           ) : (
-            <span className="text-xs font-medium text-muted/70 select-none">
-              Read-only — you don’t have permission to create blends.
+            <span className="text-[13px] text-muted">
+              Read-only: your role cannot create blends.
             </span>
           )}
         </div>
       </form>
-    </div>
+    </PageShell>
   )
 }

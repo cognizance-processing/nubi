@@ -30,9 +30,9 @@ function NullRateBar({ rate }) {
 
   return (
     <div className="flex items-center gap-2 min-w-[90px]">
-      <div className="flex-1 h-1.5 rounded-full bg-surface-2 overflow-hidden">
+      <div className="flex-1 h-1.5 bg-surface-2 overflow-hidden">
         <div
-          className={`h-full rounded-full transition-all duration-300 ${color}`}
+          className={`h-full ${color}`}
           style={{ width: `${Math.max(pct, pct > 0 ? 2 : 0)}%` }}
         />
       </div>
@@ -59,7 +59,7 @@ function TypeBadge({ type }) {
 // DatasetProfileView
 // ---------------------------------------------------------------------------
 
-export default function DatasetProfileView({ datasetId }) {
+export default function DatasetProfileView({ datasetId, unavailable = false }: { datasetId?: string | null; unavailable?: boolean }) {
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -81,6 +81,18 @@ export default function DatasetProfileView({ datasetId }) {
   useEffect(() => {
     load()
   }, [load])
+
+  if (unavailable) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full">
+        <EmptyState
+          icon={<BarChart2 size={24} />}
+          title="Column profiling isn't available here"
+          description="This deployment doesn't expose a dataset-profile service, so per-column statistics can't be computed."
+        />
+      </div>
+    )
+  }
 
   if (!datasetId) {
     return (
@@ -106,7 +118,7 @@ export default function DatasetProfileView({ datasetId }) {
             <div key={i} className="flex items-center gap-4">
               <Skeleton className="h-3.5 w-32 rounded" />
               <Skeleton className="h-3.5 w-14 rounded" />
-              <Skeleton className="h-1.5 flex-1 max-w-[140px] rounded-full" />
+              <Skeleton className="h-1.5 flex-1 max-w-[140px]" />
               <Skeleton className="h-3.5 w-12 rounded ml-auto" />
             </div>
           ))}
@@ -140,7 +152,7 @@ export default function DatasetProfileView({ datasetId }) {
     <div className="flex flex-col h-full overflow-hidden">
       {/* Header */}
       <div className="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-border bg-surface">
-        <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-primary/10 shrink-0">
+        <div className="flex items-center justify-center w-8 h-8 bg-surface-2 border border-border shrink-0">
           <BarChart2 size={15} className="text-primary" />
         </div>
         <div className="flex-1 min-w-0">

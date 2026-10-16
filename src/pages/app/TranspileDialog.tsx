@@ -173,7 +173,7 @@ export default function TranspileDialog({ open, onClose, initialSql = '', onAppl
 
       {/* Source SQL (read-only preview) */}
       <div className="px-4 pt-3 pb-1 shrink-0">
-        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-1.5">Source SQL</p>
+        <p className="text-[11px] font-semibold uppercase tracking-wider text-muted mb-1.5">Source SQL</p>
         <div className="rounded-lg border border-border bg-surface-2/30 overflow-auto max-h-36">
           <pre className="p-3 text-xs font-mono text-fg whitespace-pre-wrap break-words leading-relaxed">
             {initialSql || <span className="italic text-muted/50">No SQL to translate</span>}
@@ -192,7 +192,7 @@ export default function TranspileDialog({ open, onClose, initialSql = '', onAppl
       {/* Translated SQL */}
       <div className="px-4 pt-3 pb-3 flex-1 min-h-0 overflow-hidden flex flex-col">
         <div className="flex items-center justify-between mb-1.5">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
             Translated SQL
             {translated && (
               <span className="ml-1.5 normal-case text-muted/60 font-normal">
@@ -203,7 +203,7 @@ export default function TranspileDialog({ open, onClose, initialSql = '', onAppl
           {translated && (
             <button
               onClick={handleCopy}
-              className="inline-flex items-center gap-1 h-6 px-2 rounded-md border border-border text-[10px] font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors"
+              className="inline-flex items-center gap-1 h-6 px-2 rounded-md border border-border text-[11px] font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors"
               title="Copy to clipboard"
             >
               {copied ? <Check size={10} className="text-success" /> : <Copy size={10} />}

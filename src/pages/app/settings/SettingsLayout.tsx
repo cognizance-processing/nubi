@@ -28,7 +28,7 @@
  * URL-addressable route.
  */
 
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   User,
   Building2,
@@ -44,76 +44,37 @@ import {
   Key,
   Bot,
   Sparkles,
+  ChevronDown,
 } from 'lucide-react'
 import { useOrg } from '../../../contexts/OrgContext.jsx'
 import { useProject } from '../../../contexts/ProjectContext.jsx'
 import { useFeature } from '../../../lib/features.js'
+import { SettingsScopeContext } from './SettingsUI.jsx'
+import '../../../shell/shell.css'
+import '../../../components/app/appPatterns.css'
 
 // ---------------------------------------------------------------------------
-// Nav item — matches the AppSidebar active style
+// Nav item: 32px row, active = 2px ink marker + ink text (the sidebar's rule)
 // ---------------------------------------------------------------------------
 
 function SettingsNavItem({ to, label, Icon, end = true, external = false }) {
   return (
-    <NavLink
-      to={to}
-      end={end}
-      className={({ isActive }) =>
-        [
-          'group flex items-center gap-2 px-2.5 py-[6px] rounded-lg text-[0.8125rem] font-medium transition-colors duration-100',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-          isActive
-            ? 'bg-primary/10 text-primary dark:bg-primary/15 font-semibold'
-            : 'text-muted hover:text-fg hover:bg-surface-2',
-        ].join(' ')
-      }
-    >
-      {({ isActive }) => (
-        <>
-          <Icon
-            size={14}
-            aria-hidden="true"
-            className={[
-              'shrink-0 transition-colors',
-              isActive ? 'text-primary' : 'text-muted group-hover:text-fg',
-            ].join(' ')}
-          />
-          <span className="truncate leading-none">{label}</span>
-          {external && (
-            <ArrowUpRight
-              size={11}
-              aria-hidden="true"
-              className="ml-auto shrink-0 text-muted/50 group-hover:text-muted"
-            />
-          )}
-        </>
-      )}
+    <NavLink to={to} end={end} className={({ isActive }) => `st-nav-item ${isActive ? 'is-active' : ''}`}>
+      <Icon size={16} strokeWidth={1.5} aria-hidden="true" className="st-nav-icon" />
+      <span className="truncate">{label}</span>
+      {external && <ArrowUpRight size={12} aria-hidden="true" className="ml-auto shrink-0 text-subtle" />}
     </NavLink>
   )
 }
 
 function NavGroup({ label, context = undefined, children }) {
   return (
-    <div
-      className="
-        flex items-center gap-1 shrink-0 pr-3 mr-1 border-r border-border/50
-        last:border-r-0 last:pr-0 last:mr-0
-        lg:block lg:pr-0 lg:mr-0 lg:border-0
-      "
-    >
-      <div className="hidden lg:flex items-baseline gap-1 px-2.5 mb-1 min-w-0">
-        <span className="text-[10px] font-semibold uppercase tracking-widest text-muted/60 shrink-0">
-          {label}
-        </span>
-        {context && (
-          <span className="text-[10px] text-muted/50 truncate" title={context}>
-            · {context}
-          </span>
-        )}
+    <div className="st-nav-group">
+      <div className="st-nav-label">
+        <span className="shrink-0">{label}</span>
+        {context && <span className="truncate normal-case tracking-normal" title={context}>{context}</span>}
       </div>
-      <div className="flex gap-1 shrink-0 lg:flex-col lg:gap-0.5">
-        {children}
-      </div>
+      <div className="st-nav-items">{children}</div>
     </div>
   )
 }
@@ -126,6 +87,39 @@ export default function SettingsLayout() {
   const { activeOrg } = useOrg()
   const { activeProject } = useProject()
   const billingEnabled = useFeature('billing')
+  const { pathname } = useLocation()
+  const navigate = useNavigate()
+
+  // The scope shown above each page title: which group the current route is in.
+  const scope = pathname.startsWith('/settings/profile')
+    ? 'Settings · Account'
+    : pathname.startsWith('/settings/project')
+      ? `Settings · Project${activeProject?.name ? ` · ${activeProject.name}` : ''}`
+      : `Settings · Organization${activeOrg?.name ? ` · ${activeOrg.name}` : ''}`
+
+  // Same sections as the grouped nav, as data, for the compact mobile select.
+  const mobileGroups = [
+    { label: 'Account', items: [{ to: '/settings/profile', label: 'Profile' }] },
+    {
+      label: 'Organization',
+      items: [
+        { to: '/settings/organization', label: 'General' },
+        { to: '/settings/members', label: 'Members' },
+        { to: '/settings/integrations', label: 'Integrations' },
+        { to: '/settings/ai-providers', label: 'AI providers' },
+        { to: '/settings/connections', label: 'Connections' },
+        { to: '/settings/mcp', label: 'MCP servers' },
+        { to: '/settings/bridges', label: 'Bridges' },
+        { to: '/settings/security', label: 'Security' },
+        { to: '/settings/usage', label: 'Usage' },
+        { to: '/settings/access-grants', label: 'Access grants' },
+        ...(billingEnabled ? [{ to: '/billing', label: 'Billing', external: true }] : []),
+      ],
+    },
+    { label: 'Project', items: [{ to: '/settings/project', label: 'General' }] },
+  ] as { label: string; items: { to: string; label: string; external?: boolean }[] }[]
+  const flat = mobileGroups.flatMap((g) => g.items)
+  const current = flat.find((i) => pathname === i.to || pathname.startsWith(`${i.to}/`))
 
   const navGroups = (
     <>
@@ -156,45 +150,47 @@ export default function SettingsLayout() {
   )
 
   return (
-    <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 lg:py-10">
-      {/* Page header */}
-      <header className="mb-6 lg:mb-8">
-        <h1 className="font-display font-semibold text-2xl text-fg tracking-tight">Settings</h1>
-        <p className="text-muted text-sm mt-1 leading-relaxed">
-          Manage your account, organisation, and project configuration.
-        </p>
-      </header>
-
-      {/* Mobile / tablet nav — a single horizontally-scrolling tab strip.
-          Sticky under the page header so it stays reachable while scrolling
-          a long section (e.g. Members). Hidden at lg+ in favour of the
-          grouped sidebar below. */}
-      <nav
-        className="lg:hidden sticky top-0 z-10 -mx-4 sm:-mx-6 mb-6 bg-bg/95 backdrop-blur border-y border-border"
-        aria-label="Settings navigation"
-      >
-        <div className="flex items-center gap-1.5 overflow-x-auto px-4 sm:px-6 py-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          {navGroups}
+    <div className="sh-page" data-width="default">
+      <div className="sh-page-inner st-layout">
+        {/* Below lg: one "Settings / <current>" select (grouped by scope) so the
+            page content starts right under it. At lg+ the grouped left nav shows. */}
+        <div className="st-strip">
+          <label className="st-select" htmlFor="st-section">
+            <span className="st-select-label">Settings</span>
+            <span className="st-select-wrap">
+              <select
+                id="st-section"
+                value={current?.to ?? ''}
+                onChange={(e) => {
+                  const item = flat.find((i) => i.to === e.target.value)
+                  if (!item) return
+                  if (item.external) window.location.assign(item.to)
+                  else navigate(item.to)
+                }}
+              >
+                {!current && <option value="" disabled>Choose a section</option>}
+                {mobileGroups.map((g) => (
+                  <optgroup key={g.label} label={g.label}>
+                    {g.items.map((i) => <option key={i.to} value={i.to}>{i.label}</option>)}
+                  </optgroup>
+                ))}
+              </select>
+              <ChevronDown size={14} aria-hidden="true" />
+            </span>
+          </label>
         </div>
-      </nav>
 
-      {/* Sidebar + content */}
-      <div className="flex flex-col lg:flex-row gap-8 lg:gap-10 items-start">
-        <nav
-          className="hidden lg:flex w-56 shrink-0 lg:sticky lg:top-6 flex-col gap-5"
-          aria-label="Settings navigation"
-        >
+        <nav className="st-side" aria-label="Settings navigation">
           {navGroups}
         </nav>
 
-        {/* Section content fills the rest of the shell — individual
-            paragraphs/fields cap their own width (see SettingsPageHeader,
-            FieldRow) so text stays readable even though the card itself
-            uses the full available width instead of floating in empty
-            space. */}
-        <div className="flex-1 min-w-0 w-full">
-          <Outlet />
-        </div>
+        {/* Section content: the narrow (720px) column. Each section renders its
+            own h1 through SettingsPageHeader, so there is no "Settings" h1 here. */}
+        <SettingsScopeContext.Provider value={scope}>
+          <div className="st-main">
+            <Outlet />
+          </div>
+        </SettingsScopeContext.Provider>
       </div>
     </div>
   )

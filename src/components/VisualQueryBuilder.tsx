@@ -16,6 +16,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { Plus, Trash2, Wand2 } from 'lucide-react'
+import Button from './ui/Button.jsx'
 import { inputCls, selectCls } from '../editor/shared/inspectorPrimitives.jsx'
 
 const OPERATORS = [
@@ -98,7 +99,7 @@ export default function VisualQueryBuilder({ schema, onGenerate, onClose }) {
 
   if (tables.length === 0) {
     return (
-      <div className="rounded-lg border border-dashed border-border bg-surface-2/30 p-4 text-center">
+      <div className="rounded-[var(--radius-sheet)] border border-dashed border-border bg-surface-2 p-4 text-center">
         <p className="text-[11px] text-muted leading-relaxed">
           No tables in the schema catalog yet — the visual builder needs at least
           one registered query's output to know what tables/columns exist. Write
@@ -109,7 +110,7 @@ export default function VisualQueryBuilder({ schema, onGenerate, onClose }) {
   }
 
   return (
-    <div className="rounded-lg border border-border bg-surface-2/30 p-3 space-y-3">
+    <div className="rounded-[var(--radius-sheet)] border border-border bg-surface-2 p-3 space-y-3">
       <div className="flex items-center justify-between">
         <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-fg">
           <Wand2 size={12} className="text-primary" /> Build a query
@@ -126,21 +127,22 @@ export default function VisualQueryBuilder({ schema, onGenerate, onClose }) {
 
       <div>
         <label className="text-[11px] font-medium text-muted block mb-1.5">
-          Columns <span className="text-muted/60">(none selected = *)</span>
+          Columns <span className="text-subtle">(none selected = *)</span>
         </label>
         <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
           {availableColumns.map(c => (
             <button
               key={c}
               onClick={() => toggleColumn(c)}
-              className={`px-2 py-0.5 rounded-full border text-[10.5px] font-mono transition-colors ${
-                columns.includes(c) ? 'bg-primary text-primary-fg border-primary' : 'border-border text-muted hover:text-fg'
+              aria-pressed={columns.includes(c)}
+              className={`h-6 px-2 rounded-[var(--radius-control)] border text-[11px] font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                columns.includes(c) ? 'bg-ink text-ink-fg border-ink' : 'border-border text-muted hover:border-ink hover:text-fg'
               }`}
             >
               {c}
             </button>
           ))}
-          {availableColumns.length === 0 && <p className="text-[10.5px] text-muted/70">No columns known for this table.</p>}
+          {availableColumns.length === 0 && <p className="text-[11px] text-muted">No columns known for this table.</p>}
         </div>
       </div>
 
@@ -169,7 +171,7 @@ export default function VisualQueryBuilder({ schema, onGenerate, onClose }) {
                 onChange={e => updateFilter(i, { value: e.target.value })}
               />
             )}
-            <button onClick={() => removeFilter(i)} className="p-1 text-muted hover:text-red-500 shrink-0">
+            <button onClick={() => removeFilter(i)} className="p-1 text-muted hover:text-danger shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-[2px]" aria-label={`Remove filter ${i + 1}`}>
               <Trash2 size={12} />
             </button>
           </div>
@@ -198,17 +200,13 @@ export default function VisualQueryBuilder({ schema, onGenerate, onClose }) {
         />
       </div>
 
-      <pre className="text-[10.5px] font-mono text-fg bg-surface rounded-lg px-2.5 py-2 overflow-x-auto whitespace-pre-wrap break-words border border-border/60">
+      <pre className="text-[11px] font-mono text-fg bg-surface rounded-[var(--radius-control)] px-2.5 py-2 overflow-x-auto whitespace-pre-wrap break-words border border-border/60">
         {sql || '— pick a table to preview the generated SQL —'}
       </pre>
 
-      <button
-        onClick={() => sql && onGenerate(sql)}
-        disabled={!sql}
-        className="w-full h-8 rounded-lg bg-primary text-primary-fg text-xs font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
-      >
+      <Button className="w-full" size="sm" onClick={() => sql && onGenerate(sql)} disabled={!sql}>
         Insert into editor
-      </button>
+      </Button>
     </div>
   )
 }

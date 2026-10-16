@@ -24,27 +24,17 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import {
-  Boxes,
-  Zap,
-  RefreshCw,
-  Loader2,
-  AlertCircle,
-  CheckCircle2,
-  Layers,
-  Database,
-  Gauge,
-  Sigma,
-  Filter,
-  Plus,
-  Info,
-  ExternalLink,
-  Sparkles,
-} from 'lucide-react'
+import { RefreshCw, Plus, Check, ExternalLink } from 'lucide-react'
 
 import { fetchPreaggSuggestions, fetchPreaggs, buildPreagg } from '../../lib/preagg.js'
 import { useCanWrite } from '../../contexts/OrgContext.jsx'
-import Badge from '../../components/ui/Badge.jsx'
+import Button from '../../components/ui/Button.jsx'
+import Tag from '../../components/ui/Tag.jsx'
+import Skeleton from '../../components/ui/Skeleton.jsx'
+import EmptyState from '../../components/ui/EmptyState.jsx'
+import { EmptyQueries } from '../../components/illustrations'
+import PageShell from '../../components/app/PageShell.jsx'
+import { LoadError } from './appShared.jsx'
 
 // ---------------------------------------------------------------------------
 // Formatting helpers
@@ -71,35 +61,20 @@ function formatCompact(n) {
 }
 
 // ---------------------------------------------------------------------------
-// ColumnChips — render a labelled list of dimension/measure/key strings
+// ColumnList: a labelled run of column names (mono), used for the rollup shape
 // ---------------------------------------------------------------------------
 
-function ColumnChips({ icon: Icon, label, items, tone = 'muted', empty = 'none' }) {
-  const toneClass = {
-    muted: 'bg-surface-2 text-muted border-border/60',
-    primary: 'bg-primary/10 text-primary border-primary/20',
-    indigo: 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20',
-    amber: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20',
-  }[tone]
-
+function ColumnList({ label, items, empty = 'none' }) {
   return (
-    <div className="flex items-start gap-1.5 min-w-0">
-      <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-muted/70 shrink-0 mt-0.5">
-        <Icon size={10} />
-        {label}
-      </span>
+    <div className="flex items-baseline gap-3 min-w-0">
+      <span className="w-20 shrink-0 font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-subtle">{label}</span>
       <div className="flex flex-wrap gap-1 min-w-0">
         {items && items.length > 0 ? (
           items.map((it) => (
-            <span
-              key={it}
-              className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono border ${toneClass}`}
-            >
-              {it}
-            </span>
+            <Tag key={it} caps={false}>{it}</Tag>
           ))
         ) : (
-          <span className="text-[10px] text-muted/50 italic">{empty}</span>
+          <span className="text-[12px] text-subtle">{empty}</span>
         )}
       </div>
     </div>
@@ -107,185 +82,123 @@ function ColumnChips({ icon: Icon, label, items, tone = 'muted', empty = 'none' 
 }
 
 // ---------------------------------------------------------------------------
-// SuggestionCard — one mined rollup candidate with a Build action
+// SuggestionRow: one mined rollup candidate with a Build action
 // ---------------------------------------------------------------------------
 
-function SuggestionCard({ suggestion, canWrite, onBuild, buildState }) {
+function SuggestionRow({ suggestion, canWrite, onBuild, buildState }) {
   const { table, dimensions, measures, filters, score, sample_count, est_bytes } = suggestion
   const building = buildState?.status === 'building'
   const built = buildState?.status === 'ok'
   const errored = buildState?.status === 'err'
 
   return (
-    <div className="rounded-2xl border border-border bg-surface p-4 shadow-sm transition-shadow duration-150 hover:shadow-md">
-      <div className="flex items-start gap-3">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400">
-          <Sparkles size={16} />
+    <li className="ap-row !items-start !py-4">
+      <div className="ap-row-main">
+        <div className="ap-row-title">
+          <span className="ap-trunc font-mono">{table}</span>
+          <Tag caps>score {formatCompact(score)}</Tag>
         </div>
-
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="inline-flex items-center gap-1 text-sm font-semibold text-fg font-display">
-              <Database size={13} className="text-muted" />
-              {table}
-            </span>
-            <Badge variant="primary" size="sm">
-              <Gauge size={9} /> score {formatCompact(score)}
-            </Badge>
-          </div>
-
-          {/* Cost / frequency stats */}
-          <div className="mt-1.5 flex items-center gap-3 flex-wrap text-[11px] text-muted">
-            <span className="inline-flex items-center gap-1">
-              <Zap size={10} className="text-amber-500" />
-              {Number(sample_count).toLocaleString()} hit{sample_count !== 1 ? 's' : ''} in the log
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <Database size={10} />
-              ~{formatBytes(est_bytes)} scanned
-            </span>
-          </div>
-
-          {/* Shape */}
-          <div className="mt-3 flex flex-col gap-2">
-            <ColumnChips icon={Layers} label="group by" items={dimensions} tone="indigo" empty="(none)" />
-            <ColumnChips icon={Sigma} label="measures" items={measures} tone="primary" empty="(none)" />
-            {filters && filters.length > 0 && (
-              <ColumnChips icon={Filter} label="filters" items={filters} tone="muted" />
-            )}
-          </div>
+        <p className="ap-meta mt-1">
+          {Number(sample_count).toLocaleString()} hit{sample_count !== 1 ? 's' : ''} in the log
+          <span aria-hidden="true"> · </span>~{formatBytes(est_bytes)} scanned
+        </p>
+        <div className="mt-3 flex flex-col gap-2">
+          <ColumnList label="Group by" items={dimensions} empty="(none)" />
+          <ColumnList label="Measures" items={measures} empty="(none)" />
+          {filters && filters.length > 0 && <ColumnList label="Filters" items={filters} />}
         </div>
-
-        {/* Build action */}
-        <div className="shrink-0 flex flex-col items-end gap-1.5">
-          {canWrite ? (
-            <button
-              onClick={() => onBuild(suggestion)}
-              disabled={building || built}
-              className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold rounded-lg bg-primary text-primary-fg hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              title="Materialize and register this rollup"
-            >
-              {building ? (
-                <Loader2 size={12} className="animate-spin" />
-              ) : built ? (
-                <CheckCircle2 size={12} />
-              ) : (
-                <Plus size={12} />
-              )}
-              {building ? 'Building…' : built ? 'Built' : 'Build'}
-            </button>
-          ) : (
-            <span className="text-[10px] text-muted/70 select-none" title="Read-only access">
-              Read-only
-            </span>
-          )}
-        </div>
+        {errored && (
+          <p role="alert" className="mt-3 text-[13px] text-fg border-l-2 border-danger pl-2">
+            {buildState?.message ?? 'Build failed.'} Nothing was changed.
+          </p>
+        )}
       </div>
 
-      {errored && (
-        <p className="mt-2 text-[11px] text-danger flex items-center gap-1">
-          <AlertCircle size={10} /> {buildState?.message ?? 'Build failed.'}
-        </p>
-      )}
-    </div>
+      <div className="ap-actions !items-start">
+        {canWrite ? (
+          <Button
+            size="sm"
+            variant={built ? 'secondary' : 'primary'}
+            onClick={() => onBuild(suggestion)}
+            disabled={built}
+            loading={building}
+            title="Materialize and register this rollup"
+          >
+            {!building && (built ? <Check size={13} aria-hidden="true" /> : <Plus size={13} aria-hidden="true" />)}
+            {building ? 'Building…' : built ? 'Built' : 'Build rollup'}
+          </Button>
+        ) : (
+          <Tag title="Your role cannot build rollups">Read-only</Tag>
+        )}
+      </div>
+    </li>
   )
 }
 
 // ---------------------------------------------------------------------------
-// BuiltRollupCard — one active (built) rollup with its HIT count
+// BuiltRollupRow: one active (built) rollup with its HIT count
 // ---------------------------------------------------------------------------
 
-function BuiltRollupCard({ rollup }) {
+function BuiltRollupRow({ rollup }) {
   const { rollup_id, table, source_table, dimensions, measures, rls_keys, datastore_id, hits } = rollup
 
   return (
-    <div className="rounded-2xl border border-border bg-surface p-4 shadow-sm">
-      <div className="flex items-start gap-3">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-          <Boxes size={16} />
+    <li className="ap-row !items-start !py-4">
+      <div className="ap-row-main">
+        <div className="ap-row-title">
+          <span className="ap-trunc font-mono">{table ?? rollup_id}</span>
+          <Tag variant="success" dot>Active</Tag>
         </div>
-
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-semibold text-fg font-display truncate">{table ?? rollup_id}</span>
-            <Badge variant="success" size="sm">
-              <CheckCircle2 size={9} /> active
-            </Badge>
-            <Badge variant="info" size="sm" title="Queries routed to this rollup">
-              <Zap size={9} /> {Number(hits ?? 0).toLocaleString()} hit{hits !== 1 ? 's' : ''}
-            </Badge>
-          </div>
-
-          <p className="mt-1 text-[11px] text-muted flex items-center gap-1 min-w-0">
-            <Database size={10} className="shrink-0" />
-            from <span className="font-mono text-fg/80">{source_table}</span>
-            {datastore_id && (
-              <span className="text-muted/60 truncate">· via {datastore_id}</span>
-            )}
-          </p>
-
-          <div className="mt-3 flex flex-col gap-2">
-            <ColumnChips icon={Layers} label="group by" items={dimensions} tone="indigo" empty="(none)" />
-            <ColumnChips icon={Sigma} label="measures" items={measures} tone="primary" empty="(none)" />
-            {rls_keys && rls_keys.length > 0 && (
-              <ColumnChips icon={Filter} label="rls keys" items={rls_keys} tone="amber" />
-            )}
-          </div>
-
-          {rollup_id && (
-            <p className="mt-2 text-[10px] font-mono text-muted/60 truncate" title={rollup_id}>
-              {rollup_id}
-            </p>
-          )}
+        <p className="ap-meta mt-1 truncate">
+          from {source_table}
+          {datastore_id && <> <span aria-hidden="true">·</span> via {datastore_id}</>}
+        </p>
+        <div className="mt-3 flex flex-col gap-2">
+          <ColumnList label="Group by" items={dimensions} empty="(none)" />
+          <ColumnList label="Measures" items={measures} empty="(none)" />
+          {rls_keys && rls_keys.length > 0 && <ColumnList label="RLS keys" items={rls_keys} />}
         </div>
+        {rollup_id && (
+          <p className="mt-3 ap-meta text-subtle truncate" title={rollup_id}>{rollup_id}</p>
+        )}
       </div>
-    </div>
+      <div className="text-right shrink-0" title="Queries routed to this rollup">
+        <div className="ap-mono text-[20px] font-semibold leading-none text-fg">{Number(hits ?? 0).toLocaleString()}</div>
+        <div className="ap-count mt-1">{hits === 1 ? 'hit' : 'hits'}</div>
+      </div>
+    </li>
   )
 }
 
 // ---------------------------------------------------------------------------
-// SectionHeader
+// RollupSkeleton: layout-matching placeholder for a row
 // ---------------------------------------------------------------------------
 
-function SectionHeader({ icon: Icon, title, count, hint }) {
+function RollupSkeleton() {
   return (
-    <div className="flex items-baseline gap-2 mb-3">
-      <h3 className="text-sm font-semibold text-fg font-display flex items-center gap-1.5">
-        <Icon size={14} className="text-primary" />
-        {title}
-      </h3>
-      {count != null && (
-        <span className="text-[11px] font-mono text-muted">{count}</span>
-      )}
-      {hint && <span className="text-[11px] text-muted/70">· {hint}</span>}
-    </div>
+    <li className="ap-row !items-start !py-4" aria-hidden="true">
+      <div className="ap-row-main flex flex-col gap-2">
+        <Skeleton className="h-4 w-40" />
+        <Skeleton className="h-3 w-56" />
+        <Skeleton className="h-5 w-72 mt-2" />
+        <Skeleton className="h-5 w-56" />
+      </div>
+      <Skeleton className="h-8 w-24 shrink-0" />
+    </li>
   )
 }
 
-// ---------------------------------------------------------------------------
-// RollupCardSkeleton — shimmer placeholder matching the suggestion/rollup
-// card layout, shown while the initial fetch is in flight.
-// ---------------------------------------------------------------------------
-
-function RollupCardSkeleton() {
+function Section({ index, title, count = undefined, hint = undefined, children }) {
   return (
-    <div className="rounded-2xl border border-border bg-surface p-4" aria-hidden="true">
-      <div className="flex items-start gap-3">
-        <div className="nubi-shimmer h-9 w-9 shrink-0 rounded-xl" />
-        <div className="min-w-0 flex-1 space-y-2">
-          <div className="flex items-center gap-2">
-            <div className="nubi-shimmer h-4 w-28 rounded" />
-            <div className="nubi-shimmer h-4 w-16 rounded-full" />
-          </div>
-          <div className="nubi-shimmer h-3 w-40 rounded" />
-          <div className="flex gap-1.5 mt-2">
-            <div className="nubi-shimmer h-4 w-14 rounded" />
-            <div className="nubi-shimmer h-4 w-14 rounded" />
-            <div className="nubi-shimmer h-4 w-10 rounded" />
-          </div>
-        </div>
+    <section className="mt-8 first:mt-0" aria-labelledby={`pre-${index}`}>
+      <div className="border-t-2 border-ink pt-3 pb-2 flex items-baseline gap-3">
+        <span className="font-mono text-[11px] text-subtle">{index}</span>
+        <h2 id={`pre-${index}`} className="text-[15px] font-semibold text-fg">{title}</h2>
+        {count != null && <span className="ap-count">{count}</span>}
+        {hint && <span className="text-[13px] text-muted hidden sm:inline">{hint}</span>}
       </div>
-    </div>
+      {children}
+    </section>
   )
 }
 
@@ -356,102 +269,48 @@ export default function PreaggregationsPanel() {
   })
 
   return (
-    <div className="h-full overflow-y-auto bg-bg">
-      <div className="mx-auto max-w-4xl px-4 py-5 sm:px-6">
-
-        {/* ── Header ───────────────────────────────────────────────────── */}
-        <div className="flex items-start gap-3">
-          <div
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl shadow-nubi-md"
-            style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
-          >
-            <Boxes size={22} className="text-white" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <h2 className="text-lg font-semibold font-display text-fg">Pre-aggregations</h2>
-            <p className="text-sm text-muted mt-0.5">
-              Auto rollups, mined from your query log.
-            </p>
-          </div>
-          <button
-            onClick={load}
-            disabled={loading}
-            className="h-8 px-2.5 flex items-center gap-1.5 text-[11px] font-medium rounded-lg border border-border bg-surface text-muted hover:text-fg hover:bg-surface-2 disabled:opacity-40 transition-colors duration-100 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            title="Refresh suggestions and built rollups"
-            aria-label="Refresh suggestions and built rollups"
-          >
-            <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+    <div className="h-full overflow-y-auto">
+      <PageShell
+        eyebrow="Query acceleration"
+        title="Pre-aggregations"
+        description="Rollups mined from your own query log. Matching queries read the rollup instead of the source."
+        actions={
+          <Button variant="secondary" onClick={load} loading={loading} title="Refresh suggestions and built rollups" aria-label="Refresh suggestions and built rollups">
+            {!loading && <RefreshCw size={14} aria-hidden="true" />}
             <span className="hidden sm:inline">Refresh</span>
-          </button>
-        </div>
+          </Button>
+        }
+      >
+        <p className="text-[13px] leading-relaxed text-muted max-w-[68ch] mb-8">
+          Nubi watches the queries that run, finds hot <code className="font-mono text-fg">GROUP BY</code> shapes,
+          ranks them by frequency times scanned bytes, and materializes the winners as content-hashed rollup tables.
+          Row-level security still holds because each rollup keeps its tenant key columns.{' '}
+          <a
+            href="/docs/pre-aggregations"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-[2px]"
+          >
+            Read the guide <ExternalLink size={11} aria-hidden="true" />
+          </a>
+        </p>
 
-        {/* ── What is this? explainer ──────────────────────────────────── */}
-        <div className="mt-4 rounded-2xl border border-border bg-surface-2/40 p-4">
-          <div className="flex items-start gap-2.5">
-            <Info size={15} className="text-primary shrink-0 mt-0.5" />
-            <div className="text-[12px] leading-relaxed text-muted">
-              <span className="text-fg font-medium">Pre-aggregations accelerate repeated queries.</span>{' '}
-              Nubi watches the queries that actually run, finds the hot{' '}
-              <code className="font-mono text-fg/80 bg-surface px-1 rounded">GROUP BY</code> shapes,
-              ranks them by <span className="text-fg/80">frequency × scanned-bytes</span>, and materializes
-              the winners as content-hashed rollup tables. Matching queries are then transparently routed to
-              the rollup — fewer bytes scanned, faster dashboards and embeds — while row-level security still
-              holds because the rollup keeps its tenant key columns. No cubes to hand-define; the suggestions
-              below are mined automatically.
-              <a
-                href="/docs/pre-aggregations"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-0.5 ml-1 text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
-              >
-                Learn more <ExternalLink size={10} />
-              </a>
-            </div>
-          </div>
-        </div>
+        {error && <LoadError title="Pre-aggregations could not load" error={error} onRetry={load} />}
 
-        {/* ── Error banner ─────────────────────────────────────────────── */}
-        {error && (
-          <div className="mt-4 flex items-center gap-2 rounded-xl bg-danger-bg border border-danger/20 px-3 py-2 text-xs text-danger">
-            <AlertCircle size={13} />
-            {error}
+        {!error && loading && (
+          <div aria-live="polite" aria-label="Loading pre-aggregations">
+            <Section index="01" title="Suggested rollups"><ul className="ap-list"><RollupSkeleton /><RollupSkeleton /></ul></Section>
+            <Section index="02" title="Active rollups"><ul className="ap-list"><RollupSkeleton /></ul></Section>
           </div>
         )}
 
-        {/* ── Loading ──────────────────────────────────────────────────── */}
-        {loading && (
-          <div className="mt-6 space-y-8" aria-live="polite" aria-label="Loading pre-aggregations">
-            <section>
-              <div className="nubi-shimmer h-4 w-36 rounded mb-3" />
-              <div className="flex flex-col gap-3">
-                <RollupCardSkeleton />
-                <RollupCardSkeleton />
-              </div>
-            </section>
-            <section>
-              <div className="nubi-shimmer h-4 w-32 rounded mb-3" />
-              <div className="flex flex-col gap-3">
-                <RollupCardSkeleton />
-              </div>
-            </section>
-          </div>
-        )}
-
-        {!loading && (
+        {!error && !loading && (
           <>
-            {/* ── Suggestions ──────────────────────────────────────────── */}
-            <section className="mt-6">
-              <SectionHeader
-                icon={Sparkles}
-                title="Suggested rollups"
-                count={openSuggestions.length}
-                hint="ranked by score"
-              />
-
+            <Section index="01" title="Suggested rollups" count={openSuggestions.length} hint="Ranked by score">
               {openSuggestions.length > 0 ? (
-                <div className="flex flex-col gap-3">
+                <ul className="ap-list">
                   {openSuggestions.map((s) => (
-                    <SuggestionCard
+                    <SuggestionRow
                       key={s.cluster_key}
                       suggestion={s}
                       canWrite={canWrite}
@@ -459,50 +318,38 @@ export default function PreaggregationsPanel() {
                       buildState={buildStates[s.cluster_key]}
                     />
                   ))}
-                </div>
+                </ul>
               ) : (
-                <div className="rounded-2xl border border-dashed border-border bg-surface-2/30 px-6 py-10 text-center">
-                  <Sparkles size={22} className="mx-auto mb-2 text-muted/40" />
-                  <p className="text-sm text-fg font-medium">No suggestions yet</p>
-                  <p className="text-xs text-muted mt-1 max-w-md mx-auto">
-                    Run aggregating queries a few times and Nubi will mine the hot{' '}
-                    <code className="font-mono text-fg/70">GROUP BY</code> shapes here. A pattern must
-                    appear at least 3 times before it&apos;s suggested.
-                  </p>
-                </div>
+                <EmptyState
+                  compact
+                  art={<EmptyQueries className="w-28" />}
+                  title="No suggestions yet"
+                  description="A GROUP BY shape is suggested once it has run at least 3 times. Run your dashboards and check back."
+                />
               )}
-            </section>
+            </Section>
 
-            {/* ── Active rollups ───────────────────────────────────────── */}
-            <section className="mt-8 pb-4">
-              <SectionHeader
-                icon={Boxes}
-                title="Active rollups"
-                count={rollups.length}
-                hint="transparently routed to"
-              />
-
+            <Section index="02" title="Active rollups" count={rollups.length} hint="Queries are routed here automatically">
               {rollups.length > 0 ? (
-                <div className="flex flex-col gap-3">
+                <ul className="ap-list">
                   {rollups.map((r) => (
-                    <BuiltRollupCard key={r.rollup_id} rollup={r} />
+                    <BuiltRollupRow key={r.rollup_id} rollup={r} />
                   ))}
-                </div>
+                </ul>
               ) : (
-                <div className="rounded-2xl border border-dashed border-border bg-surface-2/30 px-6 py-10 text-center">
-                  <Boxes size={22} className="mx-auto mb-2 text-muted/40" />
-                  <p className="text-sm text-fg font-medium">No rollups built yet</p>
-                  <p className="text-xs text-muted mt-1 max-w-md mx-auto">
-                    {canWrite
-                      ? 'Build a suggestion above to materialize your first rollup. Once built, matching queries route to it automatically.'
-                      : 'A writer can build a suggestion above to materialize a rollup. Once built, matching queries route to it automatically.'}
-                  </p>
-                </div>
+                <EmptyState
+                  compact
+                  art={<EmptyQueries className="w-28" />}
+                  title="No rollups built yet"
+                  description={canWrite
+                    ? 'Build a suggestion above to materialize your first rollup. Matching queries will route to it.'
+                    : 'A writer can build a suggestion to materialize a rollup. Matching queries will route to it.'}
+                />
               )}
-            </section>
+            </Section>
           </>
         )}
-      </div>
+      </PageShell>
     </div>
   )
 }

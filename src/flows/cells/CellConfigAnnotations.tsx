@@ -16,6 +16,7 @@
  */
 
 import { Database, Layers, Filter } from 'lucide-react'
+import Tag from '../../components/ui/Tag.jsx'
 
 function truncate(s, n = 32) {
   if (s == null) return ''
@@ -37,36 +38,28 @@ export default function CellConfigAnnotations({ config }) {
   if (!materialized && !forEach && !runWhen) return null
 
   return (
-    <div className="flex items-center gap-1.5 flex-wrap px-3 py-1.5 bg-surface-2/20 border-b border-border">
+    <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-3 py-1.5">
       {materialized && (
-        <span
-          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium border bg-cyan-500/10 text-cyan-700 dark:text-cyan-300 border-cyan-300/50 dark:border-cyan-800"
+        <Tag
+          caps={false}
           title={materialized.target ? `→ table (${materialized.kind}) · ${materialized.target}` : undefined}
         >
-          <Database size={10} className="shrink-0" />
+          <Database size={10} className="shrink-0" aria-hidden="true" />
           → table ({materialized.kind})
-          {materialized.target && (
-            <span className="font-mono opacity-70">· {truncate(materialized.target, 20)}</span>
-          )}
-        </span>
+          {materialized.target && <span className="text-subtle">· {truncate(materialized.target, 20)}</span>}
+        </Tag>
       )}
       {forEach && (
-        <span
-          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium border bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border-indigo-300/50 dark:border-indigo-800"
-          title={`for each: ${forEach.items}`}
-        >
-          <Layers size={10} className="shrink-0" />
-          for each: <span className="font-mono opacity-80">{truncate(forEach.items)}</span>
-        </span>
+        <Tag caps={false} title={`for each: ${forEach.items}`}>
+          <Layers size={10} className="shrink-0" aria-hidden="true" />
+          for each: <span className="text-subtle">{truncate(forEach.items)}</span>
+        </Tag>
       )}
       {runWhen && (
-        <span
-          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium border bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-300/50 dark:border-amber-800"
-          title={`runs when: ${runWhen}`}
-        >
-          <Filter size={10} className="shrink-0" />
-          runs when: <span className="font-mono opacity-80">{truncate(runWhen)}</span>
-        </span>
+        <Tag caps={false} title={`runs when: ${runWhen}`}>
+          <Filter size={10} className="shrink-0" aria-hidden="true" />
+          runs when: <span className="text-subtle">{truncate(runWhen)}</span>
+        </Tag>
       )}
     </div>
   )
