@@ -31,6 +31,13 @@ import './landing/landing.css'
 type Mount = (root: HTMLElement) => () => void
 const GLStage = lazy(() => import('./landing/stage/Stage'))
 
+// Stable objects on purpose: React re-applies dangerouslySetInnerHTML whenever it gets a new
+// object, which would replace the static markup (and the canvases and listeners that chrome.js
+// and landingLive.js attached to it) on every re-render of the page.
+const HEADER_HTML = { __html: HEADER_MARKUP }
+const OUTRO_HTML = { __html: OUTRO_MARKUP }
+const OVERLAY_HTML = { __html: OVERLAY_MARKUP }
+
 function useMedia(q: string) {
   const sub = useCallback((f: () => void) => { const m = window.matchMedia(q); m.addEventListener('change', f); return () => m.removeEventListener('change', f) }, [q])
   return useSyncExternalStore(sub, () => window.matchMedia(q).matches, () => false)
@@ -85,7 +92,10 @@ export default function LandingPage() {
     }
     const load = (name: string, importer: () => Promise<{ mount: Mount }>) =>
       importer().then(m => { if (!cancelled) run(name, () => m.mount(root)) }).catch(e => console.warn(`[landing] ${name} failed to load`, e))
-    const idle = (window as any).requestIdleCallback ?? ((f: () => void) => setTimeout(f, 200))
+    // The timeout matters: while the stage animates the page is rarely idle, and without it the
+    // outro (live instrument, embed demo, particle wordmark) would never load.
+    const ric = (window as any).requestIdleCallback as ((f: () => void, o: { timeout: number }) => number) | undefined
+    const idle = ric ? (f: () => void) => ric(f, { timeout: 1500 }) : (f: () => void) => setTimeout(f, 200)
     idle(() => load('live figure', () => import('./landing/landingLive.js')))
     return () => {
       cancelled = true
@@ -234,12 +244,12 @@ export default function LandingPage() {
   return (
     <>
       <div ref={rootRef} className={`nl${debug.ui ? '' : ' noui'}${reduced ? ' rm' : ''}`} id="top">
-        <div className="hdr-wrap" dangerouslySetInnerHTML={{ __html: HEADER_MARKUP }} />
+        <div className="hdr-wrap" dangerouslySetInnerHTML={HEADER_HTML} />
         <main id="main" tabIndex={-1}>
           <Story director={director} env={{ mobile, reduced, debug: debug.any, ui: debug.ui }} api={api} stage={stage} labelsRef={labelsRef} />
         </main>
-        <div className="outro-wrap" dangerouslySetInnerHTML={{ __html: OUTRO_MARKUP }} />
-        <div className="ovl-wrap" dangerouslySetInnerHTML={{ __html: OVERLAY_MARKUP }} />
+        <div className="outro-wrap" dangerouslySetInnerHTML={OUTRO_HTML} />
+        <div className="ovl-wrap" dangerouslySetInnerHTML={OVERLAY_HTML} />
         {debug.perf && <div className="perf" aria-hidden="true">{perf}</div>}
       </div>
       <div className="nl-foot"><Footer /></div>
