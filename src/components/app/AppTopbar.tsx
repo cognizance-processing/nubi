@@ -1,219 +1,251 @@
 /**
- * AppTopbar — top navigation bar inside the authenticated AppShell.
+ * AppTopbar — the bar across the top of the white sheet in the authenticated AppShell.
  *
- * Left:   [mobile hamburger] + Logo (mobile only)
- * Center: per-page toolbar slot (pages portal their toolbar JSX here)
- * Right:  Global panel switcher (Notifications / Git / Chat) | User avatar menu
+ * Left:   [mobile menu] [mobile logo] [breadcrumb — only at depth >= 2]
+ * Center: the page-actions slot (pages portal their toolbar here via <TopbarPortal>)
+ * Right:  [search (mobile)] [panels: notifications · git · chat] [account menu]
  *
- * The global switcher (Notifications / Git / Chat) is the single, consistent
- * home for the shell-level RHS panels — present on every authed page at every
- * breakpoint. AppShell owns the panel open/close state and passes the toggle
- * descriptors in via `actions`.
+ * Rules:
+ *   - Top-level pages never repeat their title here (the page header owns it); the breadcrumb
+ *     appears only on nested routes, from the label map in shell/shellLogic.ts.
+ *   - Panel toggles are icon buttons (16px, 1.5 stroke). The notification count is a square ink
+ *     badge capped at "9+" — never a red pill.
+ *   - Below 768px the git/chat toggles collapse into a "⋯" menu so the bar never truncates the
+ *     breadcrumb or the page's own actions. Notifications stays visible (it carries the count).
  *
  * Contracts:
- *   - Reads UiContext for setTopbarSlot (the center per-page toolbar portal)
- *   - Reads AuthContext for user, logout
- *   - Reads ThemeContext for theme, toggleTheme
+ *   - UiContext: setTopbarSlot (the page-actions portal target), crumbLabel
+ *   - AuthContext: user, logout. ThemeContext: theme, toggleTheme
  */
 
-import { useState, useEffect, useRef } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import {
-  Menu,
-  Sun,
-  Moon,
-  LogOut,
-  Settings,
-} from 'lucide-react'
+import { Fragment } from 'react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { ChevronRight, Keyboard, LogOut, Menu, MoreHorizontal, Search, Settings, Sun, Moon } from 'lucide-react'
 import { useUi } from '../../contexts/UiContext.jsx'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import { useTheme } from '../../contexts/ThemeContext.jsx'
-import {
-  visibleRailItems,
-  railItemAriaLabel,
-  formatBadgeCount,
-} from '../../shell/shellLogic.js'
+import { visibleRailItems, railItemAriaLabel, formatBadgeCount, crumbTrail } from '../../shell/shellLogic.js'
+import { useMenu } from '../../shell/useMenu.js'
+import { openSpotlight } from './Spotlight.jsx'
+import { openShortcuts } from '../../shell/ShortcutSheet.jsx'
 import Logo from '../Logo.jsx'
+import '../../shell/shell.css'
+
+type RailItem = {
+  id: string
+  Icon: any
+  label: string
+  active?: boolean
+  onToggle: () => void
+  badge?: number
+  hidden?: boolean
+}
 
 // ---------------------------------------------------------------------------
-// TopbarActions — the global panel switcher (Notifications / Git / Chat).
+// Panel switcher (Notifications / Git / Chat)
 // ---------------------------------------------------------------------------
 
-function TopbarActions({ items }: { items: { id: string; Icon: any; label: string; active?: boolean; onToggle: () => void; badge?: number; hidden?: boolean }[] }) {
+function PanelButton({ item, className = '' }: { item: RailItem; className?: string }) {
+  const { id, Icon, label, active, onToggle, badge } = item
+  const count = formatBadgeCount(badge, 9)
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label={railItemAriaLabel({ active, label, badge })}
+      aria-pressed={active}
+      title={label}
+      data-testid={`rail-toggle-${id}`}
+      className={['sh-icon-btn', className].join(' ')}
+    >
+      <Icon size={16} strokeWidth={1.5} aria-hidden="true" />
+      {count && <span className="sh-count" aria-hidden="true">{count}</span>}
+    </button>
+  )
+}
+
+function TopbarActions({ items }: { items: RailItem[] }) {
   const visible = visibleRailItems(items || [])
+  const overflow = new Set(['git', 'chat']) // collapse into "⋯" on small screens
+  const { open: menuOpen, setOpen: setMenuOpen, close: closeMenu, rootRef, triggerRef, menuRef, onMenuKeyDown } = useMenu()
   if (visible.length === 0) return null
 
+  const inMenu = visible.filter(i => overflow.has(i.id))
+  const menuActive = inMenu.some(i => i.active)
+
   return (
-    <div
-      className="flex items-center gap-1"
-      role="toolbar"
-      aria-label="Panels"
-      data-testid="app-right-rail"
-    >
-      {visible.map(({ id, Icon, label, active, onToggle, badge }) => (
-        <button
-          key={id}
-          type="button"
-          onClick={onToggle}
-          aria-label={railItemAriaLabel({ active, label, badge })}
-          aria-pressed={active}
-          title={label}
-          data-testid={`rail-toggle-${id}`}
-          className={[
-            'nubi-topbar-action',
-            active ? 'active' : '',
-          ].join(' ')}
-        >
-          <Icon size={15} strokeWidth={2} aria-hidden="true" />
-          {badge > 0 && (
-            <span
-              className="absolute -top-1 -right-1 min-w-[1rem] h-4 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-bold leading-none shadow-sm"
-              aria-hidden="true"
-            >
-              {formatBadgeCount(badge)}
-            </span>
-          )}
-        </button>
+    <div className="flex items-center gap-1" role="toolbar" aria-label="Panels" data-testid="app-right-rail">
+      {visible.map(item => (
+        <PanelButton key={item.id} item={item} className={overflow.has(item.id) ? 'hidden md:inline-flex' : ''} />
       ))}
+
+      {/* Mobile overflow */}
+      {inMenu.length > 0 && (
+        <div ref={rootRef} className="relative md:hidden">
+          <button
+            ref={triggerRef}
+            type="button"
+            onClick={() => setMenuOpen(v => !v)}
+            aria-label="More actions"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            className="sh-icon-btn"
+            data-active={menuActive || undefined}
+            style={menuActive && !menuOpen ? { color: 'var(--text)', borderColor: 'var(--ink)' } : undefined}
+          >
+            <MoreHorizontal size={16} strokeWidth={1.5} aria-hidden="true" />
+          </button>
+          {menuOpen && (
+            <div
+              ref={menuRef}
+              role="menu"
+              aria-label="More actions"
+              onKeyDown={onMenuKeyDown}
+              className="sh-pop sh-pop-in absolute right-0 top-full mt-2 z-40 w-52 p-1 origin-top-right"
+            >
+              {inMenu.map(({ id, Icon, label, active, onToggle }) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="menuitem"
+                  className="sh-menu-item"
+                  onClick={() => { onToggle(); closeMenu(false) }}
+                >
+                  <Icon size={16} strokeWidth={1.5} aria-hidden="true" className="text-subtle" />
+                  <span className="flex-1">{label}</span>
+                  {active && <span className="nubi-dot nubi-dot-live" role="img" aria-label="Open" />}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// User avatar dropdown
+// Breadcrumb — only on nested routes ("Settings / AI providers")
+// ---------------------------------------------------------------------------
+
+function Crumb() {
+  const { pathname } = useLocation()
+  const { crumbLabel } = useUi()
+  const trail = crumbTrail(pathname, crumbLabel)
+  if (trail.length === 0) return null
+  return (
+    <nav aria-label="Breadcrumb" className="flex items-center min-w-0 text-[13px]">
+      <ol className="flex items-center gap-1.5 min-w-0 m-0 p-0 list-none">
+        {trail.map((c, i) => {
+          const last = i === trail.length - 1
+          return (
+            <Fragment key={c.to}>
+              {i > 0 && (
+                <li aria-hidden="true" className={['text-subtle', last ? '' : 'hidden sm:block'].join(' ')}>
+                  <ChevronRight size={12} strokeWidth={1.5} />
+                </li>
+              )}
+              <li className={['min-w-0', last ? '' : 'hidden sm:block'].join(' ')}>
+                {last ? (
+                  <span aria-current="page" className="block font-semibold text-fg truncate">{c.label}</span>
+                ) : (
+                  <Link to={c.to} className="text-muted hover:text-fg rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                    {c.label}
+                  </Link>
+                )}
+              </li>
+            </Fragment>
+          )
+        })}
+      </ol>
+    </nav>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Account menu
 // ---------------------------------------------------------------------------
 
 function UserMenu() {
   const { user, logout } = useAuth()
   const { theme, toggleTheme } = useTheme()
   const navigate = useNavigate()
-  const [open, setOpen] = useState(false)
-  const ref = useRef(null)
-
-  // Close on outside click
-  useEffect(() => {
-    if (!open) return
-    function onDown(e) {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [open])
-
-  // Close on Escape (matches the Escape-to-close behaviour of every other
-  // dropdown/dialog in the shell — WorkspaceSwitcher, NotificationCenter, etc).
-  useEffect(() => {
-    if (!open) return
-    function onKey(e) {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open])
+  const { open: menuOpen, setOpen: setMenuOpen, close: closeMenu, rootRef, triggerRef, menuRef, onMenuKeyDown } = useMenu()
 
   if (!user) return null
 
   const initials = (user.name || user.email || '?')
     .split(' ')
-    .map(s => s[0])
+    .map((s: string) => s[0])
     .join('')
     .slice(0, 2)
     .toUpperCase()
 
   async function handleLogout() {
-    setOpen(false)
+    closeMenu(false)
     await logout()
     navigate('/login')
   }
 
   return (
-    <div className="relative" ref={ref}>
+    <div className="relative" ref={rootRef}>
       <button
-        onClick={() => setOpen(v => !v)}
-        aria-label="User account menu"
-        aria-expanded={open}
+        ref={triggerRef}
+        type="button"
+        onClick={() => setMenuOpen(v => !v)}
+        aria-label="Account menu"
+        aria-expanded={menuOpen}
         aria-haspopup="menu"
-        className="
-          flex items-center justify-center overflow-hidden
-          w-8 h-8 rounded-full
-          text-xs font-bold text-white
-          ring-2 ring-transparent
-          transition-[opacity,box-shadow] duration-150
-          hover:opacity-85
-          focus-visible:outline-none focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface
-          select-none shrink-0
-        "
-        style={user.avatar_url ? undefined : { background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
+        className="flex items-center justify-center overflow-hidden w-8 h-8 rounded-full text-xs font-semibold select-none shrink-0
+          hover:opacity-85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
+        style={user.avatar_url ? undefined : { background: 'var(--ink)', color: 'var(--ink-fg)' }}
       >
         {user.avatar_url
           ? <img src={user.avatar_url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
           : initials}
       </button>
 
-      {open && (
-        <>
-          <div
-            className="fixed inset-0 z-30"
-            onClick={() => setOpen(false)}
-            aria-hidden="true"
-          />
-          <div
-            role="menu"
-            className="
-              absolute right-0 top-full mt-2 z-40
-              w-52 rounded-nubi-xl
-              bg-surface border border-border
-              shadow-nubi-lg
-              overflow-hidden
-              nubi-animate-scale-in origin-top-right
-            "
-          >
-            {/* User info */}
-            <div className="px-3 pt-2.5 pb-2.5 border-b border-border">
-              {user.name && (
-                <p className="text-sm font-semibold text-fg truncate leading-tight">{user.name}</p>
-              )}
-              <p className="text-xs text-muted truncate leading-tight mt-0.5">{user.email}</p>
-            </div>
-
-            <div className="p-1">
-              {/* Theme toggle */}
-              <button
-                onClick={toggleTheme}
-                role="menuitem"
-                className="nubi-dropdown-item"
-              >
-                {theme === 'dark'
-                  ? <Sun size={14} className="shrink-0 text-muted" aria-hidden="true" />
-                  : <Moon size={14} className="shrink-0 text-muted" aria-hidden="true" />}
-                {theme === 'dark' ? 'Light mode' : 'Dark mode'}
-              </button>
-
-              {/* Settings link */}
-              <Link
-                to="/settings"
-                onClick={() => setOpen(false)}
-                role="menuitem"
-                className="nubi-dropdown-item"
-              >
-                <Settings size={14} className="shrink-0 text-muted" aria-hidden="true" />
-                Settings
-              </Link>
-
-              <div className="nubi-dropdown-divider" />
-
-              {/* Sign out */}
-              <button
-                onClick={handleLogout}
-                role="menuitem"
-                className="nubi-dropdown-item danger"
-              >
-                <LogOut size={14} className="shrink-0" aria-hidden="true" />
-                Sign out
-              </button>
-            </div>
+      {menuOpen && (
+        <div
+          ref={menuRef}
+          role="menu"
+          aria-label="Account"
+          onKeyDown={onMenuKeyDown}
+          className="sh-pop sh-pop-in absolute right-0 top-full mt-2 z-40 w-60 origin-top-right"
+        >
+          <div className="px-3 py-2.5 border-b border-border">
+            {user.name && <p className="text-[13px] font-semibold text-fg truncate leading-tight">{user.name}</p>}
+            <p className="text-xs text-muted truncate leading-tight mt-0.5">{user.email}</p>
           </div>
-        </>
+
+          <div className="p-1">
+            <button type="button" role="menuitem" className="sh-menu-item" onClick={() => { toggleTheme(); closeMenu(false) }}>
+              {theme === 'dark'
+                ? <Sun size={16} strokeWidth={1.5} className="text-subtle" aria-hidden="true" />
+                : <Moon size={16} strokeWidth={1.5} className="text-subtle" aria-hidden="true" />}
+              <span className="flex-1">{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
+            </button>
+
+            <Link to="/settings" role="menuitem" className="sh-menu-item" onClick={() => closeMenu(false)}>
+              <Settings size={16} strokeWidth={1.5} className="text-subtle" aria-hidden="true" />
+              <span className="flex-1">Settings</span>
+              <span className="inline-flex gap-1" aria-hidden="true"><kbd className="nubi-kbd">g</kbd><kbd className="nubi-kbd">s</kbd></span>
+            </Link>
+
+            <button type="button" role="menuitem" className="sh-menu-item" onClick={() => { closeMenu(false); openShortcuts() }}>
+              <Keyboard size={16} strokeWidth={1.5} className="text-subtle" aria-hidden="true" />
+              <span className="flex-1">Keyboard shortcuts</span>
+              <kbd className="nubi-kbd" aria-hidden="true">?</kbd>
+            </button>
+
+            <div className="sh-menu-sep" role="separator" />
+
+            <button type="button" role="menuitem" className="sh-menu-item" data-danger onClick={handleLogout}>
+              <LogOut size={16} strokeWidth={1.5} aria-hidden="true" />
+              <span className="flex-1">Sign out</span>
+            </button>
+          </div>
+        </div>
       )}
     </div>
   )
@@ -224,67 +256,48 @@ function UserMenu() {
 // ---------------------------------------------------------------------------
 
 /**
- * @param {{ onMobileMenuOpen: Function, actions?: Array }} props
- *   actions — the global panel toggle descriptors (Notifications / Git / Chat),
- *   built and owned by AppShell. Item shape:
- *   { id, Icon, label, active, onToggle, hidden?, badge? } — see TopbarActions.
+ * @param onMobileMenuOpen opens the mobile navigation drawer
+ * @param actions the global panel descriptors (Notifications / Git / Chat), owned by AppShell:
+ *   { id, Icon, label, active, onToggle, hidden?, badge? }
  */
-export default function AppTopbar({ onMobileMenuOpen, actions = [] }) {
+export default function AppTopbar({
+  onMobileMenuOpen,
+  actions = [],
+}: {
+  onMobileMenuOpen: () => void
+  actions?: RailItem[]
+}) {
   const { setTopbarSlot } = useUi()
 
   return (
-    <header className="
-      sticky top-0 z-30
-      flex items-center gap-3
-      px-3 sm:px-4 shrink-0
-      bg-surface/90 backdrop-blur-md
-      border-b border-border
-      shadow-[0_1px_0_var(--border)]
-    "
-    style={{ height: '3.25rem' }}
-    >
-      {/* ── Far left: mobile hamburger / logo ── */}
-      <div className="flex items-center gap-2 shrink-0">
-        {/* Mobile hamburger */}
-        <button
-          onClick={onMobileMenuOpen}
-          aria-label="Open navigation menu"
-          className="
-            md:hidden flex items-center justify-center w-8 h-8 rounded-lg
-            text-muted hover:text-fg hover:bg-surface-2
-            transition-colors duration-100
-            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring
-          "
-        >
-          <Menu size={17} aria-hidden="true" />
+    <header className="sticky top-0 z-30 flex items-center gap-3 px-3 sm:px-4 shrink-0 h-12 bg-surface border-b border-border">
+      {/* Left: mobile menu, mobile logo, breadcrumb */}
+      <div className="flex items-center gap-2 min-w-0 shrink">
+        <button type="button" onClick={onMobileMenuOpen} aria-label="Open navigation menu" className="sh-icon-btn md:hidden">
+          <Menu size={16} strokeWidth={1.5} aria-hidden="true" />
         </button>
-
-        {/* Logo — mobile only (sidebar hidden); links to the landing page */}
         <Link
           to="/"
-          aria-label="Nubi — back to landing page"
-          className="md:hidden shrink-0 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label="Nubi, back to the landing page"
+          className="md:hidden shrink-0 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <Logo size={22} showName={false} />
+          <Logo size={20} showName={false} />
         </Link>
+        <Crumb />
       </div>
 
-      {/* ── Center: per-page toolbar slot (e.g. the dashboard editor) ── */}
-      <div
-        ref={setTopbarSlot}
-        className="flex items-center gap-2 flex-1 min-w-0 overflow-x-auto"
-      />
+      {/* Center: the page-actions slot */}
+      <div ref={setTopbarSlot} className="flex items-center gap-2 flex-1 min-w-0 overflow-x-auto" />
 
-      {/* ── Right: global panel switcher + user avatar (far right) ── */}
+      {/* Right: search (mobile), panel switcher, account */}
       <div className="flex items-center gap-1.5 shrink-0">
-        {/* Notifications / Git / Chat — the single home for shell RHS panels,
-            on every page at every breakpoint. */}
+        <button type="button" onClick={() => openSpotlight()} aria-label="Search" className="sh-icon-btn md:hidden">
+          <Search size={16} strokeWidth={1.5} aria-hidden="true" />
+        </button>
+
         <TopbarActions items={actions} />
 
-        {/* Divider between the panel switcher and the account menu. */}
-        {actions.filter(a => !a.hidden).length > 0 && (
-          <div className="w-px h-5 bg-border mx-0.5" aria-hidden="true" />
-        )}
+        {actions.some(a => !a.hidden) && <div className="w-px h-5 bg-border mx-0.5" aria-hidden="true" />}
 
         <UserMenu />
       </div>

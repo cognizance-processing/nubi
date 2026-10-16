@@ -44,11 +44,11 @@ export function resolveActiveEnv(saved: string | null | undefined, list: EnvRow[
   return savedIsValid ? saved : defaultEnvKey(list)
 }
 
-/** prod = emerald (live), dev = sky, anything else (custom) = violet. */
+/** Swiss: one status colour for live, the accent for dev, a neutral for everything custom. */
 export function envDotClass(envKey: string): string {
-  if (envKey === 'prod') return 'bg-emerald-500'
-  if (envKey === 'dev') return 'bg-sky-500'
-  return 'bg-violet-500'
+  if (envKey === 'prod') return 'bg-success'
+  if (envKey === 'dev') return 'bg-accent'
+  return 'bg-subtle'
 }
 
 /**
@@ -107,10 +107,13 @@ export function railItemAriaLabel({ active, label, badge }: RailItem): string {
   return badge ? `${verb} ${label} (${badge} unread)` : `${verb} ${label}`
 }
 
-/** Clamp a badge count to the "99+" display convention; 0/undefined → ''. */
-export function formatBadgeCount(n: number | null | undefined): string {
+/**
+ * Clamp a badge count to the "99+" display convention; 0/undefined → ''.
+ * `cap` lets a tighter surface (the topbar's square count) clamp earlier: cap=9 → "9+".
+ */
+export function formatBadgeCount(n: number | null | undefined, cap = 99): string {
   if (!n || n <= 0) return ''
-  return n > 99 ? '99+' : String(n)
+  return n > cap ? `${cap}+` : String(n)
 }
 
 // ---------------------------------------------------------------------------
@@ -197,4 +200,170 @@ export function isUnchangedName(next: unknown, current: unknown): boolean {
   const n = String(next ?? '').trim()
   if (!n) return true
   return n === String(current ?? '').trim()
+}
+
+
+// ---------------------------------------------------------------------------
+// Breadcrumb
+// ---------------------------------------------------------------------------
+
+export interface Crumb {
+  label: string
+  to: string
+}
+
+const SECTION_LABELS: Record<string, string> = {
+  home: 'Home',
+  connectors: 'Connectors',
+  data: 'Data',
+  queries: 'Queries',
+  dashboards: 'Dashboards',
+  flows: 'Flows',
+  watches: 'Watches',
+  editor: 'Dashboard editor',
+  settings: 'Settings',
+  admin: 'Admin',
+  billing: 'Billing',
+  invite: 'Invitation',
+}
+
+/** Known second-level segments. Anything else is treated as an id and gets a generic noun. */
+const SUB_LABELS: Record<string, Record<string, string>> = {
+  settings: {
+    profile: 'Profile',
+    organization: 'Organization',
+    members: 'Members',
+    integrations: 'Integrations',
+    'ai-providers': 'AI providers',
+    bridges: 'Bridges',
+    usage: 'Usage',
+    project: 'Project',
+    security: 'Security',
+    mcp: 'MCP',
+    connections: 'Connections',
+    'access-grants': 'Access grants',
+  },
+  admin: { users: 'Users', orgs: 'Organisations', audit: 'Audit log' },
+  queries: { blend: 'Blend' },
+}
+
+/** The noun used for an id segment ("/queries/abc" → "Query"). */
+const ID_NOUN: Record<string, string> = {
+  queries: 'Query',
+  flows: 'Flow',
+  connectors: 'Connector',
+  orgs: 'Organisation',
+  editor: 'Dashboard',
+}
+
+const humanize = (s: string) => {
+  const t = s.replace(/[-_]+/g, ' ').trim()
+  return t.charAt(0).toUpperCase() + t.slice(1)
+}
+
+/**
+ * The breadcrumb trail for a pathname — **empty below depth 2** (top-level pages never repeat their
+ * title in the topbar). `lastLabel` replaces the final segment's label (dynamic routes: a board or
+ * query name supplied by the page).
+ */
+export function crumbTrail(pathname: string, lastLabel?: string | null): Crumb[] {
+  const parts = pathname.split('/').filter(Boolean).map(decodeURIComponent)
+  if (parts.length < 2 || !SECTION_LABELS[parts[0]]) return []
+  const trail: Crumb[] = [{ label: SECTION_LABELS[parts[0]], to: `/${parts[0]}` }]
+  let prev = parts[0]
+  for (let i = 1; i < parts.length; i++) {
+    const seg = parts[i]
+    const known = SUB_LABELS[parts[0]]?.[seg]
+    const label = known ?? (/^[0-9a-f-]{8,}$/i.test(seg) || /\d/.test(seg) ? ID_NOUN[prev] ?? humanize(seg) : humanize(seg))
+    trail.push({ label, to: '/' + parts.slice(0, i + 1).join('/') })
+    prev = seg
+  }
+  if (lastLabel) trail[trail.length - 1] = { ...trail[trail.length - 1], label: lastLabel }
+  return trail
+}
+
+// ---------------------------------------------------------------------------
+// g-chords (go to …)
+// ---------------------------------------------------------------------------
+
+/** `g` then the key → route. Single source for the sidebar tooltips, Spotlight kbd column and the shortcut sheet. */
+export const NAV_CHORDS: Record<string, { to: string; label: string }> = {
+  h: { to: '/home', label: 'Home' },
+  c: { to: '/connectors', label: 'Connectors' },
+  e: { to: '/data', label: 'Data' },
+  q: { to: '/queries', label: 'Queries' },
+  d: { to: '/dashboards', label: 'Dashboards' },
+  f: { to: '/flows', label: 'Flows' },
+  w: { to: '/watches', label: 'Watches' },
+  s: { to: '/settings', label: 'Settings' },
+}
+
+/** The chord key for a route (`/queries` → `q`), or undefined. */
+export function chordKeyFor(to: string): string | undefined {
+  return Object.keys(NAV_CHORDS).find(k => NAV_CHORDS[k].to === to)
+}
+
+/** True when a key event target is somewhere the user is typing (so global single-key shortcuts must not fire). */
+export function isTypingTarget(el: unknown): boolean {
+  const t = el as { tagName?: string; isContentEditable?: boolean; closest?: (s: string) => unknown } | null
+  if (!t || !t.tagName) return false
+  const tag = t.tagName.toUpperCase()
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+  if (t.isContentEditable) return true
+  return Boolean(t.closest?.('.monaco-editor, [role="textbox"], [contenteditable="true"]'))
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard-started navigation is not animated (brief: motion rule 5)
+// ---------------------------------------------------------------------------
+
+let keyboardNavAt = 0
+/** Call right before navigating from a keyboard shortcut. */
+export function markKeyboardNav(): void { keyboardNavAt = Date.now() }
+/** Read-and-clear. True only if marked within the last second (a mark that never led to a route change goes stale). */
+export function consumeKeyboardNav(): boolean {
+  const v = keyboardNavAt > 0 && Date.now() - keyboardNavAt < 1000
+  keyboardNavAt = 0
+  return v
+}
+
+// ---------------------------------------------------------------------------
+// Spotlight
+// ---------------------------------------------------------------------------
+
+export type SpotlightScope = 'all' | 'dashboards' | 'queries' | 'connectors' | 'actions'
+
+const SCOPE_PREFIX: Record<string, SpotlightScope> = { d: 'dashboards', q: 'queries', c: 'connectors', '>': 'actions' }
+
+/**
+ * Split a raw query into a scope and a search term. `d `, `q `, `c ` (letter + space) and `>`
+ * narrow the search to one kind of thing; anything else searches everything.
+ */
+export function parseSpotlightQuery(raw: string): { scope: SpotlightScope; term: string } {
+  const m = /^([dqc]) (.*)$/s.exec(raw) ?? /^(>)\s*(.*)$/s.exec(raw)
+  if (!m) return { scope: 'all', term: raw }
+  return { scope: SCOPE_PREFIX[m[1]], term: m[2] }
+}
+
+/** Most-recent-first list with the item moved to the front, de-duplicated, capped. */
+export function pushRecent(list: string[], id: string, max = 8): string[] {
+  return [id, ...list.filter(x => x !== id)].slice(0, max)
+}
+
+/** Rank by: every term present; prefix and word-start matches first. -1 = no match. */
+export function scoreText(hay: string, terms: string[]): number {
+  const h = hay.toLowerCase()
+  let s = 0
+  for (const t of terms) {
+    const i = h.indexOf(t)
+    if (i < 0) return -1
+    s += i === 0 ? 3 : /[\s\-_/.]/.test(h[i - 1]) ? 2 : 1
+  }
+  return s
+}
+
+/** "1 result" / "12 results" / "No results" — the Spotlight live region. */
+export function resultCountLabel(n: number): string {
+  if (n <= 0) return 'No results'
+  return n === 1 ? '1 result' : `${n} results`
 }

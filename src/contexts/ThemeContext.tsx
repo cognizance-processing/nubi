@@ -47,6 +47,31 @@ function getInitialTheme(): Theme {
   return 'light'
 }
 
+/** Frame colours from the brief, used only if the --bg token can't be read. */
+const THEME_COLOR_FALLBACK: Record<Theme, string> = { light: '#eceef1', dark: '#0b0c0e' }
+
+/**
+ * Keep <meta name="theme-color"> (browser chrome / mobile status bar) in step with the frame.
+ * index.html may ship media-query variants that follow the OS; this explicit, media-less tag is
+ * inserted first so the user's own toggle wins. Colour is read from the --bg token so it can't drift.
+ */
+function syncThemeColor(theme: Theme) {
+  try {
+    const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()
+    const color = /^#[0-9a-f]{3,8}$/i.test(bg) ? bg : THEME_COLOR_FALLBACK[theme]
+    let meta = document.head.querySelector<HTMLMetaElement>('meta[name="theme-color"][data-nubi-theme]')
+    if (!meta) {
+      meta = document.createElement('meta')
+      meta.name = 'theme-color'
+      meta.setAttribute('data-nubi-theme', '')
+      document.head.prepend(meta)
+    }
+    meta.content = color
+  } catch {
+    // Non-browser environment — nothing to sync.
+  }
+}
+
 function applyTheme(theme: Theme) {
   const root = document.documentElement
   if (theme === 'dark') {
@@ -54,6 +79,7 @@ function applyTheme(theme: Theme) {
   } else {
     root.classList.remove('dark')
   }
+  syncThemeColor(theme)
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {

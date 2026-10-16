@@ -8,6 +8,9 @@
  *   openChat()
  *   closeChat()
  *   toggleChat()
+ *   chatDraft / setChatDraft(text) — text a surface (Spotlight "Ask AI") hands to the chat composer
+ *   crumbLabel / setCrumbLabel(label) — label for the last breadcrumb segment on a
+ *                      dynamic route (set by PageShell's `crumb` prop / usePageCrumb)
  *
  * sidebarCollapsed is persisted to localStorage under 'nubi-sidebar-collapsed'.
  */
@@ -25,6 +28,10 @@ export interface UiContextValue {
   setTopbarSlot: (node: HTMLElement | null) => void
   pageOwnsChat: boolean
   setPageOwnsChat: (owns: boolean) => void
+  crumbLabel: string | null
+  setCrumbLabel: (label: string | null) => void
+  chatDraft: string
+  setChatDraft: (text: string) => void
 }
 
 const UiContext = createContext<UiContextValue | null>(null)
@@ -48,6 +55,10 @@ export function UiProvider({ children }: { children: ReactNode }) {
   // When a page (e.g. the dashboard editor) owns the chat UI itself, the global
   // chat button and panel are suppressed so there are never two chats at once.
   const [pageOwnsChat, setPageOwnsChat] = useState(false)
+  // Label for the last breadcrumb segment on dynamic routes (a board or query name).
+  const [crumbLabel, setCrumbLabel] = useState<string | null>(null)
+  // A draft message handed to the chat composer by another surface (e.g. Spotlight's "Ask AI").
+  const [chatDraft, setChatDraft] = useState('')
 
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed(prev => {
@@ -78,6 +89,10 @@ export function UiProvider({ children }: { children: ReactNode }) {
         setTopbarSlot,
         pageOwnsChat,
         setPageOwnsChat,
+        crumbLabel,
+        setCrumbLabel,
+        chatDraft,
+        setChatDraft,
       }}
     >
       {children}

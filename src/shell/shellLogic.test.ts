@@ -64,9 +64,9 @@ test('resolveActiveEnv with no saved key defaults to the project default', () =>
 // ── envDotClass ──────────────────────────────────────────────────────────────
 
 test('envDotClass colours prod/dev/custom distinctly', () => {
-  assert.equal(envDotClass('prod'), 'bg-emerald-500')
-  assert.equal(envDotClass('dev'), 'bg-sky-500')
-  assert.equal(envDotClass('staging'), 'bg-violet-500')
+  assert.equal(envDotClass('prod'), 'bg-success')
+  assert.equal(envDotClass('dev'), 'bg-accent')
+  assert.equal(envDotClass('staging'), 'bg-subtle')
 })
 
 // ── buildEnvRows ─────────────────────────────────────────────────────────────
@@ -233,4 +233,102 @@ test('isUnchangedName flags empty and unchanged edits', () => {
 
 test('isUnchangedName allows a real rename', () => {
   assert.equal(isUnchangedName('Acme Inc', 'Acme'), false)
+})
+
+// ── shell polish: breadcrumb, chords, spotlight ──────────────────────────────
+
+import {
+  crumbTrail,
+  chordKeyFor,
+  isTypingTarget,
+  markKeyboardNav,
+  consumeKeyboardNav,
+  parseSpotlightQuery,
+  pushRecent,
+  scoreText,
+  resultCountLabel,
+} from './shellLogic.js'
+
+test('formatBadgeCount honours a tighter cap', () => {
+  assert.equal(formatBadgeCount(9, 9), '9')
+  assert.equal(formatBadgeCount(10, 9), '9+')
+  assert.equal(formatBadgeCount(30, 9), '9+')
+})
+
+test('crumbTrail is empty at depth 1 and for unknown sections', () => {
+  assert.deepEqual(crumbTrail('/home'), [])
+  assert.deepEqual(crumbTrail('/connectors'), [])
+  assert.deepEqual(crumbTrail('/'), [])
+  assert.deepEqual(crumbTrail('/nope/thing'), [])
+})
+
+test('crumbTrail uses the label map, not title-cased slugs', () => {
+  assert.deepEqual(crumbTrail('/settings/ai-providers'), [
+    { label: 'Settings', to: '/settings' },
+    { label: 'AI providers', to: '/settings/ai-providers' },
+  ])
+  assert.equal(crumbTrail('/settings/mcp')[1].label, 'MCP')
+  assert.equal(crumbTrail('/settings/access-grants')[1].label, 'Access grants')
+  assert.equal(crumbTrail('/queries/blend')[1].label, 'Blend')
+})
+
+test('crumbTrail names id segments and accepts a page-supplied last label', () => {
+  const t = crumbTrail('/admin/orgs/3f9a1c22-0b7d-4a55-9c1e-77d0a5d1c001')
+  assert.deepEqual(t.map(c => c.label), ['Admin', 'Organisations', 'Organisation'])
+  const named = crumbTrail('/queries/q_9f31', 'Revenue by region')
+  assert.equal(named[named.length - 1].label, 'Revenue by region')
+  assert.equal(named[named.length - 1].to, '/queries/q_9f31')
+})
+
+test('chordKeyFor maps routes to their g-chord key', () => {
+  assert.equal(chordKeyFor('/queries'), 'q')
+  assert.equal(chordKeyFor('/dashboards'), 'd')
+  assert.equal(chordKeyFor('/docs'), undefined)
+})
+
+test('isTypingTarget recognises form fields and editors', () => {
+  assert.equal(isTypingTarget({ tagName: 'INPUT' }), true)
+  assert.equal(isTypingTarget({ tagName: 'textarea' }), true)
+  assert.equal(isTypingTarget({ tagName: 'DIV', isContentEditable: true }), true)
+  assert.equal(isTypingTarget({ tagName: 'DIV', closest: (s: string) => (s.includes('monaco') ? {} : null) }), true)
+  assert.equal(isTypingTarget({ tagName: 'BUTTON', closest: () => null }), false)
+  assert.equal(isTypingTarget(null), false)
+})
+
+test('keyboard-nav flag is read-and-clear', () => {
+  assert.equal(consumeKeyboardNav(), false)
+  markKeyboardNav()
+  assert.equal(consumeKeyboardNav(), true)
+  assert.equal(consumeKeyboardNav(), false)
+})
+
+test('parseSpotlightQuery splits scope prefixes from the term', () => {
+  assert.deepEqual(parseSpotlightQuery('revenue'), { scope: 'all', term: 'revenue' })
+  assert.deepEqual(parseSpotlightQuery('d q3 review'), { scope: 'dashboards', term: 'q3 review' })
+  assert.deepEqual(parseSpotlightQuery('q '), { scope: 'queries', term: '' })
+  assert.deepEqual(parseSpotlightQuery('c pg'), { scope: 'connectors', term: 'pg' })
+  assert.deepEqual(parseSpotlightQuery('> theme'), { scope: 'actions', term: 'theme' })
+  assert.deepEqual(parseSpotlightQuery('>theme'), { scope: 'actions', term: 'theme' })
+  // a letter with no space is just a search term
+  assert.deepEqual(parseSpotlightQuery('d'), { scope: 'all', term: 'd' })
+  assert.deepEqual(parseSpotlightQuery('data'), { scope: 'all', term: 'data' })
+})
+
+test('pushRecent moves to front, de-duplicates and caps', () => {
+  assert.deepEqual(pushRecent(['a', 'b'], 'c'), ['c', 'a', 'b'])
+  assert.deepEqual(pushRecent(['a', 'b', 'c'], 'b'), ['b', 'a', 'c'])
+  assert.equal(pushRecent(['1', '2', '3'], '4', 3).length, 3)
+})
+
+test('scoreText prefers prefixes and word starts; rejects missing terms', () => {
+  assert.equal(scoreText('Dashboards', ['zzz']), -1)
+  assert.ok(scoreText('Dashboards', ['dash']) > scoreText('My dashboards', ['dash']))
+  assert.ok(scoreText('My dashboards', ['dash']) > scoreText('Redash', ['dash']))
+  assert.equal(scoreText('AI providers', ['ai', 'prov']) > 0, true)
+})
+
+test('resultCountLabel pluralises', () => {
+  assert.equal(resultCountLabel(0), 'No results')
+  assert.equal(resultCountLabel(1), '1 result')
+  assert.equal(resultCountLabel(12), '12 results')
 })

@@ -20,6 +20,8 @@
 
 import { useRef, useState } from 'react'
 import { Camera, Link2, X, Loader2, CheckCircle } from 'lucide-react'
+import Button from '../ui/Button.jsx'
+import { ToolLogo } from '../brand/index.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -62,12 +64,13 @@ function AvatarPreview({ src, fallbackName, size = 80 }) {
   const label = initials(fallbackName)
   return (
     <div
-      className="rounded-full flex items-center justify-center font-display font-semibold text-white select-none"
+      className="rounded-full flex items-center justify-center font-semibold select-none"
       style={{
         width: size,
         height: size,
         fontSize: size * 0.32,
-        background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)',
+        background: 'var(--ink)',
+        color: 'var(--ink-fg)',
       }}
       aria-label={fallbackName || 'Avatar'}
     >
@@ -176,15 +179,16 @@ export default function AvatarField({
           className="
             absolute inset-0 rounded-full
             flex items-center justify-center
-            bg-black/50 text-white
-            opacity-0 group-hover:opacity-100
-            transition-opacity duration-150
+            bg-[var(--sh-scrim)] text-white
+            opacity-0 group-hover:opacity-100 focus-visible:opacity-100
+            transition-opacity duration-100
             disabled:cursor-not-allowed
+            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface
           "
         >
           {uploading
-            ? <Loader2 size={20} className="animate-spin" />
-            : <Camera size={20} />
+            ? <Loader2 size={20} strokeWidth={1.5} className="animate-spin" aria-hidden="true" />
+            : <Camera size={20} strokeWidth={1.5} aria-hidden="true" />
           }
         </button>
 
@@ -211,105 +215,60 @@ export default function AvatarField({
                 onChange={e => { setUrlDraft(e.target.value); setUrlError(null) }}
                 onKeyDown={handleUrlKeyDown}
                 placeholder="https://example.com/photo.jpg"
+                aria-label="Photo URL"
                 className="
-                  flex-1 px-3 py-1.5 rounded-xl text-sm
-                  bg-bg border border-border text-fg placeholder:text-muted
-                  focus:outline-none focus:border-primary
+                  flex-1 h-8 px-3 rounded-sm text-sm
+                  bg-surface border border-[var(--frame-line)] text-fg placeholder:text-subtle
+                  hover:border-[var(--ink)] focus:border-[var(--ink)]
                 "
               />
-              <button
+              <Button
                 type="button"
                 onClick={handleUrlApply}
-                className="
-                  inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium
-                  text-white transition-opacity
-                "
-                style={{ background: 'linear-gradient(135deg, #2456a6, #17b3a3)' }}
+                size="sm"
               >
-                <CheckCircle size={14} />
+                <CheckCircle size={14} strokeWidth={1.5} aria-hidden="true" />
                 Apply
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
                 onClick={() => { setUrlMode(false); setUrlDraft(''); setUrlError(null) }}
-                className="p-1.5 rounded-xl border border-border text-muted hover:text-fg transition-colors"
+                variant="secondary"
+                size="icon-sm"
                 aria-label="Cancel URL entry"
               >
-                <X size={14} />
-              </button>
+                <X size={14} strokeWidth={1.5} aria-hidden="true" />
+              </Button>
             </div>
             {urlError && (
-              <p className="text-xs text-red-600 dark:text-red-400">{urlError}</p>
+              <p className="text-xs text-danger-fg" role="alert">{urlError}</p>
             )}
           </div>
         ) : (
           <div className="flex flex-wrap gap-2">
-            {/* Upload file */}
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
-              className="
-                inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium
-                border border-border text-muted hover:text-fg hover:bg-surface-2
-                transition-colors disabled:opacity-50 disabled:cursor-not-allowed
-              "
-            >
-              <Camera size={13} />
+            <Button type="button" variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+              <Camera size={14} strokeWidth={1.5} aria-hidden="true" />
               Upload photo
-            </button>
+            </Button>
 
-            {/* Set URL */}
-            <button
-              type="button"
-              onClick={() => setUrlMode(true)}
-              className="
-                inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium
-                border border-border text-muted hover:text-fg hover:bg-surface-2
-                transition-colors
-              "
-            >
-              <Link2 size={13} />
+            <Button type="button" variant="secondary" size="sm" onClick={() => setUrlMode(true)}>
+              <Link2 size={14} strokeWidth={1.5} aria-hidden="true" />
               Set URL
-            </button>
+            </Button>
 
             {/* Use Google photo (shown only when googleUrl is available and different) */}
             {googleUrl && googleUrl !== value && (
-              <button
-                type="button"
-                onClick={handleUseGoogle}
-                className="
-                  inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium
-                  border border-border text-muted hover:text-fg hover:bg-surface-2
-                  transition-colors
-                "
-              >
-                {/* Google colourful G mark, inline SVG */}
-                <svg width="13" height="13" viewBox="0 0 48 48" aria-hidden="true">
-                  <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
-                  <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
-                  <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
-                  <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-                </svg>
+              <Button type="button" variant="secondary" size="sm" onClick={handleUseGoogle}>
+                <ToolLogo slug="google" mode="brand" size={14} decorative />
                 Use Google photo
-              </button>
+              </Button>
             )}
 
-            {/* Clear */}
             {value && (
-              <button
-                type="button"
-                onClick={handleClear}
-                className="
-                  inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium
-                  border border-border text-muted hover:text-red-600 hover:border-red-300 hover:bg-red-50
-                  dark:hover:bg-red-900/20
-                  transition-colors
-                "
-              >
-                <X size={13} />
+              <Button type="button" variant="secondary" size="sm" onClick={handleClear}>
+                <X size={14} strokeWidth={1.5} aria-hidden="true" />
                 Remove
-              </button>
+              </Button>
             )}
           </div>
         )}

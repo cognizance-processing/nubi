@@ -90,7 +90,7 @@ function PanelShell({ pos, width, label, children }) {
       role="dialog"
       aria-label={label}
       style={{ position: 'fixed', left: pos.left, top: pos.top, width, maxHeight: 'calc(100vh - 24px)' }}
-      className="z-50 overflow-y-auto rounded-2xl bg-surface border border-border shadow-2xl shadow-black/20"
+      className="sh-pop sh-pop-in z-50 overflow-y-auto"
     >
       {children}
     </div>,
@@ -105,7 +105,7 @@ function PanelShell({ pos, width, label, children }) {
 function SectionLabel({ children, action = undefined }) {
   return (
     <div className="flex items-center gap-2 px-3 pt-2 pb-1">
-      <p className="flex-1 text-[10px] font-semibold text-muted uppercase tracking-wider">{children}</p>
+      <p className="t-label flex-1 m-0">{children}</p>
       {action}
     </div>
   )
@@ -147,9 +147,9 @@ function WorkspacePanel({ pos, onClose, onNewProject }) {
             onClick={handleNewOrg}
             title="New organization"
             aria-label="Create a new organization"
-            className="w-6 h-6 flex items-center justify-center rounded-md text-muted/70 hover:text-fg hover:bg-surface-2 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="sh-icon-btn" style={{ width: 24, height: 24 }}
           >
-            <Plus size={12} />
+            <Plus size={14} strokeWidth={1.5} aria-hidden="true" />
           </button>
         }
       >
@@ -163,17 +163,17 @@ function WorkspacePanel({ pos, onClose, onNewProject }) {
                   <button
                     onClick={() => setActiveOrg(org.id)}
                     className={`
-                      group flex items-center gap-2.5 w-full px-2 py-1.5 rounded-lg text-left
+                      group flex items-center gap-2.5 w-full px-2 py-1.5 rounded-sm text-left
                       min-h-[36px] transition-colors
                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring
-                      ${active ? 'bg-surface-2' : 'hover:bg-surface-2'}
+                      ${active ? 'bg-[var(--frame-hover)]' : 'hover:bg-[var(--frame-hover)]'}
                     `}
                   >
-                    <span className="flex items-center justify-center w-6 h-6 rounded-md bg-primary/10 text-primary shrink-0">
-                      <Building2 size={13} />
+                    <span className="flex items-center justify-center w-6 h-6 rounded-sm border border-[var(--frame-line)] text-subtle shrink-0">
+                      <Building2 size={14} strokeWidth={1.5} aria-hidden="true" />
                     </span>
-                    <span className="flex-1 truncate text-sm font-medium text-fg">{org.name}</span>
-                    {active && <Check size={14} className="text-primary shrink-0" />}
+                    <span className="flex-1 truncate text-[13px] font-medium text-fg">{org.name}</span>
+                    {active && <Check size={14} strokeWidth={2} className="text-fg shrink-0" aria-label="Current" />}
                   </button>
                 </li>
               )
@@ -196,22 +196,22 @@ function WorkspacePanel({ pos, onClose, onNewProject }) {
               <button
                 onClick={() => { setActiveProject(project.id); onClose() }}
                 className={`
-                  group flex items-center gap-2.5 w-full px-2 py-1.5 rounded-lg text-left
+                  group flex items-center gap-2.5 w-full px-2 py-1.5 rounded-sm text-left
                   min-h-[36px] transition-colors
                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring
-                  ${active ? 'bg-primary/10' : 'hover:bg-surface-2'}
+                  ${active ? 'bg-[var(--frame-hover)]' : 'hover:bg-[var(--frame-hover)]'}
                 `}
               >
                 <span className={`
-                  flex items-center justify-center w-6 h-6 rounded-md shrink-0
-                  ${active ? 'bg-primary/15 text-primary' : 'bg-surface-2 text-muted group-hover:text-fg'}
+                  flex items-center justify-center w-6 h-6 rounded-sm border shrink-0
+                  ${active ? 'border-[var(--ink)] text-fg' : 'border-[var(--frame-line)] text-subtle group-hover:text-fg'}
                 `}>
-                  {active ? <FolderGit2 size={13} /> : <Folder size={13} />}
+                  {active ? <FolderGit2 size={14} strokeWidth={1.5} aria-hidden="true" /> : <Folder size={14} strokeWidth={1.5} aria-hidden="true" />}
                 </span>
-                <span className={`flex-1 truncate text-sm ${active ? 'font-semibold text-fg' : 'font-medium text-fg'}`}>
+                <span className={`flex-1 truncate text-[13px] ${active ? 'font-semibold text-fg' : 'font-medium text-fg'}`}>
                   {project.name}
                 </span>
-                {active && <Check size={14} className="text-primary shrink-0" />}
+                {active && <Check size={14} strokeWidth={2} className="text-fg shrink-0" aria-label="Current" />}
               </button>
             </li>
           )
@@ -222,10 +222,10 @@ function WorkspacePanel({ pos, onClose, onNewProject }) {
       <div className="p-1.5">
         <button
           onClick={handleNewProject}
-          className="flex items-center gap-2.5 w-full px-2 py-1.5 rounded-lg text-left min-h-[36px] text-sm font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          className="flex items-center gap-2.5 w-full px-2 py-1.5 rounded-sm text-left min-h-[36px] text-[13px] font-medium text-muted hover:text-fg hover:bg-[var(--frame-hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         >
-          <span className="flex items-center justify-center w-6 h-6 rounded-md border border-dashed border-border text-muted shrink-0">
-            <Plus size={13} />
+          <span className="flex items-center justify-center w-6 h-6 rounded-sm border border-dashed border-[var(--frame-line)] text-muted shrink-0">
+            <Plus size={14} strokeWidth={1.5} aria-hidden="true" />
           </span>
           <span className="flex-1 truncate">New project</span>
         </button>
@@ -314,9 +314,9 @@ function EnvPanel({ pos, onClose, onOpenGraph }) {
             onClick={() => { onClose(); onOpenGraph() }}
             title="Branch graph"
             aria-label="Open git branch graph"
-            className="w-6 h-6 flex items-center justify-center rounded-md text-muted/70 hover:text-fg hover:bg-surface-2 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="sh-icon-btn" style={{ width: 24, height: 24 }}
           >
-            <GitBranch size={12} />
+            <GitBranch size={14} strokeWidth={1.5} aria-hidden="true" />
           </button>
         }
       >
@@ -333,25 +333,25 @@ function EnvPanel({ pos, onClose, onOpenGraph }) {
                 aria-selected={active}
                 onClick={() => select(env.key)}
                 className={`
-                  group flex items-center gap-2.5 w-full px-2 py-1.5 rounded-lg text-left
+                  group flex items-center gap-2.5 w-full px-2 py-1.5 rounded-sm text-left
                   min-h-[36px] transition-colors
                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring
-                  ${active ? 'bg-primary/10' : 'hover:bg-surface-2'}
+                  ${active ? 'bg-[var(--frame-hover)]' : 'hover:bg-[var(--frame-hover)]'}
                 `}
               >
-                <span className={`w-2 h-2 rounded-full shrink-0 ${envDotClass(env.key)}`} />
+                <span className={`w-1.5 h-1.5 shrink-0 ${envDotClass(env.key)}`} aria-hidden="true" />
                 <span className="flex-1 min-w-0 leading-tight">
                   <span className="block truncate font-mono text-xs text-fg">{env.key}</span>
                   {env.git_branch && (
-                    <span className="flex items-center gap-1 text-[10px] font-mono text-muted/60">
-                      <GitBranch size={9} className="shrink-0" />
+                    <span className="flex items-center gap-1 text-[11px] font-mono text-subtle">
+                      <GitBranch size={11} strokeWidth={1.5} className="shrink-0" aria-hidden="true" />
                       <span className="truncate">{env.git_branch}</span>
                     </span>
                   )}
                 </span>
                 {env.protected && (
                   <span title="Protected environment" className="shrink-0 flex items-center">
-                    <Lock size={11} className="text-muted/60" />
+                    <Lock size={12} strokeWidth={1.5} className="text-subtle" aria-label="Protected" />
                   </span>
                 )}
                 {isCustom && (
@@ -362,12 +362,12 @@ function EnvPanel({ pos, onClose, onOpenGraph }) {
                     onKeyDown={(e) => { if (e.key === 'Enter') handleRemove(env, e) }}
                     title="Remove environment"
                     aria-label={`Remove environment ${env.key}`}
-                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 w-5 h-5 flex items-center justify-center rounded text-muted/60 hover:text-red-500 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 w-5 h-5 flex items-center justify-center rounded-sm text-subtle hover:text-danger transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
-                    <X size={12} />
+                    <X size={12} strokeWidth={1.5} aria-hidden="true" />
                   </span>
                 )}
-                {active && <Check size={14} className="text-primary shrink-0" />}
+                {active && <Check size={14} strokeWidth={2} className="text-fg shrink-0" aria-label="Current" />}
               </button>
             </li>
           )
@@ -385,7 +385,7 @@ function EnvPanel({ pos, onClose, onOpenGraph }) {
                   value={draft}
                   placeholder="staging"
                   aria-label="New environment key"
-                  className="h-7 flex-1 min-w-0 text-xs font-mono border border-border rounded-md px-2 bg-surface text-fg placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-ring/60"
+                  className="h-7 flex-1 min-w-0 text-xs font-mono border border-[var(--frame-line)] rounded-sm px-2 bg-surface text-fg placeholder:text-subtle focus:outline-none focus:border-[var(--ink)] focus-visible:ring-2 focus-visible:ring-ring"
                   onChange={e => setDraft(e.target.value)}
                   onKeyDown={e => {
                     if (e.key === 'Enter') commitNew()
@@ -394,7 +394,7 @@ function EnvPanel({ pos, onClose, onOpenGraph }) {
                 />
                 <button
                   onClick={commitNew}
-                  className="h-7 px-2.5 rounded-md text-xs font-medium bg-primary text-primary-fg hover:opacity-90 transition-opacity shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
+                  className="h-7 px-2.5 rounded-sm text-xs font-medium bg-[var(--ink)] text-[var(--ink-fg)] hover:opacity-85 transition-opacity shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
                 >
                   Add
                 </button>
@@ -404,7 +404,7 @@ function EnvPanel({ pos, onClose, onOpenGraph }) {
                   value={fromBranch}
                   onChange={e => setFromBranch(e.target.value)}
                   aria-label="Seed new environment from git branch (optional)"
-                  className="h-7 w-full text-[11px] font-mono border border-border rounded-md px-1.5 bg-surface text-muted focus:outline-none focus:ring-2 focus:ring-ring/60"
+                  className="h-7 w-full text-[11px] font-mono border border-[var(--frame-line)] rounded-sm px-1.5 bg-surface text-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <option value="">empty environment</option>
                   {branches.map(branch => (
@@ -417,10 +417,10 @@ function EnvPanel({ pos, onClose, onOpenGraph }) {
             <div className="p-1.5">
               <button
                 onClick={() => { setFromBranch(''); setAdding(true) }}
-                className="flex items-center gap-2.5 w-full px-2 py-1.5 rounded-lg text-left min-h-[36px] text-sm font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                className="flex items-center gap-2.5 w-full px-2 py-1.5 rounded-sm text-left min-h-[36px] text-[13px] font-medium text-muted hover:text-fg hover:bg-[var(--frame-hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
               >
                 <span className="flex items-center justify-center w-5 h-5 shrink-0">
-                  <Plus size={13} />
+                  <Plus size={14} strokeWidth={1.5} aria-hidden="true" />
                 </span>
                 <span className="flex-1 truncate">Add environment</span>
               </button>
@@ -486,15 +486,15 @@ export default function WorkspaceSwitcher({ collapsed }) {
             aria-expanded={openPanel === 'workspace'}
             title={`${activeOrg.name} · ${projectLabel}`}
             className={`
-              relative flex items-center justify-center w-11 h-11 mx-auto rounded-xl border
+              relative flex items-center justify-center w-10 h-10 mx-auto rounded-sm border
               transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring
-              focus-visible:ring-offset-2 focus-visible:ring-offset-surface
+              focus-visible:ring-offset-2 focus-visible:ring-offset-bg
               ${openPanel === 'workspace'
-                ? 'border-primary/40 bg-primary/10 text-primary'
-                : 'border-border bg-surface-2 hover:bg-surface text-primary'}
+                ? 'border-[var(--ink)] bg-surface text-fg'
+                : 'border-[var(--frame-line)] bg-surface hover:border-[var(--ink)] text-fg'}
             `}
           >
-            <FolderGit2 size={17} />
+            <FolderGit2 size={16} strokeWidth={1.5} aria-hidden="true" />
           </button>
 
           <button
@@ -503,15 +503,15 @@ export default function WorkspaceSwitcher({ collapsed }) {
             aria-expanded={openPanel === 'env'}
             title={`Environment: ${activeEnv}`}
             className={`
-              flex items-center justify-center w-11 h-8 mx-auto rounded-lg border
+              flex items-center justify-center w-10 h-8 mx-auto rounded-sm border
               transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring
-              focus-visible:ring-offset-2 focus-visible:ring-offset-surface
+              focus-visible:ring-offset-2 focus-visible:ring-offset-bg
               ${openPanel === 'env'
-                ? 'border-primary/40 bg-primary/5'
-                : 'border-border bg-surface-2 hover:bg-surface'}
+                ? 'border-[var(--ink)] bg-surface'
+                : 'border-[var(--frame-line)] bg-surface hover:border-[var(--ink)]'}
             `}
           >
-            <span className={`w-2.5 h-2.5 rounded-full ${envDotClass(activeEnv)}`} />
+            <span className={`w-1.5 h-1.5 ${envDotClass(activeEnv)}`} aria-hidden="true" />
           </button>
         </div>
 
@@ -533,63 +533,56 @@ export default function WorkspaceSwitcher({ collapsed }) {
   return (
     <div className="relative px-2" ref={ref}>
       <div className={`
-        rounded-2xl border overflow-hidden transition-colors
-        ${openPanel ? 'border-primary/40' : 'border-border'}
+        rounded-sm border bg-surface overflow-hidden transition-colors
+        ${openPanel ? 'border-[var(--ink)]' : 'border-[var(--frame-line)] hover:border-[var(--ink)]'}
       `}>
-        {/* Org › Project — the primary control.
-            rounded-t-2xl matches the card's own rounded-2xl (minus the border
-            hairline) so the inset focus ring follows the card's true shape —
-            without it the ring falls back to the button's default square
-            corners even though the card around it reads as rounded. */}
+        {/* Org › Project — the primary control. */}
         <button
           onClick={() => toggle('workspace')}
           aria-label="Switch workspace"
           aria-expanded={openPanel === 'workspace'}
           className={`
-            flex items-center gap-2.5 w-full px-2.5 py-2 text-left rounded-t-2xl
+            flex items-center gap-2.5 w-full px-2.5 py-2 text-left
             transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring
-            ${openPanel === 'workspace' ? 'bg-primary/5' : 'bg-surface-2 hover:bg-surface'}
+            ${openPanel === 'workspace' ? 'bg-[var(--frame-hover)]' : 'hover:bg-[var(--frame-hover)]'}
           `}
         >
           <span
-            className="flex items-center justify-center w-8 h-8 rounded-lg text-white text-[13px] font-bold shrink-0 shadow-sm"
-            style={{ background: 'linear-gradient(135deg, #1b2363, #2456a6, #17b3a3)' }}
+            className="flex items-center justify-center w-8 h-8 rounded-sm bg-[var(--ink)] text-[var(--ink-fg)] text-[13px] font-semibold shrink-0"
             aria-hidden="true"
           >
             {orgInitial}
           </span>
           <span className="flex flex-col min-w-0 flex-1 leading-tight" title={`${activeOrg.name} · ${projectLabel}`}>
-            <span className="truncate text-[11px] font-medium text-muted">{activeOrg.name}</span>
-            <span className="truncate text-[13.5px] font-semibold text-fg">{projectLabel}</span>
+            <span className="truncate text-xs text-muted">{activeOrg.name}</span>
+            <span className="truncate text-[13px] font-semibold text-fg">{projectLabel}</span>
           </span>
-          <ChevronsUpDown size={14} className="text-muted shrink-0" />
+          <ChevronsUpDown size={14} strokeWidth={1.5} className="text-subtle shrink-0" aria-hidden="true" />
         </button>
 
         {/* Divider between the two axes */}
         <div className="border-t border-border" />
 
-        {/* Environment — the secondary, runtime axis. rounded-b-2xl for the
-            same reason as the org button above — matches the card's radius
-            so the focus ring hugs the bottom corners instead of squaring off. */}
+        {/* Environment — the secondary, runtime axis. */}
         <button
           onClick={() => toggle('env')}
           aria-label="Switch environment"
           aria-haspopup="listbox"
           aria-expanded={openPanel === 'env'}
           className={`
-            flex items-center gap-2.5 w-full px-2.5 py-1.5 text-left rounded-b-2xl
+            flex items-center gap-2.5 w-full px-2.5 py-1.5 text-left
             transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring
-            ${openPanel === 'env' ? 'bg-primary/5' : 'bg-surface hover:bg-surface-2'}
+            ${openPanel === 'env' ? 'bg-[var(--frame-hover)]' : 'hover:bg-[var(--frame-hover)]'}
           `}
         >
           <span className="flex items-center justify-center w-8 shrink-0">
-            <span className={`w-2.5 h-2.5 rounded-full ${envDotClass(activeEnv)}`} />
+            <span className={`w-1.5 h-1.5 ${envDotClass(activeEnv)}`} aria-hidden="true" />
           </span>
           <span className="flex items-baseline gap-1.5 min-w-0 flex-1">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted shrink-0">Env</span>
+            <span className="t-label shrink-0">Env</span>
             <span className="truncate font-mono text-xs text-fg">{activeEnv}</span>
           </span>
-          <ChevronDown size={13} className={`text-muted shrink-0 transition-transform ${openPanel === 'env' ? 'rotate-180' : ''}`} />
+          <ChevronDown size={14} strokeWidth={1.5} aria-hidden="true" className="text-subtle shrink-0" />
         </button>
       </div>
 

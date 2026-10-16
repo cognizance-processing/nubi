@@ -20,7 +20,9 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { FolderPlus, Loader2, X } from 'lucide-react'
+import { Loader2, X } from 'lucide-react'
+import Button from '../ui/Button.jsx'
+import '../../shell/shell.css'
 
 import { useProject } from '../../contexts/ProjectContext.jsx'
 import * as api from '../../lib/api.js'
@@ -93,7 +95,7 @@ export default function NewProjectDialog({ open, onClose }) {
     <>
       {/* Backdrop */}
       <div
-        className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm"
+        className="fixed inset-0 z-[60] bg-[var(--sh-scrim)]"
         onClick={busy ? undefined : onClose}
         aria-hidden="true"
       />
@@ -106,19 +108,17 @@ export default function NewProjectDialog({ open, onClose }) {
         className="fixed inset-0 z-[60] flex items-center justify-center p-4 pointer-events-none"
       >
         <div
-          className="pointer-events-auto w-full max-w-md bg-surface rounded-2xl border border-border shadow-2xl flex flex-col"
+          className="sh-pop sh-pop-in pointer-events-auto w-full max-w-md flex flex-col"
           onClick={e => e.stopPropagation()}
         >
           {/* Header */}
-          <div className="flex items-start gap-3 px-6 pt-6 pb-4 border-b border-border">
-            <div className="shrink-0 w-10 h-10 rounded-xl flex items-center justify-center bg-primary/10">
-              <FolderPlus size={18} className="text-primary" />
-            </div>
+          <div className="flex items-start gap-3 px-6 pt-5 pb-4 border-b-2 border-[var(--ink)]">
             <div className="flex-1 min-w-0">
-              <h2 id="new-project-dialog-title" className="font-display font-semibold text-base text-fg">
+              <p className="t-label m-0 mb-1">Project</p>
+              <h2 id="new-project-dialog-title" className="m-0 text-[17px] font-semibold tracking-[-0.01em] text-fg">
                 New project
               </h2>
-              <p className="text-sm text-muted mt-0.5">
+              <p className="text-[13px] text-muted mt-1 mb-0">
                 Projects group your queries, dashboards and connectors.
               </p>
             </div>
@@ -127,9 +127,9 @@ export default function NewProjectDialog({ open, onClose }) {
               onClick={onClose}
               disabled={busy}
               aria-label="Close"
-              className="shrink-0 p-1.5 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors disabled:opacity-50"
+              className="sh-icon-btn shrink-0 disabled:opacity-50"
             >
-              <X size={16} />
+              <X size={16} strokeWidth={1.5} aria-hidden="true" />
             </button>
           </div>
 
@@ -138,19 +138,14 @@ export default function NewProjectDialog({ open, onClose }) {
             {error && (
               <div
                 role="alert"
-                className="rounded-xl border px-4 py-3 text-sm"
-                style={{
-                  background: 'color-mix(in srgb, #ef4444 8%, transparent)',
-                  borderColor: 'color-mix(in srgb, #ef4444 28%, transparent)',
-                  color: '#ef4444',
-                }}
+                className="border-l-2 border-[var(--danger)] bg-danger-bg text-danger-fg px-3 py-2.5 text-[13px]"
               >
                 {error}
               </div>
             )}
 
             <div>
-              <label htmlFor="np-name" className="block text-sm font-medium text-fg mb-1.5">
+              <label htmlFor="np-name" className="block text-[13px] font-medium text-fg mb-1.5">
                 Project name
               </label>
               <input
@@ -162,13 +157,13 @@ export default function NewProjectDialog({ open, onClose }) {
                 onChange={(e) => setName(e.target.value)}
                 disabled={busy}
                 placeholder="Analytics"
-                className="w-full px-3.5 py-2.5 bg-surface border border-border rounded-xl text-sm text-fg placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="w-full h-9 px-3 bg-surface border border-[var(--frame-line)] rounded-sm text-sm text-fg placeholder:text-subtle hover:border-[var(--ink)] focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus:border-[var(--ink)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               />
             </div>
 
             <label
               htmlFor="np-demo-data"
-              className="flex items-start gap-3 rounded-xl border border-border bg-bg px-4 py-3 cursor-pointer hover:bg-surface-2 transition-colors"
+              className="flex items-start gap-3 rounded-sm border border-[var(--frame-line)] px-3 py-3 cursor-pointer hover:border-[var(--ink)] transition-colors"
             >
               <input
                 id="np-demo-data"
@@ -176,10 +171,10 @@ export default function NewProjectDialog({ open, onClose }) {
                 checked={seedDemo}
                 onChange={(e) => setSeedDemo(e.target.checked)}
                 disabled={busy}
-                className="mt-0.5 h-4 w-4 shrink-0 rounded border-border text-primary accent-[var(--color-primary,#2456a6)] focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               />
               <span>
-                <span className="block text-sm font-medium text-fg">Seed with demo data</span>
+                <span className="block text-[13px] font-medium text-fg">Seed with demo data</span>
                 <span className="block mt-0.5 text-xs text-muted">
                   Adds sample dashboards, queries and a demo connector — removable anytime.
                 </span>
@@ -188,26 +183,16 @@ export default function NewProjectDialog({ open, onClose }) {
 
             {/* Footer */}
             <div className="flex items-center justify-end gap-2 pt-1">
-              <button
-                type="button"
-                onClick={onClose}
-                disabled={busy}
-                className="px-3.5 py-2 rounded-xl text-sm font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors disabled:opacity-50"
-              >
+              <Button type="button" variant="secondary" onClick={onClose} disabled={busy}>
                 Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={busy}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold bg-primary text-primary-fg hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity focus:outline-none focus:ring-2 focus:ring-ring"
-              >
-                {busy && <Loader2 size={14} className="animate-spin" />}
+              </Button>
+              <Button type="submit" loading={busy}>
                 {phase === 'seeding'
                   ? 'Adding demo data…'
                   : phase === 'creating'
                     ? 'Creating…'
                     : 'Create project'}
-              </button>
+              </Button>
             </div>
           </form>
         </div>

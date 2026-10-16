@@ -1,7 +1,13 @@
 /**
- * PageShell — reusable app-page layout primitives.
+ * PageShell — the app page template + reusable page primitives.
  *
- * Exports:
+ * New (Swiss shell):
+ *   PageShell       — eyebrow, h1, description, actions, tabs, toolbar, width. THE page template.
+ *   PageSection     — 2px ink rule + mono index + title + actions, for long pages / settings groups
+ *   TopbarPortal    — render a page toolbar inside the topbar's page-actions slot
+ *   usePageCrumb    — label the last breadcrumb segment on a dynamic route
+ *
+ * Existing (unchanged signatures; PageRoot/PageHeader now paint the Swiss header):
  *   PageRoot        — scrollable page container with consistent padding
  *   PageHeader      — title + subtitle + optional CTA slot
  *   Toolbar         — search + sort + view-toggle row
@@ -19,42 +25,202 @@
  *   ListRowSkeleton — shimmer list row placeholder
  *   DropdownMenu    — shared dropdown chrome + items
  *
- * All components use the .nubi-* CSS classes added to index.css,
- * keeping JSX free of repetitive Tailwind utility strings.
+ * Full API + migration notes: uiteam/reports/shell-pageshell.md
+ *
+ * Content sits directly on --surface (the sheet). Page roots must not paint
+ * bg-bg / bg-surface-2 — that grey wash made the sheet read as two surfaces.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { ChevronDown, LayoutGrid, List, Search, X } from 'lucide-react'
+import { useUi } from '../../contexts/UiContext.jsx'
+import Button from '../ui/Button.jsx'
+import '../../shell/shell.css'
 
 function cx(...parts) {
   return parts.filter(Boolean).join(' ')
 }
 
-// ── Page root ────────────────────────────────────────────────────────────────
+// ── PageShell ────────────────────────────────────────────────────────────────
+
+export interface PageTab {
+  id: string
+  label: string
+  count?: number | string
+  /** Router link target. Takes precedence over onSelect. */
+  href?: string
+  onSelect?: () => void
+  disabled?: boolean
+}
+
+export interface PageShellProps {
+  /** Mono label above the title, e.g. "11 DASHBOARDS". */
+  eyebrow?: string
+  /** The single visible h1. */
+  title: string
+  description?: ReactNode
+  /** Right-aligned header actions. At most one ink primary. */
+  actions?: ReactNode
+  tabs?: PageTab[]
+  activeTab?: string
+  /** Search / filter / sort row under the header. */
+  toolbar?: ReactNode
+  /** default = 1200px max, narrow = 720px (settings / forms), full = no max. */
+  width?: 'full' | 'default' | 'narrow'
+  /** Label for the last breadcrumb segment on dynamic routes. */
+  crumb?: string
+  /** Body fills the viewport height (split panes, tables with their own scroll). */
+  fill?: boolean
+  className?: string
+  children?: ReactNode
+}
+
+/** Label the last breadcrumb segment (dynamic routes: a board or query name). Cleared on unmount. */
+export function usePageCrumb(label: string | null | undefined) {
+  const { setCrumbLabel } = useUi()
+  useEffect(() => {
+    setCrumbLabel(label || null)
+    return () => setCrumbLabel(null)
+  }, [label, setCrumbLabel])
+}
+
+function PageTabs({ tabs, activeTab }: { tabs: PageTab[]; activeTab?: string }) {
+  const { pathname } = useLocation()
+  const listRef = useRef<HTMLDivElement>(null)
+  const active = activeTab ?? tabs.find(t => t.href && (t.href === pathname))?.id
+
+  // Arrow keys move focus between tabs (roving focus; Tab still reaches every tab).
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (!['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(e.key)) return
+    const els = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[role="tab"]:not([aria-disabled="true"])') ?? [])
+    if (!els.length) return
+    const i = els.indexOf(document.activeElement as HTMLElement)
+    let next = i
+    if (e.key === 'ArrowRight') next = (i + 1) % els.length
+    else if (e.key === 'ArrowLeft') next = (i - 1 + els.length) % els.length
+    else if (e.key === 'Home') next = 0
+    else next = els.length - 1
+    e.preventDefault()
+    els[next].focus()
+  }
+
+  return (
+    <div ref={listRef} role="tablist" className="sh-tabs" onKeyDown={onKeyDown}>
+      {tabs.map(t => {
+        const common = {
+          role: 'tab' as const,
+          'aria-selected': active === t.id,
+          'aria-disabled': t.disabled || undefined,
+          className: cx('sh-tab', active === t.id && 'is-active'),
+        }
+        const body = (
+          <>
+            {t.label}
+            {t.count != null && <span className="sh-tab-count">{t.count}</span>}
+          </>
+        )
+        return t.href && !t.disabled ? (
+          <Link key={t.id} to={t.href} {...common}>{body}</Link>
+        ) : (
+          <button key={t.id} type="button" disabled={t.disabled} onClick={t.onSelect} {...common}>{body}</button>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
+ * The page template. See uiteam/reports/shell-pageshell.md.
+ *
+ * Header anatomy: eyebrow → title + actions → description → rule (2px ink, or a hairline
+ * when tabs carry the 2px active underline) → toolbar → body.
+ */
+export default function PageShell({
+  eyebrow, title, description, actions, tabs, activeTab, toolbar,
+  width = 'default', crumb, fill = false, className, children,
+}: PageShellProps) {
+  usePageCrumb(crumb)
+  const hasTabs = Boolean(tabs?.length)
+  return (
+    <div className={cx('sh-page', fill && 'sh-page-fill', className)} data-width={width}>
+      <div className="sh-page-inner">
+        <header className={cx('sh-head', hasTabs && 'has-tabs')}>
+          {eyebrow && <p className="sh-eyebrow">{eyebrow}</p>}
+          <div className="sh-head-row">
+            <div className="sh-head-text">
+              <h1 className="sh-title">{title}</h1>
+              {description && <p className="sh-desc">{description}</p>}
+            </div>
+            {actions && <div className="sh-head-actions">{actions}</div>}
+          </div>
+          {hasTabs && <PageTabs tabs={tabs!} activeTab={activeTab} />}
+        </header>
+        {toolbar && <div className="sh-toolbar-row">{toolbar}</div>}
+        <div className={cx('sh-body', fill && 'sh-body-fill')}>{children}</div>
+      </div>
+    </div>
+  )
+}
+
+/** A titled section: 2px ink rule, optional mono index, title, right-aligned actions. */
+export function PageSection({
+  index, title, description, actions, id, className, children,
+}: {
+  index?: string
+  title: string
+  description?: ReactNode
+  actions?: ReactNode
+  id?: string
+  className?: string
+  children?: ReactNode
+}) {
+  const headingId = id ? `${id}-heading` : undefined
+  return (
+    <section id={id} aria-labelledby={headingId} className={cx('sh-section', className)}>
+      <div className="sh-section-head">
+        {index && <span className="sh-section-index" aria-hidden="true">{index}</span>}
+        <div className="sh-section-text">
+          <h2 id={headingId} className="sh-section-title">{title}</h2>
+          {description && <p className="sh-section-desc">{description}</p>}
+        </div>
+        {actions && <div className="sh-section-actions">{actions}</div>}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+/** Render children inside the topbar's page-actions slot (nothing until the slot has mounted). */
+export function TopbarPortal({ children }: { children?: ReactNode }) {
+  const { topbarSlot } = useUi()
+  return topbarSlot ? createPortal(children, topbarSlot) : null
+}
+
+// ── Page root (legacy API, Swiss paint) ──────────────────────────────────────
 
 export function PageRoot({ className = undefined, children, ...rest }) {
   return (
-    <div className={cx('nubi-page', className)} {...rest}>
+    <div className={cx('nubi-page sh-surface', className)} {...rest}>
       {children}
     </div>
   )
 }
 
-// ── Page header ──────────────────────────────────────────────────────────────
+// ── Page header (legacy API, Swiss paint) ────────────────────────────────────
 
 export function PageHeader({ title, subtitle = undefined, children, className = undefined }) {
   return (
-    <div className={cx('nubi-page-header', className)}>
-      <div>
-        <h1 className="nubi-page-title">{title}</h1>
-        {subtitle && <p className="nubi-page-subtitle">{subtitle}</p>}
-      </div>
-      {children && (
-        <div className="shrink-0 self-start sm:self-auto">
-          {children}
+    <header className={cx('sh-head', className)}>
+      <div className="sh-head-row">
+        <div className="sh-head-text">
+          <h1 className="sh-title">{title}</h1>
+          {subtitle && <p className="sh-desc">{subtitle}</p>}
         </div>
-      )}
-    </div>
+        {children && <div className="sh-head-actions">{children}</div>}
+      </div>
+    </header>
   )
 }
 
@@ -280,13 +446,9 @@ export function ErrorState({ icon = undefined, title = 'Something went wrong', m
         )}
       </div>
       {onRetry && (
-        <button
-          type="button"
-          onClick={onRetry}
-          className="inline-flex items-center gap-2 h-9 px-5 rounded-xl bg-primary text-primary-fg text-sm font-medium hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring mt-1"
-        >
+        <Button type="button" onClick={onRetry} className="mt-1">
           Try again
-        </button>
+        </Button>
       )}
     </div>
   )

@@ -25,7 +25,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Bell,
   X,
   Check,
   CheckCheck,
@@ -74,10 +73,10 @@ function relativeTime(iso) {
 }
 
 const SEVERITY = {
-  success: { Icon: CheckCircle2, cls: 'text-emerald-500' },
-  info: { Icon: Info, cls: 'text-sky-500' },
-  warning: { Icon: AlertTriangle, cls: 'text-amber-500' },
-  error: { Icon: AlertCircle, cls: 'text-red-500' },
+  success: { Icon: CheckCircle2, cls: 'text-success' },
+  info: { Icon: Info, cls: 'text-subtle' },
+  warning: { Icon: AlertTriangle, cls: 'text-warning' },
+  error: { Icon: AlertCircle, cls: 'text-danger' },
 }
 
 function severityOf(n) {
@@ -146,7 +145,7 @@ function PushToggle() {
   if (!supported) return null
 
   return (
-    <div className="px-5 py-2.5 border-b border-border bg-surface-2/30">
+    <div className="px-5 py-2.5 border-b border-border">
       <label className="flex items-center gap-2.5 text-xs text-fg cursor-pointer select-none">
         <button
           type="button"
@@ -155,17 +154,17 @@ function PushToggle() {
           onClick={toggle}
           disabled={busy}
           className={[
-            'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
-            on ? 'bg-primary' : 'bg-surface-2 border border-border',
+            'relative inline-flex h-5 w-9 shrink-0 items-center rounded-sm border transition-colors disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface',
+            on ? 'bg-[var(--ink)] border-[var(--ink)]' : 'bg-surface border-[var(--frame-line)]',
           ].join(' ')}
         >
           {busy ? (
-            <Loader2 size={11} className="animate-spin mx-auto text-muted" />
+            <Loader2 size={12} strokeWidth={1.5} className="animate-spin mx-auto text-muted" aria-hidden="true" />
           ) : (
             <span
               className={[
-                'inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform',
-                on ? 'translate-x-4' : 'translate-x-0.5',
+                'inline-block h-3 w-3 rounded-sm transition-transform',
+                on ? 'translate-x-[1.1rem] bg-[var(--ink-fg)]' : 'translate-x-0.5 bg-[var(--ink)]',
               ].join(' ')}
             />
           )}
@@ -178,7 +177,7 @@ function PushToggle() {
           </span>
         </span>
       </label>
-      {hint && <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1.5 pl-11">{hint}</p>}
+      {hint && <p className="text-[11px] text-warning mt-1.5 pl-11" role="status">{hint}</p>}
     </div>
   )
 }
@@ -199,9 +198,9 @@ function NotificationItem({ n, onMarkRead, onNavigate }) {
   return (
     <div
       className={[
-        'group flex items-start gap-3 px-5 py-3 border-b border-border/60 transition-colors',
-        unread ? 'bg-primary/[0.04]' : '',
-        n.link ? 'cursor-pointer hover:bg-surface-2/60' : '',
+        'group flex items-start gap-3 px-5 py-3 border-b border-border border-l-2 transition-colors',
+        unread ? 'border-l-[var(--ink)]' : 'border-l-transparent',
+        n.link ? 'cursor-pointer hover:bg-[var(--frame-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring' : '',
       ].join(' ')}
       onClick={n.link ? open : undefined}
       role={n.link ? 'button' : undefined}
@@ -217,16 +216,16 @@ function NotificationItem({ n, onMarkRead, onNavigate }) {
           : undefined
       }
     >
-      <Icon size={16} className={`shrink-0 mt-0.5 ${cls}`} />
+      <Icon size={16} strokeWidth={1.5} className={`shrink-0 mt-0.5 ${cls}`} aria-hidden="true" />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <p className={`text-sm truncate ${unread ? 'font-semibold text-fg' : 'font-medium text-fg/90'}`}>
+          <p className={`text-[13px] truncate m-0 ${unread ? 'font-semibold text-fg' : 'font-medium text-muted'}`}>
             {n.title || 'Notification'}
           </p>
-          {unread && <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" aria-label="Unread" />}
+          {unread && <span className="sr-only">Unread</span>}
         </div>
         {n.body && <p className="text-xs text-muted mt-0.5 line-clamp-3">{n.body}</p>}
-        <p className="text-[11px] text-muted/70 mt-1">{relativeTime(n.created_at)}</p>
+        <p className="font-mono text-[11px] text-subtle tabular-nums mt-1 m-0">{relativeTime(n.created_at)}</p>
       </div>
       {unread && (
         <button
@@ -237,9 +236,9 @@ function NotificationItem({ n, onMarkRead, onNavigate }) {
           }}
           title="Mark as read"
           aria-label="Mark as read"
-          className="shrink-0 p-1 rounded-lg text-muted/60 opacity-0 group-hover:opacity-100 hover:text-fg hover:bg-surface-2 transition-all focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          className="sh-icon-btn shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100" style={{ width: 28, height: 28 }}
         >
-          <Check size={14} />
+          <Check size={14} strokeWidth={1.5} aria-hidden="true" />
         </button>
       )}
     </div>
@@ -270,7 +269,7 @@ function NotificationPanel({ open, onClose, items, loading, onMarkRead, onMarkAl
       {/* Backdrop — overlay mode only (embedded lives inside the shared sidebar) */}
       {!embedded && (
         <div
-          className="fixed inset-0 z-[55] bg-black/40 backdrop-blur-[1px]"
+          className="fixed inset-0 z-[55] bg-[var(--sh-scrim)]"
           onClick={onClose}
           aria-hidden="true"
         />
@@ -281,36 +280,33 @@ function NotificationPanel({ open, onClose, items, loading, onMarkRead, onMarkAl
         aria-labelledby="notif-panel-title"
         className={embedded
           ? 'flex h-full w-full flex-col bg-surface'
-          : 'fixed inset-y-0 right-0 z-[55] w-full max-w-md bg-surface border-l border-border shadow-2xl flex flex-col'}
+          : 'sh-pop fixed inset-y-0 right-0 z-[55] w-full max-w-md flex flex-col'}
       >
         {/* Header */}
         <div className="flex items-center gap-3 px-5 py-4 border-b border-border shrink-0">
-          <div className="shrink-0 w-9 h-9 rounded-xl flex items-center justify-center bg-primary/10">
-            <Bell size={17} className="text-primary" />
-          </div>
           <div className="min-w-0 flex-1">
-            <h2 id="notif-panel-title" className="font-display font-semibold text-base text-fg">
+            <h2 id="notif-panel-title" className="m-0 text-[15px] font-semibold text-fg">
               Notifications
             </h2>
-            <p className="text-xs text-muted truncate">Alerts from watches, flows and shares.</p>
+            <p className="m-0 text-xs text-muted truncate">Alerts from watches, flows and shares.</p>
           </div>
           <button
             type="button"
             onClick={onMarkAll}
             disabled={!hasUnread}
             title="Mark all as read"
-            className="shrink-0 inline-flex items-center gap-1.5 px-2.5 h-8 rounded-lg text-xs font-medium text-muted hover:text-fg hover:bg-surface-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            className="shrink-0 inline-flex items-center gap-1.5 px-2.5 h-8 rounded-sm text-xs font-medium text-muted hover:text-fg hover:bg-[var(--frame-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <CheckCheck size={14} />
+            <CheckCheck size={14} strokeWidth={1.5} aria-hidden="true" />
             <span className="hidden sm:inline">Mark all read</span>
           </button>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close notifications"
-            className="shrink-0 p-1.5 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            className="sh-icon-btn shrink-0"
           >
-            <X size={16} />
+            <X size={16} strokeWidth={1.5} aria-hidden="true" />
           </button>
         </div>
 
@@ -321,11 +317,11 @@ function NotificationPanel({ open, onClose, items, loading, onMarkRead, onMarkAl
         <div className="flex-1 min-h-0 overflow-y-auto">
           {loading && items.length === 0 ? (
             <div className="flex items-center justify-center gap-2 text-sm text-muted py-16">
-              <Loader2 size={16} className="animate-spin" /> Loading…
+              <Loader2 size={16} strokeWidth={1.5} className="animate-spin" aria-hidden="true" /> Loading…
             </div>
           ) : items.length === 0 ? (
             <div className="flex flex-col items-center justify-center text-center py-20 px-6 gap-3">
-              <Inbox size={30} className="text-muted/40" />
+              <Inbox size={28} strokeWidth={1.5} className="text-subtle" aria-hidden="true" />
               <p className="text-sm font-medium text-fg">You're all caught up</p>
               <p className="text-xs text-muted max-w-xs">
                 New alerts from watches, flow runs and shared resources will show up here.

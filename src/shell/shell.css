@@ -1,0 +1,403 @@
+/*
+ * shell.css — styles for the authenticated app frame (sidebar, topbar, Spotlight,
+ * PageShell, panels). Owned by the shell squad; imported by PageShell.tsx and AppShell.tsx.
+ *
+ * Rules: colours only through tokens (var(--ink) etc). Motion tokens carry fallbacks so the
+ * file also works before the design-system tokens land: --dur-1..4, --ease-out, --shadow-pop.
+ * Everything animated is switched off under prefers-reduced-motion at the bottom.
+ */
+
+/* ── Skip link ─────────────────────────────────────────────────────────────── */
+/* Scrim behind drawers, dialogs and Spotlight. Ink would LIGHTEN the page in dark mode, so it is explicit. */
+:root { --sh-scrim: rgba(11, 12, 14, 0.4); --sh-scrim-light: rgba(11, 12, 14, 0.22); }
+.dark { --sh-scrim: rgba(0, 0, 0, 0.62); --sh-scrim-light: rgba(0, 0, 0, 0.5); }
+
+/* ── Route transition (content area only; never remounts the page) ─────────── */
+.sh-route-in {
+  animation: sh-route-in 120ms var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1)) backwards;
+}
+@keyframes sh-route-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ── Page template ─────────────────────────────────────────────────────────── */
+.sh-surface { background: var(--surface); }
+
+.sh-page {
+  background: var(--surface);
+  min-height: 100%;
+  padding: 24px 16px 48px;
+}
+@media (min-width: 768px) { .sh-page { padding: 32px 32px 64px; } }
+
+.sh-page-inner { margin: 0 auto; width: 100%; max-width: 1200px; }
+.sh-page[data-width='narrow'] .sh-page-inner { max-width: 720px; }
+.sh-page[data-width='full'] .sh-page-inner { max-width: none; }
+
+.sh-page-fill { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.sh-page-fill .sh-page-inner { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.sh-body-fill { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+
+.sh-head {
+  padding-bottom: 16px;
+  margin-bottom: 24px;
+  border-bottom: 2px solid var(--ink);
+}
+.sh-head.has-tabs {
+  padding-bottom: 0;
+  border-bottom: 1px solid var(--border);
+}
+.sh-eyebrow {
+  margin: 0 0 8px;
+  font: 500 11px/1.4 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+.sh-head-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.sh-head-text { min-width: 0; flex: 1; }
+.sh-title {
+  margin: 0;
+  font: 600 24px/1.2 var(--font-ui);
+  letter-spacing: -0.015em;
+  color: var(--text);
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+.sh-desc {
+  margin: 4px 0 0;
+  max-width: 70ch;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  text-wrap: pretty;
+}
+.sh-head-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; flex-shrink: 0; }
+@media (max-width: 639px) {
+  .sh-head-row { flex-direction: column; gap: 12px; }
+  .sh-head-actions { justify-content: flex-start; }
+}
+.sh-head.has-tabs .sh-head-row { margin-bottom: 4px; }
+
+.sh-tabs { display: flex; gap: 24px; margin-top: 12px; overflow-x: auto; scrollbar-width: none; }
+.sh-tabs::-webkit-scrollbar { display: none; }
+.sh-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  margin-bottom: -1px;
+  padding: 0 2px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  font: 500 13px/1 var(--font-ui);
+  white-space: nowrap;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-decoration: none;
+  transition: color var(--dur-1, 100ms) var(--ease-out, ease-out);
+}
+.sh-tab:hover { color: var(--text); }
+.sh-tab.is-active { color: var(--text); font-weight: 600; border-bottom-color: var(--ink); }
+.sh-tab[aria-disabled='true'] { opacity: 0.45; cursor: not-allowed; }
+.sh-tab:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.sh-tab-count { font: 500 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-subtle); }
+
+.sh-toolbar-row { margin: -8px 0 16px; }
+
+/* Layout-shift guard. Pages mount their toolbar (search, sort) only once the list has data, which
+   used to push the whole body down by the toolbar's height. While a skeleton stands in for that
+   list and no toolbar has mounted yet, hold the toolbar's space on the header. Toolbar height:
+   one row (36px) from 640px up, two stacked rows (80px) below; plus its -8px/16px margins. If the
+   list turns out empty the space is released, which is a smaller jump than a page that never
+   reserved it. */
+.sh-page-inner { --sh-toolbar-reserve: 88px; }
+@media (min-width: 640px) { .sh-page-inner { --sh-toolbar-reserve: 44px; } }
+.sh-page-inner:not(:has(.sh-toolbar-row)):has(.sh-body .nubi-skeleton) > .sh-head {
+  margin-bottom: calc(24px + var(--sh-toolbar-reserve));
+}
+
+.sh-section { margin-top: 32px; padding-top: 12px; border-top: 2px solid var(--ink); }
+.sh-body > .sh-section:first-child { margin-top: 0; }
+.sh-sections-grid { margin-top: 32px; }
+.sh-sections-grid > .sh-section { margin-top: 0; }
+.sh-section-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
+.sh-section-index { font: 500 11px/1.4 var(--font-mono); letter-spacing: 0.06em; font-variant-numeric: tabular-nums; color: var(--text-subtle); }
+.sh-section-text { min-width: 0; flex: 1; }
+.sh-section-title { margin: 0; font: 600 15px/1.35 var(--font-ui); color: var(--text); }
+.sh-section-desc { margin: 2px 0 0; font-size: 13px; line-height: 1.45; color: var(--text-muted); max-width: 70ch; }
+.sh-section-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-shrink: 0; }
+
+/* ── Popovers and menus ────────────────────────────────────────────────────── */
+.sh-pop {
+  background: var(--surface);
+  border: 1px solid var(--frame-line);
+  border-radius: 4px;
+  box-shadow: var(--shadow-pop);
+}
+
+.sh-pop-in { animation: sh-pop-in var(--dur-2, 160ms) var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1)) backwards; }
+@keyframes sh-pop-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: none; }
+}
+
+.sh-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  font: 400 13px/1.2 var(--font-ui);
+  color: var(--text);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.sh-menu-item:hover, .sh-menu-item:focus-visible { background: var(--frame-hover); outline: none; }
+.sh-menu-item:focus-visible { box-shadow: inset 0 0 0 2px var(--ring); }
+.sh-menu-item[data-danger] { color: var(--danger); }
+.sh-menu-sep { height: 1px; margin: 4px 0; background: var(--border); }
+
+/* ── Icon buttons (topbar, panels) ─────────────────────────────────────────── */
+.sh-icon-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color var(--dur-1, 100ms) var(--ease-out, ease-out), background-color var(--dur-1, 100ms) var(--ease-out, ease-out);
+}
+.sh-icon-btn:hover { color: var(--text); background: var(--frame-hover); }
+.sh-icon-btn[aria-pressed='true'], .sh-icon-btn[aria-expanded='true'] { background: var(--ink); color: var(--ink-fg); }
+.sh-icon-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.sh-icon-btn:active { transform: scale(0.98); }
+
+/* Square ink count: never a red pill. */
+.sh-count {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  background: var(--ink);
+  color: var(--ink-fg);
+  outline: 2px solid var(--surface);
+  font: 600 11px/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.sh-icon-btn[aria-pressed='true'] .sh-count { background: var(--ink-fg); color: var(--ink); outline-color: var(--ink); }
+
+/* ── Sidebar ───────────────────────────────────────────────────────────────── */
+.sh-nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 2px;
+  font: 500 13px/1 var(--font-ui);
+  color: var(--text-muted);
+  text-decoration: none;
+  user-select: none;
+  transition: color var(--dur-1, 100ms) var(--ease-out, ease-out), background-color var(--dur-1, 100ms) var(--ease-out, ease-out);
+}
+.sh-nav-item:hover { color: var(--text); background: var(--frame-hover); }
+.sh-nav-item:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.sh-nav-item .sh-nav-icon { flex-shrink: 0; color: var(--text-subtle); transition: color var(--dur-1, 100ms) var(--ease-out, ease-out); }
+.sh-nav-item:hover .sh-nav-icon { color: var(--text); }
+.sh-nav-item.is-active { color: var(--text); font-weight: 600; }
+.sh-nav-item.is-active .sh-nav-icon { color: var(--text); }
+/* active = 2px ink marker on the row's leading edge + ink text */
+.sh-nav-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  background: var(--ink);
+  opacity: 0;
+}
+.sh-nav-item.is-active::before { opacity: 1; }
+.sh-nav-item[data-collapsed] { justify-content: center; width: 40px; margin: 0 auto; padding: 0; }
+.sh-nav-item[data-collapsed]::before { left: -4px; }
+
+.sh-nav-group { padding: 16px 10px 4px; }
+.sh-nav-rule { height: 1px; margin: 8px 12px; background: var(--frame-line); }
+
+.sh-rail-tip {
+  position: fixed;
+  z-index: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  background: var(--ink);
+  color: var(--ink-fg);
+  border-radius: 2px;
+  font: 500 12px/1 var(--font-ui);
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateY(-50%);
+  animation: sh-fade var(--dur-1, 100ms) ease-out backwards;
+}
+.sh-rail-tip .nubi-kbd { background: transparent; border-color: color-mix(in srgb, var(--ink-fg) 40%, transparent); color: var(--ink-fg); height: 16px; }
+@keyframes sh-fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* ── Mobile drawer + RHS panel (motion on --dur-3 / --ease-out) ────────────── */
+.sh-drawer {
+  transition: transform var(--dur-3, 220ms) var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+.sh-sidebar {
+  transition: width var(--dur-3, 220ms) var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+.sh-backdrop {
+  background: var(--sh-scrim);
+  transition: opacity var(--dur-3, 220ms) var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+.sh-rhs {
+  transition: width var(--dur-3, 220ms) var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+.sh-rhs-body { animation: sh-route-in 120ms var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1)) backwards; }
+
+/* ── Spotlight ─────────────────────────────────────────────────────────────── */
+.sh-spot-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 450;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12vh 16px 16px;
+  background: var(--sh-scrim-light);
+  animation: sh-fade 120ms ease-out backwards;
+}
+.sh-spot {
+  width: 100%;
+  max-width: 640px;
+  overflow: hidden;
+  animation: sh-fade 120ms ease-out backwards;
+}
+.sh-spot-input-row { display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 16px; border-bottom: 1px solid var(--border); }
+.sh-spot-input-row:focus-within { box-shadow: inset 0 -2px 0 var(--ring); }
+.sh-spot-input { flex: 1; min-width: 0; background: transparent; border: 0; outline: none !important; font: 400 15px/1.2 var(--font-ui); color: var(--text); }
+.sh-spot-input::placeholder { color: var(--text-subtle); }
+.sh-spot-list { max-height: min(420px, 55vh); overflow-y: auto; padding: 4px 0 8px; margin: 0; list-style: none; }
+.sh-spot-group-label { padding: 12px 16px 4px; }
+.sh-spot-opt {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 36px;
+  margin: 0 6px;
+  padding: 0 10px;
+  border-radius: 2px;
+  font-size: 13.5px;
+  color: var(--text);
+  cursor: pointer;
+}
+.sh-spot-opt[aria-selected='true'] { background: var(--ink); color: var(--ink-fg); }
+.sh-spot-opt[aria-selected='true'] .sh-spot-icon { color: var(--ink-fg); }
+.sh-spot-opt[aria-selected='true'] .nubi-kbd { background: transparent; border-color: color-mix(in srgb, var(--ink-fg) 45%, transparent); color: var(--ink-fg); }
+.sh-spot-opt[aria-selected='true'] .sh-spot-meta { color: color-mix(in srgb, var(--ink-fg) 75%, transparent); }
+.sh-spot-icon { flex-shrink: 0; color: var(--text-subtle); }
+.sh-spot-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sh-spot-label mark { background: transparent; color: var(--primary); font-weight: 600; }
+.sh-spot-opt[aria-selected='true'] .sh-spot-label mark { color: var(--ink-fg); text-decoration: underline; text-underline-offset: 3px; }
+.sh-spot-meta { font: 400 11px/1 var(--font-mono); color: var(--text-subtle); max-width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sh-spot-kbds { display: inline-flex; align-items: center; gap: 4px; min-width: 56px; justify-content: flex-end; }
+.sh-spot-foot { display: flex; align-items: center; gap: 16px; height: 36px; padding: 0 16px; border-top: 1px solid var(--border); background: var(--surface-2); }
+@media (max-width: 639px) {
+  .sh-spot-overlay { padding-top: 8vh; }
+  .sh-spot-foot, .sh-spot-kbds, .sh-spot-hints { display: none; }
+}
+
+/* ── Home ──────────────────────────────────────────────────────────────────── */
+.sh-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  height: 48px;
+  padding: 0 16px;
+  border: 1px solid var(--frame-line);
+  border-radius: 2px;
+  background: var(--surface);
+  text-align: left;
+  color: var(--text-subtle);
+  cursor: pointer;
+  transition: border-color var(--dur-1, 100ms) var(--ease-out, ease-out), color var(--dur-1, 100ms) var(--ease-out, ease-out);
+}
+.sh-search-bar:hover { color: var(--text); border-color: var(--ink); }
+.sh-search-bar:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+/* hairline card that turns its border ink on hover (never lifts or scales) */
+.sh-card {
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--surface);
+  color: inherit;
+  text-decoration: none;
+  transition: border-color var(--dur-1, 100ms) var(--ease-out, ease-out);
+}
+.sh-card:hover { border-color: var(--ink); }
+.sh-card:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+.sh-rows { border-top: 1px solid var(--border); }
+.sh-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 13.5px;
+}
+.sh-row:hover { background: var(--frame-hover); }
+.sh-row:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+
+.sh-progress { display: flex; gap: 4px; }
+.sh-progress > i { display: block; width: 24px; height: 4px; background: var(--border); }
+.sh-progress > i[data-done] { background: var(--ink); }
+
+/* ── Reduced motion: the final state shows immediately ─────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .sh-route-in, .sh-pop-in, .sh-rhs-body, .sh-spot, .sh-spot-overlay, .sh-rail-tip { animation: none !important; }
+  .sh-sidebar, .sh-drawer, .sh-backdrop, .sh-rhs, .sh-nav-item, .sh-icon-btn, .sh-card, .sh-tab { transition: none !important; }
+  .sh-icon-btn:active { transform: none; }
+}
+
+/* The white sheet inset on the frame (desktop). Phones: full-bleed. */
+@media (min-width: 768px) {
+  .sh-sheet { border-radius: 4px; }
+}

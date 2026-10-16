@@ -3,11 +3,17 @@
  *
  * Structure (desktop):
  *
- *   ┌────────────────────────────────────────────────────────────┐
- *   │  [sidebar]  │  [topbar … page toolbar …  🔔 ⑂ 💬 │ avatar] │
- *   │             ├──────────────────────────────────────────────┤
- *   │             │  <Outlet/> (main content)         │ [panel]  │
- *   └────────────────────────────────────────────────────────────┘
+ *   ┌─ frame ───────────────────────────────────────────────────────┐
+ *   │  [sidebar]  ┌─ sheet ──────────────────────────────────────┐ │
+ *   │  on the     │  [crumb · page toolbar …  🔔 ⑂ 💬 │ avatar]  │ │
+ *   │  frame      ├──────────────────────────────────────────────┤ │
+ *   │             │  <Outlet/> (main content)         │ [panel]  │ │
+ *   │             └──────────────────────────────────────────────┘ │
+ *   └───────────────────────────────────────────────────────────────┘
+ *
+ * Swiss "inset sheet": the sidebar sits directly on the grey frame; the topbar
+ * and page share one white sheet. ⌘K opens Spotlight from anywhere; `?` opens the
+ * shortcut sheet; `g` + a letter jumps between pages (see shell/useShellShortcuts).
  *
  * The global panel switcher (Notifications / Git / Chat) lives in the topbar's
  * right zone (AppTopbar → TopbarActions). All three share ONE collapsible
@@ -23,18 +29,29 @@
  * so it keeps polling the unread-count badge; it only renders its panel when it
  * is the active panel.
  *
+ * Motion: content fades in on route change (120ms opacity + 4px, --ease-out; not for
+ * keyboard-started navigation); the RHS panel and the mobile drawer move on --dur-3.
+ * All of it is off under prefers-reduced-motion. The page area has its own Suspense
+ * boundary so the frame stays put while a route's code loads.
+ *
  * Wrapped by UiProvider + OrgProvider (injected in App.jsx routing tree).
  */
 
-import { useState, useEffect, useCallback, lazy, Suspense, type ComponentType } from 'react'
-import { Outlet } from 'react-router-dom'
+import { useState, useEffect, useCallback, useLayoutEffect, useRef, lazy, Suspense, type ComponentType } from 'react'
+import { Outlet, useLocation } from 'react-router-dom'
 import { useUi } from '../contexts/UiContext.jsx'
 import { useProject } from '../contexts/ProjectContext.jsx'
 import { AppSidebarDesktop, AppSidebarMobile } from '../components/app/AppSidebar.jsx'
 import AppTopbar from '../components/app/AppTopbar.jsx'
 import { ChatPanel } from '../chat/ChatPanel.jsx'
 import NotificationCenter from '../components/app/NotificationCenter.jsx'
+import Spotlight from '../components/app/Spotlight.jsx'
+import ShortcutSheet from '../shell/ShortcutSheet.jsx'
+import { RouteErrorBoundary } from '../shell/ErrorBoundary.jsx'
+import { useShellShortcuts } from '../shell/useShellShortcuts.js'
+import { consumeKeyboardNav } from '../shell/shellLogic.js'
 import { GitBranch, MessageSquare, Bell } from 'lucide-react'
+import '../shell/shell.css'
 
 // Lazy-load GitSyncPanel — a sibling agent creates this; it may not exist yet
 // in the OSS build, so we degrade silently if the import fails. Untyped .jsx
@@ -51,6 +68,32 @@ const GitSyncPanel = lazy<ComponentType<any>>(() =>
 // between Notifications / Git / Chat never resizes the sidebar.
 
 // ---------------------------------------------------------------------------
+// Page-area loading state — shown only if a route's code takes > 300ms, so quick
+// navigations never flash it. The frame (sidebar, topbar) stays put around it.
+// ---------------------------------------------------------------------------
+
+function ContentFallback() {
+  const [show, setShow] = useState(false)
+  useEffect(() => {
+    const t = window.setTimeout(() => setShow(true), 300)
+    return () => window.clearTimeout(t)
+  }, [])
+  if (!show) return null
+  return (
+    <div className="sh-page" role="status" aria-live="polite" aria-busy="true">
+      <span className="sr-only">Loading page</span>
+      <div className="sh-page-inner" aria-hidden="true">
+        <div className="nubi-shimmer h-6 w-48 mb-3" />
+        <div className="nubi-shimmer h-4 w-80 max-w-full mb-4" />
+        <div className="border-t-2 border-[var(--ink)] pt-6 space-y-3">
+          {[0, 1, 2].map(i => <div key={i} className="nubi-shimmer h-10 w-full" />)}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // AppShell
 // ---------------------------------------------------------------------------
 
@@ -61,6 +104,23 @@ export default function AppShell() {
   const [unreadCount, setUnreadCount] = useState(0)
 
   const { chatOpen, openChat, closeChat, pageOwnsChat } = useUi()
+  useShellShortcuts()
+
+  // Route transition: restart a 120ms fade on <main> whenever the path changes. Done by toggling
+  // a class (not by re-keying), so a page that stays mounted across params keeps its state.
+  const { pathname } = useLocation()
+  const mainRef = useRef<HTMLElement>(null)
+  const firstRoute = useRef(true)
+  useLayoutEffect(() => {
+    const el = mainRef.current
+    if (!el) return
+    el.scrollTop = 0
+    if (firstRoute.current) { firstRoute.current = false; return }
+    if (consumeKeyboardNav()) return
+    el.classList.remove('sh-route-in')
+    void el.offsetWidth // restart the animation
+    el.classList.add('sh-route-in')
+  }, [pathname])
 
   // Read the active project so we can pass its id to GitSyncPanel.
   const { activeProject } = useProject()
@@ -127,6 +187,12 @@ export default function AppShell() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-bg text-fg">
+      <a href="#main-content" className="nubi-skip-link" onClick={e => {
+        // The hash would collide with the router; move focus ourselves.
+        e.preventDefault()
+        mainRef.current?.focus()
+      }}>Skip to content</a>
+
       {/* ── Desktop sidebar ─────────────────────────────────── */}
       <AppSidebarDesktop />
 
@@ -136,8 +202,10 @@ export default function AppShell() {
         onClose={() => setMobileNavOpen(false)}
       />
 
-      {/* ── Main column: topbar + content ──────────────────── */}
-      <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+      {/* ── Main column: topbar + content, set as one inset sheet on the frame.
+           Desktop: the sheet floats 8px off the frame with a hairline edge;
+           phones: it fills the screen. ─────────────────────────────────── */}
+      <div className="flex flex-col flex-1 min-w-0 overflow-hidden bg-surface sh-sheet md:my-2 md:mr-2 md:border md:border-[var(--frame-line)]">
         <AppTopbar
           onMobileMenuOpen={() => setMobileNavOpen(true)}
           actions={railItems}
@@ -156,10 +224,16 @@ export default function AppShell() {
               that don't opt into a fixed-height layout are unaffected — a
               flex column with one child still just scrolls its content. */}
           <main
-            className="flex-1 min-h-0 flex flex-col overflow-y-auto bg-bg"
+            ref={mainRef}
+            tabIndex={-1}
+            className="flex-1 min-h-0 flex flex-col overflow-y-auto bg-surface outline-none"
             id="main-content"
           >
-            <Outlet />
+            <RouteErrorBoundary>
+              <Suspense fallback={<ContentFallback />}>
+                <Outlet />
+              </Suspense>
+            </RouteErrorBoundary>
           </main>
 
           {/* ── Shared RHS sidebar — Notifications / Git / Chat ──────────────
@@ -172,34 +246,44 @@ export default function AppShell() {
             aria-hidden={!activePanel}
             inert={!activePanel ? true : undefined}
             className={[
-              'flex flex-col bg-surface shrink-0',
-              'md:border-l md:border-border md:transition-[width] md:duration-[250ms] md:ease-in-out md:overflow-hidden',
+              'sh-rhs flex flex-col bg-surface shrink-0',
+              'md:border-l md:border-border md:overflow-hidden',
               activePanel
                 ? 'fixed inset-0 z-50 md:static md:z-auto md:w-[380px]'
                 : 'hidden md:flex md:w-0',
             ].join(' ')}
           >
             <div className="w-full md:w-[380px] h-full flex flex-col">
-              {activePanel === 'chat' && <ChatPanel onClose={collapseAll} />}
+              {activePanel === 'chat' && (
+                <div key="chat" className="sh-rhs-body h-full flex flex-col min-h-0"><ChatPanel onClose={collapseAll} /></div>
+              )}
 
               {activePanel === 'git' && (
-                <Suspense fallback={null}>
-                  <GitSyncPanel embedded open projectId={projectId} onClose={collapseAll} />
-                </Suspense>
+                <div key="git" className="sh-rhs-body h-full flex flex-col min-h-0">
+                  <Suspense fallback={null}>
+                    <GitSyncPanel embedded open projectId={projectId} onClose={collapseAll} />
+                  </Suspense>
+                </div>
               )}
 
               {/* Always mounted: keeps polling the unread-count badge even while
                   collapsed. Renders its panel only when it is the active panel. */}
-              <NotificationCenter
-                embedded
-                open={activePanel === 'notifications'}
-                onClose={collapseAll}
-                onCount={setUnreadCount}
-              />
+              <div className={activePanel === 'notifications' ? 'sh-rhs-body h-full flex flex-col min-h-0' : 'contents'}>
+                <NotificationCenter
+                  embedded
+                  open={activePanel === 'notifications'}
+                  onClose={collapseAll}
+                  onCount={setUnreadCount}
+                />
+              </div>
             </div>
           </aside>
         </div>
       </div>
+
+      {/* ⌘K — one search for pages, settings, actions, dashboards and queries */}
+      <Spotlight />
+      <ShortcutSheet />
     </div>
   )
 }
