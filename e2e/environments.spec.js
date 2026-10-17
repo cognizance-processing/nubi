@@ -109,17 +109,8 @@ test('board card overflow menu exposes History', async ({ page }) => {
   await page.goto('/dashboards')
   await expect(page.getByRole('heading', { name: 'Dashboards' })).toBeVisible({ timeout: 20_000 })
 
-  // Boards are seeded in the Demo project — switch to it when the active
-  // project has no boards.
-  let menuButtons = page.getByRole('button', { name: 'Board options' })
-  if (await menuButtons.count() === 0) {
-    const switcher = page.getByRole('button', { name: 'Switch project' })
-    await switcher.click()
-    const demo = page.getByRole('button', { name: /Demo/ }).first()
-    test.skip(await demo.count() === 0, 'No Demo project to source boards from')
-    await demo.click()
-    menuButtons = page.getByRole('button', { name: 'Board options' })
-  }
+  // Demo boards are seeded into the active project itself (there is no separate Demo project).
+  const menuButtons = page.getByRole('button', { name: 'Board options' })
 
   const visible = await menuButtons.first()
     .waitFor({ state: 'visible', timeout: 20_000 })
@@ -127,9 +118,9 @@ test('board card overflow menu exposes History', async ({ page }) => {
   test.skip(!visible, 'No boards in any reachable project')
 
   await menuButtons.first().click()
-  await expect(page.getByRole('button', { name: 'History', exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Checkpoint', exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Promote', exact: true })).toBeVisible()
+  await expect(page.getByRole('menuitem', { name: 'History', exact: true })).toBeVisible()
+  await expect(page.getByRole('menuitem', { name: 'Checkpoint', exact: true })).toBeVisible()
+  await expect(page.getByRole('menuitem', { name: 'Promote', exact: true })).toBeVisible()
 })
 
 // ---------------------------------------------------------------------------
@@ -142,22 +133,15 @@ test('board History opens the version timeline with env pointer chips', async ({
   await page.goto('/dashboards')
   await expect(page.getByRole('heading', { name: 'Dashboards' })).toBeVisible({ timeout: 20_000 })
 
-  let menuButtons = page.getByRole('button', { name: 'Board options' })
-  if (await menuButtons.count() === 0) {
-    const switcher = page.getByRole('button', { name: 'Switch project' })
-    await switcher.click()
-    const demo = page.getByRole('button', { name: /Demo/ }).first()
-    test.skip(await demo.count() === 0, 'No Demo project to source boards from')
-    await demo.click()
-    menuButtons = page.getByRole('button', { name: 'Board options' })
-  }
+  // Demo boards are seeded into the active project itself (there is no separate Demo project).
+  const menuButtons = page.getByRole('button', { name: 'Board options' })
   const visible = await menuButtons.first()
     .waitFor({ state: 'visible', timeout: 20_000 })
     .then(() => true, () => false)
   test.skip(!visible, 'No boards in any reachable project')
 
   await menuButtons.first().click()
-  await page.getByRole('button', { name: 'History', exact: true }).click()
+  await page.getByRole('menuitem', { name: 'History', exact: true }).click()
 
   // VersionHistoryDialog renders the VersionTimeline.
   const dialog = page.getByRole('dialog').filter({ hasText: 'Version history' })
@@ -167,7 +151,7 @@ test('board History opens the version timeline with env pointer chips', async ({
   await expect(dialog.getByTitle('Pinned to prod').first()).toBeVisible()
   await expect(dialog.getByTitle('Pinned to dev').first()).toBeVisible()
   // … and the per-row Restore action is offered.
-  await expect(dialog.getByTitle('Restore v1 into the draft').first()).toBeVisible()
+  await expect(dialog.getByRole('button', { name: 'Restore version 1 into the draft' }).first()).toBeVisible()
   await page.keyboard.press('Escape')
 })
 
@@ -208,6 +192,9 @@ test('unpromoted flow shows a "not in prod" badge under the prod run env', async
   // Two "New flow" buttons exist (desktop rail + mobile sheet) — use the
   // visible one for the current viewport.
   await page.getByRole('button', { name: 'New flow' }).filter({ visible: true }).first().click()
+  // A unique name, so the flow's rail row can be found again.
+  const flowName = `e2e-env-${Date.now().toString(36)}`
+  await page.getByRole('textbox', { name: 'Flow name' }).fill(flowName)
   const createResponse = page.waitForResponse(
     res => res.request().method() === 'POST' && /\/flows$/.test(new URL(res.url()).pathname),
     { timeout: 20_000 },
@@ -221,20 +208,21 @@ test('unpromoted flow shows a "not in prod" badge under the prod run env', async
     // row comes from GET /flows (which always includes pinned_envs).
     await page.getByTitle('Refresh flows').filter({ visible: true }).first().click()
 
-    // Switch the run environment to prod (protected) — strict visibility.
-    const envButton = page.getByRole('button', { name: 'Run environment' })
+    // Switch the (global) run environment to prod (protected) — strict visibility.
+    const envButton = page.getByRole('button', { name: 'Switch environment' })
     await expect(envButton).toBeVisible({ timeout: 20_000 })
     await envButton.click()
-    await page.getByRole('option', { name: 'prod', exact: true }).click()
+    // Options read "<env> <git branch>", e.g. "prod main".
+    await page.getByRole('option', { name: /^prod\b/ }).click()
 
     // The rail row for the new flow carries the strict-env chip.
-    const row = page.locator('aside button').filter({ hasText: created.id.slice(0, 8) }).first()
+    const row = page.locator('aside button').filter({ hasText: flowName }).first()
     await expect(row).toBeVisible({ timeout: 20_000 })
     await expect(row.getByText('not in prod')).toBeVisible({ timeout: 20_000 })
   } finally {
     // Cleanup: delete the flow we created (confirm() dialog auto-accepted).
     page.once('dialog', d => d.accept())
-    const row = page.locator('aside button').filter({ hasText: created.id.slice(0, 8) }).first()
+    const row = page.locator('aside button').filter({ hasText: flowName }).first()
     await row.hover().catch(() => {})
     await row.getByTitle('Delete flow').click({ timeout: 10_000 }).catch(() => {})
   }

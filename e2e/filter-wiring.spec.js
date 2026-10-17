@@ -221,7 +221,7 @@ test.describe('Filter wiring', () => {
     await page.waitForTimeout(500)
     // ConfigPanel opens on the "Widget" tab by default — the query picker
     // lives under "Data".
-    await page.getByRole('button', { name: 'Data', exact: true }).click()
+    await page.getByRole('tab', { name: 'Data', exact: true }).click()
     await page.waitForTimeout(500)
 
     const queryTrigger = page.locator('button[aria-label="Query"]:visible').first()

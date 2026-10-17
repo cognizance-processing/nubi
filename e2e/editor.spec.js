@@ -116,21 +116,17 @@ test.describe('Dashboard Editor', () => {
 
   // ---------------------------------------------------------------------------
 
-  test('Ask AI panel opens and accepts a prompt', async ({ page }) => {
+  test('editor chat opens and accepts a prompt', async ({ page }) => {
     await page.goto('/editor')
     await expect(page.getByTestId('editor-title')).toBeVisible({ timeout: 20_000 })
 
-    // Click the Ask AI button in the header
-    await page.getByRole('button', { name: /ask ai/i }).first().click()
-
-    // The AI textarea / panel should appear
-    const textarea = page.locator('textarea').filter({ hasText: '' }).first()
+    // AI authoring lives in the editor's own Chat panel
+    await page.getByTestId('panel-toggle-chat').filter({ visible: true }).first().click()
+    const textarea = page.locator('textarea[aria-label="Chat input"]').first()
     await expect(textarea).toBeVisible({ timeout: 10_000 })
 
-    // Type a prompt
     await textarea.fill('Show me daily active users')
-    // The Generate button should become enabled
-    await expect(page.getByRole('button', { name: /generate/i })).not.toBeDisabled()
+    await expect(textarea).toHaveValue('Show me daily active users')
   })
 })
 

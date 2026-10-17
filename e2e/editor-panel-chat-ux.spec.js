@@ -37,8 +37,9 @@ test.describe('Desktop /editor — panel icon toggles + single chat', () => {
     const toggles = page.getByTestId('editor-panel-toggles')
     await expect(toggles).toBeVisible()
 
-    // All four panel toggle buttons present
-    await expect(page.getByTestId('panel-toggle-add')).toBeVisible()
+    // Configure / Dashboard / Chat toggles present. At lg+ "Add" is hidden on purpose:
+    // the permanent widget-library rail on the left covers it.
+    await expect(page.getByTestId('panel-toggle-add')).not.toBeVisible()
     await expect(page.getByTestId('panel-toggle-config')).toBeVisible()
     await expect(page.getByTestId('panel-toggle-board')).toBeVisible()
     await expect(page.getByTestId('panel-toggle-chat')).toBeVisible()
@@ -46,7 +47,7 @@ test.describe('Desktop /editor — panel icon toggles + single chat', () => {
 
   test('global chat button is NOT present in the editor', async ({ page }) => {
     await openEditor(page)
-    await expect(page.getByTestId('global-chat-btn')).not.toBeVisible()
+    await expect(page.getByTestId('rail-toggle-chat')).not.toBeVisible()
   })
 
   test('clicking Chat opens chat in the RHS sidebar (no global chat panel)', async ({ page }) => {
@@ -65,34 +66,34 @@ test.describe('Desktop /editor — panel icon toggles + single chat', () => {
   test('editor panel icons are icon-only (no visible text labels)', async ({ page }) => {
     await openEditor(page)
     // The toggle buttons should not have visible text — only icons (SVG)
-    const addBtn = page.getByTestId('panel-toggle-add')
-    await expect(addBtn).toBeVisible()
-    const btnText = await addBtn.textContent()
+    const configBtn = page.getByTestId('panel-toggle-config')
+    await expect(configBtn).toBeVisible()
+    const btnText = await configBtn.textContent()
     expect((btnText ?? '').trim()).toBe('')
   })
 
   test('clicking active panel toggle collapses the sidebar', async ({ page }) => {
     await openEditor(page)
 
-    // The Add panel is open by default; RHS aside visible
-    const aside = page.locator('aside').last()
+    // The Configure panel is open by default; the editor's right panel is visible
+    const aside = page.getByTestId('editor-right-panel')
     await expect(aside).toBeVisible()
 
-    // Click Add toggle (active) → collapses
-    await page.getByTestId('panel-toggle-add').click()
+    // Click Configure toggle (active) → collapses
+    await page.getByTestId('panel-toggle-config').click()
     await expect(aside).not.toBeVisible({ timeout: 3_000 })
   })
 
-  test('clicking Add toggle re-opens the sidebar after collapsing', async ({ page }) => {
+  test('clicking Configure toggle re-opens the sidebar after collapsing', async ({ page }) => {
     await openEditor(page)
 
     // Collapse
-    await page.getByTestId('panel-toggle-add').click()
+    await page.getByTestId('panel-toggle-config').click()
     await page.waitForTimeout(200)
 
-    // Re-open Add
-    await page.getByTestId('panel-toggle-add').click()
-    await expect(page.locator('aside').last()).toBeVisible({ timeout: 5_000 })
+    // Re-open Configure
+    await page.getByTestId('panel-toggle-config').click()
+    await expect(page.getByTestId('editor-right-panel')).toBeVisible({ timeout: 5_000 })
   })
 
   test('clicking Dashboard panel toggle shows Dashboard settings', async ({ page }) => {
@@ -113,14 +114,14 @@ test.describe('Non-editor page (/home) — global chat is available', () => {
     await loginAs(page)
     await page.goto('/home')
     await page.waitForLoadState('networkidle')
-    await expect(page.getByTestId('global-chat-btn')).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByTestId('rail-toggle-chat')).toBeVisible({ timeout: 10_000 })
   })
 
   test('global chat button opens the global chat panel', async ({ page }) => {
     await loginAs(page)
     await page.goto('/home')
     await page.waitForLoadState('networkidle')
-    await page.getByTestId('global-chat-btn').click()
+    await page.getByTestId('rail-toggle-chat').click()
     const globalChatAside = page.locator('aside[aria-label="AI chat panel"]')
     await expect(globalChatAside).toBeVisible({ timeout: 5_000 })
   })
@@ -143,10 +144,10 @@ test.describe('Mobile 390px — editor panel icon toggles', () => {
     // …open the slide-out menu, then they're all visible.
     await page.getByTestId('editor-hamburger').click()
     await expect(page.getByTestId('editor-mobile-menu')).toBeVisible()
-    await expect(page.getByTestId('panel-toggle-add')).toBeVisible()
-    await expect(page.getByTestId('panel-toggle-config')).toBeVisible()
-    await expect(page.getByTestId('panel-toggle-board')).toBeVisible()
-    await expect(page.getByTestId('panel-toggle-chat')).toBeVisible()
+    await expect(page.getByTestId('editor-mobile-menu').getByTestId('panel-toggle-add')).toBeVisible()
+    await expect(page.getByTestId('editor-mobile-menu').getByTestId('panel-toggle-config')).toBeVisible()
+    await expect(page.getByTestId('editor-mobile-menu').getByTestId('panel-toggle-board')).toBeVisible()
+    await expect(page.getByTestId('editor-mobile-menu').getByTestId('panel-toggle-chat')).toBeVisible()
   })
 
   test('no horizontal overflow on the page', async ({ page }) => {
@@ -159,7 +160,7 @@ test.describe('Mobile 390px — editor panel icon toggles', () => {
   test('clicking Add (via hamburger) opens bottom sheet on mobile', async ({ page }) => {
     await openEditor(page)
     await page.getByTestId('editor-hamburger').click()
-    await page.getByTestId('panel-toggle-add').click()
+    await page.getByTestId('editor-mobile-menu').getByTestId('panel-toggle-add').click()
     // Mobile bottom sheet (flex variant) becomes visible
     const sheet = page.locator('.md\\:hidden.fixed.inset-0.z-40.flex')
     await expect(sheet).toBeVisible({ timeout: 5_000 })
@@ -168,14 +169,14 @@ test.describe('Mobile 390px — editor panel icon toggles', () => {
   test('clicking Chat (via hamburger) opens chat bottom sheet on mobile', async ({ page }) => {
     await openEditor(page)
     await page.getByTestId('editor-hamburger').click()
-    await page.getByTestId('panel-toggle-chat').click()
+    await page.getByTestId('editor-mobile-menu').getByTestId('panel-toggle-chat').click()
     const sheet = page.locator('.md\\:hidden.fixed.inset-0.z-40.flex')
     await expect(sheet).toBeVisible({ timeout: 5_000 })
   })
 
   test('global chat button NOT present in editor on mobile', async ({ page }) => {
     await openEditor(page)
-    await expect(page.getByTestId('global-chat-btn')).not.toBeVisible()
+    await expect(page.getByTestId('rail-toggle-chat')).not.toBeVisible()
   })
 })
 
@@ -203,15 +204,15 @@ test.describe('Tablet 820px — editor panel icon toggles', () => {
 
   test('clicking Add opens slide-over RHS sidebar on tablet', async ({ page }) => {
     await openEditor(page)
-    // Add is open by default — collapse then re-open
-    await page.getByTestId('panel-toggle-add').click() // collapse
-    await page.waitForTimeout(200)
-    await page.getByTestId('panel-toggle-add').click() // re-open
-    await expect(page.locator('aside').last()).toBeVisible({ timeout: 5_000 })
+    // Below lg the right panel starts collapsed: Add opens it as a slide-over, Add again closes it
+    await page.getByTestId('panel-toggle-add').click()
+    await expect(page.getByTestId('editor-right-panel')).toBeVisible({ timeout: 5_000 })
+    await page.getByTestId('panel-toggle-add').click()
+    await expect(page.getByTestId('editor-right-panel')).not.toBeVisible({ timeout: 5_000 })
   })
 
   test('global chat button NOT present in editor on tablet', async ({ page }) => {
     await openEditor(page)
-    await expect(page.getByTestId('global-chat-btn')).not.toBeVisible()
+    await expect(page.getByTestId('rail-toggle-chat')).not.toBeVisible()
   })
 })

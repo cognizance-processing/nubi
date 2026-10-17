@@ -25,13 +25,13 @@ const PASSWORD = 'NewPassword123!'
  */
 async function registerViaUi(page, { email, orgName, projectName, demo }) {
   await page.goto('/register')
-  await page.locator('#name').fill('Onboarding Tester')
-  await page.locator('#orgName').fill(orgName)
-  await page.locator('#projectName').fill(projectName)
+  await page.getByLabel('Full name', { exact: true }).fill('Onboarding Tester')
+  await page.getByLabel('Organization', { exact: true }).fill(orgName)
+  await page.getByLabel('First project', { exact: true }).fill(projectName)
   await page.locator('input[type="email"]').fill(email)
   await page.locator('input[type="password"]').fill(PASSWORD)
 
-  const checkbox = page.locator('#demoProject')
+  const checkbox = page.locator('#reg-demo')
   await expect(checkbox).toBeChecked() // default ON
   if (!demo) await checkbox.uncheck()
 
@@ -67,11 +67,30 @@ async function fetchProjectNames(page, email) {
   return (Array.isArray(projects) ? projects : projects.projects ?? []).map(p => p.name)
 }
 
+/**
+ * Count the boards in the user's first org + project (login → orgs → projects → boards).
+ * @param {import('@playwright/test').Page} page
+ * @param {string} email
+ * @returns {Promise<number>}
+ */
+async function fetchBoardCount(page, email) {
+  const loginRes = await page.request.post('/api/v1/auth/login', { data: { email, password: PASSWORD } })
+  const { access_token: token } = await loginRes.json()
+  const auth = { Authorization: `Bearer ${token}` }
+  const { orgs } = await (await page.request.get('/api/v1/orgs', { headers: auth })).json()
+  const projects = await (await page.request.get('/api/v1/projects', { headers: { ...auth, 'X-Org-Id': orgs[0].id } })).json()
+  const project = (Array.isArray(projects) ? projects : projects.projects ?? [])[0]
+  const boardsRes = await page.request.get('/api/v1/boards', { headers: { ...auth, 'X-Org-Id': orgs[0].id, 'X-Project-Id': project.id } })
+  expect(boardsRes.ok()).toBeTruthy()
+  const boards = await boardsRes.json()
+  return (Array.isArray(boards) ? boards : boards.boards ?? []).length
+}
+
 // ---------------------------------------------------------------------------
-// 1. Register with demo checkbox ON → named project + Demo project
+// 1. Register with demo checkbox ON → the named project, seeded with the sample bundle
 // ---------------------------------------------------------------------------
 
-test('register with demo project ON → named project and Demo both exist', async ({ page }) => {
+test('register with demo project ON → the named project holds the sample boards', async ({ page }) => {
   const email = randomEmail()
   await registerViaUi(page, {
     email,
@@ -83,9 +102,10 @@ test('register with demo project ON → named project and Demo both exist', asyn
   // Lands in the app (authed route, not /login)
   await expect(page).not.toHaveURL(/\/login/)
 
+  // The demo bundle is seeded into the org's own project; there is no separate "Demo" project.
   const names = await fetchProjectNames(page, email)
-  expect(names).toContain('Main Project')
-  expect(names).toContain('Demo')
+  expect(names).toEqual(['Main Project'])
+  expect(await fetchBoardCount(page, email)).toBeGreaterThan(0)
 })
 
 // ---------------------------------------------------------------------------
@@ -105,6 +125,7 @@ test('register with demo project OFF → only the named project exists', async (
 
   const names = await fetchProjectNames(page, email)
   expect(names).toEqual(['Solo Project'])
+  expect(await fetchBoardCount(page, email)).toBe(0)
 })
 
 // ---------------------------------------------------------------------------
@@ -147,12 +168,12 @@ test('org-less user is redirected to /onboarding and can create a workspace', as
   // Any app-shell route must bounce to /onboarding.
   await page.goto('/home')
   await page.waitForURL(/\/onboarding/, { timeout: 20_000 })
-  await expect(page.getByRole('heading', { name: /create a new organization/i })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /create (a new organization|your workspace)/i })).toBeVisible()
 
   // Create org + project from the onboarding page (skip the demo seed).
   await page.locator('#ob-org-name').fill('Guarded Org')
   await page.locator('#ob-project-name').fill('Guarded Project')
-  await page.locator('#ob-demo-project').uncheck()
+  await page.locator('#ob-demo-data').uncheck()
   await page.locator('button[type="submit"]').click()
 
   // Hard redirect to /home; the shell renders with the new org.

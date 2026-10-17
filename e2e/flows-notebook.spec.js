@@ -45,10 +45,11 @@ async function openNotebookWithSqlCell(page) {
   await expect(page.locator('.react-flow').first()).toBeVisible({ timeout: 10_000 })
 
   // Switch to the Notebook / cell view (icon toggle in the app top bar)
-  await page.getByRole('button', { name: 'Notebook / cell view' }).click()
+  await page.getByRole('radio', { name: 'Notebook / cell view' }).click()
 
   // Empty notebook → "Add SQL cell" button in the empty state
-  const addSqlBtn = page.getByRole('button', { name: 'Add SQL cell', exact: true })
+  // The toolbar's "+ SQL" button shares this accessible name; pick the empty-state one by its text.
+  const addSqlBtn = page.getByRole('button', { name: 'Add SQL cell', exact: true }).filter({ hasText: 'Add SQL cell' })
   await expect(addSqlBtn).toBeVisible({ timeout: 10_000 })
   await addSqlBtn.click()
 
@@ -140,8 +141,8 @@ test.describe('Flows notebook — run SQL cell (POST /flows/preview)', () => {
 
     // App did not crash: notebook toolbar is still interactive —
     // the "+ SQL" add-cell button and the notebook name input are usable.
-    await expect(page.getByRole('button', { name: '+ SQL' })).toBeVisible()
-    const nameInput = page.getByPlaceholder('Notebook name…')
+    await expect(page.getByRole('button', { name: 'Add SQL cell', exact: true }).first()).toBeVisible()
+    const nameInput = page.getByRole('textbox', { name: 'Notebook name' })
     await expect(nameInput).toBeVisible()
     await nameInput.fill('still-alive')
     await expect(nameInput).toHaveValue('still-alive')

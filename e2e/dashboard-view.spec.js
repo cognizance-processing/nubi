@@ -68,17 +68,19 @@ test.describe('Dashboard View Page', () => {
 
   // ---------------------------------------------------------------------------
 
-  test('/d/<id> with missing board shows fallback warning and sample content', async ({ page }) => {
+  test('/d/<id> with missing board shows an error state, never stand-in content', async ({ page }) => {
     await page.goto('/d/00000000-0000-0000-0000-000000000000')
 
     const viewPage = page.getByTestId('dashboard-view-page')
     await expect(viewPage).toBeVisible({ timeout: 20_000 })
 
-    // Error / fallback notice shown
-    await expect(page.getByTestId('dashboard-view-error')).toBeVisible({ timeout: 15_000 })
+    // Error state shown, with a way back
+    const error = page.getByTestId('dashboard-view-error')
+    await expect(error).toBeVisible({ timeout: 15_000 })
+    await expect(error.getByRole('button', { name: /back to dashboards/i })).toBeVisible()
 
-    // Sample fallback is rendered
-    await expect(page.getByTestId('dashboard-html-renderer')).toBeVisible({ timeout: 10_000 })
+    // A missing board must not be papered over with sample content
+    await expect(page.getByTestId('dashboard-html-renderer')).toHaveCount(0)
   })
 
   // ---------------------------------------------------------------------------

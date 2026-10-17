@@ -133,7 +133,9 @@ test.describe('Chat Panel (topbar)', () => {
 // Editor Ask AI panel (separate describe block)
 // ---------------------------------------------------------------------------
 
-test.describe('Editor Ask AI panel', () => {
+test.describe('Editor AI chat panel', () => {
+  test.use({ viewport: { width: 1280, height: 800 } })
+
   test.beforeEach(async ({ page }) => {
     await loginAs(page)
     await page.goto('/editor')
@@ -143,30 +145,21 @@ test.describe('Editor Ask AI panel', () => {
 
   // -------------------------------------------------------------------------
 
-  test('clicking Ask AI opens a textarea in the right panel', async ({ page }) => {
-    // The Ask AI toggle button in the editor header — use ✨ Ask AI text
-    const askAiBtn = page.getByRole('button', { name: /ask ai/i }).first()
-    await expect(askAiBtn).toBeVisible({ timeout: 10_000 })
-    await askAiBtn.click()
-
-    // The AskAI textarea should appear
-    const textarea = page.locator('textarea[placeholder*="Describe"]').first()
+  test('the Chat toggle opens the editor chat with a prompt box', async ({ page }) => {
+    // AI authoring lives in the editor's own Chat panel (the page owns chat).
+    await page.getByTestId('panel-toggle-chat').click()
+    const textarea = page.locator('textarea[aria-label="Chat input"]').first()
     await expect(textarea).toBeVisible({ timeout: 10_000 })
   })
 
   // -------------------------------------------------------------------------
 
-  test('typing a prompt in the Ask AI panel enables the Generate button', async ({ page }) => {
-    const askAiBtn = page.getByRole('button', { name: /ask ai/i }).first()
-    await askAiBtn.click()
-
-    const textarea = page.locator('textarea[placeholder*="Describe"]').first()
+  test('the editor chat accepts a prompt', async ({ page }) => {
+    await page.getByTestId('panel-toggle-chat').click()
+    const textarea = page.locator('textarea[aria-label="Chat input"]').first()
     await expect(textarea).toBeVisible({ timeout: 10_000 })
-
     await textarea.fill('Show daily active users with a line chart')
-
-    // Generate button should become enabled (button text is "✨ Generate" with emoji)
-    const generateBtn = page.getByRole('button', { name: /generate/i }).first()
-    await expect(generateBtn).not.toBeDisabled({ timeout: 5_000 })
+    await expect(textarea).toHaveValue('Show daily active users with a line chart')
+    await expect(page.getByRole('button', { name: 'Send message' }).first()).toBeVisible()
   })
 })
