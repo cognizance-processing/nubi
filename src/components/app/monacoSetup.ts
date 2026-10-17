@@ -37,3 +37,7 @@ import TsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
 }
 
 loader.config({ monaco })
+
+// The CDN loader this replaced exposed Monaco as `window.monaco`; keep that global so
+// browser tooling and end-to-end tests that drive editors through it keep working.
+;(window as unknown as { monaco: typeof monaco }).monaco = monaco

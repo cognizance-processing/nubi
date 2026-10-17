@@ -1597,7 +1597,7 @@ export default function FlowsPage() {
           onChange={e => setActiveSpec({ ...activeSpec, name: e.target.value })}
           placeholder={flowView === 'notebook' ? 'Notebook name' : 'Flow name'}
           disabled={!canWrite}
-          aria-label="Flow name"
+          aria-label={flowView === 'notebook' ? 'Notebook name' : 'Flow name'}
           className={[
             'nubi-input nubi-input-sm shrink-0 font-semibold',
             flowView === 'notebook' ? 'w-28 2xl:w-40' : 'w-32 sm:w-44',

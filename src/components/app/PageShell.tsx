@@ -106,6 +106,29 @@ function PageTabs({ tabs, activeTab }: { tabs: PageTab[]; activeTab?: string }) 
     els[next].focus()
   }
 
+  // Tabs that change the route are navigation, not an ARIA tab widget: expose them as
+  // links in a <nav> with aria-current, so assistive tech announces where they go.
+  if (tabs.every(t => t.href)) {
+    return (
+      <nav aria-label="Sections" className="sh-tabs">
+        {tabs.map(t => {
+          const cls = cx('sh-tab', active === t.id && 'is-active')
+          const body = (
+            <>
+              {t.label}
+              {t.count != null && <span className="sh-tab-count">{t.count}</span>}
+            </>
+          )
+          return t.disabled ? (
+            <span key={t.id} className={cls} aria-disabled="true">{body}</span>
+          ) : (
+            <Link key={t.id} to={t.href!} className={cls} aria-current={active === t.id ? 'page' : undefined}>{body}</Link>
+          )
+        })}
+      </nav>
+    )
+  }
+
   return (
     <div ref={listRef} role="tablist" className="sh-tabs" onKeyDown={onKeyDown}>
       {tabs.map(t => {

@@ -242,14 +242,15 @@ export default function AppShell() {
               Mobile: a full-screen overlay. NotificationCenter stays mounted
               (it polls the unread badge); it only shows its panel when active. */}
           <aside
-            aria-label="Side panel"
+            aria-label={activePanel === 'chat' ? 'AI chat panel' : activePanel === 'git' ? 'Git panel' : activePanel === 'notifications' ? 'Notifications panel' : 'Side panel'}
             aria-hidden={!activePanel}
             inert={!activePanel ? true : undefined}
             className={[
-              'sh-rhs flex flex-col bg-surface shrink-0',
-              'md:border-l md:border-border md:overflow-hidden',
+              'sh-rhs flex flex-col bg-surface shrink-0 md:overflow-hidden',
+              // The rule only while open: a collapsed 0-width panel would otherwise
+              // leave a 1px hairline down the right edge of every page.
               activePanel
-                ? 'fixed inset-0 z-50 md:static md:z-auto md:w-[380px]'
+                ? 'fixed inset-0 z-50 md:static md:z-auto md:w-[380px] md:border-l md:border-border'
                 : 'hidden md:flex md:w-0',
             ].join(' ')}
           >

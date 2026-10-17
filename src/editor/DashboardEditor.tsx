@@ -4946,6 +4946,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                 'lg:shadow-none',
               ].join(' ')}
               aria-label={RIGHT_PANEL_TITLES[rightPanel] ?? 'Configure'}
+              data-testid="editor-right-panel"
             >
               {/* Panel header */}
               <div className="nbc-panel-head">
