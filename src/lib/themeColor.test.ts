@@ -34,7 +34,7 @@ test('adaptBackgroundColor: light-neutral becomes the surface token', () => {
 
   const dark = adaptBackgroundColor('#FFFFFF', 'dark')
   assert.equal(dark.css, 'var(--surface)')
-  assert.equal(dark.hex, '#111a2e')
+  assert.equal(dark.hex, '#141518')
 })
 
 test('adaptBackgroundColor: chromatic/dark colors pass through unchanged (identity)', () => {
@@ -60,7 +60,7 @@ test('adaptBackgroundColor: non-color / empty input passes through with null hex
 
 test('resolveEffectiveBgHex: resolves the surface token per theme', () => {
   assert.equal(resolveEffectiveBgHex({ background: 'var(--surface)' }, 'light'), '#ffffff')
-  assert.equal(resolveEffectiveBgHex({ background: 'var(--surface)' }, 'dark'), '#111a2e')
+  assert.equal(resolveEffectiveBgHex({ background: 'var(--surface)' }, 'dark'), '#141518')
 })
 
 test('resolveEffectiveBgHex: prefers backgroundColor over background, falls back to plain hex', () => {

@@ -714,8 +714,8 @@ class TestWidgetStyleAndTheme:
         assert "var(--" not in light
         assert "var(--" not in dark
         # Tokens resolved to each theme's real values (src/index.css).
-        assert "#ffffff" in light and "#0e1729" in light      # --surface / --fg(→--text)
-        assert "#111a2e" in dark and "#e7edf6" in dark
+        assert "#ffffff" in light and "#0b0c0e" in light      # --surface / --fg(→--text)
+        assert "#141518" in dark and "#f4f5f7" in dark
         # The two themes must genuinely differ — a cache keyed by theme is only
         # worth having if the picture actually changes.
         assert light != dark
@@ -854,13 +854,13 @@ class TestBackgroundPassthrough:
         "background,theme,expected",
         [
             (None, "light", "#ffffff"),
-            (None, "dark", "#111a2e"),
+            (None, "dark", "#141518"),
             ({"type": "transparent"}, "light", "#ffffff"),
             ({"type": "solid", "color": "#123456"}, "light", "#123456"),
             ({"type": "solid", "color": "#123456"}, "dark", "#123456"),
             ({"type": "gradient", "from": "#abcdef", "to": "#000000"}, "light", "#abcdef"),
             ({"type": "solid"}, "light", "#ffffff"),  # no colour set -> falls back
-            ({"type": "image", "imageUrl": "https://example.com/x.png"}, "dark", "#111a2e"),
+            ({"type": "image", "imageUrl": "https://example.com/x.png"}, "dark", "#141518"),
             ({"type": "css", "css": "repeating-linear-gradient(...)"}, "light", "#ffffff"),
         ],
     )

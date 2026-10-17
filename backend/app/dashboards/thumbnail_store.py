@@ -111,7 +111,10 @@ def object_key(board_id: str, spec_hash: str, theme: str, policy_fp: str) -> str
     safe_hash = _safe(spec_hash)
     safe_theme = "dark" if str(theme).strip().lower() == "dark" else "light"
     safe_fp = _safe(policy_fp)[:32] or "none"
-    return f"boards/{safe_board}/{safe_hash}-{safe_theme}-{safe_fp}.svg"
+    # The renderer version is part of the picture's identity too: a renderer
+    # change (palette, layout, chart fix) must not keep serving old renders.
+    from app.dashboards.svg_render import renderer_fingerprint
+    return f"boards/{safe_board}/{safe_hash}-{safe_theme}-{safe_fp}-r{_safe(renderer_fingerprint())}.svg"
 
 
 def load(board_id: str, spec_hash: str, theme: str, policy_fp: str) -> str | None:

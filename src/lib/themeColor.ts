@@ -21,7 +21,7 @@
 import { parseHex, relativeLuminance, ensureReadable } from './contrast.js'
 
 // Mirrors the `--surface` token in src/index.css — keep in sync if it changes.
-const SURFACE_HEX = { light: '#ffffff', dark: '#111a2e' }
+const SURFACE_HEX = { light: '#ffffff', dark: '#141518' }
 
 const NEUTRAL_SAT_MAX = 0.12
 const LIGHT_LUM_MIN = 0.55

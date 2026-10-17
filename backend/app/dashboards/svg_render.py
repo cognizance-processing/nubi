@@ -41,6 +41,8 @@ from __future__ import annotations
 
 import base64
 import copy
+import functools
+import hashlib
 import json
 import os
 import re
@@ -64,6 +66,25 @@ _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 _REPO_ROOT = os.path.dirname(_BACKEND_ROOT)
 _ECHARTS_SSR_SCRIPT = os.path.join(_REPO_ROOT, "scripts", "render", "echarts-ssr.mjs")
 _SVG_COMPOSER_SCRIPT = os.path.join(_REPO_ROOT, "scripts", "render", "svg-composer.mjs")
+
+
+@functools.lru_cache(maxsize=1)
+def renderer_fingerprint() -> str:
+    """Short hash of the renderer's own source (this module + both Node scripts).
+
+    A stored render is only valid for the renderer that produced it: a palette,
+    layout or chart fix changes the picture without changing the board spec.
+    Folding this into the stored thumbnail key means any renderer change makes
+    old renders unreachable instead of serving them indefinitely.
+    """
+    h = hashlib.sha256()
+    for path in (os.path.abspath(__file__), _ECHARTS_SSR_SCRIPT, _SVG_COMPOSER_SCRIPT):
+        try:
+            with open(path, "rb") as fh:
+                h.update(fh.read())
+        except OSError:
+            h.update(path.encode("utf-8"))
+    return h.hexdigest()[:12]
 
 # Default page geometry (mirrors svg-composer.mjs defaults).
 _DEFAULT_PAGE_WIDTH_PX = 1200
@@ -489,7 +510,7 @@ def render_widgets_svg(
     return list(result.get("widgets") or [])
 
 
-_PAGE_BG = {"light": "#ffffff", "dark": "#111a2e"}   # mirrors --surface in src/index.css
+_PAGE_BG = {"light": "#ffffff", "dark": "#141518"}   # mirrors --surface in src/index.css
 
 
 def resolve_page_bg(spec: DashboardSpec, theme: str) -> str:

@@ -8,6 +8,7 @@ every dimension a render's identity depends on.
 
 from __future__ import annotations
 
+import re
 import pytest
 
 from app.dashboards import thumbnail_store as ts
@@ -64,7 +65,14 @@ def test_disabled_store_is_a_no_op(monkeypatch):
 
 def test_key_includes_every_identity_dimension():
     key = ts.object_key("board1", "abc123", "dark", "fp9")
-    assert key == "boards/board1/abc123-dark-fp9.svg"
+    assert re.fullmatch(r"boards/board1/abc123-dark-fp9-r[0-9a-f]{12}\.svg", key), key
+
+
+def test_key_changes_with_the_renderer(monkeypatch):
+    from app.dashboards import svg_render
+    before = ts.object_key("b", "h", "light", "fp")
+    monkeypatch.setattr(svg_render, "renderer_fingerprint", lambda: "000000000000")
+    assert ts.object_key("b", "h", "light", "fp") != before
 
 
 def test_theme_is_normalised_to_light_or_dark():
