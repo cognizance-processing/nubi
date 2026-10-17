@@ -1230,3 +1230,24 @@ class TestListTaskRunResultsByteBudget:
         pg = PgFlowStore()
         with pytest.raises(RuntimeError, match="inputs byte budget"):
             await pg.list_task_run_results(str(uuid.uuid4()))
+
+
+# ---------------------------------------------------------------------------
+# Interface parity: the in-memory test double and the Postgres store must expose
+# the same public methods. Unit tests run against InMemoryFlowStore, so a method
+# that only exists there passes every unit test and then fails in production.
+# ---------------------------------------------------------------------------
+
+async def test_pg_store_implements_every_in_memory_method():
+    import inspect
+
+    from app.flows.store import InMemoryFlowStore, PgFlowStore
+
+    def public_methods(cls):
+        return {
+            name for name, fn in inspect.getmembers(cls, inspect.isfunction)
+            if not name.startswith("_")
+        }
+
+    missing = public_methods(InMemoryFlowStore) - public_methods(PgFlowStore)
+    assert not missing, f"PgFlowStore is missing: {sorted(missing)}"

@@ -2004,6 +2004,78 @@ class PgFlowStore:
         )
         return [_row_to_run_output(r) for r in rows]
 
+    # ------------------------------------------------------------------
+    # Flow spec version history (table flow_spec_versions, migration 0021)
+    # ------------------------------------------------------------------
+
+    async def add_flow_version(
+        self,
+        flow_id: str,
+        org_id: str,
+        spec: dict,
+        created_by: str | None = None,
+    ) -> dict:
+        """Snapshot a spec as the next version for *flow_id*.
+
+        The version number is computed inside the INSERT, so it is assigned
+        atomically; the UNIQUE (flow_id, version) constraint backs it up.
+        """
+        import json  # noqa: PLC0415
+        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+
+        row = await db_fetchrow(
+            """
+            INSERT INTO flow_spec_versions (flow_id, org_id, version, spec, created_by)
+            SELECT $1::uuid, $2::uuid, COALESCE(MAX(version), 0) + 1, $3::jsonb, $4::uuid
+            FROM flow_spec_versions WHERE flow_id = $1::uuid
+            RETURNING *
+            """,
+            flow_id,
+            org_id,
+            json.dumps(spec),
+            created_by,
+        )
+        if row is None:  # pragma: no cover
+            raise RuntimeError("INSERT INTO flow_spec_versions returned no row.")
+        return _row_to_flow_version(row)
+
+    async def list_flow_versions(self, flow_id: str) -> list[dict]:
+        """Return all versions for *flow_id*, ordered by version ASC."""
+        from app.db import fetch as db_fetch  # noqa: PLC0415
+
+        rows = await db_fetch(
+            "SELECT * FROM flow_spec_versions WHERE flow_id = $1::uuid ORDER BY version ASC",
+            flow_id,
+        )
+        return [_row_to_flow_version(r) for r in rows]
+
+    async def get_flow_version(self, flow_id: str, version: int) -> dict | None:
+        """Return a specific version, or ``None``."""
+        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+
+        row = await db_fetchrow(
+            "SELECT * FROM flow_spec_versions WHERE flow_id = $1::uuid AND version = $2",
+            flow_id,
+            version,
+        )
+        return _row_to_flow_version(row) if row is not None else None
+
+
+def _row_to_flow_version(row: Any) -> dict[str, Any]:
+    """Convert a flow_spec_versions record to the dict shape InMemoryFlowStore returns."""
+    import json  # noqa: PLC0415
+
+    d = dict(row)
+    for key in ("id", "flow_id", "org_id", "created_by"):
+        if d.get(key) is not None and not isinstance(d[key], str):
+            d[key] = str(d[key])
+    if isinstance(d.get("spec"), str):
+        d["spec"] = json.loads(d["spec"])
+    val = d.get("created_at")
+    if isinstance(val, datetime) and val.tzinfo is None:
+        d["created_at"] = val.replace(tzinfo=timezone.utc)
+    return d
+
 
 # ---------------------------------------------------------------------------
 # Module-level singleton / provider
