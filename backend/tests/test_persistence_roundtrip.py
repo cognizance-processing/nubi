@@ -19,10 +19,11 @@ Opt-in — it talks to a RUNNING backend and creates (then deletes) real rows:
         ../.venv/bin/python -m pytest -q tests/test_persistence_roundtrip.py
 
 Credentials come from SUPERUSER_EMAIL / SUPERUSER_PASSWORD (env, else the repo
-root ``.env``). Everything is created inside one org named
-``zz-persistence-roundtrip`` (reused across runs — orgs can't be deleted through
-the API while they own a project) and removed again in ``finally`` blocks; the
-profile test uses its own throwaway user rather than the superuser's profile.
+root ``.env``). Everything is created inside one throwaway org named
+``zz-persistence-roundtrip`` (a leftover from an aborted run is reused) and
+removed again in ``finally`` blocks; the org itself — with its default project —
+is deleted when the module finishes. The profile test uses its own throwaway
+user rather than the superuser's profile.
 """
 
 from __future__ import annotations
@@ -122,6 +123,8 @@ def api() -> Iterator[Api]:
     default = client.get("/orgs", org=False)  # sanity: the throwaway org must not be the default
     assert any(o["id"] == client.org for o in default["orgs"])
     yield client
+    # Deleting an org takes its projects (and everything in them) with it.
+    client.request("DELETE", f"/orgs/{client.org}", org=False, json={"confirm_name": ORG_NAME})
     client.http.close()
 
 
@@ -218,6 +221,32 @@ def test_org_settings_roundtrip(api: Api) -> None:
         api.request("PATCH", f"/orgs/{org}", org=False, json={"name": ORG_NAME, "avatar_url": None})
 
 
+def test_org_delete_takes_its_projects(api: Api) -> None:
+    """An org (which always has >=1 project) can be deleted; its contents go with it."""
+    name = f"zz-delete-org-{uuid.uuid4().hex[:6]}"
+    oid = api.ok("POST", "/orgs", {"name": name}, org=False)["id"]
+    try:
+        api.ok("POST", "/projects", {"name": "zz-second"}, org=oid)
+        cid = api.ok("POST", "/connectors", {
+            "name": "zz-conn", "type": "postgres", "config": {"host": "h.invalid", "port": 5432}, "secret": {"password": "x"},
+        }, org=oid)["id"]
+
+        impact = api.get(f"/orgs/{oid}/deletion-impact", org=False)
+        assert impact["can_delete"] is True and impact["blockers"] == [], impact
+        deletes = {d["type"]: d["count"] for d in impact["deletes"]}
+        assert deletes.get("projects") == 2 and deletes.get("datastores") == 1, impact
+
+        r = api.request("DELETE", f"/orgs/{oid}", org=False, json={"confirm_name": name.upper()})
+        assert r.status_code == 422, f"wrong confirm_name -> {r.status_code}"
+        api.ok("DELETE", f"/orgs/{oid}", {"confirm_name": name}, org=False, expect=(204,))
+
+        assert all(o["id"] != oid for o in api.get("/orgs", org=False)["orgs"]), "deleted org still listed"
+        assert api.request("GET", f"/orgs/{oid}", org=False).status_code == 404
+        assert api.request("GET", f"/connectors/{cid}", org=oid).status_code in (403, 404)
+    finally:
+        api.request("DELETE", f"/orgs/{oid}", org=False, json={"confirm_name": name})
+
+
 def test_project_settings_roundtrip(api: Api) -> None:
     pid = api.ok("POST", "/projects", {"name": f"zz-proj-{uuid.uuid4().hex[:6]}"})["id"]
     try:
@@ -284,6 +313,15 @@ def test_connector_roundtrip(api: Api, connector: str) -> None:
         cfg = read()["config"]
         assert "schema" not in cfg and "sslmode" not in cfg, f"{label}: cleared fields came back: {cfg}"
         assert cfg["host"] == "h2.invalid", f"{label}: an omitted field was lost"
+
+    # The top-level network_mode / bridge_id must report what the runtime uses
+    # (config), not the never-written legacy columns.
+    bridge_id = str(uuid.uuid4())
+    api.ok("PUT", f"/connectors/{cid}", {"config": {"network_mode": "bridge", "bridge_id": bridge_id}})
+    check_reads({"network_mode": "bridge", "bridge_id": bridge_id,
+                 "config": {"network_mode": "bridge", "bridge_id": bridge_id}}, reads)
+    api.ok("PUT", f"/connectors/{cid}", {"config": {"network_mode": "direct", "bridge_id": None}})
+    check_reads({"network_mode": "direct", "bridge_id": None}, reads)
 
 
 # ---------------------------------------------------------------------------
@@ -432,6 +470,17 @@ def test_integration_roundtrip(api: Api) -> None:
             "GET /integrations": lambda: _in_list(api.get("/integrations"), iid),
         })
         assert_not_in_default_org(api, f"/integrations/{iid}")
+
+        # Emptying the recipients must persist — as [] (what the form sends) or null.
+        api.ok("PUT", f"/integrations/{iid}", {"config": {"recipients": []}})
+        assert api.get(f"/integrations/{iid}")["config"].get("recipients") == [], "emptied recipients came back"
+        api.ok("PUT", f"/integrations/{iid}", {"config": {"recipients": ["d@example.com"]}})
+        api.ok("PUT", f"/integrations/{iid}", {"config": {"recipients": None}})
+        for label, read in {
+            f"GET /integrations/{iid}": lambda: api.get(f"/integrations/{iid}"),
+            "GET /integrations": lambda: _in_list(api.get("/integrations"), iid),
+        }.items():
+            assert not read()["config"].get("recipients"), f"{label}: null recipients did not clear"
     finally:
         api.request("DELETE", f"/integrations/{iid}")
 
@@ -465,6 +514,31 @@ def test_jwt_issuer_roundtrip(api: Api) -> None:
             "GET /security/jwt-issuers": lambda: _in_list(api.get("/security/jwt-issuers"), iid),
         })
         assert_not_in_default_org(api, f"/security/jwt-issuers/{iid}")
+
+        # The ``iss`` is editable; a clash with another issuer is a clean 409.
+        api.ok("PUT", f"/security/jwt-issuers/{iid}", {"issuer": "https://zz-renamed.example"})
+        assert api.get(f"/security/jwt-issuers/{iid}")["issuer"] == "https://zz-renamed.example"
+        other = api.ok("POST", "/security/jwt-issuers", {
+            "name": "zz-iss-2", "issuer": "https://zz-taken.example", "audience": "zz", "jwks_url": "https://zz.example/j.json",
+        })["id"]
+        try:
+            r = api.request("PUT", f"/security/jwt-issuers/{iid}", json={"issuer": "https://zz-taken.example"})
+            assert r.status_code == 409, f"issuer clash -> {r.status_code}: {r.text[:200]}"
+        finally:
+            api.request("DELETE", f"/security/jwt-issuers/{other}")
+
+        # A pasted PEM public key is stored as static_jwks_json (what verification reads).
+        from cryptography.hazmat.primitives import serialization  # noqa: PLC0415
+        from cryptography.hazmat.primitives.asymmetric import ec  # noqa: PLC0415
+
+        pem = ec.generate_private_key(ec.SECP256R1()).public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode()
+        api.ok("PUT", f"/security/jwt-issuers/{iid}", {"jwk_pem": pem})
+        keys = api.get(f"/security/jwt-issuers/{iid}")["static_jwks_json"]["keys"]
+        assert len(keys) == 1 and keys[0]["kty"] == "EC" and keys[0]["crv"] == "P-256", keys
+        api.ok("PUT", f"/security/jwt-issuers/{iid}", {"static_jwks_json": None})
+        assert api.get(f"/security/jwt-issuers/{iid}")["static_jwks_json"] is None, "clearing the inline key did not persist"
     finally:
         api.request("DELETE", f"/security/jwt-issuers/{iid}")
 
