@@ -8,7 +8,7 @@
  * Endpoints (JwksIssuersBackendAgent):
  *   GET    /api/v1/security/jwt-issuers
  *   POST   /api/v1/security/jwt-issuers
- *   PATCH  /api/v1/security/jwt-issuers/{id}
+ *   PUT    /api/v1/security/jwt-issuers/{id}   (partial update — the backend has no PATCH)
  *   DELETE /api/v1/security/jwt-issuers/{id}
  */
 
@@ -41,14 +41,14 @@ function _headers() {
 }
 
 /**
- * Generic PATCH helper with JSON body.
+ * Generic PUT helper with JSON body.
  * @param {string} path
  * @param {object} body
  * @returns {Promise<any>}
  */
-async function _patch(path, body) {
+async function _put(path, body) {
   const response = await fetch(`${BASE}${path}`, {
-    method: 'PATCH',
+    method: 'PUT',
     headers: _headers(),
     body: JSON.stringify(body),
     credentials: 'include',
@@ -188,7 +188,7 @@ export function createJwtIssuer(body) {
 /**
  * Update an existing JWT issuer.
  *
- * PATCH /security/jwt-issuers/{id}
+ * PUT /security/jwt-issuers/{id}
  *
  * @param {string} id
  * @param {Partial<{
@@ -203,7 +203,7 @@ export function createJwtIssuer(body) {
  * @returns {Promise<JwtIssuer>}
  */
 export function updateJwtIssuer(id, body) {
-  return _patch(`/security/jwt-issuers/${id}`, body)
+  return _put(`/security/jwt-issuers/${id}`, body)
 }
 
 /**

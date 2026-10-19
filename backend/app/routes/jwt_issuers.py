@@ -159,7 +159,8 @@ def _sync_registry(org_id: str, rows: list[dict[str, Any]]) -> None:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/")
+@router.get("")
+@router.get("/", include_in_schema=False)
 async def list_jwt_issuers(
     request: Request,
     user: dict[str, Any] = Depends(current_user),
@@ -172,7 +173,8 @@ async def list_jwt_issuers(
     return await get_issuers_store().list_for_org(org_id)
 
 
-@router.post("/", status_code=201, dependencies=[Depends(require_writer)])
+@router.post("", status_code=201, dependencies=[Depends(require_writer)])
+@router.post("/", status_code=201, dependencies=[Depends(require_writer)], include_in_schema=False)
 async def create_jwt_issuer(
     body: _IssuerCreate,
     request: Request,

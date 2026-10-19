@@ -158,6 +158,9 @@ function IssuerForm({ initial, onSave, onCancel, saving, saveError }) {
       enabled: form.enabled,
     }
     if (form.jwks_url.trim()) payload.jwks_url = form.jwks_url.trim()
+    // Editing: an emptied JWKS URL must be sent as null (the update is partial,
+    // so omitting it would keep the old URL).
+    else if (initial?.jwks_url) payload.jwks_url = null
     if (form.jwk_pem.trim()) payload.jwk_pem = form.jwk_pem.trim()
     if (form.audience.trim()) payload.audience = form.audience.trim()
     onSave(payload)
