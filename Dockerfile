@@ -73,8 +73,11 @@ FROM python:3.13-slim AS runtime
 WORKDIR /app
 
 # libpq is required at runtime by asyncpg / adbc-driver-postgresql.
+# nodejs runs the server-side board renderer (scripts/render/*.mjs: dashboard
+# thumbnails and PDF export); without it every render 503s and cards fall back
+# to their wireframe.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libpq5 \
+    && apt-get install -y --no-install-recommends libpq5 nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Python packages from the build stage.
@@ -101,6 +104,14 @@ ENV STATIC_DIR=/app/dist
 
 # Embed bundles — backend/main.py mounts them at /embed/* when present.
 COPY --from=frontend /build/dist-embed /app/dist-embed
+
+# Server-side board renderer: the Node scripts plus the only packages they load
+# (echarts and its deps, resolved from /app/node_modules) and the map shapes.
+COPY scripts/render/ /app/scripts/render/
+COPY --from=frontend /build/node_modules/echarts /app/node_modules/echarts
+COPY --from=frontend /build/node_modules/zrender /app/node_modules/zrender
+COPY --from=frontend /build/node_modules/tslib /app/node_modules/tslib
+COPY src/lib/maps/ /app/src/lib/maps/
 ENV EMBED_STATIC_DIR=/app/dist-embed
 
 # Non-root user for security. --create-home gives appuser a writable HOME so
