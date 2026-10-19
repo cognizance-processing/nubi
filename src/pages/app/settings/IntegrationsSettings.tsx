@@ -106,7 +106,9 @@ function buildConfig(kind, values) {
         .split(/[,\n]/)
         .map((s) => s.trim())
         .filter(Boolean)
-      if (arr.length) config[f.key] = arr
+      // Always send the list — an emptied field must persist as [] (omitting it
+      // would keep the old value, since the backend merges config on update).
+      config[f.key] = arr
       continue
     }
     if (raw != null && String(raw).trim() !== '') config[f.key] = String(raw).trim()

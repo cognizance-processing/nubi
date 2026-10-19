@@ -105,6 +105,16 @@ def split_secret(kind: str, data: dict[str, Any]) -> tuple[dict[str, Any], dict[
     return config, secret
 
 
+def _merge_config(existing: dict[str, Any] | None, update: dict[str, Any]) -> dict[str, Any]:
+    """Shallow-merge *update* over *existing*; a ``None`` value removes that key.
+
+    Lets an update clear a non-secret field (e.g. emptying an email
+    integration's recipients) instead of ``null`` meaning "unchanged".
+    """
+    merged = {**(existing or {}), **update}
+    return {k: v for k, v in merged.items() if v is not None}
+
+
 def merged_channel_config(kind: str, config: dict[str, Any], secret: dict[str, Any]) -> dict[str, Any]:
     """Merge non-secret *config* + decrypted *secret* into a ``get_channel`` config.
 
@@ -318,7 +328,7 @@ class PgIntegrationStore(IntegrationStore):
         new_enabled = enabled if enabled is not None else existing["enabled"]
         new_config = existing.get("config") or {}
         if config is not None:
-            new_config = {**new_config, **config}
+            new_config = _merge_config(new_config, config)
 
         row = await fetchrow(
             """
@@ -479,7 +489,7 @@ class InMemoryIntegrationStore(IntegrationStore):
         if name is not None:
             row["name"] = name
         if config is not None:
-            row["config"] = {**(row.get("config") or {}), **config}
+            row["config"] = _merge_config(row.get("config"), config)
         if enabled is not None:
             row["enabled"] = bool(enabled)
         row["updated_at"] = datetime.now(tz=timezone.utc)

@@ -282,6 +282,37 @@ class TestUpdateDelete:
         assert secret == {"smtp_password": "new-pw"}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("cleared", [[], None])
+    async def test_clearing_recipients_persists(self, client, cleared):
+        """Emptying recipients ([] or explicit null) must stick; a null secret still keeps the secret."""
+        c, alice_id, org_id, store = client
+        create = await c.post(
+            "/api/v1/integrations",
+            json={
+                "kind": "email",
+                "name": "Ops",
+                "config": {"recipients": ["ops@acme.com"], "from_name": "Ops", "smtp_password": "pw"},
+            },
+            headers=_auth_headers(alice_id),
+        )
+        iid = create.json()["id"]
+
+        upd = await c.put(
+            f"/api/v1/integrations/{iid}",
+            json={"config": {"recipients": cleared, "smtp_password": None}},
+            headers=_auth_headers(alice_id),
+        )
+        assert upd.status_code == 200, upd.text
+
+        cfg = (await c.get(f"/api/v1/integrations/{iid}", headers=_auth_headers(alice_id))).json()["config"]
+        if cleared is None:
+            assert "recipients" not in cfg
+        else:
+            assert cfg["recipients"] == []
+        assert cfg["from_name"] == "Ops", "an omitted field was lost"
+        assert await store.get_secret(iid, org_id) == {"smtp_password": "pw"}
+
+    @pytest.mark.asyncio
     async def test_delete_then_404(self, client):
         c, alice_id, org_id, store = client
         create = await c.post(
