@@ -293,11 +293,17 @@ const FlowBuilder = forwardRef<FlowBuilderHandle, FlowBuilderProps>(function Flo
   // (The actual open call is inside onNodeClick below.)
 
   // ── Derive meta from spec ─────────────────────────────────────────────────
-  const meta = useMemo(() => ({
-    version: spec?.version ?? 1,
-    name: spec?.name ?? 'untitled',
-    params: spec?.params ?? [],
-  }), [spec])
+  // Everything except the tasks (which the canvas rebuilds from nodes/edges),
+  // so top-level keys like runtime_config and view survive a canvas save.
+  const meta = useMemo(() => {
+    const { tasks: _tasks, ...rest } = spec ?? {}
+    return {
+      ...rest,
+      version: spec?.version ?? 1,
+      name: spec?.name ?? 'untitled',
+      params: spec?.params ?? [],
+    }
+  }, [spec])
 
   // ── Build current spec from graph ─────────────────────────────────────────
   const buildSpec = useCallback(() => {

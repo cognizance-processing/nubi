@@ -376,6 +376,10 @@ export function graphToSpec(nodes: any[], edges: any[], meta: Record<string, any
   const tasks = nodes.map(node => {
     const base = node.data?.task ?? {}
     return {
+      // Carry every other task field through (cell_type, execution_mode,
+      // freshness_sla_s, cpu_cores, mem_mb, ...) — the canvas only owns the
+      // keys below, and dropping the rest lost notebook settings on save.
+      ...base,
       key: node.id,
       kind: base.kind ?? 'noop',
       needs: needsMap.get(node.id) ?? [],
@@ -390,7 +394,10 @@ export function graphToSpec(nodes: any[], edges: any[], meta: Record<string, any
     }
   })
 
+  // Top-level keys the canvas doesn't own (runtime_config, view, ...) pass
+  // through from meta so a canvas save doesn't silently reset them.
   return {
+    ...meta,
     version: meta.version ?? 1,
     name: meta.name ?? 'untitled',
     params: meta.params ?? [],

@@ -36,6 +36,7 @@ import {
   ShieldCheck,
 } from 'lucide-react'
 import * as api from '../../lib/api.js'
+import { connectorConfigPayload } from '../../lib/connectorPayload.js'
 import Button from '../../components/ui/Button.jsx'
 import Tag from '../../components/ui/Tag.jsx'
 import Input from '../../components/ui/Input.jsx'
@@ -337,10 +338,9 @@ function ConnectorForm({ type, initialConfig, initialName, onBack, onSubmit, isE
       return
     }
 
-    // Strip undefined/empty values
-    const cleanConfig = Object.fromEntries(
-      Object.entries(config).filter(([, v]) => v !== undefined && v !== '')
-    )
+    // Strip undefined/empty values; when editing, a field the user cleared is
+    // sent as null so the server (which merges config) actually clears it.
+    const cleanConfig = connectorConfigPayload(config, initialConfig, isEditing)
     const cleanSecret = Object.fromEntries(
       Object.entries(secret).filter(([, v]) => v !== undefined && v !== '')
     )

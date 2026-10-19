@@ -564,6 +564,38 @@ class TestUpdateConnector:
         _assert_no_secret_in_response(body)
 
     @pytest.mark.asyncio
+    async def test_update_null_clears_config_field_and_persists(self, connectors_client):
+        """PUT config {key: null} clears that key (as re-read via GET); omitted keys stay.
+
+        Regression: ``to_safe_dict`` dropped Nones before the merge, so an edit that
+        emptied an optional field (schema, bridge_id, ...) came back on reload.
+        """
+        client, alice_id, org_id, repo = connectors_client
+        h = _auth_headers(alice_id)
+        row_id = (await client.post(
+            "/api/v1/connectors",
+            json={
+                "name": "clearable",
+                "type": "postgres",
+                "config": {"host": "h", "port": 5432, "database": "d", "user": "u", "schema": "analytics"},
+                "secret": {"password": "pw"},
+            },
+            headers=h,
+        )).json()["id"]
+
+        resp = await client.put(
+            f"/api/v1/connectors/{row_id}",
+            json={"config": {"schema": None, "user": None, "connector_type": None}},
+            headers=h,
+        )
+        assert resp.status_code == 200, resp.text
+
+        cfg = (await client.get(f"/api/v1/connectors/{row_id}", headers=h)).json()["config"]
+        assert "schema" not in cfg and "user" not in cfg
+        assert cfg["host"] == "h" and cfg["database"] == "d"  # omitted keys untouched
+        assert cfg["connector_type"] == "postgres"  # server-owned keys can't be cleared
+
+    @pytest.mark.asyncio
     async def test_update_response_has_no_secret(self, connectors_client):
         """PUT response must never include secret material."""
         client, alice_id, org_id, repo = connectors_client

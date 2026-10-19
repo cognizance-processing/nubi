@@ -746,6 +746,15 @@ async def update_connector(
             new_non_secret.pop(key, None)
 
         existing_config.update(new_non_secret)
+
+        # An explicit ``null`` clears that key (``to_safe_dict`` drops Nones, so
+        # without this an edit that empties an optional field — schema,
+        # warehouse, bridge_id — "saves" but the old value comes back on reload).
+        # Omitted keys are still left untouched (merge semantics).
+        explicit = body.config.model_dump(exclude_unset=True)
+        for key, value in explicit.items():
+            if value is None and key not in _RESERVED_CONFIG_KEYS and key != "connector_type":
+                existing_config.pop(key, None)
         fields["config"] = existing_config
 
     row = await repo.update("datastores", org_id, connector_id, fields)

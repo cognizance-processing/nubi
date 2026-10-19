@@ -33,6 +33,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import GridCanvas from './grid/GridCanvas.jsx'
 import TabBar from './TabBar.jsx'
+import { tabBarConfig } from './tabBarConfig.js'
 import { getBreakpointFromWidth } from './grid/breakpoints.js'
 import ChartWidget from './widgets/ChartWidget.jsx'
 import KpiWidget from './widgets/KpiWidget.jsx'
@@ -767,7 +768,7 @@ function SpecRendererBody({
             tabs={tabs}
             activeTabId={effectiveTabId}
             onChange={setTab}
-            tabBar={spec.tabBar}
+            tabBar={tabBarConfig(spec)}
           />
         </div>
       )}

@@ -103,7 +103,7 @@ from __future__ import annotations
 import html
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +118,12 @@ class WidgetPos(BaseModel):
       x / y   — 1-based column / row start index.
       w / h   — span in columns / rows.
     """
+
+    # Keep keys this model does not declare. Server-side paths (AI/MCP board
+    # edits, portability) persist ``model_dump()``, and the default
+    # ``extra="ignore"`` silently dropped editor fields the model had not caught
+    # up with yet (stylePreset, tab_bar, Tab.icon, Variable.url_bind, ...).
+    model_config = ConfigDict(extra="allow")
 
     x: int = Field(ge=1, description="Column start (1-based).")
     y: int = Field(ge=1, description="Row start (1-based).")
@@ -466,6 +472,12 @@ class Variable(BaseModel):
         Optional default value for the variable.
     """
 
+    # Keep keys this model does not declare. Server-side paths (AI/MCP board
+    # edits, portability) persist ``model_dump()``, and the default
+    # ``extra="ignore"`` silently dropped editor fields the model had not caught
+    # up with yet (stylePreset, tab_bar, Tab.icon, Variable.url_bind, ...).
+    model_config = ConfigDict(extra="allow")
+
     name: str = Field(min_length=1, description="Unique variable name.")
     type: Literal["text", "number", "date", "daterange", "select", "multiselect"] = (
         Field(description="Variable value type.")
@@ -503,6 +515,12 @@ class Tab(BaseModel):
         user-supplied colors/CSS flow through the sanitized ``tabStyleToCss``
         path on the frontend — never interpolated raw.
     """
+
+    # Keep keys this model does not declare. Server-side paths (AI/MCP board
+    # edits, portability) persist ``model_dump()``, and the default
+    # ``extra="ignore"`` silently dropped editor fields the model had not caught
+    # up with yet (stylePreset, tab_bar, Tab.icon, Variable.url_bind, ...).
+    model_config = ConfigDict(extra="allow")
 
     id: str = Field(min_length=1, description="Stable, unique tab id within the spec.")
     label: str = Field(min_length=1, description="Human-readable tab label.")
@@ -663,6 +681,12 @@ class Widget(BaseModel):
         key-by-key (recursively), and list values REPLACE the library value
         wholesale rather than concatenating.
     """
+
+    # Keep keys this model does not declare. Server-side paths (AI/MCP board
+    # edits, portability) persist ``model_dump()``, and the default
+    # ``extra="ignore"`` silently dropped editor fields the model had not caught
+    # up with yet (stylePreset, tab_bar, Tab.icon, Variable.url_bind, ...).
+    model_config = ConfigDict(extra="allow")
 
     id: str = Field(min_length=1)
     type: (
@@ -1028,6 +1052,12 @@ class DashboardSpec(BaseModel):
       it round-trip byte-identical (``source`` is absent from the serialized
       widget dict when ``None`` via ``exclude_none`` serialization).
     """
+
+    # Keep keys this model does not declare. Server-side paths (AI/MCP board
+    # edits, portability) persist ``model_dump()``, and the default
+    # ``extra="ignore"`` silently dropped editor fields the model had not caught
+    # up with yet (stylePreset, tab_bar, Tab.icon, Variable.url_bind, ...).
+    model_config = ConfigDict(extra="allow")
 
     version: int = Field(default=1, ge=1)
     title: str = Field(min_length=1)
