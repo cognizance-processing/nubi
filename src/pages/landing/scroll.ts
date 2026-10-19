@@ -3,11 +3,54 @@
  * T(scroll) linear over #story. Mobile: the beat steps are the anchors; a step crossing the reading line
  * (band bottom + 30% of the rest) reaches its label; morphs complete within the first 60% between steps.
  *
- * Before GSAP arrives a native scroll listener drives T. Then one ScrollTrigger on #story maps scroll → T,
- * with Lenis (desktop pointer, no reduced motion) or gsap.quickTo smoothing, and directional snap to beat
- * labels on desktop. Everything is wrapped in gsap.context()/matchMedia() and reverted on unmount.
+ * Before GSAP arrives a native scroll listener drives T. Then one ScrollTrigger on #story maps scroll → T
+ * (Lenis smooths desktop pointers). The picture follows at a capped, calm pace and, when scrolling stops inside
+ * a morph, the page glides to the nearest composed beat, so the visitor never rests on a half-built picture.
+ * Everything is wrapped in gsap.context() and reverted on unmount.
  */
 import type { Director } from './stage/director'
+import type { CompiledStory } from './stage/story'
+
+/* ───────────── calm motion: the picture follows scroll at a capped pace, and never rests mid-morph ───────────── */
+
+/** Top speed (beats/s) while the picture is within a beat of the scroll position: a 1-beat morph takes ≥ 1.1 s. */
+export const FOLLOW_VMAX = 0.9
+/** Exponential approach time constant (s); the cap above wins whenever scrolling is faster than calm. */
+export const FOLLOW_TAU = 0.16
+
+/**
+ * One frame of the displayed T chasing the scroll T. Within a beat of the target the speed is capped at
+ * FOLLOW_VMAX, so a fast wheel flick can't rush a morph; further away (a rail jump) it speeds up with distance.
+ */
+export function followStep(cur: number, target: number, dt: number): number {
+  const d = target - cur
+  if (Math.abs(d) < 1e-4) return target
+  const ease = Math.abs(d) * (1 - Math.exp(-dt / FOLLOW_TAU))
+  const cap = Math.max(FOLLOW_VMAX, (Math.abs(d) - 1) * 1.5) * dt
+  return cur + Math.sign(d) * Math.min(ease, cap)
+}
+
+/**
+ * Where the page should glide when scrolling stops at T (null when T is at rest). Inside a morph it finishes
+ * the morph in the direction of travel, unless the visitor had barely started it (then it goes back). It lands
+ * a third of the way into the neighbouring rest, not on its edge, so a small scroll back from there stays at
+ * rest instead of starting the morph again (and being pulled back).
+ */
+export function settleTarget(story: CompiledStory, T: number, dir: 1 | -1): number | null {
+  const i = story.segs.findIndex(s => s.kind === 'morph' && T > s.t0 + 1e-3 && T < s.t1 - 1e-3)
+  if (i < 0) return null
+  const seg = story.segs[i]
+  const m = (T - seg.t0) / (seg.t1 - seg.t0)
+  const forward = dir > 0 ? m >= 0.15 : m > 0.85
+  const rest = story.segs[forward ? i + 1 : i - 1]
+  const inset = rest?.kind === 'rest' ? (rest.t1 - rest.t0) / 3 : 0
+  return forward ? seg.t1 + inset : seg.t0 - inset
+}
+
+/** Settle glide duration (s): slower for longer distances, always unhurried. */
+export const settleDuration = (dT: number) => Math.min(1.6, Math.max(0.8, 0.6 + 0.9 * Math.abs(dT)))
+
+const easeInOutSine = (t: number) => -(Math.cos(Math.PI * t) - 1) / 2
 
 export interface ScrollEnv { reduced: boolean; mobile: boolean; debug: boolean }
 export interface ScrollMap { toT(y: number): number; toScroll(T: number): number }
@@ -84,7 +127,7 @@ export async function gsapScroll(story: HTMLElement, director: Director, env: Sc
   let lenis: any = null
   if (useLenis) {
     const { default: Lenis } = await import('lenis')
-    lenis = new Lenis({ autoRaf: false, anchors: true })
+    lenis = new Lenis({ autoRaf: false, anchors: true, lerp: 0.08 })
     lenis.on('scroll', ScrollTrigger.update)
     const tick = (t: number) => lenis.raf(t * 1000)
     gsap.ticker.add(tick)
@@ -92,27 +135,67 @@ export async function gsapScroll(story: HTMLElement, director: Director, env: Sc
     lenis.__tick = tick
   }
   let map = makeScrollMap(story, director, env.mobile)
-  const proxy = { t: director.T }
-  const smooth = !env.reduced && !env.debug && !lenis
-  const quick = smooth ? gsap.quickTo(proxy, 't', { duration: 0.45, ease: 'power3.out', onUpdate: () => director.setT(proxy.t) }) : null
+  // Calm mode: the displayed T follows the scroll T at a capped pace (followStep), and when scrolling stops
+  // inside a morph the page glides to the nearest composed beat (settleTarget). Reduced motion and the debug
+  // hook keep the direct mapping.
+  const calm = !env.reduced && !env.debug
+  let target = director.T, cur = director.T
+  const follow = (_t: number, dtMs: number) => {
+    if (cur === target) return
+    cur = followStep(cur, target, Math.min(dtMs, 250) / 1000)
+    director.setT(cur)
+  }
+  if (calm) gsap.ticker.add(follow)
+
+  // settle: after a short idle, finish (or undo) a half-played morph with an unhurried glide
+  let lastY = window.scrollY, dir: 1 | -1 = 1, idle = 0, touching = false, glide = 0, gliding = false
+  const stopGlide = () => { if (glide) { cancelAnimationFrame(glide); glide = 0 } gliding = false }
+  const glideTo = (y: number, dur: number) => {
+    if (lenis) { gliding = true; lenis.scrollTo(y, { duration: dur, easing: easeInOutSine, onComplete: () => { gliding = false } }); return }
+    stopGlide(); gliding = true
+    const y0 = window.scrollY, t0 = performance.now()
+    const step = (t: number) => {
+      const u = Math.min(1, (t - t0) / (dur * 1000))
+      window.scrollTo(0, y0 + (y - y0) * easeInOutSine(u))
+      glide = u < 1 ? requestAnimationFrame(step) : 0
+      if (u >= 1) gliding = false
+    }
+    glide = requestAnimationFrame(step)
+  }
+  const settle = () => {
+    if (touching || gliding) return
+    const T = map.toT(window.scrollY)
+    const to = settleTarget(director.story, T, dir)
+    if (to == null) return
+    glideTo(map.toScroll(to), settleDuration(to - T))
+  }
+  const onScrollY = () => {
+    const y = window.scrollY
+    if (y !== lastY) dir = y > lastY ? 1 : -1
+    lastY = y
+    clearTimeout(idle)
+    if (calm) idle = window.setTimeout(settle, 220)
+  }
+  // the visitor taking over cancels a glide in progress
+  const interrupt = () => { if (gliding) { stopGlide(); if (lenis) lenis.scrollTo(window.scrollY, { immediate: true }) } }
+  const onTouchStart = () => { touching = true; interrupt() }
+  const onTouchEnd = () => { touching = false; onScrollY() }
+  if (calm) {
+    window.addEventListener('wheel', interrupt, { passive: true })
+    window.addEventListener('keydown', interrupt)
+    window.addEventListener('touchstart', onTouchStart, { passive: true })
+    window.addEventListener('touchend', onTouchEnd, { passive: true })
+  }
 
   const ctx = gsap.context(() => {
-    const mm = gsap.matchMedia()
-    mm.add({ desktop: '(min-width: 861px)', fine: '(pointer: fine)', reduce: '(prefers-reduced-motion: reduce)' }, c => {
-      const { desktop, fine: fp, reduce } = c.conditions as { desktop: boolean; fine: boolean; reduce: boolean }
-      const total = director.story.total
-      const snapPoints = director.story.labels.map(l => l.T / total)
-      ScrollTrigger.create({
-        trigger: story, start: 'top top', end: 'bottom bottom',
-        onUpdate: () => {
-          const T = map.toT(window.scrollY)
-          if (quick) quick(T); else director.setT(T)
-        },
-        onRefresh: () => { map = makeScrollMap(story, director, env.mobile) },
-        snap: desktop && fp && !reduce && !env.debug && !env.mobile
-          ? { snapTo: snapPoints, directional: true, delay: 0.12, duration: { min: 0.25, max: 0.6 }, ease: 'power2.inOut' }
-          : undefined,
-      })
+    ScrollTrigger.create({
+      trigger: story, start: 'top top', end: 'bottom bottom',
+      onUpdate: () => {
+        target = map.toT(window.scrollY)
+        if (!calm) { cur = target; director.setT(target) }
+        onScrollY()
+      },
+      onRefresh: () => { map = makeScrollMap(story, director, env.mobile) },
     })
   })
 
@@ -120,7 +203,8 @@ export async function gsapScroll(story: HTMLElement, director: Director, env: Sc
   const fonts = (document as any).fonts
   if (fonts?.ready) fonts.ready.then(refresh)
   window.addEventListener('resize', refresh)
-  director.setT(map.toT(window.scrollY))
+  target = cur = map.toT(window.scrollY)
+  director.setT(cur)
   return {
     map: () => map,
     refresh,
@@ -135,6 +219,12 @@ export async function gsapScroll(story: HTMLElement, director: Director, env: Sc
     },
     destroy() {
       window.removeEventListener('resize', refresh)
+      clearTimeout(idle); stopGlide()
+      gsap.ticker.remove(follow)
+      window.removeEventListener('wheel', interrupt)
+      window.removeEventListener('keydown', interrupt)
+      window.removeEventListener('touchstart', onTouchStart)
+      window.removeEventListener('touchend', onTouchEnd)
       ctx.revert()
       if (lenis) { gsap.ticker.remove(lenis.__tick); lenis.destroy() }
     },

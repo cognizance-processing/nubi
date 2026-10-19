@@ -271,9 +271,9 @@ export function board(s: BoardState): BoardPart {
     P.anchors[g] = [REG_BAR_X + n, y, ON + REG_DEPTH]
   })
 
-  // the filter mark (zero size): the board-level callout anchors to it on the window's top edge, only while filtered
+  // the filter mark (zero size): the board-level callout points at the filter pill's top edge, only while filtered
   const origin = originOf(s.o, s)
-  if (filtered) P.cells.push({ p: [12, BOARD_H + 0.1, 0.5], s: ZERO, tone: TONE.INK, group: 'sel' })
+  if (filtered) P.cells.push({ p: [pillX1 - pillW / 2, pillY + 0.75, Z + 0.35], s: ZERO, tone: TONE.INK, group: 'sel' })
   // order sentinels (zero size): pin the radial normalisation to [0, ORDER_REACH] around the origin
   P.cells.push({ p: origin, s: ZERO, tone: TONE.INK, group: '' }, { p: [origin[0], origin[1], origin[2] - reachOf(origin)], s: ZERO, tone: TONE.INK, group: '' })
 

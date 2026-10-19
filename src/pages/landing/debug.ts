@@ -83,6 +83,10 @@ export function installHook(opts: {
     async hover(scene: SceneId, group: string | null) { director.setHover(sid(scene), group); await settle(3) },
     state: (scene?: SceneId) => director.sceneState(scene ? sid(scene) : director.activeScene()),
     freeze: (t = 0) => director.freeze(t),
+    /** The displayed story time (beats). */
+    T: () => director.T,
+    /** The story time the scroll position maps to (the displayed T follows it). */
+    scrollT: () => opts.scroll()?.map().toT(window.scrollY) ?? null,
     frame: () => settle(1),
     metrics: () => ({ ...opts.metrics(), frames: director.frames }),
   }

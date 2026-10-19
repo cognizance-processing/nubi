@@ -170,7 +170,10 @@ function tile(k: number): Part {
   const sl = SLOTS[k]
   if (k < 2) {
     const id = k === 0 ? 'ag-kpi-rev' : 'ag-kpi-mgn'
-    const P = kit.kpiTile({ id, at: [sl.x0, sl.y0 + sl.h, SCR.z], w: sl.w, h: sl.h, value: k === 0 ? KPI_REV : KPI_MGN, caption: '', px: 0.5 })
+    const value = k === 0 ? KPI_REV : KPI_MGN
+    // shrink the numerals until they fit inside the plate (0.8 inset each side)
+    const px = Math.min(0.5, (sl.w - 1.6) / kit.measureVoxelText(value, 1))
+    const P = kit.kpiTile({ id, at: [sl.x0, sl.y0 + sl.h, SCR.z], w: sl.w, h: sl.h, value, caption: '', px })
     P.texts = []
     return P
   }
