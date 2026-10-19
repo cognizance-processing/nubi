@@ -69,7 +69,7 @@ async def get_image(image_id: str) -> Response:
     """Return the stored image's raw bytes with its original content-type."""
     try:
         data, content_type = load_image(image_id)
-    except FileNotFoundError:
+    except (FileNotFoundError, ValueError):  # ValueError: id escapes the storage root
         raise AppError("image_not_found", f"No image with id {image_id!r}.", 404) from None
     return Response(content=data, media_type=content_type)
 

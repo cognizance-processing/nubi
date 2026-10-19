@@ -25,6 +25,7 @@ import {
 import { useOrg } from '../../../contexts/OrgContext.jsx'
 import { useFeature } from '../../../lib/features.js'
 import AvatarField from '../../../components/app/AvatarField.jsx'
+import { useAvatarUpload } from '../../../components/app/useAvatarUpload.js'
 import DangerDeleteDialog from '../../../components/app/DangerDeleteDialog.jsx'
 import { updateOrg, deleteOrg, getOrgDeletionImpact } from '../../../lib/settings.js'
 import {
@@ -65,12 +66,13 @@ function QuickLink({ to, Icon, title, description }) {
 }
 
 export default function OrgSettings() {
-  const { activeOrg, orgs, setActiveOrg } = useOrg()
+  const { activeOrg, orgs, setActiveOrg, updateOrgInList } = useOrg()
   const billingEnabled = useFeature('billing')
   const orgId = activeOrg?.id ?? null
 
   const [orgName, setOrgName] = useState(activeOrg?.name ?? '')
   const [avatarUrl, setAvatarUrl] = useState(activeOrg?.avatar_url ?? '')
+  const avatarUpload = useAvatarUpload(avatarUrl, setAvatarUrl)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState(null)
@@ -117,9 +119,16 @@ export default function OrgSettings() {
     setSaved(false)
     setSaveError(null)
     try {
-      await updateOrg(orgId, {
+      // Only send the avatar when it changed; null clears it server-side.
+      const nextAvatar = avatarUrl || null
+      const updated = await updateOrg(orgId, {
         name: orgName.trim() || undefined,
-        avatar_url: avatarUrl || undefined,
+        avatar_url: nextAvatar !== (activeOrg?.avatar_url ?? null) ? nextAvatar : undefined,
+      })
+      // Refresh the shared org list so the switcher updates without a reload.
+      updateOrgInList(orgId, {
+        name: updated?.name ?? (orgName.trim() || activeOrg?.name),
+        avatar_url: updated && 'avatar_url' in updated ? updated.avatar_url : nextAvatar,
       })
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
@@ -175,11 +184,11 @@ export default function OrgSettings() {
                 description="The name and avatar shown across the app and to invited members."
                 footer={
                   <>
-                    <PrimaryButton type="submit" busy={saving} disabled={saving}>
+                    <PrimaryButton type="submit" busy={saving} disabled={saving || avatarUpload.uploading}>
                       Save changes
                     </PrimaryButton>
                     <SavedBadge show={saved} />
-                    <ErrorText>{saveError}</ErrorText>
+                    <ErrorText>{saveError ?? avatarUpload.uploadError}</ErrorText>
                   </>
                 }
               >
@@ -190,7 +199,8 @@ export default function OrgSettings() {
                   >
                     <AvatarField
                       value={avatarUrl}
-                      onChange={setAvatarUrl}
+                      onChange={avatarUpload.onChange}
+                      uploading={avatarUpload.uploading}
                       fallbackName={orgName || activeOrg?.name || '?'}
                     />
                   </FieldRow>

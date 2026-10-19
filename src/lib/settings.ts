@@ -107,7 +107,7 @@ async function _delWithBody(path, body) {
  *
  * PATCH /auth/me
  *
- * @param {{ name?: string, avatar_url?: string }} body
+ * @param {{ name?: string, avatar_url?: string|null }} body  (avatar_url null clears it)
  * @returns {Promise<{ user: import('./api.js').User }>}
  */
 export function updateMe(body) {
@@ -124,7 +124,7 @@ export function updateMe(body) {
  * PATCH /orgs/{id}
  *
  * @param {string} id
- * @param {{ name?: string, avatar_url?: string }} body
+ * @param {{ name?: string, avatar_url?: string|null }} body  (avatar_url null clears it)
  * @returns {Promise<object>}
  */
 export function updateOrg(id, body) {

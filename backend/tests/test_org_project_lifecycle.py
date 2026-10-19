@@ -151,6 +151,7 @@ async def org_client(app, fake_db):
     async def _execute(query: str, *args: Any) -> str:
         q = query.upper().strip()
         if q.startswith("UPDATE ORGS"):
+            state["last_update"] = (q, args)
             # Extract new name from args if present.
             # The update call passes values then org_id last.
             # We track name changes for assertion.
@@ -354,6 +355,35 @@ class TestPatchOrg:
             headers=_auth(user_id),
         )
         assert resp.status_code == 200
+        # The response model must carry the field, or it is silently dropped.
+        assert resp.json()["avatar_url"] == "https://cdn.example.com/logo.png"
+
+    @pytest.mark.asyncio
+    async def test_patch_org_null_avatar_url_clears_it(self, org_client):
+        """An explicit null clears the avatar instead of being ignored (→ 400)."""
+        ac, user_id, org_id, state = org_client
+        resp = await ac.patch(
+            f"/api/v1/orgs/{org_id}",
+            json={"avatar_url": None},
+            headers=_auth(user_id),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["avatar_url"] is None
+        query, args = state["last_update"]
+        assert "AVATAR_URL" in query
+        assert args[0] is None
+
+    @pytest.mark.asyncio
+    async def test_patch_org_name_only_leaves_avatar_untouched(self, org_client):
+        ac, user_id, org_id, state = org_client
+        resp = await ac.patch(
+            f"/api/v1/orgs/{org_id}",
+            json={"name": "Renamed Corp"},
+            headers=_auth(user_id),
+        )
+        assert resp.status_code == 200, resp.text
+        query, _ = state["last_update"]
+        assert "AVATAR_URL" not in query
 
     @pytest.mark.asyncio
     async def test_patch_org_no_fields_returns_400(self, org_client):

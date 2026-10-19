@@ -8,9 +8,10 @@
  * Calls: PATCH /auth/me via settings.js#updateMe
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../../../contexts/AuthContext.jsx'
 import AvatarField from '../../../components/app/AvatarField.jsx'
+import { useAvatarUpload } from '../../../components/app/useAvatarUpload.js'
 import { updateMe } from '../../../lib/settings.js'
 import {
   SettingsPageHeader,
@@ -24,13 +25,20 @@ import {
 } from './SettingsUI.jsx'
 
 export default function ProfileSettings() {
-  const { user } = useAuth()
+  const { user, updateUser } = useAuth()
 
   const [name, setName] = useState(user?.name ?? '')
   const [avatarUrl, setAvatarUrl] = useState(user?.avatar_url ?? '')
+  const avatarUpload = useAvatarUpload(avatarUrl, setAvatarUrl)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState(null)
+
+  // Sync local state when the signed-in user changes (e.g. session restore).
+  useEffect(() => {
+    setName(user?.name ?? '')
+    setAvatarUrl(user?.avatar_url ?? '')
+  }, [user?.id, user?.name, user?.avatar_url])
 
   async function handleSave(e) {
     e.preventDefault()
@@ -38,10 +46,13 @@ export default function ProfileSettings() {
     setSaved(false)
     setError(null)
     try {
-      await updateMe({
+      // Only send the avatar when it changed; null clears it server-side.
+      const nextAvatar = avatarUrl || null
+      const data = await updateMe({
         name: name.trim() || undefined,
-        avatar_url: avatarUrl || undefined,
+        avatar_url: nextAvatar !== (user?.avatar_url ?? null) ? nextAvatar : undefined,
       })
+      if (data?.user) updateUser(data.user)
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
     } catch (err) {
@@ -63,11 +74,11 @@ export default function ProfileSettings() {
           title="Your profile"
           footer={
             <>
-              <PrimaryButton type="submit" busy={saving} disabled={saving}>
+              <PrimaryButton type="submit" busy={saving} disabled={saving || avatarUpload.uploading}>
                 Save profile
               </PrimaryButton>
               <SavedBadge show={saved} />
-              <ErrorText>{error}</ErrorText>
+              <ErrorText>{error ?? avatarUpload.uploadError}</ErrorText>
             </>
           }
         >
@@ -75,15 +86,11 @@ export default function ProfileSettings() {
             <FieldRow
               label="Avatar"
               description="Shown next to your name across the app."
-              hint={
-                !avatarUrl && user?.avatar_url
-                  ? 'Using your Google profile picture. Set a custom URL or upload a file to override it.'
-                  : undefined
-              }
             >
               <AvatarField
-                value={avatarUrl || user?.avatar_url || ''}
-                onChange={setAvatarUrl}
+                value={avatarUrl}
+                onChange={avatarUpload.onChange}
+                uploading={avatarUpload.uploading}
                 fallbackName={name || user?.email || '?'}
               />
             </FieldRow>

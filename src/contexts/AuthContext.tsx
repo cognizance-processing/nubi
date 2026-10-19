@@ -9,6 +9,8 @@
  *   login({ email, password })         — POST /auth/login, stores access token
  *   register({ email, password, name }) — POST /auth/register, stores access token
  *   logout()                            — POST /auth/logout, clears token + user
+ *   updateUser(fields)                  — merge fields (e.g. a PATCH /auth/me
+ *                                         response) into the current user
  *
  * On mount: calls refresh() then me() to silently restore an existing session,
  * unless this browser already learned there is none (see authSession.ts), so
@@ -19,6 +21,7 @@
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import * as api from '../lib/api.js'
+import { clearBoardThumbnailCache } from '../lib/boardThumbnail.js'
 import { announceSession, shouldProbeSession, writeSessionHint } from './authSession.js'
 
 export interface AuthUser {
@@ -41,6 +44,7 @@ export interface AuthContextValue {
     demo_project?: boolean
   }) => Promise<void>
   logout: () => Promise<void>
+  updateUser: (fields: Partial<AuthUser>) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -164,13 +168,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       api.setAccessToken(null)
       writeSessionHint('0')
       setUser(null)
+      // Rendered boards are cached per browser, not per user.
+      void clearBoardThumbnailCache()
     }
+  }
+
+  /**
+   * Merge *fields* into the current user (e.g. after PATCH /auth/me) so the
+   * shell reflects a profile change without a reload. Merging, not replacing,
+   * keeps fields the PATCH response omits (such as is_superadmin).
+   */
+  function updateUser(fields: Partial<AuthUser>) {
+    setUser((prev) => (prev ? { ...prev, ...fields } : prev))
   }
 
   // -- Context value --------------------------------------------------------
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, register, logout, updateUser }}>
       {children}
     </AuthContext.Provider>
   )

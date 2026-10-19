@@ -169,8 +169,10 @@ function WorkspacePanel({ pos, onClose, onNewProject }) {
                       ${active ? 'bg-[var(--frame-hover)]' : 'hover:bg-[var(--frame-hover)]'}
                     `}
                   >
-                    <span className="flex items-center justify-center w-6 h-6 rounded-sm border border-[var(--frame-line)] text-subtle shrink-0">
-                      <Building2 size={14} strokeWidth={1.5} aria-hidden="true" />
+                    <span className="flex items-center justify-center w-6 h-6 rounded-sm border border-[var(--frame-line)] text-subtle shrink-0 overflow-hidden">
+                      {org.avatar_url
+                        ? <img key={org.avatar_url} src={org.avatar_url} alt="" aria-hidden="true" className="w-full h-full object-cover" />
+                        : <Building2 size={14} strokeWidth={1.5} aria-hidden="true" />}
                     </span>
                     <span className="flex-1 truncate text-[13px] font-medium text-fg">{org.name}</span>
                     {active && <Check size={14} strokeWidth={2} className="text-fg shrink-0" aria-label="Current" />}
@@ -548,10 +550,12 @@ export default function WorkspaceSwitcher({ collapsed }) {
           `}
         >
           <span
-            className="flex items-center justify-center w-8 h-8 rounded-sm bg-[var(--ink)] text-[var(--ink-fg)] text-[13px] font-semibold shrink-0"
+            className="flex items-center justify-center w-8 h-8 rounded-sm bg-[var(--ink)] text-[var(--ink-fg)] text-[13px] font-semibold shrink-0 overflow-hidden"
             aria-hidden="true"
           >
-            {orgInitial}
+            {activeOrg.avatar_url
+              ? <img key={activeOrg.avatar_url} src={activeOrg.avatar_url} alt="" className="w-full h-full object-cover" />
+              : orgInitial}
           </span>
           <span className="flex flex-col min-w-0 flex-1 leading-tight" title={`${activeOrg.name} · ${projectLabel}`}>
             <span className="truncate text-xs text-muted">{activeOrg.name}</span>

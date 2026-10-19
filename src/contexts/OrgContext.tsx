@@ -44,6 +44,7 @@ export interface OrgContextValue {
   activeOrg: Org | null
   setActiveOrg: (id: string) => void
   createOrg: (name: string) => Promise<Org>
+  updateOrgInList: (id: string, fields: Partial<Org>) => void
   loading: boolean
   hasNoOrgs: boolean
 }
@@ -172,8 +173,23 @@ export function OrgProvider({ children }: { children: ReactNode }) {
     return org
   }, [])
 
+  /**
+   * Merge saved fields into an org already in the list (and the active org),
+   * so the switcher shows a rename or new avatar without a reload. A merge,
+   * not a replace: the PATCH response does not carry the caller's `role`.
+   */
+  const updateOrgInList = useCallback((id: string, fields: Partial<Org>) => {
+    setOrgs(prev => prev.map(o => (o.id === id ? { ...o, ...fields, id } : o)))
+    setActiveOrgState(prev => {
+      if (!prev || prev.id !== id) return prev
+      const next = { ...prev, ...fields, id }
+      _applyActiveOrg(next)
+      return next
+    })
+  }, [])
+
   return (
-    <OrgContext.Provider value={{ orgs, activeOrg, setActiveOrg, createOrg, loading, hasNoOrgs }}>
+    <OrgContext.Provider value={{ orgs, activeOrg, setActiveOrg, createOrg, updateOrgInList, loading, hasNoOrgs }}>
       {children}
     </OrgContext.Provider>
   )

@@ -168,7 +168,7 @@ export default function AvatarField({
     <div className="flex items-start gap-5">
       {/* Avatar circle with optional upload overlay */}
       <div className="relative shrink-0 group">
-        <AvatarPreview src={value} fallbackName={fallbackName} size={80} />
+        <AvatarPreview key={value || ''} src={value} fallbackName={fallbackName} size={80} />
 
         {/* Camera overlay on hover */}
         <button

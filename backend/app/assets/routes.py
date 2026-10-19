@@ -5,7 +5,8 @@ Endpoints
 GET  /assets/avatars/{key}
     Serve stored avatar bytes when ``ASSET_SERVE_MODE=local``.
     Returns 404 in Bunny mode (assets are served by the CDN directly).
-    ``key`` may contain slashes (e.g. ``user/abc123/deadbeef.jpg``).
+    ``key`` may contain slashes (e.g. ``user/abc123/deadbeef.jpg``) and is
+    resolved to the storage key ``avatars/<key>``.
 
 PATCH /auth/me
     Update the current user's profile name and/or avatar_url.
@@ -68,17 +69,18 @@ async def serve_avatar(key: str) -> FastAPIResponse:
 
     import asyncio  # noqa: PLC0415
     import mimetypes  # noqa: PLC0415
-    import os as _os  # noqa: PLC0415
 
-    from app.storage.local import LocalStorageClient  # noqa: PLC0415
+    from app.storage.assets import asset_storage  # noqa: PLC0415
 
-    default_root = _os.path.join(_os.path.dirname(__file__), "..", "..", "storage_data")
-    root = _os.path.abspath(_os.getenv("LOCAL_STORAGE_ROOT", default_root))
-    client = LocalStorageClient(root=root)
+    client = asset_storage()
 
+    # The ingest service stores avatars under ``avatars/<kind>/...`` and
+    # ``asset_url`` serves that key at ``/assets/<key>``, so the ``avatars/``
+    # segment is consumed by this route's path and must be restored here.
     try:
-        data: bytes = await asyncio.to_thread(client.download_bytes, key)
-    except FileNotFoundError:
+        data: bytes = await asyncio.to_thread(client.download_bytes, f"avatars/{key}")
+    except (FileNotFoundError, ValueError):
+        # ValueError: the key escapes the storage root (path traversal).
         return FastAPIResponse(status_code=404, content=b"Not found")
 
     mime, _ = mimetypes.guess_type(key)
@@ -94,7 +96,10 @@ async def serve_avatar(key: str) -> FastAPIResponse:
 # ── Profile update ────────────────────────────────────────────────────────────
 
 class PatchMeIn(BaseModel):
-    """Request body for PATCH /auth/me."""
+    """Request body for PATCH /auth/me.
+
+    ``avatar_url: null`` clears the avatar; omitting it leaves it unchanged.
+    """
 
     name: str | None = None
     avatar_url: str | None = None
@@ -121,8 +126,10 @@ async def patch_me(
     if body.name is not None:
         updates["name"] = body.name.strip() or None
 
-    if body.avatar_url is not None:
-        url = body.avatar_url.strip()
+    # An explicit ``null`` (or ``""``) clears the avatar; omitting the field
+    # leaves it unchanged — so test field presence, not the value.
+    if "avatar_url" in body.model_fields_set:
+        url = (body.avatar_url or "").strip()
         if url.startswith(("http://", "https://")):
             # External URL — ingest + rehost so we serve it ourselves.
             served = await ingest_avatar_from_url(url, "user", user_id)

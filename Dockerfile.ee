@@ -111,7 +111,10 @@ ENV EMBED_STATIC_DIR=/app/dist-embed
 RUN useradd --create-home --home-dir /home/appuser --shell /bin/false appuser
 ENV HOME=/home/appuser
 # demo_bundle regenerates parquet/duckdb seed artefacts under seed_data/.
-RUN chown -R appuser /app/backend/seed_data
+# storage_data/ is the default local root for avatars and uploaded images
+# (LOCAL_STORAGE_ROOT); without a volume it does not survive a redeploy.
+RUN mkdir -p /app/backend/storage_data \
+    && chown -R appuser /app/backend/seed_data /app/backend/storage_data
 USER appuser
 
 # Both process commands (fly.toml [processes]) run from this directory.

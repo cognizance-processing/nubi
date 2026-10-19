@@ -5,13 +5,13 @@ Backs the ``upload_image`` AI/MCP tool (``app.ai.tools``) and the
 
 Storage backend
 ----------------
-Uses :class:`~app.storage.local.LocalStorageClient` (``file://`` — pure
-stdlib, no credentials) rather than the S3/MinIO-backed
-``NUBI_THUMBNAIL_STORAGE_URI`` this dev environment already declares, because
-that MinIO instance is not actually running here. The root directory is
-``NUBI_IMAGE_STORAGE_DIR`` (default ``/tmp/nubi-dashboard-images``) — same
-"local dev fallback" pattern as ``ARTIFACTS_BASE_URI``'s ``/tmp/nubi-artifacts``
-default.
+Object storage under ``images/`` when ``NUBI_ASSET_STORAGE_URI`` is set (see
+:mod:`app.storage.assets` — required on any host with an ephemeral disk, such
+as Fly). Otherwise local disk via :class:`~app.storage.local.LocalStorageClient`:
+``NUBI_IMAGE_STORAGE_DIR`` when set, else ``<LOCAL_STORAGE_ROOT>/images`` — the
+same durable root avatars use, defaulting to ``backend/storage_data/images``.
+Images written by older builds to the former ``/tmp/nubi-dashboard-images``
+default are still served locally (read-only fallback).
 
 Each image is stored as two objects under its ``image_id`` (a random hex
 token, so ids are unguessable — there is no per-org access control on the
@@ -42,14 +42,34 @@ ALLOWED_CONTENT_TYPES: frozenset[str] = frozenset(
 MAX_IMAGE_BYTES: int = 8 * 1024 * 1024  # 8 MiB
 
 
+#: Pre-durable default root; still read so images uploaded before the move resolve.
+_LEGACY_ROOT_DIR = "/tmp/nubi-dashboard-images"
+
+
 def _root_dir() -> str:
-    return os.environ.get("NUBI_IMAGE_STORAGE_DIR") or "/tmp/nubi-dashboard-images"
+    from app.storage.assets import local_storage_root  # noqa: PLC0415
+
+    explicit = os.environ.get("NUBI_IMAGE_STORAGE_DIR")
+    if explicit:
+        return explicit
+    return os.path.join(local_storage_root(), "images")
 
 
-def _storage() -> Any:
+def _storage(root: str | None = None) -> tuple[Any, str]:
+    """Return ``(client, key_prefix)`` for the image store.
+
+    In object storage the bucket is shared with avatars (``avatars/…``), so
+    images live under ``images/``; locally the root directory already is
+    ``…/images`` and keys are the bare id.
+    """
+    from app.storage.assets import remote_asset_storage  # noqa: PLC0415
     from app.storage.local import LocalStorageClient  # noqa: PLC0415
 
-    return LocalStorageClient(root=_root_dir())
+    if root is None:
+        remote = remote_asset_storage()
+        if remote is not None:
+            return remote, "images/"
+    return LocalStorageClient(root=root or _root_dir()), ""
 
 
 def sniff_content_type(data: bytes) -> str | None:
@@ -97,9 +117,9 @@ def save_image_bytes(data: bytes, content_type: str) -> dict[str, Any]:
         raise AppError("invalid_image", "Image data is empty.", 400)
 
     image_id = uuid.uuid4().hex
-    store = _storage()
-    store.upload_bytes(data, image_id)
-    store.upload_bytes(content_type.encode("ascii"), f"{image_id}.ct")
+    store, prefix = _storage()
+    store.upload_bytes(data, f"{prefix}{image_id}")
+    store.upload_bytes(content_type.encode("ascii"), f"{prefix}{image_id}.ct")
     return {"id": image_id, "content_type": content_type, "size": len(data)}
 
 
@@ -154,7 +174,14 @@ def load_image(image_id: str) -> tuple[bytes, str]:
     FileNotFoundError
         If *image_id* was never stored (or was deleted).
     """
-    store = _storage()
-    data = store.download_bytes(image_id)
-    content_type = store.download_bytes(f"{image_id}.ct").decode("ascii").strip()
+    store, prefix = _storage()
+    try:
+        data = store.download_bytes(f"{prefix}{image_id}")
+    except FileNotFoundError:
+        if prefix or os.environ.get("NUBI_IMAGE_STORAGE_DIR"):
+            raise
+        # Uploaded before the default root moved out of /tmp.
+        store, prefix = _storage(_LEGACY_ROOT_DIR)
+        data = store.download_bytes(image_id)
+    content_type = store.download_bytes(f"{prefix}{image_id}.ct").decode("ascii").strip()
     return data, content_type

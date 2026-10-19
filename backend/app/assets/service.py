@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 from typing import Literal
 
 from app.assets.config import (
@@ -174,11 +173,10 @@ async def _store_local(data: bytes, key: str) -> str:
     """
     import asyncio  # noqa: PLC0415
 
-    from app.storage.local import LocalStorageClient  # noqa: PLC0415
+    from app.storage.assets import asset_storage  # noqa: PLC0415
 
-    default_root = os.path.join(os.path.dirname(__file__), "..", "..", "storage_data")
-    root = os.path.abspath(os.getenv("LOCAL_STORAGE_ROOT", default_root))
-    client = LocalStorageClient(root=root)
+    # Local disk, or object storage when NUBI_ASSET_STORAGE_URI is set.
+    client = asset_storage()
 
     def _write() -> str:
         client.upload_bytes(data, key)

@@ -63,6 +63,7 @@ class OrgOut(BaseModel):
     id: str
     name: str
     role: str
+    avatar_url: str | None = None
 
 
 class OrgsListResponse(BaseModel):
@@ -77,6 +78,7 @@ class OrgDetailResponse(BaseModel):
     id: str
     name: str
     role: str
+    avatar_url: str | None = None
 
 
 class ImpactBlocker(BaseModel):
@@ -192,11 +194,11 @@ async def _list_user_orgs(user_id: str) -> list[dict[str, Any]]:
     Returns
     -------
     list[dict]
-        Each entry has ``id``, ``name``, and ``role``.
+        Each entry has ``id``, ``name``, ``role`` and ``avatar_url``.
     """
     rows = await fetch(
         """
-        SELECT o.id, o.name, om.role
+        SELECT o.id, o.name, om.role, o.avatar_url
         FROM org_members om
         JOIN orgs o ON o.id = om.org_id
         WHERE om.user_id = $1::uuid
@@ -204,7 +206,10 @@ async def _list_user_orgs(user_id: str) -> list[dict[str, Any]]:
         """,
         user_id,
     )
-    return [{"id": str(r["id"]), "name": r["name"], "role": r["role"]} for r in rows]
+    return [
+        {"id": str(r["id"]), "name": r["name"], "role": r["role"], "avatar_url": r.get("avatar_url")}
+        for r in rows
+    ]
 
 
 async def _get_user_org_membership(user_id: str, org_id: str) -> dict[str, Any] | None:
@@ -220,11 +225,11 @@ async def _get_user_org_membership(user_id: str, org_id: str) -> dict[str, Any] 
     Returns
     -------
     dict or None
-        ``{id, name, role}`` if the user is a member; ``None`` otherwise.
+        ``{id, name, role, avatar_url}`` if the user is a member; ``None`` otherwise.
     """
     row = await fetchrow(
         """
-        SELECT o.id, o.name, om.role
+        SELECT o.id, o.name, om.role, o.avatar_url
         FROM org_members om
         JOIN orgs o ON o.id = om.org_id
         WHERE om.user_id = $1::uuid
@@ -235,7 +240,12 @@ async def _get_user_org_membership(user_id: str, org_id: str) -> dict[str, Any] 
     )
     if row is None:
         return None
-    return {"id": str(row["id"]), "name": row["name"], "role": row["role"]}
+    return {
+        "id": str(row["id"]),
+        "name": row["name"],
+        "role": row["role"],
+        "avatar_url": row.get("avatar_url"),
+    }
 
 
 async def _get_org_name(org_id: str) -> str | None:
@@ -498,7 +508,8 @@ async def patch_org(
     body.name:
         New human-readable name for the org (optional).
     body.avatar_url:
-        New avatar URL for the org (optional).
+        New avatar URL for the org (optional). An explicit ``null`` or empty
+        string clears it; omitting the field leaves it unchanged.
 
     Returns
     -------
@@ -514,7 +525,10 @@ async def patch_org(
     user_id = str(user["id"])
     org = await _require_manage(user_id, org_id)  # owner/admin only (also blocks viewer/member)
 
-    if body.name is None and body.avatar_url is None:
+    # ``avatar_url`` distinguishes "omitted" (leave as-is) from an explicit
+    # ``null``/``""`` (clear it), so test field presence, not the value.
+    avatar_set = "avatar_url" in body.model_fields_set
+    if body.name is None and not avatar_set:
         raise AppError("invalid_request", "At least one of name or avatar_url must be provided.", 400)
 
     updates: list[str] = []
@@ -529,9 +543,11 @@ async def patch_org(
         values.append(name)
         idx += 1
 
-    if body.avatar_url is not None:
+    avatar_url = org.get("avatar_url")
+    if avatar_set:
+        avatar_url = (body.avatar_url or "").strip() or None
         updates.append(f"avatar_url = ${idx}")
-        values.append(body.avatar_url)
+        values.append(avatar_url)
         idx += 1
 
     # NOTE: the `orgs` table has no `updated_at` column (see 0005/0019), so we
@@ -546,7 +562,9 @@ async def patch_org(
 
     # Return the updated org detail; re-resolve name from DB in case it changed.
     updated_name = body.name.strip() if body.name is not None else org["name"]
-    return OrgDetailResponse(id=org_id, name=updated_name, role=org["role"])
+    return OrgDetailResponse(
+        id=org_id, name=updated_name, role=org["role"], avatar_url=avatar_url,
+    )
 
 
 @router.delete("/{org_id}", status_code=204)
