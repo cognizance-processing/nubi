@@ -5,7 +5,7 @@ Endpoints
 GET    /security/jwt-issuers              -> list of issuer rows for caller's org
 POST   /security/jwt-issuers              -> create a new issuer config
 GET    /security/jwt-issuers/{issuer_id}  -> get a single issuer by id
-PUT    /security/jwt-issuers/{issuer_id}  -> update (partial) an issuer
+PUT    /security/jwt-issuers/{issuer_id}  -> update (partial) an issuer, incl. its ``iss``
 DELETE /security/jwt-issuers/{issuer_id}  -> delete an issuer
 
 All endpoints require a valid first-party Bearer token (``current_user``).
@@ -69,6 +69,13 @@ class _IssuerCreate(BaseModel):
     static_jwks_json: dict[str, Any] | None = Field(
         None, description="Pre-built JWKS dict.  When set, jwks_url is ignored during verification."
     )
+    jwk_pem: str | None = Field(
+        None,
+        description=(
+            "Write-only convenience: a pasted PEM public key, JWK or JWKS JSON. "
+            "Converted to ``static_jwks_json`` (and overrides it); never stored as-is."
+        ),
+    )
     algorithms: list[str] | None = Field(
         None, description="Allowed signing algorithms.  Defaults to ['RS256']."
     )
@@ -87,8 +94,10 @@ class _IssuerUpdate(BaseModel):
     """Request body for ``PUT /security/jwt-issuers/{issuer_id}`` (all fields optional)."""
 
     name: str | None = None
+    issuer: str | None = None
     jwks_url: str | None = None
     static_jwks_json: dict[str, Any] | None = None
+    jwk_pem: str | None = None  # write-only; converted to static_jwks_json
     algorithms: list[str] | None = None
     audience: str | None = None
     enabled: bool | None = None
@@ -154,6 +163,16 @@ def _sync_registry(org_id: str, rows: list[dict[str, Any]]) -> None:
         pass  # best-effort; verification falls through to DB lookup
 
 
+def _unregister_issuer(iss: str) -> None:
+    """Best-effort removal of *iss* from the in-process ``IssuerRegistry``."""
+    try:
+        from app.auth.issuers import get_issuer_registry  # noqa: PLC0415
+
+        get_issuer_registry().unregister(iss)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -184,10 +203,16 @@ async def create_jwt_issuer(
     """Create a new JWT issuer configuration for the caller's org."""
     from app.security.issuers_store import get_issuers_store  # noqa: PLC0415
 
-    if not body.jwks_url and not body.static_jwks_json:
+    from app.security.jwks import jwks_from_pasted_key  # noqa: PLC0415
+
+    static_jwks_json = (
+        jwks_from_pasted_key(body.jwk_pem) if body.jwk_pem and body.jwk_pem.strip()
+        else body.static_jwks_json
+    )
+    if not body.jwks_url and not static_jwks_json:
         raise AppError(
             "missing_jwks",
-            "Either jwks_url or static_jwks_json must be provided.",
+            "Either jwks_url or a public key (jwk_pem / static_jwks_json) must be provided.",
             422,
         )
 
@@ -201,7 +226,7 @@ async def create_jwt_issuer(
         audience=body.audience,
         created_by=user["id"],
         jwks_url=body.jwks_url,
-        static_jwks_json=body.static_jwks_json,
+        static_jwks_json=static_jwks_json,
         algorithms=body.algorithms,
         enabled=body.enabled,
         host_mode=body.host_mode,
@@ -246,9 +271,17 @@ async def update_jwt_issuer(
     org_id = await _resolve_org_id(user["id"], repo, request)
     store = get_issuers_store()
 
+    existing = await store.get_by_id(issuer_id, org_id)
+    if existing is None:
+        raise AppError("issuer_not_found", "JWT issuer not found.", 404)
+
     update_kwargs: dict[str, Any] = {}
     if body.name is not None:
         update_kwargs["name"] = body.name
+    if body.issuer is not None:
+        if not body.issuer.strip():
+            raise AppError("invalid_request", "Issuer cannot be empty.", 422)
+        update_kwargs["issuer"] = body.issuer.strip()
     if body.audience is not None:
         update_kwargs["audience"] = body.audience
     if body.algorithms is not None:
@@ -262,12 +295,20 @@ async def update_jwt_issuer(
         update_kwargs["jwks_url"] = body.jwks_url
     if "static_jwks_json" in body.model_fields_set:
         update_kwargs["static_jwks_json"] = body.static_jwks_json
+    if body.jwk_pem and body.jwk_pem.strip():
+        from app.security.jwks import jwks_from_pasted_key  # noqa: PLC0415
+
+        update_kwargs["static_jwks_json"] = jwks_from_pasted_key(body.jwk_pem)
     if "org_claim" in body.model_fields_set:
         update_kwargs["org_claim"] = body.org_claim
 
     row = await store.update(issuer_id, org_id, **update_kwargs)
     if row is None:
         raise AppError("issuer_not_found", "JWT issuer not found.", 404)
+
+    # A renamed ``iss`` must stop verifying under the old value.
+    if row["issuer"] != existing["issuer"]:
+        _unregister_issuer(existing["issuer"])
 
     all_rows = await store.list_for_org(org_id)
     _sync_registry(org_id, all_rows)

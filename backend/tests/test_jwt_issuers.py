@@ -483,3 +483,102 @@ async def test_crud_routes_roundtrip():
 
         set_issuers_store(None)
         set_repo(None)
+
+
+# ---------------------------------------------------------------------------
+# Tests — pasted PEM key (jwk_pem) and editable issuer
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def issuer_client(monkeypatch):
+    """TestClient over the issuer routes, pinned to a fresh org."""
+    from fastapi.testclient import TestClient
+
+    import app.routes.jwt_issuers as _jr
+    from app.repos.provider import set_repo
+    from app.security.issuers_store import set_issuers_store
+
+    org_id, user_id = str(uuid.uuid4()), str(uuid.uuid4())
+    app, store = _make_app_with_fake_user(org_id, user_id)
+
+    async def _fake_org(uid, repo, request):
+        return org_id
+
+    monkeypatch.setattr(_jr, "_resolve_org_id", _fake_org)
+    with TestClient(app, raise_server_exceptions=True) as client:
+        yield client, store, org_id
+    set_issuers_store(None)
+    set_repo(None)
+
+
+@pytest.mark.asyncio
+async def test_pasted_pem_key_is_stored_as_jwks_and_verifies(issuer_client):
+    """A pasted PEM public key becomes static_jwks_json and verifies a real token."""
+    from app.auth.verify import verify_token_async
+
+    client, store, org_id = issuer_client
+    resp = client.post("/api/v1/security/jwt-issuers", json={
+        "name": "PEM host", "issuer": _HOST_ISS, "audience": _HOST_AUD, "jwk_pem": _PUBLIC_KEY_PEM,
+    })
+    assert resp.status_code == 201, resp.text
+    row = resp.json()
+    assert "jwk_pem" not in row
+    (jwk,) = row["static_jwks_json"]["keys"]
+    assert jwk["kty"] == "RSA" and jwk["n"] == _JWKS_KEY["n"] and "d" not in jwk
+
+    # Verify through the DB-backed path (the registry is not consulted).
+    from app.auth.issuers import get_issuer_registry
+
+    get_issuer_registry().clear()
+    identity = await verify_token_async(_mint_token(org=org_id))
+    assert identity.kind == "embed" and identity.org == org_id
+
+    # Re-pasting on edit replaces the key; JWK JSON is accepted too.
+    resp = client.put(f"/api/v1/security/jwt-issuers/{row['id']}", json={"jwk_pem": json.dumps(_JWKS_KEY)})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["static_jwks_json"] == {"keys": [_JWKS_KEY]}
+
+
+@pytest.mark.parametrize("bad", [
+    "not a key",
+    "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----",
+    json.dumps({**_JWKS_KEY, "d": "private"}),
+])
+def test_pasted_key_rejects_garbage_and_private_keys(issuer_client, bad):
+    client, store, _ = issuer_client
+    resp = client.post("/api/v1/security/jwt-issuers", json={
+        "name": "x", "issuer": "https://bad.example", "audience": "a", "jwk_pem": bad,
+    })
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["code"] == "invalid_public_key"
+
+
+@pytest.mark.asyncio
+async def test_issuer_is_editable_and_conflict_is_409(issuer_client):
+    from app.auth.verify import verify_token_async
+    from app.errors import AppError
+
+    client, store, org_id = issuer_client
+    a = client.post("/api/v1/security/jwt-issuers", json={
+        "name": "A", "issuer": _HOST_ISS, "audience": _HOST_AUD, "static_jwks_json": _STATIC_JWKS,
+    }).json()
+    client.post("/api/v1/security/jwt-issuers", json={
+        "name": "B", "issuer": "https://taken.example", "audience": _HOST_AUD, "static_jwks_json": _STATIC_JWKS,
+    })
+
+    new_iss = "https://renamed.example"
+    resp = client.put(f"/api/v1/security/jwt-issuers/{a['id']}", json={"issuer": new_iss})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["issuer"] == new_iss
+    assert client.get(f"/api/v1/security/jwt-issuers/{a['id']}").json()["issuer"] == new_iss
+
+    # Old iss no longer verifies (registry evicted, DB row renamed); new one does.
+    with pytest.raises(AppError):
+        await verify_token_async(_mint_token(iss=_HOST_ISS, org=org_id))
+    assert (await verify_token_async(_mint_token(iss=new_iss, org=org_id))).org == org_id
+
+    resp = client.put(f"/api/v1/security/jwt-issuers/{a['id']}", json={"issuer": "https://taken.example"})
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["error"]["code"] == "issuer_exists"
+    assert client.get(f"/api/v1/security/jwt-issuers/{a['id']}").json()["issuer"] == new_iss

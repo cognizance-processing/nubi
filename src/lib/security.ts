@@ -135,7 +135,7 @@ async function _del(path) {
  *   name: string,
  *   issuer: string,
  *   jwks_url: string | null,
- *   jwk_pem: string | null,
+ *   static_jwks_json: { keys: object[] } | null,
  *   algorithms: string[],
  *   audience: string | null,
  *   enabled: boolean,
@@ -174,7 +174,7 @@ export async function listJwtIssuers() {
  *   name: string,
  *   issuer: string,
  *   jwks_url?: string,
- *   jwk_pem?: string,
+ *   jwk_pem?: string,          // write-only PEM / JWK / JWKS → stored as static_jwks_json
  *   algorithms?: string[],
  *   audience?: string,
  *   enabled?: boolean
@@ -194,8 +194,9 @@ export function createJwtIssuer(body) {
  * @param {Partial<{
  *   name: string,
  *   issuer: string,
- *   jwks_url: string,
- *   jwk_pem: string,
+ *   jwks_url: string | null,
+ *   jwk_pem: string,           // write-only; replaces static_jwks_json
+ *   static_jwks_json: null,    // clears the inline key
  *   algorithms: string[],
  *   audience: string,
  *   enabled: boolean

@@ -11,7 +11,9 @@
  *   name        — a human label ("My App Production")
  *   issuer      — the `iss` claim value in the JWT
  *   jwks_url    — URL of a JWKS endpoint (preferred; Nubi caches and rotates keys)
- *   jwk_pem     — pasted PEM / raw JWK JSON (alternative to jwks_url)
+ *   jwk_pem     — pasted PEM public key / JWK / JWKS JSON (alternative to jwks_url).
+ *                 Write-only: the backend converts it to `static_jwks_json`,
+ *                 which is what comes back (and takes precedence over jwks_url).
  *   algorithms  — RS256, RS384, RS512, ES256, ES384, ES512 (comma-separated input)
  *   audience    — optional expected `aud` claim
  *   enabled     — can disable without deleting
@@ -67,6 +69,12 @@ const EMPTY_FORM = {
   enabled: true,
 }
 
+/** Render a stored `static_jwks_json` (object, or a JSON string) for the key textarea. */
+function jwksText(jwks) {
+  if (!jwks) return ''
+  return typeof jwks === 'string' ? jwks : JSON.stringify(jwks, null, 2)
+}
+
 // ---------------------------------------------------------------------------
 // IssuerRow — a single row in the list
 // ---------------------------------------------------------------------------
@@ -86,7 +94,7 @@ function IssuerRow({ issuer, onEdit, onDelete, deleting }) {
               JWKS: <span className="font-mono">{issuer.jwks_url}</span>
             </span>
           )}
-          {issuer.jwk_pem && !issuer.jwks_url && (
+          {issuer.static_jwks_json && (
             <span className="text-[11px] text-muted">Inline key (PEM/JWK)</span>
           )}
           {issuer.algorithms?.length > 0 && (
@@ -132,9 +140,11 @@ function IssuerForm({ initial, onSave, onCancel, saving, saveError }) {
     ...EMPTY_FORM,
     ...(initial ?? {}),
     algorithms: initial?.algorithms ?? ['RS256'],
+    // The stored inline key comes back as a JWKS; show it so it can be edited.
+    jwk_pem: jwksText(initial?.static_jwks_json),
   }))
 
-  const [showPem, setShowPem] = useState(Boolean(initial?.jwk_pem))
+  const [showPem, setShowPem] = useState(Boolean(initial?.static_jwks_json))
 
   function set(field, value) {
     setForm((prev) => ({ ...prev, [field]: value }))
@@ -162,6 +172,9 @@ function IssuerForm({ initial, onSave, onCancel, saving, saveError }) {
     // so omitting it would keep the old URL).
     else if (initial?.jwks_url) payload.jwks_url = null
     if (form.jwk_pem.trim()) payload.jwk_pem = form.jwk_pem.trim()
+    // Editing: an emptied inline key must be cleared explicitly (it would
+    // otherwise keep overriding the JWKS URL).
+    else if (initial?.static_jwks_json) payload.static_jwks_json = null
     if (form.audience.trim()) payload.audience = form.audience.trim()
     onSave(payload)
   }
