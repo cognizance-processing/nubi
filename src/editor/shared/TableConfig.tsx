@@ -28,6 +28,7 @@ import {
   inputCls, selectCls, FieldLabel, SectionLabel, Section, ColorSwatch, ColorField, ToggleRow,
 } from './inspectorPrimitives.jsx'
 import { useColumnIntrospection } from './useInspectorData.js'
+import { parseNumberInput } from './numberInput.js'
 import { FORMAT_OPS, COLUMN_FORMAT_TYPES, PIVOT_AGGS } from './constants.js'
 
 /** Coerce props.columns (array | comma-string | undefined) to a string[]. */
@@ -101,7 +102,7 @@ function ExportStyleFields({ value, onChange }) {
           <FieldLabel>Size</FieldLabel>
           <input type="number" min={6} max={72} className={inputCls} placeholder="auto"
             value={value.fontSize ?? ''}
-            onChange={e => set('fontSize', e.target.value === '' ? undefined : (parseInt(e.target.value, 10) || undefined))} />
+            onChange={e => set('fontSize', parseNumberInput(e.target.value, { integer: true, min: 1 }))} />
         </div>
         <div className="flex-1">
           <FieldLabel>Align</FieldLabel>

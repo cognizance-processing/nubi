@@ -28,6 +28,7 @@ import { CHART_TYPES, SERIES_TYPES } from './constants.js'
 import { CHART_ICONS, CHART_LABELS, TYPE_ENCODING } from './chartMeta.jsx'
 import { profileTable, suggestVisuals } from './chartSuggest.js'
 import { titleText, withTitleText } from './titleValue.js'
+import { parseNumberInput } from './numberInput.js'
 import { registeredMaps, mapLabel, mapCategory } from '../../lib/maps.js'
 
 // Chart types that use an x/y cartesian axis system (show axis config +
@@ -347,7 +348,7 @@ export function ChartConfig({ widget, onChange }) {
                 className={inputCls}
                 value={cfg.yAxis?.max ?? wProps.max ?? ''}
                 placeholder={isRadialBar ? '100' : 'auto'}
-                onChange={e => setAxisConfig('yAxis', 'max', e.target.value === '' ? undefined : (parseFloat(e.target.value) || undefined))}
+                onChange={e => setAxisConfig('yAxis', 'max', parseNumberInput(e.target.value))}
               />
             </div>
           </div>

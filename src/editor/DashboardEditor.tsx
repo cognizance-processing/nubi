@@ -150,7 +150,7 @@ import {
   ChartConfig, KpiConfig, IconPicker,
   TableConfig, ColumnFormatsEditor, ConditionalRulesEditor,
   FilterConfig, TextConfig, PlacementControl, effectivePlacement,
-  titleText, withTitleText,
+  titleText, withTitleText, parseNumberInput,
   useQueryParamsIndex,
   DEMO_QUERY_IDS, CHART_TYPES, SERIES_TYPES, FILTER_SUBTYPES, VARIABLE_TYPES,
   FORMAT_OPS, COLUMN_FORMAT_TYPES, BACKGROUND_TYPES, PIVOT_AGGS,
@@ -1224,7 +1224,7 @@ function WidgetLayoutSection({ widget, onChange, spec, activeBreakpoint = 'lg', 
     <div>
       <FieldLabel>{label}</FieldLabel>
       <input type="number" min={1} className={inputCls} placeholder={placeholder}
-        value={pos[key] ?? ''} onChange={e => setPos({ [key]: e.target.value === '' ? undefined : (parseInt(e.target.value, 10) || undefined) })} />
+        value={pos[key] ?? ''} onChange={e => setPos({ [key]: parseNumberInput(e.target.value, { integer: true, min: 1 }) })} />
     </div>
   )
 
@@ -1682,7 +1682,7 @@ function DashboardPanel({ spec, onSpecChange }) {
           <FieldLabel>Max content width (px)</FieldLabel>
           <input type="number" min={0} className={inputCls} placeholder="unbounded"
             value={layout.max_width ?? ''}
-            onChange={e => setLayout({ max_width: e.target.value === '' ? undefined : (parseInt(e.target.value, 10) || undefined) })} />
+            onChange={e => setLayout({ max_width: parseNumberInput(e.target.value, { integer: true, min: 1 }) })} />
         </div>
       </Section>
 

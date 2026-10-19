@@ -11,6 +11,7 @@ import { Database, TrendingUp, Gauge, Shapes } from 'lucide-react'
 import { inputCls, selectCls, FieldLabel, Section, ToggleRow, ColumnSelect, ColorField } from './inspectorPrimitives.jsx'
 import { useColumnIntrospection } from './useInspectorData.js'
 import { IconPicker } from './IconPicker.jsx'
+import { parseNumberInput } from './numberInput.js'
 
 export function KpiConfig({ widget, onChange }) {
   const { columns, introspecting } = useColumnIntrospection(widget.query_id)
@@ -191,7 +192,7 @@ export function KpiConfig({ widget, onChange }) {
                 <FieldLabel>Segments</FieldLabel>
                 <input type="number" min={2} max={40} className={inputCls} placeholder="10"
                   value={progress.segments ?? ''}
-                  onChange={e => setProgressField('segments', e.target.value === '' ? undefined : (parseInt(e.target.value, 10) || undefined))} />
+                  onChange={e => setProgressField('segments', parseNumberInput(e.target.value, { integer: true, min: 1 }))} />
               </div>
             )}
           </div>
