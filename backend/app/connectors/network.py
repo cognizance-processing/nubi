@@ -108,6 +108,21 @@ class NetworkTarget:
     cleanup: Callable[[], None] = field(default=lambda: None, compare=False)
 
 
+def effective_network(ds: dict[str, Any]) -> tuple[str, str | None]:
+    """Return the ``(network_mode, bridge_id)`` a datastore row actually uses.
+
+    The connector API writes both into ``datastores.config`` and never touches
+    the legacy top-level ``network_mode`` / ``bridge_id`` columns, so the config
+    values win; the columns are only a fallback for rows provisioned before the
+    config carried them. Every runtime path and every API response must go
+    through this so what the user sees is what the connection does.
+    """
+    cfg = ds.get("config") if isinstance(ds.get("config"), dict) else {}
+    mode = str(cfg.get("network_mode") or ds.get("network_mode") or "direct").strip().lower()
+    bridge_id = cfg.get("bridge_id") or ds.get("bridge_id")
+    return mode, (str(bridge_id) if bridge_id else None)
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------

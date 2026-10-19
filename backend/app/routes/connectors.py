@@ -54,6 +54,7 @@ from pydantic import BaseModel, model_validator
 from app.audit import record_audit as _record_audit
 from app.auth.deps import current_user
 from app.auth.roles import require_writer
+from app.connectors.network import effective_network
 from app.errors import AppError
 from app.repos.provider import get_repo, Repo
 from app.routes import api_router
@@ -323,6 +324,10 @@ def _sanitise(row: dict[str, Any]) -> dict[str, Any]:
     # Never include a top-level 'secret' key.
     safe.pop("secret", None)
 
+    # Report the network mode / bridge the connection actually uses (config),
+    # not the legacy top-level columns the API never writes.
+    safe["network_mode"], safe["bridge_id"] = effective_network(row)
+
     # Belt-and-suspenders assertion — will surface in tests
     _assert_no_secret_leakage(safe)
     return safe
@@ -404,10 +409,11 @@ async def _attach_connector_status(
     from app.bridges.store import get_bridge_store  # noqa: PLC0415
 
     bridge_ids: set[str] = set()
+    # Sanitised rows carry the effective network_mode / bridge_id (see _sanitise).
     for row in rows:
-        cfg = row.get("config")
-        if isinstance(cfg, dict) and cfg.get("network_mode") == "bridge" and cfg.get("bridge_id"):
-            bridge_ids.add(str(cfg["bridge_id"]))
+        mode, bid = effective_network(row)
+        if mode == "bridge" and bid:
+            bridge_ids.add(bid)
 
     bridges_by_id: dict[str, dict[str, Any]] = {}
     if bridge_ids:
@@ -418,8 +424,9 @@ async def _attach_connector_status(
 
     for row in rows:
         cfg = row.get("config") if isinstance(row.get("config"), dict) else {}
-        if cfg.get("network_mode") == "bridge":
-            bridge = bridges_by_id.get(str(cfg.get("bridge_id") or ""))
+        mode, bid = effective_network(row)
+        if mode == "bridge":
+            bridge = bridges_by_id.get(bid or "")
             if bridge is None:
                 row["status"] = {
                     "kind": "bridge", "state": "unknown",
@@ -910,7 +917,7 @@ async def test_connector(
             "layers": {"config": False, "secret": False},
         }
 
-    is_bridge_mode = row["config"].get("network_mode") == "bridge"  # type: ignore[union-attr]
+    is_bridge_mode = effective_network(row)[0] == "bridge"
 
     # Verify the secret layer resolves. ``get`` returns the decrypted dict when a
     # secret exists (proves the key works), or ``None`` when the connector simply

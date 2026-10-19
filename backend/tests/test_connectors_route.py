@@ -1186,6 +1186,64 @@ class TestConnectorTest:
 # ---------------------------------------------------------------------------
 
 
+class TestEffectiveNetworkFields:
+    """Top-level network_mode/bridge_id report what the runtime uses (config),
+    not the legacy columns the API never writes."""
+
+    @pytest.mark.asyncio
+    async def test_get_and_list_report_config_values_over_stale_columns(self, connectors_client):
+        client, alice_id, org_id, repo = connectors_client
+        bridge_id = str(uuid.uuid4())
+        create_resp = await client.post(
+            "/api/v1/connectors",
+            json={
+                "name": "via-bridge",
+                "type": "postgres",
+                "config": {"host": "10.0.0.5", "port": 5432, "database": "d", "user": "u",
+                           "network_mode": "bridge", "bridge_id": bridge_id},
+                "secret": {"password": "pw"},
+            },
+            headers=_auth_headers(alice_id),
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        row_id = create_resp.json()["id"]
+        assert create_resp.json()["network_mode"] == "bridge"
+        assert create_resp.json()["bridge_id"] == bridge_id
+
+        # Simulate the Postgres row: column defaults that were never synced.
+        repo._store["datastores"][row_id].update({"network_mode": "direct", "bridge_id": None})
+
+        got = (await client.get(f"/api/v1/connectors/{row_id}", headers=_auth_headers(alice_id))).json()
+        listed = next(
+            r for r in (await client.get("/api/v1/connectors", headers=_auth_headers(alice_id))).json()
+            if r["id"] == row_id
+        )
+        for body in (got, listed):
+            assert body["network_mode"] == "bridge"
+            assert body["bridge_id"] == bridge_id
+        assert listed["status"]["kind"] == "bridge"
+
+        # Switching back to direct in config is reflected too.
+        upd = await client.put(
+            f"/api/v1/connectors/{row_id}",
+            json={"config": {"network_mode": "direct", "bridge_id": None}},
+            headers=_auth_headers(alice_id),
+        )
+        assert upd.status_code == 200, upd.text
+        got = (await client.get(f"/api/v1/connectors/{row_id}", headers=_auth_headers(alice_id))).json()
+        assert got["network_mode"] == "direct"
+        assert got["bridge_id"] is None
+
+
+def test_effective_network_prefers_config_and_falls_back_to_columns():
+    from app.connectors.network import effective_network
+
+    assert effective_network({"network_mode": "direct", "bridge_id": "old",
+                              "config": {"network_mode": "Bridge", "bridge_id": "new"}}) == ("bridge", "new")
+    assert effective_network({"network_mode": "bridge", "bridge_id": "col", "config": {}}) == ("bridge", "col")
+    assert effective_network({"config": None}) == ("direct", None)
+
+
 class TestConnectorStatus:
 
     @pytest.mark.asyncio

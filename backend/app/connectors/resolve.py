@@ -172,14 +172,16 @@ async def resolve_datastore_connector(
 
     # ── Network-mode resolution (M22-A / M22-B VPC bridge) ────────────────────
     from app.connectors.network import (
+        effective_network as _effective_network,
         resolve_network as _resolve_network,
         resolve_network_async as _resolve_network_async,
     )
 
-    if "network_mode" not in cfg:
-        cfg["network_mode"] = ds.get("network_mode") or "direct"
-    _mode: str = (cfg.get("network_mode") or "direct").strip().lower()
-    _bridge_id: str | None = ds.get("bridge_id") or cfg.get("bridge_id")
+    # Config wins over the legacy top-level columns (see effective_network).
+    _mode, _bridge_id = _effective_network({**ds, "config": cfg})
+    cfg["network_mode"] = _mode
+    if _bridge_id:
+        cfg["bridge_id"] = _bridge_id
     _bridge: dict | None = None
     if _bridge_id:
         try:
