@@ -1592,10 +1592,19 @@ async def run_one_ready_task(
     # identity — fill in the flow OWNER's snapshotted RLS policies so query
     # cells row-filter exactly as the owner does.  No-op when claims already
     # carry policies (the synchronous interactive path).
-    exec_claims = _claims_with_owner_policies(
-        claims, flow_dict, flow_run_id=flow_run_id,
-        requires_rls=_task_requires_rls(task_spec),
-    )
+    try:
+        exec_claims = _claims_with_owner_policies(
+            claims, flow_dict, flow_run_id=flow_run_id,
+            requires_rls=_task_requires_rls(task_spec),
+        )
+    except MissingOwnerPolicySnapshot as exc:
+        # Refused, not crashed: record a terminal failure (the guard stays
+        # fail-closed; the cell never runs) so the run finishes with the reason
+        # instead of the lease expiring and the task being retried forever.
+        return await _fail_refused_task(
+            store, task_run, flow_run_id, str(exc), now,
+            preloaded=_patch_snapshot,
+        )
     # Merge task_run with task_spec so execute_task sees kind/config/timeout.
     full_task = {**task_run, **task_spec}
     # for_each cells are rewritten into a legacy 'map' task so the existing
@@ -2686,6 +2695,15 @@ def _task_requires_rls(task_spec: dict[str, Any] | None) -> bool:
     return task_spec.get("kind") == "query"
 
 
+class MissingOwnerPolicySnapshot(RuntimeError):
+    """A query cell was refused: no owner-policy snapshot and no caller policies.
+
+    Raised by :func:`_claims_with_owner_policies` (fail-closed RLS). Distinct so
+    the executors can record it as a terminal task failure: no retry can succeed
+    until the flow is re-saved, so it must not escape as a worker crash.
+    """
+
+
 def _claims_with_owner_policies(
     claims: dict[str, Any],
     flow: dict[str, Any] | None,
@@ -2757,7 +2775,7 @@ def _claims_with_owner_policies(
             "the owner's policy snapshot.",
             _flow_id,
         )
-        raise RuntimeError(
+        raise MissingOwnerPolicySnapshot(
             f"Flow {_flow_id} has no owner-policy snapshot (__owner_policies__); "
             "scheduled execution cannot apply RLS to a query cell and would leak "
             "rows across tenants. Re-save or re-enable the flow to capture the "
@@ -2959,10 +2977,14 @@ async def _execute_claimed_task_run_inner(
     # scheduled drain → claims has no policies), substitute the flow OWNER's
     # snapshotted RLS policies so query cells still row-filter.  Interactive
     # drains (run_flow / run-cell) already pass the caller's policies — kept.
-    exec_claims = _claims_with_owner_policies(
-        claims, flow_dict, flow_run_id=flow_run_id,
-        requires_rls=_task_requires_rls(task_spec),
-    )
+    try:
+        exec_claims = _claims_with_owner_policies(
+            claims, flow_dict, flow_run_id=flow_run_id,
+            requires_rls=_task_requires_rls(task_spec),
+        )
+    except MissingOwnerPolicySnapshot as exc:
+        # Same as the worker-pool path: a terminal, explained failure.
+        return await _fail_refused_task(store, task_run, flow_run_id, str(exc), now)
 
     # ── Offload to a thread ────────────────────────────────────────────────────
     # execute_task is synchronous (and enforces timeout_s internally via a
@@ -3244,6 +3266,35 @@ async def _execute_claimed_task_run_inner(
                 _preloaded_task_runs=await _patch_snapshot(result_tr or task_run),
             )
             return result_tr or task_run
+
+
+async def _fail_refused_task(
+    store: Any,
+    task_run: dict[str, Any],
+    flow_run_id: str,
+    error: str,
+    now: datetime,
+    *,
+    preloaded: Any = None,
+) -> dict[str, Any]:
+    """Mark a task_run that was refused before execution as failed (no retry).
+
+    *preloaded* optionally maps the updated row to the run's task-run snapshot
+    (an executor's ``_patch_snapshot``) so advance_readiness can skip a reload.
+    """
+    failed_tr = await store.update_task_run(
+        task_run["id"],
+        {"state": "failed", "error": error, "finished_at": now, "logs": []},
+    )
+    _emit_task_event(
+        "task_failed", flow_run_id, task_run.get("task_key", ""), "failed", error,
+        int(task_run.get("attempt", 0)), now,
+    )
+    kwargs = {}
+    if preloaded is not None:
+        kwargs["_preloaded_task_runs"] = await preloaded(failed_tr or task_run)
+    await advance_readiness(store, flow_run_id, now, **kwargs)
+    return failed_tr or task_run
 
 
 # ---------------------------------------------------------------------------
