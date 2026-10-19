@@ -1044,8 +1044,11 @@ async def query_metric(
     payload["metric_id"] = metric_id
     mq = MetricQuery.from_dict(payload)
 
+    # Pass the request so the datastore resolves in the org the metric was
+    # resolved in (X-Org-Id); without it this falls back to the caller's
+    # DEFAULT org and every metric in a non-default org 404s its datastore.
     repo = get_repo()
-    org_id, org_lookup_error = await _resolve_caller_org(identity, repo)
+    org_id, org_lookup_error = await _resolve_caller_org(identity, repo, request)
 
     return await execute_metric_query(
         metric=metric,

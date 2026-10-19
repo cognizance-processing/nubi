@@ -40,22 +40,34 @@ DEFAULT_ORG_MODULES: dict[str, str] = {
         "falls back only when no Request was passed."
     ),
     "watches.py": (
-        "_feed_breach() dispatches a breach notification and may run from a "
-        "background tick with no request at all. The RIGHT fix is to take the "
-        "org from the watch rather than the evaluating user, which needs "
-        "app.ai.watch.Watch to carry org_id; until then the default org is the "
-        "only thing available. TODO: add Watch.org_id and scope it there."
+        "_feed_breach() takes the watch's org from its caller (the request-scoped "
+        "evaluate route passes it) and falls back to the evaluating user's "
+        "default org only when no org is known (a request-less background tick). "
+        "TODO: add Watch.org_id so the fallback can go."
     ),
 }
 
 DEFAULT_GUARDS = ("Depends(require_writer_default)", "Depends(require_approver_default)")
 
 
+#: Routers that live outside ``app/routes`` but serve the same org-scoped API.
+#: ``app/webhooks/router.py`` resolved every request in the DEFAULT org (and
+#: guarded with ``require_writer_default``) for months because this test only
+#: globbed ``app/routes`` — so any module that builds an ``APIRouter`` counts.
+_APP = ROUTES.parent
+
+
 def _modules():
-    return [p for p in sorted(ROUTES.glob("*.py")) if not p.name.startswith("_")]
+    mods = [p for p in sorted(ROUTES.glob("*.py")) if not p.name.startswith("_")]
+    mods += [
+        p
+        for p in sorted(_APP.rglob("*.py"))
+        if ROUTES not in p.parents and "APIRouter(" in p.read_text()
+    ]
+    return mods
 
 
-@pytest.mark.parametrize("path", _modules(), ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _modules(), ids=lambda p: str(p.relative_to(_APP)))
 def test_default_org_guard_is_not_paired_with_header_aware_resolution(path):
     src = path.read_text()
     uses_default_guard = any(g in src for g in DEFAULT_GUARDS)
@@ -74,7 +86,7 @@ def test_default_org_guard_is_not_paired_with_header_aware_resolution(path):
     )
 
 
-@pytest.mark.parametrize("path", _modules(), ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _modules(), ids=lambda p: str(p.relative_to(_APP)))
 def test_handlers_that_resolve_an_org_do_not_use_the_default_helper(path):
     """``get_user_org`` ignores ``X-Org-Id`` — a route serving a user in a
     workspace must use ``resolve_org_id``, which verifies membership first."""
@@ -92,4 +104,47 @@ def test_handlers_that_resolve_an_org_do_not_use_the_default_helper(path):
         f"{path.name} calls get_user_org(), which always returns the caller's "
         f"DEFAULT org and silently ignores X-Org-Id. Use resolve_org_id(...), or "
         f"add the module to DEFAULT_ORG_MODULES with a reason."
+    )
+
+
+#: Helpers that resolve the acting org and honour ``X-Org-Id`` ONLY when handed
+#: the request; called without it they silently fall back to the default org.
+_REQUEST_AWARE_RESOLVERS = {
+    "_resolve_caller_org",
+    "resolve_org_id",
+    "_resolve_org_id",
+    "_caller_org",
+}
+
+
+@pytest.mark.parametrize("path", _modules(), ids=lambda p: str(p.relative_to(_APP)))
+def test_handlers_with_a_request_pass_it_to_the_org_resolver(path):
+    """If a handler has the request, its org resolver must get it.
+
+    ``POST /metrics/{id}/query`` resolved the metric in the X-Org-Id org but then
+    called ``_resolve_caller_org(identity, repo)`` WITHOUT the request to find
+    the datastore — so every metric in a non-default org failed with
+    ``datastore_not_found``. Pairing is checked per function, by AST.
+    """
+    tree = ast.parse(path.read_text())
+    misses: list[str] = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if "request" not in [a.arg for a in fn.args.args + fn.args.kwonlyargs]:
+            continue
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if name not in _REQUEST_AWARE_RESOLVERS:
+                continue
+            passed = any(isinstance(a, ast.Name) and a.id == "request" for a in node.args) or any(
+                k.arg == "request" for k in node.keywords
+            )
+            if not passed:
+                misses.append(f"{fn.name}() line {node.lineno}: {name}(...) without request")
+    assert not misses, (
+        f"{path.name}: these calls drop the request, so X-Org-Id is ignored and "
+        f"the caller's DEFAULT org is used: {misses}"
     )

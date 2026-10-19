@@ -455,7 +455,7 @@ async def api_client():
 
     from main import app  # noqa: PLC0415
     from app.auth.deps import current_user  # noqa: PLC0415
-    from app.auth.roles import require_writer_default  # noqa: PLC0415
+    from app.auth.roles import require_writer  # noqa: PLC0415
     from app.routes import _org as org_mod  # noqa: PLC0415
 
     fake_user = {"id": _USER, "email": "t@nubi.dev", "name": "T"}
@@ -470,12 +470,9 @@ async def api_client():
         return _ROUTE_ORG
 
     app.dependency_overrides[current_user] = _fake_current_user
-    app.dependency_overrides[require_writer_default] = _fake_writer
+    app.dependency_overrides[require_writer] = _fake_writer
     _orig = org_mod.get_user_org
     org_mod.get_user_org = _fake_get_user_org
-    # The router imported the symbol directly — patch its binding too.
-    import app.webhooks.router as wh_router  # noqa: PLC0415
-    wh_router._get_user_org = _fake_get_user_org
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
@@ -483,9 +480,8 @@ async def api_client():
             yield ac
     finally:
         app.dependency_overrides.pop(current_user, None)
-        app.dependency_overrides.pop(require_writer_default, None)
+        app.dependency_overrides.pop(require_writer, None)
         org_mod.get_user_org = _orig
-        wh_router._get_user_org = _orig
         set_webhook_store(None)
 
 
@@ -545,6 +541,42 @@ async def test_route_rejects_unknown_event_type(api_client: AsyncClient):
     )
     assert resp.status_code == 422
     assert resp.json()["error"]["code"] == "invalid_event_types"
+
+
+@pytest.mark.asyncio
+async def test_route_honours_x_org_id(api_client: AsyncClient, monkeypatch):
+    """A webhook created/updated in workspace B (X-Org-Id) lives in B, not the
+    caller's default org — and the slash-less collection path works too.
+
+    Regression: every webhook route resolved the DEFAULT org (``get_user_org``),
+    so a multi-org user's webhooks silently landed in their first workspace.
+    """
+    from app.routes import _org as org_mod  # noqa: PLC0415
+
+    async def _is_member(user_id, org_id, repo):
+        return True
+
+    monkeypatch.setattr(org_mod, "_user_is_member", _is_member)
+    other_org = str(uuid.uuid4())
+    hdr = {"X-Org-Id": other_org}
+
+    resp = await api_client.post(
+        "/api/v1/webhooks",
+        json={"name": "b hook", "url": "https://host.example/b", "secret": "supersecret"},
+        headers=hdr,
+    )
+    assert resp.status_code == 201, resp.text
+    wid = resp.json()["id"]
+    assert resp.json()["org_id"] == other_org
+
+    resp = await api_client.put(f"/api/v1/webhooks/{wid}", json={"name": "b2"}, headers=hdr)
+    assert resp.status_code == 200, resp.text
+
+    in_b = (await api_client.get("/api/v1/webhooks", headers=hdr)).json()
+    assert [r["name"] for r in in_b] == ["b2"]
+    # The default org (no header) never sees it.
+    assert (await api_client.get("/api/v1/webhooks")).json() == []
+    assert (await api_client.get(f"/api/v1/webhooks/{wid}")).status_code == 404
 
 
 @pytest.mark.asyncio

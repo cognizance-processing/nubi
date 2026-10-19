@@ -486,7 +486,11 @@ async def delete_watch(
 
 
 async def _feed_breach(
-    summary: dict[str, Any], watch: Watch, *, identity: VerifiedIdentity | None
+    summary: dict[str, Any],
+    watch: Watch,
+    *,
+    identity: VerifiedIdentity | None,
+    org_id: str | None = None,
 ) -> None:
     """Also land a breached watch in the in-app feed + Web Push (best-effort).
 
@@ -495,6 +499,10 @@ async def _feed_breach(
     through the unified ``notify_event`` dispatch so it shows up in the
     notification center and as a push. Never raises — a feed/push failure must
     not regress a watch evaluation.
+
+    *org_id* is the org that owns the watch (the one the caller resolved via
+    ``X-Org-Id``). Pass it whenever it is known: falling back to the caller's
+    DEFAULT org lands a multi-org user's breach in the wrong org's feed.
     """
     if not summary.get("breached"):
         return
@@ -503,8 +511,7 @@ async def _feed_breach(
         from app.repos.provider import get_repo
         from app.routes._org import get_user_org
 
-        org_id = None
-        if identity is not None and getattr(identity, "user_id", None):
+        if not org_id and identity is not None and getattr(identity, "user_id", None):
             org_id = await get_user_org(identity.user_id, get_repo())
         if not org_id:
             return  # No tenant context (system tick) — nothing to scope the feed to.
@@ -580,7 +587,7 @@ async def evaluate_watch_now(
     claims = {"policies": identity.policies, "org_id": org_id}
     summary = await run_watch(watch, metric, claims)
     summary["id"] = watch.id
-    await _feed_breach(summary, watch, identity=identity)
+    await _feed_breach(summary, watch, identity=identity, org_id=org_id)
     return summary
 
 
