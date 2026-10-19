@@ -155,7 +155,6 @@ export default function OrgSettings() {
   const isPersonal = !orgId || orgId === 'personal'
 
   // Determine blocker text
-  const projectsBlocker = impact?.blockers?.find((b) => b.type === 'projects')
   const canDelete = impact?.can_delete === true
   // Org rename/branding/delete are owner/admin only (backend enforces via _require_manage).
   const canManage = ['owner', 'admin'].includes(activeOrg?.role)
@@ -252,18 +251,9 @@ export default function OrgSettings() {
             <DangerZone>
               <DangerRow
                 title="Delete this organisation"
-                description="Permanently deletes the organisation and all of its resources. This cannot be undone."
+                description="Permanently deletes the organisation, all of its projects and all of their resources. This cannot be undone."
                 extra={
                   <>
-                    {projectsBlocker && (
-                      <div className="nubi-notice nubi-notice-warning mt-3 text-xs" role="status">
-                        <span>
-                          This organisation has {projectsBlocker.count} project
-                          {projectsBlocker.count !== 1 ? 's' : ''}. Delete all projects first
-                          before deleting the organisation.
-                        </span>
-                      </div>
-                    )}
                     {impactError && (
                       <div className="mt-2 flex items-center gap-2">
                         <p className="text-xs text-danger-fg">{impactError}</p>
@@ -283,7 +273,6 @@ export default function OrgSettings() {
                   onClick={() => setDialogOpen(true)}
                   disabled={impactLoading || !canDelete}
                   busy={impactLoading}
-                  title={!canDelete && projectsBlocker ? 'Delete all projects first' : undefined}
                 >
                   {!impactLoading && <Trash2 size={15} />}
                   Delete organisation

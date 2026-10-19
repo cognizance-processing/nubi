@@ -7,7 +7,7 @@ GET    /orgs/{id}         — fetch a single org the user is a member of (404 ot
 POST   /orgs              — create a new org with the current user as owner.
 PATCH  /orgs/{id}         — rename an org and/or set its avatar_url.
 GET    /orgs/{id}/deletion-impact — describe what would be deleted (can_delete, blockers, deletes).
-DELETE /orgs/{id}         — delete an org (409 if projects exist; requires confirm_name).
+DELETE /orgs/{id}         — delete an org and its projects (requires confirm_name).
 
 Authentication
 --------------
@@ -350,9 +350,9 @@ async def get_org_deletion_impact(
 ) -> DeletionImpactResponse:
     """Return a summary of what deleting this org would affect.
 
-    Sets ``can_delete=false`` with a ``projects`` blocker when the org has any
-    projects (an org with projects cannot be deleted — all projects must be
-    removed first).
+    Deleting an org also deletes its projects and their resources, so projects
+    are reported under ``deletes`` (not as a blocker) and ``can_delete`` is
+    true for any org the caller can see.
 
     Parameters
     ----------
@@ -377,21 +377,13 @@ async def get_org_deletion_impact(
     blockers: list[ImpactBlocker] = []
     deletes: list[ImpactDelete] = []
 
-    # Projects are a hard blocker — an org with projects cannot be deleted.
+    # Projects (and everything inside them) are deleted with the org — the DB
+    # cascades from orgs → projects → project resources. Project deletion's
+    # "last project" rule only applies to a standalone project delete.
     project_count = await projects_repo.count_projects(org_id)
     if project_count > 0:
-        blockers.append(
-            ImpactBlocker(
-                type="projects",
-                count=project_count,
-                reason=(
-                    f"This org has {project_count} project(s). "
-                    "Delete all projects before deleting the org."
-                ),
-            )
-        )
+        deletes.append(ImpactDelete(type="projects", count=project_count))
 
-    # Count resources that WOULD be deleted (regardless of blocker).
     for resource_type, table in [
         ("datastores", "datastores"),
         ("boards", "boards"),
@@ -578,12 +570,11 @@ async def delete_org(
     Rules
     -----
     1.  The caller must be a member of the org.
-    2.  The org must have **no projects** — if any projects exist, the endpoint
-        returns 409 with a clear message listing the project count.
-    3.  The caller must supply ``confirm_name`` matching the org's exact name
+    2.  The caller must supply ``confirm_name`` matching the org's exact name
         (case-sensitive). Mismatch → 422.
-    4.  On success, org-scoped data is cascade-deleted by the DB (foreign key
-        ``ON DELETE CASCADE`` on all resource tables).
+    3.  On success the org's projects and all org-scoped data are
+        cascade-deleted by the DB (foreign key ``ON DELETE CASCADE``), matching
+        what GET /orgs/{id}/deletion-impact lists under ``deletes``.
 
     Parameters
     ----------
@@ -600,27 +591,13 @@ async def delete_org(
     ------
     AppError("not_found", 404)
         If the org doesn't exist or the user isn't a member.
-    AppError("org_has_projects", 409)
-        If the org still has projects.
     AppError("confirm_name_mismatch", 422)
         If ``confirm_name`` does not match the org's name exactly.
     """
     user_id = str(user["id"])
     org = await _require_manage(user_id, org_id)  # owner/admin only (also blocks viewer/member)
 
-    # Rule 2: reject if any projects exist.
-    project_count = await projects_repo.count_projects(org_id)
-    if project_count > 0:
-        raise AppError(
-            "org_has_projects",
-            (
-                f"Cannot delete org '{org['name']}': it still has {project_count} project(s). "
-                "Delete all projects first."
-            ),
-            409,
-        )
-
-    # Rule 3: confirm_name must match.
+    # Rule 2: confirm_name must match.
     if body.confirm_name != org["name"]:
         raise AppError(
             "confirm_name_mismatch",
@@ -631,7 +608,9 @@ async def delete_org(
             422,
         )
 
-    # Cascade-delete: the DB cascades to org_members + resource tables via FK.
+    # One statement, so it is atomic: the DB cascades (FK ON DELETE CASCADE) to
+    # org_members, projects and every org/project-scoped resource table — the
+    # same set GET /deletion-impact reports.
     await execute(
         "DELETE FROM orgs WHERE id = $1::uuid",
         org_id,

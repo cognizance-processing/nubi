@@ -7,11 +7,11 @@ Org:
 2.  PATCH /orgs/{id} — avatar_url update.
 3.  PATCH /orgs/{id} — 400 when no fields given.
 4.  PATCH /orgs/{id} — 404 for unknown / foreign org.
-5.  GET /orgs/{id}/deletion-impact — org with projects → can_delete=false + blocker.
+5.  GET /orgs/{id}/deletion-impact — org with projects → can_delete=true, projects in deletes.
 6.  GET /orgs/{id}/deletion-impact — org with no projects → can_delete=true.
-7.  DELETE /orgs/{id} — 409 when org has projects.
+7.  DELETE /orgs/{id} — 204 when org has projects (cascade-deleted with it).
 8.  DELETE /orgs/{id} — 422 when confirm_name mismatches.
-9.  DELETE /orgs/{id} — 204 on successful delete (no projects, correct name).
+9.  DELETE /orgs/{id} — 204 on successful delete (correct name).
 10. DELETE /orgs/{id} — 404 for unknown org.
 
 Project:
@@ -419,23 +419,8 @@ class TestPatchOrg:
 
 class TestOrgDeletionImpact:
     @pytest.mark.asyncio
-    async def test_org_with_projects_cannot_delete(self, org_client):
-        ac, user_id, org_id, state = org_client
-        state["project_count"] = 2
-
-        resp = await ac.get(
-            f"/api/v1/orgs/{org_id}/deletion-impact",
-            headers=_auth(user_id),
-        )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["can_delete"] is False
-        blockers = body["blockers"]
-        assert len(blockers) >= 1
-        assert any(b["type"] == "projects" for b in blockers)
-
-    @pytest.mark.asyncio
-    async def test_org_with_projects_blocker_has_count(self, org_client):
+    async def test_org_with_projects_can_delete_and_lists_projects(self, org_client):
+        """Projects are deleted with the org, so they are a ``deletes`` item, not a blocker."""
         ac, user_id, org_id, state = org_client
         state["project_count"] = 3
 
@@ -443,9 +428,12 @@ class TestOrgDeletionImpact:
             f"/api/v1/orgs/{org_id}/deletion-impact",
             headers=_auth(user_id),
         )
+        assert resp.status_code == 200
         body = resp.json()
-        blocker = next(b for b in body["blockers"] if b["type"] == "projects")
-        assert blocker["count"] == 3
+        assert body["can_delete"] is True
+        assert body["blockers"] == []
+        item = next(d for d in body["deletes"] if d["type"] == "projects")
+        assert item["count"] == 3
 
     @pytest.mark.asyncio
     async def test_org_without_projects_can_delete(self, org_client):
@@ -487,20 +475,8 @@ class TestOrgDeletionImpact:
 
 class TestDeleteOrg:
     @pytest.mark.asyncio
-    async def test_delete_org_with_projects_returns_409(self, org_client):
-        ac, user_id, org_id, state = org_client
-        state["project_count"] = 1
-
-        resp = await ac.request(
-            "DELETE",
-            f"/api/v1/orgs/{org_id}",
-            json={"confirm_name": "Acme Corp"},
-            headers=_auth(user_id),
-        )
-        assert resp.status_code == 409
-
-    @pytest.mark.asyncio
-    async def test_delete_org_409_message_mentions_projects(self, org_client):
+    async def test_delete_org_with_projects_returns_204(self, org_client):
+        """An org with projects (every org has >=1) is deletable; the DB cascades them."""
         ac, user_id, org_id, state = org_client
         state["project_count"] = 2
 
@@ -510,8 +486,22 @@ class TestDeleteOrg:
             json={"confirm_name": "Acme Corp"},
             headers=_auth(user_id),
         )
-        body = resp.json()
-        assert "project" in body["error"]["message"].lower()
+        assert resp.status_code == 204
+        assert state.get("deleted") is True
+
+    @pytest.mark.asyncio
+    async def test_delete_org_with_projects_wrong_name_still_422(self, org_client):
+        ac, user_id, org_id, state = org_client
+        state["project_count"] = 2
+
+        resp = await ac.request(
+            "DELETE",
+            f"/api/v1/orgs/{org_id}",
+            json={"confirm_name": "acme corp"},
+            headers=_auth(user_id),
+        )
+        assert resp.status_code == 422
+        assert state.get("deleted") is not True
 
     @pytest.mark.asyncio
     async def test_delete_org_wrong_confirm_name_returns_422(self, org_client):
