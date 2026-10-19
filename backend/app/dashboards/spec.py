@@ -130,6 +130,17 @@ class WidgetPos(BaseModel):
     w: int = Field(ge=1, description="Column span.")
     h: int = Field(ge=1, description="Row span.")
 
+    @field_validator("x", "y", mode="before")
+    @classmethod
+    def _clamp_legacy_zero_based_start(cls, v: Any) -> Any:
+        # Some imported boards carry 0-based starts (x/y = 0). The frontend's
+        # posToGridItem clamps with ``max(0, v - 1)``, so 0 draws exactly where
+        # 1 does — normalise to the same position instead of rejecting a board
+        # that renders fine.
+        if isinstance(v, int) and not isinstance(v, bool) and v < 1:
+            return 1
+        return v
+
 
 # ---------------------------------------------------------------------------
 # Surface layout models (T1 — additive container model)
@@ -483,6 +494,15 @@ class Variable(BaseModel):
         Field(description="Variable value type.")
     )
     default: Any = Field(default=None, description="Default value for the variable.")
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _legacy_string_type(cls, v: Any) -> Any:
+        # Imported boards declare ``type: "string"``. No renderer reads a
+        # variable's type (it only seeds the store from ``default``) and the
+        # editor shows an unknown type as ``text``, so treat it as that alias.
+        return "text" if v == "string" else v
+
     mode: Literal["scan", "slice"] | None = Field(
         default=None,
         description=(
@@ -642,7 +662,9 @@ class Widget(BaseModel):
         not re-derive it. ``drawer`` / ``drawer_group`` keep working unchanged.
     subtype:
         Filter widget sub-type — ``'select'``, ``'multiselect'``,
-        ``'daterange'``, or ``'text'``.  Required when ``type == 'filter'``.
+        ``'daterange'``, ``'text'``, or ``'list'`` (an always-visible list
+        slicer, single-valued like ``'select'``).  Required when
+        ``type == 'filter'``.
     options_query_id:
         Registered query id that provides option values for a ``filter``
         widget of sub-type ``'select'`` or ``'multiselect'``.  Optional.
@@ -757,6 +779,17 @@ class Widget(BaseModel):
     # LIST of column names (one series per column) — see buildCombo in
     # embed/widgets/chart-options.js.
     encoding: dict[str, str | list[str]] = Field(default_factory=dict)
+
+    @field_validator("encoding", mode="before")
+    @classmethod
+    def _drop_null_channels(cls, v: Any) -> Any:
+        # Imported boards write unmapped channels as ``"x": null``. The chart
+        # builder treats a null channel exactly like an absent one (it falls
+        # back to the result's leading columns), so drop it rather than reject
+        # the board. A missing required channel is still reported by step 3.
+        if isinstance(v, dict):
+            return {k: val for k, val in v.items() if val is not None}
+        return v
     props: dict[str, Any] = Field(default_factory=dict)
     config: dict[str, Any] = Field(
         default_factory=dict,
@@ -826,7 +859,7 @@ class Widget(BaseModel):
     )
     order: int = Field(default=0, description="Sort order within a drawer.")
     # filter-specific fields
-    subtype: Literal["select", "multiselect", "daterange", "text"] | None = Field(
+    subtype: Literal["select", "multiselect", "daterange", "text", "list"] | None = Field(
         default=None,
         description="Filter sub-type (required for filter widgets).",
     )
@@ -1449,7 +1482,7 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
             if widget.subtype is None:
                 issues.append(
                     f"Widget {widget.id!r} (filter): 'subtype' is required "
-                    "for filter widgets ('select'|'multiselect'|'daterange'|'text')."
+                    "for filter widgets ('select'|'multiselect'|'daterange'|'text'|'list')."
                 )
             if not widget.target_var:
                 issues.append(

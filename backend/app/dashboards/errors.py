@@ -416,7 +416,7 @@ def _classify_widget_requirement(
             message=full_text,
             severity="error",
             suggestion="Set 'subtype' for the filter widget.",
-            valid_options=["select", "multiselect", "daterange", "text"],
+            valid_options=["select", "multiselect", "daterange", "text", "list"],
         )
     if "target_var" in lower:
         return StructuredIssue(

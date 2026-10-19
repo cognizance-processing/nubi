@@ -616,11 +616,10 @@ def spec_for_render(spec_dict: dict[str, Any], *, fallback_title: str | None = N
     cannot affect pixels, and draw what's left.
 
     This is deliberately a RENDERING concession, not a loosening of the product's
-    contract — ``validate_spec`` and ``POST /dashboards/validate`` are untouched,
-    so a genuinely malformed spec still fails there. The underlying problem is
-    that the backend schema has drifted behind the frontend renderer (the combo
-    ``encoding.y`` array form is rejected the same way); fixing that drift at the
-    schema is a separate, contract-level decision.
+    contract — a genuinely malformed spec still fails ``validate_spec`` and
+    ``POST /dashboards/validate``. The schema now accepts the specific forms
+    above (``"string"`` normalises to ``"text"``, ``"list"`` is a real subtype),
+    so this retry is the safety net for whatever drift comes next.
 
     Returns ``None`` when even the geometry won't parse — callers should then
     show a placeholder rather than a blank, which would be a convincing lie.

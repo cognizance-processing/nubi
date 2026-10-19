@@ -747,7 +747,7 @@ class TestM14FilterWidget:
         )
 
     def test_filter_subtypes_accepted(self):
-        for subtype in ("select", "multiselect", "daterange", "text"):
+        for subtype in ("select", "multiselect", "daterange", "text", "list"):
             data = _make_variable_spec()
             data["widgets"][0]["subtype"] = subtype
             spec, issues = validate_spec(data)
@@ -2129,3 +2129,123 @@ class TestPassThroughWidgetFields:
         widget = result.model_dump()["widgets"][0]
         for key in self.PASS_THROUGH:
             assert widget.get(key) is None
+
+
+# ---------------------------------------------------------------------------
+# Legacy forms the frontend renders but the schema used to reject
+# ---------------------------------------------------------------------------
+
+
+class TestLegacyFormsAccepted:
+    """Values found on imported boards that the app renders fine.
+
+    Each must parse (so AI/MCP edits on such a board are not refused) and be
+    normalised to the form the renderer already treats it as.
+    """
+
+    @staticmethod
+    def _spec(**overrides: Any) -> dict[str, Any]:
+        spec: dict[str, Any] = {
+            "title": "Legacy forms",
+            "variables": [{"name": "region", "type": "select", "default": None}],
+            "widgets": [
+                {
+                    "id": "f1", "type": "filter", "subtype": "select",
+                    "target_var": "region", "pos": {"x": 1, "y": 1, "w": 4, "h": 1},
+                },
+                {
+                    "id": "c1", "type": "chart", "chart_type": "bar",
+                    "query_id": "demo_all", "encoding": {"x": "a", "y": "b"},
+                    "pos": {"x": 1, "y": 2, "w": 6, "h": 4},
+                },
+            ],
+        }
+        spec.update(overrides)
+        return spec
+
+    def test_string_variable_type_normalises_to_text(self):
+        data = self._spec(variables=[{"name": "region", "type": "string", "default": []}])
+        spec, issues = validate_spec(data)
+        assert spec is not None, issues
+        assert spec.variables[0].type == "text"
+        assert spec.variables[0].default == []
+
+    def test_unknown_variable_type_still_rejected(self):
+        data = self._spec(variables=[{"name": "region", "type": "blob"}])
+        spec, _ = validate_spec(data)
+        assert spec is None
+
+    def test_list_filter_subtype_accepted(self):
+        data = self._spec()
+        data["widgets"][0]["subtype"] = "list"
+        spec, issues = validate_spec(data)
+        assert spec is not None, issues
+        assert spec.widgets[0].subtype == "list"
+        assert not [i for i in issues if "subtype" in i]
+
+    def test_null_encoding_channels_are_dropped(self):
+        data = self._spec()
+        data["widgets"][1]["encoding"] = {"x": "a", "y": None, "color": None}
+        spec, issues = validate_spec(data)
+        assert spec is not None, issues
+        assert spec.widgets[1].encoding == {"x": "a"}
+        # A dropped required channel is reported like an absent one.
+        assert any("encoding must include 'y'" in i for i in issues)
+
+    def test_all_null_encoding_parses(self):
+        data = self._spec()
+        data["widgets"][1]["encoding"] = {"x": None, "y": None}
+        spec, issues = validate_spec(data)
+        assert spec is not None, issues
+        assert spec.widgets[1].encoding == {}
+
+    @pytest.mark.parametrize("axis", ["x", "y"])
+    def test_zero_based_pos_start_clamps_to_one(self, axis):
+        data = self._spec()
+        data["widgets"][1]["pos"][axis] = 0
+        spec, issues = validate_spec(data)
+        assert spec is not None, issues
+        assert getattr(spec.widgets[1].pos, axis) == 1
+
+    def test_zero_span_still_rejected(self):
+        data = self._spec()
+        data["widgets"][1]["pos"]["w"] = 0
+        spec, _ = validate_spec(data)
+        assert spec is None
+
+    def test_normalised_spec_round_trips(self):
+        data = self._spec(variables=[{"name": "region", "type": "string", "default": []}])
+        data["widgets"][0]["subtype"] = "list"
+        data["widgets"][1]["encoding"] = {"x": None, "y": "b"}
+        data["widgets"][1]["pos"] = {"x": 0, "y": 0, "w": 6, "h": 4}
+        first, issues = validate_spec(data)
+        assert first is not None, issues
+        again, _ = validate_spec(first.model_dump())
+        assert again is not None
+        assert again.model_dump() == first.model_dump()
+
+    def test_update_dashboard_tool_accepts_legacy_board(self):
+        from app.ai.tools import execute_tool
+
+        repo = InMemoryRepo()
+        set_repo(repo)
+        try:
+            org_id, user_id = str(uuid.uuid4()), str(uuid.uuid4())
+            claims = {"kind": "access", "sub": user_id, "org": org_id,
+                      "policies": {}, "scope": ["author:sql"]}
+            created = execute_tool(
+                "save_dashboard", {"spec": self._spec(), "name": "Board"}, claims
+            )
+            legacy = self._spec(variables=[{"name": "region", "type": "string"}])
+            legacy["widgets"][0]["subtype"] = "list"
+            legacy["widgets"][1]["encoding"] = {"x": None, "y": None}
+            legacy["widgets"][1]["pos"]["x"] = 0
+            res = execute_tool(
+                "update_dashboard", {"board_id": created["id"], "spec": legacy}, claims
+            )
+            assert res["saved"] is True, res
+            back = execute_tool("get_dashboard", {"board_id": created["id"]}, claims)
+            assert back["spec"]["variables"][0]["type"] == "text"
+            assert back["spec"]["widgets"][0]["subtype"] == "list"
+        finally:
+            set_repo(None)
