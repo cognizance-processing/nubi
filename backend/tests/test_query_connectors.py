@@ -216,8 +216,8 @@ async def test_http_json_datastore_returns_mocked_rows(conn_client):
 
     # Monkeypatch the request boundary. The connector now resolves the host once
     # and pins the connection to the validated IP (DNS-rebinding defence), then
-    # issues the request via httpx.request — so we mock the resolver to a public
-    # IP and patch httpx.request (httpx is lazily imported inside execute(); patch
+    # issues the request via httpx.Client.send — so we mock the resolver to a public
+    # IP and patch httpx.Client.send (httpx is lazily imported inside execute(); patch
     # at the httpx module level so the lazy import picks up the patched version).
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
@@ -227,7 +227,7 @@ async def test_http_json_datastore_returns_mocked_rows(conn_client):
         return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 0))]
 
     with patch.object(socket, "getaddrinfo", _fake_getaddrinfo), patch(
-        "httpx.request", return_value=mock_response
+        "httpx.Client.send", return_value=mock_response
     ):
         resp = await client.post(
             "/api/v1/query",

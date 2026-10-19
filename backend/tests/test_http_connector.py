@@ -52,15 +52,17 @@ def _fake_getaddrinfo(*ips: str):
 
 @contextmanager
 def _patched_fetch(response, *, resolves_to: tuple[str, ...] = (_PUBLIC_IP,)):
-    """Patch the resolver to a safe public IP and httpx.request -> *response*.
+    """Patch the resolver to a safe public IP and ``httpx.Client.send`` -> *response*.
 
-    The connector now pins the connection to a validated IP (DNS-rebinding
-    defence) and issues the request via ``httpx.request``; tests must mock both
-    the resolution and the request boundary.  Yields the request mock so callers
-    can assert on how the request was issued.
+    The connector pins the connection to a validated IP (DNS-rebinding
+    defence), builds a real ``httpx.Request`` and sends it through a Client.
+    Mocking at ``send`` (not the request shortcut) keeps the real request
+    construction in every test, so an argument httpx rejects fails here
+    instead of in production. Yields the send mock; ``call_args.args[0]`` is
+    the ``httpx.Request`` that would have gone out.
     """
     with patch.object(socket, "getaddrinfo", _fake_getaddrinfo(*resolves_to)):
-        with patch("httpx.request", return_value=response) as mock_request:
+        with patch("httpx.Client.send", return_value=response) as mock_request:
             yield mock_request
 
 
@@ -256,7 +258,7 @@ class TestHttpJsonConnectorFetchError:
         plan = _make_plan()
 
         with patch.object(socket, "getaddrinfo", _fake_getaddrinfo(_PUBLIC_IP)):
-            with patch("httpx.request", side_effect=httpx.RequestError("Connection refused")):
+            with patch("httpx.Client.send", side_effect=httpx.RequestError("Connection refused")):
                 with pytest.raises(AppError) as exc_info:
                     conn.execute(plan)
 
@@ -427,10 +429,9 @@ class TestHttpJsonConnectorHeaders:
             conn.execute(plan)
 
         assert mock_request.called
-        _, kwargs = mock_request.call_args
-        headers = kwargs.get("headers", {})
-        assert headers.get("Authorization") == "Bearer test-token"
-        assert headers.get("X-Custom") == "value"
+        request = mock_request.call_args.args[0]
+        assert request.headers.get("Authorization") == "Bearer test-token"
+        assert request.headers.get("X-Custom") == "value"
 
     def test_pinned_request_connects_to_ip_and_preserves_host(self) -> None:
         """TOCTOU defence: the request goes to the validated IP literal, while the
@@ -441,15 +442,13 @@ class TestHttpJsonConnectorHeaders:
         with _patched_fetch(_fake_httpx_get([]), resolves_to=(_PUBLIC_IP,)) as mock_request:
             conn.execute(plan)
 
-        args, kwargs = mock_request.call_args
-        method, target_url = args[0], args[1]
-        assert method == "GET"
+        request = mock_request.call_args.args[0]
+        assert request.method == "GET"
         # Connection target is the pinned IP literal, NOT the hostname.
-        assert _PUBLIC_IP in target_url
-        assert "api.example.com" not in target_url
+        assert request.url.host == _PUBLIC_IP
         # Host header + TLS SNI/cert hostname still the original hostname.
-        assert kwargs.get("headers", {}).get("Host") == "api.example.com"
-        assert kwargs.get("extensions", {}).get("sni_hostname") == "api.example.com"
+        assert request.headers.get("Host") == "api.example.com"
+        assert request.extensions.get("sni_hostname") == "api.example.com"
 
 
 # ---------------------------------------------------------------------------
@@ -461,20 +460,17 @@ class TestHttpJsonConnectorTimeout:
     """Verify that every request carries an explicit, bounded timeout."""
 
     def test_request_issued_with_explicit_timeout(self) -> None:
-        """httpx.request is called with a timeout= kwarg (not None / missing)."""
-        import httpx
-
+        """The request carries an explicit timeout with every phase bounded."""
         conn = HttpJsonConnector({"url": "http://api.example.com/records"})
         plan = _make_plan()
 
         with _patched_fetch(_fake_httpx_get([])) as mock_request:
             conn.execute(plan)
 
-        _, kwargs = mock_request.call_args
-        timeout = kwargs.get("timeout")
-        assert timeout is not None, "timeout must be passed explicitly to httpx.request"
-        assert isinstance(timeout, httpx.Timeout), (
-            "timeout must be an httpx.Timeout instance so all phases are bounded"
+        timeout = mock_request.call_args.args[0].extensions.get("timeout")
+        assert timeout, "timeout must be set explicitly on the request"
+        assert all(timeout.get(phase) is not None for phase in ("connect", "read", "write", "pool")), (
+            f"every timeout phase must be bounded, got {timeout}"
         )
 
     def test_default_timeout_is_30_seconds(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -488,11 +484,10 @@ class TestHttpJsonConnectorTimeout:
         with _patched_fetch(_fake_httpx_get([])) as mock_request:
             conn.execute(plan)
 
-        _, kwargs = mock_request.call_args
-        timeout: httpx.Timeout = kwargs["timeout"]
+        timeout = mock_request.call_args.args[0].extensions["timeout"]
         # httpx.Timeout(30) sets connect/read/write/pool all to 30.
-        assert timeout.connect == 30.0
-        assert timeout.read == 30.0
+        assert timeout["connect"] == 30.0
+        assert timeout["read"] == 30.0
 
     def test_custom_timeout_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """NUBI_HTTP_CONNECTOR_TIMEOUT_S overrides the default."""
@@ -505,10 +500,9 @@ class TestHttpJsonConnectorTimeout:
         with _patched_fetch(_fake_httpx_get([])) as mock_request:
             conn.execute(plan)
 
-        _, kwargs = mock_request.call_args
-        timeout: httpx.Timeout = kwargs["timeout"]
-        assert timeout.connect == 5.0
-        assert timeout.read == 5.0
+        timeout = mock_request.call_args.args[0].extensions["timeout"]
+        assert timeout["connect"] == 5.0
+        assert timeout["read"] == 5.0
 
     def test_slow_upstream_raises_source_fetch_error_not_hang(self) -> None:
         """A simulated slow upstream (TimeoutException) surfaces as AppError 502,
@@ -520,7 +514,7 @@ class TestHttpJsonConnectorTimeout:
 
         with patch.object(socket, "getaddrinfo", _fake_getaddrinfo(_PUBLIC_IP)):
             with patch(
-                "httpx.request",
+                "httpx.Client.send",
                 side_effect=httpx.ReadTimeout("timed out reading response"),
             ):
                 with pytest.raises(AppError) as exc_info:
@@ -539,7 +533,7 @@ class TestHttpJsonConnectorTimeout:
 
         with patch.object(socket, "getaddrinfo", _fake_getaddrinfo(_PUBLIC_IP)):
             with patch(
-                "httpx.request",
+                "httpx.Client.send",
                 side_effect=httpx.ConnectTimeout("connection timed out"),
             ):
                 with pytest.raises(AppError) as exc_info:
@@ -592,7 +586,7 @@ class TestHttpJsonDnsRebinding:
 
         Because the connector resolves once and pins the connection to the
         validated public IP, the second (malicious) resolution is never used:
-        httpx.request is invoked with the pinned public IP literal, never the
+        the request is sent to the pinned public IP literal, never the
         internal one — closing the TOCTOU window.
         """
         conn = HttpJsonConnector({"url": "http://rebind.example.com/records"})
@@ -611,13 +605,11 @@ class TestHttpJsonDnsRebinding:
             return next(answers)(host, *args, **kwargs)
 
         with patch.object(socket, "getaddrinfo", _flipping):
-            with patch("httpx.request", return_value=_fake_httpx_get([])) as mock_request:
+            with patch("httpx.Client.send", return_value=_fake_httpx_get([])) as mock_request:
                 conn.execute(plan)
 
         # The connection was pinned to the checked PUBLIC IP, not the rebind.
-        target_url = mock_request.call_args.args[1]
-        assert _PUBLIC_IP in target_url
-        assert "169.254.169.254" not in target_url
+        assert mock_request.call_args.args[0].url.host == _PUBLIC_IP
 
     def test_rebind_resolving_only_to_internal_is_blocked(self) -> None:
         """If the host resolves to an internal address at check time, the fetch
@@ -626,7 +618,7 @@ class TestHttpJsonDnsRebinding:
         plan = _make_plan()
 
         with patch.object(socket, "getaddrinfo", _fake_getaddrinfo("169.254.169.254")):
-            with patch("httpx.request") as mock_request:
+            with patch("httpx.Client.send") as mock_request:
                 with pytest.raises(AppError) as exc_info:
                     conn.execute(plan)
 
@@ -640,9 +632,64 @@ class TestHttpJsonDnsRebinding:
         plan = _make_plan()
 
         with patch.object(socket, "getaddrinfo", _fake_getaddrinfo(_PUBLIC_IP, "127.0.0.1")):
-            with patch("httpx.request") as mock_request:
+            with patch("httpx.Client.send") as mock_request:
                 with pytest.raises(AppError) as exc_info:
                     conn.execute(plan)
 
         assert exc_info.value.code == "ssrf_blocked"
         assert mock_request.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Real HTTP round-trip (no httpx mocks)
+# ---------------------------------------------------------------------------
+
+
+class TestHttpJsonRealRequest:
+    """Drive the real httpx stack against a local server.
+
+    Every other test here stops at ``Client.send``; this one lets the request go
+    out over a socket, so an httpx API change (like ``httpx.request()`` dropping
+    ``extensions``) fails the suite instead of every production fetch. Only the
+    resolver is patched: the SSRF guard (rightly) refuses loopback, so the pinned
+    target is handed to the connector directly.
+    """
+
+    def test_fetch_over_a_real_socket(self) -> None:
+        import json
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        from app.connectors.ssrf import PinnedTarget
+
+        seen: dict = {}
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                seen["host"] = self.headers.get("Host")
+                seen["auth"] = self.headers.get("Authorization")
+                body = json.dumps([{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args) -> None:  # noqa: ANN002
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            url = f"http://api.example.com:{port}/records"
+            pinned = PinnedTarget(url=url, ip="127.0.0.1", host="api.example.com", port=port)
+            conn = HttpJsonConnector({"url": url, "headers": {"Authorization": "Bearer t"}})
+            with patch("app.connectors.http_json.resolve_and_pin", return_value=pinned):
+                table = conn.execute(_make_plan())
+        finally:
+            server.shutdown()
+
+        assert table.num_rows == 2
+        assert seen["host"] == f"api.example.com:{port}"
+        assert seen["auth"] == "Bearer t"

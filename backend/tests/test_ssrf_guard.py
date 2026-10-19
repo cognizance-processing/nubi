@@ -325,7 +325,7 @@ class TestHttpJsonInvokesGuard:
             cache_key="cafebabe" * 8,
         )
 
-        with patch("httpx.request") as mock_request:
+        with patch("httpx.Client.send") as mock_request:
             with pytest.raises(AppError) as exc_info:
                 conn.execute(plan)
 
@@ -363,7 +363,7 @@ class TestHttpJsonInvokesGuard:
 
         with patch(
             "app.connectors.http_json.resolve_and_pin", return_value=pinned
-        ) as mock_pin, patch("httpx.request", return_value=mock_response):
+        ) as mock_pin, patch("httpx.Client.send", return_value=mock_response):
             conn.execute(plan)
 
         mock_pin.assert_called_once_with(url)
