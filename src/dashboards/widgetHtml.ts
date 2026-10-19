@@ -99,7 +99,7 @@ const STYLE_WHITELIST = new Set([
   'background', 'backgroundColor', 'backgroundImage', 'backgroundSize',
   'backgroundPosition', 'backgroundRepeat',
   'color', 'border', 'borderColor', 'borderWidth', 'borderStyle',
-  'borderRadius', 'padding', 'margin', 'boxShadow', 'opacity',
+  'borderRadius', 'padding', 'margin', 'boxShadow', 'opacity', 'gap',
   'backdropFilter', 'WebkitBackdropFilter',
   // Typography. A board needs a heading that is bigger than its body text and a
   // caption that is smaller, and until now the only way to get either was to
