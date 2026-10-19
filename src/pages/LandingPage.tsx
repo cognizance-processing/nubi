@@ -14,6 +14,7 @@
  */
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useAuth } from '../contexts/AuthContext.jsx'
 import { HEADER_MARKUP, OUTRO_MARKUP, OVERLAY_MARKUP } from './landing/landingMarkup'
 import { mount as mountChrome } from './landing/chrome.js'
 import Footer from '../components/Footer'
@@ -51,6 +52,7 @@ const HEADER_H = 56
 
 export default function LandingPage() {
   const navigate = useNavigate()
+  const { user } = useAuth()
   const debug = useMemo(() => parseDebug(), [])
   useMemo(() => applyTheme(debug.theme), [debug.theme])
   const prefersReduced = useMedia('(prefers-reduced-motion: reduce)')
@@ -243,7 +245,7 @@ export default function LandingPage() {
 
   return (
     <>
-      <div ref={rootRef} className={`nl${debug.ui ? '' : ' noui'}${reduced ? ' rm' : ''}`} id="top">
+      <div ref={rootRef} className={`nl${debug.ui ? '' : ' noui'}${reduced ? ' rm' : ''}${user ? ' authed' : ''}`} id="top">
         <div className="hdr-wrap" dangerouslySetInnerHTML={HEADER_HTML} />
         <main id="main" tabIndex={-1}>
           <Story director={director} env={{ mobile, reduced, debug: debug.any, ui: debug.ui }} api={api} stage={stage} labelsRef={labelsRef} />

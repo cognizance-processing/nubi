@@ -30,7 +30,7 @@ const tierCells = TIERS.map(t => `
         <p>${esc(t.tagline)}</p>
       </li>`).join('')
 
-/** Header: [mark]ubi lockup, nav, ⌘K, Sign in, Start free (the drawer is the mobile menu). */
+/** Header: [mark]ubi lockup, nav, ⌘K, Sign in, Start free, or Open app when signed in (the drawer is the mobile menu). */
 export const HEADER_MARKUP = `
 <a class="skip" href="#main">Skip to content</a>
 <header class="top gut"><div class="inner">
@@ -38,13 +38,13 @@ export const HEADER_MARKUP = `
   <nav class="main-nav" aria-label="Main"><a href="#ch-columns">Product</a><a href="#live">Live demo</a><a href="/docs">Docs</a><a href="/pricing">Pricing</a><a href="/compare">Compare</a></nav>
   <div class="r">
     <button class="kbtn" id="kbtn" type="button" aria-label="Search the page (Ctrl K)"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M11 11l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" fill="none"/></svg><span>Search or jump to…</span><kbd id="kmod">Ctrl K</kbd></button>
-    <a class="ibtn gh" href="https://github.com/nu-bi/nubi" target="_blank" rel="noopener noreferrer" aria-label="Nubi on GitHub"><i class="gh-mark" aria-hidden="true"></i></a><a class="btn sm ghost signin" href="/login">Sign in</a><a class="btn sm pri" href="/register">Start free</a>
+    <a class="ibtn gh" href="https://github.com/nu-bi/nubi" target="_blank" rel="noopener noreferrer" aria-label="Nubi on GitHub"><i class="gh-mark" aria-hidden="true"></i></a><a class="btn sm ghost signin guest" href="/login">Sign in</a><a class="btn sm pri guest" href="/register">Start free</a><a class="btn sm pri member" href="/home">Open app</a>
     <button class="menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="drawer" aria-label="Open menu"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path class="m-open" d="M2 5h14M2 9h14M2 13h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" fill="none"/><path class="m-close" d="M3 3l12 12M15 3L3 15" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" fill="none"/></svg></button>
   </div>
 </div>
 <nav class="drawer" id="drawer" aria-label="Menu" hidden>
   <a href="#ch-columns">Product</a><a href="#live">Live demo</a><a href="#embed">Embed</a><a href="#agents">Agents</a><a href="/docs">Docs</a><a href="/pricing">Pricing</a><a href="/compare">Compare</a><a href="https://github.com/nu-bi/nubi" target="_blank" rel="noopener noreferrer">GitHub</a>
-  <div class="dr-cta"><a class="btn" href="/login">Sign in</a><a class="btn pri" href="/register">Start free</a></div>
+  <div class="dr-cta"><a class="btn guest" href="/login">Sign in</a><a class="btn pri guest" href="/register">Start free</a><a class="btn pri member" href="/home">Open app</a></div>
 </nav>
 </header>
 `

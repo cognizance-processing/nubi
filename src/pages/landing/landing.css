@@ -77,6 +77,9 @@
 .nl .drawer > a:not(.btn)::after { content: "→"; color: var(--subtle); font-weight: 400; }
 .nl .dr-cta { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding-top: 16px; }
 .nl .dr-cta .btn { justify-content: center; }
+/* the account buttons follow the session: guests get Sign in + Start free, members get Open app */
+.nl:not(.authed) .member, .nl.authed .guest { display: none; }
+.nl.authed .dr-cta { grid-template-columns: 1fr; }
 
 @media (max-width: 1099px) {
   .nl .kbtn span, .nl .kbtn kbd { display: none; }

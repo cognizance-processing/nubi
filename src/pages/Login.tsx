@@ -7,7 +7,7 @@
  */
 
 import { useState, useEffect, useRef } from 'react'
-import { Link, useNavigate, useLocation } from 'react-router-dom'
+import { Link, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext.jsx'
 import { googleStartUrl, fetchAuthConfig } from '../lib/api.js'
 import AuthLayout from '../components/AuthLayout.jsx'
@@ -18,7 +18,7 @@ import {
 } from '../components/marketing/AuthFields.jsx'
 
 export default function Login() {
-  const { login } = useAuth()
+  const { login, user } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   // Keep the query string: the AI-app consent page (/oauth/consent?request=…)
@@ -60,6 +60,9 @@ export default function Login() {
       requestAnimationFrame(() => banner.current?.scrollIntoView({ block: 'nearest' }))
     }
   }
+
+  // Already signed in (the session was restored): skip the form.
+  if (user && !pending) return <Navigate to={from} replace />
 
   return (
     <AuthLayout

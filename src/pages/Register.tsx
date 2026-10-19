@@ -7,7 +7,7 @@
  */
 
 import { useState, useEffect, useRef } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, Navigate, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext.jsx'
 import { googleStartUrl, fetchAuthConfig } from '../lib/api.js'
 import AuthLayout from '../components/AuthLayout.jsx'
@@ -19,7 +19,7 @@ import {
 type Touched = Partial<Record<'name' | 'email' | 'password' | 'org' | 'project', boolean>>
 
 export default function Register() {
-  const { register } = useAuth()
+  const { register, user } = useAuth()
   const navigate = useNavigate()
 
   const [name, setName] = useState('')
@@ -70,6 +70,9 @@ export default function Register() {
       requestAnimationFrame(() => banner.current?.scrollIntoView({ block: 'nearest' }))
     }
   }
+
+  // Already signed in (the session was restored): skip the form.
+  if (user && !pending) return <Navigate to="/dashboard" replace />
 
   return (
     <AuthLayout
