@@ -105,7 +105,8 @@ void main() {
     float thA = atan(da.y, da.x), thB = atan(db.y, db.x);
     float dth = mod(thB - thA, 6.2831853) + uTurns * 6.2831853;
     float th = thA + dth * k;
-    float r = mix(mix(length(da), uHelix.w, smoothstep(0., .3, e)), length(db), smoothstep(.7, 1., e));
+    // pull in over most of the flight (not a lunge in its first third), so far cells spiral rather than jump
+    float r = mix(mix(length(da), uHelix.w, smoothstep(0., .6, e)), length(db), smoothstep(.6, 1., e));
     p.xz = uHelix.xz + r * vec2(cos(th), sin(th));
     p.y = mix(pA.y, pB.y, k);
   } else if (kind == ${KIND_CODE.flip}) {

@@ -247,9 +247,11 @@ const beats: Beat<CacheState>[] = [
 /** IN from columns `read`: the towers drain along a helix into the warehouse rings, bottom-up. */
 const IN_MORPH: MorphSpec = {
   kind: 'helix', len: 1.4, spread: IN.spread, assign: 'rank', toneAt: 0.8,
-  helix: { centre: WAREHOUSE, radius: DB_R, turns: 1.5 },
-  // rank key: warehouse cells by their arrival order; the towers give their top layers first
-  order: (c: Cell) => (c.group === 'db' ? (c.order ?? 0) : c.group === '' || /^(rack|v-?\d)/.test(c.group) ? 10 + (c.order ?? 0) : -c.p[1] * 100 + Math.hypot(c.p[0] - WAREHOUSE[0], c.p[2] - WAREHOUSE[2])),
+  helix: { centre: WAREHOUSE, radius: DB_R, turns: 1 },
+  // rank key: warehouse cells by their arrival order; the towers give their top layers first. Everything else
+  // the IN builds late (rack, station, traces, the top ring, the slab) sorts last, so no column cube is paired
+  // with it and left standing in the old picture until its late cue.
+  order: (c: Cell) => (c.group === 'db' ? (c.order ?? 0) : c.group === '' || /^(rack|v-?\d|db-ring|slab)/.test(c.group) ? 10 + (c.order ?? 0) : -c.p[1] * 100 + Math.hypot(c.p[0] - WAREHOUSE[0], c.p[2] - WAREHOUSE[2])),
 }
 
 /* ───────────── labels ───────────── */
