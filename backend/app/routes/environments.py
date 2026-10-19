@@ -50,6 +50,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
+from app.auth.scopes import caller_claims
 from app.auth.roles import require_writer
 from app.environments.store import get_env_store
 from app.errors import AppError
@@ -482,6 +483,7 @@ async def restore_version(
     version: int,
     request: Request,
     user: dict[str, Any] = Depends(current_user),
+    claims: dict[str, Any] = Depends(caller_claims),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Write a version's config back into the resource's draft definition."""
@@ -503,6 +505,15 @@ async def restore_version(
         )
     if updated is None:
         raise AppError("not_found", f"{kind.capitalize()} not found.", 404)
+    # A restore rewrites the board's draft just like a save does, so its card
+    # thumbnail is re-rendered the same way. (Promote needs no warm: it moves
+    # env pointers, and the card renders the draft row, which it leaves alone.)
+    if kind == "board":
+        # Lazy: importing resources at module load registers its catch-all
+        # /{resource}/{id} routes ahead of this router's /environments/{id}.
+        from app.routes.resources import _schedule_thumbnail_warm  # noqa: PLC0415
+
+        _schedule_thumbnail_warm(updated, org_id, claims, repo)
     return updated
 
 

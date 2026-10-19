@@ -310,7 +310,7 @@ function CardThumbnail({ board }) {
           className="h-full w-full overflow-hidden bg-surface"
           style={{ border: '1px solid var(--frame-line)', borderBottom: 'none', borderRadius: '2px 2px 0 0' }}
         >
-          <BoardThumbnail boardId={board.id} spec={board.config?.spec} />
+          <BoardThumbnail boardId={board.id} spec={board.config?.spec} version={board.updated_at} />
         </div>
       </div>
     </div>

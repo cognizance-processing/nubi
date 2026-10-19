@@ -328,15 +328,23 @@ async def export_board_pdf(
 # CONSTRUCTION: if a policy-bearing caller ever reaches this route, it simply
 # misses the cache instead of being served someone else's pixels.
 # Cross-org is already impossible — _load_board is org-scoped and 404s first.
-_THUMB_CACHE: dict[str, tuple[str, str, str]] = {}   # board_id -> (spec_hash, policy_fp, svg)
+# Keyed by "board_id:theme" (cache_key carries the theme too): one slot per
+# board meant the light and dark renders evicted each other, and a warm — which
+# writes light then dark — always left light viewers with a miss.
+_THUMB_CACHE: dict[str, tuple[str, str, str]] = {}   # "board_id:theme" -> (cache_key, policy_fp, svg)
 _THUMB_CACHE_MAX = 512
+
+
+def _thumb_slot(board_id: str, cache_key: str) -> str:
+    """In-process cache slot for a board render: the theme is cache_key's suffix."""
+    return f"{board_id}:{cache_key.rsplit(':', 1)[-1]}"
 
 
 def _remember_thumb(board_id: str, cache_key: str, policy_fp: str, svg: str) -> None:
     """Put a render in the in-process cache, bounding its size."""
     if len(_THUMB_CACHE) >= _THUMB_CACHE_MAX:
         _THUMB_CACHE.clear()  # crude but bounded; entries are cheap to rebuild
-    _THUMB_CACHE[board_id] = (cache_key, policy_fp, svg)
+    _THUMB_CACHE[_thumb_slot(board_id, cache_key)] = (cache_key, policy_fp, svg)
 
 # Thumbnail render width in px. The card displays it a few hundred px wide, but
 # the SSR layout is width-driven (font sizes and chart geometry are absolute),
@@ -545,11 +553,77 @@ async def warm_board_thumbnails(
     return stored
 
 
+# Any fixed bigint; pg_try_advisory_lock makes the startup backfill run on one
+# worker at a time instead of every worker rendering every board.
+_BACKFILL_LOCK_ID = 0x6E75_6269_7468  # "nubith"
+
+
+async def backfill_board_thumbnails(repo: Repo) -> int:
+    """Store thumbnails for every board that has none for the current renderer.
+
+    Saves warm their own board, but the stored key includes the renderer's
+    fingerprint (thumbnail_store.object_key), so any renderer change makes EVERY
+    stored picture unreachable at once — and until each board was saved again,
+    the first gallery visit paid a cold render per card. Run in the background
+    at startup, this re-warms them before anyone asks.
+
+    Sequential and best-effort: one board at a time keeps the query and Node
+    load of a full sweep off the request path, and no failure propagates.
+    Returns the number of boards warmed.
+    """
+    if not thumbnail_store.is_enabled():
+        return 0
+    from app.dashboards.svg_render import renderer_available  # noqa: PLC0415
+    from app.db import get_pool  # noqa: PLC0415
+
+    if not renderer_available():
+        return 0
+
+    # The same claims the read path renders under, so the keys checked here are
+    # the keys the gallery will ask for.
+    claims = _collect_claims({})
+    policy_fp = _policy_fingerprint(claims)
+    warmed = 0
+
+    async with get_pool().acquire() as conn:
+        if not await conn.fetchval("SELECT pg_try_advisory_lock($1)", _BACKFILL_LOCK_ID):
+            return 0
+        try:
+            org_ids = [r["org_id"] for r in await conn.fetch("SELECT DISTINCT org_id FROM boards")]
+            for org_id in org_ids:
+                org_id = str(org_id)
+                for board in await repo.list("boards", org_id):
+                    board_id = str(board.get("id"))
+                    try:
+                        spec_dict = await resolve_board_spec(board, org_id, repo)
+                        spec_hash = _spec_hash(spec_dict)
+                        have = await asyncio.to_thread(thumbnail_store.stored_keys, board_id)
+                        want = {
+                            thumbnail_store.object_key(board_id, spec_hash, t, policy_fp)
+                            for t in ("light", "dark")
+                        }
+                        if want <= have:
+                            continue
+                        if await warm_board_thumbnails(
+                            board_id, org_id, spec_from_board(board), board.get("name"), claims, repo,
+                        ):
+                            warmed += 1
+                    except Exception as exc:  # noqa: BLE001
+                        logger.info("thumbnail backfill skipped board %s: %s", board_id, exc)
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock($1)", _BACKFILL_LOCK_ID)
+
+    if warmed:
+        logger.info("thumbnail backfill warmed %d board(s)", warmed)
+    return warmed
+
+
 @router.get("/{board_id}/thumbnail.svg")
 async def board_thumbnail_svg(
     board_id: str,
     request: Request,
     theme: str | None = None,
+    cached_only: bool = False,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> Response:
@@ -604,7 +678,7 @@ async def board_thumbnail_svg(
     # Access is authorised BEFORE this lookup (_load_board is org-scoped and
     # 404s cross-org), and the key carries the policy fingerprint, so a hit can
     # only ever be this org's board rendered under these exact policies.
-    cached = _THUMB_CACHE.get(board_id)
+    cached = _THUMB_CACHE.get(_thumb_slot(board_id, cache_key))
     if cached and cached[0] == cache_key and cached[1] == policy_fp:
         return Response(
             content=cached[2],
@@ -626,6 +700,12 @@ async def board_thumbnail_svg(
             media_type="image/svg+xml",
             headers={"Cache-Control": "private, max-age=300", "X-Nubi-Thumb-Cache": "stored"},
         )
+
+    # The gallery asks for stored pictures first, all at once, and queues only
+    # the misses for a real render — so a ready card never waits behind a cold
+    # one. 204 = "nothing stored yet", distinct from 503 "can't render at all".
+    if cached_only:
+        return Response(status_code=204, headers={"X-Nubi-Thumb-Cache": "none"})
 
     if not renderer_available():
         # No Node → no render. Fail soft: the card keeps its miniature.

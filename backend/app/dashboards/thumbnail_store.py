@@ -144,6 +144,17 @@ def save(board_id: str, spec_hash: str, theme: str, policy_fp: str, svg: str) ->
         return None
 
 
+def stored_keys(board_id: str) -> set[str]:
+    """Keys currently stored for this board (empty if storage is off or errored)."""
+    client = _client()
+    if client is None:
+        return set()
+    try:
+        return set(client.list(f"boards/{_safe(board_id)}/"))
+    except Exception:  # noqa: BLE001 - treated as "nothing stored", so it re-warms
+        return set()
+
+
 def prune_other_versions(board_id: str, keep_keys: set[str]) -> int:
     """Delete this board's stored thumbnails except *keep_keys*.
 

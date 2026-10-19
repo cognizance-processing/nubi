@@ -15,35 +15,42 @@
  * immediately and upgrading to the true picture is strictly better.
  *
  * Fetching is gated three ways: only when the card is actually near the
- * viewport (IntersectionObserver), only two at a time (see lib/boardThumbnail),
- * and aborted if the card unmounts mid-flight.
+ * viewport (IntersectionObserver), only two cold renders at a time (see
+ * lib/boardThumbnail), and aborted if the card unmounts mid-flight. A picture
+ * already in the client cache skips all of that and mounts in place.
  */
 
 import { useEffect, useRef, useState } from 'react'
 import BoardMiniature from './BoardMiniature.jsx'
-import { fetchBoardThumbnail } from '../../lib/boardThumbnail.js'
+import { fetchBoardThumbnail, peekBoardThumbnail } from '../../lib/boardThumbnail.js'
 import { useTheme } from '../../contexts/ThemeContext.jsx'
 
 /**
  * @param {{
  *   boardId: string,
  *   spec?: object|null,
+ *   version?: string|null,
  *   enabled?: boolean,
  *   className?: string,
  * }} props
+ *   version: the board's `updated_at` — keys the client cache, so a saved
+ *            board is a new picture.
  *   enabled: set false to stay on the miniature (e.g. legacy boards).
  */
-export default function BoardThumbnail({ boardId, spec = undefined, enabled = true, className = '' }) {
+export default function BoardThumbnail({ boardId, spec = undefined, version = undefined, enabled = true, className = '' }) {
   // The render is theme-specific (the board is styled in theme tokens the
   // server must resolve), so a theme flip needs a NEW picture — hence theme
   // is a dependency of the fetch, not a class on the img.
   const { theme } = useTheme()
-  const isDark = theme === 'dark'
+  const thumbTheme = theme === 'dark' ? 'dark' : 'light'
   const hostRef = useRef(null)
-  const [url, setUrl] = useState(null)
+  // A picture already in memory (back from a board, say) mounts in place — no
+  // miniature flash, no fade.
+  const [url, setUrl] = useState(() => peekBoardThumbnail(boardId, { theme: thumbTheme, version }))
   // Only start fetching once the card is near the viewport — a long gallery
-  // shouldn't render boards the user never scrolls to.
-  const [visible, setVisible] = useState(false)
+  // shouldn't render boards the user never scrolls to. A cached card is
+  // "visible" from the start: it costs nothing to show.
+  const [visible, setVisible] = useState(() => url !== null)
 
   useEffect(() => {
     if (!enabled) return
@@ -69,27 +76,20 @@ export default function BoardThumbnail({ boardId, spec = undefined, enabled = tr
 
   useEffect(() => {
     if (!enabled || !visible || !boardId) return
-    setUrl(null)   // drop the old theme's picture while the new one loads
+    // Show what's cached for this theme/version right away; otherwise drop
+    // the old theme's picture while the new one loads.
+    setUrl(peekBoardThumbnail(boardId, { theme: thumbTheme, version }))
     const ctrl = new AbortController()
-    let objectUrl = null
 
-    fetchBoardThumbnail(boardId, { signal: ctrl.signal, theme: isDark ? 'dark' : 'light' })
+    fetchBoardThumbnail(boardId, { signal: ctrl.signal, theme: thumbTheme, version })
       .then(u => {
-        if (ctrl.signal.aborted) {
-          // Landed after unmount — free it rather than leak the blob.
-          if (u) URL.revokeObjectURL(u)
-          return
-        }
-        objectUrl = u
-        setUrl(u)
+        if (!ctrl.signal.aborted && u) setUrl(u)
       })
       .catch(() => { /* keep the miniature; a card is not worth an error state */ })
 
-    return () => {
-      ctrl.abort()
-      if (objectUrl) URL.revokeObjectURL(objectUrl)
-    }
-  }, [enabled, visible, boardId, isDark])
+    // The object URL belongs to lib/boardThumbnail's cache — never revoke it here.
+    return () => ctrl.abort()
+  }, [enabled, visible, boardId, thumbTheme, version])
 
   return (
     <div

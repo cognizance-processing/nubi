@@ -57,6 +57,7 @@ PAYSTACK_SECRET_KEY
 
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -417,9 +418,31 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 "EE startup tasks failed (non-fatal): %s", _ee_exc
             )
 
+    # Re-warm stored board thumbnails in the background. A renderer change
+    # invalidates every stored picture at once (its fingerprint is in the key),
+    # so without this the first gallery visit after a deploy pays a cold render
+    # per card. Delayed so it doesn't compete with startup traffic.
+    # NUBI_THUMBNAIL_BACKFILL=false turns it off.
+    _thumb_backfill: asyncio.Task | None = None
+    if os.getenv("NUBI_THUMBNAIL_BACKFILL", "true").lower() not in ("0", "false", "no"):
+        async def _backfill_thumbnails() -> None:
+            from app.repos.provider import get_repo  # noqa: PLC0415
+            from app.routes.export_share import backfill_board_thumbnails  # noqa: PLC0415
+
+            await asyncio.sleep(10)
+            try:
+                await backfill_board_thumbnails(get_repo())
+            except Exception as exc:  # noqa: BLE001
+                import logging  # noqa: PLC0415
+                logging.getLogger(__name__).info("thumbnail backfill failed (non-fatal): %s", exc)
+
+        _thumb_backfill = asyncio.create_task(_backfill_thumbnails())
+
     try:
         yield
     finally:
+        if _thumb_backfill is not None:
+            _thumb_backfill.cancel()
         await stop_flow_worker()
         await stop_scheduler()
         await close_db()

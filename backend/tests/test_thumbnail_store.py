@@ -164,3 +164,37 @@ def test_prune_keeps_every_key_it_is_told_to(fake_storage):
     ts.save("b1", "h", "light", "fp", "<svg/>")
     ts.save("b1", "h", "dark", "fp", "<svg/>")
     assert ts.prune_other_versions("b1", {light, dark}) == 0
+
+
+# ── stored_keys (startup backfill's "already warm?" check) ───────────────────
+
+def test_stored_keys_lists_only_this_board(fake_storage):
+    ts.save("b1", "h", "light", "fp", "<svg/>")
+    ts.save("b1", "h", "dark", "fp", "<svg/>")
+    ts.save("b2", "h", "light", "fp", "<svg/>")
+    assert ts.stored_keys("b1") == {
+        ts.object_key("b1", "h", "light", "fp"),
+        ts.object_key("b1", "h", "dark", "fp"),
+    }
+
+
+def test_stored_keys_is_empty_when_disabled_or_failing(fake_storage, monkeypatch):
+    def boom(prefix=""):
+        raise RuntimeError("bucket down")
+    monkeypatch.setattr(fake_storage, "list", boom)
+    assert ts.stored_keys("b1") == set()
+    monkeypatch.delenv(URI_ENV, raising=False)
+    monkeypatch.setattr(ts, "_client", lambda: None)
+    assert ts.stored_keys("b1") == set()
+
+
+# ── in-process cache keeps both themes ───────────────────────────────────────
+
+def test_memory_cache_holds_light_and_dark_side_by_side():
+    from app.routes import export_share as es
+    es._THUMB_CACHE.clear()
+    es._remember_thumb("b1", "h:light", "fp", "<svg>light</svg>")
+    es._remember_thumb("b1", "h:dark", "fp", "<svg>dark</svg>")
+    assert es._THUMB_CACHE[es._thumb_slot("b1", "h:light")][2] == "<svg>light</svg>"
+    assert es._THUMB_CACHE[es._thumb_slot("b1", "h:dark")][2] == "<svg>dark</svg>"
+    es._THUMB_CACHE.clear()
