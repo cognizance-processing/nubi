@@ -352,6 +352,20 @@ def _remember_thumb(board_id: str, cache_key: str, policy_fp: str, svg: str) -> 
 # desktop-ish width and let the card scale the vector down.
 _THUMB_WIDTH_PX = 1000
 
+
+def _thumb_width_px(spec_dict: dict[str, Any]) -> int:
+    """Render width for a thumbnail: the board's own max_width when narrower.
+
+    A board capped at, say, 720px lays its grid out at 720px in the viewer;
+    rendering it 1000px wide would draw a layout nobody sees.
+    """
+    layout = spec_dict.get("layout") if isinstance(spec_dict, dict) else None
+    try:
+        max_width = int((layout or {}).get("max_width") or 0)
+    except (TypeError, ValueError):
+        max_width = 0
+    return min(_THUMB_WIDTH_PX, max_width) if max_width > 0 else _THUMB_WIDTH_PX
+
 # Hard cap on how much of a tall board ends up in the thumbnail.
 #
 # Chosen as an ASPECT, not an arbitrary cap: ~1.4:1 against _THUMB_WIDTH_PX. A
@@ -527,7 +541,7 @@ async def warm_board_thumbnails(
                 render_board_svg,
                 validated_spec,
                 widget_data,
-                page_width_px=_THUMB_WIDTH_PX,
+                page_width_px=_thumb_width_px(spec_dict),
                 theme=theme_key,
             )
             page_svg = _clamp_svg_height(
@@ -741,7 +755,7 @@ async def board_thumbnail_svg(
         render_board_svg,
         validated_spec,
         widget_data,
-        page_width_px=_THUMB_WIDTH_PX,
+        page_width_px=_thumb_width_px(spec_dict),
         theme=theme_key,
     )
     page_svg = _clamp_svg_height(

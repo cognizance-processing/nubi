@@ -198,3 +198,22 @@ def test_memory_cache_holds_light_and_dark_side_by_side():
     assert es._THUMB_CACHE[es._thumb_slot("b1", "h:light")][2] == "<svg>light</svg>"
     assert es._THUMB_CACHE[es._thumb_slot("b1", "h:dark")][2] == "<svg>dark</svg>"
     es._THUMB_CACHE.clear()
+
+
+# ── thumbnail render width follows layout.max_width ─────────────────────────
+
+@pytest.mark.parametrize(
+    ("layout", "expected"),
+    [
+        (None, 1000),
+        ({}, 1000),
+        ({"max_width": 720}, 720),
+        ({"max_width": 1600}, 1000),   # wider than the thumbnail: no effect
+        ({"max_width": 0}, 1000),
+        ({"max_width": "abc"}, 1000),
+    ],
+)
+def test_thumbnail_width_follows_max_width(layout, expected):
+    from app.routes import export_share as es
+    spec = {"widgets": []} if layout is None else {"layout": layout, "widgets": []}
+    assert es._thumb_width_px(spec) == expected

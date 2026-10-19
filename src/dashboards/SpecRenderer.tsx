@@ -592,6 +592,10 @@ function SpecRendererBody({
   const activeCols = colsByBp[renderBreakpoint] ?? cols
 
   const compactionMode = spec.layout?.compaction ?? 'free'
+  // layout.max_width caps the board's width in the viewer, centred. It goes on
+  // the measured root, so the ResizeObserver above sees the capped width and
+  // the grid reflows inside it.
+  const maxWidth = Number(spec.layout?.max_width) > 0 ? Number(spec.layout.max_width) : undefined
   const gap = Array.isArray(spec.layout?.margin)
     ? (spec.layout.margin[0] ?? 12)
     : (spec.layout?.margin_x ?? 12)
@@ -719,7 +723,10 @@ function SpecRendererBody({
       className="w-full"
       data-dashboard-root
       ref={containerRef}
-      style={bgStyle ? (flushBackground ? bgStyle : { ...bgStyle, padding: 16, borderRadius: 12 }) : undefined}
+      style={{
+        ...(bgStyle ? (flushBackground ? bgStyle : { ...bgStyle, padding: 16, borderRadius: 12 }) : null),
+        ...(maxWidth ? { maxWidth, marginInline: 'auto' } : null),
+      }}
     >
       {(spec.title || spec.description || hasFilters) && (
         <div className="flex items-start justify-between px-1 mb-5 gap-3">
