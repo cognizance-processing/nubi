@@ -454,9 +454,25 @@ export function renameVariableReads(widget: Json, from: string, to: string): Jso
   return walk(widget)
 }
 
-/** True when `widget` (or a widget nested in it) reads variable `name`. */
+/**
+ * True when `widget` (or a widget nested in it) reads variable `name` — the
+ * same places `renameVariableReads` rewrites, checked without copying (the
+ * canvas runs this for every filter on every edit).
+ */
 export function readsVariable(widget: Json, name: string): boolean {
-  return !!name && renameVariableReads(widget, name, `${name}\u0000`) !== widget
+  if (!name) return false
+  const walk = (node: Json): boolean => {
+    if (Array.isArray(node)) return node.some(walk)
+    if (!isPlainObject(node)) return false
+    if (isBindingTo(node, name)) return true
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'filters' && isPlainObject(value) && typeof value[name] === 'string') return true
+      if (key === 'variable' && value === name) return true
+      if (typeof value === 'object' && value !== null && walk(value)) return true
+    }
+    return false
+  }
+  return walk(widget)
 }
 
 const WRITER_KEYS = new Set(['target_var', 'setVar', 'var'])

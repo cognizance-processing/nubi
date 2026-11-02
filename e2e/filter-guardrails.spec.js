@@ -149,6 +149,12 @@ test.describe('Filter guardrails', () => {
     await expect(page.getByTestId('filter-rename-note')).toContainText('Moved 2 connections')
     await expect(page.getByTestId('filter-connections')).toContainText('2 of 3 connected')
 
+    // Relabelling a filter that is in use changes only its display text.
+    await label.fill('Zone (sales)')
+    await label.blur()
+    await page.waitForTimeout(600)
+    await expect(varInput).toHaveValue('area')
+
     await page.locator('[data-testid="editor-save-btn"]:visible').first().click()
     await page.waitForTimeout(4000)
 

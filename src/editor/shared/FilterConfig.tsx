@@ -33,7 +33,7 @@ import { titleText } from './titleValue.js'
 import { listFilterableColumns, parameterizeQuery } from '../../lib/api.js'
 import {
   wiringRows, connectedCount, bindParam, unbindVar, varNameFromLabel,
-  bindFilter, unbindFilterVar, suggestVarName, boardParamUsage, planVariableRename,
+  bindFilter, unbindFilterVar, suggestVarName, boardParamUsage, planVariableRename, readerCounts,
 } from '../../dashboards/paramWiring.js'
 
 const SUBTYPE_LABELS = {
@@ -505,12 +505,17 @@ export function FilterConfig({ widget, onChange, spec, onPatchWidget = undefined
   // someone edits the name directly, at which point it stops following. That is
   // detected by comparing against what the PREVIOUS label would have produced,
   // so a hand-picked name is never overwritten by a later label edit.
+  // Once anything reads the variable it is load-bearing (bindings, shared
+  // links carry `?name=`), so relabelling — "Region" → "Region (sales)" — only
+  // changes the display text. Renaming stays possible, deliberately, below.
+  const inUse = !!varName
+    && (readerCounts(spec?.widgets ?? [], [varName], resolveWidget).get(varName) ?? 0) > 0
   const setLabel = (label) => {
     const next: Record<string, any> = { ...widget, props: { ...props, label } }
     const prevLabel = props.label ?? ''
-    const followed = !varName
+    const followed = !inUse && (!varName
       || varName === varNameFromLabel(prevLabel)
-      || varName === suggestVarName(prevLabel, knownNames)
+      || varName === suggestVarName(prevLabel, knownNames))
     if (followed) {
       const derived = suggestVarName(label, knownNames)
       if (derived) next.target_var = derived
@@ -628,7 +633,7 @@ export function FilterConfig({ widget, onChange, spec, onPatchWidget = undefined
           The name this filter’s value travels under — written into queries as
           <span className="font-mono text-muted"> {'{{'}{varName || 'region'}{'}}'}</span>, and into a
           shareable link as <span className="font-mono text-muted">?{varName || 'region'}=…</span>.
-          It follows the label unless you change it here.
+          It follows the label until a widget uses it or you change it here; renaming it here keeps its connections.
         </p>
       </Section>
 

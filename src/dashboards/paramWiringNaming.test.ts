@@ -136,3 +136,18 @@ test('planVariableRename reports moves and other producers of the old name', () 
   assert.deepEqual(planVariableRename(shared, 'old', 'new', 'self'), { moves: 2, sharedWith: ['f2'] })
   assert.deepEqual(planVariableRename(widgets, 'old', 'old', 'self'), { moves: 0, sharedWith: [] })
 })
+
+test('readsVariable agrees with renameVariableReads on every read site', () => {
+  const cases = [
+    { params: { r: { ref: 'v' } } },
+    { filters: { v: 'col' } },
+    { props: { variable: 'v' } },
+    { props: { steps: [{ widget: { params: { r: { ref: 'v' } } } }] } },
+    { params: { r: { ref: 'other' } }, filters: { other: 'c' } },
+    { id: 'x', ref: 'v', overrides: {} },
+    { target_var: 'v', onClick: { setVar: 'v' } },
+  ]
+  for (const w of cases) {
+    assert.equal(readsVariable(w, 'v'), renameVariableReads(w, 'v', 'v2') !== w, JSON.stringify(w))
+  }
+})
