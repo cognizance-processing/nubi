@@ -48,7 +48,7 @@ import {
   ZoomIn, ZoomOut, Maximize2, Menu, ChevronUp, Sigma, FileCode2, LayoutDashboard,
   Undo2, Redo2, Eye, Pencil, Save, Loader2, CheckCircle2, BookmarkPlus, Library,
   Link2, Copy, Unlink, Users, Layers, Download, Image as ImageIcon, FileText, Search,
-  Minus, CalendarRange, ChevronsRight,
+  Minus, CalendarRange, ChevronsRight, AlertTriangle,
 } from 'lucide-react'
 import {
   saveWidgetToLibrary, deleteLibraryWidget, updateLibraryWidget, fromLibraryRow,
@@ -155,7 +155,7 @@ import {
   DEMO_QUERY_IDS, CHART_TYPES, SERIES_TYPES, FILTER_SUBTYPES, VARIABLE_TYPES,
   FORMAT_OPS, COLUMN_FORMAT_TYPES, BACKGROUND_TYPES, PIVOT_AGGS,
 } from './shared/index.js'
-import { autoBindParams } from '../dashboards/paramWiring.js'
+import { autoBindParams, planVariableRename, renameVariableReads, readerCounts } from '../dashboards/paramWiring.js'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1712,7 +1712,7 @@ function ConfigPanel({
   libraryById, onDetachRequest, onEditScopeRequest, onResetOverride,
   sharedEditRefId, onSaveSharedDefinition, onCancelSharedEdit, savingShared,
   // Filter wiring: reach other widgets on the board, and declare variables.
-  onPatchWidget, onCreateVariable, resolveWidget,
+  onPatchWidget, onCreateVariable, onRenameVariable = undefined, resolveWidget,
 }) {
   const focus = variant === 'focus'
   // Declared params for every registered query — shared, cached, so binding a
@@ -1925,6 +1925,7 @@ function ConfigPanel({
               widget={widget} onChange={onChange} spec={spec}
               onPatchWidget={onPatchWidget}
               onCreateVariable={name => onCreateVariable?.(name, VARIABLE_TYPE_FOR_FILTER[widget.subtype ?? 'select'] ?? 'text')}
+              onRenameVariable={(from, to) => onRenameVariable?.(from, to, widget.id, VARIABLE_TYPE_FOR_FILTER[widget.subtype ?? 'select'] ?? 'text')}
               resolveWidget={resolveWidget}
             />
           )}
@@ -3933,6 +3934,57 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
     })
   }, [setSpec])
 
+  // How many widgets each filter actually reaches. A filter that reaches none
+  // looks fine on the canvas and does nothing for viewers, so the canvas and
+  // the filters drawer flag it.
+  const filterReaderCounts = useMemo(() => {
+    const names = (spec.widgets ?? [])
+      .map(w => resolveEntry(w))
+      .filter(w => w?.type === 'filter' && w.target_var)
+      .map(w => w.target_var)
+    return readerCounts(spec.widgets ?? [], names, resolveEntry)
+  }, [spec.widgets, resolveEntry])
+
+  /**
+   * A filter's variable was renamed `from` → `to`: re-point every widget that
+   * READS `from` (param bindings, direct column bindings, date captions) so the
+   * filter keeps controlling what it controlled, and carry the declaration
+   * (type, default) over. One spec update, so it is one undo step.
+   *
+   * Skipped when another widget also WRITES `from` — the variable is shared,
+   * and moving its readers would silently cut that other producer off. The
+   * caller (FilterConfig) says so instead.
+   */
+  const renameVariable = useCallback((from, to, selfId, type = 'text') => {
+    const oldName = String(from ?? '').trim()
+    const newName = String(to ?? '').trim()
+    if (!newName) return
+    setSpec(prev => {
+      const plan = planVariableRename(prev.widgets, oldName, newName, selfId, resolveEntry)
+      const vars = prev.variables ?? []
+      const oldDecl = vars.find(v => v?.name === oldName)
+      const hasNew = vars.some(v => v?.name === newName)
+      if (!oldName || oldName === newName || plan.sharedWith.length > 0) {
+        return hasNew ? prev : { ...prev, variables: [...vars, { name: newName, type, default: null }] }
+      }
+      const widgets = plan.moves === 0 ? prev.widgets : prev.widgets.map(w => {
+        if (w.id === selfId) return w
+        const def = isRefWidget(w) ? libraryById.get(w.ref) : null
+        const resolved = isRefWidget(w) ? resolveWidgetRef(w, def).widget : w
+        const updated = renameVariableReads(resolved, oldName, newName)
+        if (updated === resolved) return w
+        return isRefWidget(w) ? applyWidgetEdit(w, updated, def) : updated
+      })
+      // Nothing else writes the old name now, so its declaration moves with it.
+      const variables = hasNew
+        ? vars.filter(v => v?.name !== oldName)
+        : oldDecl
+          ? vars.map(v => (v?.name === oldName ? { ...v, name: newName } : v))
+          : [...vars, { name: newName, type, default: null }]
+      return { ...prev, widgets, variables }
+    })
+  }, [libraryById, resolveEntry, setSpec])
+
   /**
    * "Reset to library value" for one overridden leaf field (per-field, from
    * RefWidgetBanner's flattened override list) — removes just that leaf from
@@ -4227,6 +4279,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         savingShared={savingShared}
         onPatchWidget={patchWidgetById}
         onCreateVariable={createVariable}
+        onRenameVariable={renameVariable}
         resolveWidget={resolveEntry}
       />
     )
@@ -4563,6 +4616,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         savingShared={savingShared}
         onPatchWidget={patchWidgetById}
         onCreateVariable={createVariable}
+        onRenameVariable={renameVariable}
         resolveWidget={resolveEntry}
       />
     )
@@ -4901,6 +4955,16 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                             <span className="nbc-tile-title capitalize">
                               {widget.props?.label || widget.type}
                             </span>
+                            {widget.type === 'filter' && (filterReaderCounts.get(widget.target_var) ?? 0) === 0 && (
+                              <span
+                                className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-warning"
+                                title="This filter is not connected to any widget, so picking a value changes nothing. Select it to connect widgets."
+                                data-testid={`filter-unconnected-badge-${raw.id}`}
+                              >
+                                <AlertTriangle size={14} strokeWidth={1.5} aria-hidden="true" />
+                                {item.w >= 4 ? 'Not connected' : <span className="sr-only">Not connected</span>}
+                              </span>
+                            )}
                             {widget.props?.label && item.w >= 4 && (
                               <span className="nbc-meta shrink-0">{widget.type}</span>
                             )}
@@ -5015,6 +5079,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
               savingShared={savingShared}
               onPatchWidget={patchWidgetById}
               onCreateVariable={createVariable}
+              onRenameVariable={renameVariable}
               resolveWidget={resolveEntry}
             />
           }
@@ -5205,7 +5270,15 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                       <span className="nbc-glyph"><FilterIcon size={16} strokeWidth={1.5} /></span>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-[13px] font-semibold">{w.props?.label || w.subtype || 'Filter'}</span>
-                        <span className="nbc-meta block truncate">{w.target_var || '(no variable)'}</span>
+                        <span className="nbc-meta block truncate">
+                          {w.target_var || '(no variable)'}
+                          {(() => {
+                            const n = w.target_var ? (filterReaderCounts.get(w.target_var) ?? 0) : 0
+                            return n > 0
+                              ? ` · ${n} widget${n === 1 ? '' : 's'}`
+                              : <span className="text-warning" data-testid={`filters-drawer-unconnected-${w.id}`}> · not connected</span>
+                          })()}
+                        </span>
                       </span>
                     </button>
                   ))

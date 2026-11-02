@@ -22,8 +22,8 @@
  *   onChange  (w)=>void
  */
 
-import { useState } from 'react'
-import { LayoutGrid, Link2, BarChart3, Table2, Gauge, Grid3x3, Layers, Check, Wand2, Loader2 } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { LayoutGrid, Link2, BarChart3, Table2, Gauge, Grid3x3, Layers, Check, Wand2, Loader2, AlertTriangle, ArrowRight } from 'lucide-react'
 import { inputCls, selectCls, FieldLabel, ToggleRow, Section, ColorField, SectionLabel } from './inspectorPrimitives.jsx'
 import { QueryPicker } from './QueryPicker.jsx'
 import { FILTER_SUBTYPES } from './constants.js'
@@ -33,7 +33,7 @@ import { titleText } from './titleValue.js'
 import { listFilterableColumns, parameterizeQuery } from '../../lib/api.js'
 import {
   wiringRows, connectedCount, bindParam, unbindVar, varNameFromLabel,
-  bindFilter, unbindFilterVar,
+  bindFilter, unbindFilterVar, suggestVarName, boardParamUsage, planVariableRename,
 } from '../../dashboards/paramWiring.js'
 
 const SUBTYPE_LABELS = {
@@ -255,7 +255,7 @@ function MakeFilterable({ queryId, varName, subtype, onDone, onConnectDirect, la
  * a name match tells us which param a variable belongs in. Ticking a row writes
  * that binding onto the other widget; unticking removes it.
  */
-function ConnectedWidgets({ widget, spec, varName, onPatchWidget, resolveWidget, onOptionsQuery = undefined }) {
+function ConnectedWidgets({ widget, spec, varName, onPatchWidget, resolveWidget, onOptionsQuery = undefined, onAdoptName = undefined }) {
   const { paramsById, loaded } = useQueryParamsIndex()
 
   if (!varName) {
@@ -288,6 +288,22 @@ function ConnectedWidgets({ widget, spec, varName, onPatchWidget, resolveWidget,
 
   const connected = connectedCount(rows)
   const connectable = rows.filter(r => r.state === 'available')
+  // The names this board's queries actually take — offered when the filter
+  // reaches nothing, so the fix is one click instead of a rename hunt.
+  const others = (spec?.widgets ?? []).filter(w => w.id !== widget.id)
+  const usage = boardParamUsage({ widgets: others, paramsByQueryId: paramsById, resolve: resolveWidget })
+    .filter(u => u.name !== varName)
+    .slice(0, 4)
+
+  // Switch the filter to `name` and connect every widget whose query takes it.
+  const adoptName = (name) => {
+    onAdoptName?.(name)
+    const next = wiringRows({ widgets: others, varName: name, paramsByQueryId: paramsById, resolve: resolveWidget })
+    for (const row of next) {
+      if (row.state !== 'available' || !row.paramName) continue
+      onPatchWidget(row.id, w => ({ ...w, params: bindParam(w.params, row.paramName, name) }))
+    }
+  }
 
   const connect = (row, paramName) => {
     if (!paramName) return
@@ -323,6 +339,35 @@ function ConnectedWidgets({ widget, spec, varName, onPatchWidget, resolveWidget,
           </button>
         )}
       </div>
+
+      {loaded && connected === 0 && (
+        <div data-testid="filter-not-connected"
+          className="rounded-lg border border-warning/40 bg-warning/10 px-2.5 py-2 space-y-1.5">
+          <p className="text-[11px] text-fg leading-relaxed flex gap-1.5">
+            <AlertTriangle size={12} className="text-warning flex-none mt-0.5" aria-hidden="true" />
+            <span>
+              Not connected: picking a value won’t change anything on this board yet.
+            </span>
+          </p>
+          {onAdoptName && usage.length > 0 && (
+            <div className="pl-[18px] space-y-1">
+              <p className="text-[10px] text-muted">Widgets here can be filtered by:</p>
+              <div className="flex flex-wrap gap-1">
+                {usage.map(u => (
+                  <button key={u.name} type="button"
+                    data-testid={`filter-use-name-${u.name}`}
+                    onClick={() => adoptName(u.name)}
+                    title={`Use “${u.name}” and connect the ${u.widgets === 1 ? 'widget' : `${u.widgets} widgets`} whose query takes it`}
+                    className="inline-flex items-center gap-1 h-6 px-2 rounded-lg border border-border bg-surface hover:border-fg text-[10px] transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
+                    <span className="font-mono text-fg">{u.name}</span>
+                    <span className="text-muted">· {u.widgets}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       <ul className="space-y-1">
         {rows.map(row => {
@@ -421,8 +466,8 @@ function ConnectedWidgets({ widget, spec, varName, onPatchWidget, resolveWidget,
   )
 }
 
-export function FilterConfig({ widget, onChange, spec, onPatchWidget = undefined, onCreateVariable = undefined, resolveWidget = undefined }) {
-  const { datastoreById } = useQueryParamsIndex()
+export function FilterConfig({ widget, onChange, spec, onPatchWidget = undefined, onCreateVariable = undefined, onRenameVariable = undefined, resolveWidget = undefined }) {
+  const { datastoreById, paramsById } = useQueryParamsIndex()
   const setField = (key, val) => onChange({ ...widget, [key]: val })
   const props = widget.props ?? {}
   const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
@@ -446,6 +491,15 @@ export function FilterConfig({ widget, onChange, spec, onPatchWidget = undefined
   const varNames = (spec?.variables ?? []).map(v => v.name).filter(Boolean)
   const varName = widget.target_var ?? ''
   const knownVar = !varName || varNames.includes(varName)
+  // Names the board already uses: declared variables plus every param its
+  // queries take. A label that means one of them ("The region filter") adopts
+  // it, so the filter wires up instead of minting `the_region_filter`.
+  const paramUsage = boardParamUsage({
+    widgets: (spec?.widgets ?? []).filter(w => w.id !== widget.id),
+    paramsByQueryId: paramsById,
+    resolve: resolveWidget,
+  })
+  const knownNames = [...varNames, ...paramUsage.map(u => u.name)]
 
   // The variable follows the label — "Store group" writes `store_group` — until
   // someone edits the name directly, at which point it stops following. That is
@@ -453,12 +507,47 @@ export function FilterConfig({ widget, onChange, spec, onPatchWidget = undefined
   // so a hand-picked name is never overwritten by a later label edit.
   const setLabel = (label) => {
     const next: Record<string, any> = { ...widget, props: { ...props, label } }
-    const followed = !varName || varName === varNameFromLabel(props.label ?? '')
+    const prevLabel = props.label ?? ''
+    const followed = !varName
+      || varName === varNameFromLabel(prevLabel)
+      || varName === suggestVarName(prevLabel, knownNames)
     if (followed) {
-      const derived = varNameFromLabel(label)
+      const derived = suggestVarName(label, knownNames)
       if (derived) next.target_var = derived
     }
     onChange(next)
+  }
+
+  // Renames are committed when editing ends (blur), not per keystroke: typing
+  // through `regi…` must not drag connections across every prefix, or onto an
+  // unrelated variable that happens to share one.
+  const varAtFocus = useRef(null)
+  const [renameNote, setRenameNote] = useState(null)
+  const beginVarEdit = () => {
+    if (varAtFocus.current === null) varAtFocus.current = widget.target_var ?? ''
+  }
+  const commitVar = (finalName) => {
+    const from = varAtFocus.current ?? ''
+    varAtFocus.current = null
+    const to = String(finalName ?? '').trim()
+    if (!to) return
+    if (from && from !== to && onRenameVariable) {
+      const plan = planVariableRename(spec?.widgets ?? [], from, to, widget.id, resolveWidget)
+      onRenameVariable(from, to)
+      setRenameNote(plan.sharedWith.length > 0
+        ? { kind: 'shared', from, to, n: plan.sharedWith.length }
+        : plan.moves > 0 ? { kind: 'moved', from, to, n: plan.moves } : null)
+    } else if (!varNames.includes(to)) {
+      onCreateVariable?.(to)
+    }
+  }
+  // A suggestion chip: switch to an existing name in one step.
+  const adoptName = (name) => {
+    const from = widget.target_var ?? ''
+    setField('target_var', name)
+    setRenameNote(null)
+    if (from && from !== name && onRenameVariable) onRenameVariable(from, name)
+    else if (!varNames.includes(name)) onCreateVariable?.(name)
   }
 
   return (
@@ -468,8 +557,9 @@ export function FilterConfig({ widget, onChange, spec, onPatchWidget = undefined
         <FieldLabel>Label</FieldLabel>
         <input type="text" className={inputCls} value={props.label ?? ''} placeholder="e.g. Region"
           data-testid="filter-label"
+          onFocus={beginVarEdit}
           onChange={e => setLabel(e.target.value)}
-          onBlur={() => { const v = (widget.target_var ?? '').trim(); if (v && !varNames.includes(v)) onCreateVariable?.(v) }} />
+          onBlur={() => commitVar(widget.target_var)} />
       </div>
       <div>
         <FieldLabel>Type</FieldLabel>
@@ -481,11 +571,28 @@ export function FilterConfig({ widget, onChange, spec, onPatchWidget = undefined
       {/* ── What this filter controls ────────────────────────────────────── */}
       <div className="space-y-1.5">
         <FieldLabel className="flex items-center gap-1.5"><Link2 size={12} /> Controls these widgets</FieldLabel>
+        {renameNote && (
+          <p data-testid="filter-rename-note"
+            className={`text-[10px] leading-relaxed rounded-lg px-2 py-1.5 ${
+              renameNote.kind === 'shared' ? 'text-warning/90 bg-warning/10' : 'text-muted bg-surface-2/60'}`}>
+            {renameNote.kind === 'moved' ? (
+              <>Moved {renameNote.n === 1 ? '1 connection' : `${renameNote.n} connections`}{' '}
+                <span className="font-mono">{renameNote.from}</span>
+                <ArrowRight size={9} className="inline mx-0.5" aria-hidden="true" />
+                <span className="font-mono">{renameNote.to}</span>, so they keep following this filter.</>
+            ) : (
+              <>{renameNote.n === 1 ? 'Another widget also sets' : `${renameNote.n} other widgets also set`}{' '}
+                <span className="font-mono">{renameNote.from}</span>, so its connections stayed on it.
+                Reconnect the widgets below that should follow this filter.</>
+            )}
+          </p>
+        )}
         <ConnectedWidgets
           widget={widget}
           spec={spec}
           varName={varName}
           onPatchWidget={onPatchWidget ?? (() => {})}
+          onAdoptName={adoptName}
           resolveWidget={resolveWidget}
           onOptionsQuery={(oq) => {
             if (!oq?.id) return
@@ -495,9 +602,9 @@ export function FilterConfig({ widget, onChange, spec, onPatchWidget = undefined
           }}
         />
         <p className="text-[10px] text-muted/70 leading-relaxed">
-          A widget can be connected once its query declares a matching
+          Widgets whose query takes a
           <span className="font-mono text-muted"> {'{{'}{varName || 'name'}{'}}'} </span>
-          parameter.
+          parameter connect in one click; any other can be connected straight to a column.
         </p>
       </div>
 
@@ -506,11 +613,15 @@ export function FilterConfig({ widget, onChange, spec, onPatchWidget = undefined
         <input type="text" list="filter-var-list" placeholder="e.g. region" className={inputCls}
           data-testid="filter-target-var"
           value={varName}
+          onFocus={beginVarEdit}
           onChange={e => setField('target_var', e.target.value)}
-          onBlur={e => { const v = e.target.value.trim(); if (v && !varNames.includes(v)) onCreateVariable?.(v) }} />
-        {varNames.length > 0 && (
+          onBlur={e => commitVar(e.target.value)} />
+        {knownNames.length > 0 && (
           <datalist id="filter-var-list">
-            {varNames.map(v => <option key={v} value={v} />)}
+            {[...new Set(knownNames)].map(v => {
+              const n = paramUsage.find(u => u.name === v)?.widgets ?? 0
+              return <option key={v} value={v} label={n ? `used by ${n} widget${n === 1 ? '' : 's'}` : 'board variable'} />
+            })}
           </datalist>
         )}
         <p className="text-[10px] text-muted/70 mt-1 leading-relaxed">
