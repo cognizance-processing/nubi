@@ -331,3 +331,191 @@ export function varNameFromLabel(label: string): string {
   if (!slug) return ''
   return /^[0-9]/.test(slug) ? `v_${slug}` : slug
 }
+
+// ---------------------------------------------------------------------------
+// Naming guardrails — keep a filter's variable aligned with what the board's
+// queries actually take, and keep connections alive when it is renamed.
+// ---------------------------------------------------------------------------
+
+/** Words people put around the real name in a filter label. Edges only, so
+ *  "Date of birth" keeps its "of" while "Filter by region" sheds two words. */
+const LEADING_FILLER = new Set(['the', 'a', 'an', 'select', 'choose', 'pick', 'filter', 'by', 'your'])
+const TRAILING_FILLER = new Set(['filter', 'filters', 'dropdown', 'picker', 'selector'])
+
+/**
+ * The variable a filter labelled `label` should write to, given the names
+ * this board already uses (`knownNames`: declared variables and the params its
+ * queries take).
+ *
+ * `varNameFromLabel` turns "The region filter" into `the_region_filter`, which
+ * matches nothing, so the filter silently connects to no widget. This strips
+ * filler words from the label's edges and, when what remains is one of the
+ * board's existing names (case/separators folded), uses that name verbatim so
+ * the exact-match auto-wiring fires. It never guesses: two distinct known names
+ * folding to the same thing fall back to the plain slug.
+ */
+export function suggestVarName(label: string, knownNames: string[] = []): string {
+  const raw = varNameFromLabel(label)
+  if (!raw) return ''
+  const tokens = raw.split('_').filter(Boolean)
+  while (tokens.length > 1 && LEADING_FILLER.has(tokens[0])) tokens.shift()
+  while (tokens.length > 1 && TRAILING_FILLER.has(tokens[tokens.length - 1])) tokens.pop()
+  const core = varNameFromLabel(tokens.join('_')) || raw
+
+  const known = [...new Set((knownNames ?? []).filter(Boolean))]
+  for (const candidate of [core, raw]) {
+    const exact = known.find(n => n === candidate)
+    if (exact) return exact
+    const folded = normalizeName(candidate)
+    const near = known.filter(n => normalizeName(n) === folded)
+    if (near.length === 1) return near[0]
+  }
+  return core
+}
+
+/** One query param name and how many widgets on the board could take it. */
+export interface ParamUsage { name: string; widgets: number }
+
+/**
+ * Every param declared by the queries on this board, with how many widgets
+ * declare it — the names a filter could use and actually reach something.
+ * Most-used first, then alphabetical so the order is stable.
+ */
+export function boardParamUsage({
+  widgets,
+  paramsByQueryId,
+  resolve = w => w,
+}: Omit<WiringInput, 'varName' | 'labelFor'>): ParamUsage[] {
+  const counts = new Map<string, number>()
+  for (const entry of widgets ?? []) {
+    const w = resolve(entry) ?? entry
+    if (!(WIRABLE_TYPES as readonly string[]).includes(w?.type ?? '')) continue
+    const declared = lookupParams(paramsByQueryId, w.query_id ?? '')
+    if (!Array.isArray(declared)) continue
+    const seen = new Set<string>()
+    for (const p of declared) {
+      if (!p?.name || seen.has(p.name)) continue
+      seen.add(p.name)
+      counts.set(p.name, (counts.get(p.name) ?? 0) + 1)
+    }
+  }
+  return [...counts.entries()]
+    .map(([name, n]) => ({ name, widgets: n }))
+    .sort((a, b) => b.widgets - a.widgets || a.name.localeCompare(b.name))
+}
+
+type Json = any
+
+const isPlainObject = (v: unknown): v is Record<string, Json> =>
+  !!v && typeof v === 'object' && !Array.isArray(v)
+
+/** A binding object is exactly `{ref: name}` — a library-ref widget also has
+ *  a `ref` key, but alongside id/overrides, so it is never mistaken for one. */
+const isBindingTo = (v: unknown, name: string) =>
+  isPlainObject(v) && v.ref === name && Object.keys(v).length === 1
+
+/**
+ * Rewrite every place `widget` READS variable `from` so it reads `to`:
+ * `{ref}` param bindings, direct column bindings (`filters` keys) and
+ * `props.variable` (date display). Walks nested widgets (stepper steps) too.
+ * Places that WRITE a variable (target_var, setVar) are left alone — renaming
+ * a filter must not hijack another producer. Returns the same object when
+ * nothing changed, so callers can skip no-op patches.
+ */
+export function renameVariableReads(widget: Json, from: string, to: string): Json {
+  if (!from || !to || from === to) return widget
+  const walk = (node: Json): Json => {
+    if (Array.isArray(node)) {
+      let changed = false
+      const out = node.map(item => { const n = walk(item); if (n !== item) changed = true; return n })
+      return changed ? out : node
+    }
+    if (!isPlainObject(node)) return node
+    if (isBindingTo(node, from)) return { ref: to }
+    let changed = false
+    const out: Record<string, Json> = {}
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'filters' && isPlainObject(value) && typeof value[from] === 'string') {
+        const renamed: Record<string, Json> = {}
+        for (const [k, v] of Object.entries(value)) renamed[k === from ? to : k] = v
+        out[key] = renamed
+        changed = true
+      } else if (key === 'variable' && value === from) {
+        out[key] = to
+        changed = true
+      } else {
+        const next = walk(value)
+        if (next !== value) changed = true
+        out[key] = next
+      }
+    }
+    return changed ? out : node
+  }
+  return walk(widget)
+}
+
+/** True when `widget` (or a widget nested in it) reads variable `name`. */
+export function readsVariable(widget: Json, name: string): boolean {
+  return !!name && renameVariableReads(widget, name, `${name}\u0000`) !== widget
+}
+
+const WRITER_KEYS = new Set(['target_var', 'setVar', 'var'])
+
+/** True when `widget` (or a widget nested in it) WRITES variable `name` —
+ *  a filter's target_var, a click's setVar/setVars, a drilldown target. */
+export function writesVariable(widget: Json, name: string): boolean {
+  if (!name) return false
+  const walk = (node: Json): boolean => {
+    if (Array.isArray(node)) return node.some(walk)
+    if (!isPlainObject(node)) return false
+    for (const [key, value] of Object.entries(node)) {
+      if (WRITER_KEYS.has(key) && value === name) return true
+      if (typeof value === 'object' && value !== null && walk(value)) return true
+    }
+    return false
+  }
+  return walk(widget)
+}
+
+/** varName → how many widgets read it. One pass, for canvas badges. */
+export function readerCounts(
+  widgets: Json[],
+  varNames: string[],
+  resolve: (w: Json) => Json = w => w,
+): Map<string, number> {
+  const out = new Map<string, number>()
+  const names = [...new Set((varNames ?? []).filter(Boolean))]
+  for (const n of names) out.set(n, 0)
+  for (const entry of widgets ?? []) {
+    const w = resolve(entry) ?? entry
+    for (const n of names) if (readsVariable(w, n)) out.set(n, (out.get(n) ?? 0) + 1)
+  }
+  return out
+}
+
+/**
+ * What renaming a filter's variable from `from` to `to` would do.
+ *
+ * `moves` is how many widgets read `from` and would be re-pointed. When some
+ * OTHER widget also writes `from` (a second filter, a chart click) the
+ * variable is shared, and moving its readers would break that producer —
+ * `sharedWith` lists those writers and the caller should not move anything.
+ */
+export function planVariableRename(
+  widgets: Json[],
+  from: string,
+  to: string,
+  selfId: string,
+  resolve: (w: Json) => Json = w => w,
+): { moves: number; sharedWith: string[] } {
+  if (!from || !to || from === to) return { moves: 0, sharedWith: [] }
+  let moves = 0
+  const sharedWith: string[] = []
+  for (const entry of widgets ?? []) {
+    if (entry?.id === selfId) continue
+    const w = resolve(entry) ?? entry
+    if (writesVariable(w, from)) sharedWith.push(w.id ?? entry.id)
+    if (readsVariable(w, from)) moves += 1
+  }
+  return { moves, sharedWith }
+}
