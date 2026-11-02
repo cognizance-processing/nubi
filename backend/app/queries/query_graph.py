@@ -18,7 +18,9 @@ enumerate real table/column names for anti-hallucination prompt grounding;
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any
 
 from app.queries.registry import RegisteredQuery
@@ -82,6 +84,19 @@ class QueryGraph:
 # ---------------------------------------------------------------------------
 
 
+# Parsing is the whole cost of a graph build (thousands of sqlglot parses on a
+# big org — tens of seconds, on every get_schema call). SQL text fully
+# determines the result, so memoise per text; hand out copies so no caller can
+# mutate the cached entry.
+@lru_cache(maxsize=32768)
+def _extract_cached(sql: str) -> dict[str, Any]:
+    return extract_table_columns(sql)
+
+
+def _extract(sql: str) -> dict[str, Any]:
+    return copy.deepcopy(_extract_cached(sql))
+
+
 def build_query_graph(queries: list[RegisteredQuery]) -> QueryGraph:
     """Build a ``QueryGraph`` over *queries*.
 
@@ -114,7 +129,7 @@ def build_query_graph(queries: list[RegisteredQuery]) -> QueryGraph:
     graph = QueryGraph()
 
     for rq in queries:
-        detail_raw = extract_table_columns(rq.sql)
+        detail_raw = _extract(rq.sql)
 
         # Store per-query detail.
         detail: dict[str, Any] = {
