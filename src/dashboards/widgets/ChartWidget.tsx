@@ -367,7 +367,10 @@ export default function ChartWidget({ widget, providerTable = null }) {
           `min()` keeps the floor only while it fits the space available. */}
       <div className="flex-1 min-h-0" style={{ minHeight: 'min(180px, 100%)' }}>
         {option
-          ? <EChart option={option} height={height} onEvents={onEvents} />
+          // Keyed by type: ECharts merges setOption, so reusing an instance across
+          // types leaves the old type's components (polar, axes) drawn underneath.
+          // Same-type updates keep the instance and merge smoothly.
+          ? <EChart key={chart_type} option={option} height={height} onEvents={onEvents} />
           : (
             <EmptyState
               title="No data"
