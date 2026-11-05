@@ -18,7 +18,8 @@
  *     illustration set. Light + dark via semantic tokens.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   BarChart2,
@@ -61,7 +62,6 @@ import PageShell, {
   CardGrid,
   NoticeBanner,
   SelectionBar,
-  DropdownMenu,
   DropdownItem,
   DropdownDivider,
 } from '../../components/app/PageShell.jsx'
@@ -317,15 +317,132 @@ function CardThumbnail({ board }) {
   )
 }
 
+const CARD_MENU_VIEWPORT_MARGIN = 8 // px gap from viewport edges
+const CARD_MENU_TRIGGER_GAP = 6     // px gap between trigger and panel
+const CARD_MENU_ROW_HEIGHT = 32     // px, .nubi-dropdown-item's min-height
+
 // Actions are individually optional: the menu now sits on every card, including
 // ones a read-only viewer sees, where Open is the only thing they may do.
+//
+// The panel is portalled because .nubi-resource-card clips its overflow. It follows
+// the dashboards/inputs/Popover.tsx pattern rather than using that component:
+// Popover decides whether to flip from a fixed 200px threshold and always
+// left-aligns, whereas this taller, right-aligned menu flips on its real height.
 function CardMenu({ onOpen, onEdit, onCheckpoint, onHistory, onPromote, onDelete, folders, currentFolderId, onMoveToFolder, onNewFolderFromCard }) {
   const [open, setOpen] = useState(false)
-  const ref = useRef(null)
+  const [pos, setPos] = useState(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+
+  // Place the panel below the trigger if it fits, otherwise on the roomier side.
+  useLayoutEffect(() => {
+    if (!open) return
+
+    function measure() {
+      const trigger = triggerRef.current
+      const panel = panelRef.current
+      if (!trigger || !panel) return
+
+      // Read the natural height: the applied max-height would otherwise hide
+      // that there is now room for more of the folder list.
+      const appliedMaxHeight = panel.style.maxHeight
+      panel.style.maxHeight = ''
+      const { offsetHeight: height, offsetWidth: width } = panel
+      const list = listRef.current
+      // The least the panel can usefully be: fixed rows plus the shrunken list.
+      const minUsableHeight = list
+        ? height - list.offsetHeight + parseFloat(getComputedStyle(list).minHeight)
+        : height
+      panel.style.maxHeight = appliedMaxHeight
+
+      const r = trigger.getBoundingClientRect()
+      const vh = window.innerHeight
+      const vw = window.innerWidth
+      const spaceBelow = vh - r.bottom - CARD_MENU_TRIGGER_GAP - CARD_MENU_VIEWPORT_MARGIN
+      const spaceAbove = r.top - CARD_MENU_TRIGGER_GAP - CARD_MENU_VIEWPORT_MARGIN
+      const flipUp = height > spaceBelow && spaceAbove > spaceBelow
+      const left = Math.max(
+        CARD_MENU_VIEWPORT_MARGIN,
+        Math.min(r.right - width, vw - width - CARD_MENU_VIEWPORT_MARGIN),
+      )
+
+      // Neither side can hold the fixed rows: keep them visible by sliding the
+      // panel fully on screen, even though that covers the trigger.
+      if (minUsableHeight > Math.max(spaceAbove, spaceBelow)) {
+        const maxHeight = vh - CARD_MENU_VIEWPORT_MARGIN * 2
+        setPos({
+          left,
+          top: Math.max(
+            CARD_MENU_VIEWPORT_MARGIN,
+            Math.min(r.bottom + CARD_MENU_TRIGGER_GAP, vh - CARD_MENU_VIEWPORT_MARGIN - Math.min(height, maxHeight)),
+          ),
+          bottom: undefined,
+          maxHeight,
+        })
+        return
+      }
+
+      setPos({
+        left,
+        top: flipUp ? undefined : r.bottom + CARD_MENU_TRIGGER_GAP,
+        bottom: flipUp ? vh - r.top + CARD_MENU_TRIGGER_GAP : undefined,
+        maxHeight: Math.max(0, flipUp ? spaceAbove : spaceBelow),
+      })
+    }
+
+    measure()
+
+    let raf = 0
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined
+    const onScroll = (e: Event) => {
+      // Scrolling the folder list doesn't move the panel.
+      if (e.target instanceof Node && panelRef.current?.contains(e.target)) return
+      cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(measure)
+    }
+    const onResize = () => {
+      clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(measure, 100)
+    }
+
+    window.addEventListener('resize', onResize)
+    // Capture so scrolling any ancestor container re-anchors the panel.
+    window.addEventListener('scroll', onScroll, true)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      window.removeEventListener('scroll', onScroll, true)
+      cancelAnimationFrame(raf)
+      clearTimeout(resizeTimer)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    function onMouseDown(e: MouseEvent) {
+      const target = e.target as Node
+      // The trigger is excluded so its own click can toggle the menu shut.
+      if (panelRef.current?.contains(target) || triggerRef.current?.contains(target)) return
+      setOpen(false)
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return
+      e.stopPropagation()
+      setOpen(false)
+      triggerRef.current?.focus()
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
 
   return (
-    <div ref={ref} className="relative">
+    <div className="relative">
       <button
+        ref={triggerRef}
         type="button"
         onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen(v => !v) }}
         className="flex h-8 w-8 items-center justify-center border border-frame-line bg-surface text-muted transition-colors hover:border-ink hover:text-fg"
@@ -337,35 +454,64 @@ function CardMenu({ onOpen, onEdit, onCheckpoint, onHistory, onPromote, onDelete
         <MoreVertical size={14} aria-hidden="true" />
       </button>
 
-      <DropdownMenu open={open} onClose={() => setOpen(false)}>
-        {onOpen && <DropdownItem icon={ExternalLink} onClick={() => { setOpen(false); onOpen() }}>Open</DropdownItem>}
-        {onEdit && <DropdownItem icon={Pencil} onClick={() => { setOpen(false); onEdit() }}>Edit</DropdownItem>}
-        {(onOpen || onEdit) && (onCheckpoint || onHistory || onPromote) && <DropdownDivider />}
-        {onCheckpoint && <DropdownItem icon={GitCommitHorizontal} onClick={() => { setOpen(false); onCheckpoint() }}>Checkpoint</DropdownItem>}
-        {onHistory && <DropdownItem icon={History} onClick={() => { setOpen(false); onHistory() }}>History</DropdownItem>}
-        {onPromote && <DropdownItem icon={Rocket} onClick={() => { setOpen(false); onPromote() }}>Promote</DropdownItem>}
-        {onMoveToFolder && (
-          <>
-            <DropdownDivider />
-            <div className="px-3 pt-1.5 pb-1 ap-count">Move to folder</div>
-            {folders.map(folder => (
-              <DropdownItem
-                key={folder.id}
-                icon={Folder}
-                onClick={() => { setOpen(false); onMoveToFolder(folder.id === currentFolderId ? null : folder.id) }}
-              >
-                <span className="flex-1 text-left truncate">{folder.name}</span>
-                {folder.id === currentFolderId && <Check size={13} className="text-accent shrink-0" aria-hidden="true" />}
+      {open && createPortal(
+        <div
+          ref={panelRef}
+          role="menu"
+          // overflow-y-auto is the fallback for screens too short for the fixed rows.
+          className="nubi-dropdown flex flex-col overflow-y-auto"
+          style={{
+            position: 'fixed',
+            maxWidth: 'min(20rem, calc(100vw - 16px))',
+            // Hidden until the first measure so it can't flash at the wrong spot.
+            ...(pos ?? { left: 0, top: 0, visibility: 'hidden' }),
+          }}
+        >
+          <div className="shrink-0">
+            {onOpen && <DropdownItem icon={ExternalLink} onClick={() => { setOpen(false); onOpen() }}>Open</DropdownItem>}
+            {onEdit && <DropdownItem icon={Pencil} onClick={() => { setOpen(false); onEdit() }}>Edit</DropdownItem>}
+            {(onOpen || onEdit) && (onCheckpoint || onHistory || onPromote) && <DropdownDivider />}
+            {onCheckpoint && <DropdownItem icon={GitCommitHorizontal} onClick={() => { setOpen(false); onCheckpoint() }}>Checkpoint</DropdownItem>}
+            {onHistory && <DropdownItem icon={History} onClick={() => { setOpen(false); onHistory() }}>History</DropdownItem>}
+            {onPromote && <DropdownItem icon={Rocket} onClick={() => { setOpen(false); onPromote() }}>Promote</DropdownItem>}
+            {onMoveToFolder && (
+              <>
+                <DropdownDivider />
+                <div className="px-3 pt-1.5 pb-1 ap-count">Move to folder</div>
+              </>
+            )}
+          </div>
+          {onMoveToFolder && (
+            // Only this list scrolls, and it gives up height first when space is tight.
+            <div
+              ref={listRef}
+              className="overflow-y-auto"
+              style={{ maxHeight: '40vh', minHeight: Math.min(folders.length, 2) * CARD_MENU_ROW_HEIGHT }}
+            >
+              {folders.map(folder => (
+                <DropdownItem
+                  key={folder.id}
+                  icon={Folder}
+                  onClick={() => { setOpen(false); onMoveToFolder(folder.id === currentFolderId ? null : folder.id) }}
+                >
+                  <span className="flex-1 text-left truncate">{folder.name}</span>
+                  {folder.id === currentFolderId && <Check size={13} className="text-accent shrink-0" aria-hidden="true" />}
+                </DropdownItem>
+              ))}
+            </div>
+          )}
+          <div className="shrink-0">
+            {onMoveToFolder && (
+              <DropdownItem icon={FolderPlus} onClick={() => { setOpen(false); onNewFolderFromCard() }}>
+                New folder…
               </DropdownItem>
-            ))}
-            <DropdownItem icon={FolderPlus} onClick={() => { setOpen(false); onNewFolderFromCard() }}>
-              New folder…
-            </DropdownItem>
-          </>
-        )}
-        <DropdownDivider />
-        <DropdownItem icon={Trash2} danger onClick={() => { setOpen(false); onDelete() }}>Delete</DropdownItem>
-      </DropdownMenu>
+            )}
+            <DropdownDivider />
+            <DropdownItem icon={Trash2} danger onClick={() => { setOpen(false); onDelete() }}>Delete</DropdownItem>
+          </div>
+        </div>,
+        document.body,
+      )}
     </div>
   )
 }
