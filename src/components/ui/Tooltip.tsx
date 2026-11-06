@@ -21,6 +21,9 @@
  *   side      'top' (default) | 'bottom' | 'left' | 'right'
  *   delay     number (ms) — hover delay before showing (default 300)
  *   disabled  boolean — skip rendering the tooltip
+ *   floating  boolean — position the bubble against the viewport so an ancestor's
+ *             overflow can't clip it (toolbars, segmented groups). It also closes on
+ *             click, so it never sits on top of the menu its trigger just opened.
  *   className — applied to the trigger wrapper
  *   children  — a single React element
  *
@@ -41,6 +44,9 @@ const POSITION = {
   right:  'left-full top-1/2 -translate-y-1/2 pl-2',
 }
 
+// The hover bridge between trigger and bubble, for `floating` bubbles.
+const GAP = { top: 'pb-2', bottom: 'pt-2', left: 'pr-2', right: 'pl-2' }
+
 // Module-level: when one tooltip closed less than 400ms ago, the next opens instantly
 let lastClosed = 0
 const WARM_MS = 400
@@ -51,6 +57,7 @@ export default function Tooltip({
   side = 'top',
   delay = 300,
   disabled = false,
+  floating = false,
   className,
   children,
 }: {
@@ -59,6 +66,7 @@ export default function Tooltip({
   side?: 'top' | 'bottom' | 'left' | 'right'
   delay?: number
   disabled?: boolean
+  floating?: boolean
   className?: string
   children?: any
 }) {
@@ -68,6 +76,8 @@ export default function Tooltip({
   const [placed, setPlaced] = useState<{ side: typeof side; dx: number }>({ side, dx: 0 })
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const bubbleRef = useRef<HTMLSpanElement | null>(null)
+  const wrapRef = useRef<HTMLSpanElement | null>(null)
+  const [floatPos, setFloatPos] = useState<{ left: number; top: number } | null>(null)
 
   const show = (immediate = false) => {
     if (timerRef.current) clearTimeout(timerRef.current)
@@ -83,7 +93,7 @@ export default function Tooltip({
 
   // Clamp to the viewport / flip once the bubble is measurable
   useLayoutEffect(() => {
-    if (!visible) { setPlaced({ side, dx: 0 }); return }
+    if (!visible) { setPlaced({ side, dx: 0 }); setFloatPos(null); return }
     const el = bubbleRef.current
     if (!el) return
     const r = el.getBoundingClientRect()
@@ -98,6 +108,13 @@ export default function Tooltip({
       else if (r.right > window.innerWidth - 8) dx = window.innerWidth - 8 - r.right
     }
     if (s !== placed.side || dx !== placed.dx) setPlaced({ side: s, dx })
+    if (floating && wrapRef.current) {
+      const w = wrapRef.current.getBoundingClientRect()
+      setFloatPos({
+        left: s === 'left' ? w.left - r.width : s === 'right' ? w.right : w.left + (w.width - r.width) / 2 + dx,
+        top: s === 'top' ? w.top - r.height : s === 'bottom' ? w.bottom : w.top + (w.height - r.height) / 2,
+      })
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, side])
 
@@ -109,6 +126,13 @@ export default function Tooltip({
     return () => window.removeEventListener('keydown', onKey)
   }, [visible])
 
+  // A floating bubble doesn't follow its trigger, so close it if anything scrolls.
+  useEffect(() => {
+    if (!visible || !floating) return
+    window.addEventListener('scroll', hide, true)
+    return () => window.removeEventListener('scroll', hide, true)
+  }, [visible, floating])
+
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
 
   if (disabled || !content) return children
@@ -118,11 +142,13 @@ export default function Tooltip({
 
   return (
     <span
+      ref={wrapRef}
       className={cx('relative inline-flex', className)}
       onMouseEnter={() => show()}
       onMouseLeave={hide}
       onFocus={() => show(true)}
       onBlur={hide}
+      onClick={floating ? hide : undefined}
     >
       {typeof children === 'object' && children !== null
         ? {
@@ -137,8 +163,8 @@ export default function Tooltip({
       {visible && (
         <span
           ref={bubbleRef}
-          className={cx('absolute z-tooltip', POSITION[s] ?? POSITION.top)}
-          style={placed.dx ? { marginLeft: placed.dx } : undefined}
+          className={floatPos ? cx('fixed z-tooltip', GAP[s]) : cx('absolute z-tooltip', POSITION[s] ?? POSITION.top)}
+          style={floatPos ?? (placed.dx ? { marginLeft: placed.dx } : undefined)}
         >
           <span
             id={id}

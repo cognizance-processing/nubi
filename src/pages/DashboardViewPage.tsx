@@ -62,6 +62,7 @@ import { boardColorMode } from '../lib/boardTheme.js'
 import { colorModeClass } from '../dashboards/ColorModeScope.jsx'
 import Skeleton from '../components/ui/Skeleton.jsx'
 import Tag from '../components/ui/Tag.jsx'
+import Tooltip from '../components/ui/Tooltip.jsx'
 import Button from '../components/ui/Button.jsx'
 import Modal from '../components/ui/Modal.jsx'
 import EmptyState from '../components/ui/EmptyState.jsx'
@@ -155,23 +156,24 @@ export const SAMPLE_DASHBOARD_HTML = `
  */
 function ModeSwitch({ mode, onChange }) {
   const items = [
-    { id: 'live', label: 'Live', Icon: Eye, title: 'Live view: what viewers see' },
-    { id: 'edit', label: 'Edit', Icon: Pencil, title: 'Edit this dashboard' },
+    { id: 'live', label: 'Live', Icon: Eye, tooltip: 'What viewers see' },
+    { id: 'edit', label: 'Edit', Icon: Pencil, tooltip: 'Edit dashboard' },
   ]
   return (
     <div className="nbc-seg" role="group" aria-label="Dashboard mode" data-testid="dashboard-mode-switch">
       {items.map(it => (
-        <button
-          key={it.id}
-          type="button"
-          onClick={() => onChange(it.id)}
-          aria-pressed={mode === it.id}
-          title={it.title}
-          data-testid={`dashboard-mode-${it.id}`}
-        >
-          <it.Icon size={14} strokeWidth={1.5} aria-hidden="true" />
-          <span className="hidden sm:inline">{it.label}</span>
-        </button>
+        <Tooltip key={it.id} content={it.tooltip} side="bottom" floating>
+          <button
+            type="button"
+            onClick={() => onChange(it.id)}
+            aria-label={it.label}
+            aria-pressed={mode === it.id}
+            data-testid={`dashboard-mode-${it.id}`}
+          >
+            <it.Icon size={14} strokeWidth={1.5} aria-hidden="true" />
+            <span className="hidden sm:inline">{it.label}</span>
+          </button>
+        </Tooltip>
       ))}
     </div>
   )
@@ -193,17 +195,19 @@ function BoardOptionsMenu({ onDelete, onHistory = undefined, onToggleTheme = und
 
   return (
     <div className="relative shrink-0">
-      <button
-        type="button"
-        onClick={() => setOpen(v => !v)}
-        aria-label="Board options"
-        aria-expanded={open}
-        aria-haspopup="menu"
-        data-testid="dashboard-options-menu"
-        className="nbc-tool nbc-tool-bordered !px-0"
-      >
-        <MoreVertical size={16} strokeWidth={1.5} aria-hidden="true" />
-      </button>
+      <Tooltip content="Board options" side="bottom" floating>
+        <button
+          type="button"
+          onClick={() => setOpen(v => !v)}
+          aria-label="Board options"
+          aria-expanded={open}
+          aria-haspopup="menu"
+          data-testid="dashboard-options-menu"
+          className="nbc-tool nbc-tool-bordered !px-0"
+        >
+          <MoreVertical size={16} strokeWidth={1.5} aria-hidden="true" />
+        </button>
+      </Tooltip>
 
       <DropdownMenu open={open} onClose={() => setOpen(false)}>
         {onHistory && (
@@ -271,13 +275,15 @@ function ViewToolbar({
       data-testid="dashboard-header"
     >
       {/* Back */}
-      <Link
-        to={backTo}
-        aria-label="Back to dashboards"
-        className="nbc-tool !px-0"
-      >
-        <ArrowLeft size={16} strokeWidth={1.5} aria-hidden="true" />
-      </Link>
+      <Tooltip content="Back to dashboards" side="bottom" floating>
+        <Link
+          to={backTo}
+          aria-label="Back to dashboards"
+          className="nbc-tool !px-0"
+        >
+          <ArrowLeft size={16} strokeWidth={1.5} aria-hidden="true" />
+        </Link>
+      </Tooltip>
 
       {/* Title block. On a phone the title takes the full line and the status
           and time sit under it; from sm up it is one row. In edit mode the

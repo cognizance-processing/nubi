@@ -56,7 +56,8 @@
   border-radius: 2px;
   background: var(--surface);
 }
-.nbc-seg > button {
+/* Descendant, not child: a segment may be wrapped in a <Tooltip> span. */
+.nbc-seg button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -72,11 +73,12 @@
   cursor: pointer;
   transition: background-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
 }
-.nbc-seg > button + button { border-left: 1px solid var(--frame-line); }
-.nbc-seg > button:hover:not([aria-pressed="true"]):not(:disabled) { background: var(--frame-hover); color: var(--text); }
-.nbc-seg > button[aria-pressed="true"] { background: var(--ink); color: var(--ink-fg); }
-.nbc-seg > button:disabled { opacity: 0.4; cursor: not-allowed; }
-.nbc-seg > button:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.nbc-seg > button + button,
+.nbc-seg > span + span > button { border-left: 1px solid var(--frame-line); }
+.nbc-seg button:hover:not([aria-pressed="true"]):not(:disabled) { background: var(--frame-hover); color: var(--text); }
+.nbc-seg button[aria-pressed="true"] { background: var(--ink); color: var(--ink-fg); }
+.nbc-seg button:disabled { opacity: 0.4; cursor: not-allowed; }
+.nbc-seg button:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
 
 /* A vertical hairline between toolbar clusters. */
 .nbc-sep { width: 1px; height: 20px; flex-shrink: 0; background: var(--frame-line); }
