@@ -537,6 +537,9 @@ class QueryIn(BaseModel):
     claims: dict | None = None
     datastore_id: str | None = None
     filters: list[dict] | None = None
+    # Row cap pushed into the plan, so a widget that shows at most N rows never
+    # makes the warehouse, this process or the browser hold the rest.
+    limit: int | None = Field(default=None, ge=1, le=1_000_000)
 
 
 # ---------------------------------------------------------------------------
@@ -922,6 +925,7 @@ async def _resolve_request_plan(
         claims=claims,
         params=effective_params,
         dialect=target_dialect,
+        limit=body.limit,
         filters=body.filters,
         filter_table_columns=filter_table_columns,
     )
