@@ -41,6 +41,7 @@
  * failure result (see `queryFailure`) — never fabricated rows.
  */
 
+import { fetchRetryingRateLimit } from './rateLimitRetry.js'
 import * as arrow from 'apache-arrow'
 import { getAccessToken, tenantHeaders } from './api.js'
 import { descaleDecimalTable } from './arrowDecimal.js'
@@ -344,6 +345,7 @@ export async function runArrowQueryById(
     onBatch?: (rowsSoFar: number) => void
     isDemo?: boolean
     datastoreId?: string
+    limit?: number
   } | ((rowsSoFar: number) => void),
 ): Promise<{
   table: any
@@ -358,6 +360,7 @@ export async function runArrowQueryById(
   let onBatch
   let datastoreId
   let isDemo
+  let limit
   if (typeof opts === 'function') {
     onBatch = opts
   } else if (opts && typeof opts === 'object') {
@@ -365,6 +368,7 @@ export async function runArrowQueryById(
     filters = opts.filters
     onBatch = opts.onBatch
     datastoreId = opts.datastoreId
+    limit = opts.limit
     isDemo = opts.isDemo
   }
 
@@ -425,21 +429,22 @@ export async function runArrowQueryById(
   const t0 = performance.now()
 
   // Build request body — only include named_params/filters when provided
-  const reqBody: { query_id: any; named_params?: any; filters?: any; datastore_id?: any } = { query_id: queryId }
+  const reqBody: { query_id: any; named_params?: any; filters?: any; datastore_id?: any; limit?: number } = { query_id: queryId }
   if (namedParams && typeof namedParams === 'object' && Object.keys(namedParams).length > 0) {
     reqBody.named_params = namedParams
   }
   if (hasFilters) reqBody.filters = filters
   if (datastoreId) reqBody.datastore_id = datastoreId
+  if (limit) reqBody.limit = limit
 
   let response
   try {
-    response = await fetch(url, {
+    response = await fetchRetryingRateLimit(() => fetch(url, {
       method: 'POST',
       headers,
       credentials: 'include',
       body: JSON.stringify(reqBody),
-    })
+    }))
   } catch (cause) {
     console.warn('[wasmRuntime] runArrowQueryById network error:', cause.message)
     return queryFailure(
