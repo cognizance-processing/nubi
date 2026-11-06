@@ -667,6 +667,29 @@ _RUN_QUERY_DEFAULT_LIMIT = 1000
 _RUN_QUERY_MAX_LIMIT = 10000
 
 
+def _datastore_dialect(datastore_id: str | None, org_id: str | None) -> str:
+    """Return the SQL dialect of a datastore, like ``POST /query`` does.
+
+    Warehouse-native SQL has to be parsed in its own dialect: BigQuery's
+    backtick-quoted ``dataset.table`` is a syntax error in the default one.
+    Anything unresolvable falls back to the default dialect, which is what the
+    planner's error path then reports on.
+    """
+    from app.connectors.dialects import DEFAULT_DIALECT, dialect_for  # noqa: PLC0415
+    from app.routes.connectors import DEMO_CONNECTOR_ID  # noqa: PLC0415
+
+    if not datastore_id or datastore_id == DEMO_CONNECTOR_ID or not org_id:
+        return DEFAULT_DIALECT
+    try:
+        from app.repos.provider import get_repo  # noqa: PLC0415
+
+        datastore = _run_sync(get_repo().get("datastores", org_id, datastore_id))
+    except Exception:  # noqa: BLE001 — fail-safe to the historical default.
+        return DEFAULT_DIALECT
+    config = dict((datastore or {}).get("config") or {})
+    return dialect_for(config.get("connector_type") or config.get("type"))
+
+
 def _tool_run_query(
     claims: dict[str, Any],
     query_id: str | None = None,
@@ -731,6 +754,7 @@ def _tool_run_query(
             raise AppError("query_not_found", f"No registered query with id {query_id!r}.", 404)
         resolved_sql = rq.sql
         registered_datastore_id = rq.datastore_id
+        target_dialect = _datastore_dialect(datastore_id or registered_datastore_id, claims.get("org"))
         # Resolve named params → positional if the query declares ANY params
         # — not gated on named_params being non-empty. A query's {% if %}
         # guards need rendering even when every param is left at its default
@@ -763,6 +787,8 @@ def _tool_run_query(
                     )
                 else:
                     resolved[p.name] = None
+            # Rendered to $N regardless of dialect: connectors translate those
+            # into their own markers when they bind plan.params.
             resolved_sql, positional_params = resolve_named_params(resolved_sql, resolved)
     elif sql is not None:
         # SECURITY: ad-hoc SQL requires author:sql scope — same gate as query.py.
@@ -780,11 +806,14 @@ def _tool_run_query(
                 403,
             )
         resolved_sql = sql
+        target_dialect = _datastore_dialect(datastore_id, claims.get("org"))
     else:
         raise AppError("invalid_tool_input", "Either query_id or sql must be provided.", 400)
 
     # ── Plan ─────────────────────────────────────────────────────────────────
-    physical_plan = plan(resolved_sql, claims=claims, params=positional_params)
+    physical_plan = plan(
+        resolved_sql, claims=claims, params=positional_params, dialect=target_dialect
+    )
 
     # ── Resolve the effective datastore (explicit arg wins, else the query's
     #    own binding) and build the matching connector — same resolution order
