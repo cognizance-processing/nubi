@@ -23,7 +23,7 @@ sqlglot>=25.0
 # failed closed.  Both call sites support 1.x and 2.x.
 mcp>=1.0
 pyarrow>=14.0
-duckdb>=1.0
+duckdb==1.5.4
 pandas>=2.0  # DataFrame-native Python flow cells (app/flows/registry.py _handle_python)
 adbc-driver-postgresql>=1.0
 adbc-driver-manager>=1.0
