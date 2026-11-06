@@ -400,6 +400,17 @@ export function TableConfig({ widget, onChange }) {
           readable in both light and dark.
         </p>
         <div>
+          <FieldLabel>Appearance</FieldLabel>
+          <select className={selectCls} value={props.appearance ?? 'default'}
+            onChange={e => setProps('appearance', e.target.value === 'default' ? undefined : e.target.value)}>
+            <option value="default">Compact</option>
+            <option value="report">Report (roomy rows, larger type)</option>
+          </select>
+        </div>
+        <ToggleRow label="Summary row" hint="Totals under the last row, using each column's aggregation"
+          checked={props.summaryRow === true}
+          onChange={v => setProps('summaryRow', v ? true : undefined)} />
+        <div>
           <FieldLabel>Header background</FieldLabel>
           <ColorField value={props.headerBackground} placeholder="theme default"
             onChange={v => setProps('headerBackground', v || undefined)} />

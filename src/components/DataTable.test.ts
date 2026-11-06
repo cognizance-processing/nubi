@@ -31,6 +31,9 @@ import {
   paginateRows,
   rowsToCSV,
   formatNumber,
+  aggregate,
+  dateCellText,
+  isArrowDateType,
 } from './dataTableUtils.js'
 
 // ---------------------------------------------------------------------------
@@ -420,5 +423,69 @@ describe('formatNumber', () => {
   test('handles Infinity and NaN', () => {
     assert.equal(formatNumber(Infinity), 'Infinity')
     assert.equal(formatNumber(NaN), 'NaN')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Date columns
+// ---------------------------------------------------------------------------
+
+describe('isArrowDateType', () => {
+  test('recognises dates and timestamps, not numbers or text', () => {
+    assert.equal(isArrowDateType(new arrow.DateDay()), true)
+    assert.equal(isArrowDateType(new arrow.TimestampMillisecond()), true)
+    assert.equal(isArrowDateType(new arrow.Int32()), false)
+    assert.equal(isArrowDateType(new arrow.Utf8()), false)
+    assert.equal(isArrowDateType(undefined), false)
+  })
+})
+
+describe('dateCellText', () => {
+  const may1 = Date.UTC(2025, 4, 1)
+
+  test('a midnight value shows as a plain date', () => {
+    assert.equal(dateCellText(may1), '2025-05-01')
+    assert.equal(dateCellText(new Date(may1)), '2025-05-01')
+  })
+
+  test('a value with a time keeps it', () => {
+    assert.equal(dateCellText(may1 + 14.5 * 3600 * 1000), '2025-05-01 14:30:00')
+  })
+
+  test('accepts a bigint epoch', () => {
+    assert.equal(dateCellText(BigInt(may1)), '2025-05-01')
+  })
+
+  test('null stays null and junk is returned untouched', () => {
+    assert.equal(dateCellText(null), null)
+    assert.equal(dateCellText('not a date'), 'not a date')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Group subtotals
+// ---------------------------------------------------------------------------
+
+describe('aggregate', () => {
+  test('avg is the same aggregation as mean', () => {
+    assert.equal(aggregate('avg', [1, 2, 3]), 2)
+    assert.equal(aggregate('mean', [1, 2, 3]), 2)
+  })
+
+  test('ignores values that are not numbers but counts every row', () => {
+    assert.equal(aggregate('sum', [1, null, 'x', 2]), 3)
+    assert.equal(aggregate('count', [1, null, 'x', 2]), 4)
+  })
+
+  test('reads bigints as numbers', () => {
+    assert.equal(aggregate('sum', [1n, 2n]), 3)
+  })
+
+  test('has no average of nothing', () => {
+    assert.equal(aggregate('avg', [null]), null)
+  })
+
+  test('an unknown aggregation yields nothing', () => {
+    assert.equal(aggregate('median', [1, 2]), null)
   })
 })

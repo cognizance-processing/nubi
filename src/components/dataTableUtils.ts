@@ -25,6 +25,39 @@
  * @param {object} dtype – an apache-arrow DataType instance
  * @returns {'number'|'string'|'date'|'bool'}
  */
+export function isArrowDateType(dtype) {
+  // Arrow's Type enum: Date = 8, Timestamp = 10. typeId survives minification; class names do not.
+  return dtype?.typeId === 8 || dtype?.typeId === 10
+}
+
+/**
+ * Text for a value read from an Arrow date or timestamp column, which reads as epoch
+ * milliseconds: "2025-05-01" at midnight UTC, else "2025-05-01 14:30:00".
+ */
+export function dateCellText(value) {
+  if (value == null) return value
+  const date = value instanceof Date ? value : new Date(Number(value))
+  if (Number.isNaN(date.getTime())) return value
+  const iso = date.toISOString()
+  return iso.endsWith('T00:00:00.000Z') ? iso.slice(0, 10) : iso.slice(0, 19).replace('T', ' ')
+}
+
+/** Aggregation functions for grouping subtotals. */
+export function aggregate(kind, values) {
+  const nums = values
+    .map((v) => (typeof v === 'bigint' ? Number(v) : v))
+    .filter((v) => typeof v === 'number' && Number.isFinite(v))
+  switch (kind) {
+    case 'sum': return nums.reduce((a, b) => a + b, 0)
+    case 'mean':
+    case 'avg': return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : null
+    case 'min': return nums.length ? Math.min(...nums) : null
+    case 'max': return nums.length ? Math.max(...nums) : null
+    case 'count': return values.length
+    default: return null
+  }
+}
+
 export function arrowTypeToColumnType(dtype) {
   if (!dtype) return 'string'
   const name = dtype.constructor?.name ?? ''

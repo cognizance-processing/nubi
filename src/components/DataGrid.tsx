@@ -98,6 +98,7 @@ import {
 } from 'lucide-react'
 
 import { downloadCSV, downloadExcel } from './gridExport.js'
+import { aggregate } from './dataTableUtils.js'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -105,8 +106,11 @@ import { downloadCSV, downloadExcel } from './gridExport.js'
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 250]
 const DEFAULT_COL_WIDTH = 160
+const REPORT_COL_WIDTH = 120
 const MIN_COL_WIDTH = 64
 const ROW_HEIGHT = { compact: 28, comfortable: 36, spacious: 46 }
+const REPORT_ROW_HEIGHT = { compact: 36, comfortable: 47, spacious: 60 }
+const AGGREGATION_TAG = { sum: 'SUM', mean: 'AVG', avg: 'AVG', min: 'MIN', max: 'MAX', count: 'COUNT' }
 
 const NUMERIC_OPS = ['eq', 'ne', 'gt', 'gte', 'lt', 'lte']
 const STRING_OPS = ['contains', 'eq', 'ne']
@@ -159,21 +163,6 @@ function typedFilter(row, columnId, filterValue) {
     case 'eq': return sv === sf
     case 'ne': return sv !== sf
     default: return sv.includes(sf)
-  }
-}
-
-/** Aggregation functions for grouping subtotals. */
-function aggregate(kind, values) {
-  const nums = values
-    .map((v) => (typeof v === 'bigint' ? Number(v) : v))
-    .filter((v) => typeof v === 'number' && Number.isFinite(v))
-  switch (kind) {
-    case 'sum': return nums.reduce((a, b) => a + b, 0)
-    case 'mean': return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : null
-    case 'min': return nums.length ? Math.min(...nums) : null
-    case 'max': return nums.length ? Math.max(...nums) : null
-    case 'count': return values.length
-    default: return null
   }
 }
 
@@ -289,9 +278,16 @@ export default function DataGrid({
   className = '',
   style = undefined,
   emptyMessage = 'No rows returned.',
+  // 'report': a framed table for printed-style boards — labelled toolbar, solid
+  // header with SUM/AVG tags, plain group subtotals, a "Total Rows" footer.
+  appearance = 'default',
+  // Adds a pinned bottom row with each aggregated column over all filtered rows.
+  summaryRow = false,
+  truncated = false,
 }) {
+  const report = appearance === 'report'
   // ── Local UI state ────────────────────────────────────────────────────────
-  const [sorting, setSorting] = useState([])
+  const [sorting, setSorting] = useState(() => (report && Array.isArray(initialGrouping) ? initialGrouping.map((id) => ({ id, desc: false })) : []))
   const [columnFilters, setColumnFilters] = useState([])
   const [globalFilter, setGlobalFilter] = useState('')
   const [columnVisibility, setColumnVisibility] = useState({})
@@ -348,7 +344,7 @@ export default function DataGrid({
         id: d.key,
         accessorKey: d.key,
         header: d.label ?? d.key,
-        size: d.width ?? DEFAULT_COL_WIDTH,
+        size: d.width ?? (report ? REPORT_COL_WIDTH : DEFAULT_COL_WIDTH),
         minSize: MIN_COL_WIDTH,
         enableResizing: true,
         enableGrouping: enableGrouping,
@@ -357,10 +353,11 @@ export default function DataGrid({
         aggregationFn: undefined,
         aggregatedCell: ({ row, column }) => {
           const kind = d.aggregation
-          if (!kind) return null
+          if (!kind || d.type === 'date') return null
           const leafValues = row.getLeafRows().map((r) => r.getValue(column.id))
           const result = aggregate(kind, leafValues)
           if (result == null) return null
+          if (report) return d.renderCell ? d.renderCell(result, row.original) : formatNumber(result)
           const display =
             kind === 'count'
               ? `${result}`
@@ -378,7 +375,7 @@ export default function DataGrid({
           return <DefaultCell value={value} type={d.type ?? 'string'} />
         },
       })),
-    [columnDescriptors, enableGrouping],
+    [columnDescriptors, enableGrouping, report],
   )
 
   // ── Table instance ────────────────────────────────────────────────────────
@@ -433,7 +430,7 @@ export default function DataGrid({
   const rowVirtualizer = useVirtualizer({
     count: visibleRows.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => ROW_HEIGHT[density],
+    estimateSize: () => (report ? REPORT_ROW_HEIGHT : ROW_HEIGHT)[density],
     overscan: 12,
   })
   const virtualRows = rowVirtualizer.getVirtualItems()
@@ -476,13 +473,13 @@ export default function DataGrid({
         .filter((c) => c.id !== '__group')
         .map((c) => ({ key: c.id, label: String(c.columnDef.header ?? c.id) })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [table, columnVisibility, columnOrder],
+    [table, columns, columnVisibility, columnOrder],
   )
 
   const exportRows = useMemo(
     () => table.getFilteredRowModel().rows.filter((r) => !r.getIsGrouped()).map((r) => r.original),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [table, columnFilters, globalFilter, sorting],
+    [table, rows, columnFilters, globalFilter, sorting],
   )
 
   const getExportValue = useCallback(
@@ -509,8 +506,8 @@ export default function DataGrid({
   }, [exportFileName, exportRows, exportColumns, getExportValue, exportSettings])
 
   // ── Density classes ───────────────────────────────────────────────────────
-  const rowH = ROW_HEIGHT[density]
-  const fontSize = density === 'compact' ? 'text-[11px]' : 'text-xs'
+  const rowH = (report ? REPORT_ROW_HEIGHT : ROW_HEIGHT)[density]
+  const fontSize = report ? 'text-sm' : density === 'compact' ? 'text-[11px]' : 'text-xs'
   const cellPx = density === 'spacious' ? 'px-4' : 'px-3'
 
   const allColumns = table.getAllLeafColumns()
@@ -556,14 +553,58 @@ export default function DataGrid({
   }
 
   const toolbarBtn = 'nubi-btn nubi-btn-secondary nubi-btn-xs'
+  const reportBtn = 'inline-flex items-center gap-2 text-sm font-bold text-fg hover:opacity-70 transition-opacity'
 
   return (
     <div
       className={`relative flex h-full flex-col overflow-hidden border border-frame-line ${className}`}
-      style={{ borderRadius: 2, ...style }}
+      data-grid-appearance={report ? 'report' : undefined}
+      style={{ borderRadius: report ? 16 : 2, ...style }}
     >
       {/* ── Toolbar ──────────────────────────────────────────────────────── */}
-      {toolbar && (
+      {toolbar && report && (
+        <div className="relative flex shrink-0 flex-wrap items-center justify-end gap-5 bg-surface px-4 py-3" data-export-hide>
+          <div className="relative">
+            <button type="button" className={reportBtn} onClick={() => setOpenMenu((m) => (m === 'columns' ? null : 'columns'))}>
+              <Columns3 size={18} aria-hidden="true" /> Columns
+            </button>
+            <Popover open={openMenu === 'columns'} onClose={() => setOpenMenu(null)}>
+              <p className="t-label m-0 px-2 py-1">Columns</p>
+              {allColumns.map((col) => (
+                <label key={col.id} className="flex cursor-pointer items-center gap-2 px-2 py-1 text-xs text-fg hover:bg-frame-hover">
+                  <input type="checkbox" checked={col.getIsVisible()} onChange={col.getToggleVisibilityHandler()} className="accent-[var(--ink)]" />
+                  <span className="truncate">{String(col.columnDef.header ?? col.id)}</span>
+                </label>
+              ))}
+            </Popover>
+          </div>
+          <button type="button" className={reportBtn} aria-pressed={showFilters} onClick={() => setShowFilters((v) => !v)}>
+            <Filter size={18} aria-hidden="true" /> Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+          </button>
+          <button
+            type="button"
+            className={reportBtn}
+            title={`Density: ${density}`}
+            onClick={() => setDensity((d) => (d === 'compact' ? 'comfortable' : d === 'comfortable' ? 'spacious' : 'compact'))}
+          >
+            <AlignJustify size={18} aria-hidden="true" /> Density
+          </button>
+          <div className="relative">
+            <button type="button" className={reportBtn} onClick={() => setOpenMenu((m) => (m === 'export' ? null : 'export'))}>
+              <Download size={18} aria-hidden="true" /> Export
+            </button>
+            <Popover open={openMenu === 'export'} onClose={() => setOpenMenu(null)}>
+              <button onClick={doExportCSV} className="nubi-dropdown-item">
+                <FileText size={13} className="text-muted" /> Export CSV
+              </button>
+              <button onClick={doExportExcel} className="nubi-dropdown-item">
+                <FileSpreadsheet size={13} className="text-muted" /> Export Excel
+              </button>
+            </Popover>
+          </div>
+        </div>
+      )}
+      {toolbar && !report && (
         <div className="relative flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-surface px-3 py-2">
           {title && (
             <span className="mr-1 shrink-0 text-xs font-semibold text-fg">{title}</span>
@@ -768,7 +809,7 @@ export default function DataGrid({
             {/* Header */}
             <thead className="sticky top-0 z-20">
               {table.getHeaderGroups().map((hg) => (
-                <tr key={hg.id} className="bg-surface-2" style={{ boxShadow: 'inset 0 -2px 0 var(--ink)', ...headerStyle }}>
+                <tr key={hg.id} className="bg-surface-2" style={{ boxShadow: report ? 'none' : 'inset 0 -2px 0 var(--ink)', ...headerStyle }}>
                   {hg.headers.map((header) => {
                     const col = header.column
                     const type = col.columnDef.meta?.type
@@ -779,7 +820,7 @@ export default function DataGrid({
                       <th
                         key={header.id}
                         colSpan={header.colSpan}
-                        className="group relative select-none border-r border-border last:border-r-0 bg-surface-2"
+                        className={`group relative select-none bg-surface-2 ${report ? '' : 'border-r border-border last:border-r-0'}`}
                         style={{ width: header.getSize(), ...pinStyle(col), ...(headerStyle ?? {}) }}
                         draggable
                         onDragStart={() => (dragColRef.current = col.id)}
@@ -791,11 +832,12 @@ export default function DataGrid({
                           className={[
                             // An authored header colour is set on the <th>; the
                             // default muted ink must not override it.
-                            'flex w-full items-center gap-1 py-2 font-medium',
+                            'flex w-full items-center gap-1 py-2',
+                            report ? 'font-bold min-h-[60px]' : 'font-medium',
                             headerStyle?.color ? '' : 'text-muted',
                             cellPx,
-                            type === 'number' ? 'flex-row-reverse' : '',
-                            fontSize,
+                            type === 'number' && !report ? 'flex-row-reverse' : '',
+                            report ? 'text-[15px] leading-tight' : fontSize,
                           ].join(' ')}
                         >
                           <button
@@ -803,16 +845,21 @@ export default function DataGrid({
                             onClick={col.getToggleSortingHandler()}
                             title={`Sort by ${String(col.columnDef.header)}`}
                           >
-                            <span className="truncate">{flexRender(col.columnDef.header, header.getContext())}</span>
-                            <span data-export-hide className={sortDir ? 'shrink-0 text-fg' : 'shrink-0 text-subtle opacity-40 group-hover:opacity-100'}>
-                              {sortDir === 'asc' && <ChevronUp size={12} />}
-                              {sortDir === 'desc' && <ChevronDown size={12} />}
+                            <span className={report ? 'text-left' : 'truncate'}>{flexRender(col.columnDef.header, header.getContext())}</span>
+                            <span data-export-hide className={sortDir ? 'shrink-0 text-fg' : `shrink-0 text-subtle opacity-40 group-hover:opacity-100${report ? ' hidden group-hover:inline' : ''}`}>
+                              {sortDir === 'asc' && <ChevronUp size={12} style={report ? { color: 'inherit' } : undefined} />}
+                              {sortDir === 'desc' && <ChevronDown size={12} style={report ? { color: 'inherit' } : undefined} />}
                               {!sortDir && <ChevronsUpDown size={11} />}
                             </span>
                             {isMultiSorted && (
                               <span className="ap-mono shrink-0 text-[11px] font-semibold text-accent">{sortIndex + 1}</span>
                             )}
                           </button>
+                          {report && col.columnDef.meta?.descriptor?.aggregationTag && col.columnDef.meta?.descriptor?.aggregation && (
+                            <span className="absolute right-1.5 bottom-0.5 text-[11px] font-normal uppercase">
+                              {AGGREGATION_TAG[col.columnDef.meta.descriptor.aggregation] ?? col.columnDef.meta.descriptor.aggregation}
+                            </span>
+                          )}
                         </div>
 
                         {/* Resize handle */}
@@ -906,7 +953,7 @@ export default function DataGrid({
                       ref={rowVirtualizer.measureElement}
                       className={[
                         'group transition-colors',
-                        isGrouped
+                        isGrouped && !report
                           ? 'bg-surface-2 font-medium'
                           // An explicit stripe colour replaces the token
                           // classes entirely — leaving them on would win the
@@ -916,7 +963,7 @@ export default function DataGrid({
                       ].join(' ')}
                       style={{
                         height: rowH,
-                        ...(isGrouped ? null : stripeFor(vr.index)),
+                        ...(isGrouped && !report ? null : stripeFor(vr.index)),
                         // Conditional formatting is authored per row and must
                         // still beat the zebra stripe underneath it.
                         ...(rowStyle ?? {}),
@@ -929,7 +976,7 @@ export default function DataGrid({
                         const cellStyle =
                           !isGrouped && getCellStyle ? getCellStyle(row.original, col.id) : null
                         const textAlign =
-                          align === 'right' || (!align && type === 'number')
+                          align === 'right' || (!align && type === 'number' && !report)
                             ? 'text-right'
                             : align === 'center'
                             ? 'text-center'
@@ -938,7 +985,7 @@ export default function DataGrid({
                           <td
                             key={cell.id}
                             className={[
-                              'border-b border-border text-fg transition-colors',
+                              report ? 'text-fg transition-colors' : 'border-b border-border text-fg transition-colors',
                               cellPx,
                               fontSize,
                               textAlign,
@@ -966,15 +1013,17 @@ export default function DataGrid({
                           >
                             {cell.getIsGrouped() ? (
                               <button
-                                className="flex items-center gap-1 hover:text-fg"
+                                className={report ? 'flex items-center gap-4 hover:text-fg' : 'flex items-center gap-1 hover:text-fg'}
                                 onClick={row.getToggleExpandedHandler()}
                               >
                                 <ChevronExpand
-                                  size={12}
+                                  size={report ? 16 : 12}
                                   className={`transition-transform ${row.getIsExpanded() ? 'rotate-90' : ''}`}
                                 />
-                                {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                                <span className="text-subtle">({row.subRows.length})</span>
+                                <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                                  <span className={report ? '' : 'text-subtle'}>({row.subRows.length})</span>
+                                </span>
                               </button>
                             ) : cell.getIsAggregated() ? (
                               flexRender(
@@ -995,12 +1044,37 @@ export default function DataGrid({
                 <tr><td style={{ height: paddingBottom }} colSpan={table.getVisibleLeafColumns().length} /></tr>
               )}
             </tbody>
+            {summaryRow && (
+              <tfoot className="sticky bottom-0 z-10">
+                <tr className="bg-surface" style={{ height: rowH }}>
+                  {table.getVisibleLeafColumns().map((col) => {
+                    const d = col.columnDef.meta?.descriptor
+                    const kind = d?.aggregation
+                    const values = kind && !grouping.includes(col.id)
+                      ? table.getFilteredRowModel().rows.map((r) => r.getValue(col.id))
+                      : []
+                    // A text column has nothing to total, whatever its aggregation says.
+                    const hasNumbers = values.some((v) => v != null && v !== '' && Number.isFinite(Number(v)))
+                    const result = hasNumbers ? aggregate(kind, values) : null
+                    return (
+                      <td key={col.id} className={['border-t border-border bg-surface text-fg', cellPx, fontSize].join(' ')} style={{ width: col.getSize() }}>
+                        {result == null ? null : d.renderCell ? d.renderCell(result, {}) : formatNumber(result)}
+                      </td>
+                    )
+                  })}
+                </tr>
+              </tfoot>
+            )}
           </table>
         )}
       </div>
 
       {/* ── Footer ───────────────────────────────────────────────────────── */}
-      <div className="flex shrink-0 flex-wrap items-center gap-3 border-t border-border bg-surface px-3 py-2">
+      <div className={report ? 'flex shrink-0 flex-wrap items-center justify-end gap-3 bg-surface px-4 py-3' : 'flex shrink-0 flex-wrap items-center gap-3 border-t border-border bg-surface px-3 py-2'}>
+        {report ? (
+          // Counts what the reader sees as rows: a group is one row until opened.
+          <span className="text-sm text-fg">Total Rows: {table.getGroupedRowModel().rows.length.toLocaleString()}{truncated ? '+' : ''}</span>
+        ) : (
         <span className="ap-meta">
           {totalFilteredRows === 0 ? (
             '0 rows'
@@ -1014,8 +1088,9 @@ export default function DataGrid({
             </>
           )}
         </span>
+        )}
 
-        <div className="flex-1" />
+        {!report && <div className="flex-1" />}
 
         {paginateProp && (
           <>

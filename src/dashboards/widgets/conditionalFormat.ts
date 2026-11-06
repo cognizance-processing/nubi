@@ -134,11 +134,13 @@ export function evalRules(rules: Record<string, any>[], row: Record<string, any>
   let rowStyle: Record<string, any> | null = null
 
   for (const rule of rules) {
-    const { column, op, value, value2, style, scope } = rule
+    const { column, op, value, value2, compareColumn, style, scope } = rule
     if (!column || !op || !style) continue
 
     const cellValue = row[column]
-    if (!matchesOp(cellValue, op, value, value2)) continue
+    // compareColumn: compare against another column of the same row.
+    const target = compareColumn ? row[compareColumn] : value
+    if (!matchesOp(cellValue, op, target, value2)) continue
 
     if (scope === 'row') {
       rowStyle = rowStyle ? { ...rowStyle, ...style } : { ...style }
@@ -180,7 +182,13 @@ export const DELTA_COLORS = { up: '#10b981', down: '#ef4444', flat: '#9ca3af' }
  */
 export function formatValue(value: any, fmt: Record<string, any>): string {
   if (value == null) return '—'
+  const text = formatBare(value, fmt)
+  return fmt?.prefix || fmt?.suffix ? `${fmt.prefix ?? ''}${text}${fmt.suffix ?? ''}` : text
+}
+
+function formatBare(value: any, fmt: Record<string, any>): string {
   if (!fmt || !fmt.type) return String(value)
+  if (fmt.type === 'number' && !Number.isFinite(Number(value))) return String(value)
 
   const locale = fmt.locale ?? 'en-US'
 
@@ -193,6 +201,7 @@ export function formatValue(value: any, fmt: Record<string, any>): string {
           opts.maximumFractionDigits = fmt.decimals
         }
         if (fmt.delta) opts.signDisplay = 'exceptZero'
+        if (fmt.grouping === false) opts.useGrouping = false
         return new Intl.NumberFormat(locale, opts).format(Number(value))
       }
 

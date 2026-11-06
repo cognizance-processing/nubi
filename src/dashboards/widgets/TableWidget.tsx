@@ -71,7 +71,7 @@ import { useRefreshEpoch } from '../RefreshContext.jsx'
 import { useCrossFilter } from '../CrossFilterContext.jsx'
 import { useStepper } from '../StepperContext.jsx'
 import DataGrid from '../../components/DataGrid.jsx'
-import { arrowTypeToColumnType } from '../../components/dataTableUtils.js'
+import { arrowTypeToColumnType, dateCellText, isArrowDateType } from '../../components/dataTableUtils.js'
 import { resolveTextColors } from '../textColors.js'
 import Skeleton from '../../components/ui/Skeleton.jsx'
 import WidgetError from '../../components/app/WidgetError.jsx'
@@ -191,6 +191,19 @@ function DeltaCell({ text, value }) {
 function BarCell({ text, value, max, color, variant }) {
   const n = Math.abs(Number(value))
   const pct = max > 0 && Number.isFinite(n) ? Math.min(100, (n / max) * 100) : 0
+  // 'progress': a taller meter on a grey track with a bold value, so a zero
+  // reads as an empty grey pill rather than as a missing cell.
+  if (variant === 'progress') {
+    return (
+      <span className="relative flex items-center justify-center w-full h-7 rounded overflow-hidden" style={{ background: 'var(--border)' }}>
+        <span
+          className={`absolute inset-y-0 left-0${color ? '' : ' bg-primary/50'}`}
+          style={{ width: `${pct}%`, ...(color ? { background: color } : {}) }}
+        />
+        <span className="relative tabular-nums text-sm font-bold text-fg">{text}</span>
+      </span>
+    )
+  }
   // 'fill': the bar spans the whole cell with the value centred on it — a
   // progress meter rather than a sparkline next to the number.
   if (variant === 'fill') {
@@ -238,6 +251,7 @@ function tableToGrid(arrowTable, columns, limit, labels) {
   const maxRows = Math.min(arrowTable.numRows, limit)
   const vectors = {}
   for (const c of cols) vectors[c.key] = arrowTable.getChild(c.key)
+  const isDate = new Set(fields.filter((f) => isArrowDateType(f.type)).map((f) => f.name))
 
   const rows = []
   for (let i = 0; i < maxRows; i++) {
@@ -245,11 +259,12 @@ function tableToGrid(arrowTable, columns, limit, labels) {
     for (const c of cols) {
       const v = vectors[c.key]
       const val = v ? v.get(i) : null
-      row[c.key] = typeof val === 'bigint' ? Number(val) : val
+      const plain = typeof val === 'bigint' ? Number(val) : val
+      row[c.key] = isDate.has(c.key) ? dateCellText(plain) : plain
     }
     rows.push(row)
   }
-  return { cols, rows }
+  return { cols, rows, truncated: arrowTable.numRows > limit }
 }
 
 /**
@@ -388,12 +403,12 @@ export default function TableWidget({ widget, providerTable = null }) {
         const hasFilters = resolvedFilters.length > 0
         const { table, error: queryError } = metric
           ? await runMetricQuery(metric)
-          : await runArrowQueryById(
-              query_id,
-              (hasParams || hasFilters)
-                ? { namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined }
-                : undefined,
-            )
+          : await runArrowQueryById(query_id, {
+              namedParams: hasParams ? resolvedParams : undefined,
+              filters: hasFilters ? resolvedFilters : undefined,
+              // Fetch only what the table can show, plus one row to detect more.
+              limit: limit + 1,
+            })
         if (cancelled) return
         // Failed query → real reason, no grid. Never substitute rows.
         if (queryError) {
@@ -441,7 +456,7 @@ export default function TableWidget({ widget, providerTable = null }) {
         descriptor.renderCell = (val) => {
           if (val == null) return <span className="text-muted/50">—</span>
           const text = formatValue(val, fmt)
-          if (fmt.bar) return <BarCell text={text} value={val} max={fmt.barMax ?? barMaxByCol[col.key] ?? 0} color={fmt.barColor} variant={fmt.barStyle} />
+          if (fmt.bar && Number.isFinite(Number(val))) return <BarCell text={text} value={val} max={fmt.barMax ?? barMaxByCol[col.key] ?? 0} color={fmt.barColor} variant={fmt.barStyle} />
           if (fmt.delta) return <DeltaCell text={text} value={val} />
           return text
         }
@@ -452,7 +467,10 @@ export default function TableWidget({ widget, providerTable = null }) {
       // parity: enableAggregation + aggregationType were per-column settings,
       // and a count or an average is often what a subtotal row should show).
       if (col.type === 'number') descriptor.aggregation = 'sum'
-      if (fmt?.aggregation) descriptor.aggregation = fmt.aggregation
+      if (fmt?.aggregation) {
+        descriptor.aggregation = fmt.aggregation
+        descriptor.aggregationTag = true
+      }
       return descriptor
     })
 
@@ -679,7 +697,7 @@ export default function TableWidget({ widget, providerTable = null }) {
   const caption = wProps.showTitle && wProps.title ? (
     <div
       className="shrink-0 px-3 pt-3 pb-2 text-[13px] font-medium truncate"
-      style={{ color: ink.title ?? 'var(--fg)' }}
+      style={{ color: ink.title ?? 'var(--fg)', ...wProps.titleStyle }}
     >
       {wProps.title}
     </div>
@@ -699,6 +717,9 @@ export default function TableWidget({ widget, providerTable = null }) {
           paginate={paginate}
           density={density}
           toolbar={showToolbar}
+          appearance={wProps.appearance}
+          summaryRow={wProps.summaryRow === true}
+          truncated={data?.truncated === true}
           initialGrouping={initialGrouping}
           initialPinning={initialPinning}
           headerStyle={headerStyle}

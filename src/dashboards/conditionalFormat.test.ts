@@ -350,3 +350,15 @@ test('formatValue: no fmt returns String(value)', () => {
 test('formatValue: unknown type falls back to String(value)', () => {
   assert.equal(formatValue(99, { type: 'unknown_type' }), '99')
 })
+
+test('a rule can compare against another column of the same row', () => {
+  const rule = { column: 'actual', op: 'lt', compareColumn: 'target', style: { color: 'red' } }
+  assert.deepEqual(evalRules([rule], { actual: 5, target: 9 }).cellStyles.actual, { color: 'red' })
+  assert.equal(evalRules([rule], { actual: 9, target: 5 }).cellStyles.actual, undefined)
+})
+
+test('formatValue wraps the formatted number in prefix and suffix', () => {
+  assert.equal(formatValue(1234, { type: 'number', prefix: '$ ', locale: 'en-US' }), '$ 1,234')
+  assert.equal(formatValue(45, { suffix: '%' }), '45%')
+  assert.equal(formatValue(null, { suffix: '%' }), '—')
+})
