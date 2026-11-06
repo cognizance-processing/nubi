@@ -151,7 +151,9 @@ async function request(path: string, options: RequestInit = {}, _isRetry = false
   })
 
   // -- Silent refresh on 401 -----------------------------------------------
-  if (response.status === 401 && !_isRetry) {
+  // A 401 from the login call means the credentials were rejected, not that a
+  // session lapsed, so it falls through and surfaces the server's own message.
+  if (response.status === 401 && !_isRetry && path !== '/auth/login') {
     let refreshed = false
     try {
       const data = await _doRefresh()
