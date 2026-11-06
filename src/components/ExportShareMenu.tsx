@@ -22,6 +22,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Download, Share2, Image, FileText, Table, Link2, ShieldCheck, X, Copy, Check } from 'lucide-react'
 import { get, post } from '../lib/api.js'
 import { widgetToCsv, elementToPNG, elementToPDF } from '../lib/exports.js'
+import Tooltip from './ui/Tooltip.jsx'
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -74,6 +75,9 @@ export default function ExportShareMenu({ board, spec }) {
   const [error, setError] = useState(null)
   const [share, setShare] = useState(null)
   const [copied, setCopied] = useState(null)
+  // Fixed against the viewport: the editor toolbar scrolls horizontally on narrow
+  // screens, and that scroller would clip an absolutely positioned panel.
+  const [panelPos, setPanelPos] = useState({ top: 0, right: 0 })
   const ref = useRef(null)
 
   const name = slugify(spec?.title)
@@ -137,21 +141,27 @@ export default function ExportShareMenu({ board, spec }) {
 
   return (
     <div className="relative" ref={ref}>
-      <button
-        onClick={() => { setOpen(o => !o); if (!share && board) loadShare() }}
-        aria-label="Export & share dashboard"
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        className={`flex items-center justify-center w-8 h-8 rounded-[var(--radius-control)] border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 ${
-          open ? 'bg-surface-2 border-ink text-fg' : 'bg-surface text-fg border-border hover:border-ink'
-        }`}
-        title="Export & share dashboard"
-      >
-        <Share2 size={15} />
-      </button>
+      <Tooltip content="Export & share" side="bottom" floating>
+        <button
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect()
+            setPanelPos({ top: r.bottom + 8, right: window.innerWidth - r.right })
+            setOpen(o => !o)
+            if (!share && board) loadShare()
+          }}
+          aria-label="Export & share dashboard"
+          aria-expanded={open}
+          aria-haspopup="dialog"
+          className={`flex items-center justify-center w-8 h-8 rounded-[var(--radius-control)] border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 ${
+            open ? 'bg-surface-2 border-ink text-fg' : 'bg-surface text-fg border-border hover:border-ink'
+          }`}
+        >
+          <Share2 size={15} />
+        </button>
+      </Tooltip>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 z-50 w-80 max-w-[calc(100vw-2rem)] bg-surface border border-border rounded-[var(--radius-sheet)] shadow-pop overflow-hidden">
+        <div style={panelPos} className="fixed z-50 w-80 max-w-[calc(100vw-2rem)] bg-surface border border-border rounded-[var(--radius-sheet)] shadow-pop overflow-hidden">
           <div className="flex border-b border-border">
             {['export', 'share'].map(t => (
               <button key={t} onClick={() => setTab(t)} aria-pressed={tab === t}
