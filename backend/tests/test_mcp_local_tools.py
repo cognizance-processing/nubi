@@ -284,3 +284,142 @@ def test_response_guard_shrinks_oversized_payload_to_valid_json():
 def test_response_guard_passes_small_payloads_through_untouched():
     small = {"rows": [{"i": 1}], "columns": ["i"]}
     assert json.loads(_encode_tool_result(small)) == small
+
+
+# ── Boards too big to read in one response ───────────────────────────────────
+
+
+def _nested_spec(title: str = "Big") -> dict:
+    spec = _spec(title)
+    spec["widgets"].append(
+        {
+            "id": "s1",
+            "type": "stepper",
+            "props": {
+                "title": "Drill",
+                "steps": [
+                    {
+                        "id": "a",
+                        "label": "First",
+                        "widget": {"id": "inner", "type": "text", "title": "deep", "props": {"markdown": "x", "keep": 1}},
+                    }
+                ],
+            },
+        }
+    )
+    return spec
+
+
+@pytest.fixture
+def board(ctx):
+    _, _, claims = ctx
+    created = execute_tool("save_dashboard", {"spec": _nested_spec(), "name": "Big"}, claims)
+    return created["id"], claims
+
+
+def test_get_dashboard_outline_lists_every_widget_without_its_config(board):
+    bid, claims = board
+    res = execute_tool("get_dashboard", {"board_id": bid, "outline": True}, claims)
+    assert "spec" not in res
+    by_id = {w["id"]: w for w in res["widgets"]}
+    assert set(by_id) == {"t1", "s1", "inner"}
+    assert by_id["inner"]["parent_id"] == "s1"
+    assert by_id["inner"]["title"] == "deep"
+    assert by_id["s1"]["title"] == "Drill"
+    assert "props" not in by_id["t1"]
+
+
+def test_get_dashboard_returns_one_widget_even_when_nested(board):
+    bid, claims = board
+    res = execute_tool("get_dashboard", {"board_id": bid, "widget_id": "inner"}, claims)
+    assert res["widget"]["props"]["markdown"] == "x"
+    assert "spec" not in res
+
+
+def test_get_dashboard_unknown_widget_is_an_error(board):
+    bid, claims = board
+    with pytest.raises(AppError) as exc:
+        execute_tool("get_dashboard", {"board_id": bid, "widget_id": "nope"}, claims)
+    assert exc.value.code == "widget_not_found"
+
+
+def test_a_big_board_stays_readable_within_the_mcp_guard(ctx):
+    _, _, claims = ctx
+    spec = _spec("Huge")
+    spec["widgets"].extend(
+        {"id": f"w{i}", "type": "text", "title": f"t{i}", "props": {"markdown": "x" * 5000}} for i in range(40)
+    )
+    bid = execute_tool("save_dashboard", {"spec": spec, "name": "Huge"}, claims)["id"]
+
+    assert "_truncated" in json.loads(
+        _encode_tool_result(execute_tool("get_dashboard", {"board_id": bid}, claims))
+    )
+    outline = json.loads(
+        _encode_tool_result(execute_tool("get_dashboard", {"board_id": bid, "outline": True}, claims))
+    )
+    assert "_truncated" not in outline and len(outline["widgets"]) == 41
+
+
+def test_edit_dashboard_by_board_id_saves_without_the_full_spec(board):
+    bid, claims = board
+    res = execute_tool(
+        "edit_dashboard",
+        {"board_id": bid, "op": {"action": "configure_widget", "widget_id": "t1", "updates": {"title": "new"}}},
+        claims,
+    )
+    assert res["saved"] is True and res["valid"] is True and "spec" not in res
+    back = execute_tool("get_dashboard", {"board_id": bid, "widget_id": "t1"}, claims)
+    assert back["widget"]["title"] == "new"
+
+
+def test_edit_dashboard_reaches_a_widget_inside_a_stepper_and_merges_props(board):
+    bid, claims = board
+    execute_tool(
+        "edit_dashboard",
+        {"board_id": bid, "op": {"action": "configure_widget", "widget_id": "inner", "updates": {"props": {"markdown": "y"}}}},
+        claims,
+    )
+    props = execute_tool("get_dashboard", {"board_id": bid, "widget_id": "inner"}, claims)["widget"]["props"]
+    assert props == {"markdown": "y", "keep": 1}
+
+
+def test_edit_dashboard_refuses_an_unknown_widget_rather_than_reporting_a_save(board):
+    bid, claims = board
+    with pytest.raises(AppError) as exc:
+        execute_tool(
+            "edit_dashboard",
+            {"board_id": bid, "op": {"action": "configure_widget", "widget_id": "nope", "updates": {"title": "x"}}},
+            claims,
+        )
+    assert exc.value.code == "widget_not_found"
+
+
+def test_edit_dashboard_needs_a_spec_or_a_board(ctx):
+    _, _, claims = ctx
+    with pytest.raises(AppError) as exc:
+        execute_tool("edit_dashboard", {"op": {"action": "remove_widget", "widget_id": "t1"}}, claims)
+    assert exc.value.code == "invalid_tool_input"
+
+
+def test_edit_dashboard_by_board_id_is_org_scoped(board):
+    bid, _claims_a = board
+    claims_b = _claims(str(uuid.uuid4()), str(uuid.uuid4()))
+    with pytest.raises(AppError) as exc:
+        execute_tool(
+            "edit_dashboard",
+            {"board_id": bid, "op": {"action": "remove_widget", "widget_id": "t1"}},
+            claims_b,
+        )
+    assert exc.value.code == "board_not_found"
+
+
+def test_edit_dashboard_by_board_id_is_refused_for_an_embed_session(board):
+    bid, claims = board
+    embed = {**claims, "kind": "embed"}
+    with pytest.raises(AppError) as exc:
+        execute_tool(
+            "edit_dashboard",
+            {"board_id": bid, "op": {"action": "remove_widget", "widget_id": "t1"}},
+            embed,
+        )
+    assert exc.value.code == "insufficient_scope"

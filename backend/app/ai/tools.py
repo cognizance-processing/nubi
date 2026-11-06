@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import copy
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import Any, Awaitable, Callable, Iterator, TypeVar
 
 _T = TypeVar("_T")
 
@@ -1107,6 +1107,44 @@ def _tool_create_dashboard(
     return result
 
 
+def _walk_widgets(
+    widgets: list[Any] | None, parent_id: str | None = None
+) -> Iterator[tuple[dict[str, Any], str | None]]:
+    """Yield every widget with its parent's id, descending into stepper steps."""
+    for widget in widgets or []:
+        if not isinstance(widget, dict):
+            continue
+        yield widget, parent_id
+        props = widget.get("props")
+        steps = props.get("steps") if isinstance(props, dict) else None
+        children = [s.get("widget") for s in steps or [] if isinstance(s, dict)]
+        yield from _walk_widgets(children, widget.get("id"))
+
+
+def _require_widget(spec: dict[str, Any], widget_id: str) -> dict[str, Any]:
+    from app.errors import AppError  # noqa: PLC0415
+
+    for widget, _parent in _walk_widgets(spec.get("widgets")):
+        if widget.get("id") == widget_id:
+            return widget
+    raise AppError("widget_not_found", f"No widget with id {widget_id!r} on this board.", 404)
+
+
+def _widget_outline(widget: dict[str, Any], parent_id: str | None) -> dict[str, Any]:
+    props = widget.get("props") if isinstance(widget.get("props"), dict) else {}
+    entry = {
+        "id": widget.get("id"),
+        "type": widget.get("type"),
+        "title": widget.get("title") or props.get("title") or props.get("label"),
+    }
+    for key in ("tab_id", "query_id", "pos"):
+        if widget.get(key) is not None:
+            entry[key] = widget[key]
+    if parent_id:
+        entry["parent_id"] = parent_id
+    return entry
+
+
 def _tool_edit_dashboard(
     spec: dict[str, Any],
     op: dict[str, Any],
@@ -1125,6 +1163,8 @@ def _tool_edit_dashboard(
 
     ``{"action": "configure_widget", "widget_id": "w1", "updates": {...}}``
         Merge *updates* into the widget's fields (except ``id`` and ``type``).
+        An object such as ``props`` merges one level down, so changing one
+        prop does not drop the others.
 
     ``{"action": "remove_widget", "widget_id": "w1"}``
         Remove a widget by id.
@@ -1162,10 +1202,7 @@ def _tool_edit_dashboard(
                 "edit_dashboard move_widget requires 'widget_id' and 'pos'.",
                 400,
             )
-        for w in working_spec.get("widgets", []):
-            if w.get("id") == widget_id:
-                w["pos"] = new_pos
-                break
+        _require_widget(working_spec, widget_id)["pos"] = new_pos
 
     elif action == "configure_widget":
         widget_id = op.get("widget_id")
@@ -1177,12 +1214,11 @@ def _tool_edit_dashboard(
                 "edit_dashboard configure_widget requires 'widget_id' and 'updates'.",
                 400,
             )
-        for w in working_spec.get("widgets", []):
-            if w.get("id") == widget_id:
-                for k, v in updates.items():
-                    if k not in ("id", "type"):  # protect immutable fields
-                        w[k] = v
-                break
+        w = _require_widget(working_spec, widget_id)
+        for k, v in updates.items():
+            if k in ("id", "type"):  # protect immutable fields
+                continue
+            w[k] = {**w[k], **v} if isinstance(v, dict) and isinstance(w.get(k), dict) else v
 
     elif action == "remove_widget":
         widget_id = op.get("widget_id")
@@ -1193,6 +1229,7 @@ def _tool_edit_dashboard(
                 "edit_dashboard remove_widget requires 'widget_id'.",
                 400,
             )
+        _require_widget(working_spec, widget_id)
         working_spec["widgets"] = [
             w for w in working_spec.get("widgets", []) if w.get("id") != widget_id
         ]
@@ -1216,6 +1253,29 @@ def _tool_edit_dashboard(
         }
     # Pydantic parse failed → return the raw working_spec + issues.
     return {"spec": working_spec, "valid": False, "issues": issues}
+
+
+def _tool_edit_saved_dashboard(
+    claims: dict[str, Any], board_id: str, op: dict[str, Any]
+) -> dict[str, Any]:
+    """Apply *op* to a saved board and write it back, without the caller holding
+    the whole spec. A big board does not fit in one tool response, so this is the
+    only way an MCP client can change one.
+    """
+    from app.errors import AppError  # noqa: PLC0415
+
+    if claims.get("kind", "access") != "access":
+        raise AppError(
+            "insufficient_scope",
+            "Embed/restricted tokens cannot update dashboards via the AI tool path.",
+            403,
+        )
+    spec = _tool_get_dashboard(claims, board_id)["spec"]
+    edited = _tool_edit_dashboard(spec, op, claims)
+    # update_dashboard refuses a spec that does not parse. Lesser issues are reported,
+    # not blocking: a board can already carry some, and they should not freeze it.
+    saved = _tool_update_dashboard(claims, board_id, spec=edited["spec"])
+    return {**saved, "issues": edited["issues"]}
 
 
 def _tool_save_dashboard(
@@ -1342,7 +1402,12 @@ def _tool_list_dashboards(
     }
 
 
-def _tool_get_dashboard(claims: dict[str, Any], board_id: str) -> dict[str, Any]:
+def _tool_get_dashboard(
+    claims: dict[str, Any],
+    board_id: str,
+    outline: bool = False,
+    widget_id: str | None = None,
+) -> dict[str, Any]:
     """Return one board's full DashboardSpec, org-scoped."""
     from app.errors import AppError  # noqa: PLC0415
     from app.repos.provider import get_repo  # noqa: PLC0415
@@ -1356,12 +1421,18 @@ def _tool_get_dashboard(claims: dict[str, Any], board_id: str) -> dict[str, Any]
         raise AppError("board_not_found", f"No board with id {board_id!r}.", 404)
 
     config = row.get("config") or {}
-    return {
-        "id": row.get("id"),
-        "name": row.get("name"),
-        "spec": config.get("spec") or {},
-        "updated_at": row.get("updated_at"),
-    }
+    spec = config.get("spec") or {}
+    base = {"id": row.get("id"), "name": row.get("name"), "updated_at": row.get("updated_at")}
+    if widget_id:
+        return {**base, "widget": _require_widget(spec, widget_id)}
+    if outline:
+        return {
+            **base,
+            "tabs": spec.get("tabs") or [],
+            "variables": [v.get("name") for v in spec.get("variables") or [] if isinstance(v, dict)],
+            "widgets": [_widget_outline(w, parent) for w, parent in _walk_widgets(spec.get("widgets"))],
+        }
+    return {**base, "spec": spec}
 
 
 def _tool_update_dashboard(
@@ -1779,6 +1850,18 @@ _SCHEMA_GET_DASHBOARD: dict[str, Any] = {
     "type": "object",
     "properties": {
         "board_id": {"type": "string", "description": "Id of the board to fetch."},
+        "outline": {
+            "type": "boolean",
+            "description": (
+                "Return every widget's id, type, title and position (including "
+                "widgets inside steppers) instead of the full spec. Use this "
+                "first on a big board: a full spec can exceed the response limit."
+            ),
+        },
+        "widget_id": {
+            "type": "string",
+            "description": "Return only this widget's full definition.",
+        },
     },
     "required": ["board_id"],
     "additionalProperties": False,
@@ -1883,9 +1966,20 @@ _SCHEMA_CREATE_DASHBOARD: dict[str, Any] = {
 _SCHEMA_EDIT_DASHBOARD: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "board_id": {
+            "type": "string",
+            "description": (
+                "A saved board to edit in place: the operation is applied and "
+                "saved to its draft, and the full spec is not returned. Use this "
+                "for existing boards, finding ids with get_dashboard outline."
+            ),
+        },
         "spec": {
             "type": "object",
-            "description": "The current DashboardSpec dict to modify.",
+            "description": (
+                "A DashboardSpec to modify in memory and return, without saving. "
+                "Provide this or board_id."
+            ),
         },
         "op": {
             "type": "object",
@@ -1902,7 +1996,7 @@ _SCHEMA_EDIT_DASHBOARD: dict[str, Any] = {
             "required": ["action"],
         },
     },
-    "required": ["spec", "op"],
+    "required": ["op"],
     "additionalProperties": False,
 }
 
@@ -2057,10 +2151,17 @@ def _make_registry() -> dict[str, ToolDef]:
 
     def _wrap_edit_dashboard(
         claims: dict[str, Any],
-        spec: dict[str, Any],
         op: dict[str, Any],
+        spec: dict[str, Any] | None = None,
+        board_id: str | None = None,
         **_kw: Any,
     ) -> dict[str, Any]:
+        if board_id:
+            return _tool_edit_saved_dashboard(claims, board_id, op)
+        if spec is None:
+            from app.errors import AppError  # noqa: PLC0415
+
+            raise AppError("invalid_tool_input", "Provide board_id or spec.", 400)
         return _tool_edit_dashboard(spec, op, claims)
 
     def _wrap_save_dashboard(
@@ -2083,9 +2184,13 @@ def _make_registry() -> dict[str, ToolDef]:
         )
 
     def _wrap_get_dashboard(
-        claims: dict[str, Any], board_id: str, **_kw: Any
+        claims: dict[str, Any],
+        board_id: str,
+        outline: bool = False,
+        widget_id: str | None = None,
+        **_kw: Any,
     ) -> dict[str, Any]:
-        return _tool_get_dashboard(claims, board_id)
+        return _tool_get_dashboard(claims, board_id, outline=outline, widget_id=widget_id)
 
     def _wrap_update_dashboard(
         claims: dict[str, Any],
@@ -2216,8 +2321,9 @@ def _make_registry() -> dict[str, ToolDef]:
         ToolDef(
             name="edit_dashboard",
             description=(
-                "Apply an edit operation (add/move/configure/remove widget) to a DashboardSpec "
-                "and re-validate it."
+                "Apply an edit operation (add/move/configure/remove widget) and re-validate. "
+                "With board_id it saves to that board's draft; with spec it returns the "
+                "edited spec without saving."
             ),
             json_schema=_SCHEMA_EDIT_DASHBOARD,
             fn=_wrap_edit_dashboard,
@@ -2245,7 +2351,9 @@ def _make_registry() -> dict[str, ToolDef]:
         ToolDef(
             name="get_dashboard",
             description=(
-                "Fetch one saved board's full DashboardSpec by id. Use this "
+                "Fetch one saved board's full DashboardSpec by id, or with outline "
+                "or widget_id just its widget list or one widget. To change a "
+                "widget use edit_dashboard with board_id. Read the full spec "
                 "before update_dashboard so you edit the real spec rather than "
                 "rewriting it from scratch."
             ),

@@ -663,7 +663,9 @@ def _encode_tool_result(result: Any) -> str:
             "_truncated": {
                 "reason": (
                     f"Result exceeded the {_MAX_TOOL_RESULT_BYTES}-byte MCP "
-                    f"response guard and had no list field to sample."
+                    f"response guard and had no list field to sample. Narrow "
+                    f"the request if the tool has arguments for it "
+                    f"(get_dashboard: outline, widget_id)."
                 ),
                 "total_bytes": len(text),
             },
