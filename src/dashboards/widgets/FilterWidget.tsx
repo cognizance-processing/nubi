@@ -49,7 +49,7 @@
  */
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { useFilterRefire, useSetVariable, useVariable } from '../VariableStore.jsx'
+import { useFilterRefire, useResolvedParams, useSetVariable, useVariable } from '../VariableStore.jsx'
 import { resolveTextColors } from '../textColors.js'
 import {
   Combobox,
@@ -193,8 +193,9 @@ export default function FilterWidget({ widget, options = [] }) {
     loading: optionsLoading,
     mode: optionsMode,
     onSearch,
+    refetch,
     labelFor,
-  } = useFilterOptions(widget)
+  } = useFilterOptions(widget, useResolvedParams(wProps.options_params))
 
   // Cascading-filter refire (Finding 1 / §W4-G). When an UPSTREAM variable this
   // widget's options depend on changes (e.g. country → city), VariableStore bumps
@@ -203,17 +204,17 @@ export default function FilterWidget({ widget, options = [] }) {
   const refireEpoch = useFilterRefire(widget.id)
   // Refetch the options when the epoch increments — but NOT on initial mount
   // (epoch 0), so widgets without upstream deps behave exactly as before. We
-  // refetch via onSearch('') (the hook's debounced refetch entrypoint), which
-  // re-runs the options query with the now-current upstream variable values.
-  const onSearchRef = useRef(onSearch)
-  useEffect(() => { onSearchRef.current = onSearch }, [onSearch])
+  // refetch through the hook, which re-runs the options query with the now-current upstream variable values.
+  const refetchRef = useRef(refetch)
+  useEffect(() => { refetchRef.current = refetch }, [refetch])
   useEffect(() => {
-    if (refireEpoch > 0) onSearchRef.current?.('')
+    if (refireEpoch > 0) refetchRef.current?.()
     // Intentionally depend ONLY on refireEpoch so this fires once per cascade bump.
   }, [refireEpoch])
 
   // Choose the option source: search-mode results, else the static prop.
-  const rawOptions = optionsMode === 'search' && queryOptions.length > 0 ? queryOptions : options
+  const cascades = Boolean(wProps.options_params && Object.values(wProps.options_params).some((v: any) => v?.ref))
+  const rawOptions = (optionsMode === 'search' || cascades) && queryOptions.length > 0 ? queryOptions : options
   const normed = useMemo(() => (rawOptions ?? []).map(normOption), [rawOptions])
 
   // In search mode, ensure already-selected values still have a row+label even
@@ -308,13 +309,22 @@ export default function FilterWidget({ widget, options = [] }) {
   // read as heavy double-bordered boxes. Drawer placement is likewise borderless.
   const containerCls = 'flex flex-col justify-center h-full bg-transparent'
 
+  // props.look 'outlined': a tall rounded outline with the label inside until a
+  // value is chosen, then floating on the top edge.
+  const outlined = wProps.look === 'outlined'
+  const controlLabel = outlined ? undefined : label
+  const controlPlaceholder = outlined ? label : placeholder
+  const hasValue = Array.isArray(localValue) ? localValue.length > 0 : Boolean(localValue)
+
   return (
-    <div className={containerCls}>
+    <div className={containerCls} data-filter-look={outlined ? 'outlined' : undefined} style={outlined ? styleVars : undefined}>
+      {outlined && hasValue && label && <span className="nubi-filter-float">{label}</span>}
       {subtype === 'select' && (
         <Combobox
-          label={label}
-          placeholder={placeholder}
+          label={controlLabel}
+          placeholder={controlPlaceholder}
           allLabel={all_label}
+          showAll={show_all !== false}
           options={optionsForList}
           value={localValue}
           onChange={handleChange}
@@ -330,8 +340,8 @@ export default function FilterWidget({ widget, options = [] }) {
 
       {subtype === 'multiselect' && (
         <MultiSelect
-          label={label}
-          placeholder={placeholder}
+          label={controlLabel}
+          placeholder={controlPlaceholder}
           options={optionsForList}
           value={localValue}
           onChange={handleChange}

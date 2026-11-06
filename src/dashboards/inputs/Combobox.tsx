@@ -26,6 +26,7 @@ const SIZES = {
  *   label?: string,
  *   placeholder?: string,
  *   allLabel?: string,
+ *   showAll?: boolean,    // false when the filter must always hold a value
  *   options: Array<{v: string, l: string}>,    // pre-normalised
  *   value: string | number | null,
  *   onChange: (v: string) => void,
@@ -42,6 +43,7 @@ export default function Combobox({
   label,
   placeholder,
   allLabel = 'All',
+  showAll = true,
   options,
   value,
   onChange,
@@ -71,8 +73,8 @@ export default function Combobox({
 
   // "All" sentinel row prepended so users can clear the selection from the list.
   const rows = useMemo(
-    () => [{ v: '', l: allLabel }, ...filtered],
-    [filtered, allLabel],
+    () => (showAll ? [{ v: '', l: allLabel }, ...filtered] : filtered),
+    [filtered, allLabel, showAll],
   )
 
   const selectedLabel = useMemo(() => {

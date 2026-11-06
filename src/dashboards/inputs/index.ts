@@ -53,19 +53,25 @@ export function normOption(opt) {
   return { v: s, l: s }
 }
 
-/** Map an Arrow table's first two columns to [{value, label}]. */
-function tableToOptions(table) {
+/**
+ * Map an Arrow table to distinct [{value, label}] options: props.value_field and
+ * props.label_field name the columns, else the first two columns are used.
+ */
+export function tableToOptions(table, props: Record<string, any> = {}) {
   if (!table || table.numRows === 0) return []
   const fields = table.schema.fields.map(f => f.name)
-  const valueField = fields[0]
-  const labelField = fields[1] ?? fields[0]
+  const valueField = fields.includes(props.value_field) ? props.value_field : fields[0]
+  const labelField = fields.includes(props.label_field) ? props.label_field : (props.value_field ? valueField : fields[1] ?? fields[0])
   const valueCol = table.getChild(valueField)
   const labelCol = table.getChild(labelField)
   const out = []
+  const seen = new Set()
   for (let i = 0; i < table.numRows; i++) {
     const v = valueCol ? valueCol.get(i) : null
     const l = labelCol ? labelCol.get(i) : v
-    if (v != null) out.push({ value: String(v), label: l != null ? String(l) : String(v) })
+    if (v == null || seen.has(String(v))) continue
+    seen.add(String(v))
+    out.push({ value: String(v), label: l != null ? String(l) : String(v) })
   }
   return out
 }
@@ -95,7 +101,7 @@ function tableToOptions(table) {
  *   capped: boolean,
  * }}
  */
-export function useFilterOptions(widget) {
+export function useFilterOptions(widget, resolved = undefined) {
   const p = widget?.props ?? {}
   const optionsQueryId = widget?.options_query_id ?? p.options_query_id
   const searchQueryId = widget?.search_query_id ?? p.search_query_id
@@ -104,6 +110,10 @@ export function useFilterOptions(widget) {
   const queryId = mode === 'search' ? (searchQueryId ?? optionsQueryId) : optionsQueryId
   const debounceMs = Number(p.debounce_ms) > 0 ? Number(p.debounce_ms) : 250
   const optionsParams = p.options_params
+  // Current values of the {ref} bindings in options_params. Read through a ref so
+  // a refetch sees the latest upstream values without re-creating the callbacks.
+  const resolvedRef = useRef(resolved)
+  resolvedRef.current = resolved
 
   const [options, setOptions] = useState([])
   const [loading, setLoading] = useState(false)
@@ -120,7 +130,10 @@ export function useFilterOptions(widget) {
     const out: Record<string, any> = {}
     for (const [k, v] of Object.entries(optionsParams as Record<string, any>)) {
       if (v && typeof v === 'object' && v.input === true) out[k] = searchText
-      else out[k] = v
+      else if (v && typeof v === 'object' && 'ref' in v) {
+        const value = resolvedRef.current?.[k]
+        if (value !== undefined) out[k] = value
+      } else out[k] = v
     }
     return out
   }, [optionsParams])
@@ -133,7 +146,7 @@ export function useFilterOptions(widget) {
       const namedParams = buildParams(searchText)
       const { table } = await runArrowQueryById(queryId, namedParams ? { namedParams } : undefined)
       if (seq !== reqSeq.current) return  // a newer request superseded this one
-      const opts = tableToOptions(table)
+      const opts = tableToOptions(table, p)
       for (const o of opts) labelCache.current.set(o.value, o.label)
       setOptions(opts)
       // Heuristic "showing first N" footer when the result fills a typical cap.
@@ -162,13 +175,16 @@ export function useFilterOptions(widget) {
 
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current) }, [])
 
+  // Re-run the options query with the current upstream values (cascading filters).
+  const refetch = useCallback(() => { fetchOptions('') }, [fetchOptions])
+
   const labelFor = useCallback(
     (value) => labelCache.current.get(String(value)) ?? String(value),
     [],
   )
 
   return useMemo(
-    () => ({ options, loading, mode, onSearch, labelFor, capped }),
-    [options, loading, mode, onSearch, labelFor, capped],
+    () => ({ options, loading, mode, onSearch, refetch, labelFor, capped }),
+    [options, loading, mode, onSearch, refetch, labelFor, capped],
   )
 }

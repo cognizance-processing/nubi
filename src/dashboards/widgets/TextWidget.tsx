@@ -14,9 +14,11 @@
  *   slot is still visible in the grid.
  * - Styling: scrollable overflow, consistent padding, matches the surface/border
  *   conventions used across KpiWidget and the SpecRenderer wrapper.
+ * - props.fontSize / fontWeight / align / heading adjust the type: see textStyle.ts.
  */
 
 import MarkdownRenderer from '../../components/MarkdownRenderer.jsx'
+import { textWidgetLook } from './textStyle.js'
 
 export default function TextWidget({ widget }) {
   const { props: wProps = {} } = widget
@@ -48,10 +50,14 @@ export default function TextWidget({ widget }) {
     '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0 ' +
     '[&>*>*:first-child]:mt-0 [&>*>*:last-child]:mb-0'
 
+  const look = textWidgetLook(wProps)
+
   return (
     <div
+      data-testid="text-widget"
+      style={look.style}
       className={
-        `h-full overflow-y-auto px-5 py-3 prose-sm flex flex-col justify-center ${marginReset}` +
+        `h-full prose-sm flex flex-col justify-center ${look.className} ${marginReset}` +
         (inheritsColor ? ' [&_*]:text-inherit' : ' text-fg')
       }
     >

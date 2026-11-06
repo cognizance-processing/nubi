@@ -1104,3 +1104,30 @@
   .nubi-brand-loader-rm { display: block; }
   .nubi-tooltip-pop { animation: none !important; }
 }
+
+/* Filter look 'outlined' (FilterWidget props.look): a tall rounded outline whose
+   label floats on the top edge once a value is chosen. */
+[data-grid-appearance='report'] td .font-mono { font-family: inherit; font-size: inherit; }
+[data-filter-look='outlined'] { position: relative; padding: 5px 4px; }
+[data-filter-look='outlined'] button[aria-haspopup] svg { display: none; }
+[data-filter-look='outlined'] button[aria-haspopup]:has(svg)::after { content: '\25BC'; font-size: 11px; }
+[data-filter-look='outlined'] button[aria-haspopup] {
+  border: 1px solid var(--filter-outline, var(--border-control));
+  border-radius: 18px;
+  height: 68px;
+  padding-inline: 16px;
+  background: transparent;
+  font-size: 18px;
+}
+[data-filter-look='outlined'] button[aria-haspopup] > span > .bg-primary { display: none; }
+.nubi-filter-float {
+  position: absolute;
+  top: 50%;
+  left: 20px;
+  transform: translateY(-42px);
+  z-index: 1;
+  padding: 0 6px;
+  font-size: 13px;
+  background: var(--surface, #fff);
+  color: var(--filter-label-color, inherit);
+}

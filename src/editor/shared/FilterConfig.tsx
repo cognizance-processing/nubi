@@ -25,6 +25,7 @@
 import { useRef, useState } from 'react'
 import { LayoutGrid, Link2, BarChart3, Table2, Gauge, Grid3x3, Layers, Check, Wand2, Loader2, AlertTriangle, ArrowRight } from 'lucide-react'
 import { inputCls, selectCls, FieldLabel, ToggleRow, Section, ColorField, SectionLabel } from './inspectorPrimitives.jsx'
+import { parseNumberInput } from './numberInput.js'
 import { QueryPicker } from './QueryPicker.jsx'
 import { FILTER_SUBTYPES } from './constants.js'
 import { effectivePlacement, applyPlacement } from './placementHelpers.js'
@@ -704,6 +705,20 @@ export function FilterConfig({ widget, onChange, spec, onPatchWidget = undefined
           </div>
         )}
         {(subtype === 'select' || subtype === 'multiselect') && (
+          <div>
+            <FieldLabel>Look</FieldLabel>
+            <select className={selectCls} value={props.look ?? ''}
+              onChange={e => setProps('look', e.target.value || undefined)}>
+              <option value="">Standard</option>
+              <option value="outlined">Outlined, with the label inside</option>
+            </select>
+          </div>
+        )}
+        {subtype === 'select' && (
+          <ToggleRow label="Offer “All”" hint="Turn off when the board's queries need a value from this filter"
+            checked={props.show_all !== false} onChange={v => setProps('show_all', v ? undefined : false)} />
+        )}
+        {(subtype === 'select' || subtype === 'multiselect') && (
           <ToggleRow label="Searchable" hint="Show a search box in the dropdown"
             checked={props.searchable !== false} onChange={v => setProps('searchable', v ? undefined : false)} />
         )}
@@ -729,16 +744,47 @@ export function FilterConfig({ widget, onChange, spec, onPatchWidget = undefined
 }
 
 export function TextConfig({ widget, onChange }) {
+  const props = widget.props ?? {}
+  const setProp = (key, value) => onChange({ ...widget, props: { ...props, [key]: value } })
   return (
     <div className="space-y-3">
       <PlacementControl widget={widget} onChange={onChange} />
       <div>
         <FieldLabel>Markdown content</FieldLabel>
         <textarea rows={8} className={`${inputCls} h-auto py-1.5 resize-y font-mono text-xs leading-relaxed`}
-          value={widget.content ?? ''} onChange={e => onChange({ ...widget, content: e.target.value })}
+          value={widget.content ?? props.content ?? ''} onChange={e => onChange({ ...widget, content: e.target.value })}
           placeholder="# Heading&#10;&#10;Enter **markdown** here..." />
       </div>
       <p className="text-[10px] text-muted/70">Supports standard Markdown.</p>
+      <div className="flex gap-1.5">
+        <div className="flex-1">
+          <FieldLabel>Text size</FieldLabel>
+          <input type="number" min={8} max={96} className={inputCls} placeholder="auto"
+            value={props.fontSize ?? ''}
+            onChange={e => setProp('fontSize', parseNumberInput(e.target.value))} />
+        </div>
+        <div className="flex-1">
+          <FieldLabel>Weight</FieldLabel>
+          <select className={selectCls} value={props.fontWeight ?? ''}
+            onChange={e => setProp('fontWeight', e.target.value ? Number(e.target.value) : undefined)}>
+            <option value="">Auto</option>
+            <option value="400">Regular</option>
+            <option value="600">Semibold</option>
+            <option value="700">Bold</option>
+          </select>
+        </div>
+        <div className="flex-1">
+          <FieldLabel>Align</FieldLabel>
+          <select className={selectCls} value={props.align ?? ''}
+            onChange={e => setProp('align', e.target.value || undefined)}>
+            <option value="">Left</option>
+            <option value="center">Center</option>
+            <option value="right">Right</option>
+          </select>
+        </div>
+      </div>
+      <ToggleRow label="Heading" hint="Sits tight in its tile, with no padding above or below and no scrollbar"
+        checked={props.heading === true} onChange={v => setProp('heading', v ? true : undefined)} />
     </div>
   )
 }
