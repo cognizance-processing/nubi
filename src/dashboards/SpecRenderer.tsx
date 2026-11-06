@@ -39,6 +39,7 @@ import ChartWidget from './widgets/ChartWidget.jsx'
 import KpiWidget from './widgets/KpiWidget.jsx'
 import TableWidget from './widgets/TableWidget.jsx'
 import FilterWidget from './widgets/FilterWidget.jsx'
+import { tableToOptions } from './inputs/index.js'
 import TextWidget from './widgets/TextWidget.jsx'
 import HtmlWidget from './widgets/HtmlWidget.jsx'
 import MetricWidget from './widgets/MetricWidget.jsx'
@@ -147,21 +148,7 @@ function FilterWidgetLoader({ widget, editMode = false }) {
         const { table } = await runArrowQueryById(optionsQueryId)
         if (cancelled || !table || table.numRows === 0) return
 
-        // Map the first two columns to {value, label}; if only one col, use it for both.
-        const fields = table.schema.fields.map(f => f.name)
-        const valueField = fields[0]
-        const labelField = fields[1] ?? fields[0]
-
-        const opts = []
-        for (let i = 0; i < table.numRows; i++) {
-          const valueCol = table.getChild(valueField)
-          const labelCol = table.getChild(labelField)
-          const v = valueCol ? valueCol.get(i) : null
-          const l = labelCol ? labelCol.get(i) : v
-          if (v != null) {
-            opts.push({ value: String(v), label: l != null ? String(l) : String(v) })
-          }
-        }
+        const opts = tableToOptions(table, widget.props)
         if (!cancelled) setOptions(opts)
       } catch (err) {
         // Non-fatal — widget renders with empty options list
@@ -353,7 +340,7 @@ function buildLayouts(spec, cols, colsByBp) {
  * Variables without a default get undefined (the store skips them so
  * resolveParams returns undefined for unset refs, which is correct).
  */
-function buildVariableDefaults(specVariables) {
+export function buildVariableDefaults(specVariables) {
   if (!Array.isArray(specVariables)) return {}
   const defaults = {}
   for (const v of specVariables) {
@@ -726,12 +713,14 @@ function SpecRendererBody({
       style={{
         ...(bgStyle ? (flushBackground ? bgStyle : { ...bgStyle, padding: 16, borderRadius: 12 }) : null),
         ...(maxWidth ? { maxWidth, marginInline: 'auto' } : null),
+        // spec.font_family: the whole board in one typeface, widgets included.
+        ...(spec.font_family ? { fontFamily: spec.font_family, '--font-ui': spec.font_family } : null),
       }}
     >
-      {(spec.title || spec.description || hasFilters) && (
+      {((spec.title && !spec.page_header) || spec.description || hasFilters) && (
         <div className="flex items-start justify-between px-1 mb-5 gap-3">
           <div className="min-w-0">
-            {spec.title && (
+            {spec.title && !spec.page_header && (
               <h2 className="text-[22px] font-bold font-display text-fg leading-tight tracking-tight">{spec.title}</h2>
             )}
             {spec.description && (
@@ -769,7 +758,27 @@ function SpecRendererBody({
           )}
         </div>
       )}
-      {tabs.length > 1 && (
+      {spec.page_header && (
+        <div className="flex items-center gap-7 px-3 pb-1 mb-3 border-b border-border" data-page-header>
+          {spec.page_header.logo && (
+            <img
+              src={spec.page_header.logo}
+              alt=""
+              className="shrink-0 object-contain my-2"
+              style={{ height: spec.page_header.logoHeight ?? 112 }}
+            />
+          )}
+          {spec.page_header.title && (
+            <p className="min-w-0 truncate text-lg text-fg">{spec.page_header.title}</p>
+          )}
+          {tabs.length > 1 && (
+            <div className="ml-auto self-center min-w-0">
+              <TabBar tabs={tabs} activeTabId={effectiveTabId} onChange={setTab} tabBar={tabBarConfig(spec)} />
+            </div>
+          )}
+        </div>
+      )}
+      {tabs.length > 1 && !spec.page_header && (
         <div className="mb-5">
           <TabBar
             tabs={tabs}
@@ -932,7 +941,7 @@ function SpecRendererInner({ spec, boardId: boardIdProp, initialVariables = {}, 
   // that require VariableValuesContext: useResolvedParams, useProviderData, plus
   // the full render/return tree.
   return (
-    <VariableProvider initialValues={variableDefaults} onVariableChange={onVariableChange}>
+    <VariableProvider spec={spec} initialValues={variableDefaults} onVariableChange={onVariableChange}>
       <SpecRendererBody
         spec={spec}
         boardId={boardId}

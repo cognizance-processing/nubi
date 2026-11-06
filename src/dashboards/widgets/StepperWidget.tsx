@@ -17,12 +17,19 @@
  *     props: {
  *       steps: [ { label: string, widget: <widget spec> }, ... ],
  *       orientation?: 'horizontal' | 'vertical',   // default 'horizontal'
- *       variant?:     'dots' | 'labels',           // default 'labels'
+ *       variant?:     'dots' | 'labels' | 'numbered', // default 'labels'
  *       display?:     'one' | 'all',               // default 'one'
- *       showTitle?:   boolean,
- *       title?:       string,
+ *       title?:       string,                      // heading above the step bar
+ *       titleSize?:   number,                      // heading size in px
+ *       minHeight?:   number,                      // min height of one 'all' row, px
+ *       hideLabels?:  boolean,                     // 'all': no caption above children
  *     }
  *   }
+ *
+ * `variant: 'numbered'` spreads the steps across the tile as numbered circles
+ * joined by a line. In `display: 'all'`, a step may carry `span` (a share of a
+ * 12-column row, default: equal) and `height` (px), so a group can mix three
+ * tables across with a chart underneath rather than splitting the tile evenly.
  *
  * `display: 'all'` drops the step bar and lays every child out at once, side by
  * side (or stacked, when orientation is 'vertical'), each under its own label.
@@ -38,6 +45,7 @@
  */
 
 import { useCallback, useMemo, useState } from 'react'
+import { styleToCss } from '../widgetHtml.js'
 import { StepperProvider } from '../StepperContext.jsx'
 import { useSetVariable } from '../VariableStore.jsx'
 import { clampStep, variablesToClear } from '../stepper.js'
@@ -56,8 +64,18 @@ export default function StepperWidget({ widget, renderChild }) {
   const setVariable = useSetVariable()
 
   const orientation = widget?.props?.orientation === 'vertical' ? 'vertical' : 'horizontal'
-  const variant = widget?.props?.variant === 'dots' ? 'dots' : 'labels'
+  const rawVariant = widget?.props?.variant
+  const variant = rawVariant === 'dots' || rawVariant === 'numbered' ? rawVariant : 'labels'
   const showAll = widget?.props?.display === 'all'
+  const title = widget?.props?.title
+  const heading = title ? (
+    <p
+      className="shrink-0 text-fg mb-3"
+      style={{ fontSize: widget?.props?.titleSize ?? 24, lineHeight: 1.2 }}
+    >
+      {title}
+    </p>
+  ) : null
 
   // Moving to `next`: if it is BEHIND the current step, clear the variables the
   // steps we're leaving had written, so the drill-down filter doesn't persist.
@@ -85,33 +103,110 @@ export default function StepperWidget({ widget, renderChild }) {
 
   // Group mode: every child at once, no step bar, no stepping context.
   if (showAll) {
-    return (
-      <div
-        className={cx(
-          'flex w-full h-full min-h-0 gap-3',
-          orientation === 'vertical' ? 'flex-col' : 'flex-row',
-        )}
-      >
-        {steps.map((step, i) => (
+    const hasLayout = steps.some(s => s.span != null || s.height != null)
+    const hideLabels = widget?.props?.hideLabels === true
+    const caption = (step) => (step.label && !hideLabels ? (
+      <p className="shrink-0 text-[11px] font-medium text-muted truncate mb-1">{step.label}</p>
+    ) : null)
+    // With per-child spans the group is a grid (12 columns unless props.columns
+    // says otherwise) that scrolls within its tile; without them the original
+    // equal split is unchanged.
+    if (hasLayout) {
+      const columns = Number(widget?.props?.columns) > 0 ? Number(widget.props.columns) : 12
+      const cellStyle = styleToCss(widget?.props?.cellStyle)
+      return (
+        <div className="flex flex-col w-full h-full min-h-0">
+          {heading}
           <div
-            key={step.id ?? `${step.label ?? 'item'}-${i}`}
-            className="flex-1 min-w-0 min-h-0 flex flex-col"
+            className="grid gap-3 flex-1 min-h-0 overflow-y-auto"
+            style={{
+              gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+              gap: widget?.props?.gap,
+              gridAutoRows: widget?.props?.minHeight ? `minmax(${widget.props.minHeight}px, auto)` : undefined,
+              alignContent: 'start',
+            }}
           >
-            {step.label && (
-              <p className="shrink-0 text-[11px] font-medium text-muted truncate mb-1">{step.label}</p>
-            )}
-            <div className="flex-1 min-h-0 min-w-0">
-              {renderChild ? renderChild(step.widget) : null}
-            </div>
+            {steps.map((step, i) => (
+              <div
+                key={step.id ?? `${step.label ?? 'item'}-${i}`}
+                className="min-w-0 min-h-0 flex flex-col"
+                style={{ gridColumn: `span ${Math.min(columns, step.span ?? columns)}`, height: step.height, ...cellStyle }}
+              >
+                {caption(step)}
+                <div className="flex-1 min-h-0 min-w-0">
+                  {renderChild ? renderChild(step.widget) : null}
+                </div>
+              </div>
+            ))}
           </div>
-        ))}
+        </div>
+      )
+    }
+    return (
+      <div className="flex flex-col w-full h-full min-h-0">
+        {heading}
+        <div
+          className={cx(
+            'flex flex-1 w-full min-h-0 gap-3',
+            orientation === 'vertical' ? 'flex-col' : 'flex-row',
+          )}
+        >
+          {steps.map((step, i) => (
+            <div
+              key={step.id ?? `${step.label ?? 'item'}-${i}`}
+              className="flex-1 min-w-0 min-h-0 flex flex-col"
+            >
+              {caption(step)}
+              <div className="flex-1 min-h-0 min-w-0">
+                {renderChild ? renderChild(step.widget) : null}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     )
   }
 
   const activeStep = steps[Math.min(active, steps.length - 1)]
 
-  const stepBar = (
+  const stepBar = variant === 'numbered' ? (
+    <div role="tablist" aria-orientation="horizontal" className="flex items-center shrink-0 mb-4">
+      {steps.map((step, i) => {
+        const isActive = i === active
+        return (
+          <div
+            key={step.id ?? `${step.label ?? 'step'}-${i}`}
+            className={cx('flex items-center min-w-0', i < steps.length - 1 && 'flex-1')}
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              onClick={() => goTo(i)}
+              className="flex items-center gap-2.5 px-2 py-1 rounded-full shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <span
+                aria-hidden="true"
+                className="inline-flex items-center justify-center rounded-full text-xs shrink-0"
+                style={{
+                  width: 30,
+                  height: 30,
+                  color: 'var(--ink-fg)',
+                  background: isActive
+                    ? (widget?.style?.color ?? 'var(--ink)')
+                    : (widget?.style?.mutedColor ?? 'var(--border-control)'),
+                }}
+              >
+                {i + 1}
+              </span>
+              <span className="text-sm text-fg whitespace-nowrap">{step.label ?? `Step ${i + 1}`}</span>
+            </button>
+            {i < steps.length - 1 && <span aria-hidden="true" className="flex-1 h-px mx-2 min-w-4 bg-border" />}
+          </div>
+        )
+      })}
+    </div>
+  ) : (
     <div
       role="tablist"
       aria-orientation={orientation}
@@ -155,15 +250,22 @@ export default function StepperWidget({ widget, renderChild }) {
   return (
     <div
       className={cx(
-        'flex w-full h-full min-h-0',
-        orientation === 'vertical' ? 'flex-row' : 'flex-col',
+        'flex flex-col w-full h-full min-h-0',
       )}
     >
-      {stepBar}
-      <div className="flex-1 min-h-0 min-w-0">
-        <StepperProvider advance={advance}>
-          {renderChild ? renderChild(activeStep.widget) : null}
-        </StepperProvider>
+      {heading}
+      <div
+        className={cx(
+          'flex flex-1 w-full min-h-0',
+          orientation === 'vertical' && variant !== 'numbered' ? 'flex-row' : 'flex-col',
+        )}
+      >
+        {stepBar}
+        <div className="flex-1 min-h-0 min-w-0">
+          <StepperProvider advance={advance}>
+            {renderChild ? renderChild(activeStep.widget) : null}
+          </StepperProvider>
+        </div>
       </div>
     </div>
   )

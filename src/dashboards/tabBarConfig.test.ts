@@ -54,3 +54,7 @@ test('tabCustomStyle: per-tab custom_css is sanitised the same way', () => {
   assert.equal(tabCustomStyle({ style: {} }), undefined)
   assert.equal(tabCustomStyle(null), undefined)
 })
+
+test('resolveTabBar: the folder variant is kept as authored', () => {
+  assert.equal(resolveTabBar({ variant: 'folder', accent: '#002060' }).variant, 'folder')
+})

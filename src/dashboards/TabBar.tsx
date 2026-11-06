@@ -22,7 +22,7 @@
  *   activeTabId string                          id of the currently-active tab
  *   onChange    (id: string) => void            called when a tab is activated
  *   tabBar      { variant?, accent?, align?, size?, custom_css? }  bar-level style
- *                 variant: 'underline' | 'pills' | 'segmented' (default 'underline')
+ *                 variant: 'underline' | 'pills' | 'segmented' | 'folder' (default 'underline')
  *                 align:   'start' | 'center' | 'end' | 'stretch'  (default 'start')
  *                 size:    'sm' | 'md' | 'lg'                       (default 'md')
  *                 custom_css (and per-tab tab.style.custom_css) is parsed through
@@ -54,6 +54,7 @@ const SIZE_CLASSES = {
   underline: { sm: 'h-8 px-2.5 text-xs', md: 'h-10 px-3.5 text-[13px]', lg: 'h-12 px-4 text-sm' },
   pills:     { sm: 'h-7 px-2.5 text-xs', md: 'h-8 px-3 text-[13px]',    lg: 'h-10 px-4 text-sm' },
   segmented: { sm: 'h-6 px-2.5 text-xs', md: 'h-7 px-3 text-[13px]',    lg: 'h-9 px-4 text-sm' },
+  folder:    { sm: 'h-8 px-3 text-xs',   md: 'h-11 px-5 text-sm',       lg: 'h-12 px-6 text-base' },
 }
 
 export default function TabBar({ tabs, activeTabId, onChange, tabBar }) {
@@ -117,6 +118,7 @@ export default function TabBar({ tabs, activeTabId, onChange, tabBar }) {
   const containerClass = {
     underline: 'flex items-stretch gap-0 border-b border-border overflow-x-auto',
     pills: 'flex items-center gap-1.5 overflow-x-auto',
+    folder: 'flex items-end gap-0.5 overflow-x-auto',
     segmented: cx('flex items-center border border-frame-line bg-surface-2 p-0.5 rounded-sm max-w-full overflow-x-auto', segmentedAlign),
   }[variant] ?? 'flex items-stretch gap-0 border-b border-border overflow-x-auto'
   const tabAlignClass = (index) => {
@@ -159,6 +161,18 @@ export default function TabBar({ tabs, activeTabId, onChange, tabBar }) {
             inlineStyle = isActive && accent
               ? { backgroundColor: accent, borderColor: accent, color: readableInk(accent) ?? 'var(--primary-fg)' }
               : undefined
+            break
+          case 'folder':
+            // Folder tabs: rounded top corners; the open one carries a heavier
+            // top edge in the accent and a bold label.
+            variantBtn = cx(
+              'rounded-t-lg border border-b-0 border-border bg-surface',
+              isActive ? 'font-bold' : 'font-medium hover:bg-surface-2',
+            )
+            inlineStyle = {
+              color: accent ?? undefined,
+              borderTop: isActive ? `2px solid ${accent ?? 'var(--ink)'}` : undefined,
+            }
             break
           case 'segmented':
             variantBtn = cx(

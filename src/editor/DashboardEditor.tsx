@@ -112,7 +112,7 @@ import BreadcrumbWidget from '../dashboards/widgets/BreadcrumbWidget.jsx'
 import ExportShareMenu from '../components/ExportShareMenu.jsx'
 import DashboardCodeView from './DashboardCodeView.jsx'
 import { VariableProvider } from '../dashboards/VariableStore.jsx'
-import SpecRenderer from '../dashboards/SpecRenderer.jsx'
+import SpecRenderer, { buildVariableDefaults } from '../dashboards/SpecRenderer.jsx'
 import { backgroundToCss, styleToCss } from '../dashboards/widgetHtml.js'
 import { useTheme } from '../contexts/ThemeContext.jsx'
 import { ThemeModeProvider, colorModeClass } from '../dashboards/ColorModeScope.jsx'
@@ -132,6 +132,7 @@ import ChatPanel from './ChatPanel.jsx'
 import { LiveEditProvider } from './liveEdit.jsx'
 import WidgetHtmlEditor from './shared/WidgetHtmlEditor.jsx'
 import WidgetFocusShell from './shared/WidgetFocusShell.jsx'
+import { previewPropsEqual } from './previewPropsEqual.js'
 import {
   createHistory,
   push as historyPush,
@@ -231,7 +232,7 @@ function genId(type) {
 
 // Tab-bar style tokens exposed in the inspector. ALL user-supplied colors / CSS
 // flow through the sanitized styleToCss/parseCssString path (never raw-injected).
-const TAB_VARIANTS = ['underline', 'pills', 'segmented']
+const TAB_VARIANTS = ['underline', 'pills', 'segmented', 'folder']
 const TAB_ALIGNS = ['start', 'center', 'end', 'stretch']
 const TAB_SIZES = ['sm', 'md', 'lg']
 
@@ -1075,6 +1076,11 @@ function StepperConfig({ widget, onChange }) {
           onChange={e => setProps({ title: e.target.value })} />
       </div>
       <div>
+        <FieldLabel>Title size</FieldLabel>
+        <input type="number" min={10} max={48} className={inputCls} value={props.titleSize ?? ''} placeholder="24"
+          onChange={e => setProps({ titleSize: e.target.value === '' ? undefined : Number(e.target.value) })} />
+      </div>
+      <div>
         <FieldLabel>Show</FieldLabel>
         <div className="flex h-8 rounded-lg border border-border overflow-hidden">
           {[['one', 'One at a time'], ['all', 'All together']].map(([v, lbl]) => (
@@ -1100,7 +1106,7 @@ function StepperConfig({ widget, onChange }) {
         <div>
           <FieldLabel>Step indicator</FieldLabel>
           <div className="flex h-8 rounded-lg border border-border overflow-hidden">
-            {['labels', 'dots'].map(v => (
+            {['labels', 'dots', 'numbered'].map(v => (
               <button key={v} onClick={() => setProps({ variant: v })}
                 className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.variant ?? 'labels') === v ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{v}</button>
             ))}
@@ -2348,19 +2354,22 @@ function normalizeWidget(raw: Record<string, any>): Record<string, any> {
   return { ...raw, props: merged }
 }
 
+const NO_VARIABLES: Record<string, any> = {}
+
 /**
  * WidgetPreview — renders the REAL widget component for a given spec widget.
- * Memoised on a stable `cacheKey` that is only `query_id + JSON(encoding)`.
- * Position changes (x/y/w/h) do NOT trigger a re-render.
+ * Memoised with previewPropsEqual: any widget change re-renders it except a move
+ * or resize, which only changes `pos`.
  */
-const WidgetPreview = memo(function WidgetPreview({ widget }: { widget: Record<string, any> }) {
+const WidgetPreview = memo(function WidgetPreview({ widget, variableDefaults = NO_VARIABLES }: { widget: Record<string, any>; variableDefaults?: Record<string, any> }) {
   const w = useMemo(() => normalizeWidget(widget), [widget])
 
-  // Wrap in VariableProvider so hooks inside widgets don't throw.
-  // Editor has no filter state, so variables are empty here.
+  // Wrap in VariableProvider so hooks inside widgets don't throw. The editor has
+  // no filter state, but it seeds the board's defaults: a query with a required
+  // parameter fails without them, as it would on the live board.
   try {
     return (
-      <VariableProvider initialValues={{}}>
+      <VariableProvider initialValues={variableDefaults}>
         <div className="h-full w-full overflow-hidden">
           {w.html ? <HtmlWidget widget={w} /> : (
             <>
@@ -2379,7 +2388,7 @@ const WidgetPreview = memo(function WidgetPreview({ widget }: { widget: Record<s
               {w.type === 'stepper' && (
                 <StepperWidget
                   widget={w}
-                  renderChild={(child) => <WidgetPreview widget={child} />}
+                  renderChild={(child) => <WidgetPreview widget={child} variableDefaults={variableDefaults} />}
                 />
               )}
               {!['chart','kpi','metric','table','pivot','filter','text','section','image','stepper','divider','datedisplay','breadcrumb'].includes(w.type) && (
@@ -2395,28 +2404,7 @@ const WidgetPreview = memo(function WidgetPreview({ widget }: { widget: Record<s
   } catch {
     return <WidgetCardFallback widget={widget} />
   }
-}, (prev, next) => {
-  // Only re-render if query_id, encoding, chart_type, props, or content changed.
-  // Do NOT re-render on pos changes (that's just a drag/resize).
-  const p = prev.widget
-  const n = next.widget
-  return (
-    p.query_id === n.query_id &&
-    p.chart_type === n.chart_type &&
-    JSON.stringify(p.encoding) === JSON.stringify(n.encoding) &&
-    JSON.stringify(p.props) === JSON.stringify(n.props) &&
-    p.content === n.content &&
-    p.html === n.html &&
-    JSON.stringify(p.columnFormats) === JSON.stringify(n.columnFormats) &&
-    JSON.stringify(p.formattingRules) === JSON.stringify(n.formattingRules) &&
-    // style must be in the comparator so per-widget background/transparent edits
-    // actually re-render the live preview (previously omitted → BUG).
-    JSON.stringify(p.style) === JSON.stringify(n.style) &&
-    JSON.stringify(p.drilldown) === JSON.stringify(n.drilldown) &&
-    p.type === n.type &&
-    p.subtype === n.subtype
-  )
-})
+}, previewPropsEqual)
 
 /** Fallback card shown while loading or on error. */
 function WidgetCardFallback({ widget }) {
@@ -3114,6 +3102,11 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   // ── History state ─────────────────────────────────────────────────────────
   const [hist, setHist] = useState(() => createHistory(DEFAULT_SPEC))
   const spec = hist.present
+  const previewVariableDefaults = useMemo(
+    () => buildVariableDefaults(spec?.variables),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(spec?.variables)],
+  )
 
   // Theme-adaptation ctx (see SpecRenderer.jsx / lib/themeColor.js) — the
   // canvas/preview must match what viewers actually see.
@@ -4982,7 +4975,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
 
                         {/* Live widget preview — scrolls/clips independently */}
                         <div className="flex-1 min-h-0 overflow-hidden">
-                          <WidgetPreview widget={widget} />
+                          <WidgetPreview widget={widget} variableDefaults={previewVariableDefaults} />
                         </div>
                       </div>
                       </ThemeModeProvider>
@@ -5057,7 +5050,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
           icon={WIDGET_ICONS[focusedWidget.type]}
           rowHeight={spec.layout?.row_height ?? 60}
           frameStyle={styleToCss(focusedWidget.style, focusedWidget.style?.themeAdapt === false ? undefined : adaptCtx)}
-          preview={<WidgetPreview widget={focusedWidget} />}
+          preview={<WidgetPreview widget={focusedWidget} variableDefaults={previewVariableDefaults} />}
           config={
             <ConfigPanel
               variant="focus"

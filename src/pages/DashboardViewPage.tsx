@@ -1129,7 +1129,7 @@ export default function DashboardViewPage({ edit = false }) {
           Renders the SAVED spec, never the editor's in-memory draft — that's
           what makes "Live" an honest answer to "what do my viewers see?". */}
       <div
-        className={isEdit ? 'hidden' : ['flex-1 max-w-[110rem] w-full mx-auto px-4 sm:px-6 lg:px-8 py-6', pageBgStyle && colorModeClass(boardMode)].filter(Boolean).join(' ')}
+        className={isEdit ? 'hidden' : ['flex-1 w-full mx-auto', spec?.layout?.full_width ? 'py-2' : 'max-w-[110rem] px-4 sm:px-6 lg:px-8 py-6', pageBgStyle && colorModeClass(boardMode)].filter(Boolean).join(' ')}
         style={!isEdit ? pageBgStyle : undefined}
       >
 
