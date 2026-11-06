@@ -32,6 +32,16 @@
  *                              Fraction filled = value / target (share the same scale,
  *                              e.g. target: 100 for a 0-100 percent value).
  *                              style: 'segments' (default pips) or 'bar' (continuous meter).
+ * - props.deltaStyle  {string}  'inline' (default) or 'triangle': a large up/down
+ *                              triangle at the right of the value, with the signed
+ *                              percentage beneath it and the label as a plain heading.
+ * - props.deltaDecimals {number} Decimals on the triangle's percentage (default 2).
+ * - props.deltaUpColor / props.deltaDownColor {string} Triangle colours.
+ * - props.valueSize   {number}  Headline font size in px (triangle layout).
+ * - props.labelSize   {number}  Label font size in px (triangle layout).
+ * - props.deltaBackground / props.deltaColor {string} Inline delta as a filled badge.
+ * - props.locale      {string}  Number locale for grouped formats, for a board that
+ *                              must read the same in every viewer's browser.
  *
  * Behaviour
  * ---------
@@ -58,6 +68,8 @@ import { ensureReadable } from '../../lib/contrast.js'
 import { resolveTextColors } from '../textColors.js'
 import { adaptBackgroundColor } from '../../lib/themeColor.js'
 import { useTheme } from '../../contexts/ThemeContext.jsx'
+import { computeTrend } from './kpiDelta'
+import { fitValueFontSize } from './kpiFit.js'
 
 /**
  * Format a raw value for display.
@@ -66,7 +78,7 @@ import { useTheme } from '../../contexts/ThemeContext.jsx'
  * board that wants whole numbers ("85%") should not have to accept "85.0%".
  * A non-numeric value is shown verbatim rather than as NaN.
  */
-function formatValue(raw, format, decimals) {
+function formatValue(raw, format, decimals, locale = undefined) {
   if (raw == null) return '—'
   const num = Number(raw)
   if (Number.isNaN(num)) return String(raw)
@@ -74,18 +86,20 @@ function formatValue(raw, format, decimals) {
 
   switch (format) {
     case 'integer':
-      return num.toLocaleString(undefined, { maximumFractionDigits: d ?? 0 })
+      return num.toLocaleString(locale, { maximumFractionDigits: d ?? 0 })
+    case 'plain':
+      return num.toLocaleString(locale, { maximumFractionDigits: d ?? 0, useGrouping: false })
     case 'percent':
       return `${(num * 100).toFixed(d ?? 1)}%`
     case 'percent100':
       // value is already on a 0-100 scale (common for migrated legacy queries)
       return `${num.toFixed(d ?? 1)}%`
     case 'currency':
-      return `${num.toLocaleString(undefined, { minimumFractionDigits: d ?? 2, maximumFractionDigits: d ?? 2 })}`
+      return `${num.toLocaleString(locale, { minimumFractionDigits: d ?? 2, maximumFractionDigits: d ?? 2 })}`
     // Plain grouped digits with no K/M abbreviation — the legacy default for a
     // KPI card, and the right choice whenever the exact figure matters.
     case 'comma':
-      return num.toLocaleString(undefined, {
+      return num.toLocaleString(locale, {
         minimumFractionDigits: d ?? 0, maximumFractionDigits: d ?? 0,
       })
     default:
@@ -132,6 +146,18 @@ function computeDelta(value, baseline, deltaFormat) {
 }
 
 const DELTA_COLORS = { up: '#10b981', down: '#ef4444', flat: '#9ca3af' }
+
+/** The direction marker for props.deltaStyle 'triangle'. */
+function TrendTriangle({ direction, color }) {
+  if (direction === 'flat') {
+    return <span aria-hidden="true" style={{ display: 'block', width: 28, height: 4, background: color, margin: '10px 0' }} />
+  }
+  return (
+    <svg aria-hidden="true" width="50" height="25" viewBox="0 0 50 25" style={{ display: 'block' }}>
+      <polygon points={direction === 'up' ? '25,0 50,25 0,25' : '0,0 50,0 25,25'} fill={color} />
+    </svg>
+  )
+}
 
 /**
  * Build a minimal axis-less sparkline ECharts option from a numeric array.
@@ -222,6 +248,9 @@ export default function KpiWidget({ widget, providerTable = null }) {
       setValue(col ? col.get(0) : null)
     } else if (table && table.numRows > 0) {
       setValue(table.numRows)
+    } else {
+      // No rows: never leave the previous filter's number on screen.
+      setValue(null)
     }
     if (table && table.numRows > 0 && compareCol) {
       const cmp = table.getChild(compareCol)
@@ -304,9 +333,14 @@ export default function KpiWidget({ widget, providerTable = null }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query_id, JSON.stringify(metric), valueCol, compareCol, sparkCol, JSON.stringify(resolvedParams), JSON.stringify(resolvedFilters), refreshEpoch, providerTable, retryEpoch])
 
+  const triangle = wProps.deltaStyle === 'triangle'
   const delta = useMemo(
-    () => (compareCol ? computeDelta(value, compareValue, deltaFormat) : null),
-    [value, compareValue, compareCol, deltaFormat],
+    () => (compareCol && !triangle ? computeDelta(value, compareValue, deltaFormat) : null),
+    [value, compareValue, compareCol, deltaFormat, triangle],
+  )
+  const trend = useMemo(
+    () => (compareCol && triangle ? computeTrend(value, compareValue, wProps.deltaDecimals ?? 2) : null),
+    [value, compareValue, compareCol, triangle, wProps.deltaDecimals],
   )
 
   const spark = useMemo(
@@ -412,6 +446,42 @@ export default function KpiWidget({ widget, providerTable = null }) {
     )
   }
 
+  const valueText = `${wProps.prefix ?? ''}${formatValue(value, format, wProps.decimals, wProps.locale)}${wProps.suffix ?? ''}`
+
+  if (triangle && !loading) {
+    const trendColor = trend && ({
+      up: wProps.deltaUpColor ?? DELTA_COLORS.up,
+      down: wProps.deltaDownColor ?? DELTA_COLORS.down,
+      flat: DELTA_COLORS.flat,
+    })[trend.direction]
+    return (
+      <div className="flex flex-col h-full px-5 py-3 min-w-0">
+        <p className="text-sm font-bold leading-snug" style={{ color: labelColor ?? undefined, fontSize: wProps.labelSize }}>
+          {label}
+        </p>
+        <div className="flex-1 flex items-center justify-between gap-3 min-h-0 min-w-0">
+          <div className="flex-1 min-w-0" style={{ containerType: 'inline-size' }}>
+            <p
+              data-kpi-value
+              className="font-bold leading-none whitespace-nowrap"
+              style={{ color: valueColor ?? undefined, fontSize: fitValueFontSize(valueText, wProps.valueSize ?? 28) }}
+            >
+              {valueText}
+            </p>
+          </div>
+          {trend && (
+            <div className="flex flex-col items-center gap-2 shrink-0" aria-label={`Change: ${trend.text}`}>
+              <TrendTriangle direction={trend.direction} color={trendColor} />
+              <span className="text-sm font-bold tabular-nums" style={labelColor ? { color: labelColor } : undefined}>
+                {trend.text}
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col justify-center h-full px-5 py-4 gap-1">
       {loading ? (
@@ -444,12 +514,13 @@ export default function KpiWidget({ widget, providerTable = null }) {
               {label}
             </p>
           )}
-          <div className="flex items-baseline gap-2 flex-wrap">
+          <div className="flex items-baseline gap-2 flex-wrap" style={{ containerType: 'inline-size' }}>
             <p
-              className="text-3xl font-bold font-display leading-none tracking-tight"
-              style={{ color: valueColor ?? undefined }}
+              data-kpi-value
+              className="font-bold font-display leading-none tracking-tight whitespace-nowrap"
+              style={{ color: valueColor ?? undefined, fontSize: fitValueFontSize(valueText, 30) }}
             >
-              {wProps.prefix ?? ''}{formatValue(value, format, wProps.decimals)}{wProps.suffix ?? ''}
+              {valueText}
             </p>
             {signal.matched && signal.label && (
               <Badge
@@ -465,8 +536,8 @@ export default function KpiWidget({ widget, providerTable = null }) {
             )}
             {delta && (
               <span
-                className="text-sm font-semibold tabular-nums"
-                style={{ color: DELTA_COLORS[delta.direction] }}
+                className={`text-sm font-semibold tabular-nums${wProps.deltaBackground ? ' rounded px-1.5 py-0.5' : ''}`}
+                style={{ color: wProps.deltaColor ?? DELTA_COLORS[delta.direction], background: wProps.deltaBackground }}
                 aria-label={`Change: ${delta.text}`}
               >
                 {delta.text}

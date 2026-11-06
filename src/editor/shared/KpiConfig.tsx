@@ -113,6 +113,40 @@ export function KpiConfig({ widget, onChange }) {
             </div>
           </div>
         )}
+        {enc.compare && (
+          <div>
+            <FieldLabel>Delta style</FieldLabel>
+            <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+              {[['inline', 'Inline'], ['triangle', 'Triangle']].map(([v, lbl]) => (
+                <button key={v} onClick={() => setProps('deltaStyle', v === 'inline' ? undefined : v)}
+                  className={`flex-1 text-[11px] font-medium transition-colors ${(props.deltaStyle ?? 'inline') === v ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>
+                  {lbl}
+                </button>
+              ))}
+            </div>
+            {props.deltaStyle === 'triangle' ? (
+              <div className="mt-2">
+                <FieldLabel>Label size</FieldLabel>
+                <input type="number" min={8} max={32} className={inputCls} placeholder="auto"
+                  value={props.labelSize ?? ''}
+                  onChange={e => setProps('labelSize', parseNumberInput(e.target.value))} />
+              </div>
+            ) : (
+              <div className="mt-2 space-y-2">
+                <div>
+                  <FieldLabel>Delta badge background</FieldLabel>
+                  <ColorField value={props.deltaBackground} placeholder="none"
+                    onChange={v => setProps('deltaBackground', v || undefined)} />
+                </div>
+                <div>
+                  <FieldLabel>Delta badge text</FieldLabel>
+                  <ColorField value={props.deltaColor} placeholder="green or red by direction"
+                    onChange={v => setProps('deltaColor', v || undefined)} />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         <ColumnSelect label="Sparkline column" value={enc.spark} onChange={v => setEncoding('spark', v)} columns={columns} optional />
         {enc.spark && (
           <>
