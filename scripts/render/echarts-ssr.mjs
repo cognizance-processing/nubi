@@ -677,17 +677,25 @@ function buildCombo(colMap, enc, config = {}) {
 
   const palette = resolvePalette(config)
   const stacked = config.stack === true || config.stack === 'normal' || config.stack === 'percent'
+  const linesLeft = config.lineAxis === 'left' && barCols.length > 0 && lineCols.length > 0
+  const lineColor = (i) => (Array.isArray(config.lineColors) && config.lineColors.length
+    ? config.lineColors[i % config.lineColors.length]
+    : palette[(barCols.length + i) % palette.length])
+  const byPoint = config.colorByPoint && barCols.length === 1
   const barSeries = barCols.map((col, i) => ({
-    type: 'bar', name: col, yAxisIndex: 0,
-    data: toNumbers(colMap[col] || []),
+    type: 'bar', name: col, yAxisIndex: linesLeft ? 1 : 0,
+    data: byPoint
+      ? toNumbers(colMap[col] || []).map((v, k) => ({ value: v, itemStyle: { color: palette[k % palette.length] } }))
+      : toNumbers(colMap[col] || []),
     stack: stacked ? 'total' : undefined,
     itemStyle: { color: palette[i % palette.length] },
   }))
   const lineSeries = lineCols.map((col, i) => ({
-    type: 'line', name: col, yAxisIndex: barCols.length && lineCols.length ? 1 : 0,
+    type: 'line', name: col, yAxisIndex: barCols.length && lineCols.length && !linesLeft ? 1 : 0,
     data: toNumbers(colMap[col] || []),
-    itemStyle: { color: palette[(barCols.length + i) % palette.length] },
-    lineStyle: { color: palette[(barCols.length + i) % palette.length], width: 2 },
+    itemStyle: { color: lineColor(i) },
+    ...(config.symbolSize ? { symbol: 'circle', symbolSize: config.symbolSize } : {}),
+    lineStyle: { color: lineColor(i), width: 2 },
   }))
 
   const option = {

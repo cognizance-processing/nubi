@@ -55,6 +55,11 @@
  *                   defaults to the `index`-th segment's share (default 0 —
  *                   the first/meaningful slice of a value+remainder ring),
  *                   formatted via `format` (FormatSpec) or a plain "N.N%".
+ *   barMaxWidth: number | null,           // bar/combo: cap bar width; null = no cap
+ *   lineAxis:  'left' | 'right',          // combo: axis the lines read from (default right)
+ *   lineColors: string[],                 // combo: line colours, independent of the bars
+ *   symbolSize: number,                   // combo: size of the filled points on its lines
+ *   fontFamily: string,                   // canvas text family; default the page's body font
  *   locale:    string,                    // BCP-47 locale for number formatting
  *   echarts:   object,                    // raw echarts option, deep-merged last
  *   ...any other top-level echarts option keys (deep-merged, config wins)
@@ -117,6 +122,23 @@ const DEFAULT_THEME = {
  *
  * @param {any} input
  */
+// Arrow hands dates back as epoch numbers, which would read as raw numbers on a
+// category axis and arrive as such in a click-to-filter value.
+function isArrowTemporal(child) {
+  return /^(Date|Timestamp)/.test(String(child.type ?? ''))
+}
+
+function arrowDatesToIso(child) {
+  const out = new Array(child.length)
+  for (let i = 0; i < child.length; i++) {
+    const v = child.get(i)
+    if (v == null) { out[i] = null; continue }
+    const iso = new Date(v).toISOString()
+    out[i] = iso.endsWith('T00:00:00.000Z') ? iso.slice(0, 10) : iso
+  }
+  return out
+}
+
 export function tableView(input) {
   if (input && typeof input.col === 'function' && Array.isArray(input.columns)) {
     return input // already a TableView
@@ -133,7 +155,7 @@ export function tableView(input) {
         if (!name) return null
         if (cache.has(name)) return cache.get(name)
         const child = input.getChild(name)
-        const arr = child ? child.toArray() : null
+        const arr = !child ? null : isArrowTemporal(child) ? arrowDatesToIso(child) : child.toArray()
         cache.set(name, arr)
         return arr
       },
@@ -369,6 +391,17 @@ function titleConfig(config, theme) {
   return title // object form passed through
 }
 
+/**
+ * A concrete family for canvas text. A canvas rejects a font string naming a CSS
+ * keyword such as 'inherit' and falls back to 10px sans-serif, whatever the size
+ * and weight, so the family cannot be left to the cascade.
+ */
+function canvasFontFamily(config): string {
+  if (typeof config.fontFamily === 'string' && config.fontFamily) return config.fontFamily
+  const body = typeof document !== 'undefined' && document.body ? getComputedStyle(document.body).fontFamily : ''
+  return body || 'sans-serif'
+}
+
 function axisCommon(theme): Record<string, any> {
   return {
     axisLine: { lineStyle: { color: theme.axis } },
@@ -430,7 +463,22 @@ function estimateValueAxisNameGap(values, axis) {
   const maxAbs = Math.max(...nums.map(Math.abs))
   const fmt = axis.axisLabel?.formatter
   const sample = fmt ? String(fmt(maxAbs)) : maxAbs.toLocaleString()
-  return Math.max(44, Math.round(sample.length * 5.5) + 8)
+  const fontSize = axis.axisLabel?.fontSize ?? 10
+  return Math.max(44, Math.round(sample.length * fontSize * 0.55) + 10)
+}
+
+/**
+ * nameGap for a NAMED category axis. Tick labels take more room when they are
+ * large or rotated, and the name has to clear them.
+ */
+function estimateCategoryAxisNameGap(cats, axis) {
+  const fontSize = axis.axisLabel?.fontSize ?? 10
+  const rotate = Number(axis.axisLabel?.rotate) || 0
+  const longest = cats.reduce((m, c) => Math.max(m, String(c).length), 0)
+  const labelHeight = rotate
+    ? Math.abs(Math.sin((rotate * Math.PI) / 180)) * longest * fontSize * 0.55 + fontSize
+    : fontSize
+  return Math.max(28, Math.round(labelHeight) + 14)
 }
 
 function gridConfig(config, hasLegend, legendPos) {
@@ -489,8 +537,8 @@ function decorateCartesian(option, config, theme, locale) {
     const fmt = isDeepObject(dl) && dl.format ? makeFormatter(dl.format, locale) : null
     labelObj = {
       show,
-      fontSize: 10,
-      color: theme.fg,
+      fontSize: (isDeepObject(dl) && dl.fontSize) || 10,
+      color: (isDeepObject(dl) && dl.color) || theme.fg,
       position: (isDeepObject(dl) && dl.position) || 'top',
     }
     if (fmt) labelObj.formatter = (p) => fmt(Array.isArray(p.value) ? p.value[1] : p.value)
@@ -599,6 +647,7 @@ function buildBar(table, e, config, theme, locale) {
     valAxis.name = humaniseColumn(e.y); valAxis.nameLocation = 'middle'
   }
   if (valAxis.name) valAxis.nameGap = estimateValueAxisNameGap(vals, valAxis)
+  if (catAxis.name && !config.xAxis?.nameGap) catAxis.nameGap = estimateCategoryAxisNameGap(cats, catAxis)
 
   const colorRaw = e.color ? table.col(e.color) : null
   let series
@@ -624,13 +673,13 @@ function buildBar(table, e, config, theme, locale) {
     const radius = horizontal ? [0, 2, 2, 0] : [2, 2, 0, 0]
     if (config.colorByPoint) {
       series = [{
-        type: 'bar', name: humaniseColumn(e.y), barMaxWidth: 40,
+        type: 'bar', name: humaniseColumn(e.y), barMaxWidth: config.barMaxWidth === undefined ? 40 : config.barMaxWidth ?? undefined,
         data: vals.map((v, i) => ({ value: v, itemStyle: { color: theme.palette[i % theme.palette.length], borderRadius: radius } })),
       }]
     } else {
       series = [{
         type: 'bar', name: humaniseColumn(e.y), data: vals,
-        barMaxWidth: 40,
+        barMaxWidth: config.barMaxWidth === undefined ? 40 : config.barMaxWidth ?? undefined,
         itemStyle: { color: theme.palette[0], borderRadius: radius },
       }]
     }
@@ -786,29 +835,50 @@ function buildCombo(table, e, config, theme, locale) {
   const maxLabelLen = cats.reduce((m, c) => Math.max(m, c.length), 0)
   if (n > 12 || maxLabelLen > 10) catAxis.axisLabel = { ...catAxis.axisLabel, rotate: config.xAxis?.rotate ?? 30 }
 
+  // yAxis is always the left axis and y2Axis the right. By default the bars read
+  // the left one; config.lineAxis:'left' swaps them.
+  const linesLeft = config.lineAxis === 'left' && barCols.length > 0 && lineCols.length > 0
+  const leftCol = linesLeft ? lineCols[0] : barCols[0]
+  const rightCol = linesLeft ? barCols[0] : lineCols[0]
+  // An axis's ticks span every series plotted on it, so the name has to clear the
+  // widest of them, not just the first column's.
+  const valuesOf = (cols) => cols.flatMap((col) => toNumbers(table.col(col) || []))
+  const leftValues = valuesOf(linesLeft ? lineCols : barCols.length ? barCols : lineCols)
+  const rightValues = valuesOf(linesLeft ? barCols : lineCols)
   const yAxis = buildAxis('value', config.yAxis, theme, locale)
-  if (!config.yAxis?.label && barCols[0]) { yAxis.name = barCols[0]; yAxis.nameLocation = 'middle'; yAxis.nameGap = 44 }
+  if (!config.yAxis?.label && leftCol) { yAxis.name = leftCol; yAxis.nameLocation = 'middle' }
+  if (yAxis.name) yAxis.nameGap = estimateValueAxisNameGap(leftValues, yAxis)
   const y2Axis = buildAxis('value', config.y2Axis, theme, locale)
-  if (!config.y2Axis?.label && lineCols[0]) { y2Axis.name = lineCols[0]; y2Axis.nameLocation = 'middle'; y2Axis.nameGap = 44 }
+  if (!config.y2Axis?.label && rightCol) { y2Axis.name = rightCol; y2Axis.nameLocation = 'middle' }
+  if (y2Axis.name) y2Axis.nameGap = estimateValueAxisNameGap(rightValues, y2Axis)
+  if (catAxis.name && !config.xAxis?.nameGap) catAxis.nameGap = estimateCategoryAxisNameGap(cats, catAxis)
 
   const palette = resolvePalette(config, theme)
   // config.stack stacks the BAR series (lines are never stacked in a combo).
   const stacked = config.stack === true || config.stack === 'normal' || config.stack === 'percent'
+  const lineColor = (i) => (Array.isArray(config.lineColors) && config.lineColors.length
+    ? config.lineColors[i % config.lineColors.length]
+    : palette[(barCols.length + i) % palette.length])
+  // colorByPoint paints one bar series a palette colour per category.
+  const byPoint = config.colorByPoint && barCols.length === 1
   const barSeries = barCols.map((col, i) => ({
-    type: 'bar', name: humaniseColumn(col), yAxisIndex: 0,
-    data: toNumbers(table.col(col) || []),
-    barMaxWidth: stacked ? 28 : 24,
+    type: 'bar', name: humaniseColumn(col), yAxisIndex: linesLeft ? 1 : 0,
+    data: byPoint
+      ? toNumbers(table.col(col) || []).map((v, k) => ({ value: v, itemStyle: { color: palette[k % palette.length] } }))
+      : toNumbers(table.col(col) || []),
+    barMaxWidth: config.barMaxWidth === undefined ? (stacked ? 28 : 24) : config.barMaxWidth ?? undefined,
     stack: stacked ? 'total' : undefined,
     itemStyle: { color: palette[i % palette.length], borderRadius: stacked ? 0 : [2, 2, 0, 0] },
   }))
   if (config.stack === 'percent') applyPercentStack(barSeries)
   const lineSeries = lineCols.map((col, i) => ({
-    type: 'line', name: humaniseColumn(col), yAxisIndex: 1,
+    type: 'line', name: humaniseColumn(col), yAxisIndex: linesLeft ? 0 : 1,
     data: toNumbers(table.col(col) || []),
     smooth: config.smooth !== false,
     showSymbol: n <= 60,
-    itemStyle: { color: palette[(barCols.length + i) % palette.length] },
-    lineStyle: { color: palette[(barCols.length + i) % palette.length], width: 2 },
+    ...(config.symbolSize ? { symbol: 'circle', symbolSize: config.symbolSize } : {}),
+    itemStyle: { color: lineColor(i) },
+    lineStyle: { color: lineColor(i), width: 2 },
   }))
 
   const option: Record<string, any> = {
@@ -1551,7 +1621,7 @@ function baseFrame(config, theme, locale, { trigger = 'axis', dataZoom = false, 
     color: palette,
     backgroundColor: 'transparent',
     animation: config.animation !== false,
-    textStyle: { color: theme.fg, fontFamily: 'inherit' },
+    textStyle: { color: theme.fg, fontFamily: canvasFontFamily(config) },
     tooltip: tooltipConfig(config, theme, { trigger, locale }),
   }
   const title = titleConfig(config, theme)

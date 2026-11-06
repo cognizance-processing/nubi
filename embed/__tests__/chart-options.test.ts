@@ -236,6 +236,39 @@ describe('buildChartOption — every chart type returns a valid option', () => {
     expect(opt.series[0].roseType).toBe('area')
   })
 
+  test('combo lineAxis left puts the lines on the left axis and the bars on the right', () => {
+    const rows = [{ m: 'Jan', count: 5, value: 900 }, { m: 'Feb', count: 7, value: 700 }]
+    const opt = buildChartOption({
+      type: 'combo', table: rows, encoding: { x: 'm', bars: ['count'], lines: ['value'] },
+      config: { lineAxis: 'left', palette: ['#111', '#222'], lineColors: ['#333'] },
+    })
+    const [bar, line] = opt.series as any[]
+    expect(bar.yAxisIndex).toBe(1)
+    expect(line.yAxisIndex).toBe(0)
+    expect(line.lineStyle.color).toBe('#333')
+    expect((opt.yAxis as any[])[0].name).toBe('value')
+    expect((opt.yAxis as any[])[1].name).toBe('count')
+  })
+
+  test('combo colorByPoint gives a single bar series one palette colour per category', () => {
+    const rows = [{ m: 'Jan', count: 5 }, { m: 'Feb', count: 7 }, { m: 'Mar', count: 2 }]
+    const opt = buildChartOption({
+      type: 'combo', table: rows, encoding: { x: 'm', bars: ['count'] },
+      config: { colorByPoint: true, palette: ['#111', '#222'] },
+    })
+    const data = (opt.series as any[])[0].data
+    expect(data.map((d: any) => d.value)).toEqual([5, 7, 2])
+    expect(data.map((d: any) => d.itemStyle.color)).toEqual(['#111', '#222', '#111'])
+  })
+
+  test('barMaxWidth null removes the default cap', () => {
+    const rows = [{ m: 'Jan', count: 5 }]
+    const capped = buildChartOption({ type: 'combo', table: rows, encoding: { x: 'm', bars: ['count'] } })
+    const free = buildChartOption({ type: 'combo', table: rows, encoding: { x: 'm', bars: ['count'] }, config: { barMaxWidth: null } })
+    expect((capped.series as any[])[0].barMaxWidth).toBe(24)
+    expect((free.series as any[])[0].barMaxWidth).toBeUndefined()
+  })
+
   test('combo mixes bar + line series on dual y-axes', () => {
     const rows = [
       { branch: 'North', planned: 100, completed: 80, strike: 45.2 },
@@ -597,5 +630,73 @@ describe('deepMerge', () => {
   })
   test('arrays are replaced wholesale', () => {
     expect(deepMerge({ a: [1, 2] }, { a: [9] })).toEqual({ a: [9] })
+  })
+})
+
+describe('buildChartOption — canvas text', () => {
+  const build = (config = {}) => buildChartOption({
+    type: 'bar', table: CAT_ROWS, encoding: { x: 'month', y: 'sales' }, config,
+  })
+
+  test('never hands the canvas a CSS keyword as the font family', () => {
+    const { fontFamily } = build().textStyle
+    expect(fontFamily).toBeTruthy()
+    expect(fontFamily).not.toBe('inherit')
+  })
+
+  test('uses the configured family when one is given', () => {
+    expect(build({ fontFamily: 'Georgia' }).textStyle.fontFamily).toBe('Georgia')
+  })
+})
+
+describe('buildChartOption — axis names clear their tick labels', () => {
+  const rows = Array.from({ length: 20 }, (_, i) => ({ who: `customer-${i}`, big: 40000000 + i }))
+
+  test('a value axis name moves out with larger tick labels', () => {
+    const gap = (fontSize) => buildChartOption({
+      type: 'bar', table: rows, encoding: { x: 'who', y: 'big' },
+      config: { yAxis: { label: 'Amount', axisLabel: { fontSize } } },
+    }).yAxis.nameGap
+    expect(gap(14)).toBeGreaterThan(gap(10))
+    expect(gap(14)).toBeGreaterThan(60)
+  })
+
+  test('a category axis name clears rotated labels', () => {
+    const opt = buildChartOption({
+      type: 'bar', table: rows, encoding: { x: 'who', y: 'big' },
+      config: { xAxis: { label: 'Customer', axisLabel: { fontSize: 14 } } },
+    })
+    expect(opt.xAxis.axisLabel.rotate).toBe(30)
+    expect(opt.xAxis.nameGap).toBeGreaterThan(50)
+  })
+
+  test('a combo axis name clears the widest of the series plotted on it', () => {
+    const wide = [{ who: 'A', orders: 150, revenue: 52000 }, { who: 'B', orders: 90, revenue: 47000 }]
+    const gap = (bars: string[]) => {
+      const opt = buildChartOption({
+        type: 'combo', table: wide, encoding: { x: 'who', bars },
+        config: { yAxis: { label: 'Amount', axisLabel: { fontSize: 14 } } },
+      }) as any
+      return (Array.isArray(opt.yAxis) ? opt.yAxis[0] : opt.yAxis).nameGap
+    }
+    expect(gap(['orders', 'revenue'])).toBe(gap(['revenue', 'orders']))
+    expect(gap(['orders', 'revenue'])).toBeGreaterThan(gap(['orders']))
+  })
+
+  test('combo axes size their names from their own column', () => {
+    const opt = buildChartOption({
+      type: 'combo', table: rows, encoding: { x: 'who', bars: ['big'] },
+      config: { yAxis: { label: 'Amount', axisLabel: { fontSize: 14 } } },
+    })
+    const left = Array.isArray(opt.yAxis) ? opt.yAxis[0] : opt.yAxis
+    expect(left.nameGap).toBeGreaterThan(60)
+  })
+
+  test('an authored category gap is kept', () => {
+    const opt = buildChartOption({
+      type: 'bar', table: rows, encoding: { x: 'who', y: 'big' },
+      config: { xAxis: { label: 'Customer', nameGap: 12 } },
+    })
+    expect(opt.xAxis.nameGap).toBe(12)
   })
 })

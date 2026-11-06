@@ -137,6 +137,20 @@ export function ChartConfig({ widget, onChange }) {
     onChange({ ...widget, config: { ...cfg, [axis]: { ...prev, [key]: val } } })
   }
 
+  // Tick text on every axis, so a chart's axes never disagree on size.
+  const setAxisTextSize = (fontSize) => {
+    const withSize = (axis) => ({ ...axis, axisLabel: { ...axis?.axisLabel, fontSize } })
+    onChange({
+      ...widget,
+      config: {
+        ...cfg,
+        xAxis: withSize(cfg.xAxis),
+        yAxis: withSize(cfg.yAxis),
+        ...(cfg.y2Axis ? { y2Axis: withSize(cfg.y2Axis) } : {}),
+      },
+    })
+  }
+
   const encodingFields = TYPE_ENCODING[baseType] ?? TYPE_ENCODING.bar
 
   const isCombo = baseType === 'combo'
@@ -405,6 +419,29 @@ export function ChartConfig({ widget, onChange }) {
               {LEGEND_POSITIONS.map(p => <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>)}
             </select>
           </div>
+        </div>
+
+        <div className="flex gap-1.5">
+          <div className="flex-1">
+            <FieldLabel>Axis text size</FieldLabel>
+            <input type="number" min={8} max={24} className={inputCls} placeholder="auto"
+              value={cfg.xAxis?.axisLabel?.fontSize ?? ''}
+              onChange={e => setAxisTextSize(parseNumberInput(e.target.value))} />
+          </div>
+          <div className="flex-1">
+            <FieldLabel>Y axis ticks</FieldLabel>
+            <input type="number" min={2} max={20} className={inputCls} placeholder="auto"
+              value={cfg.yAxis?.splitNumber ?? ''}
+              onChange={e => setAxisConfig('yAxis', 'splitNumber', parseNumberInput(e.target.value))} />
+          </div>
+          {baseType === 'combo' && (
+            <div className="flex-1">
+              <FieldLabel>Point size</FieldLabel>
+              <input type="number" min={2} max={30} className={inputCls} placeholder="auto"
+                value={cfg.symbolSize ?? ''}
+                onChange={e => setConfig('symbolSize', parseNumberInput(e.target.value))} />
+            </div>
+          )}
         </div>
 
         {/* Data labels — a boolean by default; picking a format or a position

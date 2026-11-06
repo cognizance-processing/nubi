@@ -63,6 +63,8 @@ export function splitWords(name: string): string[] {
  * previous word ("Gross margin %") rather than standing as its own word.
  */
 export function humaniseColumn(name: string): string {
+  // Already written for people ("Sales Inc Tax", "MoM % Growth"): leave it alone.
+  if (/\s/.test(String(name ?? '').trim()) && /[A-Z]/.test(String(name))) return String(name)
   const words = splitWords(name)
   if (!words.length) return String(name ?? '')
 
