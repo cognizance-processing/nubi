@@ -334,6 +334,8 @@ function CardMenu({ onOpen, onEdit, onCheckpoint, onHistory, onPromote, onDelete
   const triggerRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  // Focus moves into the panel once per open; later re-measures must not pull it back.
+  const focusedRef = useRef(false)
 
   // Place the panel below the trigger if it fits, otherwise on the roomier side.
   useLayoutEffect(() => {
@@ -415,7 +417,26 @@ function CardMenu({ onOpen, onEdit, onCheckpoint, onHistory, onPromote, onDelete
       cancelAnimationFrame(raf)
       clearTimeout(resizeTimer)
     }
-  }, [open])
+  }, [open, folders.length])
+
+  // The portal sits at the end of <body>, so Tab from the trigger would skip the
+  // menu. Move focus in once the panel is positioned (it can't take focus while
+  // visibility: hidden).
+  useEffect(() => {
+    if (!open || !pos || focusedRef.current) return
+    focusedRef.current = true
+    panelRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus({ preventScroll: true })
+  }, [open, pos])
+
+  // Close when focus moves somewhere other than the panel or trigger. A null
+  // relatedTarget (clicking a label, divider or scrollbar in the panel, or the
+  // window losing focus) is ignored; outside clicks are handled by mousedown.
+  function onFocusLeave(e: React.FocusEvent) {
+    const next = e.relatedTarget as Node | null
+    if (!open || !next) return
+    if (panelRef.current?.contains(next) || triggerRef.current?.contains(next)) return
+    setOpen(false)
+  }
 
   useEffect(() => {
     if (!open) return
@@ -440,11 +461,21 @@ function CardMenu({ onOpen, onEdit, onCheckpoint, onHistory, onPromote, onDelete
   }, [open])
 
   return (
-    <div className="relative">
+    <div className="relative" data-open={open}>
       <button
         ref={triggerRef}
         type="button"
-        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen(v => !v) }}
+        onClick={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          if (!open) {
+            // Start hidden again so this open is measured before it is shown or focused.
+            setPos(null)
+            focusedRef.current = false
+          }
+          setOpen(!open)
+        }}
+        onBlur={onFocusLeave}
         className="flex h-8 w-8 items-center justify-center border border-frame-line bg-surface text-muted transition-colors hover:border-ink hover:text-fg"
         style={{ borderRadius: 2 }}
         aria-label="Board options"
@@ -458,11 +489,12 @@ function CardMenu({ onOpen, onEdit, onCheckpoint, onHistory, onPromote, onDelete
         <div
           ref={panelRef}
           role="menu"
+          onBlur={onFocusLeave}
           // overflow-y-auto is the fallback for screens too short for the fixed rows.
           className="nubi-dropdown flex flex-col overflow-y-auto"
           style={{
             position: 'fixed',
-            maxWidth: 'min(20rem, calc(100vw - 16px))',
+            maxWidth: `min(20rem, calc(100vw - ${CARD_MENU_VIEWPORT_MARGIN * 2}px))`,
             // Hidden until the first measure so it can't flash at the wrong spot.
             ...(pos ?? { left: 0, top: 0, visibility: 'hidden' }),
           }}
@@ -477,7 +509,7 @@ function CardMenu({ onOpen, onEdit, onCheckpoint, onHistory, onPromote, onDelete
             {onMoveToFolder && (
               <>
                 <DropdownDivider />
-                <div className="px-3 pt-1.5 pb-1 ap-count">Move to folder</div>
+                <div role="presentation" className="px-3 pt-1.5 pb-1 ap-count">Move to folder</div>
               </>
             )}
           </div>
@@ -492,7 +524,12 @@ function CardMenu({ onOpen, onEdit, onCheckpoint, onHistory, onPromote, onDelete
                 <DropdownItem
                   key={folder.id}
                   icon={Folder}
-                  onClick={() => { setOpen(false); onMoveToFolder(folder.id === currentFolderId ? null : folder.id) }}
+                  onClick={() => {
+                    setOpen(false)
+                    // No dialog follows a move; if the card leaves this view, focus falls back to <body>.
+                    triggerRef.current?.focus()
+                    onMoveToFolder(folder.id === currentFolderId ? null : folder.id)
+                  }}
                 >
                   <span className="flex-1 text-left truncate">{folder.name}</span>
                   {folder.id === currentFolderId && <Check size={13} className="text-accent shrink-0" aria-hidden="true" />}
@@ -501,13 +538,17 @@ function CardMenu({ onOpen, onEdit, onCheckpoint, onHistory, onPromote, onDelete
             </div>
           )}
           <div className="shrink-0">
-            {onMoveToFolder && (
+            {onMoveToFolder && onNewFolderFromCard && (
               <DropdownItem icon={FolderPlus} onClick={() => { setOpen(false); onNewFolderFromCard() }}>
                 New folder…
               </DropdownItem>
             )}
-            <DropdownDivider />
-            <DropdownItem icon={Trash2} danger onClick={() => { setOpen(false); onDelete() }}>Delete</DropdownItem>
+            {onDelete && (
+              <>
+                <DropdownDivider />
+                <DropdownItem icon={Trash2} danger onClick={() => { setOpen(false); onDelete() }}>Delete</DropdownItem>
+              </>
+            )}
           </div>
         </div>,
         document.body,
@@ -589,7 +630,7 @@ function BoardCard({ board, onDeleted, onRestored, canWrite, environments, stric
           {/* One affordance in the corner. Kept mounted and revealed with
               opacity (never display:none) so it stays tabbable; focus-within
               covers keyboards and hover:none devices show it always. */}
-          <div className="absolute top-2 right-2 opacity-0 transition-opacity duration-100 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+          <div className="absolute top-2 right-2 opacity-0 transition-opacity duration-100 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 has-[[data-open=true]]:opacity-100">
             <CardMenu
               onOpen={() => navigate(`/d/${board.id}`, { state: linkState })}
               onEdit={canWrite ? () => navigate(`/d/${board.id}/edit`) : undefined}
