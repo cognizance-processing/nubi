@@ -168,7 +168,7 @@ info "Backend PID: ${_BACKEND_PID}"
 # ── 6. Start frontend ─────────────────────────────────────────────────────────
 info "Starting Vite dev server on port ${_FRONTEND_PORT}..."
 VITE_BACKEND_URL="${BACKEND_URL}" \
-npm run dev -- --port "${_FRONTEND_PORT}" --strictPort &
+npm run dev -- --port "${_FRONTEND_PORT}" --strictPort --open false &
 _FRONTEND_PID=$!
 info "Frontend PID: ${_FRONTEND_PID}"
 

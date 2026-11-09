@@ -4,7 +4,7 @@
   "version": "0.8.2",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --open",
     "dev:api": "cd backend && python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000",
     "dev:full": "concurrently -k -n api,web -c blue,green \"npm:dev:api\" \"npm:dev\"",
     "db:reset": "cd backend && python reset_db.py",
