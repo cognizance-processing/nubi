@@ -62,7 +62,7 @@ export default function Chart({ table, xCol, yCol, colorCol, chartType = 'scatte
             <p className="text-sm text-gray-400">No data — select columns and click Render.</p>
           </div>
         ) : (
-          <EChart option={option} height={height} />
+          <EChart option={option} height={height} replaceKey={chartType} />
         )}
       </div>
 
