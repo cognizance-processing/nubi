@@ -321,6 +321,10 @@ const CARD_MENU_VIEWPORT_MARGIN = 8 // px gap from viewport edges
 const CARD_MENU_TRIGGER_GAP = 6     // px gap between trigger and panel
 const CARD_MENU_ROW_HEIGHT = 32     // px, .nubi-dropdown-item's min-height
 
+function sameCardMenuPos(a, b) {
+  return a && a.left === b.left && a.top === b.top && a.bottom === b.bottom && a.maxHeight === b.maxHeight
+}
+
 // Actions are individually optional: the menu now sits on every card, including
 // ones a read-only viewer sees, where Open is the only thing they may do.
 //
@@ -336,6 +340,14 @@ function CardMenu({ onOpen, onEdit, onCheckpoint, onHistory, onPromote, onDelete
   const listRef = useRef<HTMLDivElement>(null)
   // Focus moves into the panel once per open; later re-measures must not pull it back.
   const focusedRef = useRef(false)
+
+  // Close and hand focus back to the trigger before acting: the panel is about to
+  // unmount, and a dialog the action opens restores focus to whatever held it.
+  function choose(action: () => void) {
+    setOpen(false)
+    triggerRef.current?.focus()
+    action()
+  }
 
   // Place the panel below the trigger if it fits, otherwise on the roomier side.
   useLayoutEffect(() => {
@@ -361,6 +373,13 @@ function CardMenu({ onOpen, onEdit, onCheckpoint, onHistory, onPromote, onDelete
       const r = trigger.getBoundingClientRect()
       const vh = window.innerHeight
       const vw = window.innerWidth
+      // The card scrolled out of view: close rather than leave the panel stranded.
+      if (r.bottom < 0 || r.top > vh) {
+        setOpen(false)
+        return
+      }
+      // Scroll re-measures every frame; skip the re-render when nothing moved.
+      const place = (next) => setPos(prev => (sameCardMenuPos(prev, next) ? prev : next))
       const spaceBelow = vh - r.bottom - CARD_MENU_TRIGGER_GAP - CARD_MENU_VIEWPORT_MARGIN
       const spaceAbove = r.top - CARD_MENU_TRIGGER_GAP - CARD_MENU_VIEWPORT_MARGIN
       const flipUp = height > spaceBelow && spaceAbove > spaceBelow
@@ -373,7 +392,7 @@ function CardMenu({ onOpen, onEdit, onCheckpoint, onHistory, onPromote, onDelete
       // panel fully on screen, even though that covers the trigger.
       if (minUsableHeight > Math.max(spaceAbove, spaceBelow)) {
         const maxHeight = vh - CARD_MENU_VIEWPORT_MARGIN * 2
-        setPos({
+        place({
           left,
           top: Math.max(
             CARD_MENU_VIEWPORT_MARGIN,
@@ -385,7 +404,7 @@ function CardMenu({ onOpen, onEdit, onCheckpoint, onHistory, onPromote, onDelete
         return
       }
 
-      setPos({
+      place({
         left,
         top: flipUp ? undefined : r.bottom + CARD_MENU_TRIGGER_GAP,
         bottom: flipUp ? vh - r.top + CARD_MENU_TRIGGER_GAP : undefined,
@@ -436,6 +455,26 @@ function CardMenu({ onOpen, onEdit, onCheckpoint, onHistory, onPromote, onDelete
     if (!open || !next) return
     if (panelRef.current?.contains(next) || triggerRef.current?.contains(next)) return
     setOpen(false)
+  }
+
+  // Arrow keys roam the items, as in shell/useMenu. Tab first returns focus to the
+  // trigger so the browser continues from the card, not from the end of <body>.
+  function onMenuKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'Tab') {
+      triggerRef.current?.focus()
+      setOpen(false)
+      return
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return
+    const items = Array.from(panelRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])
+    if (!items.length) return
+    const i = items.indexOf(document.activeElement as HTMLElement)
+    let next = items.length - 1
+    if (e.key === 'ArrowDown') next = (i + 1) % items.length
+    else if (e.key === 'ArrowUp') next = (i - 1 + items.length) % items.length
+    else if (e.key === 'Home') next = 0
+    e.preventDefault()
+    items[next].focus()
   }
 
   useEffect(() => {
@@ -490,22 +529,25 @@ function CardMenu({ onOpen, onEdit, onCheckpoint, onHistory, onPromote, onDelete
           ref={panelRef}
           role="menu"
           onBlur={onFocusLeave}
+          onKeyDown={onMenuKeyDown}
           // overflow-y-auto is the fallback for screens too short for the fixed rows.
           className="nubi-dropdown flex flex-col overflow-y-auto"
           style={{
             position: 'fixed',
+            // Out of the card's stacking context now, so clear the sticky header.
+            zIndex: 'var(--z-popover)',
             maxWidth: `min(20rem, calc(100vw - ${CARD_MENU_VIEWPORT_MARGIN * 2}px))`,
             // Hidden until the first measure so it can't flash at the wrong spot.
             ...(pos ?? { left: 0, top: 0, visibility: 'hidden' }),
           }}
         >
           <div className="shrink-0">
-            {onOpen && <DropdownItem icon={ExternalLink} onClick={() => { setOpen(false); onOpen() }}>Open</DropdownItem>}
-            {onEdit && <DropdownItem icon={Pencil} onClick={() => { setOpen(false); onEdit() }}>Edit</DropdownItem>}
+            {onOpen && <DropdownItem icon={ExternalLink} onClick={() => choose(onOpen)}>Open</DropdownItem>}
+            {onEdit && <DropdownItem icon={Pencil} onClick={() => choose(onEdit)}>Edit</DropdownItem>}
             {(onOpen || onEdit) && (onCheckpoint || onHistory || onPromote) && <DropdownDivider />}
-            {onCheckpoint && <DropdownItem icon={GitCommitHorizontal} onClick={() => { setOpen(false); onCheckpoint() }}>Checkpoint</DropdownItem>}
-            {onHistory && <DropdownItem icon={History} onClick={() => { setOpen(false); onHistory() }}>History</DropdownItem>}
-            {onPromote && <DropdownItem icon={Rocket} onClick={() => { setOpen(false); onPromote() }}>Promote</DropdownItem>}
+            {onCheckpoint && <DropdownItem icon={GitCommitHorizontal} onClick={() => choose(onCheckpoint)}>Checkpoint</DropdownItem>}
+            {onHistory && <DropdownItem icon={History} onClick={() => choose(onHistory)}>History</DropdownItem>}
+            {onPromote && <DropdownItem icon={Rocket} onClick={() => choose(onPromote)}>Promote</DropdownItem>}
             {onMoveToFolder && (
               <>
                 <DropdownDivider />
@@ -524,12 +566,8 @@ function CardMenu({ onOpen, onEdit, onCheckpoint, onHistory, onPromote, onDelete
                 <DropdownItem
                   key={folder.id}
                   icon={Folder}
-                  onClick={() => {
-                    setOpen(false)
-                    // No dialog follows a move; if the card leaves this view, focus falls back to <body>.
-                    triggerRef.current?.focus()
-                    onMoveToFolder(folder.id === currentFolderId ? null : folder.id)
-                  }}
+                  // No dialog follows a move; if the card leaves this view, focus falls back to <body>.
+                  onClick={() => choose(() => onMoveToFolder(folder.id === currentFolderId ? null : folder.id))}
                 >
                   <span className="flex-1 text-left truncate">{folder.name}</span>
                   {folder.id === currentFolderId && <Check size={13} className="text-accent shrink-0" aria-hidden="true" />}
@@ -539,14 +577,14 @@ function CardMenu({ onOpen, onEdit, onCheckpoint, onHistory, onPromote, onDelete
           )}
           <div className="shrink-0">
             {onMoveToFolder && onNewFolderFromCard && (
-              <DropdownItem icon={FolderPlus} onClick={() => { setOpen(false); onNewFolderFromCard() }}>
+              <DropdownItem icon={FolderPlus} onClick={() => choose(onNewFolderFromCard)}>
                 New folder…
               </DropdownItem>
             )}
             {onDelete && (
               <>
                 <DropdownDivider />
-                <DropdownItem icon={Trash2} danger onClick={() => { setOpen(false); onDelete() }}>Delete</DropdownItem>
+                <DropdownItem icon={Trash2} danger onClick={() => choose(onDelete)}>Delete</DropdownItem>
               </>
             )}
           </div>
