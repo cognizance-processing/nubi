@@ -337,7 +337,8 @@ function CardMenu({ onOpen, onEdit, onCheckpoint, onHistory, onPromote, onDelete
         <MoreVertical size={14} aria-hidden="true" />
       </button>
 
-      <DropdownMenu open={open} onClose={() => setOpen(false)}>
+      {/* Portaled: the card's overflow:hidden would otherwise clip a tall menu. */}
+      <DropdownMenu open={open} onClose={() => setOpen(false)} anchorRef={ref}>
         {onOpen && <DropdownItem icon={ExternalLink} onClick={() => { setOpen(false); onOpen() }}>Open</DropdownItem>}
         {onEdit && <DropdownItem icon={Pencil} onClick={() => { setOpen(false); onEdit() }}>Edit</DropdownItem>}
         {(onOpen || onEdit) && (onCheckpoint || onHistory || onPromote) && <DropdownDivider />}
@@ -442,8 +443,10 @@ function BoardCard({ board, onDeleted, onRestored, canWrite, environments, stric
 
           {/* One affordance in the corner. Kept mounted and revealed with
               opacity (never display:none) so it stays tabbable; focus-within
-              covers keyboards and hover:none devices show it always. */}
-          <div className="absolute top-2 right-2 opacity-0 transition-opacity duration-100 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+              covers keyboards and hover:none devices show it always. While the
+              menu is open it stays visible: the menu is portaled out of the
+              card, so hovering it no longer counts as hovering the card. */}
+          <div className="absolute top-2 right-2 opacity-0 transition-opacity duration-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[aria-expanded=true]]:opacity-100 [@media(hover:none)]:opacity-100">
             <CardMenu
               onOpen={() => navigate(`/d/${board.id}`, { state: linkState })}
               onEdit={canWrite ? () => navigate(`/d/${board.id}/edit`) : undefined}
