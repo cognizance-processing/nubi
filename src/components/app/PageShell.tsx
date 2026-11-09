@@ -31,7 +31,7 @@
  * bg-bg / bg-surface-2 — that grey wash made the sheet read as two surfaces.
  */
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useLocation } from 'react-router-dom'
 import { ChevronDown, LayoutGrid, List, Search, X } from 'lucide-react'
@@ -530,36 +530,138 @@ export function ListRowSkeleton() {
  *   open       boolean
  *   onClose    fn
  *   align      'right' | 'left'  (default 'right')
+ *   anchorRef  optional ref to the trigger wrapper. When given, the menu is
+ *              rendered in a PORTAL on document.body with position: fixed, so
+ *              an `overflow: hidden` ancestor (e.g. .nubi-resource-card) can't
+ *              clip it. It flips above the trigger when there isn't room below,
+ *              caps its height to the viewport (scrolls inside), and re-anchors
+ *              on scroll / resize — same approach as dashboards/inputs/Popover.
+ *              Without it, the menu stays in flow (absolute under a `relative`
+ *              parent, --z-dropdown) as before.
  *   className
  *   children   <DropdownItem> | <DropdownDivider>
+ *
+ * Outside-click (the trigger wrapper counts as inside) and Escape close it.
  */
-export function DropdownMenu({ open, onClose, align = 'right', className = undefined, children }) {
+const MENU_VIEWPORT_MARGIN = 8   // px gap from viewport edges
+const MENU_TRIGGER_GAP = 4       // px gap between trigger and panel
+const MENU_MAX_HEIGHT = 360
+
+export function DropdownMenu({ open, onClose, align = 'right', anchorRef = undefined, className = undefined, children }) {
   const ref = useRef(null)
+  const portaled = Boolean(anchorRef)
+  const [pos, setPos] = useState(null)
+
+  // Portaled mode: measure the trigger + panel and place the panel.
+  useLayoutEffect(() => {
+    if (!open || !portaled) {
+      setPos(null)
+      return
+    }
+
+    function measure() {
+      const anchor = anchorRef.current
+      const panel = ref.current
+      if (!anchor || !panel) return
+      const r = anchor.getBoundingClientRect()
+      const vw = window.innerWidth
+      const vh = window.innerHeight
+      const panelW = panel.offsetWidth
+      // scrollHeight is the content's natural height even once maxHeight applies.
+      const wanted = Math.min(panel.scrollHeight, MENU_MAX_HEIGHT)
+      const spaceBelow = vh - r.bottom - MENU_TRIGGER_GAP - MENU_VIEWPORT_MARGIN
+      const spaceAbove = r.top - MENU_TRIGGER_GAP - MENU_VIEWPORT_MARGIN
+      const flipUp = spaceBelow < wanted && spaceAbove > spaceBelow
+      const maxHeight = Math.max(120, Math.min(MENU_MAX_HEIGHT, flipUp ? spaceAbove : spaceBelow))
+
+      let left = align === 'left' ? r.left : r.right - panelW
+      left = Math.min(left, vw - panelW - MENU_VIEWPORT_MARGIN)
+      left = Math.max(MENU_VIEWPORT_MARGIN, left)
+
+      setPos({
+        left,
+        top: flipUp ? undefined : r.bottom + MENU_TRIGGER_GAP,
+        bottom: flipUp ? vh - r.top + MENU_TRIGGER_GAP : undefined,
+        maxHeight,
+      })
+    }
+
+    measure()
+
+    // Coalesce re-measures: one per frame on scroll, debounced on resize.
+    let raf = 0
+    let resizeTimer: ReturnType<typeof setTimeout> | 0 = 0
+    const onScroll = () => {
+      if (raf) cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => { raf = 0; measure() })
+    }
+    const onResize = () => {
+      if (resizeTimer) clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(() => { resizeTimer = 0; measure() }, 100)
+    }
+    window.addEventListener('resize', onResize)
+    // Capture phase so scrolling any ancestor container re-anchors the panel.
+    window.addEventListener('scroll', onScroll, true)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      window.removeEventListener('scroll', onScroll, true)
+      if (raf) cancelAnimationFrame(raf)
+      if (resizeTimer) clearTimeout(resizeTimer)
+    }
+  }, [open, portaled, anchorRef, align])
 
   useEffect(() => {
     if (!open) return
     function handle(e) {
-      if (ref.current && !ref.current.contains(e.target)) onClose?.()
+      if (ref.current?.contains(e.target)) return
+      // The trigger is inside too — otherwise mousedown closes the menu and the
+      // trigger's click immediately toggles it back open.
+      if (anchorRef?.current?.contains(e.target)) return
+      onClose?.()
+    }
+    function onKey(e) {
+      if (e.key !== 'Escape') return
+      e.stopPropagation()
+      onClose?.()
+      anchorRef?.current?.querySelector('button')?.focus()
     }
     document.addEventListener('mousedown', handle)
-    return () => document.removeEventListener('mousedown', handle)
-  }, [open, onClose])
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', handle)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open, onClose, anchorRef])
 
   if (!open) return null
 
-  return (
-    <div
-      ref={ref}
-      className={cx(
-        'nubi-dropdown',
-        align === 'left' ? 'left-0' : 'right-0',
-        'top-[calc(100%+6px)]',
-        className,
-      )}
-      role="menu"
-    >
+  if (!portaled) {
+    return (
+      <div
+        ref={ref}
+        className={cx(
+          'nubi-dropdown',
+          align === 'left' ? 'left-0' : 'right-0',
+          'top-[calc(100%+6px)]',
+          className,
+        )}
+        role="menu"
+      >
+        {children}
+      </div>
+    )
+  }
+
+  // First frame renders hidden so the panel's size can be measured, then placed.
+  const style = pos
+    ? { position: 'fixed' as const, left: pos.left, top: pos.top, bottom: pos.bottom, maxHeight: pos.maxHeight, overflowY: 'auto' as const, zIndex: 'var(--z-popover)' }
+    : { position: 'fixed' as const, left: 0, top: 0, visibility: 'hidden' as const, zIndex: 'var(--z-popover)' }
+
+  return createPortal(
+    <div ref={ref} className={cx('nubi-dropdown', className)} style={style} role="menu">
       {children}
-    </div>
+    </div>,
+    document.body,
   )
 }
 

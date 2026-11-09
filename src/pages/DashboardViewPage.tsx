@@ -190,9 +190,10 @@ function ModeSwitch({ mode, onChange }) {
  */
 function BoardOptionsMenu({ onDelete, onHistory = undefined, onToggleTheme = undefined, isDark = false }) {
   const [open, setOpen] = useState(false)
+  const anchorRef = useRef(null)
 
   return (
-    <div className="relative shrink-0">
+    <div ref={anchorRef} className="relative shrink-0">
       <button
         type="button"
         onClick={() => setOpen(v => !v)}
@@ -205,7 +206,7 @@ function BoardOptionsMenu({ onDelete, onHistory = undefined, onToggleTheme = und
         <MoreVertical size={16} strokeWidth={1.5} aria-hidden="true" />
       </button>
 
-      <DropdownMenu open={open} onClose={() => setOpen(false)}>
+      <DropdownMenu open={open} onClose={() => setOpen(false)} anchorRef={anchorRef}>
         {onHistory && (
           <DropdownItem
             icon={History}
