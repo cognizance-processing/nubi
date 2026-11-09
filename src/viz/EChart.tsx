@@ -8,11 +8,16 @@
  * theme    {string|object}     ECharts theme name or theme object (optional).
  * onEvents {Record<string,fn>} Map of ECharts event name → handler (optional).
  *                              Handler is called with (params, chartInstance).
+ * replaceKey {string}          Identity of the chart's shape, e.g. its chart type
+ *                              (optional). When it changes, the next option replaces
+ *                              the previous one instead of merging into it, so the old
+ *                              chart's series/components don't linger underneath.
  *
  * Behaviour
  * ---------
  * - Calls echarts.init() on a ref div once on mount; disposes on unmount.
- * - Calls chart.setOption(option) whenever `option` changes.
+ * - Calls chart.setOption(option) whenever `option` changes — merged while
+ *   `replaceKey` is unchanged, replaced (notMerge) when it changes.
  * - ResizeObserver watches the container div and calls chart.resize() so the
  *   chart is always responsive to its parent (works on mobile without JS window resize).
  * - Registers event listeners from `onEvents` after init, removes them on unmount.
@@ -30,11 +35,12 @@ import { attachECharts } from '../lib/maps.js'
 // before or after is flushed through.
 attachECharts(echarts)
 
-export default function EChart({ option, height = 320, theme, onEvents }: {
+export default function EChart({ option, height = 320, theme, onEvents, replaceKey }: {
   option: Record<string, any>
   height?: number | string
   theme?: string | object
   onEvents?: Record<string, (params: any, chart: echarts.ECharts) => void>
+  replaceKey?: string
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   // ECharts throws for options its own validators reject (a sankey whose
@@ -45,6 +51,7 @@ export default function EChart({ option, height = 320, theme, onEvents }: {
   const [renderError, setRenderError] = useState<string | null>(null)
   const chartRef = useRef<echarts.ECharts | null>(null)    // echarts instance
   const eventsRef = useRef<Record<string, (params: any, chart: echarts.ECharts) => void> | null>(null)   // track bound events for cleanup
+  const appliedKeyRef = useRef<string | undefined>(replaceKey)   // replaceKey of the option currently drawn
 
   // ----- Init / dispose lifecycle -----
   useEffect(() => {
@@ -93,16 +100,19 @@ export default function EChart({ option, height = 320, theme, onEvents }: {
     const chart = chartRef.current
     if (!chart || chart.isDisposed()) return
     // notMerge: false  → ECharts merges intelligently (faster for live updates)
+    // notMerge: true   → only when replaceKey changed (e.g. treemap → bar), so the
+    //                    previous chart type's series/visualMap/legend are dropped
     // lazyUpdate: false → render immediately
     try {
-      chart.setOption(option, { notMerge: false, lazyUpdate: false })
+      chart.setOption(option, { notMerge: appliedKeyRef.current !== replaceKey, lazyUpdate: false })
+      appliedKeyRef.current = replaceKey
       setRenderError(null)
     } catch (err) {
       // Clear the half-drawn canvas so the message isn't overlaid on a stale chart.
       try { chart.clear() } catch { /* disposed mid-update */ }
       setRenderError(err instanceof Error ? err.message : String(err))
     }
-  }, [option])
+  }, [option, replaceKey])
 
   return (
     <div
