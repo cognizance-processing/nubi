@@ -42,6 +42,7 @@ import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { useResolvedParams, useResolvedFilters } from '../VariableStore.jsx'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
 import EmptyState from '../../components/ui/EmptyState.jsx'
+import WidgetError from '../../components/app/WidgetError.jsx'
 
 // Only show "Loading image…" if a fetch is still running after this long, so
 // a fast WASM query doesn't flash a loading line before the image appears.
@@ -67,7 +68,13 @@ export default function ImageWidget({ widget, providerTable = null }) {
 
   const [queryUrl, setQueryUrl] = useState('')
   const [loading, setLoading] = useState(false)
-  const [failed, setFailed] = useState(false)
+  // A failed query shows the real failure, never "the selected cell is empty".
+  const [queryError, setQueryError] = useState(null)
+  // Bumped by the error state's Retry button to re-run the fetch effect.
+  const [retryEpoch, setRetryEpoch] = useState(0)
+  // The src whose <img> errored; `failed` is derived, so a new src is never
+  // shown as failed, even for one render.
+  const [failedSrc, setFailedSrc] = useState(null)
 
   function extractFromTable(table) {
     if (!table || !table.numRows || !valueCol) { setQueryUrl(''); return }
@@ -78,6 +85,7 @@ export default function ImageWidget({ widget, providerTable = null }) {
   }
 
   useEffect(() => {
+    setQueryError(null)
     if (!wantsQuery) return
     if (providerTable !== null) { extractFromTable(providerTable); return }
     if (!widget.query_id) { setQueryUrl(''); return }
@@ -94,10 +102,17 @@ export default function ImageWidget({ widget, providerTable = null }) {
             : undefined,
         )
         if (cancelled) return
-        if (error) setQueryUrl('')
-        else extractFromTable(table)
-      } catch {
-        if (!cancelled) setQueryUrl('')
+        if (error) {
+          setQueryUrl('')
+          setQueryError(error.message ?? 'Query failed.')
+        } else {
+          extractFromTable(table)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setQueryUrl('')
+          setQueryError(err?.message ?? 'Query failed.')
+        }
       } finally {
         clearTimeout(loadingTimer)
         if (!cancelled) setLoading(false)
@@ -105,13 +120,27 @@ export default function ImageWidget({ widget, providerTable = null }) {
     })()
     return () => { cancelled = true; clearTimeout(loadingTimer); setLoading(false) }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wantsQuery, widget.query_id, valueCol, props.row, JSON.stringify(resolvedParams), JSON.stringify(resolvedFilters), refreshEpoch, providerTable])
+  }, [wantsQuery, widget.query_id, valueCol, props.row, JSON.stringify(resolvedParams), JSON.stringify(resolvedFilters), refreshEpoch, retryEpoch, providerTable])
+
+  // A refresh or retry gives the same URL another chance to load (e.g. after
+  // a transient CDN error); a new URL already gets one via failedSrc !== src.
+  useEffect(() => { setFailedSrc(null) }, [refreshEpoch, retryEpoch])
 
   const url = wantsQuery ? queryUrl : (props.url ?? '')
   const src = resolveImageUrl(url)
+  const failed = failedSrc !== null && failedSrc === src
 
-  // A new URL gets a fresh chance to load.
-  useEffect(() => { setFailed(false) }, [src])
+  if (wantsQuery && queryError) {
+    return (
+      <WidgetError
+        message={queryError}
+        queryId={widget.query_id}
+        kind="image"
+        onRetry={() => setRetryEpoch(e => e + 1)}
+        compact
+      />
+    )
+  }
 
   if (!url) {
     if (wantsQuery && loading) {
@@ -138,9 +167,13 @@ export default function ImageWidget({ widget, providerTable = null }) {
 
   if (failed) {
     return (
-      <div className="flex items-center justify-center h-full px-4">
-        <EmptyState title="Image failed to load" description="Check that the URL points to a reachable image." compact />
-      </div>
+      <WidgetError
+        message="The image could not be loaded."
+        queryId={wantsQuery ? widget.query_id : undefined}
+        kind="image"
+        onRetry={() => setRetryEpoch(e => e + 1)}
+        compact
+      />
     )
   }
 
@@ -150,7 +183,7 @@ export default function ImageWidget({ widget, providerTable = null }) {
         src={src}
         alt={alt}
         style={{ maxHeight: '100%', maxWidth: '100%', objectFit: fit }}
-        onError={() => setFailed(true)}
+        onError={() => setFailedSrc(src)}
       />
     </div>
   )
