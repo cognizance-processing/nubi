@@ -7,6 +7,13 @@
  * animation. Esc dismisses (WCAG 1.4.13), and the bubble can be hovered without
  * closing. Flips above/below and clamps to the viewport.
  *
+ * The bubble is portaled to document.body with position: fixed (placeTooltip /
+ * useAnchorTracking in ./useFixedAnchor), so `overflow` ancestors such as the
+ * horizontally scrolling editor toolbar can't clip it; it follows the trigger
+ * on scroll and resize. It is not a DOM child of the trigger, so hover is
+ * bridged explicitly: leaving the trigger or the bubble starts a short grace
+ * timer that entering either one cancels.
+ *
  * Usage:
  *   <Tooltip content="Save changes">
  *     <Button variant="ghost" size="icon" aria-label="Save"><Save /></Button>
@@ -28,22 +35,31 @@
  * supplement, never the only accessible name: icon buttons still need aria-label.
  */
 
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
+import { placeTooltip, useAnchorTracking, type TooltipPlacement, type TooltipSide } from './useFixedAnchor.js'
 
 function cx(...parts: unknown[]) {
   return parts.filter(Boolean).join(' ')
 }
 
-const POSITION = {
-  top:    'bottom-full left-1/2 -translate-x-1/2 pb-2',
-  bottom: 'top-full left-1/2 -translate-x-1/2 pt-2',
-  left:   'right-full top-1/2 -translate-y-1/2 pr-2',
-  right:  'left-full top-1/2 -translate-y-1/2 pl-2',
+// Padding on the portaled wrapper: the visual gap, and the hover bridge between
+// trigger and bubble. placeTooltip sits the wrapper flush against the trigger.
+const PADDING: Record<TooltipSide, string> = {
+  top: 'pb-2',
+  bottom: 'pt-2',
+  left: 'pr-2',
+  right: 'pl-2',
 }
 
 // Module-level: when one tooltip closed less than 400ms ago, the next opens instantly
 let lastClosed = 0
 const WARM_MS = 400
+// Pointer may travel trigger <-> bubble for this long without the tooltip closing
+const GRACE_MS = 100
+// The open tooltip. A neighbour that starts opening closes it at once, so two
+// bubbles never overlap during the grace period and the neighbour opens warm.
+let active: { owner: string; hide: () => void } | null = null
 
 export default function Tooltip({
   content,
@@ -56,7 +72,7 @@ export default function Tooltip({
 }: {
   content?: ReactNode
   kbd?: string | string[]
-  side?: 'top' | 'bottom' | 'left' | 'right'
+  side?: TooltipSide
   delay?: number
   disabled?: boolean
   className?: string
@@ -65,64 +81,87 @@ export default function Tooltip({
   const id = useId()
   const [visible, setVisible] = useState(false)
   const [instant, setInstant] = useState(false)
-  const [placed, setPlaced] = useState<{ side: typeof side; dx: number }>({ side, dx: 0 })
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [pos, setPos] = useState<TooltipPlacement | null>(null)
+  const openRef = useRef(false)
+  const showTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const triggerRef = useRef<HTMLSpanElement | null>(null)
   const bubbleRef = useRef<HTMLSpanElement | null>(null)
 
-  const show = (immediate = false) => {
-    if (timerRef.current) clearTimeout(timerRef.current)
-    const warm = Date.now() - lastClosed < WARM_MS
-    const open = () => { setInstant(warm || immediate); setVisible(true) }
-    if (immediate || warm) open()
-    else timerRef.current = setTimeout(open, delay)
-  }
-  const hide = () => {
-    if (timerRef.current) clearTimeout(timerRef.current)
-    setVisible((v) => { if (v) lastClosed = Date.now(); return false })
+  const clearShow = () => { if (showTimerRef.current) { clearTimeout(showTimerRef.current); showTimerRef.current = null } }
+  const clearHide = () => { if (hideTimerRef.current) { clearTimeout(hideTimerRef.current); hideTimerRef.current = null } }
+
+  const hideNow = () => {
+    clearShow()
+    clearHide()
+    if (active?.owner === id) active = null
+    if (openRef.current) { openRef.current = false; lastClosed = Date.now() }
+    setVisible(false)
+    setPos(null)
   }
 
-  // Clamp to the viewport / flip once the bubble is measurable
-  useLayoutEffect(() => {
-    if (!visible) { setPlaced({ side, dx: 0 }); return }
-    const el = bubbleRef.current
-    if (!el) return
-    const r = el.getBoundingClientRect()
-    let s = side
-    if (side === 'top' && r.top < 4) s = 'bottom'
-    else if (side === 'bottom' && r.bottom > window.innerHeight - 4) s = 'top'
-    else if (side === 'left' && r.left < 4) s = 'right'
-    else if (side === 'right' && r.right > window.innerWidth - 4) s = 'left'
-    let dx = 0
-    if (s === 'top' || s === 'bottom') {
-      if (r.left < 8) dx = 8 - r.left
-      else if (r.right > window.innerWidth - 8) dx = window.innerWidth - 8 - r.right
+  const show = (immediate = false) => {
+    clearHide()
+    if (openRef.current) return
+    if (active && active.owner !== id) active.hide()
+    clearShow()
+    const warm = Date.now() - lastClosed < WARM_MS
+    const open = () => {
+      showTimerRef.current = null
+      openRef.current = true
+      active = { owner: id, hide: hideNow }
+      setInstant(warm || immediate)
+      setVisible(true)
     }
-    if (s !== placed.side || dx !== placed.dx) setPlaced({ side: s, dx })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, side])
+    if (immediate || warm) open()
+    else showTimerRef.current = setTimeout(open, delay)
+  }
+
+  // Pointer left the trigger or the bubble: close unless it enters the other soon
+  const hideSoon = () => {
+    clearShow()
+    if (!openRef.current) return
+    clearHide()
+    hideTimerRef.current = setTimeout(hideNow, GRACE_MS)
+  }
+
+  // Place against the trigger before paint, then follow it on scroll / resize
+  useAnchorTracking(visible, () => {
+    const trigger = triggerRef.current
+    const bubble = bubbleRef.current
+    if (!trigger || !bubble) return
+    const p = placeTooltip(trigger.getBoundingClientRect(), bubble, side)
+    setPos((prev) => (prev && prev.left === p.left && prev.top === p.top && prev.side === p.side ? prev : p))
+  })
 
   // Esc dismisses while open
   useEffect(() => {
     if (!visible) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') hide() }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') hideNow() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible])
 
-  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
+  useEffect(() => () => {
+    if (showTimerRef.current) clearTimeout(showTimerRef.current)
+    if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
+    if (active?.owner === id) active = null
+  }, [id])
 
   if (disabled || !content) return children
 
   const keys = kbd ? (Array.isArray(kbd) ? kbd : kbd.split(' ')) : []
-  const s = placed.side
+  const s = pos?.side ?? side
 
   return (
     <span
+      ref={triggerRef}
       className={cx('relative inline-flex', className)}
       onMouseEnter={() => show()}
-      onMouseLeave={hide}
+      onMouseLeave={hideSoon}
       onFocus={() => show(true)}
-      onBlur={hide}
+      onBlur={hideNow}
     >
       {typeof children === 'object' && children !== null
         ? {
@@ -134,11 +173,15 @@ export default function Tooltip({
           }
         : children}
 
-      {visible && (
+      {visible && createPortal(
         <span
           ref={bubbleRef}
-          className={cx('absolute z-tooltip', POSITION[s] ?? POSITION.top)}
-          style={placed.dx ? { marginLeft: placed.dx } : undefined}
+          className={PADDING[s] ?? PADDING.top}
+          style={pos
+            ? { position: 'fixed', left: pos.left, top: pos.top, zIndex: 'var(--z-tooltip)' }
+            : { position: 'fixed', left: 0, top: 0, visibility: 'hidden', zIndex: 'var(--z-tooltip)' }}
+          onMouseEnter={clearHide}
+          onMouseLeave={hideSoon}
         >
           <span
             id={id}
@@ -156,7 +199,8 @@ export default function Tooltip({
               </span>
             )}
           </span>
-        </span>
+        </span>,
+        document.body,
       )}
     </span>
   )
