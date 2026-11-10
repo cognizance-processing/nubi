@@ -674,9 +674,14 @@ function ImageConfig({ widget, onChange }) {
       onChange({ ...widget, props: { ...props, source: 'query', row: props.row ?? 0 } })
       return
     }
+    // Static reads props.url only — drop the query binding too, or exports
+    // (widget_query_targets) would keep running the query for this widget.
     const { row: _row, ...staticProps } = props
-    onChange({ ...widget, props: { ...staticProps, source: 'static' } })
+    onChange({ ...widget, query_id: null, source: null, encoding: {}, props: { ...staticProps, source: 'static' } })
   }
+  // A widget carries at most one data binding (spec.py Step 11), so a
+  // provider-bound (`widget.source`) image must drop it before taking a query.
+  const providerBound = source === 'query' && !widget.query_id && !!widget.source
 
   return (
     <div className="space-y-3">
@@ -696,22 +701,43 @@ function ImageConfig({ widget, onChange }) {
       </div>
       {source === 'query' && (
         <>
-          {!widget.query_id && widget.source && (
-            <p className="text-[10px] text-muted/70">
-              Set a query to preview and pick columns in the editor. Provider binding still works on the published board.
-            </p>
+          {providerBound ? (
+            <>
+              <p className="text-[10px] text-muted/70">
+                Rows come from data provider <code>{widget.source.provider}</code>
+                {widget.source.result ? <> (result <code>{widget.source.result}</code>)</> : null}.
+              </p>
+              <Button variant="secondary" size="sm" className="w-full"
+                onClick={() => onChange({ ...widget, source: null, query_id: null, encoding: {} })}>
+                Use a query instead
+              </Button>
+              <div>
+                <FieldLabel>URL column</FieldLabel>
+                <input type="text" className={inputCls} placeholder="Column name"
+                  value={widget.encoding?.value ?? ''}
+                  onChange={e => onChange({ ...widget, encoding: { ...(widget.encoding ?? {}), value: e.target.value } })} />
+              </div>
+            </>
+          ) : (
+            <>
+              <QueryPicker
+                value={widget.query_id ?? ''}
+                onChange={id => {
+                  if (id === (widget.query_id ?? '')) return
+                  // Columns differ per query — clear the URL column so it's re-picked.
+                  // Drop provider binding so Step 11 (at-most-one) cannot fire.
+                  onChange({ ...widget, query_id: id, source: null, encoding: {} })
+                }}
+              />
+              {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
+              <ColumnSelect
+                label="URL column"
+                value={widget.encoding?.value ?? ''}
+                onChange={v => onChange({ ...widget, encoding: { ...(widget.encoding ?? {}), value: v } })}
+                columns={columns}
+              />
+            </>
           )}
-          <QueryPicker
-            value={widget.query_id ?? ''}
-            onChange={id => onChange({ ...widget, query_id: id })}
-          />
-          {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
-          <ColumnSelect
-            label="URL column"
-            value={widget.encoding?.value ?? ''}
-            onChange={v => onChange({ ...widget, encoding: { ...(widget.encoding ?? {}), value: v } })}
-            columns={columns}
-          />
           <div>
             <FieldLabel>Row index</FieldLabel>
             <input type="number" min={0} className={inputCls}
