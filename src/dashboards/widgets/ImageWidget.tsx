@@ -83,28 +83,28 @@ export default function ImageWidget({ widget, providerTable = null }) {
     if (!widget.query_id) { setQueryUrl(''); return }
     let cancelled = false
     const loadingTimer = setTimeout(() => { if (!cancelled) setLoading(true) }, LOADING_DELAY_MS)
-    ;(async () => {
-      try {
-        const hasParams = Object.keys(resolvedParams).length > 0
-        const hasFilters = resolvedFilters.length > 0
-        const { table, error } = await runArrowQueryById(
-          widget.query_id,
-          (hasParams || hasFilters)
-            ? { namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined }
-            : undefined,
-        )
-        if (cancelled) return
-        if (error) setQueryUrl('')
-        else extractFromTable(table)
-      } catch {
-        if (!cancelled) setQueryUrl('')
-      } finally {
-        clearTimeout(loadingTimer)
-        if (!cancelled) setLoading(false)
-      }
-    })()
+      ; (async () => {
+        try {
+          const hasParams = Object.keys(resolvedParams).length > 0
+          const hasFilters = resolvedFilters.length > 0
+          const { table, error } = await runArrowQueryById(
+            widget.query_id,
+            (hasParams || hasFilters)
+              ? { namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined }
+              : undefined,
+          )
+          if (cancelled) return
+          if (error) setQueryUrl('')
+          else extractFromTable(table)
+        } catch {
+          if (!cancelled) setQueryUrl('')
+        } finally {
+          clearTimeout(loadingTimer)
+          if (!cancelled) setLoading(false)
+        }
+      })()
     return () => { cancelled = true; clearTimeout(loadingTimer); setLoading(false) }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wantsQuery, widget.query_id, valueCol, props.row, JSON.stringify(resolvedParams), JSON.stringify(resolvedFilters), refreshEpoch, providerTable])
 
   const url = wantsQuery ? queryUrl : (props.url ?? '')
@@ -125,12 +125,12 @@ export default function ImageWidget({ widget, providerTable = null }) {
       <div className="flex items-center justify-center h-full px-4">
         {wantsQuery
           ? <EmptyState
-              title="No image URL"
-              description={(widget.query_id || providerTable !== null) && valueCol
-                ? 'The selected cell is empty.'
-                : 'Pick a query and the column that holds the image URL.'}
-              compact
-            />
+            title="No image URL"
+            description={(widget.query_id || providerTable !== null) && valueCol
+              ? 'The selected cell is empty.'
+              : 'Pick a query and the column that holds the image URL.'}
+            compact
+          />
           : <EmptyState title="No image set" description="Upload a file or paste a URL." compact />}
       </div>
     )
