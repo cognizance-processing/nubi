@@ -23,7 +23,7 @@
  *   onChange  (rules)=>void
  */
 
-import { Table2, Hash, Palette, Rows3, FileSpreadsheet } from 'lucide-react'
+import { Table2, Hash, Palette, Rows3, FileSpreadsheet, ChevronUp, ChevronDown, Copy, Trash2 } from 'lucide-react'
 import {
   inputCls, selectCls, FieldLabel, SectionLabel, Section, ColorSwatch, ColorField, ToggleRow,
 } from './inspectorPrimitives.jsx'
@@ -57,8 +57,8 @@ function PinList({ label, columns, value, onChange }) {
             {columns.map(col => (
               <button key={col} onClick={() => toggle(col)}
                 className={`px-2 h-7 text-[11px] font-mono rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${value.includes(col)
-                    ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]'
-                    : 'bg-surface text-muted border-border hover:border-fg'
+                  ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]'
+                  : 'bg-surface text-muted border-border hover:border-fg'
                   }`}>
                 {col}
               </button>
@@ -295,7 +295,49 @@ export function ColumnFormatsEditor({ columns, value, onChange }) {
   )
 }
 
-const ruleIconBtnCls = 'w-6 h-7 shrink-0 flex items-center justify-center text-[11px] rounded-lg border border-transparent hover:border-border hover:bg-surface-2 text-muted hover:text-fg transition-colors disabled:opacity-30 disabled:pointer-events-none'
+const ruleIconBtnCls = 'w-7 h-7 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors disabled:opacity-30 disabled:pointer-events-none focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50'
+
+/** Full-width two-way toggle (Value | Column, Cell | Row). */
+function Segmented({ options, value, onChange }) {
+  return (
+    <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+      {options.map(([key, label, title]) => (
+        <button key={key} type="button" title={title} aria-pressed={value === key} onClick={() => onChange(key)}
+          className={`flex-1 text-[12px] font-medium transition-colors ${value === key ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** Swatch + colour text in one box, narrow enough for a three-up row. */
+function RuleColorField({ value, fallback, placeholder, onChange }) {
+  return (
+    <div className="flex items-center gap-1.5 h-8 px-1.5 rounded-lg border border-border bg-surface min-w-0">
+      <ColorSwatch size="sm" value={value} fallback={fallback} title="Pick a colour" onChange={onChange} />
+      <input type="text" className="flex-1 min-w-0 bg-transparent text-[12px] font-mono text-fg placeholder:text-muted/60 focus:outline-none"
+        placeholder={placeholder} value={value ?? ''} onChange={e => onChange(e.target.value || undefined)} />
+    </div>
+  )
+}
+
+/** A sample of what a matching cell will look like. */
+function RulePreview({ rule }) {
+  const s = rule.style ?? {}
+  const text = rule.compareColumn != null
+    ? `${formatOpLabel(rule.op ?? 'gt')} ${rule.compareColumn || '…'}`
+    : (String(rule.value ?? '').trim() || 'Aa')
+  const border = s.border ?? (s.borderWidth || s.borderColor
+    ? `${s.borderWidth || 1}px solid ${s.borderColor || 'currentColor'}` : undefined)
+  return (
+    <span className="inline-flex items-center h-6 px-2 rounded-md text-[11px] max-w-[9rem] truncate border border-border"
+      style={{ backgroundColor: s.backgroundColor, color: s.color, fontWeight: s.fontWeight, ...(border ? { border } : {}) }}
+      title="Preview">
+      {text}
+    </span>
+  )
+}
 
 export function ConditionalRulesEditor({ columns, rules, onChange }) {
   const addRule = () => onChange([...rules, {
@@ -319,119 +361,137 @@ export function ConditionalRulesEditor({ columns, rules, onChange }) {
     : { compareColumn: undefined, compareColumn2: undefined })
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <p className="text-[10px] text-muted/70">When a cell matches, apply a style. Later rules win.</p>
-        <button onClick={addRule}
-          className="text-[11px] font-medium px-2 h-6 rounded-lg border border-dashed border-border hover:border-fg text-muted hover:text-fg transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
-          + Add rule
-        </button>
-      </div>
-      {rules.length === 0 && (
-        <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2 text-center">
-          No rules yet.
-        </p>
-      )}
+    <div className="space-y-3">
+      <p className="text-[12px] text-muted leading-snug">
+        Rules run top to bottom. When rules overlap, the later one wins.
+      </p>
       {rules.map((r, idx) => {
         const enabled = r.enabled !== false && r.isActive !== false
         const byColumn = r.compareColumn != null
         const others = columns.filter(c => c !== r.column)
+        const s = r.style ?? {}
         return (
-          <div key={idx} className={`rounded-lg border border-border p-2 space-y-1.5 bg-surface${enabled ? '' : ' opacity-60'}`}>
-            <div className="flex items-center gap-1.5">
-              <input type="checkbox" title={enabled ? 'Rule on — click to disable' : 'Rule off — click to enable'}
+          <div key={idx} className="rounded-xl border border-border bg-surface p-3 space-y-3">
+            <div className="flex items-center gap-2">
+              <input type="checkbox" className="h-4 w-4 shrink-0 cursor-pointer accent-[var(--success,#16a34a)]"
+                title={enabled ? 'Rule on — click to disable' : 'Rule off — click to enable'}
                 checked={enabled}
                 onChange={e => setRule(idx, { enabled: e.target.checked, isActive: undefined })} />
-              <select className={`${selectCls} flex-1`} value={r.column ?? ''} onChange={e => setRule(idx, { column: e.target.value })}>
-                {!r.column && <option value="">column…</option>}
-                {columns.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
-              <select className={`${selectCls} w-36`} title={formatOpLabel(r.op ?? 'gt')} value={r.op ?? 'gt'} onChange={e => setRule(idx, { op: e.target.value })}>
-                {FORMAT_OPS.map(o => <option key={o} value={o}>{formatOpLabel(o)}</option>)}
-              </select>
-              <button onClick={() => moveRule(idx, -1)} disabled={idx === 0} title="Move up" className={ruleIconBtnCls}>↑</button>
-              <button onClick={() => moveRule(idx, 1)} disabled={idx === rules.length - 1} title="Move down" className={ruleIconBtnCls}>↓</button>
-              <button onClick={() => duplicateRule(idx)} title="Duplicate rule" className={ruleIconBtnCls}>⧉</button>
-              <button onClick={() => removeRule(idx)} title="Remove rule" className={ruleIconBtnCls}>✕</button>
-            </div>
-            <div className="flex gap-1.5">
-              <div className="flex h-7 shrink-0 rounded-lg border border-border overflow-hidden">
-                {[['static', 'Value'], ['column', 'Column']].map(([mode, lbl]) => (
-                  <button key={mode} onClick={() => setCompareMode(idx, r, mode)}
-                    title={mode === 'column' ? 'Compare against another column of the same row' : 'Compare against a fixed value'}
-                    className={`px-2 text-[11px] font-medium transition-colors ${(byColumn ? 'column' : 'static') === mode ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>
-                    {lbl}
-                  </button>
-                ))}
+              <span className="text-[13px] font-semibold text-fg shrink-0">Rule {idx + 1}</span>
+              <span className="min-w-0 flex-1"><RulePreview rule={r} /></span>
+              <div className="flex items-center shrink-0">
+                <button onClick={() => moveRule(idx, -1)} disabled={idx === 0} title="Move up" className={ruleIconBtnCls}><ChevronUp size={14} /></button>
+                <button onClick={() => moveRule(idx, 1)} disabled={idx === rules.length - 1} title="Move down" className={ruleIconBtnCls}><ChevronDown size={14} /></button>
+                <button onClick={() => duplicateRule(idx)} title="Duplicate rule" className={ruleIconBtnCls}><Copy size={13} /></button>
+                <button onClick={() => removeRule(idx)} title="Delete rule" className={`${ruleIconBtnCls} !text-[var(--danger,#ef4444)]`}><Trash2 size={14} /></button>
               </div>
-              {byColumn ? (
-                <>
-                  <select className={`${selectCls} flex-1 min-w-0`} value={r.compareColumn ?? ''}
-                    onChange={e => setRule(idx, { compareColumn: e.target.value })}>
-                    {!r.compareColumn && <option value="">column…</option>}
-                    {others.map(c => <option key={c} value={c}>{c}</option>)}
+            </div>
+
+            <div className={`space-y-3${enabled ? '' : ' opacity-50'}`}>
+              <div className="space-y-2">
+                <SectionLabel>When</SectionLabel>
+                <div className="grid grid-cols-2 gap-2">
+                  <select className={`${selectCls} min-w-0`} value={r.column ?? ''} onChange={e => setRule(idx, { column: e.target.value })}>
+                    {!r.column && <option value="">Column…</option>}
+                    {columns.map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
-                  {r.op === 'between' && (
-                    <select className={`${selectCls} flex-1 min-w-0`} value={r.compareColumn2 ?? ''}
-                      onChange={e => setRule(idx, { compareColumn2: e.target.value || undefined })}>
-                      <option value="">and…</option>
+                  <select className={`${selectCls} min-w-0`} title={formatOpLabel(r.op ?? 'gt')} value={r.op ?? 'gt'} onChange={e => setRule(idx, { op: e.target.value })}>
+                    {FORMAT_OPS.map(o => <option key={o} value={o}>{formatOpLabel(o)}</option>)}
+                  </select>
+                </div>
+                {byColumn ? (
+                  <div className={r.op === 'between' ? 'grid grid-cols-2 gap-2' : ''}>
+                    <select className={`${selectCls} min-w-0`} value={r.compareColumn ?? ''}
+                      onChange={e => setRule(idx, { compareColumn: e.target.value })}>
+                      {!r.compareColumn && <option value="">Column…</option>}
                       {others.map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
-                  )}
-                </>
-              ) : (
-                <>
-                  <input type="text" placeholder="value" className={`${inputCls} flex-1 min-w-0`}
-                    value={r.value ?? ''} onChange={e => setRule(idx, { value: e.target.value })} />
-                  {r.op === 'between' && (
-                    <input type="text" placeholder="and" className={`${inputCls} flex-1 min-w-0`}
-                      value={r.value2 ?? ''} onChange={e => setRule(idx, { value2: e.target.value })} />
-                  )}
-                </>
-              )}
-            </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="flex h-7 rounded-lg border border-border overflow-hidden">
-                {['cell', 'row'].map(sc => (
-                  <button key={sc} onClick={() => setRule(idx, { scope: sc })}
-                    className={`px-2.5 text-[11px] font-medium capitalize transition-colors ${(r.scope ?? 'cell') === sc ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>
-                    {sc}
-                  </button>
-                ))}
+                    {r.op === 'between' && (
+                      <select className={`${selectCls} min-w-0`} value={r.compareColumn2 ?? ''}
+                        onChange={e => setRule(idx, { compareColumn2: e.target.value || undefined })}>
+                        <option value="">and…</option>
+                        {others.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    )}
+                  </div>
+                ) : (
+                  <div className={r.op === 'between' ? 'grid grid-cols-2 gap-2' : ''}>
+                    <input type="text" placeholder={r.op === 'between' ? 'From' : 'Value'} className={`${inputCls} min-w-0`}
+                      value={r.value ?? ''} onChange={e => setRule(idx, { value: e.target.value })} />
+                    {r.op === 'between' && (
+                      <input type="text" placeholder="To" className={`${inputCls} min-w-0`}
+                        value={r.value2 ?? ''} onChange={e => setRule(idx, { value2: e.target.value })} />
+                    )}
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <FieldLabel>Compare to</FieldLabel>
+                    <Segmented value={byColumn ? 'column' : 'static'} onChange={mode => setCompareMode(idx, r, mode)}
+                      options={[['static', 'Value', 'Compare against a fixed value'], ['column', 'Column', 'Compare against another column of the same row']]} />
+                  </div>
+                  <div>
+                    <FieldLabel>Apply to</FieldLabel>
+                    <Segmented value={r.scope ?? 'cell'} onChange={sc => setRule(idx, { scope: sc })}
+                      options={[['cell', 'Cell', 'Style only the matching cell'], ['row', 'Row', 'Style the whole row']]} />
+                  </div>
+                </div>
               </div>
-              <label className="flex items-center gap-1 text-[10px] text-muted cursor-pointer">bg
-                <ColorSwatch size="sm" title="Row background"
-                  value={r.style?.backgroundColor} fallback="#dcfce7"
-                  onChange={v => setStyle(idx, { backgroundColor: v })} />
-              </label>
-              <label className="flex items-center gap-1 text-[10px] text-muted cursor-pointer">text
-                <ColorSwatch size="sm" title="Row text colour"
-                  value={r.style?.color} fallback="#166534"
-                  onChange={v => setStyle(idx, { color: v })} />
-              </label>
-              <button onClick={() => setStyle(idx, { fontWeight: r.style?.fontWeight === 'bold' ? undefined : 'bold' })}
-                className={`w-7 h-7 text-[11px] rounded-lg border font-bold transition-colors ${r.style?.fontWeight === 'bold' ? 'border-[var(--ink)] text-fg bg-surface-2' : 'border-border text-muted hover:text-fg'}`}>
-                B
-              </button>
-              {/* Border: width + colour, folded into a CSS `border` by evalRules(). */}
-              <label className="flex items-center gap-1 text-[10px] text-muted cursor-pointer">border
-                <input type="number" min={0} max={8} placeholder="–" title="Border width (px); empty = none"
-                  className={`${inputCls} w-11 px-1`}
-                  value={r.style?.borderWidth ?? ''}
-                  onChange={e => {
-                    const w = parseNumberInput(e.target.value, { integer: true, min: 0 })
-                    setStyle(idx, w ? { borderWidth: w, borderColor: r.style?.borderColor ?? '#166534' } : { borderWidth: undefined, borderColor: undefined })
-                  }} />
-                {r.style?.borderWidth ? (
-                  <ColorSwatch size="sm" title="Border colour"
-                    value={r.style?.borderColor} fallback="#166534"
-                    onChange={v => setStyle(idx, { borderColor: v })} />
-                ) : null}
-              </label>
+
+              <div className="space-y-2 border-t border-border pt-3">
+                <SectionLabel>Then style</SectionLabel>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="min-w-0">
+                    <FieldLabel>Background</FieldLabel>
+                    <RuleColorField value={s.backgroundColor} fallback="#dcfce7" placeholder="none"
+                      onChange={v => setStyle(idx, { backgroundColor: v })} />
+                  </div>
+                  <div className="min-w-0">
+                    <FieldLabel>Text</FieldLabel>
+                    <RuleColorField value={s.color} fallback="#166534" placeholder="auto"
+                      onChange={v => setStyle(idx, { color: v })} />
+                  </div>
+                  <div className="min-w-0">
+                    {/* Border: width + colour, folded into a CSS `border` by evalRules(). */}
+                    <FieldLabel>Border</FieldLabel>
+                    <RuleColorField value={s.borderColor} fallback="#166534" placeholder="none"
+                      onChange={v => setStyle(idx, v
+                        ? { borderColor: v, borderWidth: s.borderWidth || 1 }
+                        : { borderColor: undefined, borderWidth: undefined })} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <FieldLabel>Border width</FieldLabel>
+                    <div className="relative">
+                      <input type="number" min={0} max={8} placeholder="0" title="Border width in px; 0 or empty = no border"
+                        className={`${inputCls} pr-8`}
+                        value={s.borderWidth ?? ''}
+                        onChange={e => {
+                          const w = parseNumberInput(e.target.value, { integer: true, min: 0, max: 8 })
+                          setStyle(idx, w ? { borderWidth: w, borderColor: s.borderColor ?? '#166534' } : { borderWidth: undefined, borderColor: undefined })
+                        }} />
+                      <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-muted">px</span>
+                    </div>
+                  </div>
+                  <div>
+                    <FieldLabel>Weight</FieldLabel>
+                    <button type="button" aria-pressed={s.fontWeight === 'bold'}
+                      onClick={() => setStyle(idx, { fontWeight: s.fontWeight === 'bold' ? undefined : 'bold' })}
+                      className={`w-full h-8 rounded-lg border text-[12px] transition-colors ${s.fontWeight === 'bold' ? 'font-bold border-[var(--ink)] bg-surface-2 text-fg' : 'font-medium border-border text-muted hover:text-fg'}`}>
+                      Bold
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         )
       })}
+      <button type="button" onClick={(e) => { addRule(); e.currentTarget.blur() }}
+        className="w-full h-10 text-[12px] font-medium rounded-xl border border-dashed border-border hover:border-fg text-muted hover:text-fg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+        + Add rule
+      </button>
     </div>
   )
 }
@@ -491,8 +551,8 @@ export function TableConfig({ widget, onChange }) {
               return (
                 <button key={col} onClick={() => toggleCol(col)}
                   className={`px-2 h-7 text-[11px] font-mono rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${on && selected.includes(col) ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]'
-                      : on ? 'bg-surface text-fg border-border hover:border-fg'
-                        : 'bg-surface text-muted/50 border-border line-through'
+                    : on ? 'bg-surface text-fg border-border hover:border-fg'
+                      : 'bg-surface text-muted/50 border-border line-through'
                     }`}>
                   {col}
                 </button>
