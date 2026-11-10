@@ -189,7 +189,7 @@ Open the **Add widget** panel (the **+** button in the top toolbar) and choose a
 | **KPI** | A single headline number. |
 | **Metric** | A number with a comparison delta and optional sparkline. |
 | **Chart** | Line, bar, horizontal bar, area, scatter, pie, donut, heatmap, or gauge. |
-| **Table** | Rows and columns with column formatting and conditional formatting. |
+| **Table** | Rows and columns with column formats and conditional rules. |
 | **Pivot** | A cross-tab with row/column dimensions and an aggregation. |
 | **Filter** | A control (select, multiselect, date range, text) that drives a dashboard variable. |
 | **Text** | Markdown content for headings and notes. |
@@ -205,7 +205,7 @@ Click a widget to select it, then open the **Configure** panel (gear icon):
 
 1. **Choose the query** — pick a demo query or type the ID of a query you registered in step 5.
 2. **Map columns** — Nubi introspects the query's columns and offers dropdowns. For a chart that's the **X** axis and one or more **Y** series; for a KPI it's the **value** column; for a table the **visible columns**.
-3. **Tune the display** — labels, number/currency/percent/date formats, stacking, height, conditional formatting, and more.
+3. **Tune the display** — labels, number/currency/percent/date formats, stacking, height, conditional rules, and more.
 
 ### Arrange the layout
 

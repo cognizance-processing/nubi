@@ -713,7 +713,7 @@ export function TableConfig({ widget, onChange }) {
         />
       </Section>
 
-      <Section title="Conditional formatting" defaultOpen={false} icon={Palette}>
+      <Section title="Conditional rules" defaultOpen={false} icon={Palette}>
         <ConditionalRulesEditor
           columns={fmtCols}
           rules={widget.formattingRules ?? []}
