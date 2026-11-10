@@ -438,7 +438,14 @@ def _image_effective_url(
     if not isinstance(col, str) or not col or col not in columns or not rows:
         return ""
     raw_row = props.get("row")
-    row = raw_row if isinstance(raw_row, int) and not isinstance(raw_row, bool) else 0
+    if isinstance(raw_row, bool):
+        row = 0
+    elif isinstance(raw_row, int):
+        row = raw_row
+    elif isinstance(raw_row, float) and raw_row.is_integer():
+        row = int(raw_row)
+    else:
+        row = 0
     row = min(max(row, 0), len(rows) - 1)
     record = rows[row]
     idx = columns.index(col)

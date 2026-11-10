@@ -282,6 +282,23 @@ class TestValidateSpec:
         ))
         assert self._image_issues(issues) == []
 
+    def test_query_image_with_query_id_and_provider_source_fails(self):
+        _, issues = validate_spec(self._with_image(
+            query_id="demo_all", source={"provider": "p1", "result": "r1"},
+            encoding={"value": "id"}, props={"source": "query"},
+        ))
+        assert any("at most one data binding" in i and "'img1'" in i for i in issues), issues
+
+    def test_static_image_after_toggle_has_no_query_binding(self):
+        # Shape ImageConfig writes on switching to Static: no query_id/encoding.
+        data = self._with_image(
+            query_id=None, encoding={}, props={"source": "static", "url": "/api/v1/images/" + "a" * 32},
+        )
+        _, issues = validate_spec(data)
+        assert self._image_issues(issues) == []
+        from app.dashboards.collect import widget_query_targets
+        assert not any(t["widget_id"] == "img1" for t in widget_query_targets(data, None))
+
     def test_query_image_missing_query_id_and_source_fails(self):
         _, issues = validate_spec(self._with_image(
             encoding={"value": "id"}, props={"source": "query"},

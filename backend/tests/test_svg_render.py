@@ -1121,6 +1121,15 @@ class TestImageEffectiveUrl:
         assert self._url({"source": "query", "row": 99}) == "https://example.com/b.png"
         assert self._url({"source": "query", "row": -3}) == f"/api/v1/images/{_IMG_ID}"
 
+    def test_query_row_matches_js_number_isinteger(self):
+        # Number.isInteger(1.0) is true in ImageWidget.tsx — export must agree.
+        assert self._url({"source": "query", "row": 1.0}) == "https://example.com/b.png"
+        first = f"/api/v1/images/{_IMG_ID}"
+        assert self._url({"source": "query", "row": 1.5}) == first
+        assert self._url({"source": "query", "row": True}) == first
+        assert self._url({"source": "query", "row": "1"}) == first
+        assert self._url({"source": "query", "row": float("nan")}) == first
+
     def test_query_bad_column_or_no_rows_is_empty(self):
         assert self._url({"source": "query"}, encoding={"value": "nope"}) == ""
         assert self._url({"source": "query"}, encoding={}) == ""
