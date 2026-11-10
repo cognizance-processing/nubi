@@ -162,6 +162,7 @@ export default function Tooltip({
       onMouseLeave={hideSoon}
       onFocus={() => show(true)}
       onBlur={hideNow}
+      onClick={hideNow}
     >
       {typeof children === 'object' && children !== null
         ? {
