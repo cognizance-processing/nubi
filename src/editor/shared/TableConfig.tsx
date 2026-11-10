@@ -23,7 +23,7 @@
  *   onChange  (rules)=>void
  */
 
-import { Table2, Hash, Palette, Rows3, FileSpreadsheet, ChevronUp, ChevronDown, Copy, Trash2 } from 'lucide-react'
+import { Table2, Hash, Palette, Highlighter, Rows3, FileSpreadsheet, ChevronUp, ChevronDown, Copy, Trash2 } from 'lucide-react'
 import {
   inputCls, selectCls, FieldLabel, SectionLabel, Section, ColorSwatch, ColorField, ToggleRow,
 } from './inspectorPrimitives.jsx'
@@ -713,7 +713,7 @@ export function TableConfig({ widget, onChange }) {
         />
       </Section>
 
-      <Section title="Conditional rules" defaultOpen={false} icon={Palette}>
+      <Section title="Conditional rules" defaultOpen={false} icon={Highlighter}>
         <ConditionalRulesEditor
           columns={fmtCols}
           rules={widget.formattingRules ?? []}
