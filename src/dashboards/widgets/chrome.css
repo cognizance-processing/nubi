@@ -56,6 +56,13 @@
   border-radius: 2px;
   background: var(--surface);
 }
+/* Tooltip wraps each segment in a span, so the flex child is the span — not the
+   button. Without stretch + height:100% the ink fill only covers the 16px icon,
+   not the full 32px segment cell (the old direct-child buttons still stretched). */
+.nbc-seg > span {
+  display: flex;
+  align-self: stretch;
+}
 /* `> span > button`: a segment wrapped in <Tooltip> (its trigger is a span). */
 .nbc-seg > button,
 .nbc-seg > span > button {
@@ -63,6 +70,7 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
+  height: 100%;
   min-width: 32px;
   padding: 0 10px;
   border: 0;
