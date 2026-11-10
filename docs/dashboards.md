@@ -151,7 +151,7 @@ Every widget also has an **Appearance** section (card background, border, radius
 - **Row limit** — default 50 (1–10,000).
 - **Visible columns** — toggle columns on/off. With none selected, all columns show.
 - **Column formats** — per-column `number` / `currency` / `percent` / `date` formatting, with decimals, a currency code, or a date style (`short` / `medium` / `long` / `full`).
-- **Conditional formatting** — color cells or whole rows by a rule. Each rule is an operator (`eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `between`, `contains`), a value (a second value for `between`), a **scope** (cell vs row), a background and text color, and an optional **bold** toggle.
+- **Conditional rules** — color cells or whole rows by a rule. Each rule is an operator (`eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `between`, `contains`), a value (a second value for `between`), a **scope** (cell vs row), a background and text color, and an optional **bold** toggle.
 
 > *Use case:* a top-50 orders table with negative margins highlighted red at the row level.
 
