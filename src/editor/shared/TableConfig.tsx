@@ -23,13 +23,13 @@
  *   onChange  (rules)=>void
  */
 
-import { Table2, Hash, Palette, Rows3, FileSpreadsheet } from 'lucide-react'
+import { Table2, Hash, Palette, Rows3, FileSpreadsheet, ChevronUp, ChevronDown, Copy, Trash2 } from 'lucide-react'
 import {
   inputCls, selectCls, FieldLabel, SectionLabel, Section, ColorSwatch, ColorField, ToggleRow,
 } from './inspectorPrimitives.jsx'
 import { useColumnIntrospection } from './useInspectorData.js'
 import { parseNumberInput } from './numberInput.js'
-import { FORMAT_OPS, COLUMN_FORMAT_TYPES, PIVOT_AGGS } from './constants.js'
+import { FORMAT_OPS, formatOpLabel, COLUMN_FORMAT_TYPES, NUMBER_DISPLAY_FORMATS, PIVOT_AGGS } from './constants.js'
 
 /** Coerce props.columns (array | comma-string | undefined) to a string[]. */
 function columnsToArray(raw) {
@@ -56,11 +56,10 @@ function PinList({ label, columns, value, onChange }) {
           <div className="flex flex-wrap gap-1.5">
             {columns.map(col => (
               <button key={col} onClick={() => toggle(col)}
-                className={`px-2 h-7 text-[11px] font-mono rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
-                  value.includes(col)
-                    ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]'
-                    : 'bg-surface text-muted border-border hover:border-fg'
-                }`}>
+                className={`px-2 h-7 text-[11px] font-mono rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${value.includes(col)
+                  ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]'
+                  : 'bg-surface text-muted border-border hover:border-fg'
+                  }`}>
                 {col}
               </button>
             ))}
@@ -127,14 +126,26 @@ function ExportStyleFields({ value, onChange }) {
   )
 }
 
+const checkboxLabelCls = 'flex items-center gap-1.5 text-[11px] text-muted cursor-pointer'
+
+/** Drop undefined keys; undefined when nothing is left. */
+function compact(obj) {
+  const next = { ...obj }
+  for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k]
+  return Object.keys(next).length ? next : undefined
+}
+
 export function ColumnFormatsEditor({ columns, value, onChange }) {
+  // A column keeps its entry while ANY setting is present — prefix/suffix, a
+  // chip, a link or a subtotal are all meaningful on a raw (untyped) column.
   const setFmt = (col, patch) => {
     const next = { ...value }
-    const merged = { ...(next[col] ?? {}), ...patch }
-    if (!merged.type) delete next[col]
+    const merged = compact({ ...(next[col] ?? {}), ...patch })
+    if (!merged) delete next[col]
     else next[col] = merged
     onChange(next)
   }
+  const setLink = (col, fmt, patch) => setFmt(col, { link: { ...(fmt.link ?? {}), ...patch } })
   if (columns.length === 0) {
     return (
       <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2 text-center">
@@ -146,11 +157,13 @@ export function ColumnFormatsEditor({ columns, value, onChange }) {
     <div className="space-y-2">
       {columns.map(col => {
         const fmt = value[col] ?? {}
+        const numeric = fmt.type === 'number' || fmt.type === 'percent'
+        const link = fmt.link
         return (
           <div key={col} className="rounded-lg border border-border p-2 space-y-1.5 bg-surface">
             <div className="flex items-center gap-1.5">
               <span className="flex-1 text-xs font-mono text-fg truncate">{col}</span>
-              <select className={`${selectCls} w-28`} value={fmt.type ?? ''} onChange={e => setFmt(col, { type: e.target.value })}>
+              <select className={`${selectCls} w-28`} value={fmt.type ?? ''} onChange={e => setFmt(col, { type: e.target.value || undefined })}>
                 <option value="">raw</option>
                 {COLUMN_FORMAT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
               </select>
@@ -164,6 +177,12 @@ export function ColumnFormatsEditor({ columns, value, onChange }) {
                   <input type="text" placeholder="USD" className={`${inputCls} w-20`}
                     value={fmt.currency ?? ''} onChange={e => setFmt(col, { currency: e.target.value || undefined })} />
                 )}
+                {fmt.type === 'number' && (
+                  <select className={`${selectCls} flex-1`} title="Number display" value={fmt.numberFormat ?? ''}
+                    onChange={e => setFmt(col, { numberFormat: e.target.value || undefined })}>
+                    {NUMBER_DISPLAY_FORMATS.map(([v, lbl]) => <option key={v} value={v}>{lbl}</option>)}
+                  </select>
+                )}
               </div>
             )}
             {fmt.type === 'date' && (
@@ -171,18 +190,91 @@ export function ColumnFormatsEditor({ columns, value, onChange }) {
                 {['short', 'medium', 'long', 'full'].map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             )}
-            {(fmt.type === 'number' || fmt.type === 'percent') && (
-              <div className="flex items-center gap-3">
-                <label className="flex items-center gap-1.5 text-[11px] text-muted cursor-pointer">
-                  <input type="checkbox" checked={!!fmt.delta}
-                    onChange={e => setFmt(col, { delta: e.target.checked || undefined })} />
-                  Color by sign
+            <div className="flex gap-1.5">
+              <input type="text" placeholder="prefix" className={`${inputCls} flex-1`}
+                value={fmt.prefix ?? ''} onChange={e => setFmt(col, { prefix: e.target.value || undefined })} />
+              <input type="text" placeholder="suffix" className={`${inputCls} flex-1`}
+                value={fmt.suffix ?? ''} onChange={e => setFmt(col, { suffix: e.target.value || undefined })} />
+            </div>
+            <div className="flex items-center gap-3 flex-wrap">
+              {numeric && (
+                <>
+                  <label className={checkboxLabelCls}>
+                    <input type="checkbox" checked={!!fmt.delta}
+                      onChange={e => setFmt(col, { delta: e.target.checked || undefined })} />
+                    Color by sign
+                  </label>
+                  <label className={checkboxLabelCls}>
+                    <input type="checkbox" checked={!!fmt.bar}
+                      onChange={e => setFmt(col, { bar: e.target.checked || undefined })} />
+                    Show bar
+                  </label>
+                </>
+              )}
+              <label className={checkboxLabelCls}>
+                <input type="checkbox" checked={!!fmt.chip}
+                  onChange={e => setFmt(col, { chip: e.target.checked || undefined })} />
+                Chip
+              </label>
+              <label className={checkboxLabelCls}>
+                <input type="checkbox" checked={!!link}
+                  onChange={e => setFmt(col, { link: e.target.checked ? { template: '' } : undefined })} />
+                Link
+              </label>
+            </div>
+            {numeric && fmt.bar && (
+              <div className="flex items-center gap-1.5">
+                <select className={`${selectCls} w-24`} title="Bar style" value={fmt.barStyle ?? 'inline'}
+                  onChange={e => setFmt(col, { barStyle: e.target.value === 'inline' ? undefined : e.target.value })}>
+                  <option value="inline">inline</option>
+                  <option value="fill">fill</option>
+                  <option value="progress">progress</option>
+                </select>
+                <select className={`${selectCls} flex-1`} title="Bar maximum" value={fmt.barMaxColumn ?? ''}
+                  onChange={e => setFmt(col, { barMaxColumn: e.target.value || undefined })}>
+                  <option value="">max: column max</option>
+                  {columns.filter(c => c !== col).map(c => <option key={c} value={c}>max: {c}</option>)}
+                </select>
+                <ColorSwatch size="sm" title="Bar colour" value={fmt.barColor} fallback="#1f4fd1"
+                  onChange={v => setFmt(col, { barColor: v || undefined })} />
+              </div>
+            )}
+            {fmt.chip && (
+              <div className="flex items-center gap-2">
+                <label className="flex items-center gap-1 text-[10px] text-muted cursor-pointer">chip
+                  <ColorSwatch size="sm" title="Chip colour" value={fmt.chipColor} fallback="#dbe4fb"
+                    onChange={v => setFmt(col, { chipColor: v || undefined })} />
                 </label>
-                <label className="flex items-center gap-1.5 text-[11px] text-muted cursor-pointer">
-                  <input type="checkbox" checked={!!fmt.bar}
-                    onChange={e => setFmt(col, { bar: e.target.checked || undefined })} />
-                  Show bar
+                <label className="flex items-center gap-1 text-[10px] text-muted cursor-pointer">text
+                  <ColorSwatch size="sm" title="Chip text colour" value={fmt.chipTextColor} fallback="#1f2937"
+                    onChange={v => setFmt(col, { chipTextColor: v || undefined })} />
                 </label>
+              </div>
+            )}
+            {link && (
+              <div className="space-y-1.5">
+                <input type="text" placeholder="https://example.com/item/{{value}}" className={`${inputCls} font-mono`}
+                  value={link.template ?? ''} onChange={e => setLink(col, fmt, { template: e.target.value })} />
+                <p className="text-[10px] text-muted/70">
+                  {'{{value}}'} is this cell; {'{{column}}'} reads another column. Only http(s), mailto and /paths open.
+                </p>
+                <div className="flex items-center gap-1.5">
+                  <select className={`${selectCls} flex-1`} value={link.labelMode ?? 'cellValue'}
+                    onChange={e => setLink(col, fmt, { labelMode: e.target.value === 'cellValue' ? undefined : e.target.value })}>
+                    <option value="cellValue">Label: cell value</option>
+                    <option value="customText">Label: custom text</option>
+                    <option value="button">Button</option>
+                  </select>
+                  <label className={checkboxLabelCls}>
+                    <input type="checkbox" checked={link.openInNewTab !== false}
+                      onChange={e => setLink(col, fmt, { openInNewTab: e.target.checked ? undefined : false })} />
+                    New tab
+                  </label>
+                </div>
+                {(link.labelMode === 'customText' || link.labelMode === 'button') && (
+                  <input type="text" placeholder="Open" className={inputCls}
+                    value={link.customText ?? ''} onChange={e => setLink(col, fmt, { customText: e.target.value || undefined })} />
+                )}
               </div>
             )}
             {/* Subtotal shown on a group row. Numeric columns default to a sum;
@@ -203,76 +295,203 @@ export function ColumnFormatsEditor({ columns, value, onChange }) {
   )
 }
 
+const ruleIconBtnCls = 'w-7 h-7 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors disabled:opacity-30 disabled:pointer-events-none focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50'
+
+/** Full-width two-way toggle (Value | Column, Cell | Row). */
+function Segmented({ options, value, onChange }) {
+  return (
+    <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+      {options.map(([key, label, title]) => (
+        <button key={key} type="button" title={title} aria-pressed={value === key} onClick={() => onChange(key)}
+          className={`flex-1 text-[12px] font-medium transition-colors ${value === key ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** Swatch + colour text in one box, narrow enough for a three-up row. */
+function RuleColorField({ value, fallback, placeholder, onChange }) {
+  return (
+    <div className="flex items-center gap-1.5 h-8 px-1.5 rounded-lg border border-border bg-surface min-w-0">
+      <ColorSwatch size="sm" value={value} fallback={fallback} title="Pick a colour" onChange={onChange} />
+      <input type="text" className="flex-1 min-w-0 bg-transparent text-[12px] font-mono text-fg placeholder:text-muted/60 focus:outline-none"
+        placeholder={placeholder} value={value ?? ''} onChange={e => onChange(e.target.value || undefined)} />
+    </div>
+  )
+}
+
+/** A sample of what a matching cell will look like. */
+function RulePreview({ rule }) {
+  const s = rule.style ?? {}
+  const text = rule.compareColumn != null
+    ? `${formatOpLabel(rule.op ?? 'gt')} ${rule.compareColumn || '…'}`
+    : (String(rule.value ?? '').trim() || 'Aa')
+  const border = s.border ?? (s.borderWidth || s.borderColor
+    ? `${s.borderWidth || 1}px solid ${s.borderColor || 'currentColor'}` : undefined)
+  return (
+    <span className="inline-flex items-center h-6 px-2 rounded-md text-[11px] max-w-[9rem] truncate border border-border"
+      style={{ backgroundColor: s.backgroundColor, color: s.color, fontWeight: s.fontWeight, ...(border ? { border } : {}) }}
+      title="Preview">
+      {text}
+    </span>
+  )
+}
+
 export function ConditionalRulesEditor({ columns, rules, onChange }) {
   const addRule = () => onChange([...rules, {
-    column: columns[0] ?? '', op: 'gt', value: '', scope: 'cell',
+    column: columns[0] ?? '', op: 'gt', value: '', scope: 'cell', enabled: true,
     style: { backgroundColor: '#dcfce7', color: '#166534' },
   }])
-  const setRule = (idx, patch) => onChange(rules.map((r, i) => i === idx ? { ...r, ...patch } : r))
-  const setStyle = (idx, patch) => onChange(rules.map((r, i) => i === idx ? { ...r, style: { ...r.style, ...patch } } : r))
+  const setRule = (idx, patch) => onChange(rules.map((r, i) => i === idx ? compact({ ...r, ...patch }) : r))
+  const setStyle = (idx, patch) => onChange(rules.map((r, i) => i === idx ? { ...r, style: compact({ ...r.style, ...patch }) ?? {} } : r))
   const removeRule = (idx) => onChange(rules.filter((_, i) => i !== idx))
+  // Order matters: later rules win, so moving a rule changes which style shows.
+  const moveRule = (idx, dir) => {
+    const to = idx + dir
+    if (to < 0 || to >= rules.length) return
+    const next = [...rules]
+      ;[next[idx], next[to]] = [next[to], next[idx]]
+    onChange(next)
+  }
+  const duplicateRule = (idx) => onChange([...rules.slice(0, idx + 1), structuredClone(rules[idx]), ...rules.slice(idx + 1)])
+  const setCompareMode = (idx, r, mode) => setRule(idx, mode === 'column'
+    ? { compareColumn: r.compareColumn || columns.find(c => c !== r.column) || '' }
+    : { compareColumn: undefined, compareColumn2: undefined })
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <p className="text-[10px] text-muted/70">When a cell matches, apply a style.</p>
-        <button onClick={addRule}
-          className="text-[11px] font-medium px-2 h-6 rounded-lg border border-dashed border-border hover:border-fg text-muted hover:text-fg transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
-          + Add rule
-        </button>
-      </div>
-      {rules.length === 0 && (
-        <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2 text-center">
-          No rules yet.
-        </p>
-      )}
-      {rules.map((r, idx) => (
-        <div key={idx} className="rounded-lg border border-border p-2 space-y-1.5 bg-surface">
-          <div className="flex items-center gap-1.5">
-            <select className={`${selectCls} flex-1`} value={r.column ?? ''} onChange={e => setRule(idx, { column: e.target.value })}>
-              {!r.column && <option value="">column…</option>}
-              {columns.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
-            <select className={`${selectCls} w-24`} value={r.op ?? 'gt'} onChange={e => setRule(idx, { op: e.target.value })}>
-              {FORMAT_OPS.map(o => <option key={o} value={o}>{o}</option>)}
-            </select>
-            <button onClick={() => removeRule(idx)} title="Remove rule"
-              className="w-7 h-7 shrink-0 flex items-center justify-center text-xs rounded-lg border border-transparent hover:border-border hover:bg-surface-2 text-muted hover:text-fg transition-colors">✕</button>
-          </div>
-          <div className="flex gap-1.5">
-            <input type="text" placeholder="value" className={`${inputCls} flex-1`}
-              value={r.value ?? ''} onChange={e => setRule(idx, { value: e.target.value })} />
-            {r.op === 'between' && (
-              <input type="text" placeholder="and" className={`${inputCls} flex-1`}
-                value={r.value2 ?? ''} onChange={e => setRule(idx, { value2: e.target.value })} />
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="flex h-7 rounded-lg border border-border overflow-hidden">
-              {['cell', 'row'].map(sc => (
-                <button key={sc} onClick={() => setRule(idx, { scope: sc })}
-                  className={`px-2.5 text-[11px] font-medium capitalize transition-colors ${(r.scope ?? 'cell') === sc ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>
-                  {sc}
-                </button>
-              ))}
+    <div className="space-y-3">
+      <p className="text-[12px] text-muted leading-snug">
+        Rules run top to bottom. When rules overlap, the later one wins.
+      </p>
+      {rules.map((r, idx) => {
+        const enabled = r.enabled !== false && r.isActive !== false
+        const byColumn = r.compareColumn != null
+        const others = columns.filter(c => c !== r.column)
+        const s = r.style ?? {}
+        return (
+          <div key={idx} className="rounded-xl border border-border bg-surface p-3 space-y-3">
+            <div className="flex items-center gap-2">
+              <input type="checkbox" className="h-4 w-4 shrink-0 cursor-pointer accent-[var(--success,#16a34a)]"
+                title={enabled ? 'Rule on — click to disable' : 'Rule off — click to enable'}
+                checked={enabled}
+                onChange={e => setRule(idx, { enabled: e.target.checked, isActive: undefined })} />
+              <span className="text-[13px] font-semibold text-fg shrink-0">Rule {idx + 1}</span>
+              <span className="min-w-0 flex-1"><RulePreview rule={r} /></span>
+              <div className="flex items-center shrink-0">
+                <button onClick={() => moveRule(idx, -1)} disabled={idx === 0} title="Move up" className={ruleIconBtnCls}><ChevronUp size={14} /></button>
+                <button onClick={() => moveRule(idx, 1)} disabled={idx === rules.length - 1} title="Move down" className={ruleIconBtnCls}><ChevronDown size={14} /></button>
+                <button onClick={() => duplicateRule(idx)} title="Duplicate rule" className={ruleIconBtnCls}><Copy size={13} /></button>
+                <button onClick={() => removeRule(idx)} title="Delete rule" className={`${ruleIconBtnCls} !text-[var(--danger,#ef4444)]`}><Trash2 size={14} /></button>
+              </div>
             </div>
-            <label className="flex items-center gap-1 text-[10px] text-muted cursor-pointer">bg
-              <ColorSwatch size="sm" title="Row background"
-                value={r.style?.backgroundColor} fallback="#dcfce7"
-                onChange={v => setStyle(idx, { backgroundColor: v })} />
-            </label>
-            <label className="flex items-center gap-1 text-[10px] text-muted cursor-pointer">text
-              <ColorSwatch size="sm" title="Row text colour"
-                value={r.style?.color} fallback="#166534"
-                onChange={v => setStyle(idx, { color: v })} />
-            </label>
-            <button onClick={() => setStyle(idx, { fontWeight: r.style?.fontWeight === 'bold' ? undefined : 'bold' })}
-              className={`w-7 h-7 text-[11px] rounded-lg border font-bold transition-colors ${r.style?.fontWeight === 'bold' ? 'border-[var(--ink)] text-fg bg-surface-2' : 'border-border text-muted hover:text-fg'}`}>
-              B
-            </button>
+
+            <div className={`space-y-3${enabled ? '' : ' opacity-50'}`}>
+              <div className="space-y-2">
+                <SectionLabel>When</SectionLabel>
+                <div className="grid grid-cols-2 gap-2">
+                  <select className={`${selectCls} min-w-0`} value={r.column ?? ''} onChange={e => setRule(idx, { column: e.target.value })}>
+                    {!r.column && <option value="">Column…</option>}
+                    {columns.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  <select className={`${selectCls} min-w-0`} title={formatOpLabel(r.op ?? 'gt')} value={r.op ?? 'gt'} onChange={e => setRule(idx, { op: e.target.value })}>
+                    {FORMAT_OPS.map(o => <option key={o} value={o}>{formatOpLabel(o)}</option>)}
+                  </select>
+                </div>
+                {byColumn ? (
+                  <div className={r.op === 'between' ? 'grid grid-cols-2 gap-2' : ''}>
+                    <select className={`${selectCls} min-w-0`} value={r.compareColumn ?? ''}
+                      onChange={e => setRule(idx, { compareColumn: e.target.value })}>
+                      {!r.compareColumn && <option value="">Column…</option>}
+                      {others.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                    {r.op === 'between' && (
+                      <select className={`${selectCls} min-w-0`} value={r.compareColumn2 ?? ''}
+                        onChange={e => setRule(idx, { compareColumn2: e.target.value || undefined })}>
+                        <option value="">and…</option>
+                        {others.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    )}
+                  </div>
+                ) : (
+                  <div className={r.op === 'between' ? 'grid grid-cols-2 gap-2' : ''}>
+                    <input type="text" placeholder={r.op === 'between' ? 'From' : 'Value'} className={`${inputCls} min-w-0`}
+                      value={r.value ?? ''} onChange={e => setRule(idx, { value: e.target.value })} />
+                    {r.op === 'between' && (
+                      <input type="text" placeholder="To" className={`${inputCls} min-w-0`}
+                        value={r.value2 ?? ''} onChange={e => setRule(idx, { value2: e.target.value })} />
+                    )}
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <FieldLabel>Compare to</FieldLabel>
+                    <Segmented value={byColumn ? 'column' : 'static'} onChange={mode => setCompareMode(idx, r, mode)}
+                      options={[['static', 'Value', 'Compare against a fixed value'], ['column', 'Column', 'Compare against another column of the same row']]} />
+                  </div>
+                  <div>
+                    <FieldLabel>Apply to</FieldLabel>
+                    <Segmented value={r.scope ?? 'cell'} onChange={sc => setRule(idx, { scope: sc })}
+                      options={[['cell', 'Cell', 'Style only the matching cell'], ['row', 'Row', 'Style the whole row']]} />
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2 border-t border-border pt-3">
+                <SectionLabel>Then style</SectionLabel>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="min-w-0">
+                    <FieldLabel>Background</FieldLabel>
+                    <RuleColorField value={s.backgroundColor} fallback="#dcfce7" placeholder="none"
+                      onChange={v => setStyle(idx, { backgroundColor: v })} />
+                  </div>
+                  <div className="min-w-0">
+                    <FieldLabel>Text</FieldLabel>
+                    <RuleColorField value={s.color} fallback="#166534" placeholder="auto"
+                      onChange={v => setStyle(idx, { color: v })} />
+                  </div>
+                  <div className="min-w-0">
+                    {/* Border: width + colour, folded into a CSS `border` by evalRules(). */}
+                    <FieldLabel>Border</FieldLabel>
+                    <RuleColorField value={s.borderColor} fallback="#166534" placeholder="none"
+                      onChange={v => setStyle(idx, v
+                        ? { borderColor: v, borderWidth: s.borderWidth || 1 }
+                        : { borderColor: undefined, borderWidth: undefined })} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <FieldLabel>Border width</FieldLabel>
+                    <div className="relative">
+                      <input type="number" min={0} max={8} placeholder="0" title="Border width in px; 0 or empty = no border"
+                        className={`${inputCls} pr-8`}
+                        value={s.borderWidth ?? ''}
+                        onChange={e => {
+                          const w = parseNumberInput(e.target.value, { integer: true, min: 0, max: 8 })
+                          setStyle(idx, w ? { borderWidth: w, borderColor: s.borderColor ?? '#166534' } : { borderWidth: undefined, borderColor: undefined })
+                        }} />
+                      <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-muted">px</span>
+                    </div>
+                  </div>
+                  <div>
+                    <FieldLabel>Weight</FieldLabel>
+                    <button type="button" aria-pressed={s.fontWeight === 'bold'}
+                      onClick={() => setStyle(idx, { fontWeight: s.fontWeight === 'bold' ? undefined : 'bold' })}
+                      className={`w-full h-8 rounded-lg border text-[12px] transition-colors ${s.fontWeight === 'bold' ? 'font-bold border-[var(--ink)] bg-surface-2 text-fg' : 'font-medium border-border text-muted hover:text-fg'}`}>
+                      Bold
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
-      ))}
+        )
+      })}
+      <button type="button" onClick={(e) => { addRule(); e.currentTarget.blur() }}
+        className="w-full h-10 text-[12px] font-medium rounded-xl border border-dashed border-border hover:border-fg text-muted hover:text-fg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+        + Add rule
+      </button>
     </div>
   )
 }
@@ -331,11 +550,10 @@ export function TableConfig({ widget, onChange }) {
               const on = selected.length === 0 || selected.includes(col)
               return (
                 <button key={col} onClick={() => toggleCol(col)}
-                  className={`px-2 h-7 text-[11px] font-mono rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${
-                    on && selected.includes(col) ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]'
-                      : on ? 'bg-surface text-fg border-border hover:border-fg'
+                  className={`px-2 h-7 text-[11px] font-mono rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${on && selected.includes(col) ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]'
+                    : on ? 'bg-surface text-fg border-border hover:border-fg'
                       : 'bg-surface text-muted/50 border-border line-through'
-                  }`}>
+                    }`}>
                   {col}
                 </button>
               )

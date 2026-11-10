@@ -64,7 +64,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { runMetricQuery } from '../../lib/metricRuntime.js'
-import { evalRules, formatValue, DELTA_COLORS } from './conditionalFormat.js'
+import { evalRules, formatValue, resolveBarMax, resolveLinkHref, DELTA_COLORS } from './conditionalFormat.js'
 import { columnLabel } from '../columnLabels.js'
 import { useResolvedParams, useResolvedFilters, useSetVariable } from '../VariableStore.jsx'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
@@ -89,7 +89,7 @@ import WidgetError from '../../components/app/WidgetError.jsx'
 function DetailPanel({ parentRow, detailQueryId, detailParam, detailColumns, detailLimit, detailLabels }) {
   const [detailData, setDetailData] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [error, setError]     = useState(null)
+  const [error, setError] = useState(null)
 
   const paramValue = detailParam ? parentRow[detailParam] : undefined
 
@@ -107,17 +107,17 @@ function DetailPanel({ parentRow, detailQueryId, detailParam, detailColumns, det
         )
         if (cancelled) return
 
-        const fields    = table.schema.fields
-        const colNames  = detailColumns && detailColumns.length > 0
+        const fields = table.schema.fields
+        const colNames = detailColumns && detailColumns.length > 0
           ? detailColumns
           : fields.map(f => f.name)
         const cols = colNames.map(name => ({
-          key:   name,
+          key: name,
           label: columnLabel(name, detailLabels),
-          type:  arrowTypeToColumnType(fields.find(f => f.name === name)?.type) ?? 'string',
+          type: arrowTypeToColumnType(fields.find(f => f.name === name)?.type) ?? 'string',
         }))
         const maxRows = Math.min(table.numRows, detailLimit)
-        const rows    = []
+        const rows = []
         for (let i = 0; i < maxRows; i++) {
           const row = {}
           for (const c of cols) {
@@ -136,13 +136,13 @@ function DetailPanel({ parentRow, detailQueryId, detailParam, detailColumns, det
 
     fetch()
     return () => { cancelled = true }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detailQueryId, String(paramValue), String(detailColumns), detailLimit, detailLabels])
 
   if (loading) {
     return (
       <div className="px-6 py-3 space-y-1.5" aria-busy="true">
-        {[1,2,3].map(i => <Skeleton key={i} className="h-5 w-full rounded" />)}
+        {[1, 2, 3].map(i => <Skeleton key={i} className="h-5 w-full rounded" />)}
       </div>
     )
   }
@@ -230,6 +230,47 @@ function BarCell({ text, value, max, color, variant }) {
   )
 }
 
+/** columnFormats[col].chip → the formatted value as a pill. */
+function ChipCell({ text, color, textColor }) {
+  return (
+    <span
+      className={`inline-flex items-center h-6 px-2.5 rounded-full text-[11px] font-bold whitespace-nowrap${color ? '' : ' bg-primary/15'}`}
+      style={{ ...(color ? { background: color } : {}), ...(textColor ? { color: textColor } : {}) }}
+    >
+      {text}
+    </span>
+  )
+}
+
+/**
+ * columnFormats[col].link → wrap the cell in an anchor. `href` is already
+ * vetted by resolveLinkHref(). Clicks stop here so a link never doubles as
+ * the table's click-to-filter.
+ */
+function LinkCell({ href, link, children }) {
+  const newTab = link.openInNewTab !== false
+  const isButton = link.labelMode === 'button'
+  const label = (link.labelMode === 'customText' || isButton) && link.customText ? link.customText : children
+  const color = link.buttonColor || undefined
+  return (
+    <a
+      href={href}
+      target={newTab ? '_blank' : undefined}
+      rel={newTab ? 'noopener noreferrer' : undefined}
+      onClick={e => e.stopPropagation()}
+      onDoubleClick={e => e.stopPropagation()}
+      className={isButton
+        ? 'inline-flex items-center h-6 px-2 rounded border text-[11px] font-medium no-underline hover:opacity-80'
+        : 'underline underline-offset-2 hover:opacity-80'}
+      style={isButton
+        ? { color: color ?? 'var(--primary)', borderColor: color ?? 'currentColor' }
+        : (color ? { color } : { color: 'var(--primary)' })}
+    >
+      {label}
+    </a>
+  )
+}
+
 /**
  * Convert an Arrow Table to { cols:[{key,label,type}], rows:[{...}] } limited
  * to `limit` rows and (optionally) restricted/ordered by `columns`.
@@ -293,30 +334,30 @@ export default function TableWidget({ widget, providerTable = null }) {
   const columns = Array.isArray(columnsRaw)
     ? columnsRaw
     : columnsRaw
-    ? columnsRaw.split(',').map((c) => c.trim()).filter(Boolean)
-    : []
+      ? columnsRaw.split(',').map((c) => c.trim()).filter(Boolean)
+      : []
 
   // Master-detail / expandable row config.
-  const detailQueryId  = wProps.detailQueryId  ?? null
-  const detailParam    = wProps.detailParam    ?? null
+  const detailQueryId = wProps.detailQueryId ?? null
+  const detailParam = wProps.detailParam ?? null
   const detailColumnsRaw = wProps.detailColumns ?? null
-  const detailColumns  = Array.isArray(detailColumnsRaw)
+  const detailColumns = Array.isArray(detailColumnsRaw)
     ? detailColumnsRaw
     : detailColumnsRaw
-    ? detailColumnsRaw.split(',').map(c => c.trim()).filter(Boolean)
-    : null
-  const detailLimit    = wProps.detailLimit    ?? 20
-  const isExpandable   = !!(detailQueryId || wProps.expandable)
+      ? detailColumnsRaw.split(',').map(c => c.trim()).filter(Boolean)
+      : null
+  const detailLimit = wProps.detailLimit ?? 20
+  const isExpandable = !!(detailQueryId || wProps.expandable)
 
   // ── Presentation (legacy table parity) ──────────────────────────────────
   // Everything below was previously hard-coded in the DataGrid call, so a
   // board could not turn pagination off, choose a density, hide the toolbar,
   // pin or group a column up front, or restyle header/rows — all of which the
   // legacy tables these boards came from could do.
-  const density   = ['compact', 'standard', 'comfortable'].includes(wProps.density)
+  const density = ['compact', 'standard', 'comfortable'].includes(wProps.density)
     ? wProps.density : 'compact'
-  const paginate  = wProps.pagination !== false
-  const pageSize  = Number.isFinite(wProps.pageSize) && wProps.pageSize > 0 ? wProps.pageSize : 50
+  const paginate = wProps.pagination !== false
+  const pageSize = Number.isFinite(wProps.pageSize) && wProps.pageSize > 0 ? wProps.pageSize : 50
   const showToolbar = wProps.toolbar !== false
   const asList = (v) => (Array.isArray(v) ? v : typeof v === 'string' && v
     ? v.split(',').map(s => s.trim()).filter(Boolean) : [])
@@ -383,7 +424,7 @@ export default function TableWidget({ widget, providerTable = null }) {
       setLoading(false)
       setError(null)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providerTable, limit, columnsRaw])
 
   useEffect(() => {
@@ -404,11 +445,11 @@ export default function TableWidget({ widget, providerTable = null }) {
         const { table, error: queryError } = metric
           ? await runMetricQuery(metric)
           : await runArrowQueryById(query_id, {
-              namedParams: hasParams ? resolvedParams : undefined,
-              filters: hasFilters ? resolvedFilters : undefined,
-              // Fetch only what the table can show, plus one row to detect more.
-              limit: limit + 1,
-            })
+            namedParams: hasParams ? resolvedParams : undefined,
+            filters: hasFilters ? resolvedFilters : undefined,
+            // Fetch only what the table can show, plus one row to detect more.
+            limit: limit + 1,
+          })
         if (cancelled) return
         // Failed query → real reason, no grid. Never substitute rows.
         if (queryError) {
@@ -451,14 +492,20 @@ export default function TableWidget({ widget, providerTable = null }) {
       const descriptor = { ...col }
       const width = Number(widthMap[col.key])
       if (Number.isFinite(width) && width > 0) descriptor.width = width
-      if (fmt) {
+      // An entry holding only `aggregation` (a subtotal on a raw column) is
+      // not a display format — leave those cells on the grid's default render.
+      if (fmt && Object.keys(fmt).some(k => k !== 'aggregation')) {
         // Apply column format both on-screen and on export.
-        descriptor.renderCell = (val) => {
+        // `row` is the source row, `{}` on a summary row, or a group row's
+        // first leaf — barMaxColumn / link tokens degrade to their fallbacks.
+        descriptor.renderCell = (val, row) => {
           if (val == null) return <span className="text-muted/50">—</span>
           const text = formatValue(val, fmt)
-          if (fmt.bar && Number.isFinite(Number(val))) return <BarCell text={text} value={val} max={fmt.barMax ?? barMaxByCol[col.key] ?? 0} color={fmt.barColor} variant={fmt.barStyle} />
-          if (fmt.delta) return <DeltaCell text={text} value={val} />
-          return text
+          if (fmt.chip) return <ChipCell text={text} color={fmt.chipColor} textColor={fmt.chipTextColor} />
+          if (fmt.bar && Number.isFinite(Number(val))) return <BarCell text={text} value={val} max={resolveBarMax(fmt, row, barMaxByCol[col.key] ?? 0)} color={fmt.barColor} variant={fmt.barStyle} />
+          const content = fmt.delta ? <DeltaCell text={text} value={val} /> : text
+          const href = fmt.link ? resolveLinkHref(fmt.link, val, row) : null
+          return href ? <LinkCell href={href} link={fmt.link}>{content}</LinkCell> : content
         }
         descriptor.exportValue = (val) => (val == null ? '' : formatValue(val, fmt))
       }
@@ -478,14 +525,14 @@ export default function TableWidget({ widget, providerTable = null }) {
     if (!isExpandable) return baseCols
     return [
       {
-        key:    '__expand__',
-        label:  '',
-        type:   'string',
-        width:  36,
-        align:  'center',
+        key: '__expand__',
+        label: '',
+        type: 'string',
+        width: 36,
+        align: 'center',
         renderCell: (_val, row) => {
           const rowKey = JSON.stringify(row)
-          const open   = expandedRows.has(rowKey)
+          const open = expandedRows.has(rowKey)
           return (
             <button
               type="button"
@@ -582,7 +629,7 @@ export default function TableWidget({ widget, providerTable = null }) {
       if (onClickSpec?.stepNext) stepAdvance()
     },
     [drilldown?.target_var, drilldown?.value_field, onClickSpec,
-     setVariable, emitCrossFilter, stepAdvance],
+      setVariable, emitCrossFilter, stepAdvance],
   )
 
   // Only attach a handler when the widget actually declares an interaction —
@@ -638,8 +685,8 @@ export default function TableWidget({ widget, providerTable = null }) {
             </thead>
             <tbody>
               {rows.map((row, rowIdx) => {
-                const rowKey  = JSON.stringify(row)
-                const open    = expandedRows.has(rowKey)
+                const rowKey = JSON.stringify(row)
+                const open = expandedRows.has(rowKey)
                 const rowStyle = getRowStyle ? getRowStyle(row) : null
 
                 return [
@@ -650,12 +697,12 @@ export default function TableWidget({ widget, providerTable = null }) {
                   >
                     {gridColumns.map(col => {
                       const cellStyle = getCellStyle ? getCellStyle(row, col.key) : null
-                      const val       = row[col.key]
-                      const rendered  = col.renderCell ? col.renderCell(val, row) : (val == null ? '' : String(val))
+                      const val = row[col.key]
+                      const rendered = col.renderCell ? col.renderCell(val, row) : (val == null ? '' : String(val))
                       // The expand toggle owns its own click — never let it
                       // double as a cross-filter source.
                       const clickable = hasRowClick && col.key !== '__expand__'
-                      const fire      = () => handleRowClick(val, row, col.key)
+                      const fire = () => handleRowClick(val, row, col.key)
                       return (
                         <td
                           key={col.key}
