@@ -51,6 +51,7 @@ import { useEnv } from '../contexts/EnvContext.jsx'
 import { pushToLive, resolveLiveEnvKey, resolveLiveRender, canPushToLive } from '../lib/liveBoard.js'
 import { toast } from '../components/ui/Toast.jsx'
 import ExportShareMenu from '../components/ExportShareMenu.jsx'
+import Tooltip from '../components/ui/Tooltip.jsx'
 import DeleteBoardDialog from '../components/app/DeleteBoardDialog.jsx'
 import { DropdownMenu, DropdownItem } from '../components/app/PageShell.jsx'
 import { extractVarsFromURL, applyVarToSearchParams } from '../dashboards/urlSync.js'
@@ -161,17 +162,17 @@ function ModeSwitch({ mode, onChange }) {
   return (
     <div className="nbc-seg" role="group" aria-label="Dashboard mode" data-testid="dashboard-mode-switch">
       {items.map(it => (
-        <button
-          key={it.id}
-          type="button"
-          onClick={() => onChange(it.id)}
-          aria-pressed={mode === it.id}
-          title={it.title}
-          data-testid={`dashboard-mode-${it.id}`}
-        >
-          <it.Icon size={14} strokeWidth={1.5} aria-hidden="true" />
-          <span className="hidden sm:inline">{it.label}</span>
-        </button>
+        <Tooltip key={it.id} content={it.title} side="bottom">
+          <button
+            type="button"
+            onClick={() => onChange(it.id)}
+            aria-pressed={mode === it.id}
+            data-testid={`dashboard-mode-${it.id}`}
+          >
+            <it.Icon size={14} strokeWidth={1.5} aria-hidden="true" />
+            <span className="hidden sm:inline">{it.label}</span>
+          </button>
+        </Tooltip>
       ))}
     </div>
   )
@@ -194,17 +195,19 @@ function BoardOptionsMenu({ onDelete, onHistory = undefined, onToggleTheme = und
 
   return (
     <div ref={anchorRef} className="relative shrink-0">
-      <button
-        type="button"
-        onClick={() => setOpen(v => !v)}
-        aria-label="Board options"
-        aria-expanded={open}
-        aria-haspopup="menu"
-        data-testid="dashboard-options-menu"
-        className="nbc-tool nbc-tool-bordered !px-0"
-      >
-        <MoreVertical size={16} strokeWidth={1.5} aria-hidden="true" />
-      </button>
+      <Tooltip content="Board options" side="bottom">
+        <button
+          type="button"
+          onClick={() => setOpen(v => !v)}
+          aria-label="Board options"
+          aria-expanded={open}
+          aria-haspopup="menu"
+          data-testid="dashboard-options-menu"
+          className="nbc-tool nbc-tool-bordered !px-0"
+        >
+          <MoreVertical size={16} strokeWidth={1.5} aria-hidden="true" />
+        </button>
+      </Tooltip>
 
       <DropdownMenu open={open} onClose={() => setOpen(false)} anchorRef={anchorRef}>
         {onHistory && (
@@ -272,13 +275,15 @@ function ViewToolbar({
       data-testid="dashboard-header"
     >
       {/* Back */}
-      <Link
-        to={backTo}
-        aria-label="Back to dashboards"
-        className="nbc-tool !px-0"
-      >
-        <ArrowLeft size={16} strokeWidth={1.5} aria-hidden="true" />
-      </Link>
+      <Tooltip content="Back to dashboards" side="bottom">
+        <Link
+          to={backTo}
+          aria-label="Back to dashboards"
+          className="nbc-tool !px-0"
+        >
+          <ArrowLeft size={16} strokeWidth={1.5} aria-hidden="true" />
+        </Link>
+      </Tooltip>
 
       {/* Title block. On a phone the title takes the full line and the status
           and time sit under it; from sm up it is one row. In edit mode the
@@ -360,16 +365,17 @@ function ViewToolbar({
       {/* View-mode actions. Edit mode's equivalents live in the editor toolbar. */}
       {!isEdit && (
         <div className="flex shrink-0 items-center gap-1.5">
-          <button
-            type="button"
-            onClick={toggleTheme}
-            aria-pressed={isDark}
-            aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-            title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-            className="nbc-tool nbc-tool-bordered !px-0 !hidden sm:!inline-flex"
-          >
-            {isDark ? <Sun size={16} strokeWidth={1.5} /> : <Moon size={16} strokeWidth={1.5} />}
-          </button>
+          <Tooltip content={isDark ? 'Switch to light mode' : 'Switch to dark mode'} side="bottom" className="hidden sm:inline-flex">
+            <button
+              type="button"
+              onClick={toggleTheme}
+              aria-pressed={isDark}
+              aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+              className="nbc-tool nbc-tool-bordered !px-0 !hidden sm:!inline-flex"
+            >
+              {isDark ? <Sun size={16} strokeWidth={1.5} /> : <Moon size={16} strokeWidth={1.5} />}
+            </button>
+          </Tooltip>
 
           {boardId && <ExportShareMenu board={boardId} spec={spec} />}
         </div>

@@ -43,6 +43,14 @@ function cx(...parts: unknown[]) {
   return parts.filter(Boolean).join(' ')
 }
 
+/** Per-glyph optical centre in tooltip caps (font metrics differ: ⌘ high, ⇧ low). */
+function tooltipKbdClass(k: string) {
+  if (/^[⌘⌃⌥]$/.test(k)) return cx('nubi-kbd', 'nubi-kbd-glyph-high')
+  if (/^[⇧↑↓←→]$/.test(k)) return cx('nubi-kbd', 'nubi-kbd-glyph-arrow')
+  if (/^[⏎⌫↵]$/.test(k)) return cx('nubi-kbd', 'nubi-kbd-glyph-action')
+  return 'nubi-kbd'
+}
+
 // Padding on the portaled wrapper: the visual gap, and the hover bridge between
 // trigger and bubble. placeTooltip sits the wrapper flush against the trigger.
 const PADDING: Record<TooltipSide, string> = {
@@ -157,20 +165,21 @@ export default function Tooltip({
   return (
     <span
       ref={triggerRef}
-      className={cx('relative inline-flex', className)}
+      className={cx('relative inline-flex items-center', className)}
       onMouseEnter={() => show()}
       onMouseLeave={hideSoon}
       onFocus={() => show(true)}
       onBlur={hideNow}
+      onClick={hideNow}
     >
       {typeof children === 'object' && children !== null
         ? {
-            ...children,
-            props: {
-              ...children.props,
-              'aria-describedby': visible ? id : children.props?.['aria-describedby'],
-            },
-          }
+          ...children,
+          props: {
+            ...children.props,
+            'aria-describedby': visible ? id : children.props?.['aria-describedby'],
+          },
+        }
         : children}
 
       {visible && createPortal(
@@ -194,7 +203,7 @@ export default function Tooltip({
             {keys.length > 0 && (
               <span className="inline-flex items-center gap-1" aria-hidden="true">
                 {keys.map((k, i) => (
-                  <kbd key={i} className="nubi-kbd">{k}</kbd>
+                  <kbd key={i} className={tooltipKbdClass(k)}>{k}</kbd>
                 ))}
               </span>
             )}

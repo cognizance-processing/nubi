@@ -19,7 +19,10 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Download, Share2, Image, FileText, Table, Link2, ShieldCheck, X, Copy, Check } from 'lucide-react'
+import Tooltip from './ui/Tooltip.jsx'
+import { fixedPanelStyle, placeDropdown, useAnchorTracking } from './ui/useFixedAnchor.js'
 import { get, post } from '../lib/api.js'
 import { widgetToCsv, elementToPNG, elementToPDF } from '../lib/exports.js'
 
@@ -74,13 +77,25 @@ export default function ExportShareMenu({ board, spec }) {
   const [error, setError] = useState(null)
   const [share, setShare] = useState(null)
   const [copied, setCopied] = useState(null)
+  const [pos, setPos] = useState(null)
   const ref = useRef(null)
+  const panelRef = useRef(null)
 
   const name = slugify(spec?.title)
 
+  // The panel is portaled with position: fixed — the editor toolbar that hosts
+  // this menu is `overflow-x-auto`, which would clip an absolute panel.
+  useAnchorTracking(open, () => {
+    if (!ref.current || !panelRef.current) return
+    setPos(placeDropdown(ref.current.getBoundingClientRect(), panelRef.current, { align: 'right', maxHeight: 640 }))
+  })
+
   useEffect(() => {
     if (!open) return
-    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    const onDown = (e) => {
+      if (ref.current?.contains(e.target) || panelRef.current?.contains(e.target)) return
+      setOpen(false)
+    }
     const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
     window.addEventListener('mousedown', onDown)
     window.addEventListener('keydown', onKey)
@@ -137,21 +152,28 @@ export default function ExportShareMenu({ board, spec }) {
 
   return (
     <div className="relative" ref={ref}>
-      <button
-        onClick={() => { setOpen(o => !o); if (!share && board) loadShare() }}
-        aria-label="Export & share dashboard"
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        className={`flex items-center justify-center w-8 h-8 rounded-[var(--radius-control)] border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 ${
-          open ? 'bg-surface-2 border-ink text-fg' : 'bg-surface text-fg border-border hover:border-ink'
-        }`}
-        title="Export & share dashboard"
-      >
-        <Share2 size={15} />
-      </button>
+      <Tooltip content="Export & share" side="bottom">
+        <button
+          onClick={() => { setOpen(o => !o); if (!share && board) loadShare() }}
+          aria-label="Export & share dashboard"
+          aria-expanded={open}
+          aria-haspopup="dialog"
+          data-testid="export-share-btn"
+          className={`flex items-center justify-center w-8 h-8 rounded-[var(--radius-control)] border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 ${
+            open ? 'bg-surface-2 border-ink text-fg' : 'bg-surface text-fg border-border hover:border-ink'
+          }`}
+        >
+          <Share2 size={15} />
+        </button>
+      </Tooltip>
 
-      {open && (
-        <div className="absolute right-0 top-full mt-2 z-50 w-80 max-w-[calc(100vw-2rem)] bg-surface border border-border rounded-[var(--radius-sheet)] shadow-pop overflow-hidden">
+      {open && createPortal(
+        <div
+          ref={panelRef}
+          data-testid="export-share-panel"
+          style={fixedPanelStyle(pos)}
+          className="w-80 max-w-[calc(100vw-2rem)] bg-surface border border-border rounded-[var(--radius-sheet)] shadow-pop overflow-hidden"
+        >
           <div className="flex border-b border-border">
             {['export', 'share'].map(t => (
               <button key={t} onClick={() => setTab(t)} aria-pressed={tab === t}
@@ -220,7 +242,8 @@ export default function ExportShareMenu({ board, spec }) {
               {!busy && !share && <p className="text-xs text-muted">Save the dashboard to generate an embed link.</p>}
             </div>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )

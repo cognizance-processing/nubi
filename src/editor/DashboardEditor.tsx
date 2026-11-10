@@ -58,6 +58,7 @@ import {
 import Button from '../components/ui/Button.jsx'
 import Spinner from '../components/ui/Spinner.jsx'
 import Tooltip from '../components/ui/Tooltip.jsx'
+import { fixedPanelStyle, placeDropdown, useAnchorTracking } from '../components/ui/useFixedAnchor.js'
 import Modal from '../components/ui/Modal.jsx'
 import Tag from '../components/ui/Tag.jsx'
 import EmptyState from '../components/ui/EmptyState.jsx'
@@ -3046,14 +3047,27 @@ function ToolbarDivider() {
  * ToolbarPopover — a labelled trigger button that reveals an arbitrary panel
  * of content below it. Used to group related, lower-frequency controls (e.g.
  * device + zoom) behind one bar slot instead of spreading them out inline.
+ *
+ * The panel is portaled with position: fixed (useFixedAnchor) because the
+ * toolbar row is `overflow-x-auto`, which would clip an absolute panel.
  */
-function ToolbarPopover({ icon: Icon, label, title, testId, active, children }) {
+function ToolbarPopover({ icon: Icon, label, title, tooltip, testId, active, children }) {
   const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState(null)
   const ref = useRef(null)
+  const panelRef = useRef(null)
+
+  useAnchorTracking(open, () => {
+    if (!ref.current || !panelRef.current) return
+    setPos(placeDropdown(ref.current.getBoundingClientRect(), panelRef.current, { align: 'right' }))
+  })
 
   useEffect(() => {
     if (!open) return
-    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    const onDown = (e) => {
+      if (ref.current?.contains(e.target) || panelRef.current?.contains(e.target)) return
+      setOpen(false)
+    }
     const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
     window.addEventListener('mousedown', onDown)
     window.addEventListener('keydown', onKey)
@@ -3062,26 +3076,31 @@ function ToolbarPopover({ icon: Icon, label, title, testId, active, children }) 
 
   return (
     <div className="relative shrink-0" ref={ref}>
-      <button
-        onClick={() => setOpen(o => !o)}
-        title={title}
-        aria-label={title}
-        aria-expanded={open}
-        data-testid={testId}
-        className={['nbc-tool nbc-tool-bordered', open || active ? 'is-active' : ''].join(' ')}
-      >
-        <Icon size={16} strokeWidth={1.5} />
-        <span className="hidden lg:inline">{label}</span>
-        <ChevronDown size={14} strokeWidth={1.5} className={open ? 'rotate-180' : ''} />
-      </button>
+      <Tooltip content={tooltip ?? title} side="bottom">
+        <button
+          onClick={() => setOpen(o => !o)}
+          aria-label={title}
+          aria-expanded={open}
+          data-testid={testId}
+          className={['nbc-tool nbc-tool-bordered', open || active ? 'is-active' : ''].join(' ')}
+        >
+          <Icon size={16} strokeWidth={1.5} />
+          <span className="hidden lg:inline">{label}</span>
+          <ChevronDown size={14} strokeWidth={1.5} className={open ? 'rotate-180' : ''} />
+        </button>
+      </Tooltip>
 
-      {open && (
+      {open && createPortal(
         <div
-          className="nubi-dropdown absolute right-0 top-full mt-1.5 z-50 w-max p-3"
+          ref={panelRef}
+          className="nubi-dropdown w-max p-3"
+          style={fixedPanelStyle(pos)}
           onClick={(e) => e.stopPropagation()}
+          data-testid={testId ? `${testId}-panel` : undefined}
         >
           {children}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )
@@ -4341,13 +4360,17 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   )
 
   // Device viewport switcher — shared by the top bar and the mobile slide-out.
-  const deviceSwitcher = (
+  // `compact` (slide-out) keeps a native title instead of a Tooltip.
+  const deviceSwitcher = (compact = false) => (
     <div className="nbc-seg" role="group" aria-label="Preview size" data-testid="device-switcher">
-      {DEVICES.map(d => (
-        <button key={d.id} onClick={() => setDevice(d.id)} title={d.label} aria-label={d.label} aria-pressed={device === d.id}>
-          <d.Icon size={16} strokeWidth={1.5} />
-        </button>
-      ))}
+      {DEVICES.map(d => {
+        const button = (
+          <button key={d.id} onClick={() => setDevice(d.id)} title={compact ? d.label : undefined} aria-label={d.label} aria-pressed={device === d.id}>
+            <d.Icon size={16} strokeWidth={1.5} />
+          </button>
+        )
+        return compact ? button : <Tooltip key={d.id} content={d.label} side="bottom">{button}</Tooltip>
+      })}
     </div>
   )
 
@@ -4358,11 +4381,11 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
     // it there) but still the only way to add widgets on md/mobile, which have
     // no room for a second permanent rail — so the toggle stays, just hidden
     // at lg+ via hideOnLg.
-    { id: 'add',    Icon: Plus,         mobileSheet: 'palette', label: 'Add widget', title: 'Add widget',                ariaLabel: 'Add widget panel', hideOnLg: true },
-    { id: 'config', Icon: Settings2,    mobileSheet: 'config',  label: 'Configure',  title: 'Configure selected widget', ariaLabel: 'Configure panel' },
-    { id: 'board',  Icon: LayoutGrid,   mobileSheet: 'board',   label: 'Dashboard',  title: 'Dashboard background, grid & variables', ariaLabel: 'Dashboard panel' },
-    { id: 'tabs',   Icon: Heading,      mobileSheet: 'tabs',    label: 'Tabs',       title: 'Tab bar & per-tab style',   ariaLabel: 'Tabs panel' },
-    { id: 'chat',   Icon: MessageSquare,mobileSheet: 'chat',    label: 'Chat',       title: 'AI Chat',                   ariaLabel: 'Chat panel' },
+    { id: 'add',    Icon: Plus,         mobileSheet: 'palette', label: 'Add widget', tip: 'Add widget', title: 'Add widget',                ariaLabel: 'Add widget panel', hideOnLg: true },
+    { id: 'config', Icon: Settings2,    mobileSheet: 'config',  label: 'Configure',  tip: 'Configure widget', title: 'Configure selected widget', ariaLabel: 'Configure panel' },
+    { id: 'board',  Icon: LayoutGrid,   mobileSheet: 'board',   label: 'Dashboard',  tip: 'Dashboard settings', title: 'Dashboard background, grid & variables', ariaLabel: 'Dashboard panel' },
+    { id: 'tabs',   Icon: Heading,      mobileSheet: 'tabs',    label: 'Tabs',       tip: 'Tab settings', title: 'Tab bar & per-tab style',   ariaLabel: 'Tabs panel' },
+    { id: 'chat',   Icon: MessageSquare,mobileSheet: 'chat',    label: 'Chat',       tip: 'AI chat', title: 'AI Chat',                   ariaLabel: 'Chat panel' },
     // Not a docked side panel like the others — opens the full-screen filters
     // authoring slide-over (filtersOpen state, below). This is the ONLY entry
     // point for it: the old route-level FILTERS button that used to dispatch
@@ -4370,7 +4393,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
     // editor calls setFiltersOpen(true) — without this button a drawer-placed
     // filter (common on boards with many filters, kept off the canvas on
     // purpose) has no way to be selected and configured at all.
-    { id: 'filters', Icon: FilterIcon,  mobileSheet: null,      label: 'Filters',    title: 'Manage dashboard filters',  ariaLabel: 'Filters panel' },
+    { id: 'filters', Icon: FilterIcon,  mobileSheet: null,      label: 'Filters',    tip: 'Manage filters', title: 'Manage dashboard filters',  ariaLabel: 'Filters panel' },
   ]
   const panelToggles = (compact = false) => (
     <div className={compact ? 'flex flex-col gap-1' : 'flex items-center gap-0.5'} data-testid="editor-panel-toggles">
@@ -4419,7 +4442,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         )
         return compact
           ? button
-          : <Tooltip key={seg.id} content={seg.label} side="bottom" className={seg.hideOnLg ? 'lg:hidden' : undefined}>{button}</Tooltip>
+          : <Tooltip key={seg.id} content={seg.tip} side="bottom" className={seg.hideOnLg ? 'lg:hidden' : undefined}>{button}</Tooltip>
       })}
     </div>
   )
@@ -4473,7 +4496,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
             <md : collapsed behind the hamburger → mobile slide-out menu. */}
         <div className="hidden md:flex items-center gap-1.5">
           {/* Device viewport switcher — shown in edit + preview so preview frames per-device. */}
-          {deviceSwitcher}
+          {deviceSwitcher()}
           {/* Canvas zoom controls + Reset (edit mode only) — grouped behind one
               popover trigger instead of 4 inline buttons, so the bar reads as
               "Zoom" rather than a wall of icons. */}
@@ -4482,6 +4505,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
               icon={ZoomIn}
               label="Zoom"
               title="Canvas zoom & reset"
+              tooltip="Canvas zoom"
               testId="editor-zoom-menu"
               active={zoomMode !== 'fit'}
             >
@@ -4498,35 +4522,36 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         </div>
 
         {/* Hamburger (<md): opens the slide-out with the whole toolbar cluster. */}
-        <button
-          onClick={() => setMobileMenu(true)}
-          title="Menu"
-          aria-label="Open editor menu"
-          data-testid="editor-hamburger"
-          className="nbc-tool nbc-tool-bordered md:!hidden !px-0"
-        >
-          <Menu size={16} strokeWidth={1.5} />
-        </button>
+        <Tooltip content="Editor menu" side="bottom" className="md:hidden">
+          <button
+            onClick={() => setMobileMenu(true)}
+            aria-label="Open editor menu"
+            data-testid="editor-hamburger"
+            className="nbc-tool nbc-tool-bordered md:!hidden !px-0"
+          >
+            <Menu size={16} strokeWidth={1.5} />
+          </button>
+        </Tooltip>
 
         <ToolbarDivider />
 
         {/* View switcher — Canvas / Code */}
         <div className="nbc-seg max-sm:!hidden" role="group" aria-label="Editor view" data-testid="dashboard-view-switcher">
           {[
-            { id: 'canvas', Icon: LayoutDashboard, title: 'Canvas / grid view' },
-            { id: 'code', Icon: FileCode2, title: 'Code view (dashboard.json)' },
+            { id: 'canvas', Icon: LayoutDashboard, title: 'Canvas / grid view', tip: 'Canvas' },
+            { id: 'code', Icon: FileCode2, title: 'Code view (dashboard.json)', tip: 'Code' },
           ].map(v => {
             const active = v.id === 'code' ? codeView : (!codeView && !preview)
             return (
-              <button
-                key={v.id}
-                onClick={() => { setCodeView(v.id === 'code'); if (v.id === 'code') setPreview(false) }}
-                title={v.title}
-                aria-label={v.title}
-                aria-pressed={active}
-              >
-                <v.Icon size={16} strokeWidth={1.5} />
-              </button>
+              <Tooltip key={v.id} content={v.tip} side="bottom">
+                <button
+                  onClick={() => { setCodeView(v.id === 'code'); if (v.id === 'code') setPreview(false) }}
+                  aria-label={v.title}
+                  aria-pressed={active}
+                >
+                  <v.Icon size={16} strokeWidth={1.5} />
+                </button>
+              </Tooltip>
             )
           })}
         </div>
@@ -5104,7 +5129,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
             <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-5">
               <div className="space-y-2">
                 <SectionLabel>Device</SectionLabel>
-                {deviceSwitcher}
+                {deviceSwitcher(true)}
               </div>
               {!preview && (
                 <div className="space-y-2">
