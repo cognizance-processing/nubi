@@ -347,7 +347,8 @@
   .nubi-btn:disabled, .nubi-btn[aria-disabled="true"] { opacity: .45; pointer-events: none; }
   .nubi-btn[data-loading="true"]:disabled { opacity: 1; pointer-events: none; cursor: progress; }
   .nubi-btn:active:not(:disabled) { transform: scale(.98); }
-  .nubi-btn > svg { flex: none; }
+  .nubi-btn > svg { flex: none; display: block; }
+  .nubi-btn-sm > svg { width: 14px; height: 14px; }
 
   /* Sizes: 28 / 32 / 36 in the app, 40 / 48 for marketing */
   .nubi-btn-xs  { height: 28px; padding: 0 10px; font-size: 13px; gap: 5px; }
@@ -714,7 +715,20 @@
     font: 500 12px/1.35 var(--font-ui); background: var(--ink); color: var(--ink-fg);
     box-shadow: var(--shadow-pop); z-index: var(--z-tooltip);
   }
-  .nubi-tooltip-bubble .nubi-kbd { color: inherit; border-color: color-mix(in srgb, currentColor 40%, transparent); height: 16px; min-width: 16px; font-size: 10.5px; }
+  .nubi-tooltip-bubble .nubi-kbd {
+    display: inline-grid; place-items: center;
+    color: inherit; border-color: color-mix(in srgb, currentColor 40%, transparent);
+    height: 16px; min-width: 16px; padding: 0 4px;
+    font: 500 11px/1 var(--font-ui);
+  }
+  .nubi-tooltip-bubble .nubi-kbd-glyph-high,
+  .nubi-tooltip-bubble .nubi-kbd-glyph-arrow,
+  .nubi-tooltip-bubble .nubi-kbd-glyph-action {
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, var(--font-ui), sans-serif;
+  }
+  .nubi-tooltip-bubble .nubi-kbd-glyph-high { padding: 2px 4px 0; }
+  .nubi-tooltip-bubble .nubi-kbd-glyph-arrow { padding: 0 4px 1px; }
+  .nubi-tooltip-bubble .nubi-kbd-glyph-action { padding: 1px 4px 0; }
   .nubi-tooltip-pop { animation: nubi-tip-in 120ms var(--ease-out) both; }
   .nubi-tooltip-pop[data-instant="true"] { animation: none; }
 
