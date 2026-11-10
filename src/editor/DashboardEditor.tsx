@@ -445,7 +445,7 @@ function makeImageWidget(pos) {
   return {
     id: genId('image'), type: 'image', query_id: null,
     encoding: {},
-    props: { source: 'static', url: '', row: 0, alt: '', fit: 'contain', align: 'center' },
+    props: { source: 'static', url: '', alt: '', fit: 'contain', align: 'center' },
     pos: { ...WIDGET_SIZES.image, ...pos },
   }
 }
@@ -669,13 +669,22 @@ function ImageConfig({ widget, onChange }) {
     }
   }
 
+  const setImageSource = (next) => {
+    if (next === 'query') {
+      onChange({ ...widget, props: { ...props, source: 'query', row: props.row ?? 0 } })
+      return
+    }
+    const { row: _row, ...staticProps } = props
+    onChange({ ...widget, props: { ...staticProps, source: 'static' } })
+  }
+
   return (
     <div className="space-y-3">
       <div>
         <FieldLabel>Image source</FieldLabel>
         <div className="flex h-8 rounded-lg border border-border overflow-hidden">
           {[['static', 'Static'], ['query', 'Query']].map(([s, label]) => (
-            <button key={s} onClick={() => setProps('source', s)}
+            <button key={s} onClick={() => setImageSource(s)}
               className={`flex-1 text-[11px] font-medium transition-colors ${source === s ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{label}</button>
           ))}
         </div>

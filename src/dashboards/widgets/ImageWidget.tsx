@@ -15,8 +15,7 @@
  *                             // uploadImageFromUrl/the upload_image AI tool),
  *                             // resolved via resolveImageUrl() before use as
  *                             // <img src>. A full http(s):// URL passes as-is.
- *       row?: number,         // row index read when source === 'query' (default 0,
- *                             // clamped to the last row)
+ *       row?: number,         // query only: row index (default 0, clamped to last row)
  *       alt?: string,
  *       fit?: 'contain' | 'cover',   // default 'contain'
  *       align?: 'left' | 'center' | 'right',  // default 'center'
