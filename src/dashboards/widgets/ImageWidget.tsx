@@ -1,15 +1,22 @@
 /**
- * ImageWidget.jsx — a static image block (logo, header art, branding).
+ * ImageWidget.jsx — an image block (logo, header art, branding, or a
+ * per-row picture whose URL comes from a query).
  *
  * widget shape (type === 'image'):
  *   {
  *     id, type: 'image',
+ *     query_id?,                     // only used when props.source === 'query'
+ *     encoding: { value?: string },  // URL column read when props.source === 'query'
+ *     source?: { provider, result }, // BET-3 provider binding (see below)
  *     props: {
- *       url: string,          // backend-relative, e.g. "/api/v1/images/{id}"
- *                             // (from uploadImage/uploadImageFromUrl/the
- *                             // upload_image AI tool) — resolved via
- *                             // resolveImageUrl() before use as <img src>.
- *                             // A full http(s):// URL is passed through as-is.
+ *       source?: 'static' | 'query',  // where the image URL comes from; default 'static'
+ *       url?: string,         // static only (required then) — backend-relative,
+ *                             // e.g. "/api/v1/images/{id}" (from uploadImage/
+ *                             // uploadImageFromUrl/the upload_image AI tool),
+ *                             // resolved via resolveImageUrl() before use as
+ *                             // <img src>. A full http(s):// URL passes as-is.
+ *       row?: number,         // row index read when source === 'query' (default 0,
+ *                             // clamped to the last row)
  *       alt?: string,
  *       fit?: 'contain' | 'cover',   // default 'contain'
  *       align?: 'left' | 'center' | 'right',  // default 'center'
@@ -17,23 +24,123 @@
  *     pos
  *   }
  *
- * Purely presentational — no query, mirrors SectionWidget/TextWidget's shape.
+ * Two different `source` fields — do not confuse them:
+ *   - `props.source` ('static' | 'query') says where the IMAGE URL comes from.
+ *   - `widget.source` ({ provider, result }) is the BET-3 DataProvider binding,
+ *     an alternative to `query_id` for supplying the rows in query mode. When
+ *     the board resolves one, SpecRenderer hands the table in as
+ *     `providerTable` and no query is run here.
+ *
+ * In query mode the cell is coerced to a trimmed string and goes through the
+ * same resolveImageUrl() as a static URL, so a query may return either an
+ * absolute http(s) URL or a stored "/api/v1/images/{id}" path. Query mode
+ * mirrors DateDisplayWidget's fetch (params, filters, refresh, cancellation).
  */
 
+import { useEffect, useState } from 'react'
 import { resolveImageUrl } from '../../lib/api'
+import { runArrowQueryById } from '../../lib/wasmRuntime.js'
+import { useResolvedParams, useResolvedFilters } from '../VariableStore.jsx'
+import { useRefreshEpoch } from '../RefreshContext.jsx'
 import EmptyState from '../../components/ui/EmptyState.jsx'
 
-export default function ImageWidget({ widget }) {
+// Only show "Loading image…" if a fetch is still running after this long, so
+// a fast WASM query doesn't flash a loading line before the image appears.
+const LOADING_DELAY_MS = 200
+
+function cellToUrl(value) {
+  if (value === null || value === undefined) return ''
+  return String(value).trim()
+}
+
+export default function ImageWidget({ widget, providerTable = null }) {
   const props = widget.props ?? {}
-  const url = props.url ?? ''
+  const source = props.source === 'query' ? 'query' : 'static'
+  const wantsQuery = source === 'query'
+  const valueCol = widget.encoding?.value ?? ''
   const alt = props.alt ?? ''
   const fit = props.fit === 'cover' ? 'cover' : 'contain'
   const align = props.align === 'left' ? 'justify-start' : props.align === 'right' ? 'justify-end' : 'justify-center'
 
+  const resolvedParams = useResolvedParams(widget.params)
+  const resolvedFilters = useResolvedFilters(widget.filters)
+  const refreshEpoch = useRefreshEpoch()
+
+  const [queryUrl, setQueryUrl] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [failed, setFailed] = useState(false)
+
+  function extractFromTable(table) {
+    if (!table || !table.numRows || !valueCol) { setQueryUrl(''); return }
+    const col = table.getChild(valueCol)
+    if (!col) { setQueryUrl(''); return }
+    const row = Number.isInteger(props.row) ? Math.min(Math.max(props.row, 0), table.numRows - 1) : 0
+    setQueryUrl(cellToUrl(col.get(row)))
+  }
+
+  useEffect(() => {
+    if (!wantsQuery) return
+    if (providerTable !== null) { extractFromTable(providerTable); return }
+    if (!widget.query_id) { setQueryUrl(''); return }
+    let cancelled = false
+    const loadingTimer = setTimeout(() => { if (!cancelled) setLoading(true) }, LOADING_DELAY_MS)
+    ;(async () => {
+      try {
+        const hasParams = Object.keys(resolvedParams).length > 0
+        const hasFilters = resolvedFilters.length > 0
+        const { table, error } = await runArrowQueryById(
+          widget.query_id,
+          (hasParams || hasFilters)
+            ? { namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined }
+            : undefined,
+        )
+        if (cancelled) return
+        if (error) setQueryUrl('')
+        else extractFromTable(table)
+      } catch {
+        if (!cancelled) setQueryUrl('')
+      } finally {
+        clearTimeout(loadingTimer)
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => { cancelled = true; clearTimeout(loadingTimer); setLoading(false) }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantsQuery, widget.query_id, valueCol, props.row, JSON.stringify(resolvedParams), JSON.stringify(resolvedFilters), refreshEpoch, providerTable])
+
+  const url = wantsQuery ? queryUrl : (props.url ?? '')
+  const src = resolveImageUrl(url)
+
+  // A new URL gets a fresh chance to load.
+  useEffect(() => { setFailed(false) }, [src])
+
   if (!url) {
+    if (wantsQuery && loading) {
+      return (
+        <div className="flex items-center justify-center h-full px-4">
+          <span className="text-xs text-muted animate-pulse">Loading image…</span>
+        </div>
+      )
+    }
     return (
       <div className="flex items-center justify-center h-full px-4">
-        <EmptyState title="No image set" description="Upload a file or paste a URL." compact />
+        {wantsQuery
+          ? <EmptyState
+              title="No image URL"
+              description={(widget.query_id || providerTable !== null) && valueCol
+                ? 'The selected cell is empty.'
+                : 'Pick a query and the column that holds the image URL.'}
+              compact
+            />
+          : <EmptyState title="No image set" description="Upload a file or paste a URL." compact />}
+      </div>
+    )
+  }
+
+  if (failed) {
+    return (
+      <div className="flex items-center justify-center h-full px-4">
+        <EmptyState title="Image failed to load" description="Check that the URL points to a reachable image." compact />
       </div>
     )
   }
@@ -41,9 +148,10 @@ export default function ImageWidget({ widget }) {
   return (
     <div className={`flex items-center h-full w-full p-2 ${align}`}>
       <img
-        src={resolveImageUrl(url)}
+        src={src}
         alt={alt}
         style={{ maxHeight: '100%', maxWidth: '100%', objectFit: fit }}
+        onError={() => setFailed(true)}
       />
     </div>
   )

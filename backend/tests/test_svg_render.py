@@ -1085,3 +1085,72 @@ class TestTextColorRoles:
         }
         svg = render_widgets_svg([payload])[0].get("svg") or ""
         assert "#ffcc00" in svg
+
+
+# ---------------------------------------------------------------------------
+# image widgets — effective URL (static props.url vs query cell) at export
+# ---------------------------------------------------------------------------
+
+_IMG_ID = "b" * 32
+
+
+class TestImageEffectiveUrl:
+    """props.source='query' reads encoding.value at props.row from the
+    collected rows, with the same clamping as ImageWidget.tsx."""
+
+    COLS = ["name", "logo"]
+    ROWS = [["a", f"/api/v1/images/{_IMG_ID}"], ["b", "https://example.com/b.png"]]
+
+    def _url(self, props, encoding=None, columns=None, rows=None):
+        from app.dashboards.svg_render import _image_effective_url
+        return _image_effective_url(
+            props, encoding if encoding is not None else {"value": "logo"},
+            self.COLS if columns is None else columns,
+            self.ROWS if rows is None else rows,
+        )
+
+    def test_static_uses_props_url(self):
+        assert self._url({"url": "/x"}) == "/x"
+        assert self._url({}) == ""
+
+    def test_query_reads_row(self):
+        assert self._url({"source": "query"}) == f"/api/v1/images/{_IMG_ID}"
+        assert self._url({"source": "query", "row": 1}) == "https://example.com/b.png"
+
+    def test_query_row_is_clamped(self):
+        assert self._url({"source": "query", "row": 99}) == "https://example.com/b.png"
+        assert self._url({"source": "query", "row": -3}) == f"/api/v1/images/{_IMG_ID}"
+
+    def test_query_bad_column_or_no_rows_is_empty(self):
+        assert self._url({"source": "query"}, encoding={"value": "nope"}) == ""
+        assert self._url({"source": "query"}, encoding={}) == ""
+        assert self._url({"source": "query"}, rows=[]) == ""
+        assert self._url({"source": "query", "url": "/static"}, rows=[]) == ""
+
+    def test_payload_inlines_query_cell(self, monkeypatch):
+        import app.dashboards.images as images
+        from app.dashboards.svg_render import _widget_to_payload
+
+        monkeypatch.setattr(images, "load_image", lambda _id: (b"\x89PNG", "image/png"))
+        w = Widget(
+            id="img", type="image", query_id="q1", encoding={"value": "logo"},
+            props={"source": "query", "row": 0},
+            pos=WidgetPos(x=1, y=1, w=2, h=2),
+        )
+        data = {"widget_id": "img", "query_id": "q1", "columns": self.COLS, "rows": self.ROWS}
+        payload = _widget_to_payload(w, data, width=100, height=100)
+        assert payload["props"]["url"].startswith("data:image/png;base64,")
+
+    def test_payload_external_or_missing_is_not_inlined(self, monkeypatch):
+        import app.dashboards.images as images
+        from app.dashboards.svg_render import _widget_to_payload
+
+        monkeypatch.setattr(images, "load_image", lambda _id: (b"\x89PNG", "image/png"))
+        w = Widget(
+            id="img", type="image", query_id="q1", encoding={"value": "logo"},
+            props={"source": "query", "row": 1},
+            pos=WidgetPos(x=1, y=1, w=2, h=2),
+        )
+        data = {"widget_id": "img", "query_id": "q1", "columns": self.COLS, "rows": self.ROWS}
+        assert not _widget_to_payload(w, data, width=100, height=100)["props"]["url"].startswith("data:")
+        assert _widget_to_payload(w, {"widget_id": "img", "error": "boom"}, width=100, height=100)["props"]["url"] == ""

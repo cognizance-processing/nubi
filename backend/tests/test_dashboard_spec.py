@@ -243,6 +243,59 @@ class TestValidateSpec:
         assert spec is None
         assert len(issues) > 0
 
+    # ── image widgets: props.source 'static' (default) vs 'query' ──────────
+
+    @staticmethod
+    def _with_image(**widget: Any) -> dict[str, Any]:
+        data = _good_spec_dict()
+        data["widgets"].append({
+            "id": "img1",
+            "type": "image",
+            "pos": {"x": 1, "y": 6, "w": 3, "h": 2},
+            **widget,
+        })
+        return data
+
+    @staticmethod
+    def _image_issues(issues: list[str]) -> list[str]:
+        return [i for i in issues if "'img1' (image)" in i]
+
+    def test_static_image_without_url_fails(self):
+        _, issues = validate_spec(self._with_image(props={"alt": "logo"}))
+        assert any("props.url is required" in i for i in self._image_issues(issues))
+
+    def test_static_image_with_url_passes(self):
+        _, issues = validate_spec(self._with_image(props={"url": "/api/v1/images/" + "a" * 32}))
+        assert self._image_issues(issues) == []
+
+    def test_query_image_without_url_passes(self):
+        _, issues = validate_spec(self._with_image(
+            query_id="demo_all", encoding={"value": "id"},
+            props={"source": "query", "row": 0},
+        ))
+        assert self._image_issues(issues) == []
+
+    def test_query_image_with_provider_source_passes(self):
+        _, issues = validate_spec(self._with_image(
+            source={"provider": "p1", "result": "r1"}, encoding={"value": "id"},
+            props={"source": "query"},
+        ))
+        assert self._image_issues(issues) == []
+
+    def test_query_image_missing_query_id_and_source_fails(self):
+        _, issues = validate_spec(self._with_image(
+            encoding={"value": "id"}, props={"source": "query"},
+        ))
+        img = self._image_issues(issues)
+        assert any("query_id" in i for i in img), img
+        assert not any("props.url" in i for i in img), img
+
+    def test_query_image_missing_column_fails(self):
+        _, issues = validate_spec(self._with_image(
+            query_id="demo_all", encoding={}, props={"source": "query"},
+        ))
+        assert any("encoding.value" in i for i in self._image_issues(issues))
+
 
 # ---------------------------------------------------------------------------
 # 2. spec_to_html

@@ -420,6 +420,35 @@ def _resolve_image_data_uri(url: str) -> str | None:
     return f"data:{content_type};base64,{base64.b64encode(data).decode('ascii')}"
 
 
+def _image_effective_url(
+    props: dict[str, Any],
+    encoding: dict[str, Any],
+    columns: list[str],
+    rows: list[list[Any]],
+) -> str:
+    """The URL an ``image`` widget actually shows.
+
+    ``props.source == 'query'`` reads the ``encoding.value`` column at
+    ``props.row`` (default 0, clamped to the last row — the same rule as
+    ImageWidget.tsx / DateDisplayWidget.tsx) from the collected rows; anything
+    else is the static ``props.url``. Returns ``""`` when nothing resolves.
+    """
+    if props.get("source") != "query":
+        return str(props.get("url") or "")
+    col = encoding.get("value")
+    if not isinstance(col, str) or not col or col not in columns or not rows:
+        return ""
+    raw_row = props.get("row")
+    row = raw_row if isinstance(raw_row, int) and not isinstance(raw_row, bool) else 0
+    row = min(max(row, 0), len(rows) - 1)
+    record = rows[row]
+    idx = columns.index(col)
+    if not isinstance(record, (list, tuple)) or idx >= len(record):
+        return ""
+    value = record[idx]
+    return "" if value is None else str(value).strip()
+
+
 def _widget_to_payload(
     widget_spec: Any,
     widget_data: dict[str, Any] | None,
@@ -452,9 +481,13 @@ def _widget_to_payload(
 
     props = dict(widget_spec.props or {})
     if widget_spec.type == "image":
-        data_uri = _resolve_image_data_uri(props.get("url") or "")
-        if data_uri:
-            props["url"] = data_uri
+        # Only the app's own image store is inlined; an external URL (static
+        # or from a query cell) stays non-data: and renders as a placeholder.
+        url = _image_effective_url(
+            props, dict(widget_spec.encoding or {}), columns, rows
+        )
+        data_uri = _resolve_image_data_uri(url)
+        props["url"] = data_uri or url
 
     return {
         "id": widget_spec.id,
