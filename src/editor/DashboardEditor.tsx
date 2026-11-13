@@ -1110,7 +1110,7 @@ function BreadcrumbConfig({ widget, onChange, spec, onCreateVariable = undefined
         <div>
           <FieldLabel>Trail mode</FieldLabel>
           <select className={selectCls} value={hierarchical ? 'hierarchical' : 'append'}
-            title="Append adds a crumb for every change. Hierarchical keeps one crumb per variable above, in drill order."
+            title="Append: a timeline of filter changes. Hierarchical: one crumb per variable, in drill path order."
             onChange={e => setProps('trailMode', e.target.value)}>
             <option value="append">Append every change</option>
             <option value="hierarchical">Hierarchical (one per level)</option>
@@ -1118,7 +1118,7 @@ function BreadcrumbConfig({ widget, onChange, spec, onCreateVariable = undefined
         </div>
         {hierarchical && (
           <ToggleRow label="Clear downstream filters"
-            hint="Changing a level resets the variables listed below it"
+            hint="Recommended. Changing a level resets the variables below it."
             checked={props.clearDownstream === true}
             onChange={v => setProps('clearDownstream', v)} />
         )}
