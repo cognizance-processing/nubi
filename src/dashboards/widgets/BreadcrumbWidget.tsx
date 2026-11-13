@@ -116,24 +116,58 @@ export default function BreadcrumbWidget({ widget, editMode = false }) {
   }, [contextKey])
   const resolvedParams = useResolvedParams(widget.params)
   const [contextRow, setContextRow] = useState(null)
+  /** Shown only in edit mode — runtime boards stay quiet when context chips are absent. */
+  const [contextNotice, setContextNotice] = useState(null)
   useEffect(() => {
     if (!widget.query_id || contextColumns.length === 0) {
       setContextRow(null)
+      setContextNotice(null)
       return
     }
     let cancelled = false
     const named = Object.keys(resolvedParams).length > 0 ? { namedParams: resolvedParams } : undefined
     runArrowQueryById(widget.query_id, named)
-      .then(({ table }) => {
-        if (cancelled || !table || table.numRows === 0) return
+      .then(({ table, error }) => {
+        if (cancelled) return
+        if (error) {
+          setContextRow(null)
+          setContextNotice(editMode ? (error.message ?? 'Context query failed.') : null)
+          return
+        }
+        if (!table || table.numRows === 0) {
+          setContextRow(null)
+          setContextNotice(editMode ? 'Context query returned no rows.' : null)
+          return
+        }
         const row = {}
-        for (const col of contextColumns) row[col] = table.getChild(col)?.get(0) ?? null
+        const missingCols = []
+        for (const col of contextColumns) {
+          const child = table.getChild(col)
+          if (!child) missingCols.push(col)
+          else row[col] = child.get(0) ?? null
+        }
+        if (missingCols.length > 0) {
+          setContextRow(null)
+          setContextNotice(editMode ? `Missing column(s): ${missingCols.join(', ')}` : null)
+          return
+        }
         setContextRow(row)
+        const hasChip = contextColumns.some(col => !isEmptyValue(row[col]))
+        setContextNotice(
+          editMode && !hasChip
+            ? 'First row has no values in the selected columns — context chips hidden.'
+            : null,
+        )
       })
-      .catch(() => { if (!cancelled) setContextRow(null) })
+      .catch((err) => {
+        if (!cancelled) {
+          setContextRow(null)
+          setContextNotice(editMode ? (err?.message ?? 'Context query failed.') : null)
+        }
+      })
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [widget.query_id, contextKey, JSON.stringify(resolvedParams)])
+  }, [widget.query_id, contextKey, JSON.stringify(resolvedParams), editMode])
   const contextChips = contextRow
     ? contextColumns.map(col => contextRow[col]).filter(v => !isEmptyValue(v)).map(v => String(v))
     : []
@@ -238,47 +272,58 @@ export default function BreadcrumbWidget({ widget, editMode = false }) {
     : <ChevronRight size={props.size === 'md' ? 16 : 13} className="text-muted mx-1" style={ink.muted ? { color: ink.muted } : undefined} aria-hidden="true" />
 
   return (
-    <div
-      ref={scrollRef}
-      className="flex items-center gap-1.5 h-full w-full px-2 overflow-x-auto overflow-y-hidden"
-    >
-      <button
-        type="button"
-        onClick={goHome}
-        style={chipStyle(shown.length === 0 && contextChips.length === 0)}
-        className={`shrink-0 inline-flex items-center rounded-full border font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50 ${chipSize}`}
+    <div className="flex flex-col h-full w-full min-h-0">
+      <div
+        ref={scrollRef}
+        className="flex items-center gap-1.5 flex-1 min-h-0 w-full px-2 overflow-x-auto overflow-y-hidden"
       >
-        <Home size={props.size === 'md' ? 16 : 12} />
-        {homeLabel}
-      </button>
+        <button
+          type="button"
+          onClick={goHome}
+          style={chipStyle(shown.length === 0 && contextChips.length === 0)}
+          className={`shrink-0 inline-flex items-center rounded-full border font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50 ${chipSize}`}
+        >
+          <Home size={props.size === 'md' ? 16 : 12} />
+          {homeLabel}
+        </button>
 
-      {contextChips.map((label, i) => (
-        <div key={`ctx-${i}`} className="shrink-0 flex items-center gap-1.5">
-          {sep}
-          <span
-            title={label}
-            style={chipStyle(shown.length === 0 && i === contextChips.length - 1)}
-            className={`inline-flex items-center max-w-[18rem] truncate rounded-full border font-medium ${chipSize}`}
-          >
-            {label}
-          </span>
-        </div>
-      ))}
+        {contextChips.map((label, i) => (
+          <div key={`ctx-${i}`} className="shrink-0 flex items-center gap-1.5">
+            {sep}
+            <span
+              title={label}
+              style={chipStyle(shown.length === 0 && i === contextChips.length - 1)}
+              className={`inline-flex items-center max-w-[18rem] truncate rounded-full border font-medium ${chipSize}`}
+            >
+              {label}
+            </span>
+          </div>
+        ))}
 
-      {shown.map((step, i) => (
-        <div key={`${step.name}-${shownOffset + i}`} className="shrink-0 flex items-center gap-1.5">
-          {sep}
-          <button
-            type="button"
-            onClick={() => goToStep(shownOffset + i)}
-            title={step.label}
-            style={chipStyle(i === shown.length - 1)}
-            className={`inline-flex items-center max-w-[14rem] truncate rounded-full border font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50 ${chipSize}`}
-          >
-            {step.label}
-          </button>
-        </div>
-      ))}
+        {shown.map((step, i) => (
+          <div key={`${step.name}-${shownOffset + i}`} className="shrink-0 flex items-center gap-1.5">
+            {sep}
+            <button
+              type="button"
+              onClick={() => goToStep(shownOffset + i)}
+              title={step.label}
+              style={chipStyle(i === shown.length - 1)}
+              className={`inline-flex items-center max-w-[14rem] truncate rounded-full border font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50 ${chipSize}`}
+            >
+              {step.label}
+            </button>
+          </div>
+        ))}
+      </div>
+      {editMode && contextNotice && (
+        <p
+          className="shrink-0 px-2 pb-1 text-[10px] leading-snug text-warning/90"
+          role="status"
+          data-testid="breadcrumb-context-notice"
+        >
+          {contextNotice}
+        </p>
+      )}
     </div>
   )
 }

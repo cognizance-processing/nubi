@@ -147,7 +147,7 @@ import {
 import {
   inputCls, selectCls, FieldLabel, SectionLabel, Section, ToggleRow, ChipRow, ColumnSelect,
   ColorField, ColorSwatch,
-  useColumnIntrospection, useMetricsList, useWidgetLibrary, useWidgetUsage, invalidateWidgetUsage,
+  useColumnIntrospection, useQuerySample, useMetricsList, useWidgetLibrary, useWidgetUsage, invalidateWidgetUsage,
   QueryPicker, BackgroundEditor, ParamBindingSection,
   QueryStatusLink,
   ChartConfig, KpiConfig, IconPicker,
@@ -159,6 +159,7 @@ import {
   FORMAT_OPS, COLUMN_FORMAT_TYPES, BACKGROUND_TYPES, PIVOT_AGGS,
 } from './shared/index.js'
 import { autoBindParams, planVariableRename, renameVariableReads, readerCounts } from '../dashboards/paramWiring.js'
+import { isEmptyValue } from '../dashboards/legacyWidgetText.js'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1012,11 +1013,45 @@ function DateDisplayConfig({ widget, onChange, spec }) {
 function BreadcrumbConfig({ widget, onChange, spec, onCreateVariable = undefined }) {
   const props = widget.props ?? {}
   const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
-  
+
   // Context chips: optional query whose first row supplies fixed scope chips.
   const contextColumns = Array.isArray(props.contextColumns) ? props.contextColumns : []
   const { columns: contextQueryColumns, introspecting } = useColumnIntrospection(widget.query_id || null)
-  
+  const {
+    rows: contextSampleRows,
+    rowCount: contextRowCount,
+    loading: contextSampleLoading,
+    error: contextSampleError,
+  } = useQuerySample(widget.query_id || null, 1)
+  const contextChipHint = useMemo(() => {
+    if (!widget.query_id || contextColumns.length === 0) return null
+    if (contextSampleLoading) return null
+    if (contextSampleError) return null
+    if (contextRowCount === 0) {
+      return 'Query returned no rows. Context chips read the first row only.'
+    }
+    const missing = contextColumns.filter(
+      c => contextQueryColumns.length > 0 && !contextQueryColumns.includes(c),
+    )
+    if (missing.length > 0) {
+      return `Column(s) not in this query: ${missing.join(', ')}.`
+    }
+    const row = contextSampleRows[0] ?? {}
+    const hasValue = contextColumns.some(col => !isEmptyValue(row[col]))
+    if (!hasValue) {
+      return 'Row 1 is NULL or empty for the selected columns — only Home (and drill crumbs) will show on the board.'
+    }
+    return null
+  }, [
+    widget.query_id,
+    contextColumns,
+    contextSampleLoading,
+    contextSampleError,
+    contextRowCount,
+    contextSampleRows,
+    contextQueryColumns,
+  ])
+
   // A picked column the query no longer returns stays listed so it can be removed.
   const contextColumnChoices = [
     ...contextQueryColumns,
@@ -1125,15 +1160,28 @@ function BreadcrumbConfig({ widget, onChange, spec, onCreateVariable = undefined
       </Section>
 
       <Section title="Context chips" defaultOpen={Boolean(widget.query_id)} icon={Database}>
-        <p className="text-[10px] text-muted/70">
+        <p className="text-[10px] text-muted/70 leading-relaxed">
           Optional. Pick a query and columns to show fixed scope chips between
-          Home and the drill path. Values come from the query's first row; chips
-          are not clickable.
+          Home and the drill path (not clickable). Values always come from{' '}
+          <span className="font-medium text-fg/80">row 1</span> of the query
+          result — return at least one row with non-empty values in the columns you pick.
+          Bound parameters use live board variables on the canvas preview; the check
+          below runs the query without those bindings.
         </p>
         <QueryPicker value={widget.query_id ?? ''} onChange={setContextQuery} />
         {widget.query_id && (
           <>
             <QueryStatusLink queryId={widget.query_id} />
+            {contextChipHint && (
+              <p
+                className="text-[10px] text-warning/90 flex items-start gap-1 leading-relaxed rounded-lg border border-warning/20 bg-warning/5 px-2 py-1.5"
+                role="status"
+                data-testid="breadcrumb-context-chip-hint"
+              >
+                <AlertTriangle size={12} className="text-warning flex-none mt-0.5" aria-hidden="true" />
+                <span>{contextChipHint}</span>
+              </p>
+            )}
             {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
             <div className="space-y-1.5">
               <FieldLabel className="mb-0">Columns</FieldLabel>
