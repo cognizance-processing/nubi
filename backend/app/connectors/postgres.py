@@ -19,8 +19,11 @@ Design notes
   and closes it after use.  Connection pooling is deferred to M2/M9.
 - ``plan.params`` are passed as a list; ADBC maps them to ``$1``/``$2``
   positional placeholders as used by the Nubi planner's Postgres dialect.
-- ``execute_stream()`` reads one batch at a time via ``fetch_record_batch()``;
-  the batch size is controlled by the ADBC driver (default 1 024 rows).
+- ``execute_stream()`` iterates the ``RecordBatchReader`` returned by
+  ``fetch_record_batch()``; the batch size is controlled by the ADBC driver.
+- The DB-API layer lives in the ``adbc_driver_postgresql.dbapi`` submodule,
+  which must be imported explicitly — the package does not expose ``.dbapi``
+  as an attribute until then.
 """
 
 from __future__ import annotations
@@ -150,9 +153,9 @@ class PostgresConnector(Connector):
         _import_adbc()  # surface driver-unavailable early
 
         try:
-            import adbc_driver_postgresql
+            import adbc_driver_postgresql.dbapi as pg_dbapi
 
-            with adbc_driver_postgresql.dbapi.connect(self._dsn) as db_conn:
+            with pg_dbapi.connect(self._dsn) as db_conn:
                 with db_conn.cursor() as cur:
                     cur.execute(plan.sql, plan.params if plan.params else None)
                     return cur.fetch_arrow_table()
@@ -169,8 +172,9 @@ class PostgresConnector(Connector):
         """Execute *plan* and yield result data as a stream of RecordBatches.
 
         Opens a fresh ADBC connection, runs the SQL, and yields one
-        ``RecordBatch`` at a time via ``fetch_record_batch()``.  The
-        connection is closed after all batches have been consumed.
+        ``RecordBatch`` at a time from the reader ``fetch_record_batch()``
+        returns.  The connection is closed after all batches have been
+        consumed.
 
         Parameters
         ----------
@@ -191,16 +195,19 @@ class PostgresConnector(Connector):
         _import_adbc()  # surface driver-unavailable early
 
         try:
-            import adbc_driver_postgresql
+            import adbc_driver_postgresql.dbapi as pg_dbapi
 
-            with adbc_driver_postgresql.dbapi.connect(self._dsn) as db_conn:
+            with pg_dbapi.connect(self._dsn) as db_conn:
                 with db_conn.cursor() as cur:
                     cur.execute(plan.sql, plan.params if plan.params else None)
-                    while True:
-                        batch = cur.fetch_record_batch()
-                        if batch is None or batch.num_rows == 0:
-                            break
-                        yield batch
+                    # fetch_record_batch() returns a RecordBatchReader (the
+                    # whole result), not a single batch.
+                    reader = cur.fetch_record_batch()
+                    if reader is None:
+                        return
+                    for batch in reader:
+                        if batch.num_rows:
+                            yield batch
         except AppError:
             raise
         except Exception as exc:

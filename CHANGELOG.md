@@ -57,6 +57,15 @@ Conventions:
   `app/queries/sql_table_columns.py` and `app/queries/query_graph.py`, so
   those host features are unaffected.
 
+### Fixed
+
+- **Postgres connector Test and queries.** `PostgresConnector` (also used for
+  Redshift, CockroachDB and Cloud SQL) now imports `adbc_driver_postgresql.dbapi`
+  explicitly — the connector Test and every query failed with "module
+  'adbc_driver_postgresql' has no attribute 'dbapi'". `execute_stream` now
+  iterates the `RecordBatchReader` that `fetch_record_batch()` returns instead
+  of treating it as a single batch.
+
 ## [0.6.2] - 2026-07-09
 
 ### Removed
