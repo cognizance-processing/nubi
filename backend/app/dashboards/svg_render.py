@@ -958,7 +958,9 @@ async def render_board_svg_from_data(
         # Unparseable spec — render a blank page.
         parsed_spec = DashboardSpec(title=board.get("name") or board_id, widgets=[])
 
-    widget_data = await collect_board_data(board_id, org_id, claims=claims, repo=repo, board=board)
+    widget_data = await collect_board_data(
+        board_id, org_id, claims=claims, repo=repo, board=board, include_providers=True
+    )
 
     return render_board_svg(
         parsed_spec,

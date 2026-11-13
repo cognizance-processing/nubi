@@ -34,6 +34,14 @@ Conventions:
   `/api/v1/images/{id}` paths render; anything else (including `data:`,
   `javascript:` and other relative paths such as `/logo.png`) shows
   "Invalid image URL", and exports draw a placeholder.
+- **Provider-bound widgets in the editor and PDF export.** Widgets bound to a
+  board data provider (`widget.source = {provider, result}`, no `query_id`)
+  now render live data on the editor canvas, as they already did on the live
+  board, and the image widget's "URL column" picker lists the provider
+  result's columns. PDF export (and `render_board_svg_from_data`) collects
+  provider rows server-side, so a provider-bound image resolves its stored
+  `/api/v1/images/...` URL instead of a placeholder. CSV/JSON export,
+  thumbnails and embed snapshots still omit provider-only widgets.
 
 ### Removed
 

@@ -276,7 +276,7 @@ async def export_board_pdf(
 
     # Collect widget data (first-party = no RLS, full editor view).
     widget_data = await collect_board_data(
-        board_id, org_id, claims=_collect_claims(user), repo=repo
+        board_id, org_id, claims=_collect_claims(user), repo=repo, include_providers=True
     )
 
     # Render page SVG via T2 (Node.js echarts-SSR).

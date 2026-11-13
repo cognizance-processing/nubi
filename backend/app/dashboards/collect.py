@@ -140,11 +140,19 @@ def _execute_and_convert(
     with lock:
         arrow_table: pa.Table = connector.execute(physical_plan)  # type: ignore[attr-defined]
 
+    return _table_to_columns_rows(arrow_table, cap, f"query_id={query_id!r}")
+
+
+def _table_to_columns_rows(
+    arrow_table: "pa.Table", cap: int, label: str
+) -> "tuple[list[str], list[list[Any]]]":
+    """Slice *arrow_table* to *cap* rows (0 = unlimited) and convert it to
+    ``(columns, rows)``. *label* names the source in the truncation warning."""
     if cap > 0 and len(arrow_table) > cap:
         logger.warning(
-            "collect: widget query_id=%r returned %d rows, truncating to %d "
+            "collect: widget %s returned %d rows, truncating to %d "
             "(set NUBI_COLLECT_ROW_CAP to raise limit)",
-            query_id,
+            label,
             len(arrow_table),
             cap,
         )
@@ -425,6 +433,121 @@ def widget_query_targets(
     for w in widgets:
         _visit(w)
     return targets
+
+
+def widget_provider_targets(spec: dict[str, Any]) -> list[dict[str, str]]:
+    """Collect ``{widget_id, provider, result}`` targets for provider-bound widgets.
+
+    A widget is provider-bound when it has a BET-3 ``source`` binding
+    (``{provider, result}``) and no ``query_id`` — the same rule SpecRenderer
+    uses to hand a widget its ``providerTable``. Stepper children are walked
+    exactly like :func:`widget_query_targets`. Kept separate from that helper
+    on purpose: its other callers (usage endpoints, CSV/JSON export, the
+    snapshot multi-tenant check) must keep seeing query widgets only.
+    """
+    widgets = spec.get("widgets")
+    if not isinstance(widgets, list):
+        return []
+
+    targets: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def _visit(w: Any) -> None:
+        if not isinstance(w, dict):
+            return
+        src = w.get("source")
+        wid = w.get("id")
+        if (
+            not w.get("query_id")
+            and isinstance(src, dict)
+            and src.get("provider")
+            and src.get("result")
+            and wid
+            and str(wid) not in seen
+        ):
+            seen.add(str(wid))
+            targets.append(
+                {
+                    "widget_id": str(wid),
+                    "provider": str(src["provider"]),
+                    "result": str(src["result"]),
+                }
+            )
+        steps = (w.get("props") or {}).get("steps")
+        if isinstance(steps, list):
+            for step in steps:
+                if isinstance(step, dict):
+                    _visit(step.get("widget"))
+
+    for w in widgets:
+        _visit(w)
+    return targets
+
+
+async def _collect_provider_rows(
+    targets: list[dict[str, str]],
+    board_id: str,
+    org_id: str,
+    claims: dict[str, Any],
+    repo: Repo,
+) -> list[dict[str, Any]]:
+    """Resolve each distinct provider ONCE and slice its result per widget.
+
+    Uses the provider's declared default params (exports carry no filter state,
+    same as query widgets) and RLS from the verified *claims* only. Metering is
+    NOT skipped — an export is a first-party compute request, same as a
+    writer's live view; a provider cache hit costs nothing. Best-effort: a
+    provider failure becomes an inline ``error`` on each of its widgets.
+    """
+    from app.dashboards.board_data import resolve_provider_data  # noqa: PLC0415
+
+    provider_ids = list(dict.fromkeys(t["provider"] for t in targets))
+    rls_claims = {**(claims or {}), "policies": dict((claims or {}).get("policies") or {})}
+
+    async def _resolve(pid: str) -> "dict[str, pa.Table] | str":
+        try:
+            return await resolve_provider_data(
+                board_id=board_id,
+                provider_id=pid,
+                params={},
+                org_id=org_id,
+                claims=rls_claims,
+                repo=repo,
+                skip_metering=False,
+            )
+        except AppError as exc:
+            return exc.code
+        except Exception as exc:  # noqa: BLE001 — best-effort collection
+            return f"export_failed: {exc.__class__.__name__}"
+
+    resolved = dict(
+        zip(provider_ids, await asyncio.gather(*(_resolve(p) for p in provider_ids)))
+    )
+
+    out: list[dict[str, Any]] = []
+    for t in targets:
+        entry: dict[str, Any] = {
+            "widget_id": t["widget_id"],
+            "query_id": None,
+            "provider": t["provider"],
+            "result": t["result"],
+        }
+        tables = resolved[t["provider"]]
+        if isinstance(tables, str):
+            entry["error"] = tables
+        elif t["result"] not in tables:
+            entry["error"] = "provider_result_not_found"
+        else:
+            columns, rows = await asyncio.to_thread(
+                _table_to_columns_rows,
+                tables[t["result"]],
+                _ROW_CAP,
+                f"provider={t['provider']!r} result={t['result']!r}",
+            )
+            entry["columns"] = columns
+            entry["rows"] = rows
+        out.append(entry)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -728,6 +851,7 @@ async def collect_board_data(
     only_query_id: str | None = None,
     *,
     board: dict[str, Any] | None = None,
+    include_providers: bool = False,
 ) -> list[dict[str, Any]]:
     """Collect per-widget data for an org-scoped board.
 
@@ -762,6 +886,13 @@ async def collect_board_data(
         skipped — callers that already hold the row (e.g.
         ``render_board_svg_from_data``) can pass it in to avoid a redundant
         round-trip.
+    include_providers:
+        When true (and *only_query_id* is not set), also collect rows for
+        provider-bound widgets (``widget.source`` = ``{provider, result}``, no
+        ``query_id``) — see :func:`widget_provider_targets`. Their entries carry
+        ``query_id: None`` plus ``provider`` / ``result``. Off by default so
+        embed snapshots, thumbnails and CSV/JSON export are unchanged; the
+        first-party SVG/PDF render paths opt in.
 
     Returns
     -------
@@ -846,5 +977,12 @@ async def collect_board_data(
     out: list[dict[str, Any]] = list(
         await asyncio.gather(*(_fetch_guarded(t) for t in targets))
     )
+
+    if include_providers and not only_query_id:
+        provider_targets = widget_provider_targets(spec)
+        if provider_targets:
+            out.extend(
+                await _collect_provider_rows(provider_targets, board_id, org_id, claims, repo)
+            )
 
     return out
