@@ -173,8 +173,8 @@ class PostgresConnector(Connector):
 
         Opens a fresh ADBC connection, runs the SQL, and yields one
         ``RecordBatch`` at a time from the reader ``fetch_record_batch()``
-        returns.  The
-        connection is closed after all batches have been consumed.
+        returns.  The connection is closed after all batches have been
+        consumed.
 
         Parameters
         ----------
