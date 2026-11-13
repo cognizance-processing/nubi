@@ -63,6 +63,7 @@ import { PAGE_BG_HEX, backgroundHex, boardColorMode, modeForHex } from '../lib/b
 import { findWidgetStylePreset } from './stylePresets.js'
 import { buildResponsiveLayouts, isHiddenAt } from './responsiveLayout.js'
 import { useProviderData } from './useProviderData.js'
+import { withStepperChildren } from './stepperChildren.js'
 import Button from '../components/ui/Button.jsx'
 import EmptyState from '../components/ui/EmptyState.jsx'
 
@@ -180,7 +181,7 @@ function FilterWidgetLoader({ widget, editMode = false }) {
  * resolved Arrow table slice for this widget is passed here so the widget
  * skips its own query_id / metric fetch.  null = legacy path unchanged.
  */
-function WidgetComponent({ widget, onOpenDrawer = undefined, editMode = false, providerTable = null }) {
+function WidgetComponent({ widget, onOpenDrawer = undefined, editMode = false, providerTable = null, providerTables = null }) {
   // Normalize top-level spec fields into widget.props before dispatch
   const w = useMemo(() => normalizeWidget(widget), [widget])
 
@@ -213,7 +214,7 @@ function WidgetComponent({ widget, onOpenDrawer = undefined, editMode = false, p
     // drawer is available for authoring.  editMode suppresses the live query
     // fetch (no wasm needed in the editor canvas).
     case 'filter':  return <FilterWidgetLoader widget={w} editMode={editMode} />
-    case 'text':    return <TextWidget   widget={w} />
+    case 'text':    return <TextWidget   widget={w} providerTable={providerTable} />
     case 'image':   return <ImageWidget  widget={w} providerTable={providerTable} />
     case 'section': return <SectionWidget widget={w} />
     case 'divider': return <DividerWidget widget={w} />
@@ -233,6 +234,8 @@ function WidgetComponent({ widget, onOpenDrawer = undefined, editMode = false, p
             widget={child}
             onOpenDrawer={onOpenDrawer}
             editMode={editMode}
+            providerTable={providerTables?.[child.id] ?? null}
+            providerTables={providerTables}
           />
         )}
       />
@@ -260,7 +263,7 @@ function WidgetComponent({ widget, onOpenDrawer = undefined, editMode = false, p
  * vertically. Used for the shared "Filters" drawer and for per-trigger
  * drilldown drawers (legacy renderToDrawer / BasicWidgetGroup).
  */
-function SlideOver({ open, title, widgets, onClose, wide }) {
+function SlideOver({ open, title, widgets, onClose, wide, providerTables = {} }) {
   if (!open) return null
   const sorted = [...widgets].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
   return (
@@ -300,7 +303,7 @@ function SlideOver({ open, title, widgets, onClose, wide }) {
               className={`rounded-xl border border-border bg-bg ${w.type === 'filter' ? 'overflow-visible' : 'overflow-hidden'}`}
               style={{ minHeight: w.type === 'filter' ? undefined : 280 }}
             >
-              <WidgetComponent widget={w} />
+              <WidgetComponent widget={w} providerTable={providerTables[w.id] ?? null} providerTables={providerTables} />
             </div>
           ))}
         </div>
@@ -647,7 +650,9 @@ function SpecRendererBody({
 
   const widgetProviderTableMap = useMemo(() => {
     const map = {}
-    for (const w of allWidgets) {
+    // Stepper children are nested in props.steps — include them so a
+    // provider-bound widget inside a stepper gets its rows too.
+    for (const w of withStepperChildren(allWidgets)) {
       if (w.source?.provider && w.source?.result) {
         const pResult = providerResults[w.source.provider]
         if (pResult) {
@@ -697,7 +702,7 @@ function SpecRendererBody({
         ].filter(Boolean).join(' ')}
         style={customStyle}
       >
-        <WidgetComponent widget={widget} onOpenDrawer={setOpenDrawer} editMode={editMode} providerTable={providerTable} />
+        <WidgetComponent widget={widget} onOpenDrawer={setOpenDrawer} editMode={editMode} providerTable={providerTable} providerTables={widgetProviderTableMap} />
       </ColorModeScope>
     )
   }, [visibleWidgetsById, editMode, setOpenDrawer, widgetProviderTableMap, dashboardPresetStyle, adaptCtx, boardBgHex, theme])
@@ -822,7 +827,7 @@ function SpecRendererBody({
                   key={w.id}
                   className="min-w-[10rem] max-w-xs overflow-visible"
                 >
-                  <WidgetComponent widget={w} onOpenDrawer={setOpenDrawer} editMode={editMode} />
+                  <WidgetComponent widget={w} onOpenDrawer={setOpenDrawer} editMode={editMode} providerTable={widgetProviderTableMap[w.id] ?? null} providerTables={widgetProviderTableMap} />
                 </div>
               ))}
             </div>
@@ -858,6 +863,7 @@ function SpecRendererBody({
       widgets={openDrawer != null ? (drawerGroups[openDrawer] ?? []) : []}
       wide={openDrawer != null && openDrawer !== 'filters'}
       onClose={() => setOpenDrawer(null)}
+      providerTables={widgetProviderTableMap}
     />
     </CrossFilterProviderWrapper>
     </RefreshContext.Provider>

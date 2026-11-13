@@ -2506,7 +2506,9 @@ function WidgetCardFallback({ widget }) {
         {widget.type === 'kpi' && <p className="truncate">{widget.props?.label ?? 'KPI'} · <span className="font-mono">{widget.encoding?.value || '(no column)'}</span></p>}
         {widget.type === 'table' && <p>Table · limit <span className="font-mono">{widget.props?.limit ?? 50}</span></p>}
         {widget.type === 'filter' && <p className="truncate">{widget.subtype ?? 'select'} → <span className="font-mono">{widget.target_var || '(no var)'}</span></p>}
-        {widget.type === 'text' && <p className="line-clamp-3 italic text-muted/70">{(widget.content ?? '').split('\n')[0] || 'Empty text block'}</p>}
+        {widget.type === 'text' && (widget.props?.source === 'query'
+          ? <p className="truncate">Query text · <span className="font-mono">{widget.encoding?.value || '(no column)'}</span></p>
+          : <p className="line-clamp-3 italic text-muted/70">{(widget.content ?? '').split('\n')[0] || 'Empty text block'}</p>)}
       </div>
     </div>
   )

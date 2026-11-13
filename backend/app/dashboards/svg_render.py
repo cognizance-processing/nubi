@@ -419,22 +419,18 @@ def _resolve_image_data_uri(url: str) -> str | None:
     return f"data:{content_type};base64,{base64.b64encode(data).decode('ascii')}"
 
 
-def _image_effective_url(
+def _query_cell(
     props: dict[str, Any],
     encoding: dict[str, Any],
     columns: list[str],
     rows: list[list[Any]],
 ) -> str:
-    """The URL an ``image`` widget actually shows.
+    """The ``encoding.value`` cell at ``props.row`` as a trimmed string.
 
-    ``props.source == 'query'`` reads the ``encoding.value`` column at
-    ``props.row`` (default 0; negative → 0) from the collected rows — the same
-    rule as ImageWidget.tsx. A row past the end yields ``""`` (placeholder),
-    never another row's image. Anything else is the static ``props.url``.
-    Returns ``""`` when nothing resolves.
+    Row rule shared by query-mode ``image`` and ``text`` widgets (ImageWidget.tsx,
+    textQuery.ts): default 0, negative → 0, and a row past the end yields
+    ``""`` — never another row's value. Returns ``""`` when nothing resolves.
     """
-    if props.get("source") != "query":
-        return str(props.get("url") or "")
     col = encoding.get("value")
     if not isinstance(col, str) or not col or col not in columns or not rows:
         return ""
@@ -456,6 +452,48 @@ def _image_effective_url(
         return ""
     value = record[idx]
     return "" if value is None else str(value).strip()
+
+
+def _image_effective_url(
+    props: dict[str, Any],
+    encoding: dict[str, Any],
+    columns: list[str],
+    rows: list[list[Any]],
+) -> str:
+    """The URL an ``image`` widget actually shows.
+
+    ``props.source == 'query'`` reads the query cell (see :func:`_query_cell`);
+    anything else is the static ``props.url``. Returns ``""`` when nothing
+    resolves.
+    """
+    if props.get("source") != "query":
+        return str(props.get("url") or "")
+    return _query_cell(props, encoding, columns, rows)
+
+
+def _text_effective_content(
+    widget_spec: Any,
+    props: dict[str, Any],
+    columns: list[str],
+    rows: list[list[Any]],
+) -> str | None:
+    """The text a ``text`` widget actually shows.
+
+    Static: the markdown ``content``. Query (``props.source == 'query'``):
+    ``prefix + cell + suffix`` as plain text, or ``""`` when the cell is empty
+    or the row is out of range (same rule as TextWidget.tsx).
+    """
+    if props.get("source") != "query":
+        return widget_spec.content
+    cell = _query_cell(props, dict(widget_spec.encoding or {}), columns, rows)
+    if not cell:
+        return ""
+    prefix = props.get("prefix")
+    suffix = props.get("suffix")
+    return (
+        f"{prefix if isinstance(prefix, str) else ''}{cell}"
+        f"{suffix if isinstance(suffix, str) else ''}"
+    )
 
 
 def _widget_to_payload(
@@ -510,7 +548,11 @@ def _widget_to_payload(
         # tiles rendered on the SSR default white, so the picture was accurate
         # about the DATA and wrong about the DESIGN.
         "style": dict(widget_spec.style or {}),
-        "content": widget_spec.content,
+        "content": (
+            _text_effective_content(widget_spec, props, columns, rows)
+            if widget_spec.type == "text"
+            else widget_spec.content
+        ),
         "columns": columns,
         "rows": rows,
         "width": width,

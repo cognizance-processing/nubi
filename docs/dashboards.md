@@ -192,7 +192,12 @@ A filter widget writes to a **dashboard variable**; data widgets bound to that v
 **What it's for:** headings, explanations, context, links.
 **When to use it:** to annotate a board — a title block, a "what this measures" note, a link to the source doc.
 
-**Config:** write **Markdown content** directly in the Configure panel. Supports standard Markdown: headings, bold, italic, lists, links, inline code. (For interpolating live data into free-form HTML, use a widget's [Custom HTML](#widget-appearance--custom-html) instead.)
+**Config:** pick a **Text source**:
+
+- **Static** (default) — write **Markdown content** directly in the Configure panel. Supports standard Markdown: headings, bold, italic, lists, links, inline code.
+- **Query** — show one value from a query as plain text (no Markdown). Pick a **query**, the **Text column**, and a **Row index** (default `0`), plus an optional **Prefix** / **Suffix** (e.g. `Client: ` or `%`). The text follows filters, variables and refreshes. A widget bound to a board data provider reads that provider's rows instead of running a query. If the row doesn't exist the widget shows "No value at this row"; it never falls back to another row or to the static content. Switching back to **Static** clears the query binding.
+
+(For interpolating live data into free-form HTML, use a widget's [Custom HTML](#widget-appearance--custom-html) instead.)
 
 ### Section
 

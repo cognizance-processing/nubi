@@ -34,6 +34,12 @@ Conventions:
   `/api/v1/images/{id}` paths render; anything else (including `data:`,
   `javascript:` and other relative paths such as `/logo.png`) shows
   "Invalid image URL", and exports draw a placeholder.
+- **Query-driven text widgets.** A `text` widget with `props.source: 'query'`
+  shows one query cell as plain text (`query_id` or a provider binding,
+  `encoding.value` column, `props.row`, default 0), wrapped in optional
+  `props.prefix` / `props.suffix`. Markdown `content` is only required in
+  static mode. Same row rule as image: a row past the end shows "No value at
+  this row" in the app and empty text in exports, never another row's value.
 
 ### Removed
 

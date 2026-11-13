@@ -1210,3 +1210,39 @@ class TestImageEffectiveUrl:
         )
         data = {"widget_id": "img", "query_id": "q1", "columns": self.COLS, "rows": self.ROWS}
         assert _widget_to_payload(w, data, width=100, height=100)["props"]["url"] == ""
+
+
+class TestTextEffectiveContent:
+    """Query-mode text widgets resolve their cell into the SSR ``content``."""
+
+    COLS = ["name", "score"]
+    ROWS = [["Acme", 42], ["  ", None]]
+
+    def _content(self, props, *, encoding=None, rows=None, content="# Static"):
+        from app.dashboards.svg_render import _widget_to_payload
+
+        w = Widget(
+            id="txt", type="text", query_id="q1", content=content,
+            encoding={"value": "name"} if encoding is None else encoding,
+            props=props, pos=WidgetPos(x=1, y=1, w=2, h=2),
+        )
+        data = {"widget_id": "txt", "query_id": "q1", "columns": self.COLS,
+                "rows": self.ROWS if rows is None else rows}
+        return _widget_to_payload(w, data, width=100, height=100)["content"]
+
+    def test_static_keeps_markdown_content(self):
+        assert self._content({}) == "# Static"
+        assert self._content({"source": "static"}) == "# Static"
+
+    def test_query_reads_cell_with_affixes(self):
+        assert self._content({"source": "query", "prefix": "Client: ", "suffix": "!"}) == "Client: Acme!"
+        assert self._content({"source": "query"}, encoding={"value": "score"}) == "42"
+
+    def test_query_never_falls_back_to_static_content(self):
+        assert self._content({"source": "query", "row": 5, "prefix": "x"}) == ""
+        assert self._content({"source": "query", "row": 1, "prefix": "x"}) == ""
+        assert self._content({"source": "query"}, encoding={"value": "nope"}) == ""
+        assert self._content({"source": "query"}, rows=[]) == ""
+
+    def test_query_negative_row_is_first(self):
+        assert self._content({"source": "query", "row": -2}) == "Acme"
