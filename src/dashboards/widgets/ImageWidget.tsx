@@ -15,7 +15,8 @@
  *                             // uploadImageFromUrl/the upload_image AI tool),
  *                             // resolved via resolveImageUrl() before use as
  *                             // <img src>. A full http(s):// URL passes as-is.
- *       row?: number,         // query only: row index (default 0, clamped to last row)
+ *       row?: number,         // query only: row index (default 0; negative → 0;
+ *                             // past the last row → no image, not the last row's)
  *       alt?: string,
  *       fit?: 'contain' | 'cover',   // default 'contain'
  *       align?: 'left' | 'center' | 'right',  // default 'center'
@@ -80,12 +81,18 @@ export default function ImageWidget({ widget, providerTable = null }) {
   // The src whose <img> errored; `failed` is derived, so a new src is never
   // shown as failed, even for one render.
   const [failedSrc, setFailedSrc] = useState(null)
+  // props.row is past the last returned row (e.g. a filter shrank the table).
+  const [rowOutOfRange, setRowOutOfRange] = useState(false)
 
   function extractFromTable(table) {
+    setRowOutOfRange(false)
     if (!table || !table.numRows || !valueCol) { setQueryUrl(''); return }
     const col = table.getChild(valueCol)
     if (!col) { setQueryUrl(''); return }
-    const row = Number.isInteger(props.row) ? Math.min(Math.max(props.row, 0), table.numRows - 1) : 0
+    // Negative → 0; past the end → no image (never another row's picture).
+    // Same rule as svg_render._image_effective_url.
+    const row = Number.isInteger(props.row) ? Math.max(props.row, 0) : 0
+    if (row >= table.numRows) { setQueryUrl(''); setRowOutOfRange(true); return }
     setQueryUrl(cellToUrl(col.get(row)))
   }
 
@@ -159,9 +166,11 @@ export default function ImageWidget({ widget, providerTable = null }) {
       <div className="flex items-center justify-center h-full px-4">
         {wantsQuery
           ? <EmptyState
-              title="No image URL"
+              title={rowOutOfRange ? 'No image at this row' : 'No image URL'}
               description={(widget.query_id || providerTable !== null) && valueCol
-                ? 'The selected cell is empty.'
+                ? (rowOutOfRange
+                    ? `The query returned fewer than ${(Number.isInteger(props.row) ? Math.max(props.row, 0) : 0) + 1} rows.`
+                    : 'The selected cell is empty.')
                 : 'Pick a query and the column that holds the image URL.'}
               compact
             />

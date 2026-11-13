@@ -428,9 +428,10 @@ def _image_effective_url(
     """The URL an ``image`` widget actually shows.
 
     ``props.source == 'query'`` reads the ``encoding.value`` column at
-    ``props.row`` (default 0, clamped to the last row — the same rule as
-    ImageWidget.tsx / DateDisplayWidget.tsx) from the collected rows; anything
-    else is the static ``props.url``. Returns ``""`` when nothing resolves.
+    ``props.row`` (default 0; negative → 0) from the collected rows — the same
+    rule as ImageWidget.tsx. A row past the end yields ``""`` (placeholder),
+    never another row's image. Anything else is the static ``props.url``.
+    Returns ``""`` when nothing resolves.
     """
     if props.get("source") != "query":
         return str(props.get("url") or "")
@@ -446,7 +447,9 @@ def _image_effective_url(
         row = int(raw_row)
     else:
         row = 0
-    row = min(max(row, 0), len(rows) - 1)
+    row = max(row, 0)
+    if row >= len(rows):
+        return ""
     record = rows[row]
     idx = columns.index(col)
     if not isinstance(record, (list, tuple)) or idx >= len(record):
@@ -487,13 +490,13 @@ def _widget_to_payload(
 
     props = dict(widget_spec.props or {})
     if widget_spec.type == "image":
-        # Only the app's own image store is inlined; an external URL (static
-        # or from a query cell) stays non-data: and renders as a placeholder.
+        # Only the app's own image store is inlined. Anything else (external
+        # URL, data:, javascript:, junk from a query cell) becomes "" so the
+        # SSR composer draws its placeholder — never a caller-supplied data:.
         url = _image_effective_url(
             props, dict(widget_spec.encoding or {}), columns, rows
         )
-        data_uri = _resolve_image_data_uri(url)
-        props["url"] = data_uri or url
+        props["url"] = _resolve_image_data_uri(url) or ""
 
     return {
         "id": widget_spec.id,

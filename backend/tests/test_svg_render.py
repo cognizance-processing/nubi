@@ -1096,7 +1096,7 @@ _IMG_ID = "b" * 32
 
 class TestImageEffectiveUrl:
     """props.source='query' reads encoding.value at props.row from the
-    collected rows, with the same clamping as ImageWidget.tsx."""
+    collected rows, with the same row rule as ImageWidget.tsx."""
 
     COLS = ["name", "logo"]
     ROWS = [["a", f"/api/v1/images/{_IMG_ID}"], ["b", "https://example.com/b.png"]]
@@ -1117,8 +1117,13 @@ class TestImageEffectiveUrl:
         assert self._url({"source": "query"}) == f"/api/v1/images/{_IMG_ID}"
         assert self._url({"source": "query", "row": 1}) == "https://example.com/b.png"
 
-    def test_query_row_is_clamped(self):
-        assert self._url({"source": "query", "row": 99}) == "https://example.com/b.png"
+    def test_query_row_past_end_is_empty(self):
+        # A filter that shrinks the table must not show another row's image.
+        assert self._url({"source": "query", "row": 2}) == ""
+        assert self._url({"source": "query", "row": 99}) == ""
+        assert self._url({"source": "query", "row": 2.0}) == ""
+
+    def test_query_negative_row_is_first(self):
         assert self._url({"source": "query", "row": -3}) == f"/api/v1/images/{_IMG_ID}"
 
     def test_query_row_matches_js_number_isinteger(self):
@@ -1161,5 +1166,47 @@ class TestImageEffectiveUrl:
             pos=WidgetPos(x=1, y=1, w=2, h=2),
         )
         data = {"widget_id": "img", "query_id": "q1", "columns": self.COLS, "rows": self.ROWS}
-        assert not _widget_to_payload(w, data, width=100, height=100)["props"]["url"].startswith("data:")
+        assert _widget_to_payload(w, data, width=100, height=100)["props"]["url"] == ""
         assert _widget_to_payload(w, {"widget_id": "img", "error": "boom"}, width=100, height=100)["props"]["url"] == ""
+
+    @pytest.mark.parametrize("cell", [
+        "data:image/png;base64,iVBORw0KGgo=",
+        "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>",
+        "javascript:alert(1)",
+        "/logo.png",
+    ])
+    def test_payload_never_passes_unresolved_cell(self, monkeypatch, cell):
+        import app.dashboards.images as images
+        from app.dashboards.svg_render import _widget_to_payload
+
+        monkeypatch.setattr(images, "load_image", lambda _id: (b"\x89PNG", "image/png"))
+        w = Widget(
+            id="img", type="image", query_id="q1", encoding={"value": "logo"},
+            props={"source": "query", "row": 0},
+            pos=WidgetPos(x=1, y=1, w=2, h=2),
+        )
+        data = {"widget_id": "img", "query_id": "q1", "columns": self.COLS, "rows": [["a", cell]]}
+        assert _widget_to_payload(w, data, width=100, height=100)["props"]["url"] == ""
+
+    def test_payload_static_data_url_not_passed(self):
+        from app.dashboards.svg_render import _widget_to_payload
+
+        w = Widget(
+            id="img", type="image",
+            props={"url": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>"},
+            pos=WidgetPos(x=1, y=1, w=2, h=2),
+        )
+        assert _widget_to_payload(w, None, width=100, height=100)["props"]["url"] == ""
+
+    def test_payload_row_past_end_is_placeholder(self, monkeypatch):
+        import app.dashboards.images as images
+        from app.dashboards.svg_render import _widget_to_payload
+
+        monkeypatch.setattr(images, "load_image", lambda _id: (b"\x89PNG", "image/png"))
+        w = Widget(
+            id="img", type="image", query_id="q1", encoding={"value": "logo"},
+            props={"source": "query", "row": 5},
+            pos=WidgetPos(x=1, y=1, w=2, h=2),
+        )
+        data = {"widget_id": "img", "query_id": "q1", "columns": self.COLS, "rows": self.ROWS}
+        assert _widget_to_payload(w, data, width=100, height=100)["props"]["url"] == ""
