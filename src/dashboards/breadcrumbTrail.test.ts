@@ -284,4 +284,23 @@ describe("displayedSteps", () => {
     );
     assert.deepEqual(displayedSteps([], { trailDisplay: "current" }), []);
   });
+  test("hierarchical full trail: uncapped maxSteps shows one crumb per level", () => {
+    // BreadcrumbWidget passes POSITIVE_INFINITY in hierarchical mode, so a
+    // small maxSteps left over from append authoring can't hide levels.
+    const levels = hierarchicalTrail(
+      [],
+      0,
+      TRACKED,
+      { region: "West", store: "42", sku: "A" },
+      {},
+      false,
+    );
+    assert.equal(levels.length, 3);
+    assert.deepEqual(
+      displayedSteps(levels, { maxSteps: Number.POSITIVE_INFINITY }).map(
+        (s) => s.name,
+      ),
+      TRACKED,
+    );
+  });
 });

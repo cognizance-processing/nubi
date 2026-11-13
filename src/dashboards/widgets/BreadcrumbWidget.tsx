@@ -116,7 +116,7 @@ export default function BreadcrumbWidget({ widget, editMode = false }) {
   }, [contextKey])
   const resolvedParams = useResolvedParams(widget.params)
   const [contextRow, setContextRow] = useState(null)
-  /** Shown only in edit mode — runtime boards stay quiet when context chips are absent. */
+  /** Rendered only in edit mode (see below) — runtime boards stay quiet when context chips are absent. */
   const [contextNotice, setContextNotice] = useState(null)
   useEffect(() => {
     if (!widget.query_id || contextColumns.length === 0) {
@@ -131,12 +131,12 @@ export default function BreadcrumbWidget({ widget, editMode = false }) {
         if (cancelled) return
         if (error) {
           setContextRow(null)
-          setContextNotice(editMode ? (error.message ?? 'Context query failed.') : null)
+          setContextNotice(error.message ?? 'Context query failed.')
           return
         }
         if (!table || table.numRows === 0) {
           setContextRow(null)
-          setContextNotice(editMode ? 'Context query returned no rows.' : null)
+          setContextNotice('Context query returned no rows.')
           return
         }
         const row = {}
@@ -148,13 +148,13 @@ export default function BreadcrumbWidget({ widget, editMode = false }) {
         }
         if (missingCols.length > 0) {
           setContextRow(null)
-          setContextNotice(editMode ? `Missing column(s): ${missingCols.join(', ')}` : null)
+          setContextNotice(`Missing column(s): ${missingCols.join(', ')}`)
           return
         }
         setContextRow(row)
         const hasChip = contextColumns.some(col => !isEmptyValue(row[col]))
         setContextNotice(
-          editMode && !hasChip
+          !hasChip
             ? 'First row has no values in the selected columns — context chips hidden.'
             : null,
         )
@@ -162,12 +162,12 @@ export default function BreadcrumbWidget({ widget, editMode = false }) {
       .catch((err) => {
         if (!cancelled) {
           setContextRow(null)
-          setContextNotice(editMode ? (err?.message ?? 'Context query failed.') : null)
+          setContextNotice(err?.message ?? 'Context query failed.')
         }
       })
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [widget.query_id, contextKey, JSON.stringify(resolvedParams), editMode])
+  }, [widget.query_id, contextKey, JSON.stringify(resolvedParams)])
   const contextChips = contextRow
     ? contextColumns.map(col => contextRow[col]).filter(v => !isEmptyValue(v)).map(v => String(v))
     : []
@@ -225,7 +225,11 @@ export default function BreadcrumbWidget({ widget, editMode = false }) {
     () => (hierarchical ? normalizeStepsByVariableOrder(steps, tracked) : steps),
     [hierarchical, steps, tracked],
   )
-  const shown = displayedSteps(activeSteps, { trailDisplay, maxSteps })
+  // maxSteps is an append-mode cap; a hierarchical trail is bounded by its levels.
+  const shown = displayedSteps(activeSteps, {
+    trailDisplay,
+    maxSteps: hierarchical ? Number.POSITIVE_INFINITY : maxSteps,
+  })
   // `shown` is a suffix of activeSteps; offset maps a shown crumb back to it.
   const shownOffset = activeSteps.length - shown.length
 

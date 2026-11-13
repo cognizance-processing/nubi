@@ -184,7 +184,8 @@ export function hierarchicalTrail(
 
 /**
  * Crumbs to render: 'full' keeps the newest `maxSteps`, 'current' only the
- * deepest. The result is always a suffix of `steps`, so the original index of
+ * deepest. `maxSteps` is an append-mode cap — hierarchical callers pass
+ * Number.POSITIVE_INFINITY so every level shows. The result is always a suffix of `steps`, so the original index of
  * displayed[k] is `steps.length - displayed.length + k`.
  */
 export function displayedSteps(
