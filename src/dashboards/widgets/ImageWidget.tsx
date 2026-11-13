@@ -162,19 +162,42 @@ export default function ImageWidget({ widget, providerTable = null }) {
         </div>
       )
     }
-    return (
-      <div className="flex items-center justify-center h-full px-4">
-        {wantsQuery
-          ? <EmptyState
-              title={rowOutOfRange ? 'No image at this row' : 'No image URL'}
-              description={(widget.query_id || providerTable !== null) && valueCol
-                ? (rowOutOfRange
-                    ? `The query returned fewer than ${(Number.isInteger(props.row) ? Math.max(props.row, 0) : 0) + 1} rows.`
-                    : 'The selected cell is empty.')
-                : 'Pick a query and the column that holds the image URL.'}
+    const queryBound =
+      (widget.query_id || providerTable !== null || widget.source) && valueCol
+    if (wantsQuery) {
+      if (!queryBound) {
+        return (
+          <div className="flex items-center justify-center h-full px-4">
+            <EmptyState
+              title="No image URL"
+              description="Pick a query and the column that holds the image URL."
               compact
             />
-          : <EmptyState title="No image set" description="Upload a file or paste a URL." compact />}
+          </div>
+        )
+      }
+      if (rowOutOfRange) {
+        const row = Number.isInteger(props.row) ? Math.max(props.row, 0) : 0
+        return (
+          <div className="flex items-center justify-center h-full px-4">
+            <EmptyState
+              title="No image at this row"
+              description={`The query returned fewer than ${row + 1} rows.`}
+              compact
+            />
+          </div>
+        )
+      }
+      // Bound but no URL yet — provider still loading, empty cell, etc. (same as TextWidget).
+      return (
+        <div className="flex items-center justify-center h-full px-4 text-muted text-sm">
+          —
+        </div>
+      )
+    }
+    return (
+      <div className="flex items-center justify-center h-full px-4">
+        <EmptyState title="No image set" description="Upload a file or paste a URL." compact />
       </div>
     )
   }
