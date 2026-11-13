@@ -5,9 +5,9 @@ followed by ``adbc_driver_postgresql.dbapi.connect(...)`` — a submodule that
 the package does not expose until it is imported. The deep Postgres regression
 lives in ``test_postgres_connector.py``; this file covers the neighbours:
 
-- Trino — ``import trino`` + ``trino.dbapi.connect``. Correct only because
-  upstream ``trino/__init__.py`` does ``from . import dbapi``; the fake mirrors
-  that, and a strict xfail records the reliance.
+- Trino — ``trino.dbapi`` / ``trino.auth`` are imported explicitly, so the
+  connector works whether or not the parent package re-exports them (upstream
+  ``trino/__init__.py`` does; both shapes are tested).
 - BigQuery — a different pattern (``from google.cloud import bigquery``); the
   fakes stand in for ``Client`` / ``QueryJobConfig`` / ``ScalarQueryParameter``.
 - Postgres wire aliases (redshift / cockroachdb / cloudsql) resolve to
@@ -75,7 +75,7 @@ class _FakeTrinoConn:
         self.closed = True
 
 
-def _install_fake_trino(monkeypatch, *, expose_dbapi: bool):
+def _install_fake_trino(monkeypatch, *, expose_submodules: bool):
     cursor = _FakeTrinoCursor()
     conn = _FakeTrinoConn(cursor)
     calls: list[dict] = []
@@ -87,12 +87,23 @@ def _install_fake_trino(monkeypatch, *, expose_dbapi: bool):
         return conn
 
     dbapi.connect = connect
+
+    auth = types.ModuleType("trino.auth")
+
+    class BasicAuthentication:
+        def __init__(self, user, password):
+            self.user, self.password = user, password
+
+    auth.BasicAuthentication = BasicAuthentication
+
     parent = types.ModuleType("trino")
-    if expose_dbapi:
-        # Upstream trino/__init__.py does `from . import dbapi`.
+    if expose_submodules:
+        # Upstream trino/__init__.py does `from . import auth, dbapi, ...`.
         parent.dbapi = dbapi
+        parent.auth = auth
     monkeypatch.setitem(sys.modules, "trino", parent)
     monkeypatch.setitem(sys.modules, "trino.dbapi", dbapi)
+    monkeypatch.setitem(sys.modules, "trino.auth", auth)
     return types.SimpleNamespace(cursor=cursor, conn=conn, calls=calls)
 
 
@@ -102,7 +113,7 @@ _TRINO_CFG = {"host": "trino.example.test", "user": "nubi", "catalog": "hive", "
 def test_trino_execute_with_upstream_shaped_package(monkeypatch):
     from app.connectors.trino import TrinoConnector
 
-    fake = _install_fake_trino(monkeypatch, expose_dbapi=True)
+    fake = _install_fake_trino(monkeypatch, expose_submodules=True)
     out = TrinoConnector(_TRINO_CFG).execute(_plan("SELECT $1 AS ok", [1]))
 
     assert out.column("ok").to_pylist() == [1, 2]
@@ -113,20 +124,27 @@ def test_trino_execute_with_upstream_shaped_package(monkeypatch):
     assert fake.conn.closed
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AppError,
-    reason=(
-        "trino.py does `import trino` then `trino.dbapi.connect`, relying on "
-        "upstream __init__ importing dbapi. If this starts passing, trino.py was "
-        "hardened to `import trino.dbapi` — drop this marker."
-    ),
-)
 def test_trino_without_parent_dbapi_attribute(monkeypatch):
+    # Regression: `import trino` + `trino.dbapi.connect` failed here with
+    # "module 'trino' has no attribute 'dbapi'" (wrapped as AppError).
     from app.connectors.trino import TrinoConnector
 
-    _install_fake_trino(monkeypatch, expose_dbapi=False)
-    TrinoConnector(_TRINO_CFG).execute(_plan())
+    fake = _install_fake_trino(monkeypatch, expose_submodules=False)
+    out = TrinoConnector(_TRINO_CFG).execute(_plan())
+
+    assert out.column("ok").to_pylist() == [1, 2]
+    assert fake.conn.closed
+
+
+def test_trino_password_uses_basic_auth_without_parent_attributes(monkeypatch):
+    from app.connectors.trino import TrinoConnector
+
+    fake = _install_fake_trino(monkeypatch, expose_submodules=False)
+    TrinoConnector({**_TRINO_CFG, "password": "not-a-secret"}).execute(_plan())
+
+    auth = fake.calls[0]["auth"]
+    assert type(auth).__name__ == "BasicAuthentication"
+    assert (auth.user, auth.password) == ("nubi", "not-a-secret")
 
 
 # ---------------------------------------------------------------------------
