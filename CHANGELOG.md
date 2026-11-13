@@ -40,6 +40,11 @@ Conventions:
   `props.prefix` / `props.suffix`. Markdown `content` is only required in
   static mode. Same row rule as image: a row past the end shows "No value at
   this row" in the app and empty text in exports, never another row's value.
+- **Dashboard breadcrumb widget.** New `breadcrumb` widget type: clickable drill
+  path over dashboard variables with append or hierarchical trail modes,
+  optional clear-downstream when changing a level, full vs current trail
+  display, and optional context chips from a query's first row. Editor
+  configuration for drill path, trail mode, context columns, and display.
 
 ### Removed
 

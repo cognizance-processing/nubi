@@ -46,7 +46,7 @@ before publishing.
 | Field | Type | Required | Default | Notes |
 |-------|------|----------|---------|-------|
 | `id` | string (min len 1) | **yes** | — | Stable, unique widget id (e.g. `"w1"`). |
-| `type` | enum | **yes** | — | `kpi`, `table`, `chart`, `filter`, `text` (canonical). Extended: `metric`, `pivot`, `section`, `html` (frontend-only renderers). |
+| `type` | enum | **yes** | — | `kpi`, `table`, `chart`, `filter`, `text` (canonical). Extended: `metric`, `pivot`, `section`, `html`, `image`, `divider`, `stepper`, `datedisplay`, `breadcrumb` (frontend/editor renderers; validated in `spec.py`). |
 | `tab_id` | string or null | no | `null` | Tab this widget belongs to. `null` ⇒ first tab when `tabs` is non-empty. Must reference a declared tab id (hard error otherwise). Ignored for drawer widgets. |
 | `query_id` | string | for `kpi`/`table`/`chart` | `""` | Registered query id backing this widget. Empty for `text`; optional for `filter` (which may use `options_query_id`). |
 | `chart_type` | enum or null | **yes for `chart`** | `null` | Canonical (validated) enum: `line`, `bar`, `hbar`, `scatter`, `area`, `pie`, `donut`, `heatmap`, `gauge`. The visual editor + frontend/embed renderer also accept an **extended** set that round-trips through the stored JSON: `bubble`, `sankey`, `funnel`, `waterfall`, `treemap`, `radar`, `boxplot`, `candlestick`, `fan` (these render but are not yet in the strict `validate` enum — see note below). |
@@ -122,6 +122,7 @@ validators in `validate_spec`.
   `hbar` is in the canonical enum but the editor renders horizontal bars via
   `chart_type: bar` + `config.orientation: horizontal` instead.
 - **Text requirement.** `text` widgets MUST set `content`.
+- **Breadcrumb.** `breadcrumb` widgets track drill path variables in `props.variables` (outermost first). Optional `props.trailMode` (`append` | `hierarchical`), `props.clearDownstream` (hierarchical only), `props.trailDisplay` (`full` | `current`), and optional context chips via `query_id` + `props.contextColumns`. No `query_id` required unless context chips are used.
 - **Uniqueness.** Widget ids and tab ids must be unique within the spec.
 
 ### What `POST /dashboards/validate` returns
@@ -297,7 +298,37 @@ param `region: text`). Replace these with the ids/columns from your own
 }
 ```
 
-### 4.7 Text (markdown)
+### 4.7 Breadcrumb (drill path)
+
+```json
+{
+  "version": 1,
+  "title": "Regional drill",
+  "layout": {"cols": 12, "row_height": 60},
+  "variables": [
+    {"name": "region", "type": "text", "default": null},
+    {"name": "store", "type": "text", "default": null}
+  ],
+  "widgets": [
+    {
+      "id": "bc1",
+      "type": "breadcrumb",
+      "query_id": null,
+      "props": {
+        "variables": ["region", "store"],
+        "labels": {"region": "Region", "store": "Store"},
+        "homeLabel": "All",
+        "trailMode": "hierarchical",
+        "clearDownstream": true,
+        "trailDisplay": "full"
+      },
+      "pos": {"x": 1, "y": 1, "w": 12, "h": 1}
+    }
+  ]
+}
+```
+
+### 4.8 Text (markdown)
 
 ```json
 {
@@ -315,7 +346,7 @@ param `region: text`). Replace these with the ids/columns from your own
 }
 ```
 
-### 4.8 Cascading filters (filter A scopes filter B's options + a chart)
+### 4.9 Cascading filters (filter A scopes filter B's options + a chart)
 
 ```json
 {
@@ -359,7 +390,7 @@ param `region: text`). Replace these with the ids/columns from your own
 }
 ```
 
-### 4.9 Tabs (two tabs, one widget each + a filter on the first tab)
+### 4.10 Tabs (two tabs, one widget each + a filter on the first tab)
 
 ```json
 {
@@ -406,7 +437,7 @@ param `region: text`). Replace these with the ids/columns from your own
 }
 ```
 
-### 4.10 Drawer (shared filters drawer + a chart on the grid)
+### 4.11 Drawer (shared filters drawer + a chart on the grid)
 
 ```json
 {

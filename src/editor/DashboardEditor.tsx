@@ -468,7 +468,10 @@ function makeDateDisplayWidget(pos) {
 function makeBreadcrumbWidget(pos) {
   return {
     id: genId('breadcrumb'), type: 'breadcrumb', query_id: null,
-    props: { variables: [], labels: {}, homeLabel: 'All', maxSteps: 10, separator: 'arrow', chipVariant: 'filled' },
+    props: {
+      variables: [], labels: {}, homeLabel: 'All', maxSteps: 10, separator: 'arrow', chipVariant: 'filled',
+      trailMode: 'append', clearDownstream: false, trailDisplay: 'full',
+    },
     pos: { ...WIDGET_SIZES.breadcrumb, ...pos },
   }
 }
@@ -1006,13 +1009,40 @@ function DateDisplayConfig({ widget, onChange, spec }) {
 // BreadcrumbConfig — a drill path over dashboard variables (`breadcrumb`)
 // ---------------------------------------------------------------------------
 
-function BreadcrumbConfig({ widget, onChange, spec }) {
+function BreadcrumbConfig({ widget, onChange, spec, onCreateVariable = undefined }) {
   const props = widget.props ?? {}
   const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
+
+  // Context chips: optional query whose first row supplies fixed scope chips.
+  const contextColumns = useMemo(
+    () => (Array.isArray(props.contextColumns) ? props.contextColumns : []),
+    [props.contextColumns],
+  )
+  const { columns: contextQueryColumns, introspecting } = useColumnIntrospection(widget.query_id || null)
+
+  // A picked column the query no longer returns stays listed so it can be removed.
+  const contextColumnChoices = [
+    ...contextQueryColumns,
+    ...contextColumns.filter(c => !contextQueryColumns.includes(c)),
+  ]
+  const toggleContextColumn = (col) => setProps('contextColumns', contextColumns.includes(col)
+    ? contextColumns.filter(c => c !== col)
+    : [...contextColumns, col])
+  const setContextQuery = (id) => {
+    if ((id || null) === (widget.query_id || null)) return
+    // Columns differ per query — re-pick them. Params are kept, as on the Data tab.
+    onChange({ ...widget, query_id: id || null, props: { ...props, contextColumns: [] } })
+  }
+  const clearContextQuery = () => {
+    const { contextColumns: _drop, ...rest } = props
+    onChange({ ...widget, query_id: null, params: undefined, props: rest })
+  }
   const tracked = Array.isArray(props.variables) ? props.variables : []
   const labels = props.labels ?? {}
   const specVariables = Array.isArray(spec?.variables) ? spec.variables : []
   const available = specVariables.filter(v => !tracked.includes(v.name))
+  const hierarchical = props.trailMode === 'hierarchical'
+  const trailDisplay = props.trailDisplay === 'current' ? 'current' : 'full'
 
   const setTracked = (next) => setProps('variables', next)
   const move = (i, dir) => {
@@ -1027,8 +1057,10 @@ function BreadcrumbConfig({ widget, onChange, spec }) {
     <div className="space-y-3">
       <Section title="Drill path" icon={Database}>
         <p className="text-[10px] text-muted/70">
-          List the filter variables in drill order — outermost first. A crumb is
-          added each time one of them takes a new value.
+          List the filter variables in drill order — outermost first.
+          {hierarchical
+            ? ' Hierarchical mode keeps one crumb per variable at that level; changing an upstream variable replaces its step and trims anything below.'
+            : ' Append mode adds a new crumb each time a tracked variable takes a new value.'}
         </p>
         {tracked.length === 0 && (
           <p className="text-xs text-muted/70 text-center rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2">
@@ -1078,6 +1110,71 @@ function BreadcrumbConfig({ widget, onChange, spec }) {
             This board has no variables yet — add a filter widget first.
           </p>
         )}
+        <div>
+          <FieldLabel>Trail mode</FieldLabel>
+          <select className={selectCls} value={hierarchical ? 'hierarchical' : 'append'}
+            title="Append: a timeline of filter changes. Hierarchical: one crumb per variable, in drill path order."
+            onChange={e => setProps('trailMode', e.target.value)}>
+            <option value="append">Append every change</option>
+            <option value="hierarchical">Hierarchical (one per level)</option>
+          </select>
+        </div>
+        {hierarchical && (
+          <ToggleRow label="Clear downstream filters"
+            hint="Recommended. Changing a level resets the variables below it."
+            checked={props.clearDownstream === true}
+            onChange={v => setProps('clearDownstream', v)} />
+        )}
+      </Section>
+
+      <Section title="Context chips" defaultOpen={Boolean(widget.query_id)} icon={Database}>
+        <p className="text-[10px] text-muted/70 leading-relaxed">
+          Optional. Pick a query and columns to show fixed scope chips between
+          Home and the drill path (not clickable). Values always come from{' '}
+          <span className="font-medium text-fg/80">row 1</span> of the query
+          result with non-empty values in the columns you pick. Use the query
+          status below for failures and row count (unbound sample). If chips are
+          missing on the canvas preview, check row 1 and your parameter bindings
+          there — the preview runs with live board variables.
+        </p>
+        <QueryPicker value={widget.query_id ?? ''} onChange={setContextQuery} />
+        {widget.query_id && (
+          <>
+            <QueryStatusLink queryId={widget.query_id} />
+            {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
+            <div className="space-y-1.5">
+              <FieldLabel className="mb-0">Columns</FieldLabel>
+              {contextColumnChoices.length === 0
+                ? <p className="text-[10px] text-muted/70">No columns found for this query.</p>
+                : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {contextColumnChoices.map(col => (
+                      <button key={col} type="button" onClick={() => toggleContextColumn(col)}
+                        className={`px-2 h-7 text-[11px] font-mono rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${contextColumns.includes(col)
+                          ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]'
+                          : 'bg-surface text-muted border-border hover:border-fg'
+                          }`}>
+                        {col}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              <p className="text-[10px] text-muted/70">
+                {contextColumns.length > 0
+                  ? <>Order left → right: <span className="font-mono">{contextColumns.join(' › ')}</span>. Click order is display order.</>
+                  : 'Click columns in the order they should appear, left → right.'}
+              </p>
+            </div>
+            <div>
+              <FieldLabel>Parameters</FieldLabel>
+              <ParamBindingSection widget={widget} onChange={onChange} specVariables={spec?.variables}
+                onCreateVariable={onCreateVariable} />
+            </div>
+            <Button variant="secondary" size="sm" className="w-full" onClick={clearContextQuery}>
+              Remove context query
+            </Button>
+          </>
+        )}
       </Section>
 
       <Section title="Display" defaultOpen={false} icon={SlidersHorizontal}>
@@ -1095,11 +1192,30 @@ function BreadcrumbConfig({ widget, onChange, spec }) {
           </select>
         </div>
         <div>
-          <FieldLabel>Max steps</FieldLabel>
-          <input type="number" min={1} max={30} className={inputCls}
-            value={props.maxSteps ?? 10}
-            onChange={e => setProps('maxSteps', Math.max(1, parseInt(e.target.value, 10) || 10))} />
+          <FieldLabel>Trail display</FieldLabel>
+          <select className={selectCls} value={trailDisplay}
+            title="Full shows the whole drill path. Current shows only the latest selection."
+            onChange={e => setProps('trailDisplay', e.target.value)}>
+            <option value="full">Full trail</option>
+            <option value="current">Current selection only</option>
+          </select>
         </div>
+        {trailDisplay === 'full' && !hierarchical && (
+          <div>
+            <FieldLabel>Max steps</FieldLabel>
+            <input type="number" min={1} max={30} className={inputCls}
+              value={props.maxSteps ?? 10}
+              onChange={e => setProps('maxSteps', Math.max(1, parseInt(e.target.value, 10) || 10))} />
+            <p className="text-[10px] text-muted/70 mt-1">
+              Caps how many crumbs append mode keeps in the trail.
+            </p>
+          </div>
+        )}
+        {trailDisplay === 'full' && hierarchical && (
+          <p className="text-[10px] text-muted/70">
+            Hierarchical mode shows at most one crumb per tracked variable — depth follows your drill path list, not max steps.
+          </p>
+        )}
         <div>
           <FieldLabel>Chip style</FieldLabel>
           <select className={selectCls} value={props.chipVariant ?? 'filled'} onChange={e => setProps('chipVariant', e.target.value)}>
@@ -2028,7 +2144,7 @@ function ConfigPanel({
           {widget.type === 'stepper' && <StepperConfig widget={widget} onChange={onChange} />}
           {widget.type === 'divider' && <DividerConfig widget={widget} onChange={onChange} />}
           {widget.type === 'datedisplay' && <DateDisplayConfig widget={widget} onChange={onChange} spec={spec} />}
-          {widget.type === 'breadcrumb' && <BreadcrumbConfig widget={widget} onChange={onChange} spec={spec} />}
+          {widget.type === 'breadcrumb' && <BreadcrumbConfig widget={widget} onChange={onChange} spec={spec} onCreateVariable={onCreateVariable} />}
 
           {widget.type === 'chart' && <DrilldownSection widget={widget} onChange={onChange} />}
         </div>

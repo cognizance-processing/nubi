@@ -54,6 +54,33 @@ const captured = []
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+const DOCS_MIRROR_DIR = path.join(ROOT, 'docs', 'screenshots')
+mkdirSync(DOCS_MIRROR_DIR, { recursive: true })
+
+function encodePngToWebp(tmpPng, webp) {
+  try {
+    execSync(
+      `cwebp -quiet -q 86 -sharp_yuv -m 6 ${JSON.stringify(tmpPng)} -o ${JSON.stringify(webp)}`,
+    )
+  } catch {
+    const py = path.join(OUT_DIR, '_encode_webp.py')
+    writeFileSync(
+      py,
+      `from PIL import Image\nImage.open(${JSON.stringify(tmpPng)}).save(${JSON.stringify(webp)}, 'WEBP', quality=86)\n`,
+    )
+    try {
+      execSync(`python ${JSON.stringify(py)}`)
+    } finally {
+      unlinkSync(py)
+    }
+  }
+  unlinkSync(tmpPng)
+}
+
+function mirrorWebpToDocsMirror(webpPath, baseName) {
+  copyFileSync(webpPath, path.join(DOCS_MIRROR_DIR, `${baseName}.webp`))
+}
+
 // ── Discover seeded resource ids via the API ─────────────────────────────────
 async function api(pathname, token, projectId) {
   const headers = { 'Content-Type': 'application/json' }
@@ -237,13 +264,24 @@ async function shoot(page, name, { settle = 1200, dir = OUT_DIR, format = 'webp'
     const tmpPng = path.join(dir, `${name}.png`)
     const webp = path.join(dir, `${name}.webp`)
     await page.screenshot({ path: tmpPng })
-    execSync(`cwebp -quiet -q 86 -sharp_yuv -m 6 ${JSON.stringify(tmpPng)} -o ${JSON.stringify(webp)}`)
-    unlinkSync(tmpPng)
+    encodePngToWebp(tmpPng, webp)
+    mirrorWebpToDocsMirror(webp, name)
   } else {
     await page.screenshot({ path: path.join(dir, `${name}.${format}`) })
   }
   captured.push(name)
   console.log(`✓ ${name}.${format}`)
+}
+
+async function shootLocator(page, locator, name, { settle = 1200, dir = OUT_DIR } = {}) {
+  await sleep(settle)
+  const tmpPng = path.join(dir, `${name}.png`)
+  const webp = path.join(dir, `${name}.webp`)
+  await locator.screenshot({ path: tmpPng })
+  encodePngToWebp(tmpPng, webp)
+  mirrorWebpToDocsMirror(webp, name)
+  captured.push(name)
+  console.log(`✓ ${name}.webp`)
 }
 
 // Every full page load reboots the app, whose boot-time POST /auth/refresh
@@ -406,6 +444,21 @@ async function captureProductTour(browser, ids, theme) {
   // sees) — captured directly rather than via the editor's Eye/preview toggle so
   // it stays robust to editor top-bar changes.
   await goAndShoot(page, `/editor/${ids.board.id}`, `dashboard-editor${sfx}`, { settle: 4500 })
+
+  // Widget palette (left library rail @ lg+) — all Add-panel types including breadcrumb.
+  await ensureApp(page, '/editor')
+  await page.waitForSelector('[data-testid="palette-add-breadcrumb"]', { timeout: 30_000 })
+  await page.waitForSelector('[data-testid="palette-add-stepper"]', { timeout: 10_000 })
+  const widgetLibrary = page.locator('aside[aria-label="Widget library"]')
+  await widgetLibrary.waitFor({ state: 'visible', timeout: 15_000 })
+  await page.evaluate(() => {
+    const search = document.querySelector('[data-testid="add-panel-search"]')
+    search?.scrollIntoView({ block: 'start' })
+    const scroller = search?.closest('.overflow-y-auto')
+    if (scroller) scroller.scrollTop = 0
+  })
+  await shootLocator(page, widgetLibrary, `NEW-widget-palette${sfx}`, { settle: 400 })
+
   await ensureApp(page, `/d/${ids.board.id}`)
   // Widgets compute in-browser via DuckDB-WASM; wait for a chart/table to paint.
   await page

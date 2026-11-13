@@ -110,7 +110,7 @@ Ask for a dashboard and Nubi builds a real one — not a screenshot, a live, cro
 3. Watch the **Create dashboard** block assemble the board. Expand it to see the dashboard name and a chip for each widget added.
 4. The assistant replies with a summary and a link to open the dashboard.
 
-Under the hood Nubi generates a structured **DashboardSpec** (referencing real query ids and real column names), compiles it to dashboard HTML, and validates it. Dashboards are composed only of Nubi's sandboxed widget elements — so a generated dashboard can never contain scripts or unsafe markup. Widgets are limited to the types Nubi supports: `kpi`, `metric`, `chart`, `table`, `pivot`, `filter`, `text`, and `section`. See [Dashboards](/docs/dashboards) for the full widget and chart reference.
+Under the hood Nubi generates a structured **DashboardSpec** (referencing real query ids and real column names), compiles it to dashboard HTML, and validates it. Dashboards are composed only of Nubi's sandboxed widget elements — so a generated dashboard can never contain scripts or unsafe markup. Widget types include data widgets (`kpi`, `metric`, `chart`, `table`, `pivot`), filters, layout/widgets (`text`, `section`, `image`, `divider`, `stepper`, `datedisplay`, `breadcrumb`), and related frontend renderers validated in `spec.py`. See [Dashboards](/docs/dashboards) for author-facing behaviour and [DashboardSpec reference](/docs/dashboard-spec-reference) for the JSON contract.
 
 ---
 

@@ -14,7 +14,10 @@
  *       chipTextColor?: string, // chip text, both variants (default: fg / chipColor)
  *       chipVariant?: 'filled' | 'outlined',     // default 'filled'
  *       size?: 'sm' | 'md',    // default 'sm'
- *       contextColumns?: string[],  // see "Context chips" below
+ *       contextColumns?: string[],  // see "Context chips" below (editor: Widget tab › Context chips)
+ *       trailMode?: 'append' | 'hierarchical',  // default 'append'
+ *       clearDownstream?: boolean,  // default false; hierarchical only
+ *       trailDisplay?: 'full' | 'current',      // default 'full'
  *     },
  *     query_id?, params?,      // backs the context chips
  *     pos
@@ -26,6 +29,16 @@
  * step is appended carrying a SNAPSHOT of all tracked variables at that moment.
  * Clicking a step restores its snapshot and truncates the trail after it;
  * clicking Home clears every tracked variable and empties the trail.
+ *
+ * trailMode 'hierarchical': each tracked variable owns one level, at its index
+ * in `variables`. A change at a level replaces that crumb and drops the ones
+ * below; clearing it drops that crumb and the ones below. With
+ * `clearDownstream` the variables below are also set to null; without it they
+ * keep their values and their crumbs are rebuilt from them.
+ *
+ * trailDisplay 'current' renders only the deepest crumb (Home and context
+ * chips still show); 'full' renders the newest `maxSteps`. Trail logic lives in
+ * ../breadcrumbTrail.ts.
  *
  * The legacy widget this replaces tracked *widget ids* because filters wrote
  * their output into a per-widget slot. Nubi filters write named variables, so
@@ -49,7 +62,16 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronRight, Home } from 'lucide-react'
 import { useResolvedParams, useSetVariable, useVariableValues } from '../VariableStore.jsx'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
-import { chipLabel, isEmptyValue } from '../legacyWidgetText.js'
+import { isEmptyValue } from '../legacyWidgetText.js'
+import {
+  appendModeUpdate,
+  buildSnapshot,
+  displayedSteps,
+  downstreamToClear,
+  findHierarchicalChange,
+  hierarchicalTrail,
+  normalizeStepsByVariableOrder,
+} from '../breadcrumbTrail.js'
 import { resolveTextColors } from '../textColors.js'
 import EmptyState from '../../components/ui/EmptyState.jsx'
 
@@ -71,6 +93,9 @@ export default function BreadcrumbWidget({ widget, editMode = false }) {
   const labels = props.labels ?? {}
   const homeLabel = props.homeLabel ?? 'All'
   const maxSteps = Number.isInteger(props.maxSteps) && props.maxSteps > 0 ? props.maxSteps : 10
+  const hierarchical = props.trailMode === 'hierarchical'
+  const clearDownstream = hierarchical && props.clearDownstream === true
+  const trailDisplay = props.trailDisplay === 'current' ? 'current' : 'full'
   // The chips carry their own colour; the separators between them are the
   // `muted` text role, so they follow the card's Appearance settings.
   const ink = resolveTextColors(widget.style)
@@ -91,23 +116,57 @@ export default function BreadcrumbWidget({ widget, editMode = false }) {
   }, [contextKey])
   const resolvedParams = useResolvedParams(widget.params)
   const [contextRow, setContextRow] = useState(null)
+  /** Rendered only in edit mode (see below) — runtime boards stay quiet when context chips are absent. */
+  const [contextNotice, setContextNotice] = useState(null)
   useEffect(() => {
     if (!widget.query_id || contextColumns.length === 0) {
       setContextRow(null)
+      setContextNotice(null)
       return
     }
     let cancelled = false
     const named = Object.keys(resolvedParams).length > 0 ? { namedParams: resolvedParams } : undefined
     runArrowQueryById(widget.query_id, named)
-      .then(({ table }) => {
-        if (cancelled || !table || table.numRows === 0) return
+      .then(({ table, error }) => {
+        if (cancelled) return
+        if (error) {
+          setContextRow(null)
+          setContextNotice(error.message ?? 'Context query failed.')
+          return
+        }
+        if (!table || table.numRows === 0) {
+          setContextRow(null)
+          setContextNotice('Context query returned no rows.')
+          return
+        }
         const row = {}
-        for (const col of contextColumns) row[col] = table.getChild(col)?.get(0) ?? null
+        const missingCols = []
+        for (const col of contextColumns) {
+          const child = table.getChild(col)
+          if (!child) missingCols.push(col)
+          else row[col] = child.get(0) ?? null
+        }
+        if (missingCols.length > 0) {
+          setContextRow(null)
+          setContextNotice(`Missing column(s): ${missingCols.join(', ')}`)
+          return
+        }
         setContextRow(row)
+        const hasChip = contextColumns.some(col => !isEmptyValue(row[col]))
+        setContextNotice(
+          !hasChip
+            ? 'First row has no values in the selected columns — context chips hidden.'
+            : null,
+        )
       })
-      .catch(() => { if (!cancelled) setContextRow(null) })
+      .catch((err) => {
+        if (!cancelled) {
+          setContextRow(null)
+          setContextNotice(err?.message ?? 'Context query failed.')
+        }
+      })
     return () => { cancelled = true }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [widget.query_id, contextKey, JSON.stringify(resolvedParams)])
   const contextChips = contextRow
     ? contextColumns.map(col => contextRow[col]).filter(v => !isEmptyValue(v)).map(v => String(v))
@@ -140,28 +199,44 @@ export default function BreadcrumbWidget({ widget, editMode = false }) {
     lastSnapshot.current = snapshot
     if (prev === null) return // first render establishes the baseline, it isn't a drill
 
-    for (const name of tracked) {
-      const before = prev[name]
-      const after = snapshot[name]
-      if (JSON.stringify(before) === JSON.stringify(after)) continue
-      if (isEmptyValue(after)) continue // clearing a filter drills OUT, it isn't a new step
-      const value = chipLabel(after)
-      const prefix = labels[name] ?? name
-      setSteps(cur => {
-        const next = [...cur, { name, label: prefix === '' ? value : `${prefix}: ${value}`, snapshot }]
-        return next.length > maxSteps ? next.slice(-maxSteps) : next
-      })
-      break
+    if (hierarchical) {
+      // Outermost changed level wins (drill order = `variables` order).
+      const index = findHierarchicalChange(prev, snapshot, tracked)
+      if (index < 0) return
+      setSteps(cur => hierarchicalTrail(cur, index, tracked, snapshot, labels, clearDownstream))
+      if (clearDownstream) {
+        // Agree with the post-clear state first, so the null writes below
+        // don't read as a second change on the next run.
+        lastSnapshot.current = buildSnapshot(tracked, snapshot, index, true)
+        for (const name of downstreamToClear(tracked, snapshot, index)) setVariable(name, null)
+      }
+      return
     }
-  // `labels` is authoring config, not a trigger — keying on the snapshot alone
-  // keeps this from firing on every unrelated re-render.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [snapshotKey, tracked, maxSteps, editMode])
+
+    setSteps(cur => appendModeUpdate(cur, prev, snapshot, tracked, labels, maxSteps) ?? cur)
+    // `labels` is authoring config, not a trigger — keying on the snapshot alone
+    // keeps this from firing on every unrelated re-render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshotKey, tracked, maxSteps, editMode, hierarchical, clearDownstream])
+
+  // Hierarchical trails hold one crumb per level; normalising here also
+  // collapses an append trail left over from switching modes in the editor.
+  const activeSteps = useMemo(
+    () => (hierarchical ? normalizeStepsByVariableOrder(steps, tracked) : steps),
+    [hierarchical, steps, tracked],
+  )
+  // maxSteps is an append-mode cap; a hierarchical trail is bounded by its levels.
+  const shown = displayedSteps(activeSteps, {
+    trailDisplay,
+    maxSteps: hierarchical ? Number.POSITIVE_INFINITY : maxSteps,
+  })
+  // `shown` is a suffix of activeSteps; offset maps a shown crumb back to it.
+  const shownOffset = activeSteps.length - shown.length
 
   // Keep the newest crumb in view on a trail wider than the tile.
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollLeft = scrollRef.current.scrollWidth
-  }, [steps.length])
+  }, [shown.length])
 
   const goHome = () => {
     for (const name of tracked) setVariable(name, null)
@@ -169,11 +244,12 @@ export default function BreadcrumbWidget({ widget, editMode = false }) {
     lastSnapshot.current = null
   }
 
+  // `index` is into activeSteps (the normalised trail in hierarchical mode).
   const goToStep = (index) => {
-    const target = steps[index]
+    const target = activeSteps[index]
     if (!target) return
     for (const name of tracked) setVariable(name, target.snapshot[name] ?? null)
-    setSteps(cur => cur.slice(0, index + 1))
+    setSteps(activeSteps.slice(0, index + 1))
     lastSnapshot.current = target.snapshot
   }
 
@@ -200,47 +276,58 @@ export default function BreadcrumbWidget({ widget, editMode = false }) {
     : <ChevronRight size={props.size === 'md' ? 16 : 13} className="text-muted mx-1" style={ink.muted ? { color: ink.muted } : undefined} aria-hidden="true" />
 
   return (
-    <div
-      ref={scrollRef}
-      className="flex items-center gap-1.5 h-full w-full px-2 overflow-x-auto overflow-y-hidden"
-    >
-      <button
-        type="button"
-        onClick={goHome}
-        style={chipStyle(steps.length === 0 && contextChips.length === 0)}
-        className={`shrink-0 inline-flex items-center rounded-full border font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50 ${chipSize}`}
+    <div className="flex flex-col h-full w-full min-h-0">
+      <div
+        ref={scrollRef}
+        className="flex items-center gap-1.5 flex-1 min-h-0 w-full px-2 overflow-x-auto overflow-y-hidden"
       >
-        <Home size={props.size === 'md' ? 16 : 12} />
-        {homeLabel}
-      </button>
+        <button
+          type="button"
+          onClick={goHome}
+          style={chipStyle(shown.length === 0 && contextChips.length === 0)}
+          className={`shrink-0 inline-flex items-center rounded-full border font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50 ${chipSize}`}
+        >
+          <Home size={props.size === 'md' ? 16 : 12} />
+          {homeLabel}
+        </button>
 
-      {contextChips.map((label, i) => (
-        <div key={`ctx-${i}`} className="shrink-0 flex items-center gap-1.5">
-          {sep}
-          <span
-            title={label}
-            style={chipStyle(steps.length === 0 && i === contextChips.length - 1)}
-            className={`inline-flex items-center max-w-[18rem] truncate rounded-full border font-medium ${chipSize}`}
-          >
-            {label}
-          </span>
-        </div>
-      ))}
+        {contextChips.map((label, i) => (
+          <div key={`ctx-${i}`} className="shrink-0 flex items-center gap-1.5">
+            {sep}
+            <span
+              title={label}
+              style={chipStyle(shown.length === 0 && i === contextChips.length - 1)}
+              className={`inline-flex items-center max-w-[18rem] truncate rounded-full border font-medium ${chipSize}`}
+            >
+              {label}
+            </span>
+          </div>
+        ))}
 
-      {steps.map((step, i) => (
-        <div key={`${step.name}-${i}`} className="shrink-0 flex items-center gap-1.5">
-          {sep}
-          <button
-            type="button"
-            onClick={() => goToStep(i)}
-            title={step.label}
-            style={chipStyle(i === steps.length - 1)}
-            className={`inline-flex items-center max-w-[14rem] truncate rounded-full border font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50 ${chipSize}`}
-          >
-            {step.label}
-          </button>
-        </div>
-      ))}
+        {shown.map((step, i) => (
+          <div key={`${step.name}-${shownOffset + i}`} className="shrink-0 flex items-center gap-1.5">
+            {sep}
+            <button
+              type="button"
+              onClick={() => goToStep(shownOffset + i)}
+              title={step.label}
+              style={chipStyle(i === shown.length - 1)}
+              className={`inline-flex items-center max-w-[14rem] truncate rounded-full border font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50 ${chipSize}`}
+            >
+              {step.label}
+            </button>
+          </div>
+        ))}
+      </div>
+      {editMode && contextNotice && (
+        <p
+          className="shrink-0 px-2 pb-1 text-[10px] leading-snug text-warning/90"
+          role="status"
+          data-testid="breadcrumb-context-notice"
+        >
+          {contextNotice}
+        </p>
+      )}
     </div>
   )
 }
