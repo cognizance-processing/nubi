@@ -50,7 +50,7 @@ import StepperWidget from './widgets/StepperWidget.jsx'
 import DividerWidget from './widgets/DividerWidget.jsx'
 import DateDisplayWidget from './widgets/DateDisplayWidget.jsx'
 import BreadcrumbWidget from './widgets/BreadcrumbWidget.jsx'
-import { VariableProvider, useSetVariable, useResolvedParams, useVariableValues } from './VariableStore.jsx'
+import { VariableProvider, useSetVariable, useVariableValues } from './VariableStore.jsx'
 import { isFilterApplied } from './inputs/helpers.js'
 import { CrossFilterProvider } from './CrossFilterContext.jsx'
 import { RefreshContext } from './RefreshContext.jsx'
@@ -62,7 +62,7 @@ import ColorModeScope from './ColorModeScope.jsx'
 import { PAGE_BG_HEX, backgroundHex, boardColorMode, modeForHex } from '../lib/boardTheme.js'
 import { findWidgetStylePreset } from './stylePresets.js'
 import { buildResponsiveLayouts, isHiddenAt } from './responsiveLayout.js'
-import { useProviderData } from './useProviderData.js'
+import { useBoardProviderTables } from './useBoardProviderTables.js'
 import Button from '../components/ui/Button.jsx'
 import EmptyState from '../components/ui/EmptyState.jsx'
 
@@ -408,9 +408,9 @@ function CrossFilterProviderWrapper({ onCrossFilter, onTabChange, children }) {
 // SpecRendererBody — runs INSIDE <VariableProvider>
 // ---------------------------------------------------------------------------
 //
-// All hooks that require VariableValuesContext (useResolvedParams, useProviderData
-// via useResolvedParams internally) live here. The 8×useResolvedParams +
-// 8×useProviderData calls are unconditional and in fixed order (Rules of Hooks).
+// All hooks that require VariableValuesContext (useVariableValues, which feeds
+// useBoardProviderTables' provider params) live here. Its 8×useProviderData calls are
+// unconditional and in fixed order (Rules of Hooks).
 //
 // Props are forwarded from SpecRendererInner after it has computed the
 // VariableProvider seed values and mounted the provider.
@@ -597,67 +597,10 @@ function SpecRendererBody({
   )
 
   // ── BET-3 DataProvider wiring ──────────────────────────────────────────────
-  // useResolvedParams reads VariableValuesContext — this component is rendered
-  // INSIDE <VariableProvider> so the context is available.
-  // Fixed 8 slots, unconditional, in fixed order — satisfies Rules of Hooks.
-
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const boardProviders = useMemo(() => Array.isArray(spec.data) ? spec.data : [], [JSON.stringify(spec.data)])
-
-  const MAX_PROVIDERS = 8
-  const providerSlots = useMemo(() => {
-    const slots = []
-    for (let i = 0; i < MAX_PROVIDERS; i++) {
-      slots.push(boardProviders[i] ?? null)
-    }
-    return slots
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(boardProviders)])
-
-  // 8× useResolvedParams (unconditional, fixed order)
-  const resolvedP0 = useResolvedParams(providerSlots[0]?.params ?? {})
-  const resolvedP1 = useResolvedParams(providerSlots[1]?.params ?? {})
-  const resolvedP2 = useResolvedParams(providerSlots[2]?.params ?? {})
-  const resolvedP3 = useResolvedParams(providerSlots[3]?.params ?? {})
-  const resolvedP4 = useResolvedParams(providerSlots[4]?.params ?? {})
-  const resolvedP5 = useResolvedParams(providerSlots[5]?.params ?? {})
-  const resolvedP6 = useResolvedParams(providerSlots[6]?.params ?? {})
-  const resolvedP7 = useResolvedParams(providerSlots[7]?.params ?? {})
-
-  // 8× useProviderData (unconditional, fixed order)
-  const slot0 = useProviderData(boardId, providerSlots[0]?.id ?? null, resolvedP0, refreshEpoch)
-  const slot1 = useProviderData(boardId, providerSlots[1]?.id ?? null, resolvedP1, refreshEpoch)
-  const slot2 = useProviderData(boardId, providerSlots[2]?.id ?? null, resolvedP2, refreshEpoch)
-  const slot3 = useProviderData(boardId, providerSlots[3]?.id ?? null, resolvedP3, refreshEpoch)
-  const slot4 = useProviderData(boardId, providerSlots[4]?.id ?? null, resolvedP4, refreshEpoch)
-  const slot5 = useProviderData(boardId, providerSlots[5]?.id ?? null, resolvedP5, refreshEpoch)
-  const slot6 = useProviderData(boardId, providerSlots[6]?.id ?? null, resolvedP6, refreshEpoch)
-  const slot7 = useProviderData(boardId, providerSlots[7]?.id ?? null, resolvedP7, refreshEpoch)
-
-  const providerResults = useMemo(() => {
-    const results = {}
-    const slots = [slot0, slot1, slot2, slot3, slot4, slot5, slot6, slot7]
-    boardProviders.forEach((provider, i) => {
-      if (i < MAX_PROVIDERS) {
-        results[provider.id] = slots[i]
-      }
-    })
-    return results
-  }, [boardProviders, slot0, slot1, slot2, slot3, slot4, slot5, slot6, slot7])
-
-  const widgetProviderTableMap = useMemo(() => {
-    const map = {}
-    for (const w of allWidgets) {
-      if (w.source?.provider && w.source?.result) {
-        const pResult = providerResults[w.source.provider]
-        if (pResult) {
-          map[w.id] = pResult.tables[w.source.result] ?? null
-        }
-      }
-    }
-    return map
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(allWidgets), providerResults])
+  // Shared with the editor canvas (useBoardProviderTables). Params resolve
+  // against the live variable values — this component is rendered INSIDE
+  // <VariableProvider> so the context is available.
+  const widgetProviderTableMap = useBoardProviderTables(boardId, spec.data, allWidgets, variableValues, refreshEpoch)
   // ── End BET-3 DataProvider wiring ─────────────────────────────────────────
 
   // Dashboard-level style preset (e.g. "glass") — only used as a fallback for

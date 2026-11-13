@@ -36,6 +36,8 @@ import {
   useMemo,
   useRef,
   memo,
+  createContext,
+  useContext,
 } from 'react'
 import { createPortal } from 'react-dom'
 import { useUi } from '../contexts/UiContext.jsx'
@@ -114,6 +116,8 @@ import BreadcrumbWidget from '../dashboards/widgets/BreadcrumbWidget.jsx'
 import ExportShareMenu from '../components/ExportShareMenu.jsx'
 import DashboardCodeView from './DashboardCodeView.jsx'
 import { VariableProvider } from '../dashboards/VariableStore.jsx'
+import { useBoardProviderTables } from '../dashboards/useBoardProviderTables.js'
+import { providerTableColumns } from '../dashboards/providerDataUtils.js'
 import SpecRenderer, { buildVariableDefaults } from '../dashboards/SpecRenderer.jsx'
 import { backgroundToCss, styleToCss } from '../dashboards/widgetHtml.js'
 import { useTheme } from '../contexts/ThemeContext.jsx'
@@ -639,6 +643,9 @@ function ImageConfig({ widget, onChange }) {
   const fileInputRef = useRef(null)
   const source = props.source === 'query' ? 'query' : 'static'
   const { columns, introspecting } = useColumnIntrospection(source === 'query' ? widget.query_id : null)
+  // Provider-bound: columns come from the provider result already fetched for
+  // the canvas (empty until loaded / when the board is unsaved → free text).
+  const providerColumns = providerTableColumns(useContext(ProviderTablesContext)[widget.id])
   const previewSrc = props.url ? safeImageSrc(resolveImageUrl(props.url)) : null
 
   const handleFile = async (file) => {
@@ -713,12 +720,21 @@ function ImageConfig({ widget, onChange }) {
                 onClick={() => onChange({ ...widget, source: null, query_id: null, encoding: {} })}>
                 Use a query instead
               </Button>
-              <div>
-                <FieldLabel>URL column</FieldLabel>
-                <input type="text" className={inputCls} placeholder="Column name"
+              {providerColumns.length > 0 ? (
+                <ColumnSelect
+                  label="URL column"
                   value={widget.encoding?.value ?? ''}
-                  onChange={e => onChange({ ...widget, encoding: { ...(widget.encoding ?? {}), value: e.target.value } })} />
-              </div>
+                  onChange={v => onChange({ ...widget, encoding: { ...(widget.encoding ?? {}), value: v } })}
+                  columns={providerColumns}
+                />
+              ) : (
+                <div>
+                  <FieldLabel>URL column</FieldLabel>
+                  <input type="text" className={inputCls} placeholder="Column name"
+                    value={widget.encoding?.value ?? ''}
+                    onChange={e => onChange({ ...widget, encoding: { ...(widget.encoding ?? {}), value: e.target.value } })} />
+                </div>
+              )}
             </>
           ) : (
             <>
@@ -2444,12 +2460,21 @@ function normalizeWidget(raw: Record<string, any>): Record<string, any> {
 const NO_VARIABLES: Record<string, any> = {}
 
 /**
+ * Provider result tables for provider-bound widgets (`widget.source`), keyed by
+ * widget id — the editor's equivalent of SpecRenderer's widgetProviderTableMap.
+ * A context (not a prop) so WidgetPreview's memo comparator and every
+ * ConfigPanel call site stay untouched.
+ */
+const ProviderTablesContext = createContext<Record<string, any>>({})
+
+/**
  * WidgetPreview — renders the REAL widget component for a given spec widget.
  * Memoised with previewPropsEqual: any widget change re-renders it except a move
  * or resize, which only changes `pos`.
  */
 const WidgetPreview = memo(function WidgetPreview({ widget, variableDefaults = NO_VARIABLES }: { widget: Record<string, any>; variableDefaults?: Record<string, any> }) {
   const w = useMemo(() => normalizeWidget(widget), [widget])
+  const providerTable = useContext(ProviderTablesContext)[widget.id] ?? null
 
   // Wrap in VariableProvider so hooks inside widgets don't throw. The editor has
   // no filter state, but it seeds the board's defaults: a query with a required
@@ -2460,17 +2485,17 @@ const WidgetPreview = memo(function WidgetPreview({ widget, variableDefaults = N
         <div className="h-full w-full overflow-hidden">
           {w.html ? <HtmlWidget widget={w} /> : (
             <>
-              {w.type === 'chart'   && <ChartWidget   widget={w} />}
-              {w.type === 'kpi'     && <KpiWidget     widget={w} />}
+              {w.type === 'chart'   && <ChartWidget   widget={w} providerTable={providerTable} />}
+              {w.type === 'kpi'     && <KpiWidget     widget={w} providerTable={providerTable} />}
               {w.type === 'metric'  && <MetricWidget  widget={w} />}
-              {w.type === 'table'   && <TableWidget   widget={w} />}
-              {w.type === 'pivot'   && <PivotWidget   widget={w} />}
+              {w.type === 'table'   && <TableWidget   widget={w} providerTable={providerTable} />}
+              {w.type === 'pivot'   && <PivotWidget   widget={w} providerTable={providerTable} />}
               {w.type === 'filter'  && <FilterWidget  widget={w} options={[]} />}
               {w.type === 'text'    && <TextWidget    widget={w} />}
               {w.type === 'section' && <SectionWidget widget={w} />}
-              {w.type === 'image'   && <ImageWidget   widget={w} />}
+              {w.type === 'image'   && <ImageWidget   widget={w} providerTable={providerTable} />}
               {w.type === 'divider' && <DividerWidget widget={w} />}
-              {w.type === 'datedisplay' && <DateDisplayWidget widget={w} />}
+              {w.type === 'datedisplay' && <DateDisplayWidget widget={w} providerTable={providerTable} />}
               {w.type === 'breadcrumb'  && <BreadcrumbWidget  widget={w} editMode />}
               {w.type === 'stepper' && (
                 <StepperWidget
@@ -3351,6 +3376,9 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
   const [loading, setLoading] = useState(!!boardId)
   const [loadError, setLoadError] = useState(null)
   const [savedBoardId, setSavedBoardId] = useState(boardId)
+  // BET-3 providers for the canvas preview — same wiring as the live board
+  // (SpecRenderer), seeded with the board's variable defaults.
+  const providerTables = useBoardProviderTables(savedBoardId, spec?.data, spec?.widgets ?? [], previewVariableDefaults)
 
   // Notify callers (the board page's draft bar) whenever the spec changes so
   // they can observe the working draft without owning it. Held back while the
@@ -4740,6 +4768,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
     // the colour spectrum) opens a gesture here, so those commits collapse into
     // a single undo step instead of dozens.
     <LiveEditProvider onChange={setLiveEdit}>
+    <ProviderTablesContext.Provider value={providerTables}>
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden bg-bg">
 
       {/* Editor toolbar lives in the single app top bar (portaled into AppTopbar). */}
@@ -5393,6 +5422,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         </div>
       )}
     </div>
+    </ProviderTablesContext.Provider>
     </LiveEditProvider>
   )
 }
