@@ -1009,9 +1009,31 @@ function DateDisplayConfig({ widget, onChange, spec }) {
 // BreadcrumbConfig — a drill path over dashboard variables (`breadcrumb`)
 // ---------------------------------------------------------------------------
 
-function BreadcrumbConfig({ widget, onChange, spec }) {
+function BreadcrumbConfig({ widget, onChange, spec, onCreateVariable = undefined }) {
   const props = widget.props ?? {}
   const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
+  
+  // Context chips: optional query whose first row supplies fixed scope chips.
+  const contextColumns = Array.isArray(props.contextColumns) ? props.contextColumns : []
+  const { columns: contextQueryColumns, introspecting } = useColumnIntrospection(widget.query_id || null)
+  
+  // A picked column the query no longer returns stays listed so it can be removed.
+  const contextColumnChoices = [
+    ...contextQueryColumns,
+    ...contextColumns.filter(c => !contextQueryColumns.includes(c)),
+  ]
+  const toggleContextColumn = (col) => setProps('contextColumns', contextColumns.includes(col)
+    ? contextColumns.filter(c => c !== col)
+    : [...contextColumns, col])
+  const setContextQuery = (id) => {
+    if ((id || null) === (widget.query_id || null)) return
+    // Columns differ per query — re-pick them. Params are kept, as on the Data tab.
+    onChange({ ...widget, query_id: id || null, props: { ...props, contextColumns: [] } })
+  }
+  const clearContextQuery = () => {
+    const { contextColumns: _drop, ...rest } = props
+    onChange({ ...widget, query_id: null, params: undefined, props: rest })
+  }
   const tracked = Array.isArray(props.variables) ? props.variables : []
   const labels = props.labels ?? {}
   const specVariables = Array.isArray(spec?.variables) ? spec.variables : []
@@ -1099,6 +1121,52 @@ function BreadcrumbConfig({ widget, onChange, spec }) {
             hint="Changing a level resets the variables listed below it"
             checked={props.clearDownstream === true}
             onChange={v => setProps('clearDownstream', v)} />
+        )}
+      </Section>
+
+      <Section title="Context chips" defaultOpen={Boolean(widget.query_id)} icon={Database}>
+        <p className="text-[10px] text-muted/70">
+          Optional. Pick a query and columns to show fixed scope chips between
+          Home and the drill path. Values come from the query's first row; chips
+          are not clickable.
+        </p>
+        <QueryPicker value={widget.query_id ?? ''} onChange={setContextQuery} />
+        {widget.query_id && (
+          <>
+            <QueryStatusLink queryId={widget.query_id} />
+            {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
+            <div className="space-y-1.5">
+              <FieldLabel className="mb-0">Columns</FieldLabel>
+              {contextColumnChoices.length === 0
+                ? <p className="text-[10px] text-muted/70">No columns found for this query.</p>
+                : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {contextColumnChoices.map(col => (
+                      <button key={col} type="button" onClick={() => toggleContextColumn(col)}
+                        className={`px-2 h-7 text-[11px] font-mono rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-ring/50 ${contextColumns.includes(col)
+                          ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]'
+                          : 'bg-surface text-muted border-border hover:border-fg'
+                          }`}>
+                        {col}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              <p className="text-[10px] text-muted/70">
+                {contextColumns.length > 0
+                  ? <>Order left → right: <span className="font-mono">{contextColumns.join(' › ')}</span>. Click order is display order.</>
+                  : 'Click columns in the order they should appear, left → right.'}
+              </p>
+            </div>
+            <div>
+              <FieldLabel>Parameters</FieldLabel>
+              <ParamBindingSection widget={widget} onChange={onChange} specVariables={spec?.variables}
+                onCreateVariable={onCreateVariable} />
+            </div>
+            <Button variant="secondary" size="sm" className="w-full" onClick={clearContextQuery}>
+              Remove context query
+            </Button>
+          </>
         )}
       </Section>
 
@@ -2069,7 +2137,7 @@ function ConfigPanel({
             {widget.type === 'stepper' && <StepperConfig widget={widget} onChange={onChange} />}
             {widget.type === 'divider' && <DividerConfig widget={widget} onChange={onChange} />}
             {widget.type === 'datedisplay' && <DateDisplayConfig widget={widget} onChange={onChange} spec={spec} />}
-            {widget.type === 'breadcrumb' && <BreadcrumbConfig widget={widget} onChange={onChange} spec={spec} />}
+            {widget.type === 'breadcrumb' && <BreadcrumbConfig widget={widget} onChange={onChange} spec={spec} onCreateVariable={onCreateVariable} />}
 
             {widget.type === 'chart' && <DrilldownSection widget={widget} onChange={onChange} />}
           </div>

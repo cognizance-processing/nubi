@@ -14,7 +14,7 @@
  *       chipTextColor?: string, // chip text, both variants (default: fg / chipColor)
  *       chipVariant?: 'filled' | 'outlined',     // default 'filled'
  *       size?: 'sm' | 'md',    // default 'sm'
- *       contextColumns?: string[],  // see "Context chips" below
+ *       contextColumns?: string[],  // see "Context chips" below (editor: Widget tab › Context chips)
  *       trailMode?: 'append' | 'hierarchical',  // default 'append'
  *       clearDownstream?: boolean,  // default false; hierarchical only
  *       trailDisplay?: 'full' | 'current',      // default 'full'
