@@ -106,6 +106,7 @@ import MetricPicker from '../components/app/MetricPicker.jsx'
 import PivotWidget from '../dashboards/widgets/PivotWidget.jsx'
 import SectionWidget from '../dashboards/widgets/SectionWidget.jsx'
 import ImageWidget from '../dashboards/widgets/ImageWidget.jsx'
+import { safeImageSrc } from '../dashboards/safeImageSrc.js'
 import StepperWidget from '../dashboards/widgets/StepperWidget.jsx'
 import DividerWidget from '../dashboards/widgets/DividerWidget.jsx'
 import DateDisplayWidget from '../dashboards/widgets/DateDisplayWidget.jsx'
@@ -444,7 +445,8 @@ function makeSectionWidget(pos) {
 function makeImageWidget(pos) {
   return {
     id: genId('image'), type: 'image', query_id: null,
-    props: { url: '', alt: '', fit: 'contain', align: 'center' },
+    encoding: {},
+    props: { source: 'static', url: '', alt: '', fit: 'contain', align: 'center' },
     pos: { ...WIDGET_SIZES.image, ...pos },
   }
 }
@@ -635,6 +637,9 @@ function ImageConfig({ widget, onChange }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const fileInputRef = useRef(null)
+  const source = props.source === 'query' ? 'query' : 'static'
+  const { columns, introspecting } = useColumnIntrospection(source === 'query' ? widget.query_id : null)
+  const previewSrc = props.url ? safeImageSrc(resolveImageUrl(props.url)) : null
 
   const handleFile = async (file) => {
     if (!file) return
@@ -666,13 +671,93 @@ function ImageConfig({ widget, onChange }) {
     }
   }
 
+  const setImageSource = (next) => {
+    if (next === 'query') {
+      onChange({ ...widget, props: { ...props, source: 'query', row: props.row ?? 0 } })
+      return
+    }
+    // Static reads props.url only — drop the query binding too, or exports
+    // (widget_query_targets) would keep running the query for this widget.
+    const { row: _row, ...staticProps } = props
+    onChange({ ...widget, query_id: null, source: null, encoding: {}, props: { ...staticProps, source: 'static' } })
+  }
+  // A widget carries at most one data binding (spec.py Step 11), so a
+  // provider-bound (`widget.source`) image must drop it before taking a query.
+  const providerBound = source === 'query' && !widget.query_id && !!widget.source
+
   return (
     <div className="space-y-3">
       <div>
+        <FieldLabel>Image source</FieldLabel>
+        <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+          {[['static', 'Static'], ['query', 'Query']].map(([s, label]) => (
+            <button key={s} onClick={() => setImageSource(s)}
+              className={`flex-1 text-[11px] font-medium transition-colors ${source === s ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{label}</button>
+          ))}
+        </div>
+        <p className="text-[10px] text-muted/70 mt-1">
+          {source === 'static'
+            ? 'One fixed image — upload a file or fetch one by URL.'
+            : 'The image URL is read from a query cell, so it follows filters and refreshes.'}
+        </p>
+      </div>
+      {source === 'query' && (
+        <>
+          {providerBound ? (
+            <>
+              <p className="text-[10px] text-muted/70">
+                Rows come from data provider <code>{widget.source.provider}</code>
+                {widget.source.result ? <> (result <code>{widget.source.result}</code>)</> : null}.
+              </p>
+              <Button variant="secondary" size="sm" className="w-full"
+                onClick={() => onChange({ ...widget, source: null, query_id: null, encoding: {} })}>
+                Use a query instead
+              </Button>
+              <div>
+                <FieldLabel>URL column</FieldLabel>
+                <input type="text" className={inputCls} placeholder="Column name"
+                  value={widget.encoding?.value ?? ''}
+                  onChange={e => onChange({ ...widget, encoding: { ...(widget.encoding ?? {}), value: e.target.value } })} />
+              </div>
+            </>
+          ) : (
+            <>
+              <QueryPicker
+                value={widget.query_id ?? ''}
+                onChange={id => {
+                  if (id === (widget.query_id ?? '')) return
+                  // Columns differ per query — clear the URL column so it's re-picked.
+                  // Drop provider binding so Step 11 (at-most-one) cannot fire.
+                  onChange({ ...widget, query_id: id, source: null, encoding: {} })
+                }}
+              />
+              {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
+              <ColumnSelect
+                label="URL column"
+                value={widget.encoding?.value ?? ''}
+                onChange={v => onChange({ ...widget, encoding: { ...(widget.encoding ?? {}), value: v } })}
+                columns={columns}
+              />
+            </>
+          )}
+          <div>
+            <FieldLabel>Row index</FieldLabel>
+            <input type="number" min={0} className={inputCls}
+              value={props.row ?? 0}
+              onChange={e => setProps('row', Math.max(0, parseInt(e.target.value, 10) || 0))} />
+          </div>
+        </>
+      )}
+      {source === 'static' && (<>
+      <div>
         <FieldLabel>Image</FieldLabel>
-        {props.url ? (
+        {props.url && previewSrc ? (
           <div className="rounded-lg border border-border bg-surface-2 p-2 flex items-center justify-center h-28 mb-2">
-            <img src={resolveImageUrl(props.url)} alt="" className="max-h-full max-w-full object-contain" />
+            <img src={previewSrc} alt="" className={`max-h-full max-w-full ${props.fit === 'cover' ? 'object-cover' : 'object-contain'}`} />
+          </div>
+        ) : props.url ? (
+          <div className="rounded-lg border border-dashed border-border bg-surface-2 flex items-center justify-center h-28 mb-2 text-xs text-muted">
+            Invalid image URL
           </div>
         ) : (
           <div className="rounded-lg border border-dashed border-border bg-surface-2 flex items-center justify-center h-28 mb-2 text-xs text-muted">
@@ -703,6 +788,7 @@ function ImageConfig({ widget, onChange }) {
         </div>
       </div>
       {error && <p className="text-xs text-danger">{error}</p>}
+      </>)}
       <div>
         <FieldLabel>Alt text</FieldLabel>
         <input type="text" className={inputCls} value={props.alt ?? ''} placeholder="Description for accessibility"

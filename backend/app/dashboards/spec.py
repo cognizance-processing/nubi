@@ -1502,7 +1502,23 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
     # ── Step 5b: Image widget requirements ───────────────────────────────
     for widget in spec.widgets:
         if widget.type == "image":
-            if not widget.props.get("url"):
+            # props.source is where the IMAGE URL comes from ('static' |
+            # 'query'), unrelated to widget.source (the BET-3 provider binding,
+            # which here is one of the two ways to supply query-mode rows).
+            if (widget.props or {}).get("source") == "query":
+                if not widget.query_id and widget.source is None:
+                    issues.append(
+                        f"Widget {widget.id!r} (image): query-mode image widgets "
+                        "(props.source='query') need a 'query_id' or a provider "
+                        "'source' binding to read the image URL from."
+                    )
+                if not (widget.encoding or {}).get("value"):
+                    issues.append(
+                        f"Widget {widget.id!r} (image): query-mode image widgets "
+                        "(props.source='query') need encoding.value — the column "
+                        "holding the image URL."
+                    )
+            elif not widget.props.get("url"):
                 issues.append(
                     f"Widget {widget.id!r} (image): props.url is required "
                     "for image widgets — upload via POST /images (or the "

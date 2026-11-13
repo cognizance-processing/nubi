@@ -393,20 +393,19 @@ _LOCAL_IMAGE_URL_RE = re.compile(r"^/api/v1/images/([0-9a-fA-F]{32})$")
 
 
 def _resolve_image_data_uri(url: str) -> str | None:
-    """Inline a locally-stored branding image (logo, etc.) as a data: URI.
+    """Inline a ``/api/v1/images/{id}`` URL as a data: URI for export rendering.
 
-    A rendered thumbnail/PDF is a standalone SVG with no browser origin and no
-    way to send the bearer token images.py doesn't even ask for — an
-    `<image href="/api/v1/images/...">` would resolve against nothing when the
-    SVG is viewed outside the app (or fail to resolve at all, since Node never
-    fetches it). The picture has to carry the bytes itself.
+    Thumbnails and PDFs are standalone SVGs with no browser origin. An
+    ``<image href="/api/v1/images/...">`` would not resolve when the SVG is
+    viewed outside the app (Node SSR never fetches relative URLs either), so
+    stored branding bytes are read here and embedded.
 
-    Only the app's own unauthenticated image store is handled (that ``GET`` is
-    deliberately unauthenticated — see images.py — so reading it here needs no
-    auth story either). An external absolute URL is left alone and the widget
-    falls back to its placeholder: fetching an arbitrary URL server-side would
-    need the same SSRF guard ``fetch_image_from_url`` already has, and no
-    "image" widget in the wild points anywhere but this store.
+    Image widgets may show other URLs at runtime (static paste, query cells with
+    ``https://…``), but only paths matching ``_LOCAL_IMAGE_URL_RE`` are
+    inlined. Other URLs return ``None``; the caller leaves a non-data URI and
+    the SSR composer shows the usual placeholder. Server-side fetch of arbitrary
+    export URLs would need the same SSRF guard as
+    ``fetch_image_from_url`` — out of scope for this helper.
     """
     m = _LOCAL_IMAGE_URL_RE.match((url or "").strip())
     if not m:
@@ -418,6 +417,45 @@ def _resolve_image_data_uri(url: str) -> str | None:
     except Exception:  # noqa: BLE001 - a missing/broken image just isn't drawn
         return None
     return f"data:{content_type};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _image_effective_url(
+    props: dict[str, Any],
+    encoding: dict[str, Any],
+    columns: list[str],
+    rows: list[list[Any]],
+) -> str:
+    """The URL an ``image`` widget actually shows.
+
+    ``props.source == 'query'`` reads the ``encoding.value`` column at
+    ``props.row`` (default 0; negative → 0) from the collected rows — the same
+    rule as ImageWidget.tsx. A row past the end yields ``""`` (placeholder),
+    never another row's image. Anything else is the static ``props.url``.
+    Returns ``""`` when nothing resolves.
+    """
+    if props.get("source") != "query":
+        return str(props.get("url") or "")
+    col = encoding.get("value")
+    if not isinstance(col, str) or not col or col not in columns or not rows:
+        return ""
+    raw_row = props.get("row")
+    if isinstance(raw_row, bool):
+        row = 0
+    elif isinstance(raw_row, int):
+        row = raw_row
+    elif isinstance(raw_row, float) and raw_row.is_integer():
+        row = int(raw_row)
+    else:
+        row = 0
+    row = max(row, 0)
+    if row >= len(rows):
+        return ""
+    record = rows[row]
+    idx = columns.index(col)
+    if not isinstance(record, (list, tuple)) or idx >= len(record):
+        return ""
+    value = record[idx]
+    return "" if value is None else str(value).strip()
 
 
 def _widget_to_payload(
@@ -452,9 +490,13 @@ def _widget_to_payload(
 
     props = dict(widget_spec.props or {})
     if widget_spec.type == "image":
-        data_uri = _resolve_image_data_uri(props.get("url") or "")
-        if data_uri:
-            props["url"] = data_uri
+        # Only the app's own image store is inlined. Anything else (external
+        # URL, data:, javascript:, junk from a query cell) becomes "" so the
+        # SSR composer draws its placeholder — never a caller-supplied data:.
+        url = _image_effective_url(
+            props, dict(widget_spec.encoding or {}), columns, rows
+        )
+        props["url"] = _resolve_image_data_uri(url) or ""
 
     return {
         "id": widget_spec.id,

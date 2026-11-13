@@ -214,7 +214,7 @@ function WidgetComponent({ widget, onOpenDrawer = undefined, editMode = false, p
     // fetch (no wasm needed in the editor canvas).
     case 'filter':  return <FilterWidgetLoader widget={w} editMode={editMode} />
     case 'text':    return <TextWidget   widget={w} />
-    case 'image':   return <ImageWidget  widget={w} />
+    case 'image':   return <ImageWidget  widget={w} providerTable={providerTable} />
     case 'section': return <SectionWidget widget={w} />
     case 'divider': return <DividerWidget widget={w} />
     case 'datedisplay': return <DateDisplayWidget widget={w} providerTable={providerTable} />
