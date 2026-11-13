@@ -66,7 +66,7 @@ const require = createRequire(import.meta.url)
 // a directory that contains node_modules/echarts/core.js.  This is robust when
 // the script is invoked from a git worktree (which has no node_modules of its
 // own) because it will walk up to the real repo root where node_modules lives.
-import { fileURLToPath } from 'url'
+import { fileURLToPath, pathToFileURL } from 'url'
 import { dirname, resolve } from 'path'
 import { existsSync, readFileSync } from 'fs'
 
@@ -98,6 +98,11 @@ const REPO_ROOT = existsSync(resolve(DIRECT_ROOT, 'node_modules', 'echarts', 'co
   ? DIRECT_ROOT
   : findEchartsRoot(__dirname)
 
+/** Windows Node ESM requires file:// URLs for absolute-path dynamic import(). */
+function importEchartsModule(...segments) {
+  return import(pathToFileURL(resolve(REPO_ROOT, ...segments)).href)
+}
+
 // Dynamic import of echarts — lets us emit a clear install error if missing.
 let echartsInit
 let echartsRegisterMap
@@ -105,8 +110,8 @@ try {
   if (!REPO_ROOT) throw new Error(
     'node_modules/echarts not found — run `npm install` in the repo root'
   )
-  const echarts = await import(resolve(REPO_ROOT, 'node_modules/echarts/core.js'))
-  const { SVGRenderer } = await import(resolve(REPO_ROOT, 'node_modules/echarts/renderers.js'))
+  const echarts = await importEchartsModule('node_modules', 'echarts', 'core.js')
+  const { SVGRenderer } = await importEchartsModule('node_modules', 'echarts', 'renderers.js')
   const {
     BarChart, LineChart, ScatterChart, PieChart, HeatmapChart, GaugeChart,
     // Server renders used to fall back to a BAR chart for every type without a
@@ -118,7 +123,7 @@ try {
     // geometry was registered on this side. The geometry ships in the repo, so
     // the honest answer is to register it and draw the map.
     MapChart,
-  } = await import(resolve(REPO_ROOT, 'node_modules/echarts/charts.js'))
+  } = await importEchartsModule('node_modules', 'echarts', 'charts.js')
   const {
     GridComponent, TooltipComponent, LegendComponent,
     VisualMapComponent, DataZoomComponent, TitleComponent,
@@ -130,7 +135,7 @@ try {
     RadarComponent,
     // A map series needs the geo coordinate system registered alongside it.
     GeoComponent,
-  } = await import(resolve(REPO_ROOT, 'node_modules/echarts/components.js'))
+  } = await importEchartsModule('node_modules', 'echarts', 'components.js')
 
   echarts.use([
     SVGRenderer,
