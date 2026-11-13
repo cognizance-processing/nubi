@@ -177,10 +177,10 @@ const VARIABLE_TYPE_FOR_FILTER = {
 
 // react-grid-layout compaction modes exposed in the Dashboard panel.
 const COMPACTION_MODES = [
-  { id: 'free',       label: 'Free place', hint: 'Keep widgets exactly where placed' },
-  { id: 'vertical',   label: 'Vertical',   hint: 'Pack upward' },
+  { id: 'free', label: 'Free place', hint: 'Keep widgets exactly where placed' },
+  { id: 'vertical', label: 'Vertical', hint: 'Pack upward' },
   { id: 'horizontal', label: 'Horizontal', hint: 'Pack leftward' },
-  { id: 'none',       label: 'None',       hint: 'No compaction (collisions allowed)' },
+  { id: 'none', label: 'None', hint: 'No compaction (collisions allowed)' },
 ]
 
 const DEFAULT_SPEC = {
@@ -193,13 +193,13 @@ const DEFAULT_SPEC = {
 
 // Minimum sizes per type (in grid cells)
 const WIDGET_MIN_SIZES = {
-  kpi:     { minW: 2, minH: 2 },
-  metric:  { minW: 2, minH: 2 },
-  table:   { minW: 3, minH: 3 },
-  pivot:   { minW: 3, minH: 3 },
-  chart:   { minW: 3, minH: 3 },
-  filter:  { minW: 2, minH: 2 },
-  text:    { minW: 2, minH: 2 },
+  kpi: { minW: 2, minH: 2 },
+  metric: { minW: 2, minH: 2 },
+  table: { minW: 3, minH: 3 },
+  pivot: { minW: 3, minH: 3 },
+  chart: { minW: 3, minH: 3 },
+  filter: { minW: 2, minH: 2 },
+  text: { minW: 2, minH: 2 },
   section: { minW: 2, minH: 1 },
 }
 
@@ -369,19 +369,19 @@ function findFreeSpot(widgets, newW, newH, cols = 12) {
 // ---------------------------------------------------------------------------
 
 const WIDGET_SIZES = {
-  kpi:     { w: 3, h: 3 },
-  metric:  { w: 3, h: 3 },
-  table:   { w: 6, h: 5 },
-  pivot:   { w: 6, h: 5 },
-  chart:   { w: 6, h: 6 },
-  filter:  { w: 3, h: 2 },
-  text:    { w: 6, h: 3 },
+  kpi: { w: 3, h: 3 },
+  metric: { w: 3, h: 3 },
+  table: { w: 6, h: 5 },
+  pivot: { w: 6, h: 5 },
+  chart: { w: 6, h: 6 },
+  filter: { w: 3, h: 2 },
+  text: { w: 6, h: 3 },
   section: { w: 12, h: 1 },
-  image:   { w: 4, h: 4 },
+  image: { w: 4, h: 4 },
   stepper: { w: 6, h: 6 },
   divider: { w: 12, h: 1 },
   datedisplay: { w: 3, h: 2 },
-  breadcrumb:  { w: 12, h: 1 },
+  breadcrumb: { w: 12, h: 1 },
 }
 
 function makeKpiWidget(pos) {
@@ -468,7 +468,10 @@ function makeDateDisplayWidget(pos) {
 function makeBreadcrumbWidget(pos) {
   return {
     id: genId('breadcrumb'), type: 'breadcrumb', query_id: null,
-    props: { variables: [], labels: {}, homeLabel: 'All', maxSteps: 10, separator: 'arrow', chipVariant: 'filled' },
+    props: {
+      variables: [], labels: {}, homeLabel: 'All', maxSteps: 10, separator: 'arrow', chipVariant: 'filled',
+      trailMode: 'append', clearDownstream: false, trailDisplay: 'full',
+    },
     pos: { ...WIDGET_SIZES.breadcrumb, ...pos },
   }
 }
@@ -749,45 +752,45 @@ function ImageConfig({ widget, onChange }) {
         </>
       )}
       {source === 'static' && (<>
-      <div>
-        <FieldLabel>Image</FieldLabel>
-        {props.url && previewSrc ? (
-          <div className="rounded-lg border border-border bg-surface-2 p-2 flex items-center justify-center h-28 mb-2">
-            <img src={previewSrc} alt="" className={`max-h-full max-w-full ${props.fit === 'cover' ? 'object-cover' : 'object-contain'}`} />
-          </div>
-        ) : props.url ? (
-          <div className="rounded-lg border border-dashed border-border bg-surface-2 flex items-center justify-center h-28 mb-2 text-xs text-muted">
-            Invalid image URL
-          </div>
-        ) : (
-          <div className="rounded-lg border border-dashed border-border bg-surface-2 flex items-center justify-center h-28 mb-2 text-xs text-muted">
-            No image yet
-          </div>
-        )}
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/png,image/jpeg,image/gif,image/webp"
-          className="hidden"
-          onChange={e => handleFile(e.target.files?.[0])}
-        />
-        <Button variant="secondary" size="sm" className="w-full" disabled={busy}
-          onClick={() => fileInputRef.current?.click()}>
-          {busy ? 'Uploading…' : 'Upload from computer'}
-        </Button>
-      </div>
-      <div>
-        <FieldLabel>Or paste an image URL</FieldLabel>
-        <div className="flex gap-2">
-          <input type="text" className={inputCls} placeholder="https://…" value={urlInput}
-            onChange={e => setUrlInput(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') handleFetchUrl() }} />
-          <Button variant="secondary" size="sm" disabled={busy || !urlInput.trim()} onClick={handleFetchUrl}>
-            Fetch
+        <div>
+          <FieldLabel>Image</FieldLabel>
+          {props.url && previewSrc ? (
+            <div className="rounded-lg border border-border bg-surface-2 p-2 flex items-center justify-center h-28 mb-2">
+              <img src={previewSrc} alt="" className={`max-h-full max-w-full ${props.fit === 'cover' ? 'object-cover' : 'object-contain'}`} />
+            </div>
+          ) : props.url ? (
+            <div className="rounded-lg border border-dashed border-border bg-surface-2 flex items-center justify-center h-28 mb-2 text-xs text-muted">
+              Invalid image URL
+            </div>
+          ) : (
+            <div className="rounded-lg border border-dashed border-border bg-surface-2 flex items-center justify-center h-28 mb-2 text-xs text-muted">
+              No image yet
+            </div>
+          )}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            className="hidden"
+            onChange={e => handleFile(e.target.files?.[0])}
+          />
+          <Button variant="secondary" size="sm" className="w-full" disabled={busy}
+            onClick={() => fileInputRef.current?.click()}>
+            {busy ? 'Uploading…' : 'Upload from computer'}
           </Button>
         </div>
-      </div>
-      {error && <p className="text-xs text-danger">{error}</p>}
+        <div>
+          <FieldLabel>Or paste an image URL</FieldLabel>
+          <div className="flex gap-2">
+            <input type="text" className={inputCls} placeholder="https://…" value={urlInput}
+              onChange={e => setUrlInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleFetchUrl() }} />
+            <Button variant="secondary" size="sm" disabled={busy || !urlInput.trim()} onClick={handleFetchUrl}>
+              Fetch
+            </Button>
+          </div>
+        </div>
+        {error && <p className="text-xs text-danger">{error}</p>}
       </>)}
       <div>
         <FieldLabel>Alt text</FieldLabel>
@@ -1013,13 +1016,15 @@ function BreadcrumbConfig({ widget, onChange, spec }) {
   const labels = props.labels ?? {}
   const specVariables = Array.isArray(spec?.variables) ? spec.variables : []
   const available = specVariables.filter(v => !tracked.includes(v.name))
+  const hierarchical = props.trailMode === 'hierarchical'
+  const trailDisplay = props.trailDisplay === 'current' ? 'current' : 'full'
 
   const setTracked = (next) => setProps('variables', next)
   const move = (i, dir) => {
     const j = i + dir
     if (j < 0 || j >= tracked.length) return
     const next = tracked.slice()
-    ;[next[i], next[j]] = [next[j], next[i]]
+      ;[next[i], next[j]] = [next[j], next[i]]
     setTracked(next)
   }
 
@@ -1027,8 +1032,10 @@ function BreadcrumbConfig({ widget, onChange, spec }) {
     <div className="space-y-3">
       <Section title="Drill path" icon={Database}>
         <p className="text-[10px] text-muted/70">
-          List the filter variables in drill order — outermost first. A crumb is
-          added each time one of them takes a new value.
+          List the filter variables in drill order — outermost first.
+          {hierarchical
+            ? ' Hierarchical mode keeps one crumb per variable at that level; changing an upstream variable replaces its step and trims anything below.'
+            : ' Append mode adds a new crumb each time a tracked variable takes a new value.'}
         </p>
         {tracked.length === 0 && (
           <p className="text-xs text-muted/70 text-center rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2">
@@ -1078,6 +1085,21 @@ function BreadcrumbConfig({ widget, onChange, spec }) {
             This board has no variables yet — add a filter widget first.
           </p>
         )}
+        <div>
+          <FieldLabel>Trail mode</FieldLabel>
+          <select className={selectCls} value={hierarchical ? 'hierarchical' : 'append'}
+            title="Append adds a crumb for every change. Hierarchical keeps one crumb per variable above, in drill order."
+            onChange={e => setProps('trailMode', e.target.value)}>
+            <option value="append">Append every change</option>
+            <option value="hierarchical">Hierarchical (one per level)</option>
+          </select>
+        </div>
+        {hierarchical && (
+          <ToggleRow label="Clear downstream filters"
+            hint="Changing a level resets the variables listed below it"
+            checked={props.clearDownstream === true}
+            onChange={v => setProps('clearDownstream', v)} />
+        )}
       </Section>
 
       <Section title="Display" defaultOpen={false} icon={SlidersHorizontal}>
@@ -1095,11 +1117,30 @@ function BreadcrumbConfig({ widget, onChange, spec }) {
           </select>
         </div>
         <div>
-          <FieldLabel>Max steps</FieldLabel>
-          <input type="number" min={1} max={30} className={inputCls}
-            value={props.maxSteps ?? 10}
-            onChange={e => setProps('maxSteps', Math.max(1, parseInt(e.target.value, 10) || 10))} />
+          <FieldLabel>Trail display</FieldLabel>
+          <select className={selectCls} value={trailDisplay}
+            title="Full shows the whole drill path. Current shows only the latest selection."
+            onChange={e => setProps('trailDisplay', e.target.value)}>
+            <option value="full">Full trail</option>
+            <option value="current">Current selection only</option>
+          </select>
         </div>
+        {trailDisplay === 'full' && !hierarchical && (
+          <div>
+            <FieldLabel>Max steps</FieldLabel>
+            <input type="number" min={1} max={30} className={inputCls}
+              value={props.maxSteps ?? 10}
+              onChange={e => setProps('maxSteps', Math.max(1, parseInt(e.target.value, 10) || 10))} />
+            <p className="text-[10px] text-muted/70 mt-1">
+              Caps how many crumbs append mode keeps in the trail.
+            </p>
+          </div>
+        )}
+        {trailDisplay === 'full' && hierarchical && (
+          <p className="text-[10px] text-muted/70">
+            Hierarchical mode shows at most one crumb per tracked variable — depth follows your drill path list, not max steps.
+          </p>
+        )}
         <div>
           <FieldLabel>Chip style</FieldLabel>
           <select className={selectCls} value={props.chipVariant ?? 'filled'} onChange={e => setProps('chipVariant', e.target.value)}>
@@ -1117,11 +1158,11 @@ function BreadcrumbConfig({ widget, onChange, spec }) {
 }
 
 const STEP_CHILD_MAKERS = {
-  kpi:    makeKpiWidget,
+  kpi: makeKpiWidget,
   metric: makeMetricWidget,
-  chart:  makeChartWidget,
-  table:  makeTableWidget,
-  text:   makeTextWidget,
+  chart: makeChartWidget,
+  table: makeTableWidget,
+  text: makeTextWidget,
 }
 const STEP_CHILD_LABELS = { kpi: 'KPI', metric: 'Metric', chart: 'Chart', table: 'Table', text: 'Text' }
 
@@ -1151,7 +1192,7 @@ function StepperConfig({ widget, onChange }) {
     const j = i + dir
     if (j < 0 || j >= steps.length) return
     const next = [...steps]
-    ;[next[i], next[j]] = [next[j], next[i]]
+      ;[next[i], next[j]] = [next[j], next[i]]
     setSteps(next)
   }
 
@@ -1868,12 +1909,12 @@ function ConfigPanel({
   }
 
   const tabDefs = [
-    { id: 'data',   label: 'Data',   icon: Database,                       show: !isBrokenRef && isDataWidget },
+    { id: 'data', label: 'Data', icon: Database, show: !isBrokenRef && isDataWidget },
     { id: 'widget', label: 'Widget', icon: WIDGET_ICONS[widget.type] ?? Settings2, show: !isBrokenRef },
-    { id: 'style',  label: 'Style',  icon: Palette,                        show: !isBrokenRef },
+    { id: 'style', label: 'Style', icon: Palette, show: !isBrokenRef },
     // Layout & size still applies to a broken ref (it still occupies grid
     // space and can be moved/resized/removed), so this tab always shows.
-    { id: 'layout', label: 'Layout', icon: LayoutGrid,                     show: true },
+    { id: 'layout', label: 'Layout', icon: LayoutGrid, show: true },
   ].filter(t => t.show)
 
   if (widget.id !== prevWidgetId) {
@@ -1931,127 +1972,127 @@ function ConfigPanel({
       )}
 
       <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-4">
-      {isRef && (
-        <RefWidgetBanner
-          widget={widget}
-          libraryRow={libraryById?.get(widget.ref)}
-          isBroken={isBrokenRef}
-          isSharedEditing={sharedEditRefId === widget.ref}
-          savingShared={savingShared}
-          onDetach={() => onDetachRequest?.(widget)}
-          onEditScope={() => onEditScopeRequest?.(widget)}
-          onResetOverride={(path) => onResetOverride?.(widget.id, path)}
-          onSaveShared={() => onSaveSharedDefinition?.(widget.id)}
-          onCancelSharedEdit={onCancelSharedEdit}
-        />
-      )}
+        {isRef && (
+          <RefWidgetBanner
+            widget={widget}
+            libraryRow={libraryById?.get(widget.ref)}
+            isBroken={isBrokenRef}
+            isSharedEditing={sharedEditRefId === widget.ref}
+            savingShared={savingShared}
+            onDetach={() => onDetachRequest?.(widget)}
+            onEditScope={() => onEditScopeRequest?.(widget)}
+            onResetOverride={(path) => onResetOverride?.(widget.id, path)}
+            onSaveShared={() => onSaveSharedDefinition?.(widget.id)}
+            onCancelSharedEdit={onCancelSharedEdit}
+          />
+        )}
 
-      {Array.isArray(spec?.tabs) && spec.tabs.length > 0 && onMoveToTab && (
-        <div>
-          <FieldLabel className="flex items-center gap-1.5"><LayoutGrid size={12} /> Move to tab</FieldLabel>
-          <select
-            className={selectCls}
-            data-testid="widget-move-to-tab"
-            value={widget.tab_id ?? spec.tabs[0].id}
-            onChange={e => onMoveToTab(widget.id, e.target.value)}
-          >
-            {spec.tabs.map(t => <option key={t.id} value={t.id}>{t.label || t.id}</option>)}
-          </select>
-        </div>
-      )}
+        {Array.isArray(spec?.tabs) && spec.tabs.length > 0 && onMoveToTab && (
+          <div>
+            <FieldLabel className="flex items-center gap-1.5"><LayoutGrid size={12} /> Move to tab</FieldLabel>
+            <select
+              className={selectCls}
+              data-testid="widget-move-to-tab"
+              value={widget.tab_id ?? spec.tabs[0].id}
+              onChange={e => onMoveToTab(widget.id, e.target.value)}
+            >
+              {spec.tabs.map(t => <option key={t.id} value={t.id}>{t.label || t.id}</option>)}
+            </select>
+          </div>
+        )}
 
-      {isBrokenRef && (
-        <p className="text-xs text-muted/70 leading-relaxed rounded-lg border border-dashed border-border bg-surface-2/30 p-3">
-          Nothing to configure for a broken reference — detach it (to keep this
-          instance) or remove it, or re-add the widget from the library once
-          the entry exists again.
-        </p>
-      )}
+        {isBrokenRef && (
+          <p className="text-xs text-muted/70 leading-relaxed rounded-lg border border-dashed border-border bg-surface-2/30 p-3">
+            Nothing to configure for a broken reference — detach it (to keep this
+            instance) or remove it, or re-add the widget from the library once
+            the entry exists again.
+          </p>
+        )}
 
-      {effectiveTab === 'data' && (
-        <div className="space-y-4">
-          {!focus && (
-            <div className="space-y-1.5">
-              <FieldLabel className="flex items-center gap-1.5"><Database size={12} /> Query</FieldLabel>
-              <QueryPicker value={widget.query_id} onChange={setQueryId} extraIds={extraQueryIds} />
-              {/* Live status + jump into the query editor — without this the only
+        {effectiveTab === 'data' && (
+          <div className="space-y-4">
+            {!focus && (
+              <div className="space-y-1.5">
+                <FieldLabel className="flex items-center gap-1.5"><Database size={12} /> Query</FieldLabel>
+                <QueryPicker value={widget.query_id} onChange={setQueryId} extraIds={extraQueryIds} />
+                {/* Live status + jump into the query editor — without this the only
                   relationship between a widget and its data was a typed id. */}
-              <QueryStatusLink queryId={widget.query_id} />
-              {autoBound?.widgetId === widget.id && (
-                <p className="text-[10px] text-accent flex items-start gap-1 leading-relaxed"
-                  data-testid="param-autobind-note">
-                  <Link2 size={11} className="mt-px flex-none" />
-                  <span>
-                    Connected to the{' '}
-                    {autoBound.added.map((a, i) => (
-                      <span key={a.param}>
-                        {i > 0 && (i === autoBound.added.length - 1 ? ' and ' : ', ')}
-                        <span className="font-mono">{a.variable}</span>
-                      </span>
-                    ))}{' '}
-                    filter{autoBound.added.length > 1 ? 's' : ''}. Change this under Parameters.
-                  </span>
-                </p>
-              )}
-            </div>
-          )}
+                <QueryStatusLink queryId={widget.query_id} />
+                {autoBound?.widgetId === widget.id && (
+                  <p className="text-[10px] text-accent flex items-start gap-1 leading-relaxed"
+                    data-testid="param-autobind-note">
+                    <Link2 size={11} className="mt-px flex-none" />
+                    <span>
+                      Connected to the{' '}
+                      {autoBound.added.map((a, i) => (
+                        <span key={a.param}>
+                          {i > 0 && (i === autoBound.added.length - 1 ? ' and ' : ', ')}
+                          <span className="font-mono">{a.variable}</span>
+                        </span>
+                      ))}{' '}
+                      filter{autoBound.added.length > 1 ? 's' : ''}. Change this under Parameters.
+                    </span>
+                  </p>
+                )}
+              </div>
+            )}
 
-          <Section title="Metric binding" defaultOpen={Boolean(widget.metric?.metric_id)} icon={Sigma}>
-            <MetricBindingSection widget={widget} onChange={onChange} />
-          </Section>
-
-          <Section title="Parameters" defaultOpen={false} icon={SlidersHorizontal}>
-            <ParamBindingSection widget={widget} onChange={onChange} specVariables={spec?.variables}
-              onCreateVariable={onCreateVariable} />
-          </Section>
-        </div>
-      )}
-
-      {effectiveTab === 'widget' && (
-        <div className="space-y-4">
-          {widget.type === 'chart' && <ChartConfig widget={widget} onChange={onChange} />}
-          {(widget.type === 'kpi' || widget.type === 'metric') && <KpiConfig widget={widget} onChange={onChange} />}
-          {widget.type === 'table' && <TableConfig widget={widget} onChange={onChange} />}
-          {widget.type === 'pivot' && <PivotConfig widget={widget} onChange={onChange} />}
-          {widget.type === 'filter' && (
-            <FilterConfig
-              widget={widget} onChange={onChange} spec={spec}
-              onPatchWidget={onPatchWidget}
-              onCreateVariable={name => onCreateVariable?.(name, VARIABLE_TYPE_FOR_FILTER[widget.subtype ?? 'select'] ?? 'text')}
-              onRenameVariable={(from, to) => onRenameVariable?.(from, to, widget.id, VARIABLE_TYPE_FOR_FILTER[widget.subtype ?? 'select'] ?? 'text')}
-              resolveWidget={resolveWidget}
-            />
-          )}
-          {widget.type === 'text' && <TextConfig widget={widget} onChange={onChange} />}
-          {widget.type === 'section' && <SectionConfig widget={widget} onChange={onChange} />}
-          {widget.type === 'image' && <ImageConfig widget={widget} onChange={onChange} />}
-          {widget.type === 'stepper' && <StepperConfig widget={widget} onChange={onChange} />}
-          {widget.type === 'divider' && <DividerConfig widget={widget} onChange={onChange} />}
-          {widget.type === 'datedisplay' && <DateDisplayConfig widget={widget} onChange={onChange} spec={spec} />}
-          {widget.type === 'breadcrumb' && <BreadcrumbConfig widget={widget} onChange={onChange} spec={spec} />}
-
-          {widget.type === 'chart' && <DrilldownSection widget={widget} onChange={onChange} />}
-        </div>
-      )}
-
-      {effectiveTab === 'style' && (
-        <div className="space-y-4">
-          <WidgetAppearanceSection widget={widget} onChange={onChange} />
-        </div>
-      )}
-
-      {effectiveTab === 'layout' && (
-        <div className="space-y-4">
-          <WidgetLayoutSection widget={widget} onChange={onChange} spec={spec}
-            activeBreakpoint={activeBreakpoint} onLayoutCommit={onLayoutCommit} />
-
-          {!isRef && (
-            <Section title="Save to library" defaultOpen={false} icon={BookmarkPlus}>
-              <SaveToLibrarySection widget={widget} onSaved={onLibrarySaved} />
+            <Section title="Metric binding" defaultOpen={Boolean(widget.metric?.metric_id)} icon={Sigma}>
+              <MetricBindingSection widget={widget} onChange={onChange} />
             </Section>
-          )}
-        </div>
-      )}
+
+            <Section title="Parameters" defaultOpen={false} icon={SlidersHorizontal}>
+              <ParamBindingSection widget={widget} onChange={onChange} specVariables={spec?.variables}
+                onCreateVariable={onCreateVariable} />
+            </Section>
+          </div>
+        )}
+
+        {effectiveTab === 'widget' && (
+          <div className="space-y-4">
+            {widget.type === 'chart' && <ChartConfig widget={widget} onChange={onChange} />}
+            {(widget.type === 'kpi' || widget.type === 'metric') && <KpiConfig widget={widget} onChange={onChange} />}
+            {widget.type === 'table' && <TableConfig widget={widget} onChange={onChange} />}
+            {widget.type === 'pivot' && <PivotConfig widget={widget} onChange={onChange} />}
+            {widget.type === 'filter' && (
+              <FilterConfig
+                widget={widget} onChange={onChange} spec={spec}
+                onPatchWidget={onPatchWidget}
+                onCreateVariable={name => onCreateVariable?.(name, VARIABLE_TYPE_FOR_FILTER[widget.subtype ?? 'select'] ?? 'text')}
+                onRenameVariable={(from, to) => onRenameVariable?.(from, to, widget.id, VARIABLE_TYPE_FOR_FILTER[widget.subtype ?? 'select'] ?? 'text')}
+                resolveWidget={resolveWidget}
+              />
+            )}
+            {widget.type === 'text' && <TextConfig widget={widget} onChange={onChange} />}
+            {widget.type === 'section' && <SectionConfig widget={widget} onChange={onChange} />}
+            {widget.type === 'image' && <ImageConfig widget={widget} onChange={onChange} />}
+            {widget.type === 'stepper' && <StepperConfig widget={widget} onChange={onChange} />}
+            {widget.type === 'divider' && <DividerConfig widget={widget} onChange={onChange} />}
+            {widget.type === 'datedisplay' && <DateDisplayConfig widget={widget} onChange={onChange} spec={spec} />}
+            {widget.type === 'breadcrumb' && <BreadcrumbConfig widget={widget} onChange={onChange} spec={spec} />}
+
+            {widget.type === 'chart' && <DrilldownSection widget={widget} onChange={onChange} />}
+          </div>
+        )}
+
+        {effectiveTab === 'style' && (
+          <div className="space-y-4">
+            <WidgetAppearanceSection widget={widget} onChange={onChange} />
+          </div>
+        )}
+
+        {effectiveTab === 'layout' && (
+          <div className="space-y-4">
+            <WidgetLayoutSection widget={widget} onChange={onChange} spec={spec}
+              activeBreakpoint={activeBreakpoint} onLayoutCommit={onLayoutCommit} />
+
+            {!isRef && (
+              <Section title="Save to library" defaultOpen={false} icon={BookmarkPlus}>
+                <SaveToLibrarySection widget={widget} onSaved={onLibrarySaved} />
+              </Section>
+            )}
+          </div>
+        )}
 
       </div>
     </div>
@@ -2251,19 +2292,19 @@ function SaveToLibrarySection({ widget, onSaved }) {
 
 // Widget palette items — shared by AddPanel (sidebar) and the mobile bar.
 const PALETTE_ITEMS = [
-  { type: 'kpi',     label: 'KPI',     icon: Hash,        desc: 'Single big number' },
-  { type: 'metric',  label: 'Metric',  icon: TrendingUp,  desc: 'Stat tile: value + delta + spark' },
-  { type: 'table',   label: 'Table',   icon: Table2,      desc: 'Data grid' },
-  { type: 'pivot',   label: 'Pivot',   icon: Grid3x3,     desc: 'Rows × cols × measure matrix' },
-  { type: 'chart',   label: 'Chart',   icon: BarChart3,   desc: 'Bar / line / scatter…' },
-  { type: 'filter',  label: 'Filter',  icon: FilterIcon,  desc: 'Select / date / text filter' },
-  { type: 'text',    label: 'Text',    icon: Type,        desc: 'Markdown content block' },
-  { type: 'section', label: 'Section', icon: Heading,     desc: 'Section header / divider' },
-  { type: 'image',   label: 'Image',   icon: ImageIcon,   desc: 'Logo, header art, or branding image' },
-  { type: 'stepper', label: 'Stepper', icon: Layers,      desc: 'In-tile drill-down, one step at a time' },
-  { type: 'divider', label: 'Divider', icon: Minus,       desc: 'A rule that separates regions of a board' },
+  { type: 'kpi', label: 'KPI', icon: Hash, desc: 'Single big number' },
+  { type: 'metric', label: 'Metric', icon: TrendingUp, desc: 'Stat tile: value + delta + spark' },
+  { type: 'table', label: 'Table', icon: Table2, desc: 'Data grid' },
+  { type: 'pivot', label: 'Pivot', icon: Grid3x3, desc: 'Rows × cols × measure matrix' },
+  { type: 'chart', label: 'Chart', icon: BarChart3, desc: 'Bar / line / scatter…' },
+  { type: 'filter', label: 'Filter', icon: FilterIcon, desc: 'Select / date / text filter' },
+  { type: 'text', label: 'Text', icon: Type, desc: 'Markdown content block' },
+  { type: 'section', label: 'Section', icon: Heading, desc: 'Section header / divider' },
+  { type: 'image', label: 'Image', icon: ImageIcon, desc: 'Logo, header art, or branding image' },
+  { type: 'stepper', label: 'Stepper', icon: Layers, desc: 'In-tile drill-down, one step at a time' },
+  { type: 'divider', label: 'Divider', icon: Minus, desc: 'A rule that separates regions of a board' },
   { type: 'datedisplay', label: 'Date display', icon: CalendarRange, desc: 'Live caption for the reporting period' },
-  { type: 'breadcrumb',  label: 'Breadcrumb',   icon: ChevronsRight, desc: 'Drill path across filter variables' },
+  { type: 'breadcrumb', label: 'Breadcrumb', icon: ChevronsRight, desc: 'Drill path across filter variables' },
 ]
 
 /**
@@ -2431,10 +2472,10 @@ function LibraryUsageBadge({ libraryId, className = '' }) {
 function normalizeWidget(raw: Record<string, any>): Record<string, any> {
   const existing = raw.props ?? {}
   const merged = {
-    subtype:     raw.subtype     ?? existing.subtype,
-    target_var:  raw.target_var  ?? existing.target_var,
-    content:     raw.content     ?? existing.content,
-    label:       raw.label       ?? existing.label,
+    subtype: raw.subtype ?? existing.subtype,
+    target_var: raw.target_var ?? existing.target_var,
+    content: raw.content ?? existing.content,
+    label: raw.label ?? existing.label,
     placeholder: raw.placeholder ?? existing.placeholder,
     ...existing,
   }
@@ -2460,25 +2501,25 @@ const WidgetPreview = memo(function WidgetPreview({ widget, variableDefaults = N
         <div className="h-full w-full overflow-hidden">
           {w.html ? <HtmlWidget widget={w} /> : (
             <>
-              {w.type === 'chart'   && <ChartWidget   widget={w} />}
-              {w.type === 'kpi'     && <KpiWidget     widget={w} />}
-              {w.type === 'metric'  && <MetricWidget  widget={w} />}
-              {w.type === 'table'   && <TableWidget   widget={w} />}
-              {w.type === 'pivot'   && <PivotWidget   widget={w} />}
-              {w.type === 'filter'  && <FilterWidget  widget={w} options={[]} />}
-              {w.type === 'text'    && <TextWidget    widget={w} />}
+              {w.type === 'chart' && <ChartWidget widget={w} />}
+              {w.type === 'kpi' && <KpiWidget widget={w} />}
+              {w.type === 'metric' && <MetricWidget widget={w} />}
+              {w.type === 'table' && <TableWidget widget={w} />}
+              {w.type === 'pivot' && <PivotWidget widget={w} />}
+              {w.type === 'filter' && <FilterWidget widget={w} options={[]} />}
+              {w.type === 'text' && <TextWidget widget={w} />}
               {w.type === 'section' && <SectionWidget widget={w} />}
-              {w.type === 'image'   && <ImageWidget   widget={w} />}
+              {w.type === 'image' && <ImageWidget widget={w} />}
               {w.type === 'divider' && <DividerWidget widget={w} />}
               {w.type === 'datedisplay' && <DateDisplayWidget widget={w} />}
-              {w.type === 'breadcrumb'  && <BreadcrumbWidget  widget={w} editMode />}
+              {w.type === 'breadcrumb' && <BreadcrumbWidget widget={w} editMode />}
               {w.type === 'stepper' && (
                 <StepperWidget
                   widget={w}
                   renderChild={(child) => <WidgetPreview widget={child} variableDefaults={variableDefaults} />}
                 />
               )}
-              {!['chart','kpi','metric','table','pivot','filter','text','section','image','stepper','divider','datedisplay','breadcrumb'].includes(w.type) && (
+              {!['chart', 'kpi', 'metric', 'table', 'pivot', 'filter', 'text', 'section', 'image', 'stepper', 'divider', 'datedisplay', 'breadcrumb'].includes(w.type) && (
                 <div className="h-full w-full bg-surface flex items-center justify-center text-xs text-muted">
                   Unrecognised widget type: <span className="font-mono ml-1">{w.type}</span>
                 </div>
@@ -3029,7 +3070,7 @@ function TabsPanel({ spec, onSpecChange, activeTabId, onActivate, onAddTab }) {
 
       <Section title="Tab bar" icon={LayoutGrid}>
         <div className="rounded-lg border border-border bg-surface px-2 py-1.5">
-          <TabBar tabs={previewTabs} activeTabId={activeTabId} onChange={() => {}} tabBar={tabBar} />
+          <TabBar tabs={previewTabs} activeTabId={activeTabId} onChange={() => { }} tabBar={tabBar} />
         </div>
         <div>
           <FieldLabel>Variant</FieldLabel>
@@ -3593,10 +3634,10 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
       // Arrow keys — nudge (1 cell) or resize (shift + 1 cell). Edits apply to
       // the ACTIVE breakpoint only: desktop writes widget.pos, tablet/mobile
       // write the matching spec.responsive override for the selected widget.
-      if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key) && selectedId) {
+      if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key) && selectedId) {
         e.preventDefault()
         const dx = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0
-        const dy = e.key === 'ArrowUp'   ? -1 : e.key === 'ArrowDown'  ? 1 : 0
+        const dy = e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : 0
         const bp = DEVICE_TO_BREAKPOINT[deviceRef.current]
 
         setHist(h => {
@@ -4300,7 +4341,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
         {dirty ? 'Unsaved changes' : 'All changes saved'}
       </span>
       <Button
-        onClick={() => { handleSave().catch(() => {}) }}
+        onClick={() => { handleSave().catch(() => { }) }}
         loading={saving}
         variant="secondary"
         size="xs"
@@ -4469,11 +4510,11 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
     // it there) but still the only way to add widgets on md/mobile, which have
     // no room for a second permanent rail — so the toggle stays, just hidden
     // at lg+ via hideOnLg.
-    { id: 'add',    Icon: Plus,         mobileSheet: 'palette', label: 'Add widget', tip: 'Add widget', title: 'Add widget',                ariaLabel: 'Add widget panel', hideOnLg: true },
-    { id: 'config', Icon: Settings2,    mobileSheet: 'config',  label: 'Configure',  tip: 'Configure widget', title: 'Configure selected widget', ariaLabel: 'Configure panel' },
-    { id: 'board',  Icon: LayoutGrid,   mobileSheet: 'board',   label: 'Dashboard',  tip: 'Dashboard settings', title: 'Dashboard background, grid & variables', ariaLabel: 'Dashboard panel' },
-    { id: 'tabs',   Icon: Heading,      mobileSheet: 'tabs',    label: 'Tabs',       tip: 'Tab settings', title: 'Tab bar & per-tab style',   ariaLabel: 'Tabs panel' },
-    { id: 'chat',   Icon: MessageSquare,mobileSheet: 'chat',    label: 'Chat',       tip: 'AI chat', title: 'AI Chat',                   ariaLabel: 'Chat panel' },
+    { id: 'add', Icon: Plus, mobileSheet: 'palette', label: 'Add widget', tip: 'Add widget', title: 'Add widget', ariaLabel: 'Add widget panel', hideOnLg: true },
+    { id: 'config', Icon: Settings2, mobileSheet: 'config', label: 'Configure', tip: 'Configure widget', title: 'Configure selected widget', ariaLabel: 'Configure panel' },
+    { id: 'board', Icon: LayoutGrid, mobileSheet: 'board', label: 'Dashboard', tip: 'Dashboard settings', title: 'Dashboard background, grid & variables', ariaLabel: 'Dashboard panel' },
+    { id: 'tabs', Icon: Heading, mobileSheet: 'tabs', label: 'Tabs', tip: 'Tab settings', title: 'Tab bar & per-tab style', ariaLabel: 'Tabs panel' },
+    { id: 'chat', Icon: MessageSquare, mobileSheet: 'chat', label: 'Chat', tip: 'AI chat', title: 'AI Chat', ariaLabel: 'Chat panel' },
     // Not a docked side panel like the others — opens the full-screen filters
     // authoring slide-over (filtersOpen state, below). This is the ONLY entry
     // point for it: the old route-level FILTERS button that used to dispatch
@@ -4481,7 +4522,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
     // editor calls setFiltersOpen(true) — without this button a drawer-placed
     // filter (common on boards with many filters, kept off the canvas on
     // purpose) has no way to be selected and configured at all.
-    { id: 'filters', Icon: FilterIcon,  mobileSheet: null,      label: 'Filters',    tip: 'Manage filters', title: 'Manage dashboard filters',  ariaLabel: 'Filters panel' },
+    { id: 'filters', Icon: FilterIcon, mobileSheet: null, label: 'Filters', tip: 'Manage filters', title: 'Manage dashboard filters', ariaLabel: 'Filters panel' },
   ]
   const panelToggles = (compact = false) => (
     <div className={compact ? 'flex flex-col gap-1' : 'flex items-center gap-0.5'} data-testid="editor-panel-toggles">
@@ -4668,7 +4709,7 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
             there is something to save. */}
         <Tooltip content={savedBoardId ? 'Save draft' : 'Create dashboard'} kbd={['⌘', 'S']} side="bottom">
           <Button
-            onClick={() => { handleSave().catch(() => {}) }}
+            onClick={() => { handleSave().catch(() => { }) }}
             loading={saving}
             variant="secondary"
             size="sm"
@@ -4742,223 +4783,26 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
     // the colour spectrum) opens a gesture here, so those commits collapse into
     // a single undo step instead of dozens.
     <LiveEditProvider onChange={setLiveEdit}>
-    <div className="flex flex-col flex-1 min-h-0 overflow-hidden bg-bg">
+      <div className="flex flex-col flex-1 min-h-0 overflow-hidden bg-bg">
 
-      {/* Editor toolbar lives in the single app top bar (portaled into AppTopbar). */}
-      {topbarSlot && createPortal(editorToolbar, topbarSlot)}
+        {/* Editor toolbar lives in the single app top bar (portaled into AppTopbar). */}
+        {topbarSlot && createPortal(editorToolbar, topbarSlot)}
 
-      {/* ── Code view — full-pane VS Code-style dashboard.json editor ── */}
-      {codeView ? (
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <DashboardCodeView spec={spec} onSpecChange={setSpec} board={savedBoardId} />
-        </div>
-      ) : preview ? (
-        <main ref={mainRef} className="flex-1 overflow-auto p-3 sm:p-6 bg-bg" style={{ touchAction: 'pan-x pan-y' }}>
-          <div ref={canvasRef} className="w-full">
-            <div
-              className="mx-auto transition-[width,height]"
-              style={{
-                width: designWidth * effectiveZoom,
-                height: effectiveZoom !== 1 ? deviceDashHeight * effectiveZoom : undefined,
-              }}
-            >
-              <div
-                className={device === 'desktop' ? '' : 'rounded-xl border border-frame-line bg-bg overflow-hidden'}
-                style={{
-                  width: designWidth,
-                  transform: effectiveZoom !== 1 ? `scale(${effectiveZoom})` : undefined,
-                  transformOrigin: 'top left',
-                }}
-              >
-                <SpecRenderer spec={spec} forceBreakpoint={activeBreakpoint} />
-              </div>
-            </div>
+        {/* ── Code view — full-pane VS Code-style dashboard.json editor ── */}
+        {codeView ? (
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <DashboardCodeView spec={spec} onSpecChange={setSpec} board={savedBoardId} />
           </div>
-        </main>
-      ) : (
-        /* ── Edit mode ── */
-        <div className="flex flex-col flex-1 min-h-0 overflow-hidden relative">
-
-          {/* ── Tab strip (T5): only shown once the dashboard has tabs ── */}
-          {hasTabs && (
-            <EditableTabStrip
-              tabs={spec.tabs}
-              activeTabId={activeTabId}
-              onActivate={setActiveTabIdRaw}
-              onAdd={addTab}
-              onRename={renameTab}
-              onReorder={reorderTabs}
-              onDeleteRequest={requestDeleteTab}
-            />
-          )}
-
-          <div className="flex flex-1 min-h-0 overflow-hidden relative">
-
-          {/* ── Left widget-library rail ──
-              Desktop only (lg+): the widget palette + "From library" list live
-              here permanently instead of behind the "Add widget" toggle, so
-              picking a widget type never costs a trip through the RHS panel
-              switcher. md/mobile have no room for a second permanent rail —
-              they keep using the "Add widget" toggle (slide-over / bottom
-              sheet), which is why that toggle stays visible below lg
-              (PANEL_SEGMENTS' hideOnLg). */}
-          <aside aria-label="Widget library" className="hidden lg:flex lg:w-60 lg:shrink-0 border-r border-border bg-surface flex-col overflow-hidden">
-            <div className="nbc-panel-head">
-              <span className="nbc-label">Widget library</span>
-            </div>
-            {/* No overflow-y-auto here — AddPanel pins its own search box and
-                scrolls its own body, so this wrapper just needs to be bounded
-                (min-h-0), not a second competing scroll container. */}
-            <div className="flex-1 min-h-0 flex flex-col">
-              <AddPanel
-                onAdd={addWidget}
-                onAddReference={addLibraryReference}
-                onAddDetachedCopy={addDetachedLibraryCopy}
-                library={library}
-                libraryLoading={libraryLoading}
-                onDeleteLibraryEntry={removeLibraryEntry}
-              />
-            </div>
-          </aside>
-
-          {/* ── Tablet slide-over backdrop (md only, not on lg+) ── */}
-          {!rightCollapsed && (
-            <div
-              className="hidden md:block lg:hidden fixed inset-0 z-20 nubi-backdrop"
-              onClick={() => setRightCollapsed(true)}
-              aria-hidden="true"
-            />
-          )}
-
-          {/* Center: grid canvas — the ONLY scrolling region in edit mode. Doubles
-              as the zoom/pan viewport (pinch to zoom, one-finger drag to pan). */}
-          <ThemeModeProvider mode={canvasMode}>
-          <main
-            ref={mainRef}
-            className={['flex-1 min-w-0 overflow-auto p-3 sm:p-4 bg-bg', colorModeClass(canvasMode)].filter(Boolean).join(' ')}
-            data-testid="editor-canvas"
-            style={{
-              ...backgroundToCss(canvasBackground, adaptCtx),
-              touchAction: 'pan-x pan-y',
-              // Reserve the vertical scrollbar's width up front (rather than
-              // only once content grows past the viewport) so the fit-zoom
-              // width measurement below is stable — without this, a board
-              // that's initially short enough to skip the scrollbar gets
-              // measured as ~15-17px wider than it ends up being once a
-              // widget is added and the scrollbar appears, and the canvas
-              // then genuinely needs to horizontally scroll to show the last
-              // column of widgets.
-              scrollbarGutter: 'stable',
-            }}
-            onClick={(e) => {
-              // Click on empty canvas → deselect
-              if (e.target === e.currentTarget) setSelectedId(null)
-            }}
-          >
-            {/* Canvas top bar: viewport width + custom-layout indicators
-                (device switcher now lives in the app top bar) */}
-            <div className="flex items-center gap-2 mb-3 flex-wrap empty:hidden">
-              {/* Custom screen width (tablet/mobile only) */}
-              {device !== 'desktop' && (
-                <div className="flex items-center gap-1" data-testid="device-width-control">
-                  {WIDTH_PRESETS.map(w => (
-                    <button key={w} onClick={() => setDeviceWidths(s => ({ ...s, [device]: w }))}
-                      title={`${w}px wide`}
-                      aria-pressed={deviceWidths[device] === w}
-                      className="nbc-chip !h-6 !px-1.5 !text-[11px]">{w}</button>
-                  ))}
-                  <input
-                    type="number" min={200} max={2000}
-                    aria-label="Custom width in pixels"
-                    value={deviceWidths[device]}
-                    onChange={e => { const v = parseInt(e.target.value, 10); if (v) setDeviceWidths(s => ({ ...s, [device]: v })) }}
-                    className="nubi-input nubi-input-xs !h-6 !w-16 !px-1.5 font-mono tabular-nums"
-                  />
-                  <span className="nbc-meta">px</span>
-                </div>
-              )}
-
-              {/* Is this size its own layout, or the desktop one scaled down? */}
-              {device !== 'desktop' && (() => {
-                const custom = hasOverrides(spec, activeBreakpoint)
-                return (
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <Tag
-                      variant={custom ? 'accent' : 'neutral'}
-                      dot
-                      title={custom
-                        ? 'This size has a custom layout — edits here only affect this breakpoint.'
-                        : 'This size inherits the desktop layout. Move/resize a widget to start a custom layout.'}
-                    >
-                      {custom ? 'Custom layout' : 'Inherits desktop'}
-                    </Tag>
-                    {custom && (
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        onClick={() => setSpec(prev => clearBreakpointOverrides(prev, activeBreakpoint))}
-                        title="Reset this size to the desktop layout"
-                      >
-                        Reset to desktop
-                      </Button>
-                    )}
-                  </div>
-                )
-              })()}
-
-              {/* Mobile panel toggles are now in the topbar (panel-toggle-* buttons) */}
-            </div>
-
-            {tabWidgets.length === 0 ? (
-              <div className="mx-auto flex min-h-[50vh] max-w-xl flex-col items-center justify-center px-4 py-12" data-testid="editor-empty-canvas">
-                <EmptyState
-                  art={<EmptyBoards />}
-                  title={hasTabs ? 'This tab is empty' : 'Your dashboard is empty'}
-                  description={
-                    <>
-                      <span className="md:hidden">Tap <strong className="font-semibold text-fg">Add</strong> in the menu, or </span>
-                      <span className="hidden md:inline">Pick a widget from the library, or </span>
-                      ask <strong className="font-semibold text-fg">Chat</strong> to build one for you.
-                    </>
-                  }
-                  action={
-                    <div className="flex flex-wrap justify-center gap-2">
-                      {PALETTE_ITEMS.filter(p => ['kpi','table','chart','text'].includes(p.type)).map((p, i) => {
-                        const Icon = p.icon
-                        return (
-                          <Button
-                            key={p.type}
-                            size="sm"
-                            variant={i === 0 ? 'primary' : 'secondary'}
-                            onClick={() => addWidget(p.type)}
-                          >
-                            <Icon size={16} strokeWidth={1.5} aria-hidden="true" />
-                            {p.label}
-                          </Button>
-                        )
-                      })}
-                    </div>
-                  }
-                />
-              </div>
-            ) : (
+        ) : preview ? (
+          <main ref={mainRef} className="flex-1 overflow-auto p-3 sm:p-6 bg-bg" style={{ touchAction: 'pan-x pan-y' }}>
+            <div ref={canvasRef} className="w-full">
               <div
-                ref={canvasRef}
-                className="w-full"
-                onClick={(e) => {
-                  // Click directly on the grid container background → deselect
-                  if (e.target === e.currentTarget) setSelectedId(null)
+                className="mx-auto transition-[width,height]"
+                style={{
+                  width: designWidth * effectiveZoom,
+                  height: effectiveZoom !== 1 ? deviceDashHeight * effectiveZoom : undefined,
                 }}
               >
-                {/* Outer: reserves the scaled frame's footprint so the viewport
-                    scrolls/pans. Inner: the true-design-width frame, CSS-scaled. */}
-                <div
-                  className="mx-auto transition-[width,height]"
-                  style={{
-                    width: designWidth * effectiveZoom,
-                    height: effectiveZoom !== 1 ? deviceDashHeight * effectiveZoom : undefined,
-                  }}
-                >
                 <div
                   className={device === 'desktop' ? '' : 'rounded-xl border border-frame-line bg-bg overflow-hidden'}
                   style={{
@@ -4967,327 +4811,524 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
                     transformOrigin: 'top left',
                   }}
                 >
-                {/* Above-grid filter bar (placement: 'header'). Rendered between the
+                  <SpecRenderer spec={spec} forceBreakpoint={activeBreakpoint} />
+                </div>
+              </div>
+            </div>
+          </main>
+        ) : (
+          /* ── Edit mode ── */
+          <div className="flex flex-col flex-1 min-h-0 overflow-hidden relative">
+
+            {/* ── Tab strip (T5): only shown once the dashboard has tabs ── */}
+            {hasTabs && (
+              <EditableTabStrip
+                tabs={spec.tabs}
+                activeTabId={activeTabId}
+                onActivate={setActiveTabIdRaw}
+                onAdd={addTab}
+                onRename={renameTab}
+                onReorder={reorderTabs}
+                onDeleteRequest={requestDeleteTab}
+              />
+            )}
+
+            <div className="flex flex-1 min-h-0 overflow-hidden relative">
+
+              {/* ── Left widget-library rail ──
+              Desktop only (lg+): the widget palette + "From library" list live
+              here permanently instead of behind the "Add widget" toggle, so
+              picking a widget type never costs a trip through the RHS panel
+              switcher. md/mobile have no room for a second permanent rail —
+              they keep using the "Add widget" toggle (slide-over / bottom
+              sheet), which is why that toggle stays visible below lg
+              (PANEL_SEGMENTS' hideOnLg). */}
+              <aside aria-label="Widget library" className="hidden lg:flex lg:w-60 lg:shrink-0 border-r border-border bg-surface flex-col overflow-hidden">
+                <div className="nbc-panel-head">
+                  <span className="nbc-label">Widget library</span>
+                </div>
+                {/* No overflow-y-auto here — AddPanel pins its own search box and
+                scrolls its own body, so this wrapper just needs to be bounded
+                (min-h-0), not a second competing scroll container. */}
+                <div className="flex-1 min-h-0 flex flex-col">
+                  <AddPanel
+                    onAdd={addWidget}
+                    onAddReference={addLibraryReference}
+                    onAddDetachedCopy={addDetachedLibraryCopy}
+                    library={library}
+                    libraryLoading={libraryLoading}
+                    onDeleteLibraryEntry={removeLibraryEntry}
+                  />
+                </div>
+              </aside>
+
+              {/* ── Tablet slide-over backdrop (md only, not on lg+) ── */}
+              {!rightCollapsed && (
+                <div
+                  className="hidden md:block lg:hidden fixed inset-0 z-20 nubi-backdrop"
+                  onClick={() => setRightCollapsed(true)}
+                  aria-hidden="true"
+                />
+              )}
+
+              {/* Center: grid canvas — the ONLY scrolling region in edit mode. Doubles
+              as the zoom/pan viewport (pinch to zoom, one-finger drag to pan). */}
+              <ThemeModeProvider mode={canvasMode}>
+                <main
+                  ref={mainRef}
+                  className={['flex-1 min-w-0 overflow-auto p-3 sm:p-4 bg-bg', colorModeClass(canvasMode)].filter(Boolean).join(' ')}
+                  data-testid="editor-canvas"
+                  style={{
+                    ...backgroundToCss(canvasBackground, adaptCtx),
+                    touchAction: 'pan-x pan-y',
+                    // Reserve the vertical scrollbar's width up front (rather than
+                    // only once content grows past the viewport) so the fit-zoom
+                    // width measurement below is stable — without this, a board
+                    // that's initially short enough to skip the scrollbar gets
+                    // measured as ~15-17px wider than it ends up being once a
+                    // widget is added and the scrollbar appears, and the canvas
+                    // then genuinely needs to horizontally scroll to show the last
+                    // column of widgets.
+                    scrollbarGutter: 'stable',
+                  }}
+                  onClick={(e) => {
+                    // Click on empty canvas → deselect
+                    if (e.target === e.currentTarget) setSelectedId(null)
+                  }}
+                >
+                  {/* Canvas top bar: viewport width + custom-layout indicators
+                (device switcher now lives in the app top bar) */}
+                  <div className="flex items-center gap-2 mb-3 flex-wrap empty:hidden">
+                    {/* Custom screen width (tablet/mobile only) */}
+                    {device !== 'desktop' && (
+                      <div className="flex items-center gap-1" data-testid="device-width-control">
+                        {WIDTH_PRESETS.map(w => (
+                          <button key={w} onClick={() => setDeviceWidths(s => ({ ...s, [device]: w }))}
+                            title={`${w}px wide`}
+                            aria-pressed={deviceWidths[device] === w}
+                            className="nbc-chip !h-6 !px-1.5 !text-[11px]">{w}</button>
+                        ))}
+                        <input
+                          type="number" min={200} max={2000}
+                          aria-label="Custom width in pixels"
+                          value={deviceWidths[device]}
+                          onChange={e => { const v = parseInt(e.target.value, 10); if (v) setDeviceWidths(s => ({ ...s, [device]: v })) }}
+                          className="nubi-input nubi-input-xs !h-6 !w-16 !px-1.5 font-mono tabular-nums"
+                        />
+                        <span className="nbc-meta">px</span>
+                      </div>
+                    )}
+
+                    {/* Is this size its own layout, or the desktop one scaled down? */}
+                    {device !== 'desktop' && (() => {
+                      const custom = hasOverrides(spec, activeBreakpoint)
+                      return (
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <Tag
+                            variant={custom ? 'accent' : 'neutral'}
+                            dot
+                            title={custom
+                              ? 'This size has a custom layout — edits here only affect this breakpoint.'
+                              : 'This size inherits the desktop layout. Move/resize a widget to start a custom layout.'}
+                          >
+                            {custom ? 'Custom layout' : 'Inherits desktop'}
+                          </Tag>
+                          {custom && (
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              onClick={() => setSpec(prev => clearBreakpointOverrides(prev, activeBreakpoint))}
+                              title="Reset this size to the desktop layout"
+                            >
+                              Reset to desktop
+                            </Button>
+                          )}
+                        </div>
+                      )
+                    })()}
+
+                    {/* Mobile panel toggles are now in the topbar (panel-toggle-* buttons) */}
+                  </div>
+
+                  {tabWidgets.length === 0 ? (
+                    <div className="mx-auto flex min-h-[50vh] max-w-xl flex-col items-center justify-center px-4 py-12" data-testid="editor-empty-canvas">
+                      <EmptyState
+                        art={<EmptyBoards />}
+                        title={hasTabs ? 'This tab is empty' : 'Your dashboard is empty'}
+                        description={
+                          <>
+                            <span className="md:hidden">Tap <strong className="font-semibold text-fg">Add</strong> in the menu, or </span>
+                            <span className="hidden md:inline">Pick a widget from the library, or </span>
+                            ask <strong className="font-semibold text-fg">Chat</strong> to build one for you.
+                          </>
+                        }
+                        action={
+                          <div className="flex flex-wrap justify-center gap-2">
+                            {PALETTE_ITEMS.filter(p => ['kpi', 'table', 'chart', 'text'].includes(p.type)).map((p, i) => {
+                              const Icon = p.icon
+                              return (
+                                <Button
+                                  key={p.type}
+                                  size="sm"
+                                  variant={i === 0 ? 'primary' : 'secondary'}
+                                  onClick={() => addWidget(p.type)}
+                                >
+                                  <Icon size={16} strokeWidth={1.5} aria-hidden="true" />
+                                  {p.label}
+                                </Button>
+                              )
+                            })}
+                          </div>
+                        }
+                      />
+                    </div>
+                  ) : (
+                    <div
+                      ref={canvasRef}
+                      className="w-full"
+                      onClick={(e) => {
+                        // Click directly on the grid container background → deselect
+                        if (e.target === e.currentTarget) setSelectedId(null)
+                      }}
+                    >
+                      {/* Outer: reserves the scaled frame's footprint so the viewport
+                    scrolls/pans. Inner: the true-design-width frame, CSS-scaled. */}
+                      <div
+                        className="mx-auto transition-[width,height]"
+                        style={{
+                          width: designWidth * effectiveZoom,
+                          height: effectiveZoom !== 1 ? deviceDashHeight * effectiveZoom : undefined,
+                        }}
+                      >
+                        <div
+                          className={device === 'desktop' ? '' : 'rounded-xl border border-frame-line bg-bg overflow-hidden'}
+                          style={{
+                            width: designWidth,
+                            transform: effectiveZoom !== 1 ? `scale(${effectiveZoom})` : undefined,
+                            transformOrigin: 'top left',
+                          }}
+                        >
+                          {/* Above-grid filter bar (placement: 'header'). Rendered between the
                     tab strip and the GridCanvas so header filters are visible +
                     editable in-place. Mirrors the renderer's `nubi-filter-bar`.
                     Padded to match the grid's container padding so it lines up. */}
-                {headerTabWidgets.length > 0 && (
-                  <div style={{ paddingLeft: editorPadding.x, paddingRight: editorPadding.x, paddingTop: editorPadding.y }}>
-                    <EditorFilterBar
-                      widgets={headerTabWidgets}
-                      selectedId={selectedId}
-                      onSelect={(id) => { setSelectedId(id); setRightCollapsed(false); setRightPanel(p => p === 'chat' ? p : 'config'); setMobileSheet('config') }}
-                      onRemove={removeWidget}
-                    />
-                  </div>
-                )}
-                {/* CSS-Grid engine (dnd-kit). GridCanvas owns drag/resize math + zoom
+                          {headerTabWidgets.length > 0 && (
+                            <div style={{ paddingLeft: editorPadding.x, paddingRight: editorPadding.x, paddingTop: editorPadding.y }}>
+                              <EditorFilterBar
+                                widgets={headerTabWidgets}
+                                selectedId={selectedId}
+                                onSelect={(id) => { setSelectedId(id); setRightCollapsed(false); setRightPanel(p => p === 'chat' ? p : 'config'); setMobileSheet('config') }}
+                                onRemove={removeWidget}
+                              />
+                            </div>
+                          )}
+                          {/* CSS-Grid engine (dnd-kit). GridCanvas owns drag/resize math + zoom
                     scaling and the column-guide / ghost overlays. We feed it the SAME
                     0-based layout array RGL consumed and the SAME commit callback, so
                     the commit contract is byte-for-byte preserved. Desktop/tablet =
                     free 2-D editing; mobile = drag-to-reorder stack. Keyed by
                     activeBreakpoint so a device switch remounts with fresh geometry. */}
-                <GridCanvas
-                  key={`${activeBreakpoint}:${activeTabId ?? '_'}`}
-                  layout={gridLayouts[activeBreakpoint]}
-                  cols={editorGridCols}
-                  rowHeight={spec.layout?.row_height ?? 60}
-                  gap={editorGap}
-                  padding={editorPadding}
-                  width={designWidth}
-                  zoom={effectiveZoom}
-                  draggable
-                  resizable={gridMode === 'grid'}
-                  mode={gridMode}
-                  compaction={editorCompaction}
-                  dense={editorDense}
-                  selectedId={selectedId}
-                  dragHandle=".drag-handle"
-                  onInteractionStart={handleInteractionStart}
-                  onInteractionEnd={handleInteractionEnd}
-                  onLayoutCommit={commitLayout}
-                  renderItem={(item) => {
-                    const raw = spec.widgets.find(w => w.id === item.i)
-                    if (!raw) return null
-                    // Resolved so a `ref` widget's live preview, drag-handle label
-                    // and icon reflect the library config + overrides, not a bare
-                    // {id, ref, overrides, pos} entry with no type/props of its own.
-                    const widget = resolveEntry(raw)
-                    const isSelected = selectedId === widget.id
-                    const reorder = gridMode === 'reorder'
-                    const WidgetIcon = WIDGET_ICONS[widget.type]
-                    const cardStyle = styleToCss(widget.style, widget.style?.themeAdapt === false ? undefined : adaptCtx)
-                    // A card with its own opaque background renders in the mode
-                    // that background calls for, as it does for viewers.
-                    const cardBgHex = cardStyle ? backgroundHex(cardStyle.backgroundColor ?? cardStyle.background, canvasBgHex) : null
-                    const cardMode = modeForHex(cardBgHex)
-                    const cardScope = cardMode && cardMode !== canvasTheme ? cardMode : null
-                    return (
-                      <ThemeModeProvider mode={cardScope}>
-                      {/* Note: NO overflow-hidden on the frame — menus opened from the
+                          <GridCanvas
+                            key={`${activeBreakpoint}:${activeTabId ?? '_'}`}
+                            layout={gridLayouts[activeBreakpoint]}
+                            cols={editorGridCols}
+                            rowHeight={spec.layout?.row_height ?? 60}
+                            gap={editorGap}
+                            padding={editorPadding}
+                            width={designWidth}
+                            zoom={effectiveZoom}
+                            draggable
+                            resizable={gridMode === 'grid'}
+                            mode={gridMode}
+                            compaction={editorCompaction}
+                            dense={editorDense}
+                            selectedId={selectedId}
+                            dragHandle=".drag-handle"
+                            onInteractionStart={handleInteractionStart}
+                            onInteractionEnd={handleInteractionEnd}
+                            onLayoutCommit={commitLayout}
+                            renderItem={(item) => {
+                              const raw = spec.widgets.find(w => w.id === item.i)
+                              if (!raw) return null
+                              // Resolved so a `ref` widget's live preview, drag-handle label
+                              // and icon reflect the library config + overrides, not a bare
+                              // {id, ref, overrides, pos} entry with no type/props of its own.
+                              const widget = resolveEntry(raw)
+                              const isSelected = selectedId === widget.id
+                              const reorder = gridMode === 'reorder'
+                              const WidgetIcon = WIDGET_ICONS[widget.type]
+                              const cardStyle = styleToCss(widget.style, widget.style?.themeAdapt === false ? undefined : adaptCtx)
+                              // A card with its own opaque background renders in the mode
+                              // that background calls for, as it does for viewers.
+                              const cardBgHex = cardStyle ? backgroundHex(cardStyle.backgroundColor ?? cardStyle.background, canvasBgHex) : null
+                              const cardMode = modeForHex(cardBgHex)
+                              const cardScope = cardMode && cardMode !== canvasTheme ? cardMode : null
+                              return (
+                                <ThemeModeProvider mode={cardScope}>
+                                  {/* Note: NO overflow-hidden on the frame — menus opened from the
                           header actions are absolutely positioned and must not be
                           clipped. Inner areas handle their own overflow. */}
-                      <div
-                        data-testid={`widget-${widget.id}`}
-                        data-widget-export-root={widget.id}
-                        onClick={(e) => { e.stopPropagation(); setSelectedId(widget.id); setRightCollapsed(false); setRightPanel(p => p === 'chat' ? p : 'config'); setMobileSheet('config') }}
-                        style={cardStyle}
-                        className={[
-                          'nbc-tile',
-                          colorModeClass(cardScope),
-                          isSelected ? 'is-selected' : '',
-                        ].filter(Boolean).join(' ')}
-                      >
-                        {/* 32px header: grip, type glyph, title, mono type. The
+                                  <div
+                                    data-testid={`widget-${widget.id}`}
+                                    data-widget-export-root={widget.id}
+                                    onClick={(e) => { e.stopPropagation(); setSelectedId(widget.id); setRightCollapsed(false); setRightPanel(p => p === 'chat' ? p : 'config'); setMobileSheet('config') }}
+                                    style={cardStyle}
+                                    className={[
+                                      'nbc-tile',
+                                      colorModeClass(cardScope),
+                                      isSelected ? 'is-selected' : '',
+                                    ].filter(Boolean).join(' ')}
+                                  >
+                                    {/* 32px header: grip, type glyph, title, mono type. The
                             handle is everything left of the actions, so pressing an
                             action never starts a drag. */}
-                        <div className="nbc-tile-head">
-                          <div
-                            className="drag-handle flex h-full min-w-0 flex-1 cursor-grab items-center gap-2 active:cursor-grabbing"
-                            title={reorder ? 'Drag to reorder' : 'Drag to move'}
-                          >
-                            <GripVertical size={14} strokeWidth={1.5} className="shrink-0 text-subtle" aria-hidden="true" />
-                            {WidgetIcon && <WidgetIcon size={16} strokeWidth={1.5} className="shrink-0" aria-hidden="true" />}
-                            {isRefWidget(raw) && (
-                              <span
-                                className="inline-flex shrink-0"
-                                title="Referenced from the widget library"
-                                aria-label="Referenced from the widget library"
-                                data-testid={`widget-ref-badge-${raw.id}`}
-                              >
-                                <Link2 size={16} strokeWidth={1.5} />
-                              </span>
-                            )}
-                            <span className="nbc-tile-title capitalize">
-                              {widget.props?.label || widget.type}
-                            </span>
-                            {widget.type === 'filter' && (filterReaderCounts.get(widget.target_var) ?? 0) === 0 && (
-                              <span
-                                className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-warning"
-                                title="This filter is not connected to any widget, so picking a value changes nothing. Select it to connect widgets."
-                                data-testid={`filter-unconnected-badge-${raw.id}`}
-                              >
-                                <AlertTriangle size={14} strokeWidth={1.5} aria-hidden="true" />
-                                {item.w >= 4 ? 'Not connected' : <span className="sr-only">Not connected</span>}
-                              </span>
-                            )}
-                            {widget.props?.label && item.w >= 4 && (
-                              <span className="nbc-meta shrink-0">{widget.type}</span>
-                            )}
-                          </div>
-                          <WidgetTileActions
-                            widget={widget}
-                            boardId={savedBoardId}
-                            onDuplicate={duplicateWidget}
-                            onDelete={removeWidget}
-                            onFocus={openFocus}
-                            reorder={reorder}
-                            onHeightStep={handleHeightStep}
+                                    <div className="nbc-tile-head">
+                                      <div
+                                        className="drag-handle flex h-full min-w-0 flex-1 cursor-grab items-center gap-2 active:cursor-grabbing"
+                                        title={reorder ? 'Drag to reorder' : 'Drag to move'}
+                                      >
+                                        <GripVertical size={14} strokeWidth={1.5} className="shrink-0 text-subtle" aria-hidden="true" />
+                                        {WidgetIcon && <WidgetIcon size={16} strokeWidth={1.5} className="shrink-0" aria-hidden="true" />}
+                                        {isRefWidget(raw) && (
+                                          <span
+                                            className="inline-flex shrink-0"
+                                            title="Referenced from the widget library"
+                                            aria-label="Referenced from the widget library"
+                                            data-testid={`widget-ref-badge-${raw.id}`}
+                                          >
+                                            <Link2 size={16} strokeWidth={1.5} />
+                                          </span>
+                                        )}
+                                        <span className="nbc-tile-title capitalize">
+                                          {widget.props?.label || widget.type}
+                                        </span>
+                                        {widget.type === 'filter' && (filterReaderCounts.get(widget.target_var) ?? 0) === 0 && (
+                                          <span
+                                            className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-warning"
+                                            title="This filter is not connected to any widget, so picking a value changes nothing. Select it to connect widgets."
+                                            data-testid={`filter-unconnected-badge-${raw.id}`}
+                                          >
+                                            <AlertTriangle size={14} strokeWidth={1.5} aria-hidden="true" />
+                                            {item.w >= 4 ? 'Not connected' : <span className="sr-only">Not connected</span>}
+                                          </span>
+                                        )}
+                                        {widget.props?.label && item.w >= 4 && (
+                                          <span className="nbc-meta shrink-0">{widget.type}</span>
+                                        )}
+                                      </div>
+                                      <WidgetTileActions
+                                        widget={widget}
+                                        boardId={savedBoardId}
+                                        onDuplicate={duplicateWidget}
+                                        onDelete={removeWidget}
+                                        onFocus={openFocus}
+                                        reorder={reorder}
+                                        onHeightStep={handleHeightStep}
+                                      />
+                                    </div>
+
+                                    {/* Live widget preview — scrolls/clips independently */}
+                                    <div className="flex-1 min-h-0 overflow-hidden">
+                                      <WidgetPreview widget={widget} variableDefaults={previewVariableDefaults} />
+                                    </div>
+                                  </div>
+                                </ThemeModeProvider>
+                              )
+                            }}
                           />
                         </div>
-
-                        {/* Live widget preview — scrolls/clips independently */}
-                        <div className="flex-1 min-h-0 overflow-hidden">
-                          <WidgetPreview widget={widget} variableDefaults={previewVariableDefaults} />
-                        </div>
                       </div>
-                      </ThemeModeProvider>
-                    )
-                  }}
-                />
-                </div>
-                </div>
-              </div>
-            )}
-          </main>
-          </ThemeModeProvider>
+                    </div>
+                  )}
+                </main>
+              </ThemeModeProvider>
 
-          {/* ── Right sidebar ──
+              {/* ── Right sidebar ──
               Desktop (lg+): always-visible 320px panel.
               Tablet (md–lg): slide-over drawer (fixed, z-30), toggled by the top-bar buttons.
               Mobile (<md): hidden — uses the bottom sheet instead. */}
-          {!rightCollapsed && (
-            <aside
-              className={[
-                'border-l border-border bg-surface flex flex-col overflow-hidden',
-                'hidden md:flex',
-                'lg:static lg:w-80 lg:shrink-0',
-                'md:fixed md:inset-y-0 md:right-0 md:z-30 md:w-80 md:shadow-pop',
-                'lg:shadow-none',
-              ].join(' ')}
-              aria-label={RIGHT_PANEL_TITLES[rightPanel] ?? 'Configure'}
-              data-testid="editor-right-panel"
-            >
-              {/* Panel header */}
-              <div className="nbc-panel-head">
-                <span className="nbc-label">
-                  {RIGHT_PANEL_TITLES[rightPanel] ?? 'Configure'}
-                </span>
-                <Tooltip content="Collapse panel" side="left">
-                  <button
-                    onClick={() => setRightCollapsed(true)}
-                    aria-label="Collapse side panel"
-                    className="nbc-tool !px-0"
-                  >
-                    <PanelRightClose size={16} strokeWidth={1.5} />
-                  </button>
-                </Tooltip>
-              </div>
-              {/* Body scrolls WITHIN the fixed-width sidebar. No overflow-y-auto
+              {!rightCollapsed && (
+                <aside
+                  className={[
+                    'border-l border-border bg-surface flex flex-col overflow-hidden',
+                    'hidden md:flex',
+                    'lg:static lg:w-80 lg:shrink-0',
+                    'md:fixed md:inset-y-0 md:right-0 md:z-30 md:w-80 md:shadow-pop',
+                    'lg:shadow-none',
+                  ].join(' ')}
+                  aria-label={RIGHT_PANEL_TITLES[rightPanel] ?? 'Configure'}
+                  data-testid="editor-right-panel"
+                >
+                  {/* Panel header */}
+                  <div className="nbc-panel-head">
+                    <span className="nbc-label">
+                      {RIGHT_PANEL_TITLES[rightPanel] ?? 'Configure'}
+                    </span>
+                    <Tooltip content="Collapse panel" side="left">
+                      <button
+                        onClick={() => setRightCollapsed(true)}
+                        aria-label="Collapse side panel"
+                        className="nbc-tool !px-0"
+                      >
+                        <PanelRightClose size={16} strokeWidth={1.5} />
+                      </button>
+                    </Tooltip>
+                  </div>
+                  {/* Body scrolls WITHIN the fixed-width sidebar. No overflow-y-auto
                   on this wrapper — each panel (ConfigPanel/AddPanel/etc.)
                   pins its own header/tabs and scrolls its own body; a second
                   overflow-auto here would compete with that and win, dragging
                   the pinned part along with the scroll instead of the panel's
                   own inner region. */}
-              <div className="flex-1 min-h-0 flex flex-col">
-                {renderRightPanelBody()}
-              </div>
-              {((rightPanel === 'config' && selectedWidget) || rightPanel === 'board') && renderSaveFooter()}
-            </aside>
-          )}
+                  <div className="flex-1 min-h-0 flex flex-col">
+                    {renderRightPanelBody()}
+                  </div>
+                  {((rightPanel === 'config' && selectedWidget) || rightPanel === 'board') && renderSaveFooter()}
+                </aside>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* ── Focus mode ──
+        {/* ── Focus mode ──
           Full-screen single-widget authoring surface: data rail + big live
           preview + the same config sections the sidebar uses. Edits go through
           updateWidget, so the board spec (and undo history) stay authoritative. */}
-      {focusedWidget && (
-        <WidgetFocusShell
-          widget={focusedWidget}
-          onChange={updateWidget}
-          onClose={() => setFocusId(null)}
-          onRemove={() => removeWidget(focusedWidget.id)}
-          extraQueryIds={queryIds}
-          icon={WIDGET_ICONS[focusedWidget.type]}
-          rowHeight={spec.layout?.row_height ?? 60}
-          frameStyle={styleToCss(focusedWidget.style, focusedWidget.style?.themeAdapt === false ? undefined : adaptCtx)}
-          preview={<WidgetPreview widget={focusedWidget} variableDefaults={previewVariableDefaults} />}
-          config={
-            <ConfigPanel
-              variant="focus"
-              widget={focusedWidget}
-              onChange={updateWidget}
-              extraQueryIds={queryIds}
-              spec={spec}
-              activeBreakpoint={activeBreakpoint}
-              onLayoutCommit={(item) => commitLayout([item])}
-              onMoveToTab={moveWidgetToTab}
-              onLibrarySaved={reloadLibrary}
-              libraryById={libraryById}
-              onDetachRequest={requestDetach}
-              onEditScopeRequest={requestEditScope}
-              onResetOverride={resetOverrideField}
-              sharedEditRefId={sharedEditRefId}
-              onSaveSharedDefinition={saveSharedDefinition}
-              onCancelSharedEdit={() => setSharedEditRefId(null)}
-              savingShared={savingShared}
-              onPatchWidget={patchWidgetById}
-              onCreateVariable={createVariable}
-              onRenameVariable={renameVariable}
-              resolveWidget={resolveEntry}
-            />
-          }
-        />
-      )}
+        {focusedWidget && (
+          <WidgetFocusShell
+            widget={focusedWidget}
+            onChange={updateWidget}
+            onClose={() => setFocusId(null)}
+            onRemove={() => removeWidget(focusedWidget.id)}
+            extraQueryIds={queryIds}
+            icon={WIDGET_ICONS[focusedWidget.type]}
+            rowHeight={spec.layout?.row_height ?? 60}
+            frameStyle={styleToCss(focusedWidget.style, focusedWidget.style?.themeAdapt === false ? undefined : adaptCtx)}
+            preview={<WidgetPreview widget={focusedWidget} variableDefaults={previewVariableDefaults} />}
+            config={
+              <ConfigPanel
+                variant="focus"
+                widget={focusedWidget}
+                onChange={updateWidget}
+                extraQueryIds={queryIds}
+                spec={spec}
+                activeBreakpoint={activeBreakpoint}
+                onLayoutCommit={(item) => commitLayout([item])}
+                onMoveToTab={moveWidgetToTab}
+                onLibrarySaved={reloadLibrary}
+                libraryById={libraryById}
+                onDetachRequest={requestDetach}
+                onEditScopeRequest={requestEditScope}
+                onResetOverride={resetOverrideField}
+                sharedEditRefId={sharedEditRefId}
+                onSaveSharedDefinition={saveSharedDefinition}
+                onCancelSharedEdit={() => setSharedEditRefId(null)}
+                savingShared={savingShared}
+                onPatchWidget={patchWidgetById}
+                onCreateVariable={createVariable}
+                onRenameVariable={renameVariable}
+                resolveWidget={resolveEntry}
+              />
+            }
+          />
+        )}
 
-      {/* ── Mobile slide-out menu (<md) ──
+        {/* ── Mobile slide-out menu (<md) ──
           Holds the toolbar cluster that the top bar hides below md: device
           switcher, zoom controls (+ Reset), and the panel toggles. Slides in from
           the right; tap the backdrop or × to dismiss. */}
-      {mobileMenu && (
-        <div className="md:hidden fixed inset-0 z-50 flex justify-end" data-testid="editor-mobile-menu" role="dialog" aria-modal="true" aria-label="Editor options">
-          <div
-            className="nubi-backdrop absolute inset-0"
-            onClick={() => setMobileMenu(false)}
-            aria-hidden="true"
-          />
-          <div className="relative flex h-full w-72 max-w-[85vw] flex-col border-l border-border bg-surface shadow-pop nubi-animate-slide-up">
-            <div className="nbc-panel-head !h-12 !px-4">
-              <span className="text-sm font-semibold text-fg">Editor options</span>
-              <button
-                onClick={() => setMobileMenu(false)}
-                aria-label="Close menu"
-                className="nbc-tool !px-0"
-              >
-                <X size={16} strokeWidth={1.5} />
-              </button>
-            </div>
-            <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-5">
-              <div className="space-y-2">
-                <SectionLabel>Device</SectionLabel>
-                {deviceSwitcher(true)}
+        {mobileMenu && (
+          <div className="md:hidden fixed inset-0 z-50 flex justify-end" data-testid="editor-mobile-menu" role="dialog" aria-modal="true" aria-label="Editor options">
+            <div
+              className="nubi-backdrop absolute inset-0"
+              onClick={() => setMobileMenu(false)}
+              aria-hidden="true"
+            />
+            <div className="relative flex h-full w-72 max-w-[85vw] flex-col border-l border-border bg-surface shadow-pop nubi-animate-slide-up">
+              <div className="nbc-panel-head !h-12 !px-4">
+                <span className="text-sm font-semibold text-fg">Editor options</span>
+                <button
+                  onClick={() => setMobileMenu(false)}
+                  aria-label="Close menu"
+                  className="nbc-tool !px-0"
+                >
+                  <X size={16} strokeWidth={1.5} />
+                </button>
               </div>
-              {!preview && (
+              <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-5">
                 <div className="space-y-2">
-                  <SectionLabel>Zoom</SectionLabel>
-                  {zoomControls()}
+                  <SectionLabel>Device</SectionLabel>
+                  {deviceSwitcher(true)}
                 </div>
-              )}
-              {!preview && (
-                <div className="space-y-2">
-                  <SectionLabel>Panels</SectionLabel>
-                  {panelToggles(true)}
-                </div>
-              )}
+                {!preview && (
+                  <div className="space-y-2">
+                    <SectionLabel>Zoom</SectionLabel>
+                    {zoomControls()}
+                  </div>
+                )}
+                {!preview && (
+                  <div className="space-y-2">
+                    <SectionLabel>Panels</SectionLabel>
+                    {panelToggles(true)}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* ── Mobile bottom sheet (<md) ──
+        {/* ── Mobile bottom sheet (<md) ──
           Slides up from the bottom when mobileSheet is set. A fixed overlay with
           a drag handle and scrollable body. Tap the backdrop or × to dismiss. */}
-      {!preview && mobileSheet && (
-        <div className="md:hidden fixed inset-0 z-40 flex flex-col justify-end" style={{ pointerEvents: 'auto' }} role="dialog" aria-modal="true" aria-label={SHEET_TITLES[mobileSheet] ?? 'Panel'}>
-          {/* Backdrop */}
-          <div
-            className="nubi-backdrop absolute inset-0"
-            onClick={() => setMobileSheet(null)}
-            aria-hidden="true"
-          />
-          {/* Sheet */}
-          <div className="relative flex max-h-[80vh] flex-col border-t-2 border-[var(--ink)] bg-surface shadow-pop nubi-animate-slide-up">
-            {/* Sheet header */}
-            <div className="flex items-center justify-between px-4 h-12 border-b border-border shrink-0">
-              <span className="text-sm font-semibold text-fg">
-                {SHEET_TITLES[mobileSheet] ?? 'Panel'}
-              </span>
-              <button
-                onClick={() => setMobileSheet(null)}
-                aria-label="Close sheet"
-                className="nbc-tool !px-0"
-              >
-                <X size={16} strokeWidth={1.5} />
-              </button>
-            </div>
-            {/* Sheet body — each panel pins its own header/tabs and scrolls
+        {!preview && mobileSheet && (
+          <div className="md:hidden fixed inset-0 z-40 flex flex-col justify-end" style={{ pointerEvents: 'auto' }} role="dialog" aria-modal="true" aria-label={SHEET_TITLES[mobileSheet] ?? 'Panel'}>
+            {/* Backdrop */}
+            <div
+              className="nubi-backdrop absolute inset-0"
+              onClick={() => setMobileSheet(null)}
+              aria-hidden="true"
+            />
+            {/* Sheet */}
+            <div className="relative flex max-h-[80vh] flex-col border-t-2 border-[var(--ink)] bg-surface shadow-pop nubi-animate-slide-up">
+              {/* Sheet header */}
+              <div className="flex items-center justify-between px-4 h-12 border-b border-border shrink-0">
+                <span className="text-sm font-semibold text-fg">
+                  {SHEET_TITLES[mobileSheet] ?? 'Panel'}
+                </span>
+                <button
+                  onClick={() => setMobileSheet(null)}
+                  aria-label="Close sheet"
+                  className="nbc-tool !px-0"
+                >
+                  <X size={16} strokeWidth={1.5} />
+                </button>
+              </div>
+              {/* Sheet body — each panel pins its own header/tabs and scrolls
                 its own content, so no overflow-y-auto here (see the desktop
                 sidebar's identical note above). */}
-            <div className="flex-1 min-h-0 flex flex-col">
-              {renderSheetBody()}
+              <div className="flex-1 min-h-0 flex flex-col">
+                {renderSheetBody()}
+              </div>
+              {((mobileSheet === 'config' && selectedWidget) || mobileSheet === 'board') && renderSaveFooter()}
             </div>
-            {((mobileSheet === 'config' && selectedWidget) || mobileSheet === 'board') && renderSaveFooter()}
           </div>
-        </div>
-      )}
+        )}
 
-      {/* ── Delete-tab confirmation (T5) ──
+        {/* ── Delete-tab confirmation (T5) ──
           A tab with widgets prompts: relocate them to another tab, or delete the
           tab AND its widgets. Routed through deleteTab → setHist (undoable). */}
-      {deletingTab && (
-        <DeleteTabDialog
-          tab={deletingTab}
-          tabs={spec.tabs ?? []}
-          widgetCount={widgetsForTab(spec, deletingTab.id).length}
-          onMove={(targetId) => { deleteTab(deletingTab.id, 'move', targetId); setDeletingTab(null) }}
-          onDeleteWidgets={() => { deleteTab(deletingTab.id, 'delete'); setDeletingTab(null) }}
-          onCancel={() => setDeletingTab(null)}
-        />
-      )}
+        {deletingTab && (
+          <DeleteTabDialog
+            tab={deletingTab}
+            tabs={spec.tabs ?? []}
+            widgetCount={widgetsForTab(spec, deletingTab.id).length}
+            onMove={(targetId) => { deleteTab(deletingTab.id, 'move', targetId); setDeletingTab(null) }}
+            onDeleteWidgets={() => { deleteTab(deletingTab.id, 'delete'); setDeletingTab(null) }}
+            onCancel={() => setDeletingTab(null)}
+          />
+        )}
 
-      {/* ── Reference-based reuse dialogs ──
+        {/* ── Reference-based reuse dialogs ──
           Detach (name + confirm), the "used by N boards" edit-scope prompt
           (Edit for all / Duplicate & edit just this one / Cancel), and the
           fork-naming prompt for "Duplicate & edit". All routed through
@@ -5295,106 +5336,106 @@ export default function DashboardEditor({ boardId = null, onSaved, onSpecChange,
           only saveSharedDefinition/forkSharedDefinition write to the library
           resource directly (that's the point — a normal field edit never
           does). */}
-      {detachTarget && (
-        <NamePromptDialog
-          title="Detach this widget?"
-          description={`It becomes an independent copy on this board only — future edits to “${detachTarget.name || 'the library entry'}” will no longer reach it. Name the detached copy so its origin stays traceable.`}
-          defaultName={detachTarget.name}
-          confirmLabel="Detach"
-          testidPrefix="detach-widget"
-          onConfirm={(name) => detachWidget(detachTarget.id, name)}
-          onCancel={() => setDetachTarget(null)}
-        />
-      )}
+        {detachTarget && (
+          <NamePromptDialog
+            title="Detach this widget?"
+            description={`It becomes an independent copy on this board only — future edits to “${detachTarget.name || 'the library entry'}” will no longer reach it. Name the detached copy so its origin stays traceable.`}
+            defaultName={detachTarget.name}
+            confirmLabel="Detach"
+            testidPrefix="detach-widget"
+            onConfirm={(name) => detachWidget(detachTarget.id, name)}
+            onCancel={() => setDetachTarget(null)}
+          />
+        )}
 
-      {editScopeTarget && (
-        <EditScopeDialog
-          count={editScopeUsage?.count ?? 0}
-          onEditForAll={() => { setSharedEditRefId(editScopeTarget.ref); setEditScopeTarget(null) }}
-          onDuplicate={() => { setForkTarget(editScopeTarget); setEditScopeTarget(null) }}
-          onCancel={() => setEditScopeTarget(null)}
-        />
-      )}
+        {editScopeTarget && (
+          <EditScopeDialog
+            count={editScopeUsage?.count ?? 0}
+            onEditForAll={() => { setSharedEditRefId(editScopeTarget.ref); setEditScopeTarget(null) }}
+            onDuplicate={() => { setForkTarget(editScopeTarget); setEditScopeTarget(null) }}
+            onCancel={() => setEditScopeTarget(null)}
+          />
+        )}
 
-      {forkTarget && (
-        <NamePromptDialog
-          title="Duplicate & edit just this one"
-          description="Creates a new library entry from this widget's current values and points only this instance at it. Every other board keeps using the original shared definition, untouched."
-          defaultName={forkTarget.name ? `${forkTarget.name} (copy)` : ''}
-          confirmLabel="Duplicate"
-          testidPrefix="fork-widget"
-          onConfirm={(name) => forkSharedDefinition(forkTarget.id, name)}
-          onCancel={() => setForkTarget(null)}
-        />
-      )}
+        {forkTarget && (
+          <NamePromptDialog
+            title="Duplicate & edit just this one"
+            description="Creates a new library entry from this widget's current values and points only this instance at it. Every other board keeps using the original shared definition, untouched."
+            defaultName={forkTarget.name ? `${forkTarget.name} (copy)` : ''}
+            confirmLabel="Duplicate"
+            testidPrefix="fork-widget"
+            onConfirm={(name) => forkSharedDefinition(forkTarget.id, name)}
+            onCancel={() => setForkTarget(null)}
+          />
+        )}
 
-      {/* ── Filters drawer (authoring) ──
+        {/* ── Filters drawer (authoring) ──
           Opened by EditorPage's FILTERS button via the nubi:open-filters event
           (OPEN_FILTERS_EVENT seam). Lists the dashboard's filter widgets — the
           ones a viewer would see in the global Filters drawer — and lets the
           author add a filter or jump straight to one's settings. The drawer is
           global across tabs (filter variables are dashboard-wide). */}
-      {filtersOpen && (
-        <div className="fixed inset-0 z-50 flex justify-end" data-testid="editor-filters-drawer" role="dialog" aria-modal="true" aria-label="Filters">
-          <div className="nubi-backdrop absolute inset-0" onClick={() => setFiltersOpen(false)} aria-hidden="true" />
-          <div className="relative flex h-full w-80 max-w-[90vw] flex-col border-l border-border bg-surface shadow-pop">
-            <div className="nbc-panel-head !h-12 !px-4">
-              <span className="flex items-center gap-2 text-sm font-semibold text-fg">
-                <FilterIcon size={16} strokeWidth={1.5} className="text-muted" /> Filters
-              </span>
-              <button onClick={() => setFiltersOpen(false)} aria-label="Close filters" className="nbc-tool !px-0">
-                <X size={16} strokeWidth={1.5} />
-              </button>
-            </div>
-            <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
-              <p className="m-0 text-[13px] leading-snug text-muted">
-                Filter widgets drive dashboard variables. They are shared across all
-                tabs. Add one here, then configure its target variable and options.
-              </p>
-              <Button
-                variant="secondary"
-                size="sm"
-                className="w-full"
-                onClick={() => { addWidget('filter'); setFiltersOpen(false); setRightPanel('config'); setRightCollapsed(false) }}
-                data-testid="filters-drawer-add"
-              >
-                <Plus size={16} strokeWidth={1.5} aria-hidden="true" /> Add filter
-              </Button>
-              <div className="border-t-2 border-[var(--ink)]">
-                {spec.widgets.filter(w => w.type === 'filter').length === 0 ? (
-                  <p className="m-0 border-b border-border px-1 py-4 text-[13px] text-muted">
-                    No filters yet.
-                  </p>
-                ) : (
-                  spec.widgets.filter(w => w.type === 'filter').map(w => (
-                    <button
-                      key={w.id}
-                      onClick={() => { setSelectedId(w.id); setRightPanel('config'); setRightCollapsed(false); setFiltersOpen(false) }}
-                      data-testid={`filters-drawer-item-${w.id}`}
-                      className="nbc-item"
-                    >
-                      <span className="nbc-glyph"><FilterIcon size={16} strokeWidth={1.5} /></span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[13px] font-semibold">{w.props?.label || w.subtype || 'Filter'}</span>
-                        <span className="nbc-meta block truncate">
-                          {w.target_var || '(no variable)'}
-                          {(() => {
-                            const n = w.target_var ? (filterReaderCounts.get(w.target_var) ?? 0) : 0
-                            return n > 0
-                              ? ` · ${n} widget${n === 1 ? '' : 's'}`
-                              : <span className="text-warning" data-testid={`filters-drawer-unconnected-${w.id}`}> · not connected</span>
-                          })()}
+        {filtersOpen && (
+          <div className="fixed inset-0 z-50 flex justify-end" data-testid="editor-filters-drawer" role="dialog" aria-modal="true" aria-label="Filters">
+            <div className="nubi-backdrop absolute inset-0" onClick={() => setFiltersOpen(false)} aria-hidden="true" />
+            <div className="relative flex h-full w-80 max-w-[90vw] flex-col border-l border-border bg-surface shadow-pop">
+              <div className="nbc-panel-head !h-12 !px-4">
+                <span className="flex items-center gap-2 text-sm font-semibold text-fg">
+                  <FilterIcon size={16} strokeWidth={1.5} className="text-muted" /> Filters
+                </span>
+                <button onClick={() => setFiltersOpen(false)} aria-label="Close filters" className="nbc-tool !px-0">
+                  <X size={16} strokeWidth={1.5} />
+                </button>
+              </div>
+              <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
+                <p className="m-0 text-[13px] leading-snug text-muted">
+                  Filter widgets drive dashboard variables. They are shared across all
+                  tabs. Add one here, then configure its target variable and options.
+                </p>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="w-full"
+                  onClick={() => { addWidget('filter'); setFiltersOpen(false); setRightPanel('config'); setRightCollapsed(false) }}
+                  data-testid="filters-drawer-add"
+                >
+                  <Plus size={16} strokeWidth={1.5} aria-hidden="true" /> Add filter
+                </Button>
+                <div className="border-t-2 border-[var(--ink)]">
+                  {spec.widgets.filter(w => w.type === 'filter').length === 0 ? (
+                    <p className="m-0 border-b border-border px-1 py-4 text-[13px] text-muted">
+                      No filters yet.
+                    </p>
+                  ) : (
+                    spec.widgets.filter(w => w.type === 'filter').map(w => (
+                      <button
+                        key={w.id}
+                        onClick={() => { setSelectedId(w.id); setRightPanel('config'); setRightCollapsed(false); setFiltersOpen(false) }}
+                        data-testid={`filters-drawer-item-${w.id}`}
+                        className="nbc-item"
+                      >
+                        <span className="nbc-glyph"><FilterIcon size={16} strokeWidth={1.5} /></span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[13px] font-semibold">{w.props?.label || w.subtype || 'Filter'}</span>
+                          <span className="nbc-meta block truncate">
+                            {w.target_var || '(no variable)'}
+                            {(() => {
+                              const n = w.target_var ? (filterReaderCounts.get(w.target_var) ?? 0) : 0
+                              return n > 0
+                                ? ` · ${n} widget${n === 1 ? '' : 's'}`
+                                : <span className="text-warning" data-testid={`filters-drawer-unconnected-${w.id}`}> · not connected</span>
+                            })()}
+                          </span>
                         </span>
-                      </span>
-                    </button>
-                  ))
-                )}
+                      </button>
+                    ))
+                  )}
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
     </LiveEditProvider>
   )
 }
