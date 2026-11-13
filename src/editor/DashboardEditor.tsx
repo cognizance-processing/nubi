@@ -468,7 +468,10 @@ function makeDateDisplayWidget(pos) {
 function makeBreadcrumbWidget(pos) {
   return {
     id: genId('breadcrumb'), type: 'breadcrumb', query_id: null,
-    props: { variables: [], labels: {}, homeLabel: 'All', maxSteps: 10, separator: 'arrow', chipVariant: 'filled' },
+    props: {
+      variables: [], labels: {}, homeLabel: 'All', maxSteps: 10, separator: 'arrow', chipVariant: 'filled',
+      trailMode: 'append', clearDownstream: false, trailDisplay: 'full',
+    },
     pos: { ...WIDGET_SIZES.breadcrumb, ...pos },
   }
 }
@@ -1013,6 +1016,8 @@ function BreadcrumbConfig({ widget, onChange, spec }) {
   const labels = props.labels ?? {}
   const specVariables = Array.isArray(spec?.variables) ? spec.variables : []
   const available = specVariables.filter(v => !tracked.includes(v.name))
+  const hierarchical = props.trailMode === 'hierarchical'
+  const trailDisplay = props.trailDisplay === 'current' ? 'current' : 'full'
 
   const setTracked = (next) => setProps('variables', next)
   const move = (i, dir) => {
@@ -1027,8 +1032,10 @@ function BreadcrumbConfig({ widget, onChange, spec }) {
     <div className="space-y-3">
       <Section title="Drill path" icon={Database}>
         <p className="text-[10px] text-muted/70">
-          List the filter variables in drill order — outermost first. A crumb is
-          added each time one of them takes a new value.
+          List the filter variables in drill order — outermost first.
+          {hierarchical
+            ? ' Hierarchical mode keeps one crumb per variable at that level; changing an upstream variable replaces its step and trims anything below.'
+            : ' Append mode adds a new crumb each time a tracked variable takes a new value.'}
         </p>
         {tracked.length === 0 && (
           <p className="text-xs text-muted/70 text-center rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2">
@@ -1078,6 +1085,21 @@ function BreadcrumbConfig({ widget, onChange, spec }) {
             This board has no variables yet — add a filter widget first.
           </p>
         )}
+        <div>
+          <FieldLabel>Trail mode</FieldLabel>
+          <select className={selectCls} value={hierarchical ? 'hierarchical' : 'append'}
+            title="Append adds a crumb for every change. Hierarchical keeps one crumb per variable above, in drill order."
+            onChange={e => setProps('trailMode', e.target.value)}>
+            <option value="append">Append every change</option>
+            <option value="hierarchical">Hierarchical (one per level)</option>
+          </select>
+        </div>
+        {hierarchical && (
+          <ToggleRow label="Clear downstream filters"
+            hint="Changing a level resets the variables listed below it"
+            checked={props.clearDownstream === true}
+            onChange={v => setProps('clearDownstream', v)} />
+        )}
       </Section>
 
       <Section title="Display" defaultOpen={false} icon={SlidersHorizontal}>
@@ -1095,11 +1117,30 @@ function BreadcrumbConfig({ widget, onChange, spec }) {
           </select>
         </div>
         <div>
-          <FieldLabel>Max steps</FieldLabel>
-          <input type="number" min={1} max={30} className={inputCls}
-            value={props.maxSteps ?? 10}
-            onChange={e => setProps('maxSteps', Math.max(1, parseInt(e.target.value, 10) || 10))} />
+          <FieldLabel>Trail display</FieldLabel>
+          <select className={selectCls} value={trailDisplay}
+            title="Full shows the whole drill path. Current shows only the latest selection."
+            onChange={e => setProps('trailDisplay', e.target.value)}>
+            <option value="full">Full trail</option>
+            <option value="current">Current selection only</option>
+          </select>
         </div>
+        {trailDisplay === 'full' && !hierarchical && (
+          <div>
+            <FieldLabel>Max steps</FieldLabel>
+            <input type="number" min={1} max={30} className={inputCls}
+              value={props.maxSteps ?? 10}
+              onChange={e => setProps('maxSteps', Math.max(1, parseInt(e.target.value, 10) || 10))} />
+            <p className="text-[10px] text-muted/70 mt-1">
+              Caps how many crumbs append mode keeps in the trail.
+            </p>
+          </div>
+        )}
+        {trailDisplay === 'full' && hierarchical && (
+          <p className="text-[10px] text-muted/70">
+            Hierarchical mode shows at most one crumb per tracked variable — depth follows your drill path list, not max steps.
+          </p>
+        )}
         <div>
           <FieldLabel>Chip style</FieldLabel>
           <select className={selectCls} value={props.chipVariant ?? 'filled'} onChange={e => setProps('chipVariant', e.target.value)}>
