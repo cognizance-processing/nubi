@@ -106,6 +106,7 @@ import MetricPicker from '../components/app/MetricPicker.jsx'
 import PivotWidget from '../dashboards/widgets/PivotWidget.jsx'
 import SectionWidget from '../dashboards/widgets/SectionWidget.jsx'
 import ImageWidget from '../dashboards/widgets/ImageWidget.jsx'
+import { safeImageSrc } from '../dashboards/safeImageSrc.js'
 import StepperWidget from '../dashboards/widgets/StepperWidget.jsx'
 import DividerWidget from '../dashboards/widgets/DividerWidget.jsx'
 import DateDisplayWidget from '../dashboards/widgets/DateDisplayWidget.jsx'
@@ -638,6 +639,7 @@ function ImageConfig({ widget, onChange }) {
   const fileInputRef = useRef(null)
   const source = props.source === 'query' ? 'query' : 'static'
   const { columns, introspecting } = useColumnIntrospection(source === 'query' ? widget.query_id : null)
+  const previewSrc = props.url ? safeImageSrc(resolveImageUrl(props.url)) : null
 
   const handleFile = async (file) => {
     if (!file) return
@@ -749,9 +751,13 @@ function ImageConfig({ widget, onChange }) {
       {source === 'static' && (<>
       <div>
         <FieldLabel>Image</FieldLabel>
-        {props.url ? (
+        {props.url && previewSrc ? (
           <div className="rounded-lg border border-border bg-surface-2 p-2 flex items-center justify-center h-28 mb-2">
-            <img src={resolveImageUrl(props.url)} alt="" className={`max-h-full max-w-full ${props.fit === 'cover' ? 'object-cover' : 'object-contain'}`} />
+            <img src={previewSrc} alt="" className={`max-h-full max-w-full ${props.fit === 'cover' ? 'object-cover' : 'object-contain'}`} />
+          </div>
+        ) : props.url ? (
+          <div className="rounded-lg border border-dashed border-border bg-surface-2 flex items-center justify-center h-28 mb-2 text-xs text-muted">
+            Invalid image URL
           </div>
         ) : (
           <div className="rounded-lg border border-dashed border-border bg-surface-2 flex items-center justify-center h-28 mb-2 text-xs text-muted">

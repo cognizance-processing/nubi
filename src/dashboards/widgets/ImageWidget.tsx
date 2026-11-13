@@ -1,5 +1,5 @@
 /**
- * ImageWidget.jsx — an image block (logo, header art, branding, or a
+ * ImageWidget.tsx — an image block (logo, header art, branding, or a
  * per-row picture whose URL comes from a query).
  *
  * widget shape (type === 'image'):
@@ -34,10 +34,15 @@
  * same resolveImageUrl() as a static URL, so a query may return either an
  * absolute http(s) URL or a stored "/api/v1/images/{id}" path. Query mode
  * mirrors DateDisplayWidget's fetch (params, filters, refresh, cancellation).
+ *
+ * Every resolved src (static or query) then passes safeImageSrc(): only
+ * http(s) URLs and "/api/v1/images/{32 hex}" render; anything else
+ * (javascript:, data:, //host, other paths) shows "Invalid image URL".
  */
 
 import { useEffect, useState } from 'react'
 import { resolveImageUrl } from '../../lib/api'
+import { safeImageSrc } from '../safeImageSrc.js'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { useResolvedParams, useResolvedFilters } from '../VariableStore.jsx'
 import { useRefreshEpoch } from '../RefreshContext.jsx'
@@ -127,7 +132,7 @@ export default function ImageWidget({ widget, providerTable = null }) {
   useEffect(() => { setFailedSrc(null) }, [refreshEpoch, retryEpoch])
 
   const url = wantsQuery ? queryUrl : (props.url ?? '')
-  const src = resolveImageUrl(url)
+  const src = safeImageSrc(resolveImageUrl(url))
   const failed = failedSrc !== null && failedSrc === src
 
   if (wantsQuery && queryError) {
@@ -161,6 +166,14 @@ export default function ImageWidget({ widget, providerTable = null }) {
               compact
             />
           : <EmptyState title="No image set" description="Upload a file or paste a URL." compact />}
+      </div>
+    )
+  }
+
+  if (src === null) {
+    return (
+      <div className="flex items-center justify-center h-full px-4">
+        <EmptyState title="Invalid image URL" description="Use an http(s) URL or an uploaded image." compact />
       </div>
     )
   }
