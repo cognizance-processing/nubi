@@ -673,7 +673,8 @@ class Widget(BaseModel):
         ``type == 'filter'``.
     content:
         Markdown content for a ``text`` widget.  Required when
-        ``type == 'text'``.
+        ``type == 'text'``, unless ``props.source == 'query'`` (the text is
+        then read from the ``encoding.value`` cell at ``props.row``).
     params:
         Named parameter bindings for this widget.  Each value is either a
         ``{ref: '<varName>'}`` reference or a literal scalar.  Ref names must
@@ -874,7 +875,10 @@ class Widget(BaseModel):
     # text-specific fields
     content: str | None = Field(
         default=None,
-        description="Markdown content for text widgets.",
+        description=(
+            "Markdown content for text widgets. Not required when "
+            "props.source='query' (text then comes from a query cell)."
+        ),
     )
     # variable binding
     params: dict[str, Any] = Field(
@@ -1373,7 +1377,9 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
     3. Chart widgets must have ``chart_type`` and ``encoding`` with at least
        ``x`` and ``y`` keys.
     4. Filter widgets must have ``subtype`` and ``target_var``.
-    5. Text widgets must have ``content``.
+    5. Text widgets must have ``content`` (static) or, with
+       ``props.source='query'``, a ``query_id``/provider ``source`` binding
+       plus ``encoding.value``.
     6. Widget ``params`` that use ``{ref: '<varName>'}`` must reference a
        declared variable name — undeclared refs are a hard error.
     6b. Tabs (Track T): duplicate ``tab.id`` values and a ``widget.tab_id``
@@ -1493,7 +1499,22 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
     # ── Step 5: Text widget requirements ─────────────────────────────────
     for widget in spec.widgets:
         if widget.type == "text":
-            if not widget.content:
+            # Same shape as Step 5b: props.source is where the TEXT comes from;
+            # widget.source is the provider binding (one way to supply rows).
+            if (widget.props or {}).get("source") == "query":
+                if not widget.query_id and widget.source is None:
+                    issues.append(
+                        f"Widget {widget.id!r} (text): query-mode text widgets "
+                        "(props.source='query') need a 'query_id' or a provider "
+                        "'source' binding to read the text from."
+                    )
+                if not (widget.encoding or {}).get("value"):
+                    issues.append(
+                        f"Widget {widget.id!r} (text): query-mode text widgets "
+                        "(props.source='query') need encoding.value — the column "
+                        "holding the text."
+                    )
+            elif not widget.content:
                 issues.append(
                     f"Widget {widget.id!r} (text): 'content' is required "
                     "for text widgets."
@@ -1969,7 +1990,13 @@ def _text_tag(widget: Widget) -> str:
     The markdown ``content`` is placed as the text content of the element,
     HTML-escaped so it is safe for innerHTML.  The frontend custom element is
     responsible for rendering the markdown.
+
+    Query-mode text (``props.source == 'query'``) has no static text to
+    compile — any ``content`` left over from static mode is stale — so the
+    element is emitted empty.
     """
+    if (widget.props or {}).get("source") == "query":
+        return "<nubi-text></nubi-text>"
     content = html.escape(widget.content or "", quote=False)
     return f"<nubi-text>{content}</nubi-text>"
 

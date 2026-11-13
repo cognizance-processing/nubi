@@ -313,6 +313,72 @@ class TestValidateSpec:
         ))
         assert any("encoding.value" in i for i in self._image_issues(issues))
 
+    # ── text widgets: props.source 'static' (default) vs 'query' ───────────
+
+    @staticmethod
+    def _with_text(**widget: Any) -> dict[str, Any]:
+        data = _good_spec_dict()
+        data["widgets"].append({
+            "id": "txt1",
+            "type": "text",
+            "pos": {"x": 1, "y": 6, "w": 3, "h": 2},
+            **widget,
+        })
+        return data
+
+    @staticmethod
+    def _text_issues(issues: list[str]) -> list[str]:
+        return [i for i in issues if "'txt1' (text)" in i]
+
+    def test_static_text_without_content_fails(self):
+        _, issues = validate_spec(self._with_text(props={"source": "static"}))
+        assert any("'content' is required" in i for i in self._text_issues(issues))
+
+    def test_query_text_without_content_passes(self):
+        _, issues = validate_spec(self._with_text(
+            query_id="demo_all", encoding={"value": "id"},
+            props={"source": "query", "row": 0, "prefix": "ID ", "suffix": "!"},
+        ))
+        assert self._text_issues(issues) == []
+
+    def test_query_text_with_provider_source_passes(self):
+        _, issues = validate_spec(self._with_text(
+            source={"provider": "p1", "result": "r1"}, encoding={"value": "id"},
+            props={"source": "query"},
+        ))
+        assert self._text_issues(issues) == []
+
+    def test_query_text_missing_query_id_and_source_fails(self):
+        _, issues = validate_spec(self._with_text(
+            encoding={"value": "id"}, props={"source": "query"},
+        ))
+        txt = self._text_issues(issues)
+        assert any("query_id" in i for i in txt), txt
+        assert not any("'content'" in i for i in txt), txt
+
+    def test_query_text_missing_column_fails(self):
+        _, issues = validate_spec(self._with_text(
+            query_id="demo_all", encoding={}, props={"source": "query"},
+        ))
+        assert any("encoding.value" in i for i in self._text_issues(issues))
+
+    def test_static_text_after_toggle_has_no_query_binding(self):
+        # Shape TextConfig writes on switching to Static: no query_id/encoding.
+        data = self._with_text(
+            content="Hi", query_id=None, encoding={}, props={"source": "static"},
+        )
+        _, issues = validate_spec(data)
+        assert self._text_issues(issues) == []
+        from app.dashboards.collect import widget_query_targets
+        assert not any(t["widget_id"] == "txt1" for t in widget_query_targets(data, None))
+
+    def test_query_text_is_a_query_target(self):
+        data = self._with_text(
+            query_id="demo_all", encoding={"value": "id"}, props={"source": "query"},
+        )
+        from app.dashboards.collect import widget_query_targets
+        assert any(t["widget_id"] == "txt1" for t in widget_query_targets(data, None))
+
 
 # ---------------------------------------------------------------------------
 # 2. spec_to_html
@@ -1076,6 +1142,22 @@ class TestM14SpecToHtmlNewWidgets:
         assert "Hello" in output, (
             f"Expected text content in nubi-text:\n{output[:600]}"
         )
+
+    def test_query_text_drops_stale_static_content(self):
+        # TextConfig keeps top-level `content` when toggling to Query; the
+        # compiled element must not show that stale markdown.
+        data = _make_variable_spec()
+        data["widgets"][1].update({
+            "content": "Hello stale",
+            "query_id": "demo_all",
+            "encoding": {"value": "id"},
+            "props": {"source": "query"},
+        })
+        spec, _ = validate_spec(data)
+        assert spec is not None
+        output = spec_to_html(spec)
+        assert "<nubi-text></nubi-text>" in output, output[:600]
+        assert "Hello stale" not in output
 
     def test_text_content_is_escaped(self):
         data = _make_variable_spec()

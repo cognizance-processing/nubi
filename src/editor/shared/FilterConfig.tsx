@@ -24,12 +24,13 @@
 
 import { useRef, useState } from 'react'
 import { LayoutGrid, Link2, BarChart3, Table2, Gauge, Grid3x3, Layers, Check, Wand2, Loader2, AlertTriangle, ArrowRight } from 'lucide-react'
-import { inputCls, selectCls, FieldLabel, ToggleRow, Section, ColorField, SectionLabel } from './inspectorPrimitives.jsx'
+import { inputCls, selectCls, FieldLabel, ToggleRow, Section, ColorField, SectionLabel, ColumnSelect } from './inspectorPrimitives.jsx'
+import Button from '../../components/ui/Button.jsx'
 import { parseNumberInput } from './numberInput.js'
 import { QueryPicker } from './QueryPicker.jsx'
 import { FILTER_SUBTYPES } from './constants.js'
 import { effectivePlacement, applyPlacement } from './placementHelpers.js'
-import { useQueryParamsIndex, refreshQueryParamsIndex } from './useInspectorData.js'
+import { useQueryParamsIndex, refreshQueryParamsIndex, useColumnIntrospection } from './useInspectorData.js'
 import { titleText } from './titleValue.js'
 import { listFilterableColumns, parameterizeQuery } from '../../lib/api.js'
 import {
@@ -746,16 +747,108 @@ export function FilterConfig({ widget, onChange, spec, onPatchWidget = undefined
 export function TextConfig({ widget, onChange }) {
   const props = widget.props ?? {}
   const setProp = (key, value) => onChange({ ...widget, props: { ...props, [key]: value } })
+  const source = props.source === 'query' ? 'query' : 'static'
+  const { columns, introspecting } = useColumnIntrospection(source === 'query' ? widget.query_id : null)
+  // Same switching rules as ImageConfig: static drops the query binding so
+  // exports (widget_query_targets) stop running the query for this widget.
+  // Prefix/suffix are kept — harmless in static mode and handy when toggling back.
+  const setTextSource = (next) => {
+    if (next === 'query') {
+      onChange({ ...widget, props: { ...props, source: 'query', row: props.row ?? 0 } })
+      return
+    }
+    const { row: _row, ...staticProps } = props
+    onChange({ ...widget, query_id: null, source: null, encoding: {}, props: { ...staticProps, source: 'static' } })
+  }
+  // A widget carries at most one data binding (spec.py Step 11).
+  const providerBound = source === 'query' && !widget.query_id && !!widget.source
   return (
     <div className="space-y-3">
       <PlacementControl widget={widget} onChange={onChange} />
       <div>
-        <FieldLabel>Markdown content</FieldLabel>
-        <textarea rows={8} className={`${inputCls} h-auto py-1.5 resize-y font-mono text-xs leading-relaxed`}
-          value={widget.content ?? props.content ?? ''} onChange={e => onChange({ ...widget, content: e.target.value })}
-          placeholder="# Heading&#10;&#10;Enter **markdown** here..." />
+        <FieldLabel>Text source</FieldLabel>
+        <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+          {[['static', 'Static'], ['query', 'Query']].map(([s, label]) => (
+            <button key={s} onClick={() => setTextSource(s)}
+              className={`flex-1 text-[11px] font-medium transition-colors ${source === s ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{label}</button>
+          ))}
+        </div>
+        <p className="text-[10px] text-muted/70 mt-1">
+          {source === 'static'
+            ? 'Fixed markdown content.'
+            : 'Plain text read from a query cell, so it follows filters and refreshes.'}
+        </p>
       </div>
-      <p className="text-[10px] text-muted/70">Supports standard Markdown.</p>
+      {source === 'query' ? (
+        <>
+          {providerBound ? (
+            <>
+              <p className="text-[10px] text-muted/70">
+                Rows come from data provider <code>{widget.source.provider}</code>
+                {widget.source.result ? <> (result <code>{widget.source.result}</code>)</> : null}.
+              </p>
+              <Button variant="secondary" size="sm" className="w-full"
+                onClick={() => onChange({ ...widget, source: null, query_id: null, encoding: {} })}>
+                Use a query instead
+              </Button>
+              <div>
+                <FieldLabel>Text column</FieldLabel>
+                <input type="text" className={inputCls} placeholder="Column name"
+                  value={widget.encoding?.value ?? ''}
+                  onChange={e => onChange({ ...widget, encoding: { ...(widget.encoding ?? {}), value: e.target.value } })} />
+              </div>
+            </>
+          ) : (
+            <>
+              <QueryPicker
+                value={widget.query_id ?? ''}
+                onChange={id => {
+                  if (id === (widget.query_id ?? '')) return
+                  // Columns differ per query — clear the column so it's re-picked.
+                  onChange({ ...widget, query_id: id, source: null, encoding: {} })
+                }}
+              />
+              {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
+              <ColumnSelect
+                label="Text column"
+                value={widget.encoding?.value ?? ''}
+                onChange={v => onChange({ ...widget, encoding: { ...(widget.encoding ?? {}), value: v } })}
+                columns={columns}
+              />
+            </>
+          )}
+          <div>
+            <FieldLabel>Row index</FieldLabel>
+            <input type="number" min={0} className={inputCls}
+              value={props.row ?? 0}
+              onChange={e => setProp('row', Math.max(0, parseInt(e.target.value, 10) || 0))} />
+          </div>
+          <div className="flex gap-1.5">
+            <div className="flex-1">
+              <FieldLabel>Prefix</FieldLabel>
+              <input type="text" className={inputCls} placeholder="e.g. Client: "
+                value={props.prefix ?? ''}
+                onChange={e => setProp('prefix', e.target.value || undefined)} />
+            </div>
+            <div className="flex-1">
+              <FieldLabel>Suffix</FieldLabel>
+              <input type="text" className={inputCls} placeholder="e.g. %"
+                value={props.suffix ?? ''}
+                onChange={e => setProp('suffix', e.target.value || undefined)} />
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          <div>
+            <FieldLabel>Markdown content</FieldLabel>
+            <textarea rows={8} className={`${inputCls} h-auto py-1.5 resize-y font-mono text-xs leading-relaxed`}
+              value={widget.content ?? props.content ?? ''} onChange={e => onChange({ ...widget, content: e.target.value })}
+              placeholder="# Heading&#10;&#10;Enter **markdown** here..." />
+          </div>
+          <p className="text-[10px] text-muted/70">Supports standard Markdown.</p>
+        </>
+      )}
       <div className="flex gap-1.5">
         <div className="flex-1">
           <FieldLabel>Text size</FieldLabel>

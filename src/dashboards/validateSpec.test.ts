@@ -98,6 +98,19 @@ test('text widget without content is flagged', () => {
   assert.ok(issues.some(i => i.includes("'content'")))
 })
 
+test('query-mode text needs a binding and a column, not content', () => {
+  const pos = { x: 1, y: 1, w: 4, h: 2 }
+  const bare = validateDashboardSpec({ ...VALID, widgets: [{ id: 't', type: 'text', pos, props: { source: 'query' } }] })
+  assert.ok(bare.some(i => i.includes("'query_id'")))
+  assert.ok(bare.some(i => i.includes('encoding.value')))
+  assert.ok(!bare.some(i => i.includes("'content' is required")))
+  const ok = validateDashboardSpec({ ...VALID, widgets: [
+    { id: 't', type: 'text', pos, query_id: 'q1', encoding: { value: 'name' }, props: { source: 'query' } },
+    { id: 'p', type: 'text', pos: { ...pos, y: 4 }, source: { provider: 'p1', result: 'r' }, encoding: { value: 'name' }, props: { source: 'query' } },
+  ] })
+  assert.ok(!ok.some(i => i.includes('(text)')), ok.join('\n'))
+})
+
 test('undeclared param ref is flagged', () => {
   const spec = {
     ...VALID,

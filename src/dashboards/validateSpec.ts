@@ -205,9 +205,19 @@ export function validateDashboardSpec(spec) {
       }
     }
 
-    // text requirements
-    if (w.type === 'text' && (typeof w.content !== 'string' || w.content === '')) {
-      issues.push(`${label} (text): 'content' is required.`)
+    // text requirements — mirrors spec.py Step 5. Query mode (props.source)
+    // reads a cell instead of markdown `content`, so it needs a binding + column.
+    if (w.type === 'text') {
+      if (w.props?.source === 'query') {
+        if (!w.query_id && w.source == null) {
+          issues.push(`${label} (text): query-mode text needs a 'query_id' or a provider 'source' binding.`)
+        }
+        if (!w.encoding?.value) {
+          issues.push(`${label} (text): query-mode text needs encoding.value — the column holding the text.`)
+        }
+      } else if (typeof w.content !== 'string' || w.content === '') {
+        issues.push(`${label} (text): 'content' is required.`)
+      }
     }
 
     // params {name: {ref:'var'} | literal} — refs must be declared
