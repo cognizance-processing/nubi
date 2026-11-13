@@ -26,7 +26,7 @@ Open **Dashboards** from the sidebar to see all boards in the active project.
 
 - Boards render as a responsive **card grid** — one column on phones, two on small screens, three on desktop. Each card shows the board name plus a meta line: the widget count, or **HTML board** for legacy HTML boards.
 - **New dashboard** (top-right) opens a blank editor.
-- **Search** filters boards by name; **Sort** toggles between *Recent* and *Name*.
+- **Search** filters boards by name; **Sort** toggles between _Recent_ and _Name_.
 - Each card shows **Open** (view the live dashboard at `/d/:id`) and **Edit** (open it in the editor). The three-dot menu adds **Checkpoint** (snapshot the saved config as a new version), **History** (view, restore, or promote past versions), **Promote** (pin a version to another environment — promoting a board also moves its referenced queries), and **Delete** (with a confirm dialog).
 - When the active environment is **protected**, a board with no version pinned there gets a **not in &lt;env&gt;** chip — promote a version to make it visible in that environment.
 - The empty state offers **New dashboard** and **Ask AI to build one**, which opens the chat panel.
@@ -49,7 +49,7 @@ From **Dashboards**, click **New dashboard**. The editor opens on an empty grid.
 
 Open the **Add** panel (the **+** toggle in the toolbar) and click a widget type. Nubi drops it onto the first free spot on the grid and jumps you to its **Configure** panel.
 
-![The Add panel — the widget palette with all eight widget types](/docs/screenshots/NEW-widget-palette.webp)
+![The Add panel — the widget palette](/docs/screenshots/NEW-widget-palette.webp)
 
 For a first board, add a **KPI** for a headline number and a **Chart** for a trend. When the canvas is empty, quick **+ KPI / + TABLE / + CHART / + TEXT** shortcut buttons also appear.
 
@@ -94,7 +94,7 @@ The editor is a single full-height workspace. Its toolbar lives in the app's top
 - **Title field** — the dashboard name (also the saved board name).
 - **Undo / Redo** — full edit history (`⌘Z` / `Ctrl+Z`, `⇧⌘Z` / `Ctrl+Y`).
 - **Device switcher** — Desktop / Tablet / Mobile (see [Responsive layout](#responsive-layout)).
-- **Zoom controls** — zoom out / *Fit* / zoom in, plus **Reset view**. Pinch or `Ctrl`/`⌘`+scroll on the canvas, and one-finger drag to pan.
+- **Zoom controls** — zoom out / _Fit_ / zoom in, plus **Reset view**. Pinch or `Ctrl`/`⌘`+scroll on the canvas, and one-finger drag to pan.
 - **Panel toggles** — open one of five right-hand panels: **Add** (widget palette), **Configure** (selected widget), **Layout** (dashboard-level settings, grid & variables), **Tabs** (tab bar & per-tab style), **Chat** (AI assistant).
 - **View switcher** — flip between the **Canvas / grid view** and a full-pane **Code / Files view** that edits the spec as a `dashboard.json` file (see [Code / Files view](#code--files-view)).
 - **Preview / Edit** — flip between the editable canvas and a live render in the current device frame.
@@ -108,18 +108,23 @@ On phones and small tablets the toolbar cluster collapses behind a hamburger tha
 
 ## Widget types
 
-Open the **Add** panel to pick a widget type. Nubi offers eight:
+Open the **Add** panel to pick a widget type. Nubi offers **thirteen** types (same set as the Add panel):
 
-| Widget | What it shows | Reads a query? |
-|--------|---------------|----------------|
-| **[KPI](#kpi)** | A single big formatted number from the first row of your query. | Yes |
-| **[Metric](#metric)** | A stat tile: value + delta vs a comparison column + optional sparkline. | Yes |
-| **[Table](#table)** | A paginated data grid with column selection, formatting, and conditional rules. | Yes |
-| **[Pivot](#pivot)** | A rows × columns × measure matrix with a chosen aggregation. | Yes |
-| **[Chart](#chart)** | One of 17 chart types (see [Chart types in depth](#chart-types-in-depth)). | Yes |
-| **[Filter](#filter)** | A select / multiselect / date-range / text control that drives a variable. | Options only |
-| **[Text](#text)** | A Markdown content block. | No |
-| **[Section](#section)** | A section header and optional divider for grouping widgets. | No |
+| Widget                            | What it shows                                                                   | Reads a query?     |
+| --------------------------------- | ------------------------------------------------------------------------------- | ------------------ |
+| **[KPI](#kpi)**                   | A single big formatted number from the first row of your query.                 | Yes                |
+| **[Metric](#metric)**             | A stat tile: value + delta vs a comparison column + optional sparkline.         | Yes                |
+| **[Table](#table)**               | A paginated data grid with column selection, formatting, and conditional rules. | Yes                |
+| **[Pivot](#pivot)**               | A rows × columns × measure matrix with a chosen aggregation.                    | Yes                |
+| **[Chart](#chart)**               | One of 17 chart types (see [Chart types in depth](#chart-types-in-depth)).      | Yes                |
+| **[Filter](#filter)**             | A select / multiselect / date-range / text control that drives a variable.      | Options only       |
+| **[Text](#text)**                 | A Markdown content block.                                                       | No                 |
+| **[Section](#section)**           | A section header and optional divider for grouping widgets.                     | No                 |
+| **[Image](#image)**               | A logo, header image, or URL from a query cell.                                 | Optional           |
+| **[Stepper](#stepper)**           | In-tile drill-down (one child widget per step) or a grouped tile.               | Per step           |
+| **[Divider](#divider)**           | A horizontal or vertical rule between regions.                                  | No                 |
+| **[Date display](#date-display)** | A live caption for the reporting period.                                        | Optional           |
+| **[Breadcrumb](#breadcrumb)**     | A clickable drill path across filter variables.                                 | Context chips only |
 
 Every widget also has an **Appearance** section (card background, border, radius, padding), an optional **Custom HTML** override, and a **Layout & size** section — see [Widget appearance & custom HTML](#widget-appearance--custom-html).
 
@@ -130,7 +135,7 @@ Every widget also has an **Appearance** section (card background, border, radius
 
 **Config:** pick a **Value column** (Nubi reads it from the first row of the query). Choose a **Format** — `number`, `integer`, `percent`, or `currency` — and add an optional **Label**.
 
-> *Use case:* a "Total revenue this month" tile formatted as currency, bound to a one-row aggregate query.
+> _Use case:_ a "Total revenue this month" tile formatted as currency, bound to a one-row aggregate query.
 
 ### Metric
 
@@ -139,7 +144,7 @@ Every widget also has an **Appearance** section (card background, border, radius
 
 **Config:** everything KPI has, plus a **Comparison column** (renders a delta, formatted as **percent** or **absolute**) and a **Sparkline column** for a mini trend line.
 
-> *Use case:* "Revenue $128k, ▲ 12% vs last month" with a 12-point sparkline.
+> _Use case:_ "Revenue $128k, ▲ 12% vs last month" with a 12-point sparkline.
 
 ### Table
 
@@ -153,7 +158,7 @@ Every widget also has an **Appearance** section (card background, border, radius
 - **Column formats** — per-column `number` / `currency` / `percent` / `date` formatting, with decimals, a currency code, or a date style (`short` / `medium` / `long` / `full`).
 - **Conditional rules** — color cells or whole rows by a rule. Each rule is an operator (`eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `between`, `contains`), a value (a second value for `between`), a **scope** (cell vs row), a background and text color, and an optional **bold** toggle.
 
-> *Use case:* a top-50 orders table with negative margins highlighted red at the row level.
+> _Use case:_ a top-50 orders table with negative margins highlighted red at the row level.
 
 ### Pivot
 
@@ -162,7 +167,7 @@ Every widget also has an **Appearance** section (card background, border, radius
 
 **Config:** pick **Rows (dimension)**, **Columns (dimension)**, an optional **Value (measure)**, and an **Aggregation** (`sum`, `avg`, `count`, `min`, `max`). With no value column, cells show the row count.
 
-> *Use case:* region (rows) × month (columns) with `sum(revenue)` in the cells.
+> _Use case:_ region (rows) × month (columns) with `sum(revenue)` in the cells.
 
 ### Chart
 
@@ -170,7 +175,6 @@ Every widget also has an **Appearance** section (card background, border, radius
 **When to use it:** see [Chart types in depth](#chart-types-in-depth) for a per-type "best for" guide.
 
 **Config:** pick the **Chart type** from the icon grid, map the columns it needs (the encoding fields change per type), then open **Display** and **Axes** to tune the look. Full detail below.
-
 
 ### Filter
 
@@ -206,6 +210,81 @@ A filter widget writes to a **dashboard variable**; data widgets bound to that v
 
 **Config:** a **Title**, optional **Subtitle**, **Alignment** (`left` / `center` / `right`), and a **divider line** toggle.
 
+### Image
+
+**What it's for:** branding and decoration — logos, header art, or a picture whose URL comes from the data.
+**When to use it:** top-of-board logos, client marks, or a product image driven by the selected row.
+
+**Config:**
+
+- **Image source** — **Static** (default): upload a PNG/JPEG/GIF/WebP or fetch by URL (stored on the server). **Query**: read a URL from a query column at a chosen **row index**; the image follows filters when the query re-runs.
+- **Alt text** — accessibility label.
+- **Fit** — `contain` (default) or `cover`.
+- **Alignment** — `left`, `center`, or `right`.
+
+> _Use case:_ a static company logo in the corner, or a query-backed thumbnail for the selected SKU.
+
+### Stepper
+
+**What it's for:** several related widgets in **one grid tile** — either a **step-by-step drill-down** or a **side-by-side group**.
+**When to use it:** legacy-style flows where the viewer clicks a chart or KPI to advance to the next view in the same tile, or when you want multiple small widgets sharing one cell without separate grid positions.
+
+**Config:**
+
+- **Title** and optional **title size** — heading above the step bar.
+- **Show** — **One at a time** (default): step bar plus one active child; clicking a data point can set a variable and advance (children use click-to-filter / drilldown). Stepping back clears variables from steps you leave. **All together**: every step's child visible at once (no stepping).
+- **Orientation** — `horizontal` or `vertical` step bar (and layout in "all together" mode).
+- **Step indicator** (one at a time) — `labels`, `dots`, or `numbered`.
+- **Steps** — each step has a **label** and a nested widget (**KPI**, **Metric**, **Chart**, **Table**, or **Text**) with its own query binding.
+
+> _Use case:_ Overview KPI → click through to a filtered chart → click through to a detail table, all in one tile.
+
+### Divider
+
+**What it's for:** a plain rule — horizontal band separator or vertical hairline between columns.
+**When to use it:** visual structure without a section title (unlike [Section](#section), which is a labelled heading).
+
+**Config:**
+
+- **Orientation** — `horizontal` or `vertical`; resize the widget to set how long the line runs.
+- **Line style** — solid, dashed, or dotted.
+- **Thickness** and **end inset** (px).
+- **Colour** and **opacity**.
+
+### Date display
+
+**What it's for:** a read-only **reporting period** caption (e.g. `Period · 1 Jan 2025 – 31 Dec 2025`).
+**When to use it:** next to filters so viewers always see which dates the board reflects — especially with relative presets ("last 30 days") that have no fixed text at author time.
+
+**Config:**
+
+- **Source** — **Variable** (default): follow a dashboard variable (usually the same one a date-range filter writes). **Query**: read a date from a column and row. **Fixed text** or **Today** for static captions.
+- **Label**, **date format** (`medium`, `long`, `short`, `month`, `ISO`, or raw), **prefix** / **suffix**, and **range separator** (for from/to values).
+- **Alignment** — `left`, `center`, or `right`.
+
+> _Use case:_ bind **Variable** to your board's `date_range` variable so the caption moves whenever the viewer changes the period filter.
+
+### Breadcrumb
+
+**What it's for:** a clickable drill path across filter variables — "All › Region: West › Store: 42".
+**When to use it:** boards where viewers narrow step by step and need a quick way back up.
+
+**Config:**
+
+- **Drill path** — the variables to track, outermost first (e.g. `region`, `store`, `sku`). Add filters first; the breadcrumb only follows existing variables.
+- **Trail mode** — how crumbs are added:
+  - **Append every change** (default) — a timeline. Each filter change adds a crumb holding the values of every tracked variable at that moment; clicking it restores them all and drops later crumbs. Use it when viewers move around freely rather than down a fixed ladder.
+  - **Hierarchical (one per level)** — one crumb per variable, in drill path order. Changing a level replaces its crumb and the ones below. Use it when the variables form a real hierarchy.
+- **Clear downstream filters** (hierarchical only) — when a level changes, reset the variables below it. **Turn this on for hierarchical boards** unless you want lower filters to stay set as the viewer moves between levels. It has no effect in append mode.
+- **Context chips** (optional) — pick a query and columns to show fixed scope chips between Home and the drill path. Values come from the query's first row; chips aren't clickable and aren't part of the drill path.
+- **Display** — Home label, separator, **Full trail** or **Current selection only**, max steps (append only), chip style.
+
+> _Example:_ drill path Region → Store → SKU in hierarchical mode. A viewer drills to West › Store 42 › SKU A-100, then switches Region to East. With **Clear downstream filters** on, Store and SKU reset and the trail reads `All › Region: East`. With it off, Store 42 and SKU A-100 keep filtering (often to no rows), and their crumbs reappear under East.
+
+Clicking a crumb restores the filter values saved with it. With **Clear downstream filters** off, a crumb saves whatever lower filters were set when it was created — so in the example above, clicking back to `Region: East` brings Store 42 and SKU A-100 back too.
+
+The trail resets on reload; a drill path describes one viewing session.
+
 ---
 
 ## Chart types in depth
@@ -214,25 +293,25 @@ A filter widget writes to a **dashboard variable**; data widgets bound to that v
 
 The chart widget renders 17 types via Apache ECharts, all reading from Arrow columns streamed from the query engine. Pick the type from the icon grid in **Configure → Chart type**; the encoding fields below it change to match.
 
-| Type | Required columns | Optional | Best for |
-|------|------------------|----------|----------|
-| **Bar** | X (category), Y (value) | Group/color | Comparing discrete categories |
-| **Line** | X, Y | Y2 (secondary axis), color | Trends over time; continuous data |
-| **Area** | X, Y | color | Cumulative totals; stacked proportions |
-| **Scatter** | X, Y | color | Correlation; outlier detection |
-| **Bubble** | X, Y | Size, color | Three variables at once (size = magnitude) |
-| **Pie** | Category, Value | — | Part-to-whole with few slices (≤ 8) |
-| **Donut** | Category, Value | — | Part-to-whole; center space for a label |
-| **Sankey** | Source, Target, Value | — | Flows between stages or nodes |
-| **Funnel** | Stage/label, Value | — | Conversion funnels; drop-off by step |
-| **Waterfall** | Category, Delta (change) | — | Running total of increments/decrements (a bridge) |
-| **Treemap** | Name, Size (value) | Group | Hierarchical part-to-whole with many items |
-| **Heatmap** | X, Y, Value | — | Two-dimensional density; calendar views |
-| **Radar** | Indicator, Value | Series/group | Comparing several metrics across dimensions |
-| **Box Plot** | Category, Values (raw — auto-boxed) | — | Distribution and spread; outliers by group |
-| **Gauge** | Value | — | Progress toward a target; single KPI with a range |
-| **Candlestick** | Date, Open, Close, Low, High | — | OHLC financial / price data |
-| **Fan** | X (time), Forecast (midline) | Lower bound, Upper bound | Forecasts with a confidence band |
+| Type            | Required columns                    | Optional                   | Best for                                          |
+| --------------- | ----------------------------------- | -------------------------- | ------------------------------------------------- |
+| **Bar**         | X (category), Y (value)             | Group/color                | Comparing discrete categories                     |
+| **Line**        | X, Y                                | Y2 (secondary axis), color | Trends over time; continuous data                 |
+| **Area**        | X, Y                                | color                      | Cumulative totals; stacked proportions            |
+| **Scatter**     | X, Y                                | color                      | Correlation; outlier detection                    |
+| **Bubble**      | X, Y                                | Size, color                | Three variables at once (size = magnitude)        |
+| **Pie**         | Category, Value                     | —                          | Part-to-whole with few slices (≤ 8)               |
+| **Donut**       | Category, Value                     | —                          | Part-to-whole; center space for a label           |
+| **Sankey**      | Source, Target, Value               | —                          | Flows between stages or nodes                     |
+| **Funnel**      | Stage/label, Value                  | —                          | Conversion funnels; drop-off by step              |
+| **Waterfall**   | Category, Delta (change)            | —                          | Running total of increments/decrements (a bridge) |
+| **Treemap**     | Name, Size (value)                  | Group                      | Hierarchical part-to-whole with many items        |
+| **Heatmap**     | X, Y, Value                         | —                          | Two-dimensional density; calendar views           |
+| **Radar**       | Indicator, Value                    | Series/group               | Comparing several metrics across dimensions       |
+| **Box Plot**    | Category, Values (raw — auto-boxed) | —                          | Distribution and spread; outliers by group        |
+| **Gauge**       | Value                               | —                          | Progress toward a target; single KPI with a range |
+| **Candlestick** | Date, Open, Close, Low, High        | —                          | OHLC financial / price data                       |
+| **Fan**         | X (time), Forecast (midline)        | Lower bound, Upper bound   | Forecasts with a confidence band                  |
 
 **Horizontal bars** are not a separate type — pick **Bar** and set **Orientation → Horizontal** in the Display section (funnels are orientable too).
 
@@ -240,7 +319,7 @@ The chart widget renders 17 types via Apache ECharts, all reading from Arrow col
 
 Open the **Display** section in Configure:
 
-- **Stacking** (bar / line / area) — *None*, *Stacked*, or *100% stacked*.
+- **Stacking** (bar / line / area) — _None_, _Stacked_, or _100% stacked_.
 - **Orientation** (bar / funnel) — vertical or horizontal.
 - **Legend** — hidden, or positioned top / bottom / left / right.
 - **Data labels** — show the value on each element.
@@ -262,26 +341,25 @@ Cartesian charts — bar, line, area, scatter, bubble, waterfall, boxplot, candl
 
 A categorical **color** column splits data into per-series groups. Scatter/bubble automatically switch to a high-performance sampling mode on very large result sets so a 100k-point board still renders fast.
 
-> **Editing tip:** the visual **Chart type** picker writes the extended types (sankey, funnel, waterfall, treemap, radar, boxplot, candlestick, fan, bubble) directly to the spec and they render everywhere. If you hand-edit a spec in the **Code panel**, note that the inline validator currently recognises only the nine *canonical* `chart_type` values (`line`, `bar`, `hbar`, `scatter`, `area`, `pie`, `donut`, `heatmap`, `gauge`) — configure the extended charts through the visual picker to avoid a spurious validation warning. See the [DashboardSpec reference](/docs/dashboard-spec-reference) for the exact enum.
+> **Editing tip:** the visual **Chart type** picker writes the extended types (sankey, funnel, waterfall, treemap, radar, boxplot, candlestick, fan, bubble) directly to the spec and they render everywhere. If you hand-edit a spec in the **Code panel**, note that the inline validator currently recognises only the nine _canonical_ `chart_type` values (`line`, `bar`, `hbar`, `scatter`, `area`, `pie`, `donut`, `heatmap`, `gauge`) — configure the extended charts through the visual picker to avoid a spurious validation warning. See the [DashboardSpec reference](/docs/dashboard-spec-reference) for the exact enum.
 
 ---
 
 ## Dashboard variables & filters
 
-**Dashboard variables** are the shared state that makes a board interactive. Filter widgets (and chart drilldowns) *write* variables; data widgets *read* them through parameter bindings and re-query when they change. Variables are **global to the board** — shared across every tab.
-
+**Dashboard variables** are the shared state that makes a board interactive. Filter widgets (and chart drilldowns) _write_ variables; data widgets _read_ them through parameter bindings and re-query when they change. Variables are **global to the board** — shared across every tab.
 
 ### 1. Declare a variable
 
 Open the **Layout** panel → **Variables** → **+ Add**. Give the variable a **name**, a **type**, and an optional **default**:
 
-| Variable type | Drives |
-|---------------|--------|
-| `text` | free-text search / single string |
-| `number` | a numeric threshold |
-| `date` | a single date |
-| `daterange` | a start + end pair (feeds two `date` query params) |
-| `select` | one value from a list |
+| Variable type | Drives                                                         |
+| ------------- | -------------------------------------------------------------- |
+| `text`        | free-text search / single string                               |
+| `number`      | a numeric threshold                                            |
+| `date`        | a single date                                                  |
+| `daterange`   | a start + end pair (feeds two `date` query params)             |
+| `select`      | one value from a list                                          |
 | `multiselect` | several values (expand with the `inclause` filter in your SQL) |
 
 Toggle **Bind to URL** to sync the value to the `/d/:id` query string, so filtered views are shareable and refresh-safe (see [Shareable views](#shareable-views--route-params)).
@@ -315,7 +393,6 @@ Every filter (and text) widget has a **Placement** control, so filters do not ha
 - **Above grid (bar)** — a compact control in a horizontal **filter bar** above the grid (below the tab bar), ordered left to right. This is the classic "filter strip across the top" layout.
 - **In drawer** — lives in a slide-over **Filters** drawer, keeping the board clean until a viewer opens it. Drawer filters are global across tabs.
 
-
 ### Use cases
 
 **A region filter.** Declare `region` (type `select`). Add a `select` filter with **Target variable** `region` and an **Options query** returning distinct regions. Bind each data widget's `region` param to `{ref: region}`. Picking a region re-queries the whole board.
@@ -344,7 +421,7 @@ Widgets sit on a CSS grid; each has a position and size in grid cells (`x`, `y`,
 Open the **Layout** panel for board-wide settings:
 
 - **Grid** — per-device **column counts** (Desktop / Tablet / Mobile), **row height**, and **gap** (px).
-- **Advanced** — **Compaction mode** (*Free place* / *Vertical* / *Horizontal* / *None*), **Dense packing** (back-fill gaps), **Container padding** (X/Y), **Breakpoint width thresholds**, and a **Max content width** cap for the rendered board.
+- **Advanced** — **Compaction mode** (_Free place_ / _Vertical_ / _Horizontal_ / _None_), **Dense packing** (back-fill gaps), **Container padding** (X/Y), **Breakpoint width thresholds**, and a **Max content width** cap for the rendered board.
 
 ### Background and theming
 
@@ -374,9 +451,9 @@ All custom HTML is sanitised (DOMPurify) and every interpolated value is HTML-es
 
 ## Tabs
 
-A dashboard can be split into **tabs** — sections inside one board. Tabs are a *render partition, not a scope*: it stays **one board, one spec, one version history**. Add tabs to `spec.tabs`; an empty or absent `tabs` list means the dashboard behaves exactly as before (no tab bar).
+A dashboard can be split into **tabs** — sections inside one board. Tabs are a _render partition, not a scope_: it stays **one board, one spec, one version history**. Add tabs to `spec.tabs`; an empty or absent `tabs` list means the dashboard behaves exactly as before (no tab bar).
 
-- **Variables stay global.** Dashboard variables (and cross-filtering) are shared across every tab — switching tabs never resets a filter. Tabs partition *where widgets render*, not *what scope they read*.
+- **Variables stay global.** Dashboard variables (and cross-filtering) are shared across every tab — switching tabs never resets a filter. Tabs partition _where widgets render_, not _what scope they read_.
 - **Widgets bind to a tab via `widget.tab_id`.** A widget's `tab_id` must reference a tab declared in `spec.tabs` (a `tab_id` pointing at no declared tab, or a duplicate `tab.id`, is a hard validation error).
 - **`tab_id: null` ⇒ first tab.** When `spec.tabs` is non-empty, a widget whose `tab_id` is `None` implicitly belongs to the **first** tab.
 - **Drawer widgets stay global.** A widget with `drawer=True` (the filters drawer or a drilldown drawer) ignores `tab_id` — drawers render across all tabs.
@@ -445,12 +522,12 @@ Click **Code** in the toolbar to open a Monaco-powered slide-over showing the fu
 
 The footer buttons in edit mode:
 
-| Button | What it does |
-|--------|-------------|
-| **File…** | Load a `.yaml` or `.json` spec file into the edit buffer. |
-| **Use current** | Reset the draft to the current canvas state. |
-| **Apply to editor** | Validate and push the spec to the canvas (does not persist — use the main Save button). |
-| **Save to server** / **Create on server** | Validate client-side, then upsert directly to the backend (server re-validates). |
+| Button                                    | What it does                                                                            |
+| ----------------------------------------- | --------------------------------------------------------------------------------------- |
+| **File…**                                 | Load a `.yaml` or `.json` spec file into the edit buffer.                               |
+| **Use current**                           | Reset the draft to the current canvas state.                                            |
+| **Apply to editor**                       | Validate and push the spec to the canvas (does not persist — use the main Save button). |
+| **Save to server** / **Create on server** | Validate client-side, then upsert directly to the backend (server re-validates).        |
 
 Press `Escape` to close the panel.
 
@@ -466,14 +543,14 @@ Edits are parsed on every keystroke: **valid JSON applies to the spec immediatel
 
 The spec is a single JSON/YAML document with these top-level fields:
 
-| Field | Description |
-|-------|-------------|
-| `version` | Schema version. Currently `1`. |
-| `title` | Dashboard title (also the board name). |
-| `layout` | Grid config: `cols` / `cols_md` / `cols_sm`, `row_height`, `gap`, `compaction`, `dense`, padding, `breakpoints`, `max_width`. |
-| `variables` | Dashboard variables (name, type, default, optional `url_bind`, optional `mode`). |
-| `tabs` | Optional list of tabs (each `id` + `label` + optional `style`). Empty/absent ⇒ no tabs. See [Tabs](#tabs). |
-| `widgets` | Ordered list of widgets. |
+| Field       | Description                                                                                                                   |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `version`   | Schema version. Currently `1`.                                                                                                |
+| `title`     | Dashboard title (also the board name).                                                                                        |
+| `layout`    | Grid config: `cols` / `cols_md` / `cols_sm`, `row_height`, `gap`, `compaction`, `dense`, padding, `breakpoints`, `max_width`. |
+| `variables` | Dashboard variables (name, type, default, optional `url_bind`, optional `mode`).                                              |
+| `tabs`      | Optional list of tabs (each `id` + `label` + optional `style`). Empty/absent ⇒ no tabs. See [Tabs](#tabs).                    |
+| `widgets`   | Ordered list of widgets.                                                                                                      |
 
 Each widget carries: `id`, `type`, `query_id`, `encoding`, `props`, `pos`, `tab_id`, and — depending on type — `chart_type`, `config`, `subtype`, `target_var`, `options_query_id`, `content`, `params`, `placement`, plus optional `columnFormats`, `formattingRules`, `drilldown`, `style`, `html`, and `hidden`. Chart display and axis settings live in `widget.config`. See the [DashboardSpec reference](/docs/dashboard-spec-reference) for the exact field types and enums.
 
@@ -535,27 +612,27 @@ The same spec applies whether you paste it into the Code panel, use the SDK, or 
 ```js
 // Using @nubi/sdk
 const board = await client.resources.boards.create({
-  name: 'Revenue Overview',
+  name: "Revenue Overview",
   config: {
     spec: {
       version: 1,
-      title: 'Revenue Overview',
+      title: "Revenue Overview",
       layout: { cols: 12, row_height: 60 },
-      variables: [{ name: 'region', type: 'select', default: 'EMEA' }],
+      variables: [{ name: "region", type: "select", default: "EMEA" }],
       widgets: [
         {
-          id: 'w1',
-          type: 'kpi',
-          query_id: 'revenue_total',
-          encoding: { value: 'revenue' },
-          props: { label: 'Total Revenue', format: 'currency' },
-          params: { region: { ref: 'region' } },
+          id: "w1",
+          type: "kpi",
+          query_id: "revenue_total",
+          encoding: { value: "revenue" },
+          props: { label: "Total Revenue", format: "currency" },
+          params: { region: { ref: "region" } },
           pos: { x: 1, y: 1, w: 4, h: 2 },
         },
       ],
     },
   },
-})
+});
 ```
 
 ---
@@ -565,29 +642,49 @@ const board = await client.resources.boards.create({
 When a dashboard is embedded, the spec compiles to a CSS-grid HTML fragment built from declarative custom elements. You can also hand-write these on a host page:
 
 ```html
-<nubi-kpi   query-id="revenue_total" value-col="revenue" label="Total Revenue" format="currency"></nubi-kpi>
-<nubi-table query-id="events_summary" limit="50" columns="id,name,value"></nubi-table>
-<nubi-chart query-id="scatter_demo" type="scatter" x="revenue" y="churn_rate" color="segment"></nubi-chart>
-<nubi-filter subtype="select" target-var="region" options-query-id="regions_list" label="Region"></nubi-filter>
+<nubi-kpi
+  query-id="revenue_total"
+  value-col="revenue"
+  label="Total Revenue"
+  format="currency"
+></nubi-kpi>
+<nubi-table
+  query-id="events_summary"
+  limit="50"
+  columns="id,name,value"
+></nubi-table>
+<nubi-chart
+  query-id="scatter_demo"
+  type="scatter"
+  x="revenue"
+  y="churn_rate"
+  color="segment"
+></nubi-chart>
+<nubi-filter
+  subtype="select"
+  target-var="region"
+  options-query-id="regions_list"
+  label="Region"
+></nubi-filter>
 <nubi-text>## Section header\nExplanatory text.</nubi-text>
 ```
 
-| Element | Key attributes |
-|---------|----------------|
-| `<nubi-kpi>` | `query-id` (req), `value-col`, `label`, `format` (`number` \| `integer` \| `percent` \| `currency`) |
-| `<nubi-table>` | `query-id` (req), `limit`, `columns` (comma-separated) |
-| `<nubi-chart>` | `query-id` (req), `type`, `x`, `y`, `color` |
-| `<nubi-filter>` | `subtype` (req), `target-var` (req), `options-query-id`, `label` |
-| `<nubi-text>` | Markdown as the element's text content |
+| Element         | Key attributes                                                                                      |
+| --------------- | --------------------------------------------------------------------------------------------------- |
+| `<nubi-kpi>`    | `query-id` (req), `value-col`, `label`, `format` (`number` \| `integer` \| `percent` \| `currency`) |
+| `<nubi-table>`  | `query-id` (req), `limit`, `columns` (comma-separated)                                              |
+| `<nubi-chart>`  | `query-id` (req), `type`, `x`, `y`, `color`                                                         |
+| `<nubi-filter>` | `subtype` (req), `target-var` (req), `options-query-id`, `label`                                    |
+| `<nubi-text>`   | Markdown as the element's text content                                                              |
 
 To register the elements on a plain page, load the widget bundle and call `registerNubiWidgets()`; the full board is also available as `<nubi-dashboard>`. All compiled and custom HTML passes through DOMPurify. See [Embedding](/docs/embedding) for token minting and per-viewer RLS.
 
 The elements emit two events on the host page (both `bubble`, `composed: true`):
 
-| Event | `detail` | Fired |
-|-------|----------|-------|
-| `nubi:widget-ready` | `{ rows, renderer }` | After a successful render |
-| `nubi:widget-error` | `{ message }` | On a non-recoverable error |
+| Event               | `detail`             | Fired                      |
+| ------------------- | -------------------- | -------------------------- |
+| `nubi:widget-ready` | `{ rows, renderer }` | After a successful render  |
+| `nubi:widget-error` | `{ message }`        | On a non-recoverable error |
 
 ---
 
@@ -595,7 +692,7 @@ The elements emit two events on the host page (both `bubble`, `composed: true`):
 
 You can build or refine a dashboard by describing it in plain language. Open the **Chat** panel in the editor (or **Ask AI to build one** from the dashboards page).
 
-1. **Pick a model** (remembered per session) and type a request — for example: *"Show revenue by region for Q1 with a KPI for total and a bar chart."*
+1. **Pick a model** (remembered per session) and type a request — for example: _"Show revenue by region for Q1 with a KPI for total and a bar chart."_
 2. The assistant streams its reply. It can inspect your data and call tools (each call shows as an expandable block). When it proposes a `DashboardSpec`, the editor **applies it automatically** and shows an **Applied to dashboard** confirmation.
 3. The applied spec lands in the normal editor — refine by dragging, configuring, or chatting again. **Stop** halts an in-flight response; **History** reopens past conversations; **+ New** starts fresh.
 

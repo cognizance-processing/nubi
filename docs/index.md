@@ -28,7 +28,7 @@ Nubi is a batteries-included BI and embedded-analytics platform. The kernel runs
 | [**Connectors**](/docs/connectors) | Postgres, DuckDB (in-mem + file), HttpJson, MySQL/MariaDB, JDBC, BYO warehouse, 7-flag capability contract, Data Browser |
 | [**Queries & Parameters**](/docs/queries-and-params) | Registered queries, `{{named}}` typed params, query library, text-to-SQL |
 | [**Pre-Aggregations**](/docs/pre-aggregations) | Auto rollups mined from the query log, ranked by frequency × scanned-bytes, RLS-preserving, transparent routing with HIT counts |
-| [**Dashboards**](/docs/dashboards) | DashboardSpec, widget types (kpi/metric/chart/table/pivot/filter/text/section), 9 chart types, variables, `/d/:id?var=` route params |
+| [**Dashboards**](/docs/dashboards) | DashboardSpec, **13** editor widget types (data, filter, layout, breadcrumb, stepper, …), 17 chart types, variables, `/d/:id?var=` route params |
 | [**Exports & Scheduled Reports**](/docs/exports-and-jobs) | CSV/PDF exports, cron jobs, per-recipient locked params |
 | [**Flows**](/docs/flows) | Cell-based orchestrator with 3 cell types (SQL, Python, Note); notebook and canvas (DAG) views; retries, durable run history, scheduling, cross-cell data references |
 | [**Notebooks**](/docs/notebooks) | The notebook view of a Flow spec — CellSpec/NotebookSpec data model, cross-cell data flow, preview vs. durable execution runtimes, cross-engine SQL (`source_dialect`) |
