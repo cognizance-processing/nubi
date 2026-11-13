@@ -26,6 +26,14 @@ Conventions:
   encrypted at rest) — BYO calls are never charged from the wallet.
   `GET /ai/providers` exposes enabled providers/models + the caller's BYO
   status. New env vars: `NUBI_AI_ENABLED_PROVIDERS`, `NUBI_TOKEN_MARKUP_PCT`.
+- **Query-driven image widgets.** An `image` widget with `props.source: 'query'`
+  reads its URL from a query cell (`query_id` or a provider binding,
+  `encoding.value` column, `props.row`, default 0). A row past the end of the
+  result shows no image (never another row's), in the app and in exports.
+  Image `src` is allowlisted: only `http(s)` URLs and stored
+  `/api/v1/images/{id}` paths render; anything else (including `data:`,
+  `javascript:` and other relative paths such as `/logo.png`) shows
+  "Invalid image URL", and exports draw a placeholder.
 
 ### Removed
 
