@@ -16,8 +16,9 @@ Conventions:
 
 - **Gauge arc colours.** The chart inspector's gauge settings gain an **Arc
   gradient** toggle with **Start** / **End** colours (low→high), or a single
-  **Arc color** when off. Stored as optional `widget.config` keys
-  (`gaugeArcGradient`, `gaugeArcStart`, `gaugeArcEnd`, `gaugeArcColor`) and
+  **Arc color** when off, plus an **Arc ends** control (Auto / Flat / Round).
+  Stored as optional `widget.config` keys (`gaugeArcGradient`,
+  `gaugeArcStart`, `gaugeArcEnd`, `gaugeArcColor`, `gaugeArcCaps`) and
   honoured by both needle and ring styles in-app, in embeds and in static
   exports. Unset keys keep the existing look.
 - **LiteLLM multi-provider AI + token-passthrough billing.** `LiteLLMProvider`
