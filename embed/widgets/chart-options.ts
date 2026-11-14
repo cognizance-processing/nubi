@@ -67,6 +67,8 @@
  *   gaugeArcColor: string,                // gauge: solid arc colour when not a gradient.
  *                   Any arc key set -> the needle drops its 3 theme bands for a
  *                   neutral track + the filled-to-value arc in this colour.
+ *   gaugeArcCaps: 'flat' | 'round',       // gauge: arc end shape. Unset (Auto) -> gradient
+ *                   flat; ring round; needle square (see resolveGaugeArcCaps).
  *   locale:    string,                    // BCP-47 locale for number formatting
  *   echarts:   object,                    // raw echarts option, deep-merged last
  *   ...any other top-level echarts option keys (deep-merged, config wins)
@@ -1538,12 +1540,14 @@ function gaugeArcStops(grad, frac, shift, rest) {
 // Second gauge series drawn under the main one. Always present (inert when
 // there's no gradient) so the series count never changes on a merge — ECharts
 // keeps a dropped series around when merging rather than removing it.
-function gaugeUnderlay(grad, { min, max, startAngle, endAngle, width, frac }) {
+// `round` follows Arc ends -> Round: on a gradient the underlay draws the grey
+// track past the value, so its max end must be capped like the main arc.
+function gaugeUnderlay(grad, { min, max, startAngle, endAngle, width, frac, round = false }) {
   return {
     type: 'gauge', silent: true, z: 1, min, max, startAngle, endAngle,
     tooltip: { show: false },
     axisLine: {
-      show: !!grad,
+      show: !!grad, roundCap: !!round,
       lineStyle: { width, color: grad ? gaugeArcStops(grad, frac, 0.5, GAUGE_TRACK) : [[1, GAUGE_TRACK]] },
     },
     progress: { show: false }, pointer: { show: false }, anchor: { show: false },
@@ -1558,6 +1562,20 @@ function gaugeArc(config) {
     ? { start: config.gaugeArcStart || GAUGE_ARC_START, end: config.gaugeArcEnd || GAUGE_ARC_END }
     : null
   return { grad, solid: grad ? null : (config.gaugeArcColor || null) }
+}
+
+/**
+ * Arc end shape from config.gaugeArcCaps. Explicit 'flat' | 'round' wins.
+ * Auto (unset/invalid): gradient -> 'flat'; solid ring -> 'round'; anything
+ * else -> null = the stock look (ring progress round, needle square), so
+ * existing solid-colour needles keep their square ends.
+ */
+export function resolveGaugeArcCaps(config, { grad, solid }) {
+  const c = config?.gaugeArcCaps
+  if (c === 'flat' || c === 'round') return c
+  if (grad) return 'flat'
+  if (solid && config?.gaugeStyle === 'ring') return 'round'
+  return null
 }
 
 // Gauge reuse of the Display panel's axis controls: "Axis text size" (written
@@ -1647,6 +1665,15 @@ function buildGauge(table, e, config, theme, locale, { displayValue = undefined,
   const { grad, solid } = gaugeArc(config)
   const span = max - min
   const frac = span > 0 && Number.isFinite(value) ? Math.max(0, Math.min(1, (value - min) / span)) : 0
+  // Arc ends — both set on every build so a needle<->ring merge or an
+  // Auto<->Flat/Round change can't keep a stale cap. The transparent gradient
+  // progress shares progressRound so its hover area matches the drawn arc.
+  const caps = resolveGaugeArcCaps(config, { grad, solid })
+  const progressRound = caps ? caps === 'round' : config.gaugeStyle === 'ring'
+  // Round also caps the track (bands / solid track / gradient stops) so the
+  // rim reads rounded at min and max. ECharts caps every axisLine colour
+  // segment, so band joins get rounded too.
+  const axisRound = caps === 'round'
 
   // 'ring' — a minimal radial progress ring (Apex radialBar look): full-circle
   // track, round-capped progress in the palette color, centered % readout, no
@@ -1667,10 +1694,10 @@ function buildGauge(table, e, config, theme, locale, { displayValue = undefined,
         // needle's tick count (see chartReplaceKey for the primary guard).
         splitNumber: 10,
         startAngle: 90, endAngle: -270,
-        // Gradient: the coloured fill is the segmented axisLine (square ends);
-        // progress stays, transparent, as the item-tooltip hover target.
-        progress: { show: true, width: 12, roundCap: true, itemStyle: { color: grad ? GAUGE_CLEAR : ringColor } },
-        axisLine: { show: true, lineStyle: { width: 12, color: grad ? gaugeArcStops(grad, frac, 0, GAUGE_CLEAR) : [[1, GAUGE_TRACK]] } },
+        // Gradient: the coloured fill is the segmented axisLine; progress
+        // stays, transparent, as the item-tooltip hover target.
+        progress: { show: true, width: 12, roundCap: progressRound, itemStyle: { color: grad ? GAUGE_CLEAR : ringColor } },
+        axisLine: { show: true, roundCap: axisRound, lineStyle: { width: 12, color: grad ? gaugeArcStops(grad, frac, 0, GAUGE_CLEAR) : [[1, GAUGE_TRACK]] } },
         pointer: { show: false },
         axisTick: { show: false },
         splitLine: { show: false },
@@ -1682,7 +1709,7 @@ function buildGauge(table, e, config, theme, locale, { displayValue = undefined,
         },
         title: { show: false },
         data: [{ value: Math.max(min, Math.min(max, value)), name: e.y || e.value || '' }],
-      }, gaugeUnderlay(grad, { min, max, startAngle: 90, endAngle: -270, width: 12, frac })],
+      }, gaugeUnderlay(grad, { min, max, startAngle: 90, endAngle: -270, width: 12, frac, round: axisRound })],
     }
   }
 
@@ -1698,10 +1725,10 @@ function buildGauge(table, e, config, theme, locale, { displayValue = undefined,
       splitNumber,
       startAngle: 225, endAngle: -45,
       progress: {
-        show: true, width: 14, roundCap: false,
+        show: true, width: 14, roundCap: progressRound,
         itemStyle: { color: grad ? GAUGE_CLEAR : (solid || resolvePalette(config, theme)[0]) },
       },
-      axisLine: { show: true, lineStyle: { width: 14, color: grad
+      axisLine: { show: true, roundCap: axisRound, lineStyle: { width: 14, color: grad
         ? gaugeArcStops(grad, frac, 0, GAUGE_CLEAR)
         : solid
           ? [[1, GAUGE_TRACK]]
@@ -1720,7 +1747,7 @@ function buildGauge(table, e, config, theme, locale, { displayValue = undefined,
       },
       data: [{ value, name: e.y || e.value || '' }],
       title: { show: true, color: theme.fgMuted, fontSize: 12 },
-    }, gaugeUnderlay(grad, { min, max, startAngle: 225, endAngle: -45, width: 14, frac })],
+    }, gaugeUnderlay(grad, { min, max, startAngle: 225, endAngle: -45, width: 14, frac, round: axisRound })],
   }
 }
 
@@ -1872,7 +1899,7 @@ const INTERPRETED_KEYS = new Set([
   // gauge: needle vs ring (read by buildGauge, not a raw ECharts key).
   'gaugeStyle',
   // gauge arc colours — read by buildGauge, not raw ECharts keys.
-  'gaugeArcGradient', 'gaugeArcStart', 'gaugeArcEnd', 'gaugeArcColor',
+  'gaugeArcGradient', 'gaugeArcStart', 'gaugeArcEnd', 'gaugeArcColor', 'gaugeArcCaps',
 ])
 
 function stripInterpretedKeys(config) {

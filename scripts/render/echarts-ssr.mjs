@@ -757,10 +757,10 @@ function gaugeArcStops(grad, frac, shift, rest) {
 }
 
 // One-shot render (no merge), so the underlay is only emitted for a gradient.
-function gaugeUnderlay(grad, { min, max, startAngle, endAngle, width, frac }) {
+function gaugeUnderlay(grad, { min, max, startAngle, endAngle, width, frac, round = false }) {
   return {
     type: 'gauge', silent: true, z: 1, min, max, startAngle, endAngle,
-    axisLine: { show: true, lineStyle: { width, color: gaugeArcStops(grad, frac, 0.5, GAUGE_TRACK) } },
+    axisLine: { show: true, roundCap: !!round, lineStyle: { width, color: gaugeArcStops(grad, frac, 0.5, GAUGE_TRACK) } },
     progress: { show: false }, pointer: { show: false }, anchor: { show: false },
     axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
     title: { show: false }, detail: { show: false },
@@ -773,6 +773,15 @@ function gaugeArc(config) {
     ? { start: config.gaugeArcStart || GAUGE_ARC_START, end: config.gaugeArcEnd || GAUGE_ARC_END }
     : null
   return { grad, solid: grad ? null : (config.gaugeArcColor || null) }
+}
+
+// Mirrors resolveGaugeArcCaps in embed/widgets/chart-options.ts.
+function resolveGaugeArcCaps(config, { grad, solid }) {
+  const c = config?.gaugeArcCaps
+  if (c === 'flat' || c === 'round') return c
+  if (grad) return 'flat'
+  if (solid && config?.gaugeStyle === 'ring') return 'round'
+  return null
 }
 
 // Mirrors positiveOr / gaugeTextSize in embed/widgets/chart-options.ts:
@@ -849,6 +858,9 @@ function buildGauge(colMap, valueCol, props = {}, config = {}) {
   const span = max - min
   const frac = span > 0 && Number.isFinite(value) ? Math.max(0, Math.min(1, (value - min) / span)) : 0
   const splitNumber = positiveOr(config.yAxis?.splitNumber, 10)
+  const caps = resolveGaugeArcCaps(config, { grad, solid })
+  const progressRound = caps ? caps === 'round' : config.gaugeStyle === 'ring'
+  const axisRound = caps === 'round'
   // 'ring' — radial progress ring (Apex radialBar look), mirroring the
   // browser builder in embed/widgets/chart-options.js so thumbnails match.
   if (config.gaugeStyle === 'ring') {
@@ -859,8 +871,8 @@ function buildGauge(colMap, valueCol, props = {}, config = {}) {
       series: [{
         type: 'gauge', min, max,
         startAngle: 90, endAngle: -270,
-        progress: { show: true, width: 12, roundCap: true, itemStyle: { color: grad ? GAUGE_CLEAR : ringColor } },
-        axisLine: { lineStyle: { width: 12, color: grad ? gaugeArcStops(grad, frac, 0, GAUGE_CLEAR) : [[1, GAUGE_TRACK]] } },
+        progress: { show: true, width: 12, roundCap: progressRound, itemStyle: { color: grad ? GAUGE_CLEAR : ringColor } },
+        axisLine: { roundCap: axisRound, lineStyle: { width: 12, color: grad ? gaugeArcStops(grad, frac, 0, GAUGE_CLEAR) : [[1, GAUGE_TRACK]] } },
         pointer: { show: false },
         axisTick: { show: false },
         splitLine: { show: false },
@@ -869,7 +881,7 @@ function buildGauge(colMap, valueCol, props = {}, config = {}) {
                   formatter: (v) => `${Number(v).toFixed(2)}%` },
         title: { show: false },
         data: [{ value: Math.max(min, Math.min(max, value)) }],
-      }, ...(grad ? [gaugeUnderlay(grad, { min, max, startAngle: 90, endAngle: -270, width: 12, frac })] : [])],
+      }, ...(grad ? [gaugeUnderlay(grad, { min, max, startAngle: 90, endAngle: -270, width: 12, frac, round: axisRound })] : [])],
     }
   }
   return {
@@ -884,11 +896,11 @@ function buildGauge(colMap, valueCol, props = {}, config = {}) {
       // default palette, as there); any arc key swaps in a neutral track +
       // the filled-to-value arc.
       progress: grad
-        ? { show: true, width: 14, itemStyle: { color: GAUGE_CLEAR } }
+        ? { show: true, width: 14, roundCap: progressRound, itemStyle: { color: GAUGE_CLEAR } }
         : solid
-          ? { show: true, width: 14, itemStyle: { color: solid } }
-          : { show: true, width: 14 },
-      axisLine: { lineStyle: { width: 14, color: grad
+          ? { show: true, width: 14, roundCap: progressRound, itemStyle: { color: solid } }
+          : { show: true, width: 14, roundCap: progressRound },
+      axisLine: { roundCap: axisRound, lineStyle: { width: 14, color: grad
         ? gaugeArcStops(grad, frac, 0, GAUGE_CLEAR)
         : solid
           ? [[1, GAUGE_TRACK]]
@@ -898,7 +910,7 @@ function buildGauge(colMap, valueCol, props = {}, config = {}) {
         formatter: gaugeScaleLabelFormatter({ min, max, splitNumber, format: config.yAxis?.format }),
       },
       detail: { fontSize: 18 },
-    }, ...(grad ? [gaugeUnderlay(grad, { min, max, startAngle: 225, endAngle: -45, width: 14, frac })] : [])],
+    }, ...(grad ? [gaugeUnderlay(grad, { min, max, startAngle: 225, endAngle: -45, width: 14, frac, round: axisRound })] : [])],
   }
 }
 

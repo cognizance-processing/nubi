@@ -12,6 +12,7 @@ import {
   buildChartOption, tableView, makeFormatter, deepMerge,
   SUPPORTED_TYPES, DEFAULT_PALETTE, gaugeScaleLabelFormatter,
   lerpGaugeArcColor, GAUGE_ARC_START, GAUGE_ARC_END, gaugeTargetValue,
+  resolveGaugeArcCaps,
 } from '../widgets/chart-options.js'
 
 // Generic categorical sample (x = category, y = value, color = group).
@@ -760,6 +761,107 @@ describe('buildChartOption — gauge arc colours', () => {
     for (const k of ['gaugeArcGradient', 'gaugeArcStart', 'gaugeArcEnd', 'gaugeArcColor']) {
       expect(opt[k]).toBeUndefined()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Gauge arc ends (config.gaugeArcCaps)
+// ---------------------------------------------------------------------------
+
+describe('gauge arc caps', () => {
+  const series = (config = {}, extra = {}) =>
+    buildChartOption({ type: 'gauge', table: [{ v: 72 }], encoding: { y: 'v' }, config, ...extra }).series
+  const grad = { start: '#111111', end: '#eeeeee' }
+
+  test('resolveGaugeArcCaps: explicit wins, Auto defaults', () => {
+    expect(resolveGaugeArcCaps({ gaugeArcCaps: 'round' }, { grad, solid: null })).toBe('round')
+    expect(resolveGaugeArcCaps({ gaugeArcCaps: 'flat', gaugeStyle: 'ring' }, { grad: null, solid: '#f0a' })).toBe('flat')
+    expect(resolveGaugeArcCaps({ gaugeArcCaps: 'bogus' }, { grad, solid: null })).toBe('flat')
+    expect(resolveGaugeArcCaps({}, { grad, solid: null })).toBe('flat')
+    expect(resolveGaugeArcCaps({ gaugeStyle: 'ring' }, { grad: null, solid: '#f0a' })).toBe('round')
+    expect(resolveGaugeArcCaps({}, { grad: null, solid: '#f0a' })).toBeNull()
+    expect(resolveGaugeArcCaps({}, { grad: null, solid: null })).toBeNull()
+    expect(resolveGaugeArcCaps({ gaugeStyle: 'ring' }, { grad: null, solid: null })).toBeNull()
+  })
+
+  test('Auto: stock needle square, stock ring round, no axis caps', () => {
+    const [needle] = series()
+    const [ring] = series({ gaugeStyle: 'ring' })
+    expect(needle.progress.roundCap).toBe(false)
+    expect(ring.progress.roundCap).toBe(true)
+    expect(needle.axisLine.roundCap).toBe(false)
+    expect(ring.axisLine.roundCap).toBe(false)
+  })
+
+  test('Auto + solid: needle stays square (no drift), ring round', () => {
+    expect(series({ gaugeArcColor: '#ff00aa' })[0].progress.roundCap).toBe(false)
+    expect(series({ gaugeArcColor: '#ff00aa', gaugeStyle: 'ring' })[0].progress.roundCap).toBe(true)
+  })
+
+  test('Auto + gradient: flat axis and progress on both styles; underlay flat', () => {
+    for (const gaugeStyle of [undefined, 'ring']) {
+      const [main, under] = series({ gaugeStyle, gaugeArcGradient: true })
+      expect(main.axisLine.roundCap).toBe(false)
+      expect(main.progress.roundCap).toBe(false)
+      expect(under.axisLine.roundCap).toBe(false)
+    }
+  })
+
+  test('explicit Round + gradient: round axis, hover progress and underlay (grey tail end)', () => {
+    for (const gaugeStyle of [undefined, 'ring']) {
+      const [main, under] = series({ gaugeStyle, gaugeArcGradient: true, gaugeArcCaps: 'round' })
+      expect(main.axisLine.roundCap).toBe(true)
+      expect(main.progress.roundCap).toBe(true)
+      expect(under.axisLine.roundCap).toBe(true)
+      const [, flatUnder] = series({ gaugeStyle, gaugeArcGradient: true, gaugeArcCaps: 'flat' })
+      expect(flatUnder.axisLine.roundCap).toBe(false)
+    }
+  })
+
+  test('explicit Flat / Round override solid and stock on both styles (fill and track)', () => {
+    for (const gaugeStyle of [undefined, 'ring']) {
+      for (const arc of [{}, { gaugeArcColor: '#ff00aa' }]) {
+        const [flat, flatUnder] = series({ gaugeStyle, ...arc, gaugeArcCaps: 'flat' })
+        const [round, roundUnder] = series({ gaugeStyle, ...arc, gaugeArcCaps: 'round' })
+        expect(flat.progress.roundCap).toBe(false)
+        expect(flat.axisLine.roundCap).toBe(false)
+        // Round caps the track too, so a banded needle's rim is rounded at min and max.
+        expect(round.progress.roundCap).toBe(true)
+        expect(round.axisLine.roundCap).toBe(true)
+        expect(flatUnder.axisLine.roundCap).toBe(false)
+        // Inert without a gradient, but follows Round so the field is always set.
+        expect(roundUnder.axisLine.roundCap).toBe(true)
+      }
+    }
+  })
+
+  test('Auto on stock and solid needle: fill and track both square (no drift)', () => {
+    for (const arc of [{}, { gaugeArcColor: '#ff00aa' }]) {
+      const [s] = series(arc)
+      expect(s.progress.roundCap).toBe(false)
+      expect(s.axisLine.roundCap).toBe(false)
+    }
+  })
+
+  test('tween frames keep the same caps as the idle build', () => {
+    for (const gaugeStyle of [undefined, 'ring']) {
+      for (const gaugeArcCaps of [undefined, 'flat', 'round']) {
+        if (gaugeArcCaps === 'round') {
+          const [t] = series({ gaugeStyle, gaugeArcGradient: true, gaugeArcCaps }, { gaugeDisplayValue: 30, gaugeTweening: true })
+          expect(t.axisLine.roundCap).toBe(true)
+        }
+        const config = { gaugeStyle, gaugeArcGradient: true, gaugeArcCaps }
+        const [idle] = series(config)
+        const [tween] = series(config, { gaugeDisplayValue: 30, gaugeTweening: true })
+        expect(tween.progress.roundCap).toBe(idle.progress.roundCap)
+        expect(tween.axisLine.roundCap).toBe(idle.axisLine.roundCap)
+      }
+    }
+  })
+
+  test('gaugeArcCaps is interpreted, not leaked into the raw ECharts passthrough', () => {
+    const opt = buildChartOption({ type: 'gauge', table: [{ v: 72 }], encoding: { y: 'v' }, config: { gaugeArcCaps: 'round' } })
+    expect(opt.gaugeArcCaps).toBeUndefined()
   })
 })
 
