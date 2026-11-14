@@ -25,4 +25,5 @@ export {
   makeFormatter,
   GAUGE_ARC_START,
   GAUGE_ARC_END,
+  gaugeTargetValue,
 } from '../../embed/widgets/chart-options.js'

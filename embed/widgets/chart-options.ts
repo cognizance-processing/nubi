@@ -1614,9 +1614,32 @@ export function gaugeScaleLabelFormatter({ min = 0, max = 100, splitNumber = 10,
   }
 }
 
-function buildGauge(table, e, config, theme, locale) {
+// The gauge's value: the last row of the value column (0 when missing).
+function gaugeLastValue(table, e) {
   const valRaw = table.col(e.y || e.value)
-  const value = valRaw && valRaw.length ? Number(valRaw[valRaw.length - 1]) : 0
+  return valRaw && valRaw.length ? Number(valRaw[valRaw.length - 1]) : 0
+}
+
+/**
+ * The value buildGauge would read from `table` (same adapter + encoding
+ * resolution), or null when there are no rows. Lets a live host tween the
+ * gradient gauge from the value it reads to the next one.
+ */
+export function gaugeTargetValue(table, encoding) {
+  const view = tableView(table)
+  if (!view || !view.numRows) return null
+  return gaugeLastValue(view, resolveEncoding(view, encoding))
+}
+
+// `displayValue` (runtime-only, never config) replaces the table value for
+// the needle, readout and gradient stops — a host tweening the gradient arc
+// passes the in-between value each frame. `tweening` turns off ECharts' own
+// value/update animation so it doesn't chase those per-frame updates; when
+// idle the fields are set back explicitly (undefined -> inherit) so a merge
+// doesn't keep them off.
+function buildGauge(table, e, config, theme, locale, { displayValue = undefined, tweening = false } = {}) {
+  const value = Number.isFinite(displayValue) ? Number(displayValue) : gaugeLastValue(table, e)
+  const animationDurationUpdate = tweening ? 0 : undefined
   const max = config.yAxis?.max ?? (config.max ?? 100)
   const min = config.yAxis?.min ?? (config.min ?? 0)
   const fmt = isDeepObject(config.dataLabels) && config.dataLabels.format
@@ -1639,7 +1662,7 @@ function buildGauge(table, e, config, theme, locale) {
     return {
       ...baseFrame(config, theme, locale, { trigger: 'item', noGrid: true }),
       series: [{
-        type: 'gauge', min, max,
+        type: 'gauge', min, max, animationDurationUpdate,
         // No visible ticks on the ring; set only so a merge can't keep the
         // needle's tick count (see chartReplaceKey for the primary guard).
         splitNumber: 10,
@@ -1653,7 +1676,7 @@ function buildGauge(table, e, config, theme, locale) {
         splitLine: { show: false },
         axisLabel: { show: false },
         detail: {
-          valueAnimation: true, color: theme.fg, fontSize: gaugeTextSize(config, 20), fontWeight: 700,
+          valueAnimation: !tweening, color: theme.fg, fontSize: gaugeTextSize(config, 20), fontWeight: 700,
           offsetCenter: [0, 0],
           formatter: fmt ? (v) => fmt(v) : (v) => `${Number(v).toFixed(2)}%`,
         },
@@ -1670,7 +1693,7 @@ function buildGauge(table, e, config, theme, locale) {
   return {
     ...baseFrame(config, theme, locale, { trigger: 'item', noGrid: true }),
     series: [{
-      type: 'gauge', min, max,
+      type: 'gauge', min, max, animationDurationUpdate,
       // Always set (ECharts' default is 10) so clearing "Y axis ticks" undoes it.
       splitNumber,
       startAngle: 225, endAngle: -45,
@@ -1691,7 +1714,7 @@ function buildGauge(table, e, config, theme, locale) {
       axisTick: { show: true, lineStyle: { color: theme.fgMuted } },
       splitLine: { show: true, lineStyle: { color: theme.fgMuted } },
       detail: {
-        valueAnimation: true, color: theme.fg, fontSize: 24, fontWeight: 'bold',
+        valueAnimation: !tweening, color: theme.fg, fontSize: 24, fontWeight: 'bold',
         offsetCenter: [0, '40%'],
         formatter: fmt ? (v) => fmt(v) : '{value}',
       },
@@ -1869,9 +1892,13 @@ function stripInterpretedKeys(config) {
  * @param {object} [args.encoding]— column-name mapping (x, y, color, ...)
  * @param {object} [args.config]  — declarative customization (deep-merged last)
  * @param {object} [args.theme]   — resolved theme tokens
+ * @param {number} [args.gaugeDisplayValue] — gauge only, runtime-only: value to
+ *                                  draw instead of the table's (gradient tween)
+ * @param {boolean} [args.gaugeTweening]    — gauge only: a tween frame (ECharts'
+ *                                  own value animation off)
  * @returns {object} ECharts option
  */
-export function buildChartOption({ type, table, encoding, config, theme }: { type?: string; table?: any; encoding?: any; config?: any; theme?: any } = {}) {
+export function buildChartOption({ type, table, encoding, config, theme, gaugeDisplayValue, gaugeTweening }: { type?: string; table?: any; encoding?: any; config?: any; theme?: any; gaugeDisplayValue?: number; gaugeTweening?: boolean } = {}) {
   const view = tableView(table)
   const th = resolveTheme(theme)
   const cfg = config || {}
@@ -1901,7 +1928,7 @@ export function buildChartOption({ type, table, encoding, config, theme }: { typ
     case 'treemap': option = buildTreemap(view, e, cfg, th, locale); break
     case 'map': option = buildMap(view, e, cfg, th, locale); break
     case 'boxplot': option = buildBoxplot(view, e, cfg, th, locale); break
-    case 'gauge': option = buildGauge(view, e, cfg, th, locale); break
+    case 'gauge': option = buildGauge(view, e, cfg, th, locale, { displayValue: gaugeDisplayValue, tweening: !!gaugeTweening }); break
     case 'candlestick': option = buildCandlestick(view, e, cfg, th, locale); break
     case 'fan': option = buildFan(view, e, cfg, th, locale); break
     case 'combo': option = buildCombo(view, e, cfg, th, locale); break

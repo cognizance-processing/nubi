@@ -11,7 +11,7 @@ import { describe, test, expect } from 'vitest'
 import {
   buildChartOption, tableView, makeFormatter, deepMerge,
   SUPPORTED_TYPES, DEFAULT_PALETTE, gaugeScaleLabelFormatter,
-  lerpGaugeArcColor, GAUGE_ARC_START, GAUGE_ARC_END,
+  lerpGaugeArcColor, GAUGE_ARC_START, GAUGE_ARC_END, gaugeTargetValue,
 } from '../widgets/chart-options.js'
 
 // Generic categorical sample (x = category, y = value, color = group).
@@ -1042,5 +1042,66 @@ describe('buildChartOption — gauge arc gradient follows the scale', () => {
     expect(solid.axisLine.lineStyle.color).toEqual([[1, 'rgba(148,163,184,0.18)']])
     const bands = buildChartOption({ type: 'gauge', table: [{ v: 72 }], encoding: { y: 'v' } }).series[0]
     expect(bands.axisLine.lineStyle.color).toHaveLength(3)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Gauge display value (runtime-only gradient tween frames)
+// ---------------------------------------------------------------------------
+
+describe('buildChartOption — gauge display value override', () => {
+  const build = (extra = {}, config = {}) =>
+    buildChartOption({ type: 'gauge', table: [{ v: 10 }, { v: 72 }], encoding: { y: 'v' }, config: { gaugeArcGradient: true, ...config }, ...extra })
+
+  test('gaugeDisplayValue replaces the table value for data, stops and underlay', () => {
+    for (const gaugeStyle of [undefined, 'ring']) {
+      const [main, under] = build({ gaugeDisplayValue: 50 }, { gaugeStyle }).series
+      const [ref50main, ref50under] = buildChartOption({
+        type: 'gauge', table: [{ v: 50 }], encoding: { y: 'v' }, config: { gaugeArcGradient: true, gaugeStyle },
+      }).series
+      expect(main.data[0].value).toBe(50)
+      expect(main.axisLine.lineStyle.color).toEqual(ref50main.axisLine.lineStyle.color)
+      expect(under.axisLine.lineStyle.color).toEqual(ref50under.axisLine.lineStyle.color)
+      // Fill ends at frac 0.5, transparent after.
+      expect(main.axisLine.lineStyle.color.at(-2)[0]).toBe(0.5)
+    }
+  })
+
+  test('no override → last row of the value column', () => {
+    const [main] = build().series
+    expect(main.data[0].value).toBe(72)
+    expect(main.axisLine.lineStyle.color.at(-2)[0]).toBeCloseTo(0.72)
+  })
+
+  test('non-finite override falls back to the table value', () => {
+    expect(build({ gaugeDisplayValue: NaN }).series[0].data[0].value).toBe(72)
+  })
+
+  test('gaugeTweening turns ECharts value/update animation off; idle restores it', () => {
+    for (const gaugeStyle of [undefined, 'ring']) {
+      const tween = build({ gaugeDisplayValue: 50, gaugeTweening: true }, { gaugeStyle }).series[0]
+      expect(tween.detail.valueAnimation).toBe(false)
+      expect(tween.animationDurationUpdate).toBe(0)
+      const idle = build({}, { gaugeStyle }).series[0]
+      expect(idle.detail.valueAnimation).toBe(true)
+      // Explicit own key (undefined → inherit) so a merge clears the 0.
+      expect('animationDurationUpdate' in idle).toBe(true)
+      expect(idle.animationDurationUpdate).toBeUndefined()
+    }
+  })
+
+  test('override is ignored by non-gauge types and never leaks as a config key', () => {
+    const barArgs = { type: 'bar', table: CAT_ROWS, encoding: { x: 'month', y: 'sales' } }
+    expect(JSON.stringify(buildChartOption({ ...barArgs, gaugeDisplayValue: 1, gaugeTweening: true })))
+      .toBe(JSON.stringify(buildChartOption(barArgs)))
+    expect(build({ gaugeDisplayValue: 50 }).gaugeDisplayValue).toBeUndefined()
+  })
+})
+
+describe('gaugeTargetValue', () => {
+  test('last row of y (or value), null without rows', () => {
+    expect(gaugeTargetValue([{ v: 5 }, { v: 72 }], { y: 'v' })).toBe(72)
+    expect(gaugeTargetValue([{ v: 5 }], { value: 'v' })).toBe(5)
+    expect(gaugeTargetValue([], { y: 'v' })).toBeNull()
   })
 })
