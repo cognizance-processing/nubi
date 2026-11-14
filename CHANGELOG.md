@@ -14,6 +14,12 @@ Conventions:
 
 ### Added
 
+- **Gauge arc colours.** The chart inspector's gauge settings gain an **Arc
+  gradient** toggle with **Start** / **End** colours (low→high), or a single
+  **Arc color** when off. Stored as optional `widget.config` keys
+  (`gaugeArcGradient`, `gaugeArcStart`, `gaugeArcEnd`, `gaugeArcColor`) and
+  honoured by both needle and ring styles in-app, in embeds and in static
+  exports. Unset keys keep the existing look.
 - **LiteLLM multi-provider AI + token-passthrough billing.** `LiteLLMProvider`
   is now the primary completion path for Anthropic/OpenAI/Gemini (`litellm`
   is a real dependency, not optional) — every metered call is priced via
@@ -59,6 +65,22 @@ Conventions:
 
 ### Fixed
 
+- **Readable gauge scale labels.** A needle gauge's arc numbers no longer show
+  raw floats such as `16.6666666667` when the tick count doesn't divide the
+  range evenly. They are rounded to suit the tick spacing, or follow a new
+  **Scale value format** setting (`config.yAxis.format`). On a gauge, Percent
+  treats a 0–100 scale as already out of 100.
+- **Gauge style switch.** Switching a dashboard gauge from **Ring** back to
+  **Needle** no longer leaves a full-circle ring with no needle or axis labels
+  until a page refresh. The two styles now redraw from scratch when switched,
+  and the needle spells out its own angles, pointer, ticks and labels. Clicking
+  **Reset to theme** after setting an arc colour also restores the default
+  needle colour right away.
+- **Gauge exports match the app.** The static-export renderer
+  (`scripts/render/echarts-ssr.mjs`) now reads a gauge's scale from
+  `config.yAxis.min/max` (then legacy `props.min/max`, `config.min/max`,
+  0..100), the same order the in-app renderer uses, instead of guessing
+  `value × 1.5`. The default needle also draws the same three theme bands.
 - **Postgres connector Test and queries.** `PostgresConnector` (also used for
   Redshift, CockroachDB and Cloud SQL) now imports `adbc_driver_postgresql.dbapi`
   explicitly — the connector Test and every query failed with "module

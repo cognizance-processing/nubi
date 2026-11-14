@@ -248,6 +248,10 @@ Open the **Display** section in Configure:
 - **Custom palette** — a comma-separated list of hex colors overrides the theme series colors.
 - **Title** and **Height (px)**.
 - **Max (gauge range)** — the top of a gauge's scale.
+- **Arc gradient** (gauge) — fill the arc from a **Start** colour (low end) to an **End** colour (high end); with the toggle off, pick one **Arc color** instead. Setting either replaces the needle's three theme bands with a neutral track plus a filled arc up to the value. **Reset to theme** clears both. The gradient follows the arc and is tied to the scale: each point is coloured by where it sits between min and max, a straight blend from Start to End (the same blend as the preview bar). A low value shows only the Start colour, and only a full gauge reaches End. With the gradient on, the fill jumps to a new value rather than sweeping, and the **Ring**'s fill has square ends.
+- **Axis text size / Y axis ticks** (gauge) — on a **Needle** gauge, these size the scale numbers around the arc and set how many major ticks it has; on a **Ring** gauge, **Axis text size** sizes the centre readout and **Y axis ticks** has no effect.
+- **Scale value format** (gauge) — formats the numbers around a **Needle** gauge's arc (Number, Currency, Percent, SI). Left on auto, they are rounded to suit the tick spacing, so 6 ticks on 0–100 read `0, 17, 33 …` rather than long decimals. **Percent** on a scale that goes past 1 treats values as already out of 100 (`50` → `50%`). The centre value is not affected.
+- **Tooltip** (gauge) — hovering the dial shows the series name and value, using **Tooltip value format** if one is set; turn **Tooltip** off to hide it.
 
 ### Axes and reference lines (cartesian types)
 
