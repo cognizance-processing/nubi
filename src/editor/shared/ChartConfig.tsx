@@ -30,7 +30,7 @@ import { profileTable, suggestVisuals } from './chartSuggest.js'
 import { titleText, withTitleText } from './titleValue.js'
 import { parseNumberInput } from './numberInput.js'
 import { registeredMaps, mapLabel, mapCategory } from '../../lib/maps.js'
-import { GAUGE_ARC_START, GAUGE_ARC_END } from '../../lib/chartOptionShared.js'
+import { DEFAULT_PALETTE, GAUGE_ARC_START, GAUGE_ARC_END } from '../../lib/chartOptionShared.js'
 
 // Chart types that use an x/y cartesian axis system (show axis config +
 // reference lines). Combo is cartesian too — buildCombo() honours axes and
@@ -113,6 +113,8 @@ export function ChartConfig({ widget, onChange }) {
   const cfg = widget.config ?? {}
   const wProps = widget.props ?? {}
   const baseType = widget.chart_type || 'bar'
+  // Solid arc fallback matches resolvePalette(config, theme)[0] in chart-options.ts.
+  const gaugeDefaultArcColor = (Array.isArray(cfg.palette) && cfg.palette[0]) || DEFAULT_PALETTE[0]
 
   // Chart types that fit this query's actual result — only chart shapes here,
   // since this panel configures a chart widget (a KPI/table nomination would
@@ -378,11 +380,13 @@ export function ChartConfig({ widget, onChange }) {
                 <ColorSwatch
                   title="Arc color"
                   value={cfg.gaugeArcColor}
-                  fallback={(Array.isArray(cfg.palette) && cfg.palette[0]) || '#6366f1'}
+                  fallback={gaugeDefaultArcColor}
                   onChange={v => setConfig('gaugeArcColor', v || undefined)}
                 />
                 <span className="text-[12px] text-muted">
-                  {cfg.gaugeArcColor ? 'Arc color' : 'Theme default'}
+                  {cfg.gaugeArcColor
+                    ? 'Arc color'
+                    : ((cfg.gaugeStyle ?? 'needle') === 'ring' ? 'Theme default' : 'Theme bands (default)')}
                 </span>
               </div>
             )}
