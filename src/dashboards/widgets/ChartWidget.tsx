@@ -70,6 +70,7 @@ import WidgetError from '../../components/app/WidgetError.jsx'
 import { useTheme } from '../../contexts/ThemeContext.jsx'
 import { adaptBackgroundColor } from '../../lib/themeColor.js'
 import { resolveTextColors } from '../textColors.js'
+import { chartReplaceKey } from './chartReplaceKey.js'
 
 /**
  * Translate a widget spec into the encoding object expected by buildChartOption.
@@ -111,13 +112,13 @@ function resolveConfig(widget) {
   if (cfg.stack === undefined && (wProps.stack === true || typeof wProps.stack === 'string')) {
     cfg.stack = wProps.stack
   }
-  // Legacy gauge max/min
-  if (cfg.yAxis === undefined) {
-    if (wProps.max !== undefined || wProps.min !== undefined) {
-      cfg.yAxis = {}
-      if (wProps.max !== undefined) cfg.yAxis.max = wProps.max
-      if (wProps.min !== undefined) cfg.yAxis.min = wProps.min
-    }
+  // Legacy gauge max/min — filled per field, so an axis text size or tick
+  // count that creates config.yAxis doesn't silently drop a props.max/min.
+  if (wProps.max !== undefined || wProps.min !== undefined) {
+    const y = { ...(cfg.yAxis ?? {}) }
+    if (y.max === undefined && wProps.max !== undefined) y.max = wProps.max
+    if (y.min === undefined && wProps.min !== undefined) y.min = wProps.min
+    cfg.yAxis = y
   }
 
   return cfg
@@ -367,7 +368,7 @@ export default function ChartWidget({ widget, providerTable = null }) {
           `min()` keeps the floor only while it fits the space available. */}
       <div className="flex-1 min-h-0" style={{ minHeight: 'min(180px, 100%)' }}>
         {option
-          ? <EChart option={option} height={height} onEvents={onEvents} replaceKey={`${chart_type}:${mapName ?? ''}`} />
+          ? <EChart option={option} height={height} onEvents={onEvents} replaceKey={chartReplaceKey(chart_type, widget.config)} />
           : (
             <EmptyState
               title="No data"
