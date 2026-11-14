@@ -312,6 +312,44 @@ def test_render_widgets_svg_webgl_flagged():
     assert r["svg"] is None
 
 
+def _gauge_svg(props: dict, config: dict) -> str:
+    results = render_widgets_svg([
+        {
+            "id": "g1",
+            "type": "chart",
+            "chart_type": "gauge",
+            "encoding": {"value": "v"},
+            "props": props,
+            "config": config,
+            "content": None,
+            "columns": ["v"],
+            "rows": [[120]],
+            "width": 400,
+            "height": 300,
+        }
+    ])
+    r = results[0]
+    assert not r.get("error"), f"Unexpected error: {r.get('error')}"
+    return r.get("svg") or ""
+
+
+def test_render_widgets_svg_gauge_legacy_props_scale_with_yaxis_set():
+    """Legacy props.max/min still set the scale when config.yAxis exists
+    without max/min (e.g. only a Scale value format) — matching
+    ChartWidget.resolveConfig's per-field fold, not a 0..100 default."""
+    svg = _gauge_svg({"max": 500}, {"yAxis": {"format": "number", "splitNumber": 5}})
+    assert ">500<" in svg, "expected a 500 scale label (props.max)"
+    assert ">100<" in svg and ">0<" in svg
+
+
+def test_render_widgets_svg_gauge_partial_yaxis_wins_per_field():
+    """config.yAxis.max beats props.max; a missing yAxis.min still falls back
+    to props.min."""
+    svg = _gauge_svg({"max": 500, "min": 50}, {"yAxis": {"max": 200, "splitNumber": 5}})
+    assert ">200<" in svg and ">50<" in svg
+    assert ">500<" not in svg
+
+
 # ---------------------------------------------------------------------------
 # 4b. _run_node_script — TimeoutExpired partial output surfaced in error message
 # ---------------------------------------------------------------------------

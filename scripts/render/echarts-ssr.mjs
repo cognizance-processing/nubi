@@ -847,12 +847,12 @@ function gaugeScaleLabelFormatter({ min = 0, max = 100, splitNumber = 10, format
 function buildGauge(colMap, valueCol, props = {}, config = {}) {
   const vals = toNumbers(colMap[valueCol] || [])
   const value = vals[0] ?? 0
-  // Same chain as the in-app path: ChartWidget folds legacy props.min/max into
-  // config.yAxis only when yAxis is unset, then embed's buildGauge falls back
-  // to config.max/min, then 0..100.
-  const legacy = config.yAxis === undefined ? props : {}
-  const max = config.yAxis?.max ?? legacy.max ?? config.max ?? 100
-  const min = config.yAxis?.min ?? legacy.min ?? config.min ?? 0
+  // Same chain as the in-app path: ChartWidget.resolveConfig fills each of
+  // config.yAxis.max/min from legacy props.max/min when that field is unset
+  // (even if yAxis holds other keys, e.g. format), then embed's buildGauge
+  // falls back to config.max/min, then 0..100.
+  const max = config.yAxis?.max ?? props.max ?? config.max ?? 100
+  const min = config.yAxis?.min ?? props.min ?? config.min ?? 0
   const palette = resolvePalette(config)
   const { grad, solid } = gaugeArc(config)
   const span = max - min
@@ -862,7 +862,7 @@ function buildGauge(colMap, valueCol, props = {}, config = {}) {
   const progressRound = caps ? caps === 'round' : config.gaugeStyle === 'ring'
   const axisRound = caps === 'round'
   // 'ring' — radial progress ring (Apex radialBar look), mirroring the
-  // browser builder in embed/widgets/chart-options.js so thumbnails match.
+  // browser builder in embed/widgets/chart-options.ts so thumbnails match.
   if (config.gaugeStyle === 'ring') {
     const ringColor = solid || palette[0]
     return {
