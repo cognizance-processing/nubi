@@ -386,13 +386,25 @@ export function ChartConfig({ widget, onChange }) {
                 </span>
               </div>
             )}
-            {(cfg.gaugeArcGradient || cfg.gaugeArcStart || cfg.gaugeArcEnd || cfg.gaugeArcColor) && (
+            <div>
+              <FieldLabel>Arc ends</FieldLabel>
+              <select
+                className={selectCls}
+                value={cfg.gaugeArcCaps === 'flat' || cfg.gaugeArcCaps === 'round' ? cfg.gaugeArcCaps : ''}
+                onChange={e => setConfig('gaugeArcCaps', e.target.value || undefined)}
+              >
+                <option value="">Auto</option>
+                <option value="flat">Flat</option>
+                <option value="round">Round</option>
+              </select>
+            </div>
+            {(cfg.gaugeArcGradient || cfg.gaugeArcStart || cfg.gaugeArcEnd || cfg.gaugeArcColor || cfg.gaugeArcCaps) && (
               <button
                 type="button"
                 className="text-[12px] text-muted hover:text-fg underline"
                 onClick={() => {
                   const next = { ...cfg }
-                  for (const k of ['gaugeArcGradient', 'gaugeArcStart', 'gaugeArcEnd', 'gaugeArcColor']) delete next[k]
+                  for (const k of ['gaugeArcGradient', 'gaugeArcStart', 'gaugeArcEnd', 'gaugeArcColor', 'gaugeArcCaps']) delete next[k]
                   onChange({ ...widget, config: next })
                 }}
               >
