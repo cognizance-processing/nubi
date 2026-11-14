@@ -10,7 +10,8 @@
 import { describe, test, expect } from 'vitest'
 import {
   buildChartOption, tableView, makeFormatter, deepMerge,
-  SUPPORTED_TYPES, DEFAULT_PALETTE,
+  SUPPORTED_TYPES, DEFAULT_PALETTE, gaugeScaleLabelFormatter,
+  lerpGaugeArcColor, GAUGE_ARC_START, GAUGE_ARC_END,
 } from '../widgets/chart-options.js'
 
 // Generic categorical sample (x = category, y = value, color = group).
@@ -698,5 +699,348 @@ describe('buildChartOption — axis names clear their tick labels', () => {
       config: { xAxis: { label: 'Customer', nameGap: 12 } },
     })
     expect(opt.xAxis.nameGap).toBe(12)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Gauge arc colours (config.gaugeArc*)
+// ---------------------------------------------------------------------------
+
+describe('buildChartOption — gauge arc colours', () => {
+  const gauge = (config = {}) =>
+    buildChartOption({ type: 'gauge', table: [{ v: 72 }], encoding: { y: 'v' }, config }).series[0]
+
+  test('unset → needle keeps the 3 theme bands, ring keeps palette[0]', () => {
+    const needle = gauge()
+    expect(needle.axisLine.lineStyle.color).toHaveLength(3)
+    // Explicit palette[0] (what ECharts drew by default), so a merge after
+    // "Reset to theme" can't keep a stale arc colour.
+    expect(needle.progress.itemStyle.color).toBe(DEFAULT_PALETTE[0])
+    expect(gauge({ palette: ['#123456'] }).progress.itemStyle.color).toBe('#123456')
+    const ring = gauge({ gaugeStyle: 'ring', palette: ['#123456'] })
+    expect(ring.progress.itemStyle.color).toBe('#123456')
+  })
+
+  test('solid arc colour → needle uses a neutral track + coloured fill', () => {
+    const s = gauge({ gaugeArcColor: '#ff00aa' })
+    expect(s.progress.itemStyle.color).toBe('#ff00aa')
+    expect(s.axisLine.lineStyle.color).toEqual([[1, 'rgba(148,163,184,0.18)']])
+  })
+
+  test('solid arc colour overrides palette[0] on the ring', () => {
+    const s = gauge({ gaugeStyle: 'ring', palette: ['#123456'], gaugeArcColor: '#ff00aa' })
+    expect(s.progress.itemStyle.color).toBe('#ff00aa')
+  })
+
+  test('gradient → segmented track stops, transparent progress (needle and ring)', () => {
+    for (const gaugeStyle of [undefined, 'ring']) {
+      const s = gauge({ gaugeStyle, gaugeArcGradient: true, gaugeArcStart: '#111111', gaugeArcEnd: '#eeeeee', gaugeArcColor: '#ff00aa' })
+      // No bounding-box gradient anywhere — it can't follow the arc.
+      expect(s.progress.itemStyle.color).toBe('rgba(0,0,0,0)')
+      const stops = s.axisLine.lineStyle.color
+      expect(stops[0][1]).toMatch(/^#1[0-9a-f]1[0-9a-f]1[0-9a-f]$/)
+      // gaugeArcColor is ignored while the gradient is on.
+      expect(JSON.stringify(stops)).not.toContain('ff00aa')
+    }
+  })
+
+  test('gradient without colours falls back to the default red→green', () => {
+    const stops = buildChartOption({
+      type: 'gauge', table: [{ v: 100 }], encoding: { y: 'v' }, config: { gaugeArcGradient: true },
+    }).series[0].axisLine.lineStyle.color
+    expect(stops[0][1]).toBe(lerpGaugeArcColor(GAUGE_ARC_START, GAUGE_ARC_END, 0.5 / 96))
+    expect(stops.at(-1)[1]).toBe(lerpGaugeArcColor(GAUGE_ARC_START, GAUGE_ARC_END, 1 - 0.5 / 96))
+  })
+
+  test('arc keys are interpreted, not leaked into the raw ECharts passthrough', () => {
+    const opt = buildChartOption({
+      type: 'gauge', table: [{ v: 72 }], encoding: { y: 'v' },
+      config: { gaugeArcGradient: true, gaugeArcStart: '#111111', gaugeArcEnd: '#eeeeee', gaugeArcColor: '#ff00aa' },
+    })
+    for (const k of ['gaugeArcGradient', 'gaugeArcStart', 'gaugeArcEnd', 'gaugeArcColor']) {
+      expect(opt[k]).toBeUndefined()
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Gauge style switch (needle ↔ ring) — merge-safe options
+// ---------------------------------------------------------------------------
+
+describe('buildChartOption — gauge needle/ring are merge-safe', () => {
+  const gauge = (config = {}) =>
+    buildChartOption({ type: 'gauge', table: [{ v: 72 }], encoding: { y: 'v' }, config }).series[0]
+
+  test('needle sets its geometry explicitly (semicircle, pointer, ticks, labels)', () => {
+    const s = gauge()
+    expect(s.startAngle).toBe(225)
+    expect(s.endAngle).toBe(-45)
+    expect(s.pointer.show).toBe(true)
+    expect(s.axisTick.show).toBe(true)
+    expect(s.splitLine.show).toBe(true)
+    expect(s.axisLabel.show).toBe(true)
+    expect(s.title.show).toBe(true)
+    expect(s.progress.roundCap).toBe(false)
+    expect(s.detail.offsetCenter).toEqual([0, '40%'])
+    expect(s.detail.formatter).toBe('{value}')
+  })
+
+  test('ring keeps its full circle with no pointer/ticks/labels', () => {
+    const s = gauge({ gaugeStyle: 'ring' })
+    expect([s.startAngle, s.endAngle]).toEqual([90, -270])
+    expect(s.pointer.show).toBe(false)
+    expect(s.axisTick.show).toBe(false)
+    expect(s.axisLabel.show).toBe(false)
+    expect(s.detail.offsetCenter).toEqual([0, 0])
+  })
+
+  test('both variants define every field either one overrides', () => {
+    const paths = [
+      'startAngle', 'endAngle', 'progress.show', 'progress.width', 'progress.roundCap',
+      'progress.itemStyle.color', 'axisLine.lineStyle.width', 'axisLine.lineStyle.color',
+      'splitNumber', 'pointer.show', 'axisTick.show', 'splitLine.show', 'axisLabel.show', 'title.show',
+      'detail.offsetCenter', 'detail.fontSize', 'detail.fontWeight', 'detail.formatter',
+    ]
+    const get = (o, p) => p.split('.').reduce((acc, k) => (acc == null ? acc : acc[k]), o)
+    for (const s of [gauge(), gauge({ gaugeStyle: 'ring' })]) {
+      for (const p of paths) expect(get(s, p), p).not.toBeUndefined()
+    }
+  })
+
+  test('gaugeStyle is interpreted, not leaked into the raw ECharts passthrough', () => {
+    const opt = buildChartOption({ type: 'gauge', table: [{ v: 72 }], encoding: { y: 'v' }, config: { gaugeStyle: 'ring' } })
+    expect(opt.gaugeStyle).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Gauge reuse of Display "Axis text size" / "Y axis ticks"
+// ---------------------------------------------------------------------------
+
+describe('buildChartOption — gauge axis text size / ticks', () => {
+  const gauge = (config = {}) =>
+    buildChartOption({ type: 'gauge', table: [{ v: 72 }], encoding: { y: 'v' }, config }).series[0]
+
+  test('needle: yAxis fontSize sizes the scale labels, splitNumber sets tick count', () => {
+    const s = gauge({ yAxis: { axisLabel: { fontSize: 14 }, splitNumber: 5 } })
+    expect(s.axisLabel.fontSize).toBe(14)
+    expect(s.splitNumber).toBe(5)
+    // The rest of axisLabel survives.
+    expect(s.axisLabel.show).toBe(true)
+    expect(s.axisLabel.distance).toBe(18)
+    // Needle centre readout is not tied to axis text size.
+    expect(s.detail.fontSize).toBe(24)
+  })
+
+  test('needle: unset (or cleared / non-positive) keeps defaults 9 / 10', () => {
+    for (const yAxis of [undefined, {}, { axisLabel: { fontSize: undefined }, splitNumber: undefined }, { splitNumber: 0 }]) {
+      const s = gauge({ yAxis })
+      expect(s.axisLabel.fontSize).toBe(9)
+      expect(s.splitNumber).toBe(10)
+    }
+  })
+
+  test('falls back to xAxis fontSize when yAxis has none', () => {
+    expect(gauge({ xAxis: { axisLabel: { fontSize: 16 } } }).axisLabel.fontSize).toBe(16)
+  })
+
+  test('ring: axis text size drives the centre readout; ticks have no effect', () => {
+    const set = gauge({ gaugeStyle: 'ring', yAxis: { axisLabel: { fontSize: 30 }, splitNumber: 4 } })
+    expect(set.detail.fontSize).toBe(30)
+    expect(set.axisLabel.show).toBe(false)
+    expect(set.axisTick.show).toBe(false)
+    expect(set.splitNumber).toBe(10)
+    expect(gauge({ gaugeStyle: 'ring' }).detail.fontSize).toBe(20)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Gauge arc scale labels — smart default + yAxis.format
+// ---------------------------------------------------------------------------
+
+describe('gaugeScaleLabelFormatter', () => {
+  const ticks = (min, max, n) => Array.from({ length: n + 1 }, (_, i) => min + (i * (max - min)) / n)
+
+  test('auto: 6 ticks on 0..100 give short labels, no repeating decimals', () => {
+    const f = gaugeScaleLabelFormatter({ min: 0, max: 100, splitNumber: 6, locale: 'en-US' })
+    const labels = ticks(0, 100, 6).map(f)
+    expect(labels).toEqual(['0', '17', '33', '50', '67', '83', '100'])
+    for (const l of labels) expect(l).not.toMatch(/666|333/)
+  })
+
+  test('auto: 5 ticks on 0..100 stay whole numbers', () => {
+    const f = gaugeScaleLabelFormatter({ min: 0, max: 100, splitNumber: 5, locale: 'en-US' })
+    expect(ticks(0, 100, 5).map(f)).toEqual(['0', '20', '40', '60', '80', '100'])
+  })
+
+  test('auto: decimals follow the tick step', () => {
+    expect(gaugeScaleLabelFormatter({ min: 0, max: 1, splitNumber: 4, locale: 'en-US' })(0.25)).toBe('0.25')
+    expect(gaugeScaleLabelFormatter({ min: 0, max: 5, splitNumber: 10, locale: 'en-US' })(2.5)).toBe('2.5')
+    expect(gaugeScaleLabelFormatter({ min: 0, max: 25, splitNumber: 10, locale: 'en-US' })(7.5)).toBe('7.5')
+    expect(gaugeScaleLabelFormatter({ min: 0, max: 1, splitNumber: 3, locale: 'en-US' })(1 / 3)).toBe('0.3')
+    expect(gaugeScaleLabelFormatter({ min: 0, max: 10000, splitNumber: 5, locale: 'en-US' })(4000)).toBe('4,000')
+  })
+
+  test('author format: si / number with decimals / currency', () => {
+    expect(gaugeScaleLabelFormatter({ min: 0, max: 5000, splitNumber: 5, format: 'si' })(2000)).toBe('2k')
+    expect(gaugeScaleLabelFormatter({ min: 0, max: 100, splitNumber: 6, format: { kind: 'number', decimals: 1 }, locale: 'en-US' })(100 / 6)).toBe('16.7')
+    expect(gaugeScaleLabelFormatter({ min: 0, max: 100, splitNumber: 6, format: 'currency', locale: 'en-US' })(100 / 6)).toBe('$17')
+  })
+
+  test('percent: 0..100 range is shown as-is + %, 0..1 range is true percent', () => {
+    const p100 = gaugeScaleLabelFormatter({ min: 0, max: 100, splitNumber: 6, format: 'percent', locale: 'en-US' })
+    expect(p100(100)).toBe('100%')
+    expect(p100(100 / 6)).toBe('17%')
+    const p1 = gaugeScaleLabelFormatter({ min: 0, max: 1, splitNumber: 4, format: 'percent', locale: 'en-US' })
+    expect(p1(0.25)).toBe('25%')
+    expect(p1(1)).toBe('100%')
+  })
+
+  test('date (hand-edited) falls back to auto; null / non-finite -> empty', () => {
+    const f = gaugeScaleLabelFormatter({ min: 0, max: 100, splitNumber: 6, format: 'date', locale: 'en-US' })
+    expect(f(50)).toBe('50')
+    expect(f(null)).toBe('')
+    expect(f(undefined)).toBe('')
+    expect(f(NaN)).toBe('')
+    expect(f(Infinity)).toBe('')
+  })
+})
+
+describe('buildChartOption — gauge scale label wiring', () => {
+  const gauge = (config = {}) =>
+    buildChartOption({ type: 'gauge', table: [{ v: 72 }], encoding: { y: 'v' }, config }).series[0]
+
+  test('needle formats arc labels with the tick count and author format', () => {
+    const auto = gauge({ yAxis: { splitNumber: 6 } })
+    expect(auto.axisLabel.formatter(100 / 6)).toBe('17')
+    const cur = gauge({ locale: 'en-US', yAxis: { splitNumber: 6, format: 'currency' } })
+    expect(cur.axisLabel.formatter(50)).toBe('$50')
+    // Centre value is untouched by the scale format.
+    expect(cur.detail.formatter).toBe('{value}')
+    // Clearing the format falls back to auto.
+    expect(gauge({ yAxis: { splitNumber: 6, format: undefined } }).axisLabel.formatter(100 / 6)).toBe('17')
+  })
+
+  test('ring keeps its hidden scale and % centre', () => {
+    const s = gauge({ gaugeStyle: 'ring', yAxis: { format: 'currency' } })
+    expect(s.axisLabel.show).toBe(false)
+    expect(s.detail.formatter(50)).toBe('50.00%')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Gauge tooltip — item trigger (no cartesian axis to point at)
+// ---------------------------------------------------------------------------
+
+describe('buildChartOption — gauge tooltip', () => {
+  const gaugeOpt = (config = {}) =>
+    buildChartOption({ type: 'gauge', table: [{ v: 72 }], encoding: { y: 'v' }, config })
+
+  test('needle and ring use an item-trigger tooltip with no axis pointer', () => {
+    for (const gaugeStyle of [undefined, 'ring']) {
+      const t = gaugeOpt({ gaugeStyle }).tooltip
+      expect(t.trigger).toBe('item')
+      expect(t.show).not.toBe(false)
+      expect(t.axisPointer).toBeUndefined()
+    }
+  })
+
+  test('tooltip: false still disables it; valueFormat still formats', () => {
+    expect(gaugeOpt({ tooltip: false }).tooltip.show).toBe(false)
+    const t = gaugeOpt({ locale: 'en-US', tooltip: { valueFormat: 'currency' } }).tooltip
+    expect(t.trigger).toBe('item')
+    expect(t.valueFormatter(72)).toBe('$72')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Gauge arc gradient — sampled along the scale, filled to the value
+// ---------------------------------------------------------------------------
+
+describe('lerpGaugeArcColor', () => {
+  test('straight start→end blend, clamped to [0,1]', () => {
+    expect(lerpGaugeArcColor('#000000', '#ffffff', 0)).toBe('#000000')
+    expect(lerpGaugeArcColor('#000000', '#ffffff', 1)).toBe('#ffffff')
+    expect(lerpGaugeArcColor('#000000', '#ffffff', 0.5)).toBe('#808080')
+    expect(lerpGaugeArcColor('#000', '#fff', 2)).toBe('#ffffff')
+    expect(lerpGaugeArcColor('#000', '#fff', -1)).toBe('#000000')
+  })
+
+  test('accepts rgb()/rgba(); unparseable falls back to the defaults', () => {
+    expect(lerpGaugeArcColor('rgb(255, 0, 0)', 'rgba(0,0,255,0.5)', 0.5)).toBe('#800080')
+    expect(lerpGaugeArcColor('var(--x)', 'nope', 0)).toBe(GAUGE_ARC_START.toLowerCase())
+    expect(lerpGaugeArcColor('var(--x)', 'nope', 1)).toBe(GAUGE_ARC_END.toLowerCase())
+  })
+})
+
+describe('buildChartOption — gauge arc gradient follows the scale', () => {
+  const opt = (v, config = {}) =>
+    buildChartOption({ type: 'gauge', table: [{ v }], encoding: { y: 'v' }, config: { gaugeArcGradient: true, ...config } })
+  const filled = (stops) => stops.filter(([, c]) => c !== 'rgba(0,0,0,0)')
+  const lerp = (t) => lerpGaugeArcColor(GAUGE_ARC_START, GAUGE_ARC_END, t)
+
+  test('5.5 of 100: only start-colour segments, ending at the value', () => {
+    for (const gaugeStyle of [undefined, 'ring']) {
+      const stops = opt(5.5, { gaugeStyle }).series[0].axisLine.lineStyle.color
+      const f = filled(stops)
+      expect(f.at(-1)[0]).toBeCloseTo(0.055, 6)
+      // Every filled colour sits in the first 5.5% of the blend — nowhere near the end colour.
+      const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16))
+      const [lo, hi] = [rgb(lerp(0)), rgb(lerp(0.055))]
+      for (const [, c] of f) {
+        rgb(c).forEach((v, i) => {
+          expect(v).toBeGreaterThanOrEqual(Math.min(lo[i], hi[i]))
+          expect(v).toBeLessThanOrEqual(Math.max(lo[i], hi[i]))
+        })
+      }
+      expect(JSON.stringify(f)).not.toContain(GAUGE_ARC_END.toLowerCase())
+      // The rest of the main layer is see-through (the underlay draws the track).
+      expect(stops.at(-1)).toEqual([1, 'rgba(0,0,0,0)'])
+    }
+  })
+
+  test('72 and 100: the colour at the value is lerp(start, end, value position)', () => {
+    const at72 = filled(opt(72).series[0].axisLine.lineStyle.color).at(-1)
+    expect(at72[0]).toBeCloseTo(0.72, 6)
+    const [r, g] = [parseInt(at72[1].slice(1, 3), 16), parseInt(lerp(0.72).slice(1, 3), 16)]
+    expect(Math.abs(r - g)).toBeLessThanOrEqual(3)  // within half a segment of 0.72
+    const at100 = opt(100).series[0].axisLine.lineStyle.color
+    expect(at100.at(-1)[0]).toBe(1)
+    expect(at100.at(-1)[1]).toBe(lerp(1 - 0.5 / 96))
+  })
+
+  test('the fill is tied to min/max, not to 0..100', () => {
+    const f = filled(opt(150, { yAxis: { min: 100, max: 200 } }).series[0].axisLine.lineStyle.color)
+    expect(f.at(-1)[0]).toBeCloseTo(0.5, 6)
+  })
+
+  test('underlay: half-segment offset under the main series, track after the value, silent', () => {
+    const [main, under] = opt(72).series
+    expect(under.type).toBe('gauge')
+    expect(under.silent).toBe(true)
+    expect(under.z).toBeLessThan(2)
+    expect(under.tooltip.show).toBe(false)
+    expect(under.axisLine.show).toBe(true)
+    expect([under.startAngle, under.endAngle]).toEqual([main.startAngle, main.endAngle])
+    const u = under.axisLine.lineStyle.color
+    expect(u[0][0]).toBeCloseTo(0.5 / 96, 9)
+    expect(u.at(-1)).toEqual([1, 'rgba(148,163,184,0.18)'])
+  })
+
+  test('always two series; the underlay is inert without a gradient (merge-safe reset)', () => {
+    for (const config of [{}, { gaugeArcColor: '#ff00aa' }, { gaugeStyle: 'ring' }, { gaugeStyle: 'ring', gaugeArcGradient: true }]) {
+      const series = buildChartOption({ type: 'gauge', table: [{ v: 72 }], encoding: { y: 'v' }, config }).series
+      expect(series).toHaveLength(2)
+    }
+    const under = buildChartOption({ type: 'gauge', table: [{ v: 72 }], encoding: { y: 'v' }, config: {} }).series[1]
+    expect(under.axisLine.show).toBe(false)
+  })
+
+  test('solid colour and default bands are unchanged by the gradient code', () => {
+    const solid = buildChartOption({ type: 'gauge', table: [{ v: 72 }], encoding: { y: 'v' }, config: { gaugeArcColor: '#ff00aa' } }).series[0]
+    expect(solid.progress.itemStyle.color).toBe('#ff00aa')
+    expect(solid.axisLine.lineStyle.color).toEqual([[1, 'rgba(148,163,184,0.18)']])
+    const bands = buildChartOption({ type: 'gauge', table: [{ v: 72 }], encoding: { y: 'v' } }).series[0]
+    expect(bands.axisLine.lineStyle.color).toHaveLength(3)
   })
 })

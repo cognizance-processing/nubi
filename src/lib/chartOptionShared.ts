@@ -23,4 +23,6 @@ export {
   tableView,
   deepMerge,
   makeFormatter,
+  GAUGE_ARC_START,
+  GAUGE_ARC_END,
 } from '../../embed/widgets/chart-options.js'
