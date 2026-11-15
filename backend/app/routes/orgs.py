@@ -718,6 +718,9 @@ async def update_member_role(
         "UPDATE org_members SET role = $3 WHERE org_id = $1::uuid AND user_id = $2::uuid",
         org_id, member_id, body.role,
     )
+    if body.role not in ("owner", "admin"):
+        # No longer allowed to manage bridges: the tokens they minted go too.
+        await _revoke_member_bridge_tokens(member_id, org_id)
     return MemberOut(user_id=member_id, name=target["name"], email=str(target["email"]), role=body.role)
 
 
@@ -765,6 +768,29 @@ async def _revoke_member_credentials(user_id: str, org_id: str) -> None:
             await store.revoke_grant(str(grant["id"]), user_id, org_id)
     except Exception:  # noqa: BLE001
         pass
+    await _revoke_member_bridge_tokens(user_id, org_id)
+
+
+async def _revoke_member_bridge_tokens(user_id: str, org_id: str) -> None:
+    """Revoke the bridge tokens *user_id* created in *org_id* and drop the
+    tunnels that were using them.  A bridge token is a credential its creator
+    holds outside the app, so it goes when they leave the org or lose the role
+    that lets them manage bridges."""
+    try:
+        from app.auth.bridge_tokens import get_bridge_token_store  # noqa: PLC0415
+
+        bridge_ids = await get_bridge_token_store().revoke_all_for_user(user_id, org_id)
+    except Exception:  # noqa: BLE001
+        return
+    for bridge_id in bridge_ids:
+        try:
+            from app.bridges.broker import get_broker  # noqa: PLC0415
+
+            # The agent may have been using another, still-valid token; if so
+            # it simply reconnects.  One that held a revoked token cannot.
+            await get_broker().drop(bridge_id)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ── Invites ─────────────────────────────────────────────────────────────────--
