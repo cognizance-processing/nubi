@@ -26,7 +26,7 @@ from pydantic import BaseModel
 
 from app.audit import record_audit as _record_audit
 from app.auth.deps import _bearer, current_user, mcp_inprocess_call, verified_identity
-from app.auth.roles import require_writer
+from app.auth.roles import require_approver, require_writer
 from app.auth.verify import VerifiedIdentity
 from app.connectors.ssrf import guard_url
 from app.errors import AppError
@@ -80,7 +80,7 @@ async def list_mcp_servers(
     return [_strip_secrets(r) for r in rows]
 
 
-@mcp_router.post("/servers", status_code=201, dependencies=[Depends(require_writer)])
+@mcp_router.post("/servers", status_code=201, dependencies=[Depends(require_approver)])
 async def create_mcp_server(
     body: McpServerCreate,
     request: Request,
@@ -133,7 +133,7 @@ async def get_mcp_server(
     return _strip_secrets(row)
 
 
-@mcp_router.put("/servers/{server_id}", dependencies=[Depends(require_writer)])
+@mcp_router.put("/servers/{server_id}", dependencies=[Depends(require_approver)])
 async def update_mcp_server(
     server_id: str,
     body: McpServerUpdate,
@@ -179,7 +179,7 @@ async def update_mcp_server(
     return _strip_secrets(row)
 
 
-@mcp_router.post("/servers/{server_id}/test")
+@mcp_router.post("/servers/{server_id}/test", dependencies=[Depends(require_writer)])
 async def test_mcp_server(
     server_id: str,
     request: Request,
@@ -255,7 +255,7 @@ async def test_mcp_server(
     }
 
 
-@mcp_router.delete("/servers/{server_id}", status_code=204, dependencies=[Depends(require_writer)])
+@mcp_router.delete("/servers/{server_id}", status_code=204, dependencies=[Depends(require_approver)])
 async def delete_mcp_server(
     server_id: str,
     request: Request,
@@ -469,23 +469,75 @@ async def mcp_endpoint(
 # caller's OWN credential and org, so every route's auth, role checks, RLS and
 # rate limits apply unchanged — the client can never do more than the user.
 #
-# A deny-list keeps credential- and membership-shaped endpoints out of reach:
-# an MCP client is a delegated agent that may be steered by content it reads,
-# so it must not be able to mint long-lived credentials, read secret material,
-# or change who has access, even though the human could do those in the UI.
+# An ALLOWLIST decides what is reachable.  An MCP client is a delegated agent
+# that may be steered by content it reads, so it gets the working surface of
+# the product — boards, queries, metrics, reading data — and nothing that
+# mints credentials, changes who has access, reaches out to other systems,
+# runs code, spends money, or destroys a workspace, even though the human
+# could do those in the UI.  A route that is not listed here is not reachable;
+# new routes are therefore closed to agents until someone decides otherwise.
 
 _API_PREFIX = "/api/v1"
 
-_API_DENY_ANY = re.compile(
-    r"^/(auth|oauth|admin|secrets|security|mcp)(/|$)"
-    r"|^/bridges/[^/]+/tokens(/|$)"
-    r"|^/embed/embed-token$"
+_S = r"[^/]+"
+_READ = frozenset({"GET"})
+_CHANGE = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_ANY = _READ | _CHANGE
+
+
+def _rule(methods: Any, pattern: str) -> tuple[frozenset[str], "re.Pattern[str]"]:
+    return frozenset(methods), re.compile(rf"\A{pattern}\Z")
+
+
+_API_ALLOW: tuple[tuple[frozenset[str], "re.Pattern[str]"], ...] = (
+    # Boards, queries, widgets — the things an agent builds.
+    _rule(_ANY, rf"/(boards|queries|widgets)(/{_S})?"),
+    _rule(_READ, rf"/(boards|queries|widgets)/{_S}/(usage|filterable-columns|thumbnail\.svg|snapshot)"),
+    _rule(_READ, rf"/boards/{_S}/export\.(csv|json)"),
+    _rule({"POST"}, rf"/boards/{_S}/providers/{_S}/data"),
+    _rule({"POST"}, rf"/queries/(options-query|{_S}/parameterize)"),
+    _rule({"POST"}, r"/dashboards/validate"),
+    _rule({"POST"}, r"/transpile"),
+    # Running and registering queries.
+    _rule({"POST"}, r"/query(/(estimate|render|validate|complete|registry|registry/validate))?"),
+    _rule(_READ, rf"/query/(schema|registry(/{_S}(/widgets)?)?)"),
+    # Governed metrics.
+    _rule(_READ, rf"/metrics(/{_S}(/versions(/{_S})?)?)?"),
+    _rule({"POST"}, r"/metrics"),
+    _rule({"PUT", "DELETE"}, rf"/metrics/{_S}"),
+    _rule({"POST"}, rf"/metrics/{_S}/(query|sql|revert/{_S})"),
+    # Variables, watches, versions.
+    _rule(_READ, rf"/variables(/{_S})?"),
+    _rule({"PUT", "DELETE"}, rf"/variables/{_S}"),
+    _rule(_READ, rf"/watches(/{_S})?"),
+    _rule({"POST"}, r"/watches"),
+    _rule({"PUT", "DELETE"}, rf"/watches/{_S}"),
+    _rule({"POST"}, rf"/watches/{_S}/evaluate"),
+    _rule(_READ, rf"/versions/{_S}/{_S}(/{_S})?"),
+    _rule({"POST"}, rf"/versions/{_S}/{_S}(/{_S}/restore)?"),
+    # Read-only views of the workspace and its data sources.
+    _rule(_READ, rf"/projects(/{_S}(/(deletion-impact|environments))?)?"),
+    _rule({"POST"}, r"/projects"),
+    _rule({"PUT", "PATCH"}, rf"/projects/{_S}"),
+    _rule(_READ, rf"/orgs(/{_S})?"),
+    _rule(_READ, rf"/(connectors|datastores)(/{_S}){{0,2}}"),
+    _rule(_READ, rf"/data/(tables|{_S}/tables)(/{_S}/(columns|rows))?"),
+    _rule(_READ, rf"/flows(/{_S}){{0,2}}"),
+    _rule(_READ, rf"/jobs(/{_S}(/runs)?)?"),
+    _rule(_READ, r"/preagg(/suggestions)?"),
+    _rule(_READ, r"/(features|usage|pricing|health|notifications)(/.*)?"),
+    _rule(_READ, r"/demo-parquet(/.*)?"),
+    # Images the agent places on a board (upload only — never fetch a URL).
+    _rule({"POST"}, r"/images"),
+    _rule(_READ, rf"/images/{_S}"),
 )
-_API_DENY_WRITE = re.compile(
-    r"^/orgs/[^/]+/(members|invites)(/|$)"
-    r"|^/orgs/invites/"
-    r"|^/access-grants(/|$)"
-)
+
+
+def _api_allowed(method: str, path: str) -> bool:
+    """True when *method* *path* (relative to /api/v1) is on the agent allowlist."""
+    return any(method in methods and pattern.match(path) for methods, pattern in _API_ALLOW)
+
+
 _API_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 _API_ROW_LIMIT = 1000
 
@@ -495,8 +547,10 @@ _API_REQUEST_TOOL: dict[str, Any] = {
         "Call any Nubi REST endpoint as the signed-in user, in their current "
         "org, with exactly their permissions. `path` is relative to /api/v1 "
         "(e.g. '/boards', '/boards/{id}', '/query', '/connectors'). Arrow "
-        "query results are returned as JSON rows (first 1000). Auth, secrets, "
-        "admin, credential-minting and membership changes are not reachable."
+        "query results are returned as JSON rows (first 1000). Only the "
+        "working surface is reachable: boards, queries, metrics, variables and "
+        "reading data; credentials, membership, connectors, integrations, code "
+        "execution, billing and workspace deletion are not."
     ),
     "inputSchema": {
         "type": "object",
@@ -543,7 +597,7 @@ async def _api_request(
     if method not in _API_METHODS:
         raise _ApiRequestRefused(f"method must be one of {sorted(_API_METHODS)}.")
     path = _normalise_api_path(arguments.get("path"))
-    if _API_DENY_ANY.search(path) or (method != "GET" and _API_DENY_WRITE.search(path)):
+    if not _api_allowed(method, path):
         raise _ApiRequestRefused(f"{method} {path} is not reachable over MCP.")
 
     headers = {
@@ -560,7 +614,7 @@ async def _api_request(
 
     transport = httpx.ASGITransport(app=request.app)
     # An OAuth token is only accepted at the MCP endpoint; this flag extends
-    # that to the dispatch below, which the deny-list above has already vetted.
+    # that to the dispatch below, which the allowlist above has already vetted.
     marker = mcp_inprocess_call.set(True)
     try:
         async with httpx.AsyncClient(transport=transport, base_url="http://nubi-mcp.internal") as client:

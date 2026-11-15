@@ -162,3 +162,89 @@ def test_raw_sql_on_the_query_route_needs_a_writer(client):
     assert client.post("/api/v1/query", json=body, headers=as_user("member")).status_code == 200
     # A registered query stays readable for viewers.
     assert client.post("/api/v1/query", json={"query_id": "demo_all"}, headers=as_user("viewer")).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# api_request: an explicit allowlist of what a delegated agent may call
+# ---------------------------------------------------------------------------
+
+ALLOWED = [
+    ("GET", "/boards"), ("POST", "/boards"), ("PUT", "/boards/abc"), ("DELETE", "/boards/abc"),
+    ("GET", "/queries/abc"), ("POST", "/queries"), ("POST", "/widgets"),
+    ("POST", "/query"), ("POST", "/query/estimate"), ("GET", "/query/registry"), ("POST", "/query/registry"),
+    ("GET", "/query/registry/q1/widgets"), ("POST", "/boards/b1/providers/p1/data"),
+    ("GET", "/metrics"), ("POST", "/metrics/m1/query"), ("PUT", "/metrics/m1"),
+    ("GET", "/connectors"), ("GET", "/connectors/c1"), ("GET", "/datastores"),
+    ("GET", "/data/c1/tables/t/rows"), ("GET", "/projects"), ("POST", "/projects"), ("PATCH", "/projects/p1"),
+    ("GET", "/orgs"), ("GET", "/orgs/o1"), ("GET", "/flows"), ("GET", "/flows/f1"),
+    ("POST", "/dashboards/validate"), ("PUT", "/variables/k"), ("POST", "/images"), ("GET", "/features"),
+    ("POST", "/versions/board/b1"), ("GET", "/versions/board/b1/3"),
+]
+REFUSED = [
+    ("DELETE", "/orgs/o1"), ("PATCH", "/orgs/o1"), ("POST", "/orgs"), ("DELETE", "/projects/p1"),
+    ("POST", "/orgs/o1/invites"), ("DELETE", "/orgs/o1/members/u1"), ("GET", "/orgs/o1/invites"),
+    ("POST", "/connectors"), ("PUT", "/connectors/c1"), ("DELETE", "/connectors/c1"), ("POST", "/connectors/c1/test"),
+    ("POST", "/datastores"), ("PUT", "/datastores/d1"), ("DELETE", "/datastores/d1"),
+    ("GET", "/git/history"), ("POST", "/git/sync"), ("POST", "/git/connect"), ("POST", "/environments/e1/git/push"),
+    ("GET", "/integrations"), ("POST", "/integrations"),
+    ("POST", "/flows"), ("POST", "/flows/f1/run"), ("POST", "/flows/run-cell"), ("POST", "/flows/compile"),
+    ("POST", "/flows/preview"), ("PUT", "/flows/f1"), ("DELETE", "/flows/f1"), ("POST", "/compute/run"),
+    ("POST", "/images/from-url"), ("POST", "/import"), ("POST", "/projects/p1/import"), ("POST", "/apply"),
+    ("GET", "/ee/billing"), ("POST", "/ee/billing/checkout"), ("GET", "/chat/conversations"), ("POST", "/chat/stream"),
+    ("POST", "/ai/chat"), ("POST", "/ai/sql"), ("GET", "/auth/me"), ("POST", "/auth/api-keys"), ("GET", "/secrets"),
+    ("GET", "/admin/orgs"), ("GET", "/security/jwt-issuers"), ("POST", "/mcp/servers"), ("POST", "/oauth/token"),
+    ("POST", "/bridges/b1/tokens"), ("POST", "/embed/embed-token"), ("POST", "/access-grants"),
+    ("POST", "/cache/invalidate"), ("POST", "/preagg/build"), ("POST", "/boards/b1/share"),
+    ("POST", "/boards/b1/export/public"), ("PATCH", "/data/c1/tables/t/rows"), ("POST", "/webhooks"),
+    ("POST", "/push/subscribe"), ("POST", "/jobs"), ("POST", "/watches/tick"), ("GET", "/something-new"),
+]
+
+
+@pytest.mark.parametrize("method,path", ALLOWED, ids=[f"{m} {p}" for m, p in ALLOWED])
+def test_api_request_allows_the_working_surface(method, path):
+    from app.routes.mcp import _api_allowed
+
+    assert _api_allowed(method, path) is True
+
+
+@pytest.mark.parametrize("method,path", REFUSED, ids=[f"{m} {p}" for m, p in REFUSED])
+def test_api_request_refuses_everything_else(method, path):
+    from app.routes.mcp import _api_allowed
+
+    assert _api_allowed(method, path) is False
+
+
+# ---------------------------------------------------------------------------
+# External MCP servers are an org-wide trust decision
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("role,expected", [("viewer", 403), ("member", 403), ("admin", 201), ("owner", 201)])
+def test_only_owner_or_admin_register_external_mcp_servers(role, expected):
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from fastapi.testclient import TestClient
+
+    from app.repos.provider import set_repo
+
+    store = MagicMock()
+    store.create = AsyncMock(return_value={"id": str(uuid.uuid4()), "name": "ext", "url": "https://mcp.example.com/mcp"})
+    store.get = AsyncMock(return_value=None)
+    app, _repo, _users = make_tenant_app({"u": (ORG, role)}, modules=("app.routes.mcp",))
+    try:
+        with (
+            patch("app.mcp.store.get_mcp_store", return_value=store),
+            patch("app.routes.mcp.guard_url", lambda url: None),
+            TestClient(app, raise_server_exceptions=False) as c,
+        ):
+            resp = c.post(
+                "/api/v1/mcp/servers",
+                json={"name": "ext", "url": "https://mcp.example.com/mcp"},
+                headers=as_user("u"),
+            )
+            assert resp.status_code == expected, resp.text
+            assert store.create.await_count == (1 if expected == 201 else 0)
+            if role == "viewer":
+                assert c.post(f"/api/v1/mcp/servers/{uuid.uuid4()}/test", headers=as_user("u")).status_code == 403
+    finally:
+        set_repo(None)
