@@ -36,6 +36,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import re
+
 import jwt
 from jwt.exceptions import PyJWTError
 
@@ -469,6 +471,32 @@ def _embed_max_ttl_seconds() -> float:
     except ValueError:
         value = 900.0
     return value if value > 0 else 900.0
+
+
+#: The only routes a board-bound embed token may call.  Each of them checks the
+#: board (or what the board references) itself; everything else is refused, so
+#: a new route is closed to these tokens until it is listed here.
+_BOARD_BOUND_ROUTES: tuple[tuple[str, "re.Pattern[str]"], ...] = tuple(
+    (method, re.compile(r"^(?:/api/v1)?" + pattern + r"/?$"))
+    for method, pattern in (
+        ("GET", r"/embed/config/[^/]+"),
+        ("GET", r"/embed/frozen/[^/]+"),
+        ("POST", r"/query"),
+        ("GET", r"/metrics"),
+        ("GET", r"/metrics/[^/]+"),
+        ("POST", r"/metrics/[^/]+/query"),
+        ("POST", r"/boards/[^/]+/providers/[^/]+/data"),
+    )
+)
+
+
+def board_bound_route_allowed(method: str, path: str) -> bool:
+    """True when a board-bound embed token may call *method* *path*."""
+    if ".." in path or "%" in path or "\\" in path:
+        return False
+    return any(
+        m == method.upper() and rx.match(path) for m, rx in _BOARD_BOUND_ROUTES
+    )
 
 
 def embed_board_scope(identity: "VerifiedIdentity") -> set[str] | None:

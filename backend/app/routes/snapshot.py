@@ -272,6 +272,11 @@ async def get_frozen_view(
             403,
         )
 
+    # A board-bound embed token only reaches the boards it names.
+    from app.routes.embed import require_board_in_token  # noqa: PLC0415
+
+    require_board_in_token(identity, dashboard_id)
+
     # ── Resolve org_id (embed token carries it; first-party looks it up) ──────
     if identity.kind == "embed" and identity.org:
         org_id = identity.org

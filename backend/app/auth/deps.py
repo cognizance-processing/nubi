@@ -226,6 +226,24 @@ def _strip_host_mode_write_scopes(scopes: list[str]) -> list[str]:
     return safe
 
 
+def require_board_bound_route(identity: "VerifiedIdentity", method: str, path: str) -> None:
+    """Refuse (403) a board-bound embed token on any route outside the short
+    list that enforces the binding.  Unrestricted tokens are unaffected; a
+    malformed restriction is refused everywhere."""
+    from app.auth.verify import board_bound_route_allowed, embed_board_scope  # noqa: PLC0415
+
+    if identity.kind != "embed":
+        return
+    refused = AppError("forbidden", "This token is not valid for that request.", 403)
+    try:
+        if embed_board_scope(identity) is None:
+            return
+    except ValueError:
+        raise refused from None
+    if not board_bound_route_allowed(method, path):
+        raise refused
+
+
 async def _maybe_pin_host_mode_org(identity: "VerifiedIdentity") -> None:
     """Pin the request's org from a host-mode embed token's claim (async).
 
@@ -406,6 +424,7 @@ async def verified_identity(
     # org-resolution helpers (get_user_org / resolve_org_id) never consult
     # org_members for this request.
     if identity.kind == "embed":
+        require_board_bound_route(identity, request.method, request.url.path)
         await _maybe_pin_host_mode_org(identity)
 
     # Denylist check.  First-party tokens are keyed by their ``jti``; an embed

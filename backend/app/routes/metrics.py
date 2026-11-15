@@ -152,6 +152,20 @@ async def _caller_org(identity: VerifiedIdentity, request: Request) -> str | Non
         return None
 
 
+async def _require_metric_on_token_boards(
+    identity: VerifiedIdentity, metric_id: str, metric: MetricDefinition
+) -> None:
+    """A board-bound embed token may only read metrics its boards display."""
+    from app.routes.query import require_ref_in_token_boards  # noqa: PLC0415
+
+    await require_ref_in_token_boards(
+        identity,
+        [metric_id, getattr(metric, "id", None), getattr(metric, "slug", None)],
+        get_repo(),
+        ("metric_id",),
+    )
+
+
 async def _resolve_metric(
     metric_id: str, org_id: str | None = None
 ) -> MetricDefinition:
@@ -537,6 +551,17 @@ async def list_metrics(
     except Exception:  # noqa: BLE001 — scoping unavailable → unfiltered list.
         pass
 
+    # A board-bound embed token lists only the metrics its boards display.
+    from app.routes.query import token_board_refs  # noqa: PLC0415
+
+    on_boards = await token_board_refs(identity, get_repo(), ("metric_id",))
+    if on_boards is not None:
+        metrics = [
+            m
+            for m in metrics
+            if {str(getattr(m, "id", "")), str(getattr(m, "slug", ""))} & on_boards
+        ]
+
     return {"metrics": [_metric_summary(m) for m in metrics]}
 
 
@@ -570,6 +595,7 @@ async def get_metric(
     _require_read_scope(identity)
     org_id = await _caller_org(identity, request)
     metric = await _resolve_metric(metric_id, org_id)
+    await _require_metric_on_token_boards(identity, metric_id, metric)
     return metric.to_dict()
 
 
@@ -1046,6 +1072,7 @@ async def query_metric(
     _require_read_scope(identity)
     org_id = await _caller_org(identity, request)
     metric = await _resolve_metric(metric_id, org_id)
+    await _require_metric_on_token_boards(identity, metric_id, metric)
 
     payload = dict(body or {})
     payload["metric_id"] = metric_id

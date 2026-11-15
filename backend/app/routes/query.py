@@ -663,6 +663,71 @@ async def _resolve_target_dialect(
         return DEFAULT_DIALECT
 
 
+async def token_board_refs(
+    identity: VerifiedIdentity, repo: Any, keys: tuple[str, ...]
+) -> set[str] | None:
+    """Ids (under any of *keys*) referenced by the boards an embed token is
+    bound to, or ``None`` when the token is not board-bound.
+
+    A malformed restriction, or a bound token without an org, raises 403.
+    Boards that do not exist in the token's org contribute nothing.
+    """
+    from app.auth.verify import embed_board_scope  # noqa: PLC0415
+    from app.errors import AppError as _AppError  # noqa: PLC0415
+
+    if identity.kind != "embed":
+        return None
+    refused = _AppError("forbidden", "This token is not valid for that request.", 403)
+    try:
+        allowed_boards = embed_board_scope(identity)
+    except ValueError:
+        raise refused from None
+    if allowed_boards is None:
+        return None
+    if not identity.org:
+        raise refused
+
+    def _collect(node: Any, found: set[str]) -> None:
+        if isinstance(node, dict):
+            for key in keys:
+                value = node.get(key)
+                if isinstance(value, str) and value:
+                    found.add(value)
+            for value in node.values():
+                _collect(value, found)
+        elif isinstance(node, list):
+            for item in node:
+                _collect(item, found)
+
+    used: set[str] = set()
+    for board_id in allowed_boards:
+        try:
+            board = await repo.get("boards", identity.org, board_id)
+        except Exception:  # noqa: BLE001
+            board = None
+        if board is not None:
+            _collect(board.get("config") or {}, used)
+    return used
+
+
+async def require_ref_in_token_boards(
+    identity: VerifiedIdentity,
+    refs: list[str | None],
+    repo: Any,
+    keys: tuple[str, ...],
+) -> None:
+    """Refuse (403) unless one of *refs* (the names one object goes by) is
+    referenced, under *keys*, by a board the embed token is bound to.
+    Unrestricted tokens are unaffected."""
+    from app.errors import AppError as _AppError  # noqa: PLC0415
+
+    used = await token_board_refs(identity, repo, keys)
+    if used is None:
+        return
+    if not any(ref and str(ref) in used for ref in refs):
+        raise _AppError("forbidden", "This token is not valid for that request.", 403)
+
+
 async def require_query_in_token_boards(
     identity: VerifiedIdentity, query_id: str | None, repo: Any
 ) -> None:
@@ -672,43 +737,9 @@ async def require_query_in_token_boards(
     that exist in its org, and the query must be one those boards reference
     (as widget data or as a filter's options query).
     """
-    from app.auth.verify import embed_board_scope  # noqa: PLC0415
-    from app.errors import AppError as _AppError  # noqa: PLC0415
-
-    if identity.kind != "embed":
-        return
-    refused = _AppError("forbidden", "This token is not valid for that query.", 403)
-    try:
-        allowed_boards = embed_board_scope(identity)
-    except ValueError:
-        raise refused from None
-    if allowed_boards is None:
-        return
-    if not identity.org or not query_id:
-        raise refused
-
-    def _query_ids(node: Any, found: set[str]) -> None:
-        if isinstance(node, dict):
-            for key in ("query_id", "options_query_id"):
-                value = node.get(key)
-                if isinstance(value, str) and value:
-                    found.add(value)
-            for value in node.values():
-                _query_ids(value, found)
-        elif isinstance(node, list):
-            for item in node:
-                _query_ids(item, found)
-
-    used: set[str] = set()
-    for board_id in allowed_boards:
-        try:
-            board = await repo.get("boards", identity.org, board_id)
-        except Exception:  # noqa: BLE001
-            board = None
-        if board is not None:
-            _query_ids(board.get("config") or {}, used)
-    if str(query_id) not in used:
-        raise refused
+    await require_ref_in_token_boards(
+        identity, [query_id], repo, ("query_id", "options_query_id")
+    )
 
 
 async def _resolve_request_plan(

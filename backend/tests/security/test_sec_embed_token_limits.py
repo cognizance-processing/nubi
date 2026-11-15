@@ -167,3 +167,92 @@ async def test_a_revoked_embed_token_stops_working():
     # Another token from the same issuer is unaffected.
     other = HTTPAuthorizationCredentials(scheme="Bearer", credentials=_token(jti="tok-2"))
     assert (await verified_identity(_request(), other)).kind == "embed"
+
+
+# ---------------------------------------------------------------------------
+# A board-bound token is bound everywhere, not only on the two main routes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "method,path,ok",
+    [
+        ("GET", "/api/v1/embed/config/b1", True),
+        ("GET", "/api/v1/embed/frozen/b1", True),
+        ("POST", "/api/v1/query", True),
+        ("GET", "/api/v1/metrics", True),
+        ("GET", "/api/v1/metrics/m1", True),
+        ("POST", "/api/v1/metrics/m1/query", True),
+        ("POST", "/api/v1/boards/b1/providers/p1/data", True),
+        ("POST", "/api/v1/metrics/m1/sql", False),
+        ("GET", "/api/v1/query/registry", False),
+        ("GET", "/api/v1/query/registry/q1", False),
+        ("GET", "/api/v1/health/freshness", False),
+        ("GET", "/api/v1/health/drift", False),
+        ("GET", "/api/v1/watches", False),
+        ("POST", "/api/v1/ai/chat", False),
+        ("POST", "/api/v1/compute/run", False),
+        ("GET", "/api/v1/embed/config/b1/../../boards", False),
+        ("DELETE", "/api/v1/metrics/m1", False),
+    ],
+)
+def test_board_bound_tokens_reach_only_the_board_data_routes(method, path, ok):
+    from app.auth.verify import board_bound_route_allowed
+
+    assert board_bound_route_allowed(method, path) is ok
+
+
+def test_every_token_is_checked_against_that_list():
+    import inspect
+
+    from app.auth import deps
+
+    assert "require_board_bound_route" in inspect.getsource(deps.verified_identity)
+
+    from app.auth.deps import require_board_bound_route
+    from app.errors import AppError
+
+    require_board_bound_route(_identity(), "GET", "/api/v1/watches")  # unrestricted
+    require_board_bound_route(_identity(board="b1"), "POST", "/api/v1/query")
+    for bad in (_identity(board="b1"), _identity(board={"x": 1})):
+        with pytest.raises(AppError) as exc:
+            require_board_bound_route(bad, "GET", "/api/v1/watches")
+        assert exc.value.status == 403
+
+
+@pytest.mark.asyncio
+async def test_board_claim_limits_which_metrics_a_token_reads():
+    from app.errors import AppError
+    from app.repos.memory import InMemoryRepo
+    from app.routes.query import require_ref_in_token_boards, token_board_refs
+
+    repo = InMemoryRepo()
+    board = await repo.create(
+        resource="boards", org_id=ORG, created_by="u", name="B",
+        config={"spec": {"title": "B", "widgets": [
+            {"id": "w1", "type": "kpi", "metric": {"metric_id": "m_on_board"}},
+        ]}},
+    )
+    bid = str(board["id"])
+    keys = ("metric_id",)
+    assert await token_board_refs(_identity(), repo, keys) is None  # unrestricted
+    assert await token_board_refs(_identity(board=bid), repo, keys) == {"m_on_board"}
+    await require_ref_in_token_boards(_identity(board=bid), ["m_on_board", "uuid-x"], repo, keys)
+    with pytest.raises(AppError) as exc:
+        await require_ref_in_token_boards(_identity(board=bid), ["m_elsewhere"], repo, keys)
+    assert exc.value.status == 403
+
+
+def test_metric_provider_and_frozen_routes_apply_the_board_restriction():
+    import inspect
+
+    from app.routes import dashboards, metrics, snapshot
+
+    for fn in (metrics.list_metrics, metrics.get_metric, metrics.query_metric):
+        assert "token_board_refs" in inspect.getsource(fn) or "_require_metric_on_token_boards" in inspect.getsource(fn)
+    assert "require_board_in_token" in inspect.getsource(dashboards.get_provider_data)
+    frozen = next(
+        f for _, f in inspect.getmembers(snapshot, inspect.iscoroutinefunction)
+        if "frozen" in f.__name__
+    )
+    assert "require_board_in_token" in inspect.getsource(frozen)

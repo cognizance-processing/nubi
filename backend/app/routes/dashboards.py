@@ -328,6 +328,11 @@ async def get_provider_data(
             403,
         )
 
+    # A board-bound embed token only reaches the boards it names.
+    from app.routes.embed import require_board_in_token  # noqa: PLC0415
+
+    require_board_in_token(identity, board_id)
+
     # ── Resolve org_id ────────────────────────────────────────────────────────
     _is_embed = identity.kind == "embed"
     if _is_embed and identity.org:
