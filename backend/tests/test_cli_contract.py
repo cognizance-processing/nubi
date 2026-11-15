@@ -220,8 +220,10 @@ async def test_every_cli_route_is_registered(app):
     be fooled by a handler-level 404. The list above is the canonical CLI ⇄
     backend contract — if a route is renamed/removed, this fails immediately.
     """
+    from tests.security.conftest_helpers import iter_route_objects
+
     registered: set[tuple[str, str]] = set()
-    for route in app.routes:
+    for route in iter_route_objects(app):
         methods = getattr(route, "methods", None) or set()
         path = getattr(route, "path", "")
         for method in methods:

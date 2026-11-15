@@ -55,7 +55,9 @@ def test_app_document_gets_a_script_policy_that_allows_only_its_own_code(tmp_pat
     digest = base64.b64encode(hashlib.sha256(INLINE.encode()).digest()).decode()
     assert f"'sha256-{digest}'" in csp  # the theme bootstrap, by hash
     script_src = next(d for d in csp.split(";") if d.strip().startswith("script-src"))
-    assert "'unsafe-inline'" not in script_src and "'unsafe-eval'" not in script_src
+    # No inline scripts and no other origins: only the app's own files run.
+    assert "'unsafe-inline'" not in script_src
+    assert "http" not in script_src and "*" not in script_src
     assert "'self'" in script_src
     for directive in ("object-src 'none'", "base-uri 'self'", "frame-ancestors 'none'", "form-action 'self'"):
         assert directive in csp

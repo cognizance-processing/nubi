@@ -146,7 +146,9 @@ def test_route_self_registers_on_api_router():
     import app.routes.insights  # noqa: F401 — triggers self-registration
     from app.routes import api_router
 
-    paths = {route.path for route in api_router.routes}
+    from tests.security.conftest_helpers import iter_route_objects
+
+    paths = {route.path for route in iter_route_objects(api_router)}
     assert "/_cache/stats" in paths
 
 

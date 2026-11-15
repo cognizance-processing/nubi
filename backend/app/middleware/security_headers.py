@@ -8,8 +8,9 @@ Applied to every response:
     - API and other non-document responses get ``default-src 'none'`` — they
       are data, never a page.
     - HTML documents (the app shell) get a policy that only runs the app's own
-      scripts: same-origin files plus the inline theme bootstrap, admitted by
-      hash.  No ``unsafe-inline`` or ``unsafe-eval`` for scripts.
+      scripts: same-origin files plus the inline bootstrap scripts, admitted
+      by hash.  No ``unsafe-inline`` and no other origins for scripts
+      (``unsafe-eval`` is allowed because the in-browser data layer needs it).
     - Nothing may frame the app (``frame-ancestors 'none'``), except assets
       under ``/embed/`` which host pages load by design.
 
@@ -58,16 +59,20 @@ def _inline_script_hashes(index_html: str | None) -> list[str]:
 
 def _document_csp(script_hashes: list[str], *, frameable: bool, env: str) -> str:
     dev = env != "production"
-    script_src = ["'self'", "'wasm-unsafe-eval'", *script_hashes]
+    # 'unsafe-eval' is required by the in-browser data layer (Apache Arrow
+    # builds its row accessors with the Function constructor; without it the
+    # query and dashboard pages fail to render).  Inline scripts and scripts
+    # from other origins — the usual injection routes — stay blocked.
+    script_src = ["'self'", "'unsafe-eval'", "'wasm-unsafe-eval'", *script_hashes]
     connect_src = ["'self'", "https:", "wss:", "blob:", "data:"]
     if dev:
         connect_src += ["http://localhost:*", "http://127.0.0.1:*", "ws://localhost:*", "ws://127.0.0.1:*"]
     directives = [
         "default-src 'self'",
         "script-src " + " ".join(script_src),
-        "style-src 'self' 'unsafe-inline'",
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
         "img-src 'self' data: blob: https:",
-        "font-src 'self' data:",
+        "font-src 'self' data: https://fonts.gstatic.com",
         "connect-src " + " ".join(connect_src),
         "worker-src 'self' blob:",
         "child-src 'self' blob:",
@@ -112,7 +117,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             )
             return response
 
-        if path in ("/docs", "/redoc") or path.startswith("/docs/oauth2"):
+        if self._env != "production" and (
+            path in ("/docs", "/redoc") or path.startswith("/docs/oauth2")
+        ):
             return response  # API explorer pages (non-production only) load their own assets
 
         mode = os.environ.get("NUBI_CSP_MODE", "enforce").strip().lower()

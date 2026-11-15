@@ -239,3 +239,16 @@ def route_guards(app: Any, path: str, method: str) -> set:
         if route_path == path and method in methods:
             return route_dependency_calls(dependant)
     raise KeyError(f"{method} {path}")
+
+
+def iter_route_objects(app_or_router: Any):
+    """Yield one route-like object per API route (``.path``, ``.methods``,
+    ``.response_model``, ``.body_field``) — the effective, fully-prefixed route
+    whichever way the framework stores included routers."""
+    from fastapi.routing import APIRoute
+
+    for route in app_or_router.routes:
+        if isinstance(route, APIRoute):
+            yield route
+        elif hasattr(route, "effective_route_contexts"):
+            yield from route.effective_route_contexts()

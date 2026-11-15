@@ -48,8 +48,10 @@ def _model_fields(tp: Any) -> set[str] | None:
 
 def _write_routes(app) -> list[tuple[APIRoute, type[BaseModel]]]:
     out = []
-    for r in app.routes:
-        if not isinstance(r, APIRoute) or not (r.methods & {"PUT", "PATCH"}) or r.body_field is None:
+    from tests.security.conftest_helpers import iter_route_objects
+
+    for r in iter_route_objects(app):
+        if not (r.methods & {"PUT", "PATCH"}) or r.body_field is None:
             continue
         body = r.body_field.field_info.annotation
         if isinstance(body, type) and issubclass(body, BaseModel):
@@ -66,7 +68,9 @@ async def test_every_writable_field_is_declared_on_the_typed_read_models(app):
     Untyped (``dict``) responses can't be checked statically — the live round-trip
     covers those.
     """
-    gets = {r.path: r for r in app.routes if isinstance(r, APIRoute) and "GET" in r.methods}
+    from tests.security.conftest_helpers import iter_route_objects
+
+    gets = {r.path: r for r in iter_route_objects(app) if "GET" in r.methods}
     checked = 0
     problems: list[str] = []
     for route, body in _write_routes(app):
