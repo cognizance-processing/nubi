@@ -42,7 +42,7 @@ __pycache__/
 backend/.env
 # ...but the secrets-contract templates ARE tracked (real .env.dev stays out)
 !.env.example
-!.env.deploy.example
+!deploy/fly/.env.fly.example
 !.env.local.example
 # ...and .env.compose itself — docker-compose.yml's `env_file` requires it to
 # exist on disk; it ships with safe placeholders only (see docs/self-host.md).
