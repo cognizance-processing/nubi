@@ -76,13 +76,28 @@ async def _resolve_opaque_credential(
     from app.auth.oauth import get_oauth_store, looks_like_oauth_access_token  # noqa: PLC0415
 
     if looks_like_api_key(raw):
-        return await get_api_key_store().resolve(raw)
+        return await _still_a_member(await get_api_key_store().resolve(raw))
     if looks_like_oauth_access_token(raw):
         path = request.url.path.rstrip("/") if request is not None else ""
         if path != _MCP_PATH and not mcp_inprocess_call.get():
             return None
-        return await get_oauth_store().resolve_access(raw)
+        return await _still_a_member(await get_oauth_store().resolve_access(raw))
     return False
+
+
+async def _still_a_member(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    """An org-pinned credential is valid only while its holder is still a
+    member of that org. Fails closed when membership cannot be confirmed."""
+    if not row:
+        return None
+    try:
+        from app.auth.roles import get_org_role  # noqa: PLC0415
+        from app.repos.provider import get_repo  # noqa: PLC0415
+
+        role = await get_org_role(str(row["user_id"]), str(row["org_id"]), get_repo())
+    except Exception:  # noqa: BLE001
+        return None
+    return row if role is not None else None
 
 
 async def current_user(

@@ -84,6 +84,11 @@ class ApiKeyStore:
         """Revoke a key owned by *user_id* in *org_id*. Return True if revoked."""
         raise NotImplementedError
 
+    async def revoke_all_for_user(self, user_id: str, org_id: str) -> int:
+        """Revoke every live key *user_id* holds in *org_id* (they left the
+        org). Return how many were revoked."""
+        raise NotImplementedError
+
 
 def _public_row(row: dict[str, Any]) -> dict[str, Any]:
     """Return the listing-safe shape of an api_keys row (never the hash)."""
@@ -141,10 +146,13 @@ class PgApiKeyStore(ApiKeyStore):
         token_hash = hash_api_key(raw_key)
         row = await fetchrow(
             """
-            SELECT id, user_id, org_id, name, last_four, revoked_at,
-                   last_used_at, created_at
-            FROM api_keys
-            WHERE token_hash = $1 AND revoked_at IS NULL
+            SELECT k.id, k.user_id, k.org_id, k.name, k.last_four, k.revoked_at,
+                   k.last_used_at, k.created_at
+            FROM api_keys k
+            -- A key is only as good as its holder's CURRENT membership of the
+            -- org it was minted for.
+            JOIN org_members m ON m.user_id = k.user_id AND m.org_id = k.org_id
+            WHERE k.token_hash = $1 AND k.revoked_at IS NULL
             """,
             token_hash,
         )
@@ -194,6 +202,23 @@ class PgApiKeyStore(ApiKeyStore):
             return int(status.split()[-1]) > 0
         except (IndexError, ValueError, AttributeError):
             return False
+
+    async def revoke_all_for_user(self, user_id: str, org_id: str) -> int:
+        from app.db import execute  # local import
+
+        status = await execute(
+            """
+            UPDATE api_keys
+            SET revoked_at = now()
+            WHERE user_id = $1::uuid AND org_id = $2::uuid AND revoked_at IS NULL
+            """,
+            user_id,
+            org_id,
+        )
+        try:
+            return int(status.split()[-1])
+        except (IndexError, ValueError, AttributeError):
+            return 0
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +281,18 @@ class InMemoryApiKeyStore(ApiKeyStore):
             return False
         row["revoked_at"] = datetime.now(tz=timezone.utc)
         return True
+
+    async def revoke_all_for_user(self, user_id: str, org_id: str) -> int:
+        count = 0
+        for row in self._store.values():
+            if (
+                str(row["user_id"]) == str(user_id)
+                and str(row["org_id"]) == str(org_id)
+                and row["revoked_at"] is None
+            ):
+                row["revoked_at"] = datetime.now(tz=timezone.utc)
+                count += 1
+        return count
 
 
 # ---------------------------------------------------------------------------

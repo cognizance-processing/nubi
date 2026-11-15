@@ -73,7 +73,8 @@ async def get_org_role(user_id: str, org_id: str, repo: Repo) -> str | None:
 
 
 def _forbid_viewer(role: str | None) -> None:
-    if role == "viewer":
+    """Writers only: a viewer — or someone with no membership at all — is refused."""
+    if role is None or role == "viewer":
         raise AppError(
             "forbidden",
             "Viewers have read-only access and cannot perform this action.",

@@ -40,7 +40,7 @@ import secrets
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
@@ -52,7 +52,41 @@ from app.repos.provider import Repo, get_repo
 from app.routes import api_router
 
 # ── Sub-router ────────────────────────────────────────────────────────────────
-router = APIRouter(prefix="/orgs", tags=["orgs"])
+async def _enforce_org_pin(request: Request) -> None:
+    """A credential issued for one org (API key, OAuth token, host-mode embed)
+    may only use these routes for THAT org.
+
+    Runs after authentication for every route on this router. Org-specific
+    routes must name the pinned org; routes with no org in the path (create an
+    org, accept an invite) are not available to a pinned credential at all.
+    The org listing is narrowed in its handler.
+    """
+    from app.routes._org import api_key_org_pin, host_mode_org_pin  # noqa: PLC0415
+
+    pinned = api_key_org_pin.get() or host_mode_org_pin.get()
+    if not pinned:
+        return
+    path_org = request.path_params.get("org_id")
+    if path_org is not None:
+        if str(path_org) != str(pinned):
+            raise AppError(
+                "forbidden", "This credential is scoped to a different organisation.", 403
+            )
+        return
+    if request.method != "GET":
+        raise AppError(
+            "forbidden", "This credential cannot manage organisations.", 403
+        )
+
+
+async def _pinned_user(
+    request: Request, user: dict[str, Any] = Depends(current_user)
+) -> None:
+    # Depends on current_user so the pin is set before it is checked.
+    await _enforce_org_pin(request)
+
+
+router = APIRouter(prefix="/orgs", tags=["orgs"], dependencies=[Depends(_pinned_user)])
 
 
 # ── Pydantic response schemas ─────────────────────────────────────────────────
@@ -340,6 +374,12 @@ async def list_orgs(
     """
     user_id = str(user["id"])
     orgs = await _list_user_orgs(user_id)
+    # A credential pinned to one org sees only that org.
+    from app.routes._org import api_key_org_pin, host_mode_org_pin  # noqa: PLC0415
+
+    pinned = api_key_org_pin.get() or host_mode_org_pin.get()
+    if pinned:
+        orgs = [o for o in orgs if str(o["id"]) == str(pinned)]
     return OrgsListResponse(orgs=[OrgOut(**o) for o in orgs])
 
 
@@ -701,6 +741,28 @@ async def remove_member(
         "DELETE FROM org_members WHERE org_id = $1::uuid AND user_id = $2::uuid",
         org_id, member_id,
     )
+    await _revoke_member_credentials(member_id, org_id)
+
+
+async def _revoke_member_credentials(user_id: str, org_id: str) -> None:
+    """Revoke the org-scoped credentials of someone who has left the org:
+    their API keys and their connected-app (OAuth) grants. Best-effort per
+    store — the membership row is already gone, which on its own stops both
+    from authenticating."""
+    try:
+        from app.auth.api_keys import get_api_key_store  # noqa: PLC0415
+
+        await get_api_key_store().revoke_all_for_user(user_id, org_id)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from app.auth.oauth import get_oauth_store  # noqa: PLC0415
+
+        store = get_oauth_store()
+        for grant in await store.list_grants(user_id, org_id):
+            await store.revoke_grant(str(grant["id"]), user_id, org_id)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ── Invites ─────────────────────────────────────────────────────────────────--
