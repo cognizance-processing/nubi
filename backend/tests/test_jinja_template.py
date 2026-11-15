@@ -381,21 +381,19 @@ class TestSqlsafeFilter:
         assert "$1" in sql
         assert params == [99]  # only val is bound
 
-    def test_sqlsafe_documented_as_dangerous(self):
-        """Confirm that a malicious string passed through sqlsafe appears raw in SQL.
+    def test_sqlsafe_refuses_anything_but_an_identifier(self):
+        """sqlsafe splices its value in unbound, so it only accepts identifiers.
 
-        This is expected and documented behaviour — callers must ONLY pass
-        trusted server-controlled values through sqlsafe.
+        A string that could change the statement is refused rather than
+        emitted raw.
         """
-        # We deliberately put a 'dangerous' string through sqlsafe to show it's raw.
-        dangerous = "'; DROP TABLE users; --"
-        sql, params = _render(
-            "SELECT {{ col | sqlsafe }} FROM t",
-            {"col": dangerous},
-        )
-        # The dangerous string IS in the SQL — this is why sqlsafe is for
-        # trusted content only.
-        assert dangerous in sql
+        with pytest.raises(Exception):
+            _render(
+                "SELECT {{ col | sqlsafe }} FROM t",
+                {"col": "'; DROP TABLE users; --"},
+            )
+        sql, params = _render("SELECT {{ col | sqlsafe }} FROM t", {"col": "users.email"})
+        assert sql == "SELECT users.email FROM t"
         assert params == []
 
 

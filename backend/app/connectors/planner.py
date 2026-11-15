@@ -607,6 +607,159 @@ def apply_dashboard_filters(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Read-only enforcement
+# ---------------------------------------------------------------------------
+#
+# "The top-level statement is a SELECT" is not the same as "this only reads".
+# A SELECT can carry a data-modifying CTE, write its result somewhere (INTO),
+# take row locks, or call a function that reads files, opens network
+# connections or stalls a worker.  The whole tree is checked, not just its root.
+
+_WRITE_NODE_NAMES = (
+    "Insert", "Update", "Delete", "Merge", "Create", "Drop", "Alter", "AlterTable",
+    "TruncateTable", "Command", "Copy", "Set", "Use", "Pragma", "Attach", "Detach",
+    "Transaction", "Commit", "Rollback", "Grant", "Into", "Lock", "LoadData", "Export",
+)
+_WRITE_NODES: tuple[type, ...] = tuple(
+    getattr(exp, name) for name in _WRITE_NODE_NAMES if hasattr(exp, name)
+)
+
+_DENIED_FUNCTIONS = frozenset(
+    {
+        # files and directories
+        "pg_stat_file", "load_file", "glob", "sniff_csv", "parquet_scan", "st_read",
+        "iceberg_scan", "delta_scan", "sqlite_scan", "file", "getenv", "openrowset",
+        "opendatasource", "openquery", "bulk",
+        # other databases / the network
+        "postgres_scan", "mysql_scan", "postgres_query", "mysql_query", "url", "remote",
+        "remotesecure", "s3", "hdfs", "jdbc", "odbc", "executable", "http_get", "http_post",
+        # stalling or controlling the server
+        "sleep", "benchmark", "get_lock", "set_config", "pg_terminate_backend",
+        "pg_cancel_backend", "pg_reload_conf", "pg_rotate_logfile", "pg_advisory_lock",
+        "pg_advisory_xact_lock", "waitfor",
+        # running SQL from a string
+        "query_to_xml", "query_to_xml_and_xmlschema", "database_to_xml", "table_to_xml",
+        "cursor_to_xml", "query", "query_table",
+    }
+)
+_DENIED_FUNCTION_PREFIXES = (
+    "read_", "pg_read_", "pg_ls_", "pg_file_", "lo_", "dblink", "pg_sleep", "xp_", "sys_e",
+    "utl_", "dbms_",
+)
+_PATHLIKE_TABLE = re.compile(r"[/\\]|://|\.(csv|tsv|txt|json|ndjson|parquet|pq|xlsx|db|duckdb|sqlite)$", re.I)
+
+
+def _function_name(node: exp.Expression) -> str:
+    if isinstance(node, exp.Anonymous):
+        return str(node.this or "").lower()
+    try:
+        return node.sql_name().lower()
+    except Exception:  # noqa: BLE001
+        return type(node).__name__.lower()
+
+
+def assert_read_only(tree: exp.Expression) -> None:
+    """Raise ``AppError("UNSUPPORTED_QUERY", 400)`` unless *tree* only reads.
+
+    Rejects data-modifying or DDL nodes anywhere in the tree (including inside
+    CTEs), ``SELECT ... INTO``, row-locking clauses, functions that reach the
+    filesystem, the network or other databases or that stall the server, and
+    "tables" that are really file paths.
+    """
+
+    def _refuse(what: str) -> AppError:
+        return AppError(
+            "UNSUPPORTED_QUERY",
+            f"Only read-only SELECT statements are supported ({what} is not allowed).",
+            status=400,
+        )
+
+    for node in tree.walk():
+        if isinstance(node, _WRITE_NODES):
+            raise _refuse(type(node).__name__.upper())
+        if isinstance(node, exp.Select) and (node.args.get("locks") or node.args.get("into")):
+            raise _refuse("INTO / FOR UPDATE")
+        if isinstance(node, exp.Func):
+            name = _function_name(node)
+            if name in _DENIED_FUNCTIONS or name.startswith(_DENIED_FUNCTION_PREFIXES):
+                raise _refuse(f"function {name}()")
+        if isinstance(node, exp.Table):
+            this = node.this
+            if isinstance(this, (exp.Identifier, exp.Literal)) and _PATHLIKE_TABLE.search(
+                str(this.this or "")
+            ):
+                raise _refuse("reading a file as a table")
+
+
+# ---------------------------------------------------------------------------
+# Row-level security injection
+# ---------------------------------------------------------------------------
+
+
+def inject_row_policies(
+    tree: exp.Expression, policies: dict[str, Any], dialect: str
+) -> list[str]:
+    """Add every policy predicate to EVERY query block that reads a base table.
+
+    Filtering only the outermost SELECT is not enough: a derived table, a CTE,
+    a UNION arm or a scalar subquery can read the protected table in a block
+    of its own and hand the rows upward under a different shape (dropping or
+    faking the policy column).  So each block that selects from a physical
+    table gets the predicates itself; blocks that only read other blocks need
+    none, because what they read is already filtered.
+
+    A base table may not be given a column-renaming alias (``t AS x(a, b)``)
+    while policies apply — that would rename the policy column out from under
+    its predicate.
+
+    Mutates *tree* in place and returns the rendered predicates (for logging).
+    """
+    if not policies:
+        return []
+
+    from sqlglot.optimizer.scope import traverse_scope  # noqa: PLC0415
+
+    predicates: list[exp.Expression] = []
+    for col_name, col_value in sorted(policies.items()):
+        predicates.extend(_make_rls_predicates(col_name, col_value))
+    rendered = [p.sql(dialect=dialect) for p in predicates]
+
+    try:
+        scopes = traverse_scope(tree)
+    except Exception as exc:  # noqa: BLE001 — cannot reason about it → refuse
+        raise AppError(
+            "UNSUPPORTED_QUERY",
+            "This query shape is not supported for callers with row-level policies.",
+            status=400,
+        ) from exc
+
+    blocks: list[exp.Select] = []
+    for scope in scopes:
+        block = scope.expression
+        if not isinstance(block, exp.Select):
+            continue
+        reads_base_table = False
+        for _name, (_node, source) in scope.selected_sources.items():
+            if isinstance(source, exp.Table) and isinstance(source.this, exp.Identifier):
+                reads_base_table = True
+                alias = source.args.get("alias")
+                if alias is not None and alias.args.get("columns"):
+                    raise AppError(
+                        "UNSUPPORTED_QUERY",
+                        "Renaming a table's columns in its alias is not supported "
+                        "for callers with row-level policies.",
+                        status=400,
+                    )
+        if reads_base_table and not any(block is b for b in blocks):
+            blocks.append(block)
+
+    for block in blocks:
+        for predicate in predicates:
+            block.where(predicate.copy(), copy=False)
+    return rendered
+
+
 def plan(
     sql: str,
     claims: dict[str, Any] | None = None,
@@ -702,6 +855,9 @@ def plan(
             status=400,
         )
 
+    # ── 2b. The WHOLE tree must be read-only, not just its root ─────────────
+    assert_read_only(tree)
+
     # ── 3. Apply projection (via optimizer) ─────────────────────────────────
     if projection:
         tree = prune_projection(tree, projection)
@@ -716,14 +872,11 @@ def plan(
     if isinstance(raw_policies, dict):
         policies = raw_policies
 
-    injected_predicates: list[str] = []
-    for col_name, col_value in sorted(policies.items()):
-        # Dispatch to shape-aware builder: scalar→EQ, list→IN, dict→range band.
-        # All paths produce AST nodes — never string concatenation.
-        pred_nodes = _make_rls_predicates(col_name, col_value)
-        for pred_node in pred_nodes:
-            tree = tree.where(pred_node)
-            injected_predicates.append(pred_node.sql(dialect=dialect))
+    # Every query block that reads a base table gets the predicates — see
+    # inject_row_policies for why the outermost WHERE alone is not enough.
+    if policies:
+        tree = tree.copy()  # never mutate the cached parse tree
+    injected_predicates: list[str] = inject_row_policies(tree, policies, dialect)
 
     # ── 6. Inject dashboard filters (AST-level, scope-aware; see
     #      apply_dashboard_filters for why this differs from RLS above) ──────

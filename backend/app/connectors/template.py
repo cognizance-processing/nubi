@@ -245,6 +245,9 @@ def _filter_inclause(value: Any) -> _RawSQL:
     return _RawSQL("(" + ", ".join(placeholders) + ")")
 
 
+_SAFE_IDENTIFIER_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,3}\Z")
+
+
 def _filter_sqlsafe(value: Any) -> _RawSQL:
     """Emit *value* as raw SQL WITHOUT binding it as a parameter.
 
@@ -261,6 +264,15 @@ def _filter_sqlsafe(value: Any) -> _RawSQL:
         # → "SELECT revenue FROM t", params=[]
 
     """
+    # Guard: the only thing that may be spliced in unbound is an identifier
+    # (optionally dotted).  Anything else — operators, quotes, whitespace,
+    # sub-selects — is refused, so a template that forwards request input here
+    # cannot be turned into an injection point.
+    if not isinstance(value, str) or not _SAFE_IDENTIFIER_RE.match(value):
+        raise ValueError(
+            "sqlsafe only accepts a plain identifier (letters, digits, underscore, "
+            "optionally dotted)."
+        )
     return _RawSQL(value)
 
 
