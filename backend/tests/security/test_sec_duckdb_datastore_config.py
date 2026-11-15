@@ -17,6 +17,12 @@ APP_DIR = pathlib.Path(__file__).resolve().parents[2] / "app"
 
 
 @pytest.fixture(autouse=True)
+def _no_extra_data_dirs(monkeypatch):
+    """The suite-wide tmp allowance must not apply to these checks."""
+    monkeypatch.delenv("NUBI_DUCKDB_DATA_DIRS", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _secret_store():
     from app.connectors.secret_store import InMemorySecretStore, set_secret_store_for_tests
 

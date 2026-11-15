@@ -480,6 +480,7 @@ class QueryLog:
         cache_key: str,
         ts: float | None = None,
         byte_size: int = 0,
+        org_id: str | None = None,
     ) -> None:
         """Record a query execution in the ring buffer.
 
@@ -511,6 +512,9 @@ class QueryLog:
                 "groupby_sig": sig,
                 "ts": ts,
                 "byte_size": byte_size,
+                # Which org ran it — the log is process-wide, so every reader
+                # that serves a tenant filters on this (see ``for_org``).
+                "org_id": str(org_id) if org_id else None,
             }
         )
 
@@ -524,6 +528,17 @@ class QueryLog:
             ``ts``, ``byte_size``.
         """
         return list(self._buf)
+
+    def for_org(self, org_id: str | None) -> "QueryLog":
+        """A snapshot log holding only *org_id*'s entries.
+
+        Tenant-facing readers (suggestions, on-demand builds, per-org refresh)
+        mine this view so one org never sees another's tables or query shapes.
+        """
+        scoped = QueryLog(maxlen=self._buf.maxlen or _MAXLEN)
+        wanted = str(org_id) if org_id else None
+        scoped._buf.extend(e for e in self._buf if e.get("org_id") == wanted)
+        return scoped
 
     def clear(self) -> None:
         """Remove all entries from the ring buffer.  Useful in tests."""

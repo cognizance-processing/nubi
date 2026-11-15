@@ -111,7 +111,7 @@ def query_log() -> QueryLog:
     log = QueryLog()
     sql = "SELECT region, SUM(amount) FROM orders GROUP BY region"
     for _ in range(5):
-        log.record(sql, cache_key="k", byte_size=1000)
+        log.record(sql, cache_key="k", byte_size=1000, org_id="org-001")
     return log
 
 

@@ -61,7 +61,19 @@ def handle(
     from app.errors import AppError  # noqa: PLC0415
     from app.preagg.scheduler import run_preagg_refresh  # noqa: PLC0415
 
+    # The run's own organisation decides whose rollups are refreshed; the
+    # config value is only a fallback for contexts that carry none, and may
+    # never name a different organisation.
+    run_org: str | None = getattr(ctx, "org_id", None)
     org_id: str | None = config.get("org_id")
+    if run_org:
+        if org_id and str(org_id) != str(run_org):
+            raise AppError(
+                "invalid_task_config",
+                "preagg_refresh 'org_id' must be the organisation running the flow.",
+                400,
+            )
+        org_id = str(run_org)
     if not org_id:
         raise AppError(
             "invalid_task_config",

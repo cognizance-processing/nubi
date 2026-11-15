@@ -46,6 +46,12 @@ os.environ["GOOGLE_REDIRECT_URI"] = "http://localhost:8000/api/v1/auth/google/ca
 os.environ["FRONTEND_URL"] = "http://localhost:3000"
 os.environ["COOKIE_SECURE"] = "false"
 os.environ["ENV"] = "test"
+# On-disk DuckDB fixtures live in the test tmp dir; rollup files must not land
+# in the repo's seed_data directory.
+import tempfile as _tempfile  # noqa: E402
+
+os.environ.setdefault("NUBI_DUCKDB_DATA_DIRS", _tempfile.gettempdir())
+os.environ.setdefault("NUBI_ROLLUPS_DIR", _tempfile.mkdtemp(prefix="nubi-rollups-"))
 os.environ.pop("CORS_ORIGINS", None)
 
 # The rate limiter is a real, IP-keyed middleware (see app/middleware/ratelimit.py).

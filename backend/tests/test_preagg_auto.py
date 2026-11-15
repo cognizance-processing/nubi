@@ -2570,7 +2570,7 @@ class TestRollupFileLifecycle:
         from app.connectors.preagg import _rollup_database_path  # noqa: PLC0415
 
         reg = RollupRegistry()
-        rollups_dir = os.path.dirname(_rollup_database_path("_"))
+        rollups_dir = os.path.dirname(os.path.dirname(_rollup_database_path("_")))
 
         built_1 = build_rollup(
             self._candidate(),
@@ -2581,7 +2581,7 @@ class TestRollupFileLifecycle:
         try:
             files_after_1 = {
                 os.path.abspath(p)
-                for p in glob.glob(os.path.join(rollups_dir, "*.duckdb"))
+                for p in glob.glob(os.path.join(rollups_dir, "**", "*.duckdb"), recursive=True)
             }
             assert os.path.abspath(built_1.database) in files_after_1
 
@@ -2598,7 +2598,7 @@ class TestRollupFileLifecycle:
 
             files_after_2 = {
                 os.path.abspath(p)
-                for p in glob.glob(os.path.join(rollups_dir, "*.duckdb"))
+                for p in glob.glob(os.path.join(rollups_dir, "**", "*.duckdb"), recursive=True)
             }
             # No NEW file was created for the rebuild (shared file may remain).
             new_files = files_after_2 - files_after_1

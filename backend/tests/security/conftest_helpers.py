@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+from fastapi import Request
+
 
 # ---------------------------------------------------------------------------
 # Environment bootstrap (must be done before any app imports).
@@ -142,3 +144,54 @@ def make_db_patches():
         patch("app.db.init_db", new=AsyncMock()),
         patch("app.db.close_db", new=AsyncMock()),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Multi-tenant route harness
+# ---------------------------------------------------------------------------
+
+def make_tenant_app(members: dict[str, tuple[str, str]], *, modules: tuple[str, ...] = ()):
+    """Build an app over the in-memory repo with several users in several orgs.
+
+    ``members`` maps a short user key to ``(org_id, role)``.  Requests pick the
+    acting user with the ``X-Test-User`` header (the short key).  Returns
+    ``(app, repo, users)`` where ``users[key]`` is the generated user id.
+    Callers must ``set_repo(None)`` when done.
+    """
+    import importlib
+    import uuid
+
+    from fastapi import FastAPI
+
+    from app.auth.deps import current_user
+    from app.errors import AppError, register_handlers
+    from app.repos.memory import InMemoryRepo
+    from app.repos.provider import set_repo
+
+    for mod in modules:
+        importlib.import_module(mod)
+    from app.routes import api_router
+
+    repo = InMemoryRepo()
+    users: dict[str, str] = {}
+    for key, (org_id, role) in members.items():
+        users[key] = str(uuid.uuid4())
+        repo.seed_org_member(org_id, users[key], role)
+    set_repo(repo)
+
+    def _user(request: Request) -> dict[str, Any]:
+        key = request.headers.get("x-test-user", "")
+        if key not in users:
+            raise AppError("unauthorized", "Authentication required.", 401)
+        return {"id": users[key], "email": f"{key}@example.com", "name": key}
+
+    app = FastAPI()
+    register_handlers(app)
+    app.dependency_overrides[current_user] = _user
+    app.include_router(api_router, prefix="/api/v1")
+    return app, repo, users
+
+
+def as_user(key: str) -> dict[str, str]:
+    """Headers selecting the acting user for :func:`make_tenant_app`."""
+    return {"X-Test-User": key}

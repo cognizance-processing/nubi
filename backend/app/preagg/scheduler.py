@@ -120,7 +120,9 @@ def run_preagg_refresh(
     from app.connectors.query_log import get_query_log  # noqa: PLC0415
 
     reg = registry if registry is not None else get_registry()
-    log = query_log if query_log is not None else get_query_log()
+    # An explicit log is used as given; the process-wide log is narrowed to
+    # this org so a refresh never builds from another org's query shapes.
+    log = query_log if query_log is not None else get_query_log().for_org(org_id)
 
     candidates = mine(log, min_hits=min_hits)
     built_ids: list[str] = []

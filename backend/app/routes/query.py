@@ -1543,7 +1543,10 @@ async def query(
     # ── 6b. Log the query for pre-agg mining (best-effort; never breaks query) ─
     try:
         get_query_log().record(
-            _resolved.effective_sql, physical_plan.cache_key, byte_size=len(full_bytes)
+            _resolved.effective_sql,
+            physical_plan.cache_key,
+            byte_size=len(full_bytes),
+            org_id=org_id,
         )
     except Exception:
         pass
