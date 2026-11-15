@@ -111,7 +111,7 @@ def _dispatch_tool(
     # ``confirm`` it supplies): they become a pending action for the person.
     from app.ai import pending_actions  # noqa: PLC0415
 
-    if name in pending_actions.CONFIRM_REQUIRED:
+    if pending_actions.needs_confirmation(name, arguments):
         from app.auth.roles import require_tool_writer  # noqa: PLC0415
 
         require_tool_writer(claims)

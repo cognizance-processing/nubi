@@ -23,6 +23,19 @@ from app.errors import AppError
 #: Tools the in-app agent can only *propose*.
 CONFIRM_REQUIRED: frozenset[str] = frozenset({"delete_dashboard", "update_dashboard"})
 
+
+
+def needs_confirmation(name: str, arguments: dict[str, Any] | None) -> bool:
+    """True for a call that would change or remove a saved dashboard.
+
+    ``edit_dashboard`` counts only when it targets a saved board; editing a
+    spec the caller holds in hand changes nothing until it is saved.
+    """
+    if name in CONFIRM_REQUIRED:
+        return True
+    return name == "edit_dashboard" and bool((arguments or {}).get("board_id"))
+
+
 _TTL_SECONDS = 600
 _PREFIX = "pending-action:"
 
@@ -37,6 +50,8 @@ def _summary(kind: str, arguments: dict[str, Any]) -> str:
     board = arguments.get("board_id") or arguments.get("dashboard_id") or "a dashboard"
     if kind == "delete_dashboard":
         return f"Delete dashboard {board}"
+    if kind == "edit_dashboard":
+        return f"Edit dashboard {board}"
     return f"Replace the contents of dashboard {board}"
 
 

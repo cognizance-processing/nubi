@@ -1267,6 +1267,10 @@ def _tool_edit_saved_dashboard(
     """
     from app.errors import AppError  # noqa: PLC0415
 
+    from app.auth.roles import require_tool_writer  # noqa: PLC0415
+
+    # Checked here, where the write happens, so no caller can skip it.
+    require_tool_writer(claims)
     if claims.get("kind", "access") != "access":
         raise AppError(
             "insufficient_scope",
@@ -1294,11 +1298,7 @@ def _tool_save_dashboard(
     uses for ``resource="boards"`` — ``repo.create(resource="boards", ...,
     config={"spec": ...})`` — so the result is a real board, listable via
     ``GET /boards`` and openable in the app exactly like one created through
-    the UI. Does NOT go through ``require_writer`` (the route-level
-    editor/owner role gate) since the tool layer has no role in *claims* to
-    check — mirrors ``create_query``'s existing lack of a role gate; the
-    embed-token exclusion below is the security-relevant boundary here (a
-    read-only third-party embed session must never persist a board).
+    the UI. Needs a writer role and a write-capable scope, like the route.
 
     Returns
     -------
@@ -1307,6 +1307,10 @@ def _tool_save_dashboard(
         ``{error: {code, message}}`` / ``{valid: False, issues: [...]}
         without saving anything if *spec* fails validation.
     """
+    from app.auth.roles import require_tool_writer  # noqa: PLC0415
+
+    # Checked here, where the write happens, so no caller can skip it.
+    require_tool_writer(claims)
     from app.dashboards.spec import validate_spec  # noqa: PLC0415
     from app.errors import AppError  # noqa: PLC0415
 
@@ -1456,6 +1460,10 @@ def _tool_update_dashboard(
 
     # Same boundary as save_dashboard: a read-only embed session must never
     # mutate a board.
+    from app.auth.roles import require_tool_writer  # noqa: PLC0415
+
+    # Checked here, where the write happens, so no caller can skip it.
+    require_tool_writer(claims)
     if claims.get("kind", "access") != "access":
         raise AppError(
             "insufficient_scope",
@@ -1514,6 +1522,10 @@ def _tool_delete_dashboard(
 
     # Same boundary as save_/update_dashboard: a read-only embed session must
     # never mutate — least of all destroy — a board.
+    from app.auth.roles import require_tool_writer  # noqa: PLC0415
+
+    # Checked here, where the write happens, so no caller can skip it.
+    require_tool_writer(claims)
     if claims.get("kind", "access") != "access":
         raise AppError(
             "insufficient_scope",

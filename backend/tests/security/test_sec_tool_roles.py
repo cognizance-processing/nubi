@@ -24,7 +24,21 @@ WRITE_CALLS = [
     ("delete_dashboard", {"dashboard_id": str(uuid.uuid4()), "confirm": True}),
     ("update_dashboard", {"dashboard_id": str(uuid.uuid4()), "spec": {"title": "t", "widgets": []}}),
     ("save_dashboard", {"spec": {"title": "t", "widgets": []}}),
+    (
+        "edit_dashboard",
+        {"board_id": str(uuid.uuid4()), "op": {"action": "remove_widget", "widget_id": "w1"}},
+    ),
 ]
+
+
+@pytest.mark.parametrize("fn", ["_tool_save_dashboard", "_tool_update_dashboard", "_tool_delete_dashboard"])
+def test_dashboard_writers_check_the_role_themselves(fn):
+    """The check lives in the function that writes, so no wrapper can skip it."""
+    import inspect
+
+    from app.ai import tools
+
+    assert "require_tool_writer(claims)" in inspect.getsource(getattr(tools, fn))
 
 
 def _refused(name, args, claims) -> bool:

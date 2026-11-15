@@ -160,11 +160,13 @@ def test_third_party_tool_descriptions_are_labelled(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("tool", ["delete_dashboard", "update_dashboard"])
+@pytest.mark.parametrize("tool", ["delete_dashboard", "update_dashboard", "edit_dashboard"])
 def test_agent_cannot_execute_destructive_tools_itself(calls, tool):
     from app.ai import pending_actions
 
     args = {"board_id": "b1", "confirm": True, "spec": {"title": "t", "widgets": []}}
+    if tool == "edit_dashboard":
+        args = {"board_id": "b1", "op": {"action": "remove_widget", "widget_id": "w1"}}
     provider = _text_provider([json.dumps({"tool": tool, "arguments": args}), "I have asked you to confirm."])
     claims = _claims()
     claims["org"] = ORG
