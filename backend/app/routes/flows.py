@@ -1450,6 +1450,10 @@ async def compile_code(
           "issues": []
         }
     """
+    from app.compute.policy import require_host_python  # noqa: PLC0415
+
+    require_host_python("Compiling flow code")
+
     import json as _json  # noqa: PLC0415
     import os  # noqa: PLC0415
     import sys  # noqa: PLC0415
@@ -1661,6 +1665,11 @@ async def preview_cell(
     if spec is None or not spec.tasks:
         raise AppError("bad_request", "Spec has no tasks.", 400)
 
+    # Python cells only run where user code is allowed to (503 otherwise).
+    from app.compute.policy import require_spec_runnable  # noqa: PLC0415
+
+    require_spec_runnable(spec)
+
     # ── 2. Determine target cell ───────────────────────────────────────────
     cell_key: str = body.cell_key or spec.tasks[-1].key
 
@@ -1840,6 +1849,11 @@ async def run_cell(
 
     if spec is None or not spec.tasks:
         raise AppError("bad_request", "Spec has no tasks.", 400)
+
+    # Python cells only run where user code is allowed to (503 otherwise).
+    from app.compute.policy import require_spec_runnable  # noqa: PLC0415
+
+    require_spec_runnable(spec)
 
     cell_key: str = body.cell_key or spec.tasks[-1].key
 
@@ -2321,6 +2335,11 @@ async def run_flow(
             flow["spec"] = pinned_spec
     except Exception:  # noqa: BLE001 — never fail the run on env resolution
         pass
+
+    # Python cells only run where user code is allowed to (503 otherwise).
+    from app.compute.policy import require_spec_runnable  # noqa: PLC0415
+
+    require_spec_runnable(flow.get("spec") or {})
 
     # ── BILLING: flow task execution consumes compute units ──────────────────
     # Enforce the org's compute-unit quota before draining (the executor

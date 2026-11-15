@@ -555,6 +555,12 @@ def _handle_python(
     ``code`` — required Python source code string.
     """
     import json  # noqa: PLC0415
+    # Refuse before any spool/artifact work: covers interactive, scheduled
+    # and worker-driven runs alike.
+    from app.compute.policy import require_host_python  # noqa: PLC0415
+
+    require_host_python("Running Python cells")
+
     import subprocess  # noqa: PLC0415
     import sys  # noqa: PLC0415
     import tempfile  # noqa: PLC0415

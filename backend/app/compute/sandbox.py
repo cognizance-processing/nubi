@@ -264,6 +264,11 @@ def run_sandboxed(
         CPU-seconds for ``RLIMIT_CPU``; ``None`` skips the CPU rlimit (other
         rlimits still apply).
     """
+    # The one gate every host-side execution of user code passes through.
+    from app.compute.policy import require_host_python  # noqa: PLC0415
+
+    require_host_python()
+
     proc = subprocess.Popen(
         list(argv),
         stdout=subprocess.PIPE,

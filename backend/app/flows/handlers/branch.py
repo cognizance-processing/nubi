@@ -38,16 +38,15 @@ Q1:  ``else_`` / ``default`` is OPTIONAL.  If no condition matches and
      engine marks the branch ``'failed'`` and all downstream tasks receive
      ``'upstream_failed'``.  This prevents silent hangs.
 
-Security note on ``eval``
---------------------------
-``when`` expressions are authored by the flow author (an authenticated user),
-not by end-users.  The expression is evaluated with ``__builtins__`` removed
-and only ``inputs``, ``params``, and ``secrets`` in scope.  This is the same
-trust boundary as the existing ``'python'`` task kind which executes arbitrary
-subprocess code.
-
-A sandboxed evaluator (e.g. ``simpleeval``) can replace ``eval`` as a
-hardening step but is not required for the initial implementation.
+Security note on conditions
+---------------------------
+``when`` expressions run inside the application process, so they are NOT
+evaluated as arbitrary Python.  Each expression is parsed and checked against
+a small grammar (comparisons, boolean / arithmetic operators, literals,
+subscripts, public attribute access and calls to a fixed set of pure
+builtins) by :func:`_safe_eval` before it is evaluated.  Anything else —
+underscore attributes, lambdas, comprehensions, method calls, f-strings — is
+rejected, so a condition cannot reach interpreter internals.
 """
 
 from __future__ import annotations
@@ -63,6 +62,45 @@ _BRACE_RE = re.compile(r"\{\{(.+?)\}\}")
 
 # Matches a pure ``{{ dot.path.expr }}`` expression (only word chars and dots).
 _PURE_PATH_RE = re.compile(r"^\{\{\s*([\w.]+)\s*\}\}$")
+
+
+_SAFE_CALLS = frozenset(
+    {"int", "float", "str", "bool", "len", "abs", "round", "min", "max", "list", "dict", "tuple", "set"}
+)
+
+
+def _safe_eval(expr: str, namespace: dict[str, Any]) -> Any:
+    """Evaluate a condition expression restricted to a safe grammar.
+
+    Raises ``ValueError`` for anything outside it (see module docstring).
+    """
+    import ast  # noqa: PLC0415
+
+    allowed = (
+        ast.Expression, ast.BoolOp, ast.BinOp, ast.UnaryOp, ast.Compare, ast.IfExp,
+        ast.Call, ast.Name, ast.Constant, ast.Attribute, ast.Subscript, ast.Slice,
+        ast.List, ast.Tuple, ast.Dict, ast.Set, ast.Load,
+        ast.And, ast.Or, ast.Not, ast.USub, ast.UAdd,
+        ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod,
+        ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn, ast.Is, ast.IsNot,
+    )
+    if len(expr) > 50_000:
+        raise ValueError("condition is too long")
+    try:
+        tree = ast.parse(expr.strip(), mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(f"condition is not a valid expression: {exc.msg}") from exc
+    for node in ast.walk(tree):
+        if not isinstance(node, allowed):
+            raise ValueError(f"condition uses unsupported syntax: {type(node).__name__}")
+        if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
+            raise ValueError("condition may not access underscore attributes")
+        if isinstance(node, ast.Name) and node.id.startswith("_"):
+            raise ValueError("condition may not use underscore names")
+        if isinstance(node, ast.Call):
+            if not (isinstance(node.func, ast.Name) and node.func.id in _SAFE_CALLS) or node.keywords:
+                raise ValueError("condition may only call basic builtins")
+    return eval(compile(tree, "<condition>", "eval"), namespace, {})  # noqa: S307 — grammar-checked above
 
 
 def _resolve_native_value(path: str, ctx: "TaskContext") -> Any:
@@ -197,7 +235,7 @@ def _eval_when(when_expr: str, ctx: "TaskContext", condition_index: int) -> bool
         except (ValueError, SyntaxError):
             pass
         try:
-            return bool(eval(when_expr, _make_ns(), {}))  # noqa: S307
+            return bool(_safe_eval(when_expr, _make_ns()))  # noqa: S307
         except Exception as exc:  # noqa: BLE001
             raise ValueError(
                 f"branch handler: failed to evaluate condition[{condition_index}] "
@@ -229,7 +267,7 @@ def _eval_when(when_expr: str, ctx: "TaskContext", condition_index: int) -> bool
             return bool(_resolve_native_value(inner, ctx))
         # Otherwise evaluate as a full Python expression with ctx namespaces.
         try:
-            return bool(eval(inner, _make_ns(), {}))  # noqa: S307
+            return bool(_safe_eval(inner, _make_ns()))  # noqa: S307
         except Exception as exc:  # noqa: BLE001
             raise ValueError(
                 f"branch handler: failed to evaluate condition[{condition_index}] "
@@ -257,7 +295,7 @@ def _eval_when(when_expr: str, ctx: "TaskContext", condition_index: int) -> bool
         pass
 
     try:
-        return bool(eval(substituted, _make_ns(), {}))  # noqa: S307
+        return bool(_safe_eval(substituted, _make_ns()))  # noqa: S307
     except Exception as exc:  # noqa: BLE001
         raise ValueError(
             f"branch handler: failed to evaluate condition[{condition_index}] "
