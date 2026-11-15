@@ -30,6 +30,7 @@ import { profileTable, suggestVisuals } from './chartSuggest.js'
 import { titleText, withTitleText } from './titleValue.js'
 import { parseNumberInput } from './numberInput.js'
 import { registeredMaps, mapLabel, mapCategory } from '../../lib/maps.js'
+import { DEFAULT_PALETTE, GAUGE_ARC_START, GAUGE_ARC_END } from '../../lib/chartOptionShared.js'
 
 // Chart types that use an x/y cartesian axis system (show axis config +
 // reference lines). Combo is cartesian too — buildCombo() honours axes and
@@ -112,6 +113,8 @@ export function ChartConfig({ widget, onChange }) {
   const cfg = widget.config ?? {}
   const wProps = widget.props ?? {}
   const baseType = widget.chart_type || 'bar'
+  // Solid arc fallback matches resolvePalette(config, theme)[0] in chart-options.ts.
+  const gaugeDefaultArcColor = (Array.isArray(cfg.palette) && cfg.palette[0]) || DEFAULT_PALETTE[0]
 
   // Chart types that fit this query's actual result — only chart shapes here,
   // since this panel configures a chart widget (a KPI/table nomination would
@@ -342,6 +345,79 @@ export function ChartConfig({ widget, onChange }) {
           </div>
         )}
 
+        {/* Gauge arc colour — gradient (low→high) or one solid colour. Unset
+            keeps the stock look (needle: theme bands; ring: palette[0]). */}
+        {isGauge && (
+          <div className="space-y-1.5">
+            <ToggleRow
+              label="Arc gradient"
+              checked={!!cfg.gaugeArcGradient}
+              onChange={v => setConfig('gaugeArcGradient', v || undefined)}
+            />
+            {cfg.gaugeArcGradient ? (
+              <div className="flex items-center gap-1.5">
+                <ColorSwatch
+                  title="Start (low)"
+                  value={cfg.gaugeArcStart}
+                  fallback={GAUGE_ARC_START}
+                  onChange={v => setConfig('gaugeArcStart', v || undefined)}
+                />
+                <div
+                  className="flex-1 h-2 rounded-full"
+                  // Same straight sRGB start→end blend the renderer samples
+                  // along the arc (lerpGaugeArcColor in chart-options.ts).
+                  style={{ background: `linear-gradient(to right, ${cfg.gaugeArcStart || GAUGE_ARC_START}, ${cfg.gaugeArcEnd || GAUGE_ARC_END})` }}
+                />
+                <ColorSwatch
+                  title="End (high)"
+                  value={cfg.gaugeArcEnd}
+                  fallback={GAUGE_ARC_END}
+                  onChange={v => setConfig('gaugeArcEnd', v || undefined)}
+                />
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5">
+                <ColorSwatch
+                  title="Arc color"
+                  value={cfg.gaugeArcColor}
+                  fallback={gaugeDefaultArcColor}
+                  onChange={v => setConfig('gaugeArcColor', v || undefined)}
+                />
+                <span className="text-[12px] text-muted">
+                  {cfg.gaugeArcColor
+                    ? 'Arc color'
+                    : ((cfg.gaugeStyle ?? 'needle') === 'ring' ? 'Theme default' : 'Theme bands (default)')}
+                </span>
+              </div>
+            )}
+            <div>
+              <FieldLabel>Arc ends</FieldLabel>
+              <select
+                className={selectCls}
+                value={cfg.gaugeArcCaps === 'flat' || cfg.gaugeArcCaps === 'round' ? cfg.gaugeArcCaps : ''}
+                onChange={e => setConfig('gaugeArcCaps', e.target.value || undefined)}
+              >
+                <option value="">Auto</option>
+                <option value="flat">Flat</option>
+                <option value="round">Round</option>
+              </select>
+            </div>
+            {(cfg.gaugeArcGradient || cfg.gaugeArcStart || cfg.gaugeArcEnd || cfg.gaugeArcColor || cfg.gaugeArcCaps) && (
+              <button
+                type="button"
+                className="text-[12px] text-muted hover:text-fg underline"
+                onClick={() => {
+                  const next = { ...cfg }
+                  for (const k of ['gaugeArcGradient', 'gaugeArcStart', 'gaugeArcEnd', 'gaugeArcColor', 'gaugeArcCaps']) delete next[k]
+                  onChange({ ...widget, config: next })
+                }}
+              >
+                Reset to theme
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Radial / gauge scale — the 0..max the arc or rings are filled against */}
         {(isGauge || isRadialBar) && (
           <div className="flex gap-1.5">
@@ -443,6 +519,21 @@ export function ChartConfig({ widget, onChange }) {
             </div>
           )}
         </div>
+
+        {/* Gauge arc scale labels — reuses yAxis.format (no Date: a scale is numeric). */}
+        {isGauge && (
+          <div>
+            <FieldLabel>Scale value format</FieldLabel>
+            <select
+              className={selectCls}
+              value={typeof cfg.yAxis?.format === 'string' ? cfg.yAxis.format : ''}
+              onChange={e => setAxisConfig('yAxis', 'format', e.target.value || undefined)}
+            >
+              {VALUE_FORMAT_OPTIONS.filter(o => o.value !== 'date').map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+            <p className="text-[12px] text-muted mt-1 leading-snug">Arc tick labels (needle); empty = auto.</p>
+          </div>
+        )}
 
         {/* Data labels — a boolean by default; picking a format or a position
             promotes the value to the object form the renderer also accepts. */}

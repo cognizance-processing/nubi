@@ -56,7 +56,7 @@ import { arrowTableToCSV, downloadCSV, chartToPNG } from '../../lib/exports.js'
 import WidgetToolbar from '../WidgetToolbar.jsx'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { runMetricQuery } from '../../lib/metricRuntime.js'
-import { buildChartOption } from '../../lib/chartOptionShared.js'
+import { buildChartOption, gaugeTargetValue } from '../../lib/chartOptionShared.js'
 import { hasMap, ensureMapRegistered } from '../../lib/maps.js'
 import { resolveSpaTheme } from '../../lib/spaTheme.js'
 import EChart from '../../viz/EChart.jsx'
@@ -70,6 +70,8 @@ import WidgetError from '../../components/app/WidgetError.jsx'
 import { useTheme } from '../../contexts/ThemeContext.jsx'
 import { adaptBackgroundColor } from '../../lib/themeColor.js'
 import { resolveTextColors } from '../textColors.js'
+import { chartReplaceKey } from './chartReplaceKey.js'
+import { useGaugeGradientTween } from './useGaugeGradientTween.js'
 
 /**
  * Translate a widget spec into the encoding object expected by buildChartOption.
@@ -111,13 +113,13 @@ function resolveConfig(widget) {
   if (cfg.stack === undefined && (wProps.stack === true || typeof wProps.stack === 'string')) {
     cfg.stack = wProps.stack
   }
-  // Legacy gauge max/min
-  if (cfg.yAxis === undefined) {
-    if (wProps.max !== undefined || wProps.min !== undefined) {
-      cfg.yAxis = {}
-      if (wProps.max !== undefined) cfg.yAxis.max = wProps.max
-      if (wProps.min !== undefined) cfg.yAxis.min = wProps.min
-    }
+  // Legacy gauge max/min — filled per field, so an axis text size or tick
+  // count that creates config.yAxis doesn't silently drop a props.max/min.
+  if (wProps.max !== undefined || wProps.min !== undefined) {
+    const y = { ...(cfg.yAxis ?? {}) }
+    if (y.max === undefined && wProps.max !== undefined) y.max = wProps.max
+    if (y.min === undefined && wProps.min !== undefined) y.min = wProps.min
+    cfg.yAxis = y
   }
 
   return cfg
@@ -261,6 +263,27 @@ export default function ChartWidget({ widget, providerTable = null }) {
     onClickSpec, emitCrossFilter, stepAdvance,
   ])
 
+  const replaceKey = chartReplaceKey(chart_type, widget.config)
+
+  // Gradient gauge: its arc is colour stops ECharts won't tween, so sweep a
+  // display value here and rebuild the option per frame (runtime-only; solid /
+  // themed gauges keep ECharts' native progress animation).
+  const gaugeTarget = useMemo(
+    () => (chart_type === 'gauge' && table ? gaugeTargetValue(table, resolveEncoding(widget)) : null),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+    [table, chart_type, JSON.stringify(widget.encoding), JSON.stringify(widget.props)],
+  )
+  const gaugeConfig = chart_type === 'gauge' ? resolveConfig(widget) : null
+  const gaugeTween = useGaugeGradientTween(gaugeTarget, {
+    enabled: !!gaugeConfig?.gaugeArcGradient && gaugeConfig.animation !== false,
+    resetKey: replaceKey,
+    // Intro sweep starts at the gauge min (buildGauge's min resolution).
+    introFrom: Number(gaugeConfig?.yAxis?.min ?? gaugeConfig?.min ?? 0),
+  })
+  // Only an in-flight tween feeds the builder (and the memo below), so a
+  // snapped value never triggers an extra setOption mid native animation.
+  const gaugeDisplayValue = gaugeTween.tweening ? gaugeTween.value : undefined
+
   // Build ECharts option via the shared builder
   const option = useMemo(() => {
     if (!table) return null
@@ -309,10 +332,12 @@ export default function ChartWidget({ widget, providerTable = null }) {
       encoding,
       config,
       theme,
+      gaugeDisplayValue,
+      gaugeTweening: gaugeTween.tweening,
     })
     return opt
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [table, chart_type, JSON.stringify(widget.encoding), JSON.stringify(widget.config), JSON.stringify(widget.props), widget.style?.color, widget.style?.titleColor, widget.style?.mutedColor, widget.style?.background, widget.style?.themeAdapt, isDark, mapName, mapReadyEpoch])
+  }, [table, chart_type, JSON.stringify(widget.encoding), JSON.stringify(widget.config), JSON.stringify(widget.props), widget.style?.color, widget.style?.titleColor, widget.style?.mutedColor, widget.style?.background, widget.style?.themeAdapt, isDark, mapName, mapReadyEpoch, gaugeTween.tweening, gaugeDisplayValue])
 
   if (loading) {
     return (
@@ -367,7 +392,7 @@ export default function ChartWidget({ widget, providerTable = null }) {
           `min()` keeps the floor only while it fits the space available. */}
       <div className="flex-1 min-h-0" style={{ minHeight: 'min(180px, 100%)' }}>
         {option
-          ? <EChart option={option} height={height} onEvents={onEvents} replaceKey={`${chart_type}:${mapName ?? ''}`} />
+          ? <EChart option={option} height={height} onEvents={onEvents} replaceKey={replaceKey} />
           : (
             <EmptyState
               title="No data"

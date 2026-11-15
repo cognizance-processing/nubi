@@ -60,6 +60,15 @@
  *   lineColors: string[],                 // combo: line colours, independent of the bars
  *   symbolSize: number,                   // combo: size of the filled points on its lines
  *   fontFamily: string,                   // canvas text family; default the page's body font
+ *   gaugeStyle: 'needle' | 'ring',        // gauge: banded needle dial (default) or progress ring
+ *   gaugeArcGradient: boolean,            // gauge: fill the arc with a low->high gradient
+ *   gaugeArcStart: string,                // gauge: gradient start colour (low end)
+ *   gaugeArcEnd:   string,                // gauge: gradient end colour (high end)
+ *   gaugeArcColor: string,                // gauge: solid arc colour when not a gradient.
+ *                   Any arc key set -> the needle drops its 3 theme bands for a
+ *                   neutral track + the filled-to-value arc in this colour.
+ *   gaugeArcCaps: 'flat' | 'round',       // gauge: arc end shape. Unset (Auto) -> gradient
+ *                   flat; ring round; needle square (see resolveGaugeArcCaps).
  *   locale:    string,                    // BCP-47 locale for number formatting
  *   echarts:   object,                    // raw echarts option, deep-merged last
  *   ...any other top-level echarts option keys (deep-merged, config wins)
@@ -1567,58 +1576,274 @@ function fiveNumberSummary(arr) {
   return [s[0], q(0.25), q(0.5), q(0.75), s[s.length - 1]]
 }
 
-function buildGauge(table, e, config, theme, locale) {
+// Gauge arc colours from config.gaugeArc*. None set -> the stock look
+// (needle: 3 theme bands; ring: palette[0]). A solid gaugeArcColor paints the
+// progress arc. A gradient can't go on `progress`: ECharts fits a gradient to
+// the element's bounding box, so it runs left->right instead of along the
+// curve and a short fill squeezes the whole start->end range into a sliver.
+// Instead the arc track is split into GAUGE_ARC_SEGMENTS colour stops, each
+// sampled at its position on the SCALE (min..max), filled up to the value —
+// so 5.5 of 100 is start-colour only and the colour follows the arc.
+export const GAUGE_ARC_START = '#E24B4A'
+export const GAUGE_ARC_END = '#1D9E75'
+const GAUGE_TRACK = 'rgba(148,163,184,0.18)'
+const GAUGE_CLEAR = 'rgba(0,0,0,0)'
+const GAUGE_ARC_SEGMENTS = 96
+
+function parseRgbColor(c) {
+  if (typeof c !== 'string') return null
+  const s = c.trim()
+  let m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(s)
+  if (m) {
+    const h = m[1].length === 3 ? [...m[1]].map((x) => x + x).join('') : m[1]
+    return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16))
+  }
+  m = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i.exec(s)
+  return m ? [m[1], m[2], m[3]].map((x) => Math.max(0, Math.min(255, Number(x)))) : null
+}
+
+/**
+ * Straight start->end blend (per-channel sRGB, the same blend as the
+ * inspector's CSS `linear-gradient(to right, start, end)` preview) at t in
+ * [0,1]. Hex or rgb() inputs; anything unparseable falls back to the default
+ * start/end colour. Returns '#rrggbb'.
+ */
+export function lerpGaugeArcColor(start, end, t) {
+  const a = parseRgbColor(start) || parseRgbColor(GAUGE_ARC_START)
+  const b = parseRgbColor(end) || parseRgbColor(GAUGE_ARC_END)
+  const k = Math.max(0, Math.min(1, Number(t) || 0))
+  return '#' + a.map((x, i) => Math.round(x + (b[i] - x) * k).toString(16).padStart(2, '0')).join('')
+}
+
+// axisLine colour stops for a gradient fill up to `frac` of the scale.
+// `shift` (in segments) offsets the boundaries — the underlay uses 0.5 so its
+// segments straddle the main layer's anti-aliasing seams. `rest` fills
+// frac..1 (transparent on the main layer, the grey track on the underlay).
+function gaugeArcStops(grad, frac, shift, rest) {
+  const n = GAUGE_ARC_SEGMENTS
+  const out = []
+  let prev = 0
+  for (let i = 1; prev < frac; i++) {
+    const t = Math.min(frac, (i - shift) / n)
+    if (t <= prev) continue
+    out.push([t, lerpGaugeArcColor(grad.start, grad.end, (prev + t) / 2)])
+    prev = t
+  }
+  if (frac < 1) out.push([1, rest])
+  return out
+}
+
+// Second gauge series drawn under the main one. Always present (inert when
+// there's no gradient) so the series count never changes on a merge — ECharts
+// keeps a dropped series around when merging rather than removing it.
+// `round` follows Arc ends -> Round: on a gradient the underlay draws the grey
+// track past the value, so its max end must be capped like the main arc.
+function gaugeUnderlay(grad, { min, max, startAngle, endAngle, width, frac, round = false }) {
+  return {
+    type: 'gauge', silent: true, z: 1, min, max, startAngle, endAngle,
+    tooltip: { show: false },
+    axisLine: {
+      show: !!grad, roundCap: !!round,
+      lineStyle: { width, color: grad ? gaugeArcStops(grad, frac, 0.5, GAUGE_TRACK) : [[1, GAUGE_TRACK]] },
+    },
+    progress: { show: false }, pointer: { show: false }, anchor: { show: false },
+    axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
+    title: { show: false }, detail: { show: false },
+    data: [],
+  }
+}
+
+function gaugeArc(config) {
+  const grad = config.gaugeArcGradient
+    ? { start: config.gaugeArcStart || GAUGE_ARC_START, end: config.gaugeArcEnd || GAUGE_ARC_END }
+    : null
+  return { grad, solid: grad ? null : (config.gaugeArcColor || null) }
+}
+
+/**
+ * Arc end shape from config.gaugeArcCaps. Explicit 'flat' | 'round' wins.
+ * Auto (unset/invalid): gradient -> 'flat'; solid ring -> 'round'; anything
+ * else -> null = the stock look (ring progress round, needle square), so
+ * existing solid-colour needles keep their square ends.
+ */
+export function resolveGaugeArcCaps(config, { grad, solid }) {
+  const c = config?.gaugeArcCaps
+  if (c === 'flat' || c === 'round') return c
+  if (grad) return 'flat'
+  if (solid && config?.gaugeStyle === 'ring') return 'round'
+  return null
+}
+
+// Gauge reuse of the Display panel's axis controls: "Axis text size" (written
+// to x/y/y2Axis.axisLabel.fontSize) and "Y axis ticks" (yAxis.splitNumber).
+// Only positive finite numbers count; anything else -> the builder default.
+function positiveOr(v, fallback) {
+  const n = Number(v)
+  return v != null && Number.isFinite(n) && n > 0 ? n : fallback
+}
+function gaugeTextSize(config, fallback) {
+  return positiveOr(config.yAxis?.axisLabel?.fontSize ?? config.xAxis?.axisLabel?.fontSize, fallback)
+}
+
+/**
+ * Tick-label formatter for the needle gauge's arc scale. ECharts places ticks
+ * at min + i * (max - min) / splitNumber, so 6 ticks on 0..100 land on
+ * 16.666…; left unformatted they print as raw floats.
+ *
+ * - No `format` (or 'date', meaningless on a scale): auto — the fewest
+ *   decimals (0..2) that show the tick step exactly; when none does (100/6),
+ *   by step size (step >= 1 -> 0, >= 0.1 -> 1, else 2).
+ * - 'percent': gauge values are usually already 0..100, so when the range
+ *   goes past 1 the number is shown as-is plus '%' (percent100-style); a 0..1
+ *   range keeps true percent (x100). Gauge-only — cartesian axes unchanged.
+ * - Anything else: makeFormatter(format, locale), as cartesian y axes use.
+ * Null / non-finite ticks -> ''.
+ */
+export function gaugeScaleLabelFormatter({ min = 0, max = 100, splitNumber = 10, format = undefined, locale = undefined } = {}) {
+  const lo = Number(min), hi = Number(max)
+  const step = Math.abs(hi - lo) / Math.max(Number(splitNumber) || 1, 1)
+  // Fewest decimals (0..2) that show the step exactly (0.25 -> 2, 2.5 -> 1);
+  // a step that never comes out exact (100/6) rounds by size instead.
+  const exactDp = [0, 1, 2].find((d) => {
+    const x = step * 10 ** d
+    return Math.abs(x - Math.round(x)) < 1e-9 * Math.max(1, x)
+  })
+  const autoDp = exactDp ?? (!(step < 1) ? 0 : step >= 0.1 ? 1 : 2)
+  const spec = typeof format === 'string' && format ? { kind: format } : (isDeepObject(format) ? format : null)
+  const kind = spec ? (spec.kind || 'number') : null
+  let fmt
+  if (!kind || kind === 'date') {
+    const nf = new Intl.NumberFormat(locale, { maximumFractionDigits: autoDp })
+    fmt = (n) => nf.format(n)
+  } else if (kind === 'percent' && (hi > 1 || hi - lo > 1)) {
+    const nf = new Intl.NumberFormat(spec.locale || locale, { maximumFractionDigits: spec.decimals ?? autoDp })
+    fmt = (n) => `${nf.format(n)}%`
+  } else {
+    fmt = makeFormatter(spec, locale)
+  }
+  return (v) => {
+    if (v == null || v === '') return ''
+    const n = Number(v)
+    return Number.isFinite(n) ? fmt(n) : ''
+  }
+}
+
+// The gauge's value: the last row of the value column (0 when missing).
+function gaugeLastValue(table, e) {
   const valRaw = table.col(e.y || e.value)
-  const value = valRaw && valRaw.length ? Number(valRaw[valRaw.length - 1]) : 0
+  return valRaw && valRaw.length ? Number(valRaw[valRaw.length - 1]) : 0
+}
+
+/**
+ * The value buildGauge would read from `table` (same adapter + encoding
+ * resolution), or null when there are no rows. Lets a live host tween the
+ * gradient gauge from the value it reads to the next one.
+ */
+export function gaugeTargetValue(table, encoding) {
+  const view = tableView(table)
+  if (!view || !view.numRows) return null
+  return gaugeLastValue(view, resolveEncoding(view, encoding))
+}
+
+// `displayValue` (runtime-only, never config) replaces the table value for
+// the needle, readout and gradient stops — a host tweening the gradient arc
+// passes the in-between value each frame. `tweening` turns off ECharts' own
+// value/update animation so it doesn't chase those per-frame updates; when
+// idle the fields are set back explicitly (undefined -> inherit) so a merge
+// doesn't keep them off.
+function buildGauge(table, e, config, theme, locale, { displayValue = undefined, tweening = false } = {}) {
+  const value = Number.isFinite(displayValue) ? Number(displayValue) : gaugeLastValue(table, e)
+  const animationDurationUpdate = tweening ? 0 : undefined
   const max = config.yAxis?.max ?? (config.max ?? 100)
   const min = config.yAxis?.min ?? (config.min ?? 0)
   const fmt = isDeepObject(config.dataLabels) && config.dataLabels.format
     ? makeFormatter(config.dataLabels.format, locale) : null
+  const { grad, solid } = gaugeArc(config)
+  const span = max - min
+  const frac = span > 0 && Number.isFinite(value) ? Math.max(0, Math.min(1, (value - min) / span)) : 0
+  // Arc ends — both set on every build so a needle<->ring merge or an
+  // Auto<->Flat/Round change can't keep a stale cap. The transparent gradient
+  // progress shares progressRound so its hover area matches the drawn arc.
+  const caps = resolveGaugeArcCaps(config, { grad, solid })
+  const progressRound = caps ? caps === 'round' : config.gaugeStyle === 'ring'
+  // Round also caps the track (bands / solid track / gradient stops) so the
+  // rim reads rounded at min and max. ECharts caps every axisLine colour
+  // segment, so band joins get rounded too.
+  const axisRound = caps === 'round'
 
   // 'ring' — a minimal radial progress ring (Apex radialBar look): full-circle
   // track, round-capped progress in the palette color, centered % readout, no
   // pointer/ticks/bands. The default remains the classic banded needle gauge.
+  //
+  // Each variant sets EVERY field the other one overrides (angles, pointer,
+  // ticks/labels/title visibility, progress cap/colour, detail placement):
+  // EChart merges same-key options, so a field one variant leaves to ECharts'
+  // default would keep the other variant's value. The widget's replaceKey
+  // also splits gauge:needle / gauge:ring — this is the second layer.
   if (config.gaugeStyle === 'ring') {
-    const ringColor = (config.palette && config.palette[0]) || theme.palette[0]
+    const ringColor = solid || (config.palette && config.palette[0]) || theme.palette[0]
     return {
-      ...baseFrame(config, theme, locale, { noGrid: true }),
+      ...baseFrame(config, theme, locale, { trigger: 'item', noGrid: true }),
       series: [{
-        type: 'gauge', min, max,
+        type: 'gauge', min, max, animationDurationUpdate,
+        // No visible ticks on the ring; set only so a merge can't keep the
+        // needle's tick count (see chartReplaceKey for the primary guard).
+        splitNumber: 10,
         startAngle: 90, endAngle: -270,
-        progress: { show: true, width: 12, roundCap: true, itemStyle: { color: ringColor } },
-        axisLine: { lineStyle: { width: 12, color: [[1, 'rgba(148,163,184,0.18)']] } },
+        // Gradient: the coloured fill is the segmented axisLine; progress
+        // stays, transparent, as the item-tooltip hover target.
+        progress: { show: true, width: 12, roundCap: progressRound, itemStyle: { color: grad ? GAUGE_CLEAR : ringColor } },
+        axisLine: { show: true, roundCap: axisRound, lineStyle: { width: 12, color: grad ? gaugeArcStops(grad, frac, 0, GAUGE_CLEAR) : [[1, GAUGE_TRACK]] } },
         pointer: { show: false },
         axisTick: { show: false },
         splitLine: { show: false },
         axisLabel: { show: false },
         detail: {
-          valueAnimation: true, color: theme.fg, fontSize: 20, fontWeight: 700,
+          valueAnimation: !tweening, color: theme.fg, fontSize: gaugeTextSize(config, 20), fontWeight: 700,
           offsetCenter: [0, 0],
           formatter: fmt ? (v) => fmt(v) : (v) => `${Number(v).toFixed(2)}%`,
         },
         title: { show: false },
         data: [{ value: Math.max(min, Math.min(max, value)), name: e.y || e.value || '' }],
-      }],
+      }, gaugeUnderlay(grad, { min, max, startAngle: 90, endAngle: -270, width: 12, frac, round: axisRound })],
     }
   }
 
+  const splitNumber = positiveOr(config.yAxis?.splitNumber, 10)
+  // Needle: the values below that match ECharts' gauge defaults (225/-45,
+  // pointer/ticks/labels/title shown, detail at [0,'40%'], '{value}') are
+  // spelled out so a merge from 'ring' can't leave them hidden.
   return {
-    ...baseFrame(config, theme, locale, { noGrid: true }),
+    ...baseFrame(config, theme, locale, { trigger: 'item', noGrid: true }),
     series: [{
-      type: 'gauge', min, max,
-      progress: { show: true, width: 14 },
-      axisLine: { lineStyle: { width: 14, color: [[0.5, theme.palette[3] || '#ef4444'], [0.8, theme.palette[1] || '#f59e0b'], [1, theme.palette[2] || '#10b981']] } },
-      pointer: { itemStyle: { color: theme.fg } },
-      axisLabel: { color: theme.fgMuted, fontSize: 9, distance: 18 },
-      axisTick: { lineStyle: { color: theme.fgMuted } },
-      splitLine: { lineStyle: { color: theme.fgMuted } },
+      type: 'gauge', min, max, animationDurationUpdate,
+      // Always set (ECharts' default is 10) so clearing "Y axis ticks" undoes it.
+      splitNumber,
+      startAngle: 225, endAngle: -45,
+      progress: {
+        show: true, width: 14, roundCap: progressRound,
+        itemStyle: { color: grad ? GAUGE_CLEAR : (solid || resolvePalette(config, theme)[0]) },
+      },
+      axisLine: { show: true, roundCap: axisRound, lineStyle: { width: 14, color: grad
+        ? gaugeArcStops(grad, frac, 0, GAUGE_CLEAR)
+        : solid
+          ? [[1, GAUGE_TRACK]]
+          : [[0.5, theme.palette[3] || '#ef4444'], [0.8, theme.palette[1] || '#f59e0b'], [1, theme.palette[2] || '#10b981']] } },
+      pointer: { show: true, itemStyle: { color: theme.fg } },
+      axisLabel: {
+        show: true, color: theme.fgMuted, fontSize: gaugeTextSize(config, 9), distance: 18,
+        formatter: gaugeScaleLabelFormatter({ min, max, splitNumber, format: config.yAxis?.format, locale }),
+      },
+      axisTick: { show: true, lineStyle: { color: theme.fgMuted } },
+      splitLine: { show: true, lineStyle: { color: theme.fgMuted } },
       detail: {
-        valueAnimation: true, color: theme.fg, fontSize: 24,
-        formatter: fmt ? (v) => fmt(v) : undefined,
+        valueAnimation: !tweening, color: theme.fg, fontSize: 24, fontWeight: 'bold',
+        offsetCenter: [0, '40%'],
+        formatter: fmt ? (v) => fmt(v) : '{value}',
       },
       data: [{ value, name: e.y || e.value || '' }],
-      title: { color: theme.fgMuted, fontSize: 12 },
-    }],
+      title: { show: true, color: theme.fgMuted, fontSize: 12 },
+    }, gaugeUnderlay(grad, { min, max, startAngle: 225, endAngle: -45, width: 14, frac, round: axisRound })],
   }
 }
 
@@ -1767,6 +1992,10 @@ const INTERPRETED_KEYS = new Set([
   'smooth', 'areaOpacity', 'dataLabels', 'animation', 'grid', 'xAxis', 'yAxis',
   'y2Axis', 'referenceLines', 'annotations', 'locale', 'echarts', 'max', 'min',
   'centerLabel',
+  // gauge: needle vs ring (read by buildGauge, not a raw ECharts key).
+  'gaugeStyle',
+  // gauge arc colours — read by buildGauge, not raw ECharts keys.
+  'gaugeArcGradient', 'gaugeArcStart', 'gaugeArcEnd', 'gaugeArcColor', 'gaugeArcCaps',
 ])
 
 function stripInterpretedKeys(config) {
@@ -1786,9 +2015,13 @@ function stripInterpretedKeys(config) {
  * @param {object} [args.encoding]— column-name mapping (x, y, color, ...)
  * @param {object} [args.config]  — declarative customization (deep-merged last)
  * @param {object} [args.theme]   — resolved theme tokens
+ * @param {number} [args.gaugeDisplayValue] — gauge only, runtime-only: value to
+ *                                  draw instead of the table's (gradient tween)
+ * @param {boolean} [args.gaugeTweening]    — gauge only: a tween frame (ECharts'
+ *                                  own value animation off)
  * @returns {object} ECharts option
  */
-export function buildChartOption({ type, table, encoding, config, theme }: { type?: string; table?: any; encoding?: any; config?: any; theme?: any } = {}) {
+export function buildChartOption({ type, table, encoding, config, theme, gaugeDisplayValue, gaugeTweening }: { type?: string; table?: any; encoding?: any; config?: any; theme?: any; gaugeDisplayValue?: number; gaugeTweening?: boolean } = {}) {
   const view = tableView(table)
   const th = resolveTheme(theme)
   const cfg = config || {}
@@ -1818,7 +2051,7 @@ export function buildChartOption({ type, table, encoding, config, theme }: { typ
     case 'treemap': option = buildTreemap(view, e, cfg, th, locale); break
     case 'map': option = buildMap(view, e, cfg, th, locale); break
     case 'boxplot': option = buildBoxplot(view, e, cfg, th, locale); break
-    case 'gauge': option = buildGauge(view, e, cfg, th, locale); break
+    case 'gauge': option = buildGauge(view, e, cfg, th, locale, { displayValue: gaugeDisplayValue, tweening: !!gaugeTweening }); break
     case 'candlestick': option = buildCandlestick(view, e, cfg, th, locale); break
     case 'fan': option = buildFan(view, e, cfg, th, locale); break
     case 'combo': option = buildCombo(view, e, cfg, th, locale); break
