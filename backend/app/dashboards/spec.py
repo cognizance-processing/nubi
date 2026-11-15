@@ -660,6 +660,31 @@ def _scrub_chart_config(node: Any, _depth: int = 0) -> Any:
     return out
 
 
+def scrub_board_config(config: Any, _depth: int = 0) -> Any:
+    """Return a board's stored config with every widget's chart options scrubbed.
+
+    A board can be written without going through spec validation (the plain
+    resource routes store ``config`` as given), so the same rule
+    ``Widget.config`` applies on validation is applied here on write.  Only
+    widget ``config`` blocks are touched — a widget being any object with a
+    ``type`` and a ``config`` — at any nesting (grouped or stepped widgets);
+    everything else on the board is returned as it came.
+    """
+    if _depth > _CHART_CONFIG_MAX_DEPTH or not isinstance(config, (dict, list)):
+        return config
+    if isinstance(config, list):
+        return [scrub_board_config(item, _depth + 1) for item in config]
+    is_widget = isinstance(config.get("type"), str) and isinstance(config.get("config"), dict)
+    return {
+        key: (
+            _scrub_chart_config(value)
+            if is_widget and key == "config"
+            else scrub_board_config(value, _depth + 1)
+        )
+        for key, value in config.items()
+    }
+
+
 class Widget(BaseModel):
     """A single dashboard widget.
 

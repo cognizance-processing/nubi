@@ -296,6 +296,11 @@ async def create_resource(
         from app.connectors.duckdb_conn import guard_datastore_config  # noqa: PLC0415
 
         guard_datastore_config(body.config, org_id)
+    if resource == "boards" and body.config is not None:
+        # Stored boards never carry chart options that render as markup.
+        from app.dashboards.spec import scrub_board_config  # noqa: PLC0415
+
+        body.config = scrub_board_config(body.config)
 
     project_id = await resolve_project_id_for_create(org_id, request)
 
@@ -401,6 +406,12 @@ async def update_resource(
         from app.routes.metrics import validate_query_metric_block  # noqa: PLC0415
 
         validate_query_metric_block(body.config)
+
+    if resource == "boards" and body.config is not None:
+        # Stored boards never carry chart options that render as markup.
+        from app.dashboards.spec import scrub_board_config  # noqa: PLC0415
+
+        body.config = scrub_board_config(body.config)
 
     # Env-scoped write enforcement (agent sandbox) — before any DB mutation.
     await _check_env_write(resource, claims, request, org_id, None)
