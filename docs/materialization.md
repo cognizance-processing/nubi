@@ -67,7 +67,6 @@ from app.flows.spec import validate_flow_spec, flow_spec_is_valid
 # IDs you pre-create (or receive from POST /datastores and POST /queries):
 DATASTORE_ID = "<uuid of the duckdb datastore row>"
 QUERY_ID     = "<uuid of the queries row>"
-BASE_URI     = "/var/nubi/managed"   # or "s3://your-bucket/managed" in prod
 
 spec_data = {
     "version": 1,
@@ -100,8 +99,7 @@ spec_data = {
                 # Persistence: 'full' overwrites every run; 'incremental' appends.
                 "materialized": {
                     "kind": "full",          # or "incremental" (add time_column then)
-                    "target": "category_totals",  # Parquet file name under base_uri/env/
-                    "base_uri": BASE_URI,
+                    "target": "category_totals",  # Parquet file name under <org>/<env>/
                 },
             },
         },
@@ -137,7 +135,7 @@ assert result["state"] == "success"
 
 After the run completes:
 
-- The Parquet file exists at `<BASE_URI>/prod/category_totals.parquet`.
+- The Parquet file exists at `<FLOWS_MATERIALIZE_BASE_URI>/<org id>/prod/category_totals.parquet`.
 - `QUERY_ID` is registered in the runtime query registry pointing at the
   Parquet file via the datastore row's `view_sql`.
 - Any widget, metric, or API call that references `QUERY_ID` will execute
@@ -244,7 +242,6 @@ query_id     = "<query-id>"
 [tasks.config.materialized]
 kind     = "full"          # NOT incremental — grand_total depends on all rows
 target   = "category_summary"
-base_uri = "/var/nubi/managed"
 ```
 
 With `kind: "full"` the runtime overwrites the Parquet file completely on
@@ -265,7 +262,6 @@ For event streams where you only want to process new rows each run, use
     "kind": "incremental",
     "target": "events_projection",
     "time_column": "occurred_at",   # column used for the watermark cutoff
-    "base_uri": BASE_URI,
     # Optional: lookback window to reprocess near the watermark boundary.
     "lookback": "1 hour",
     # Optional: unique key for upsert semantics (delete-then-insert on match).
@@ -326,8 +322,10 @@ pointing at the actual written path after each run.
 - `rls_keys` columns MUST survive the materialize step.  The engine verifies
   this and raises `rls_key_dropped` (HTTP 400) if a declared key is missing
   from the combined output.
-- The Parquet path is server-pinned under `<base_uri>/<env>/<target>.parquet`;
-  no user-controlled path component is accepted.
+- The Parquet path is server-pinned under
+  `<FLOWS_MATERIALIZE_BASE_URI>/<org id>/<env>/<target>.parquet`.  The base is
+  an operator setting and the org is the flow's owner; a flow that sets
+  `base_uri` (or `runtime_config.materialize_base_uri`) is refused.
 - At read time the DuckDB connection is opened in-memory (`database: ":memory:"`);
   `disable_external_access` is not set for the Parquet path (it needs FS
   reads), but `block_local_fs` is set for S3-only targets so a rogue

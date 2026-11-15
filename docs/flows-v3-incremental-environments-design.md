@@ -140,18 +140,19 @@ Unparseable → zero (never raise; log a `[warn]`).
   The runtime populates it from `flow_run["env"]`. The materialize handler reads `ctx.env`.
 
 ### 3.2 Env-scoped target path format (PINNED)
-The engine computes the physical target from `(env, materialized.target, base_uri)`:
+The engine computes the physical target from the operator's base, the flow's
+owning organisation, the env and `materialized.target`:
 
 ```
-physical_target = join(base_uri, env, target)
+physical_target = join(base, org_id, env, target)
 ```
 
-- `base_uri` source (PINNED precedence):
-  1. `task.config["materialized"]["base_uri"]` if set (rare, explicit override), else
-  2. `flow.runtime_config["materialize_base_uri"]` if set, else
-  3. settings `FLOWS_MATERIALIZE_BASE_URI` (env var; e.g. `s3://nubi-materialized`), else
-  4. local fallback `<backend>/seed_data/materialized` (dev/offline; mirrors existing
-     `blend_database_path`).
+- `base` is operator-set only: settings `FLOWS_MATERIALIZE_BASE_URI` (env var; e.g.
+  `s3://nubi-materialized`), else the local fallback `<backend>/seed_data/materialized`
+  (dev/offline). A flow cannot move it: `materialized.base_uri` and
+  `runtime_config.materialize_base_uri` are refused.
+- `org_id` is the flow's owner. The read side allows exactly `<base>/<org_id>/`, so a
+  dataset is readable only by the organisation that wrote it.
 - Path join rules: strip leading/trailing slashes on each segment; preserve the `s3://` scheme.
   e.g. `s3://nubi-materialized` + `dev` + `blends/revenue` →
   `s3://nubi-materialized/dev/blends/revenue.duckdb` (duckdb file) — the `.duckdb` suffix is added

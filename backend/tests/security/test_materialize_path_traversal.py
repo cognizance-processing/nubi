@@ -48,8 +48,28 @@ from app.errors import AppError
 from app.flows.incremental import (
     _sanitize_env_segment,
     _sanitize_target_segment,
-    resolve_target_uri,
+    resolve_target_uri as _resolve_target_uri,
 )
+
+_ORG = "org-under-test"
+
+
+def resolve_target_uri(env, materialized, flow=None, settings=None):
+    """Resolve as the platform does for a flow owned by ``_ORG``.
+
+    The base is the operator's setting, never the task's, so a ``base_uri``
+    in these fixtures is handed over as that setting.
+    """
+    from types import SimpleNamespace
+
+    materialized = dict(materialized or {})
+    base = materialized.pop("base_uri", None)
+    return _resolve_target_uri(
+        env,
+        materialized,
+        {"org_id": _ORG},
+        SimpleNamespace(FLOWS_MATERIALIZE_BASE_URI=base or ""),
+    )
 
 
 # ===========================================================================
@@ -471,29 +491,22 @@ class TestMaterializeOrgScope:
     """L: The materialize path inherits org scoping from flow ownership."""
 
     def test_resolve_target_uri_no_org_cross_contamination(self, tmp_path):
-        """L: Two orgs with identical target names get isolated paths via base_uri.
+        """L: Two orgs with identical target names get isolated paths.
 
-        In production each org's flows resolve to org-scoped storage (the
-        base_uri is configured per-org or per-deployment, and flow ownership
-        is verified by get_user_org).  This test confirms that two calls with
-        different base_uris (simulating two org namespaces) never produce the
-        same physical path.
+        The base is one operator setting; each org's flows resolve under
+        ``<base>/<org id>/``, so identical targets never share a path.
         """
-        base_org_a = str(tmp_path / "org_a")
-        base_org_b = str(tmp_path / "org_b")
+        from types import SimpleNamespace
 
-        mat_a = {"kind": "full", "target": "sales/daily", "base_uri": base_org_a}
-        mat_b = {"kind": "full", "target": "sales/daily", "base_uri": base_org_b}
+        settings = SimpleNamespace(FLOWS_MATERIALIZE_BASE_URI=str(tmp_path))
+        mat = {"kind": "full", "target": "sales/daily"}
 
-        path_a = resolve_target_uri("prod", mat_a, None, None)
-        path_b = resolve_target_uri("prod", mat_b, None, None)
+        path_a = _resolve_target_uri("prod", mat, {"org_id": "org_a"}, settings)
+        path_b = _resolve_target_uri("prod", mat, {"org_id": "org_b"}, settings)
 
-        assert path_a != path_b, (
-            "SECURITY: identical target names for different orgs must resolve to "
-            "different physical paths (org isolation via base_uri)."
-        )
-        assert path_a.startswith(base_org_a), f"Org A path must be inside org_a base: {path_a}"
-        assert path_b.startswith(base_org_b), f"Org B path must be inside org_b base: {path_b}"
+        assert path_a != path_b
+        assert path_a.startswith(str(tmp_path / "org_a") + os.sep), path_a
+        assert path_b.startswith(str(tmp_path / "org_b") + os.sep), path_b
 
     def test_resolve_target_uri_does_not_allow_cross_base_write(self, tmp_path):
         """L: target cannot escape its base_uri even with multiple subdir levels."""

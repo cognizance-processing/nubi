@@ -145,7 +145,7 @@ async def test_demo_tables_still_return_rows(opener):
 async def test_materialized_dataset_still_reads_but_only_for_its_org(opener, tmp_path, monkeypatch):
     import duckdb
 
-    monkeypatch.setattr("app.connectors.duckdb_conn._materialize_base", lambda: str(tmp_path))
+    monkeypatch.setattr("app.flows.incremental._operator_base", lambda settings=None: str(tmp_path))
     for org in (ORG, OTHER_ORG):
         (tmp_path / org).mkdir()
         c = duckdb.connect()

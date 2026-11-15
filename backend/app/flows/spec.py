@@ -142,7 +142,8 @@ class MaterializedConfig(BaseModel):
         Optional human duration (e.g. ``'3 days'``, ``'12h'``) re-processed
         below the watermark to absorb late-arriving rows.
     base_uri:
-        Optional per-task override of the materialization base URI.
+        Not supported.  The storage location is the operator's base plus the
+        owning organisation; a task that sets this is refused at run time.
     """
 
     kind: Literal["view", "full", "incremental"] = Field(
@@ -167,7 +168,7 @@ class MaterializedConfig(BaseModel):
     )
     base_uri: str | None = Field(
         default=None,
-        description="Optional per-task override of the materialization base URI.",
+        description="Not supported: the storage location is set by the platform.",
     )
 
 

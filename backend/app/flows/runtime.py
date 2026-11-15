@@ -2370,6 +2370,16 @@ async def _resolve_run_env_context(
             except Exception:  # noqa: BLE001
                 watermark = None
 
+    # A stored mark only counts while the target it describes is there.
+    if watermark and _is_incremental_materialize(task_spec):
+        try:
+            from app.flows.incremental import resolve_target_uri, usable_watermark  # noqa: PLC0415
+
+            mat = (task_spec.get("config") or {}).get("materialized") or {}
+            watermark = usable_watermark(watermark, resolve_target_uri(env, mat, flow_dict))
+        except Exception:  # noqa: BLE001 — the handler reports a bad config itself
+            pass
+
     return env, flow_dict, watermark
 
 

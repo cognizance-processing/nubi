@@ -28,9 +28,29 @@ from typing import Any
 import pytest
 
 from app.flows.incremental import parse_lookback, resolve_target_uri
-from app.flows.materialize import materialize_blend
+from app.flows.materialize import materialize_blend as _materialize_blend
 from app.flows.spec import flow_spec_is_valid, validate_flow_spec
 from app.flows.store import InMemoryFlowStore
+
+
+# The storage root belongs to the organisation that owns the flow.
+_FLOW = {"id": "flow-under-test", "org_id": "org-under-test"}
+
+
+def materialize_blend(config, inputs, **kwargs):
+    kwargs.setdefault("flow", _FLOW)
+    return _materialize_blend(config, inputs, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _operator_base(tmp_path, monkeypatch):
+    """Materializations land under the operator's base (a temp dir here)."""
+    monkeypatch.setattr(
+        "app.flows.incremental._operator_base",
+        lambda settings=None: (
+            getattr(settings, "FLOWS_MATERIALIZE_BASE_URI", "") or str(tmp_path / "materialized")
+        ).rstrip("/"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +76,8 @@ def _read_parquet(path: str) -> list[dict[str, Any]]:
 
 
 def _blend_config(base_uri: str, *, kind: str, **mat: Any) -> dict[str, Any]:
-    materialized = {"kind": kind, "base_uri": base_uri, **mat}
+    # *base_uri* is unused: the base is the operator's, not the task's.
+    materialized = {"kind": kind, **mat}
     return {
         "combine_sql": "SELECT * FROM src",
         "sources": ["src"],
@@ -95,33 +116,32 @@ class TestParseLookback:
 
 
 class TestResolveTargetUri:
+    @staticmethod
+    def _settings(base: str):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(FLOWS_MATERIALIZE_BASE_URI=base)
+
     def test_local_env_namespacing(self):
-        uri = resolve_target_uri(
-            "dev", {"target": "revenue", "base_uri": "/tmp/mat"}
-        )
-        assert uri == "/tmp/mat/dev/revenue.parquet"
+        uri = resolve_target_uri("dev", {"target": "revenue"}, _FLOW, self._settings("/tmp/mat"))
+        assert uri == "/tmp/mat/org-under-test/dev/revenue.parquet"
 
     def test_prod_distinct_from_dev(self):
-        dev = resolve_target_uri("dev", {"target": "rev", "base_uri": "/tmp/m"})
-        prod = resolve_target_uri("prod", {"target": "rev", "base_uri": "/tmp/m"})
+        dev = resolve_target_uri("dev", {"target": "rev"}, _FLOW, self._settings("/tmp/m"))
+        prod = resolve_target_uri("prod", {"target": "rev"}, _FLOW, self._settings("/tmp/m"))
         assert dev != prod
 
     def test_preserves_s3_scheme(self):
-        uri = resolve_target_uri(
-            "prod", {"target": "rev", "base_uri": "s3://bucket/mat"}
-        )
-        assert uri == "s3://bucket/mat/prod/rev.parquet"
+        uri = resolve_target_uri("prod", {"target": "rev"}, _FLOW, self._settings("s3://bucket/mat"))
+        assert uri == "s3://bucket/mat/org-under-test/prod/rev.parquet"
 
     def test_keeps_existing_parquet_ext(self):
-        uri = resolve_target_uri(
-            "prod", {"target": "rev.parquet", "base_uri": "/tmp/m"}
-        )
-        assert uri == "/tmp/m/prod/rev.parquet"
+        uri = resolve_target_uri("prod", {"target": "rev.parquet"}, _FLOW, self._settings("/tmp/m"))
+        assert uri == "/tmp/m/org-under-test/prod/rev.parquet"
 
-    def test_base_uri_precedence_flow_runtime_config(self):
-        flow = {"runtime_config": {"materialize_base_uri": "/tmp/from-flow"}}
-        uri = resolve_target_uri("prod", {"target": "rev"}, flow=flow)
-        assert uri.startswith("/tmp/from-flow/prod/")
+    def test_org_can_be_given_explicitly(self):
+        uri = resolve_target_uri("prod", {"target": "rev"}, None, self._settings("/tmp/m"), org_id="o2")
+        assert uri == "/tmp/m/o2/prod/rev.parquet"
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +409,6 @@ class TestEndToEndIncremental:
                                 "kind": "incremental",
                                 "target": "events",
                                 "time_column": "ts",
-                                "base_uri": base,
                             },
                         },
                     },
