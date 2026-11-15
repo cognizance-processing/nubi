@@ -315,6 +315,22 @@ async def compute_run(
             403,
         )
 
+    # ── SECURITY: running code needs write access ─────────────────────────────
+    # A login session carries edit:* whatever the member's role, so the ROLE
+    # decides: a read-only member of the workspace cannot execute code.
+    from app.auth.roles import get_org_role, is_writer_role  # noqa: PLC0415
+    from app.repos.provider import get_repo as _get_repo  # noqa: PLC0415
+    from app.routes.query import _resolve_caller_org  # noqa: PLC0415
+
+    _repo = _get_repo()
+    _org_id, _ = await _resolve_caller_org(identity, _repo, request)
+    if _org_id and not is_writer_role(await get_org_role(identity.user_id, _org_id, _repo)):
+        raise AppError(
+            "forbidden",
+            "Running code needs write access to this workspace.",
+            403,
+        )
+
     # ── SECURITY: cap incoming code length ────────────────────────────────────
     if len(body.code) > _MAX_CODE_CHARS:
         raise AppError(

@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, File, Response, UploadFile
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
+from app.auth.roles import require_writer
 from app.dashboards.images import fetch_image_from_url, load_image, save_image_bytes
 from app.errors import AppError
 from app.routes import api_router
@@ -42,7 +43,7 @@ class ImageFromUrlIn(BaseModel):
     url: str
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_writer)])
 async def upload_image(
     file: UploadFile = File(...),
     _user: dict[str, Any] = Depends(current_user),
@@ -54,7 +55,7 @@ async def upload_image(
     return {**result, "url": f"/api/v1/images/{result['id']}"}
 
 
-@router.post("/from-url", status_code=201)
+@router.post("/from-url", status_code=201, dependencies=[Depends(require_writer)])
 async def upload_image_from_url(
     body: ImageFromUrlIn,
     _user: dict[str, Any] = Depends(current_user),

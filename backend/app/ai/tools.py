@@ -994,7 +994,7 @@ def _tool_query_metric(
     #    (NOT another org's definition / data). RLS on claims["policies"] still
     #    narrows rows below; this is an ADDITIONAL gate on the definition itself.
     org_id = claims.get("org")
-    if metric_id not in SEED_METRIC_IDS:
+    if metric_id not in SEED_METRIC_IDS and registry.owned(metric_id, org_id) is None:
         if not org_id or not _run_sync(metric_belongs_to_org(metric_id, str(org_id))):
             return {
                 "error": {

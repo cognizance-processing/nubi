@@ -42,6 +42,7 @@ from pydantic import BaseModel
 
 from app.ai.watch import Watch, run_watch
 from app.auth.deps import verified_identity
+from app.auth.roles import require_writer
 from app.auth.scopes import has_scope
 from app.auth.verify import VerifiedIdentity
 from app.errors import AppError
@@ -380,7 +381,7 @@ async def get_watch(
 # ---------------------------------------------------------------------------
 
 
-@api_router.post("/watches", status_code=201)
+@api_router.post("/watches", status_code=201, dependencies=[Depends(require_writer)])
 async def create_watch(
     body: WatchIn,
     request: Request,
@@ -410,7 +411,7 @@ async def create_watch(
 # ---------------------------------------------------------------------------
 
 
-@api_router.put("/watches/{watch_id}")
+@api_router.put("/watches/{watch_id}", dependencies=[Depends(require_writer)])
 async def update_watch(
     watch_id: str,
     body: WatchIn,
@@ -453,7 +454,7 @@ async def update_watch(
 # ---------------------------------------------------------------------------
 
 
-@api_router.delete("/watches/{watch_id}")
+@api_router.delete("/watches/{watch_id}", dependencies=[Depends(require_writer)])
 async def delete_watch(
     request: Request,
     watch_id: str,
@@ -548,7 +549,9 @@ async def _resolve_metric_for_watch(metric_id: str, org_id: str | None = None):
     """
     registry = get_metric_registry()
     metric = registry.get(metric_id, org_id)
-    if metric is not None and org_id is not None:
+    # A registration under the org's own key is that org's metric; only a hit
+    # on a SHARED (org-less) entry still needs proving.
+    if metric is not None and org_id is not None and registry.owned(metric_id, org_id) is None:
         from app.metrics.registry import metric_belongs_to_org  # noqa: PLC0415
 
         if not await metric_belongs_to_org(metric_id, org_id):
@@ -564,7 +567,7 @@ async def _resolve_metric_for_watch(metric_id: str, org_id: str | None = None):
     return metric
 
 
-@api_router.post("/watches/{watch_id}/evaluate")
+@api_router.post("/watches/{watch_id}/evaluate", dependencies=[Depends(require_writer)])
 async def evaluate_watch_now(
     request: Request,
     watch_id: str,

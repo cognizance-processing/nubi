@@ -109,6 +109,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.auth.deps import verified_identity
+from app.auth.roles import require_writer
 from app.auth.scopes import has_scope, SCOPE_AUTHOR_SQL
 from app.auth.verify import VerifiedIdentity
 from app.connectors import plan as planner_plan
@@ -1881,7 +1882,7 @@ async def query_filterable_columns(
     return {"columns": filterable_columns(sql, dialect=dialect, table_columns=table_columns)}
 
 
-@router.post("/queries/{query_id}/parameterize")
+@router.post("/queries/{query_id}/parameterize", dependencies=[Depends(require_writer)])
 async def parameterize_query(
     query_id: str,
     body: ParameterizeIn,
@@ -2078,7 +2079,7 @@ class OptionsQueryIn(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-@router.post("/queries/options-query")
+@router.post("/queries/options-query", dependencies=[Depends(require_writer)])
 async def create_options_query(
     body: OptionsQueryIn,
     request: Request,
@@ -2887,7 +2888,7 @@ class RegisterQueryIn(BaseModel):
     metric: dict | None = None
 
 
-@router.post("/query/registry", status_code=201)
+@router.post("/query/registry", status_code=201, dependencies=[Depends(require_writer)])
 async def register_query(
     body: RegisterQueryIn,
     request: Request,

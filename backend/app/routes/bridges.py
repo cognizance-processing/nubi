@@ -272,7 +272,7 @@ async def delete_bridge(
 # ── POST /bridges/{id}/heartbeat ──────────────────────────────────────────
 
 
-@router.post("/{bridge_id}/heartbeat", response_model=BridgeOut)
+@router.post("/{bridge_id}/heartbeat", response_model=BridgeOut, dependencies=[Depends(require_writer)])
 async def bridge_heartbeat(
     bridge_id: str,
     request: Request,

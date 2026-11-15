@@ -42,6 +42,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 
 from app.auth.deps import current_user, verified_identity
+from app.auth.roles import require_writer
 from app.auth.scopes import has_scope
 from app.auth.verify import VerifiedIdentity
 from app.embedding.public_export import export_public
@@ -68,7 +69,7 @@ frozen_router = APIRouter(prefix="/embed", tags=["snapshot"])
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{board_id}/snapshot", status_code=200)
+@router.post("/{board_id}/snapshot", status_code=200, dependencies=[Depends(require_writer)])
 async def create_or_refresh_snapshot(
     board_id: str,
     request: Request,
@@ -155,7 +156,7 @@ async def list_board_snapshots(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{board_id}/export/public", status_code=200)
+@router.post("/{board_id}/export/public", status_code=200, dependencies=[Depends(require_writer)])
 async def export_board_public(
     board_id: str,
     request: Request,

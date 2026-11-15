@@ -852,7 +852,7 @@ async def delete_connector(
     return Response(status_code=204)
 
 
-@router.post("/{connector_id}/test")
+@router.post("/{connector_id}/test", dependencies=[Depends(require_writer)])
 async def test_connector(
     connector_id: str,
     request: Request,

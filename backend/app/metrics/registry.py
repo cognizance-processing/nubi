@@ -97,6 +97,15 @@ class MetricRegistry:
                 return hit
         return self._store.get((None, id))
 
+    def owned(self, id: str, org_id: str | None) -> MetricDefinition | None:
+        """*org_id*'s OWN registration of *id* (never a shared one), or ``None``.
+
+        A hit here is that organisation's metric by construction, so callers
+        need no further ownership proof for it.
+        """
+        org = self._org(org_id)
+        return self._store.get((org, id)) if org is not None else None
+
     def all(self) -> list[MetricDefinition]:
         """Every registered metric across all orgs (operator / loader use)."""
         return list(self._store.values())

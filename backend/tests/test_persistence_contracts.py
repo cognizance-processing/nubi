@@ -186,6 +186,13 @@ async def test_uploaded_image_url_is_servable(client, fake_db, monkeypatch, tmp_
         "id": uid, "email": "img@example.com", "name": "I", "avatar_url": None,
         "email_verified": True, "created_at": "2024-01-01T00:00:00+00:00",
     }
+    # Uploading needs a writer in an org.
+    from app.repos.memory import InMemoryRepo  # noqa: PLC0415
+    from app.repos.provider import set_repo  # noqa: PLC0415
+
+    _repo = InMemoryRepo()
+    _repo.seed_org_member(str(uuid.uuid4()), uid, "owner")
+    set_repo(_repo)
     resp = await client.post(
         "/api/v1/images",
         files={"file": ("p.png", _PNG_1PX, "image/png")},

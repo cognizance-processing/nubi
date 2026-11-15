@@ -50,6 +50,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.auth.deps import verified_identity
+from app.auth.roles import require_writer
 from app.auth.scopes import has_scope, SCOPE_AUTHOR_METRIC
 from app.auth.verify import VerifiedIdentity
 from app.connectors import plan as planner_plan
@@ -176,7 +177,9 @@ async def _resolve_metric(
     """
     registry = get_metric_registry()
     metric = registry.get(metric_id, org_id)
-    if metric is not None and org_id is not None:
+    # A registration under the org's own key is that org's metric; only a hit
+    # on a SHARED (org-less) entry still needs proving.
+    if metric is not None and org_id is not None and registry.owned(metric_id, org_id) is None:
         from app.metrics.registry import metric_belongs_to_org  # noqa: PLC0415
 
         if not await metric_belongs_to_org(metric_id, org_id):
@@ -575,7 +578,7 @@ async def get_metric(
 # ---------------------------------------------------------------------------
 
 
-@api_router.post("/metrics", status_code=201)
+@api_router.post("/metrics", status_code=201, dependencies=[Depends(require_writer)])
 async def create_metric(
     body: MetricIn,
     request: Request,
@@ -620,7 +623,7 @@ async def create_metric(
 # ---------------------------------------------------------------------------
 
 
-@api_router.put("/metrics/{metric_id}")
+@api_router.put("/metrics/{metric_id}", dependencies=[Depends(require_writer)])
 async def update_metric(
     metric_id: str,
     body: MetricIn,
@@ -638,7 +641,11 @@ async def update_metric(
     if not str(data.get("name") or "").strip():
         org_id = await _caller_org(identity, request)
         existing = get_metric_registry().get(metric_id, org_id)
-        if existing is not None and org_id is not None:
+        if (
+            existing is not None
+            and org_id is not None
+            and get_metric_registry().owned(metric_id, org_id) is None
+        ):
             from app.metrics.registry import metric_belongs_to_org  # noqa: PLC0415
 
             if not await metric_belongs_to_org(metric_id, org_id):
@@ -668,7 +675,7 @@ async def update_metric(
 # ---------------------------------------------------------------------------
 
 
-@api_router.delete("/metrics/{metric_id}")
+@api_router.delete("/metrics/{metric_id}", dependencies=[Depends(require_writer)])
 async def delete_metric(
     metric_id: str,
     request: Request,
@@ -1246,7 +1253,7 @@ async def get_metric_version(
 # ---------------------------------------------------------------------------
 
 
-@api_router.post("/metrics/{metric_id}/revert/{version_num}", status_code=200)
+@api_router.post("/metrics/{metric_id}/revert/{version_num}", status_code=200, dependencies=[Depends(require_writer)])
 async def revert_metric_to_version(
     metric_id: str,
     version_num: int,

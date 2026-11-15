@@ -79,6 +79,13 @@ async def m_client(app, fake_db):
         "email_verified": True,
         "created_at": "2024-01-01T00:00:00+00:00",
     }
+    # Metric writes need a writer in an org.
+    from app.repos.memory import InMemoryRepo
+    from app.repos.provider import set_repo
+
+    repo = InMemoryRepo()
+    repo.seed_org_member(str(uuid.uuid4()), user_id, "owner")
+    set_repo(repo)
     transport = ASGITransport(app=app)
     async with AsyncClient(
         transport=transport, base_url="http://testserver", follow_redirects=False

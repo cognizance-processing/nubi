@@ -76,6 +76,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request, Response
 
 from app.auth.deps import current_user
+from app.auth.roles import require_writer
 from app.config import get_settings
 from app.dashboards.collect import (
     collect_board_data,
@@ -788,7 +789,7 @@ async def board_thumbnail_svg(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{board_id}/share")
+@router.post("/{board_id}/share", dependencies=[Depends(require_writer)])
 async def share_board(
     board_id: str,
     request: Request,
