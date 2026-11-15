@@ -498,16 +498,18 @@ async def connect_repo(
     if not await projects_repo.project_belongs_to_org(body.project_id, org_id):
         raise AppError("not_found", "Project not found.", 404)
 
-    # Store the token in the secret store (encrypted, org-scoped).
-    await get_secret_store().put(body.project_id, org_id, {"token": body.token})
+    from app.git.safety import safe_branch, safe_repo_url  # noqa: PLC0415
 
     binding = {
         "provider": body.provider.lower(),
-        "repo_url": body.repo_url.strip(),
-        "branch": (body.branch or "main").strip() or "main",
+        "repo_url": safe_repo_url(body.repo_url),
+        "branch": safe_branch((body.branch or "main").strip() or "main"),
         "base_path": body.base_path.strip().strip("/"),
         "token_ref": body.project_id,
     }
+    # Store the token in the secret store (encrypted, org-scoped) only once
+    # the binding itself has been accepted.
+    await get_secret_store().put(body.project_id, org_id, {"token": body.token})
     await projects_repo.update_project(org_id, body.project_id, {"git": binding})
 
     return {**binding, "connected": True}

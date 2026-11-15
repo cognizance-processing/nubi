@@ -374,21 +374,29 @@ class ProjectGit:
         env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         try:
+            from app.git.safety import git_env  # noqa: PLC0415
+
             result = subprocess.run(
                 ["git", *args],
                 cwd=str(self.repo_dir),
                 capture_output=True,
                 text=True,
-                env=env,
+                env=git_env(env),
                 check=False,
             )
         except (OSError, FileNotFoundError) as exc:  # git binary / cwd missing
             raise GitEnvError(f"git unavailable: {exc}") from exc
         if check and result.returncode != 0:
-            raise GitEnvError(
-                f"git {' '.join(_scrub(a) for a in args)} failed: "
-                f"{_scrub(result.stderr).strip()[:300]}"
+            # git's output can quote file contents or remote responses: log it
+            # for the operator, return only which step failed.
+            import logging  # noqa: PLC0415
+
+            logging.getLogger("app.git").warning(
+                "git %s failed (exit %s): %s",
+                args[0] if args else "", result.returncode,
+                _scrub(result.stderr).strip()[:300],
             )
+            raise GitEnvError(f"git {args[0] if args else 'command'} failed")
         return result
 
     def _author_env(self, author: str) -> dict[str, str]:
@@ -577,12 +585,15 @@ class ProjectGit:
         in argv.  See :func:`app.git.remotes._askpass_env` for the mechanism.
         """
         from app.git.remotes import _askpass_env  # noqa: PLC0415
+        from app.git.safety import safe_branch, safe_repo_url  # noqa: PLC0415
 
+        bare_url = safe_repo_url(bare_url)
+        branch = safe_branch(branch)
         if token:
             with _askpass_env(askpass_username or "git", token) as auth_env:
-                self._git("fetch", bare_url, f"{branch}:{branch}", env=auth_env)
+                self._git("fetch", "--", bare_url, f"{branch}:{branch}", env=auth_env)
         else:
-            self._git("fetch", bare_url, f"{branch}:{branch}")
+            self._git("fetch", "--", bare_url, f"{branch}:{branch}")
 
     def push_branch(
         self,
@@ -601,10 +612,14 @@ class ProjectGit:
         """
         from app.git.remotes import _askpass_env  # noqa: PLC0415
 
+        from app.git.safety import safe_branch, safe_repo_url  # noqa: PLC0415
+
+        bare_url = safe_repo_url(bare_url)
+        branch = safe_branch(branch)
         args = ["push"]
         if force_with_lease:
             args.append("--force-with-lease")
-        args += [bare_url, f"refs/heads/{branch}:refs/heads/{branch}"]
+        args += ["--", bare_url, f"refs/heads/{branch}:refs/heads/{branch}"]
         if token:
             with _askpass_env(askpass_username or "git", token) as auth_env:
                 self._git(*args, env=auth_env)
