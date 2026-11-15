@@ -276,7 +276,7 @@ async def test_viewer_role_query_writes_no_usage_events(conn_app, fake_db, _fres
     ) as client:
         resp = await client.post(
             "/api/v1/query",
-            json={"sql": "SELECT * FROM demo"},
+            json={"query_id": "demo_all"},  # viewers run registered queries, not their own SQL
             headers=_auth_headers(user_id),
         )
     assert resp.status_code == 200, resp.text

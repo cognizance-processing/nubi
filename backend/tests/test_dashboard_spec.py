@@ -2383,7 +2383,7 @@ class TestLegacyFormsAccepted:
         set_repo(repo)
         try:
             org_id, user_id = str(uuid.uuid4()), str(uuid.uuid4())
-            claims = {"kind": "access", "sub": user_id, "org": org_id,
+            claims = {"kind": "access", "sub": user_id, "org": org_id, "role": "owner",
                       "policies": {}, "scope": ["author:sql"]}
             created = execute_tool(
                 "save_dashboard", {"spec": self._spec(), "name": "Board"}, claims

@@ -2442,6 +2442,19 @@ def tool_schemas() -> list[dict[str, Any]]:
     ]
 
 
+#: Tools that create, change or delete something, or author SQL.
+_WRITE_TOOLS: frozenset[str] = frozenset(
+    {
+        "create_query",
+        "add_filter_param",
+        "save_dashboard",
+        "update_dashboard",
+        "delete_dashboard",
+        "upload_image",
+    }
+)
+
+
 def execute_tool(
     name: str,
     arguments: dict[str, Any],
@@ -2475,6 +2488,13 @@ def execute_tool(
     tool = _REGISTRY.get(name)
     if tool is None:
         raise AppError("tool_not_found", f"No tool named {name!r}.", 404)
+
+    # Role + scope gate for every caller of the tool layer (MCP, AI agents):
+    # tools that change state, and ad-hoc SQL, need a writer.
+    if name in _WRITE_TOOLS or (name == "run_query" and arguments.get("sql")):
+        from app.auth.roles import require_tool_writer  # noqa: PLC0415
+
+        require_tool_writer(claims)
 
     # Basic schema validation: check required fields.
     required_fields: list[str] = tool.json_schema.get("required", [])

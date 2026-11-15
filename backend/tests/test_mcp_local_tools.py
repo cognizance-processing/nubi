@@ -36,6 +36,7 @@ def _claims(org_id: str, user_id: str, kind: str = "access") -> dict:
         "kind": kind,
         "sub": user_id,
         "org": org_id,
+        "role": "owner",
         "policies": {},
         "scope": ["author:sql"],
     }

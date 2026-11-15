@@ -52,12 +52,18 @@ from app.repos.provider import set_repo
 
 def _empty_claims() -> dict[str, Any]:
     """First-party claims with no RLS policies."""
-    return {"kind": "access", "sub": "test-user", "policies": {}, "scope": ["read:*"]}
+    return {
+        "kind": "access", "sub": "test-user", "role": "owner", "policies": {},
+        "scope": ["read:*", "edit:*"],
+    }
 
 
 def _claims_with_policy(col: str, val: Any) -> dict[str, Any]:
     """Claims with an equality RLS policy."""
-    return {"kind": "access", "sub": "test-user", "policies": {col: val}, "scope": ["read:*"]}
+    return {
+        "kind": "access", "sub": "test-user", "role": "owner", "policies": {col: val},
+        "scope": ["read:*", "edit:*"],
+    }
 
 
 def _auth_headers(user_id: str) -> dict[str, str]:
@@ -433,6 +439,7 @@ class TestRunQueryTool:
             "kind": "access",
             "sub": "test-admin",
             "policies": {},
+            "role": "owner",
             "scope": ["read:*", "author:sql", "author:metric"],
         }
         result = execute_tool(
@@ -1125,7 +1132,9 @@ class TestRegistryListingIsOrgScoped:
 
         reg = QueryRegistry()
         for qid, name, owner, sql in entries:
-            rq = RegisteredQuery(id=qid, name=name, sql=sql, params=[])
+            # The shared entry is a built-in (system) query; entries with no
+            # recorded owner are no longer listed to any tenant.
+            rq = RegisteredQuery(id=qid, name=name, sql=sql, params=[], system=owner is None)
             object.__setattr__(rq, "owner_org_id", owner)
             reg._store[qid] = rq  # noqa: SLF001
         monkeypatch.setattr(registry_mod, "get_query_registry", lambda: reg)
@@ -1144,7 +1153,7 @@ class TestRegistryListingIsOrgScoped:
         result = _tool_list_queries({"org": "org-a"})
         names = {q["name"] for q in result["queries"]}
         assert "Alison sales" in names
-        assert "Demo rows" in names, "unowned/system entries stay globally visible"
+        assert "Demo rows" in names, "built-in entries stay globally visible"
         assert "Acme payroll" not in names
         assert result["total"] == 2, "the count must not leak the hidden rows either"
 
@@ -1155,7 +1164,7 @@ class TestRegistryListingIsOrgScoped:
         tables = _tool_get_schema({"org": "org-a"})["tables"]
         assert "acme_salaries" not in tables
 
-    def test_no_org_in_claims_sees_only_unowned_entries(self, monkeypatch):
+    def test_no_org_in_claims_sees_only_built_in_entries(self, monkeypatch):
         """A caller with no org resolves to the shared entries, not everything."""
         from app.ai.tools import _tool_list_queries
 

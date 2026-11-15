@@ -93,6 +93,7 @@ from app.auth.deps import current_user, verified_identity
 from app.auth.roles import require_writer
 from app.auth.verify import VerifiedIdentity
 from app.compute.metering import record_usage
+from app.auth.roles import tool_claims as _tool_claims
 from app.errors import AppError
 from app.features import enforce_quota
 from app.repos.provider import Repo, get_repo
@@ -995,17 +996,10 @@ async def ai_chat(
     # Propagate any RLS policies from the verified token so that scoped
     # internal / service-to-service callers do not have their policies
     # silently stripped when the agent executes tool calls.
-    claims: dict[str, Any] = {
-        "kind": "access",
-        "sub": str(_user.get("id", "")),
-        "org": org_id,
-        "policies": dict(identity.policies or {}),
-        # Mirror _FIRST_PARTY_SCOPES (app/auth/verify.py): a real login session
-        # carries author:sql/author:metric, so the agent's own tool calls must
-        # too. Without these the "run query" tool's author:sql gate
-        # (app/ai/tools.py) 403s for every authenticated user.
-        "scope": ["read:*", "write:*", "author:sql", "author:metric"],
-    }
+    # The caller's real role and scope (never a fixed, elevated list) — a
+    # viewer's agent can read, a writer's agent can also author.
+    claims: dict[str, Any] = await _tool_claims(identity, org_id, get_repo())
+    claims["sub"] = str(_user.get("id", "")) or claims["sub"]
 
     # Convert Pydantic ChatMessage objects to plain dicts for the agent.
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
@@ -1062,13 +1056,10 @@ async def ai_chat_stream(
 
     # Propagate any RLS policies from the verified token — same reasoning as
     # ai_chat above (defense-in-depth for scoped / service-to-service callers).
-    claims: dict[str, Any] = {
-        "kind": "access",
-        "sub": str(_user.get("id", "")),
-        "org": org_id,
-        "policies": dict(identity.policies or {}),
-        "scope": ["read:*", "write:*", "author:sql", "author:metric"],
-    }
+    # The caller's real role and scope (never a fixed, elevated list) — a
+    # viewer's agent can read, a writer's agent can also author.
+    claims: dict[str, Any] = await _tool_claims(identity, org_id, get_repo())
+    claims["sub"] = str(_user.get("id", "")) or claims["sub"]
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
 
     timeout_s = _ai_turn_timeout()
@@ -1211,13 +1202,10 @@ async def ai_chat_async(
     provider, org_id, is_byo = await _prepare_ai_call(_user, request)
     project_id = await resolve_project_id_for_create(org_id, request)
 
-    claims: dict[str, Any] = {
-        "kind": "access",
-        "sub": str(_user.get("id", "")),
-        "org": org_id,
-        "policies": dict(identity.policies or {}),
-        "scope": ["read:*", "write:*", "author:sql", "author:metric"],
-    }
+    # The caller's real role and scope (never a fixed, elevated list) — a
+    # viewer's agent can read, a writer's agent can also author.
+    claims: dict[str, Any] = await _tool_claims(identity, org_id, get_repo())
+    claims["sub"] = str(_user.get("id", "")) or claims["sub"]
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
     prompt = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
     job_id = str(uuid.uuid4())

@@ -430,13 +430,11 @@ async def mcp_endpoint(
                 },
             )
 
-        claims: dict[str, Any] = {
-            "kind": identity.kind,
-            "sub": str(user.get("id", "")),
-            "org": org_id,
-            "policies": dict(identity.policies or {}),
-            "scope": list(identity.scope or []),
-        }
+        # The caller's real role and scope — see app.auth.roles.tool_claims.
+        from app.auth.roles import tool_claims  # noqa: PLC0415
+
+        claims: dict[str, Any] = await tool_claims(identity, org_id, repo)
+        claims["sub"] = str(user.get("id", "")) or claims["sub"]
 
         try:
             result = await asyncio.to_thread(execute_tool, tool_name, arguments, claims)

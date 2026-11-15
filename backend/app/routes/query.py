@@ -754,6 +754,21 @@ async def _resolve_request_plan(
                     "raw SQL execution is not permitted without this scope.",
                     403,
                 )
+            # A login session carries author:sql whatever the member's role,
+            # so the ROLE decides: read-only members run registered queries,
+            # not their own SQL.
+            from app.auth.roles import get_org_role, is_writer_role  # noqa: PLC0415
+
+            # (A caller with no organisation at all can only ever reach the
+            # shared, locked-down demo data — there is no role to check.)
+            if _allowlist_org_id and not is_writer_role(
+                await get_org_role(identity.user_id, _allowlist_org_id, get_repo())
+            ):
+                raise _AppError(
+                    "forbidden",
+                    "Running ad-hoc SQL needs write access to this workspace.",
+                    403,
+                )
             registered = None
             effective_sql = body.sql
 
