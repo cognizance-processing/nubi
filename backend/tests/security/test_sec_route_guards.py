@@ -61,35 +61,35 @@ EXEMPT: dict[tuple[str, str], str] = {
 }
 
 
-def _unguarded() -> list[tuple[str, str]]:
-    from fastapi.routing import APIRoute
-
+def _mutation_routes() -> list[tuple[str, str, bool]]:
+    """``(method, path, guarded)`` for every non-GET API route."""
     import main
     from app.auth import roles, superadmin
+    from tests.security.conftest_helpers import iter_api_routes, route_dependency_calls
 
     guards = {
         roles.require_writer, roles.require_writer_default,
         roles.require_approver, roles.require_approver_default,
         superadmin.require_superadmin,
     }
-
-    def calls(dependant, seen=None):
-        seen = set() if seen is None else seen
-        for dep in dependant.dependencies:
-            if dep.call not in seen:
-                seen.add(dep.call)
-                calls(dep, seen)
-        return seen
-
     found = []
-    for route in main.app.routes:
-        if not isinstance(route, APIRoute) or not route.path.startswith("/api/v1"):
+    for path, methods, dependant in iter_api_routes(main.app):
+        if not path.startswith("/api/v1"):
             continue
-        if calls(route.dependant) & guards:
-            continue
-        for method in sorted(route.methods - {"GET", "HEAD", "OPTIONS"}):
-            found.append((method, route.path[len("/api/v1"):]))
+        guarded = bool(route_dependency_calls(dependant) & guards)
+        for method in sorted(methods - {"GET", "HEAD", "OPTIONS"}):
+            found.append((method, path[len("/api/v1"):], guarded))
     return found
+
+
+def _unguarded() -> list[tuple[str, str]]:
+    return [(m, p) for m, p, guarded in _mutation_routes() if not guarded]
+
+
+def test_the_route_table_is_actually_being_inspected():
+    routes = _mutation_routes()
+    assert len(routes) > 150, f"only {len(routes)} mutation routes found — the walk is missing routers"
+    assert sum(1 for _m, _p, guarded in routes if guarded) > 100
 
 
 def test_every_mutation_route_is_guarded_or_explicitly_exempt():

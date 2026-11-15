@@ -197,16 +197,8 @@ def test_pending_action_belongs_to_the_person_it_was_proposed_to(calls):
 
 
 def test_confirm_route_exists_and_is_guarded():
-    import main  # noqa: F401
+    import main
     from app.auth.roles import require_writer
+    from tests.security.conftest_helpers import route_guards
 
-    route = next(r for r in main.app.routes if getattr(r, "path", "") == "/api/v1/ai/actions/{action_id}/confirm")
-
-    def deps(d, seen=None):
-        seen = set() if seen is None else seen
-        for x in d.dependencies:
-            seen.add(x.call)
-            deps(x, seen)
-        return seen
-
-    assert require_writer in deps(route.dependant)
+    assert require_writer in route_guards(main.app, "/api/v1/ai/actions/{action_id}/confirm", "POST")

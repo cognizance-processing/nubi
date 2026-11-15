@@ -91,19 +91,28 @@ BASE = {
     ],
 )
 def test_production_refuses_placeholder_signing_secrets(secret):
-    from app.config import Settings
+    from app.config import Settings, assert_production_secrets
 
-    with pytest.raises(Exception):
-        Settings(_env_file=None, ENV="production", JWT_SECRET=secret, **BASE)
-    Settings(_env_file=None, ENV="development", JWT_SECRET=secret, **BASE)  # fine outside production
+    with pytest.raises(RuntimeError):
+        assert_production_secrets(Settings(_env_file=None, ENV="production", JWT_SECRET=secret, **BASE))
+    # Fine outside production.
+    assert_production_secrets(Settings(_env_file=None, ENV="development", JWT_SECRET=secret, **BASE))
 
 
 def test_a_real_secret_is_accepted_in_production():
     import secrets
 
-    from app.config import Settings
+    from app.config import Settings, assert_production_secrets
 
-    assert Settings(_env_file=None, ENV="production", JWT_SECRET=secrets.token_hex(32), **BASE).ENV == "production"
+    assert_production_secrets(Settings(_env_file=None, ENV="production", JWT_SECRET=secrets.token_hex(32), **BASE))
+
+
+def test_application_startup_runs_the_secret_check():
+    import inspect
+
+    import main
+
+    assert "assert_production_secrets" in inspect.getsource(main.lifespan)
 
 
 def test_there_is_no_default_admin_password():

@@ -312,6 +312,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     On shutdown: stop all background tasks, then drain and close the pool.
     """
+    # A production deployment never starts on a placeholder signing secret.
+    from app.config import assert_production_secrets  # noqa: PLC0415
+
+    assert_production_secrets(get_settings())
+
     from app.flows.runtime import start_flow_worker, stop_flow_worker
     from app.health.listener import register_health_listener
     from app.jobs.runtime import start_scheduler, stop_scheduler

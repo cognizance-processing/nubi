@@ -195,3 +195,47 @@ def make_tenant_app(members: dict[str, tuple[str, str]], *, modules: tuple[str, 
 def as_user(key: str) -> dict[str, str]:
     """Headers selecting the acting user for :func:`make_tenant_app`."""
     return {"X-Test-User": key}
+
+
+# ---------------------------------------------------------------------------
+# Route table
+# ---------------------------------------------------------------------------
+
+def iter_api_routes(app: Any):
+    """Yield ``(path, methods, dependant)`` for every API route of *app*.
+
+    Works whether the framework keeps included routers flattened into
+    ``app.routes`` or as lazily-resolved wrappers.
+    """
+    from fastapi.routing import APIRoute
+
+    for route in app.routes:
+        if isinstance(route, APIRoute):
+            yield route.path, set(route.methods or ()), route.dependant
+        elif hasattr(route, "effective_route_contexts"):
+            for ctx in route.effective_route_contexts():
+                dependant = getattr(ctx, "dependant", None)
+                if dependant is not None:
+                    yield ctx.path, set(getattr(ctx, "methods", None) or ()), dependant
+
+
+def route_dependency_calls(dependant: Any) -> set:
+    """Every dependency callable reachable from *dependant*."""
+    seen: set = set()
+
+    def walk(dep: Any) -> None:
+        for sub in dep.dependencies:
+            if sub.call not in seen:
+                seen.add(sub.call)
+                walk(sub)
+
+    walk(dependant)
+    return seen
+
+
+def route_guards(app: Any, path: str, method: str) -> set:
+    """Dependency callables of the route serving *method* *path* (KeyError if absent)."""
+    for route_path, methods, dependant in iter_api_routes(app):
+        if route_path == path and method in methods:
+            return route_dependency_calls(dependant)
+    raise KeyError(f"{method} {path}")
