@@ -46,3 +46,60 @@ def test_tooltip_html_sinks_are_dropped_on_validation():
 def test_ordinary_config_is_untouched():
     cfg = {"legend": {"position": "bottom"}, "stack": True, "tooltip": {"trigger": "axis", "valueFormat": {"style": "number"}}}
     assert _widget(dict(cfg)) == cfg
+
+
+def _nest(leaf, levels):
+    node = leaf
+    for _ in range(levels):
+        node = {"children": [node]}
+    return node
+
+
+def test_tooltips_given_as_a_list_are_scrubbed():
+    import json
+
+    config = _widget(
+        {"echarts": {"tooltip": [{"formatter": PAYLOAD, "extraCssText": "position:fixed", "trigger": "item"}],
+                     "series": [{"tooltip": [{"formatter": PAYLOAD}]}]}}
+    )
+    assert "onerror" not in json.dumps(config)
+    assert config["echarts"]["tooltip"] == [{"trigger": "item"}]
+
+
+def test_component_tooltip_content_is_dropped():
+    import json
+
+    config = _widget(
+        {"echarts": {"title": {"text": "t", "tooltip": {"show": True, "content": PAYLOAD}},
+                     "legend": {"tooltip": {"show": True, "formatter": PAYLOAD}},
+                     "toolbox": {"tooltip": {"content": PAYLOAD}, "feature": {"saveAsImage": {"lang": [PAYLOAD]}}}}}
+    )
+    assert "onerror" not in json.dumps(config)
+    assert config["echarts"]["title"] == {"text": "t", "tooltip": {"show": True}}
+
+
+def test_toolbox_data_view_is_dropped():
+    import json
+
+    config = _widget(
+        {"echarts": {"toolbox": {"show": True, "feature": {
+            "dataView": {"show": True, "title": PAYLOAD, "lang": [PAYLOAD, "x", "y"], "content": PAYLOAD},
+            "restore": {"show": True}}}}}
+    )
+    assert "onerror" not in json.dumps(config)
+    assert config["echarts"]["toolbox"]["feature"] == {"restore": {"show": True}}
+
+
+def test_nesting_depth_does_not_exempt_a_value():
+    import json
+
+    for levels in (6, 13, 20, 40, 200):
+        config = _widget({"echarts": {"series": [{"data": [_nest({"tooltip": {"formatter": PAYLOAD}}, levels)]}]}})
+        assert "onerror" not in json.dumps(config), levels
+
+
+def test_ordinary_nested_data_survives():
+    tree = {"echarts": {"series": [{"type": "tree", "data": [_nest({"name": "leaf", "value": 1}, 10)]}]}}
+    import copy
+
+    assert _widget(copy.deepcopy(tree)) == tree

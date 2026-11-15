@@ -70,6 +70,7 @@ import { fileURLToPath } from 'url'
 import { dirname, resolve } from 'path'
 import { existsSync, readFileSync } from 'fs'
 import { safeColor, safePalette } from './colors.mjs'
+import { scrubRenderedHtml } from './option-scrub.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -885,7 +886,8 @@ function renderChart(widget, colMap, width, height, theme = 'light') {
   if (option.legend) option.legend = { ...option.legend, textStyle: { color: axisColor } }
   const chart = echartsInit(null, null, { renderer: 'svg', ssr: true, width, height })
   try {
-    chart.setOption(option)
+    // Same rule as the browser builder: nothing spec-supplied is drawn as markup.
+    chart.setOption(scrubRenderedHtml(option))
     return chart.renderToSVGString()
   } finally {
     chart.dispose()

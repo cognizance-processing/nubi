@@ -76,6 +76,7 @@
  * Annotation = { x, y, label, color }
  */
 
+import { scrubRenderedHtml } from '../../scripts/render/option-scrub.mjs'
 import { humaniseColumn } from './column-labels.js'
 
 // ---------------------------------------------------------------------------
@@ -670,42 +671,10 @@ export function safeTooltip(t: any): Record<string, any> {
   return out
 }
 
-const TOOLTIP_HTML_SINKS = ['extraCssText', 'className', 'renderMode', 'appendTo', 'appendToBody', 'enterable', 'alwaysShowContent']
-
-/**
- * Last step of building an option: remove anything a spec could have merged in
- * (through uninterpreted keys or the `echarts` block) that ECharts would render
- * as HTML or CSS in the page. Formatter FUNCTIONS are ours — a spec is JSON and
- * can only ever supply strings — so only string formatters are dropped.
- */
-export function scrubRenderedHtml(node: any, depth = 0): any {
-  if (depth > 12 || node == null || typeof node !== 'object') return node
-  if (Array.isArray(node)) {
-    for (const item of node) scrubRenderedHtml(item, depth + 1)
-    return node
-  }
-  for (const key of Object.keys(node)) {
-    const value = node[key]
-    if (key === 'tooltip' && isDeepObject(value)) {
-      if (typeof value.formatter === 'string') delete value.formatter
-      if (typeof value.position === 'string' && !/^(inside|top|left|right|bottom)$/.test(value.position)) delete value.position
-      for (const sink of TOOLTIP_HTML_SINKS) delete value[sink]
-      for (const c of ['backgroundColor', 'borderColor']) {
-        if (c in value && typeof value[c] === 'string' && !safeColor(value[c])) delete value[c]
-      }
-      if (isDeepObject(value.textStyle)) {
-        delete value.textStyle.rich
-        delete value.textStyle.formatter
-        if (typeof value.textStyle.color === 'string' && !safeColor(value.textStyle.color)) delete value.textStyle.color
-      }
-    } else if ((key === 'link' || key === 'sublink') && typeof value === 'string' && !/^https?:\/\//i.test(value.trim())) {
-      delete node[key]
-      continue
-    }
-    scrubRenderedHtml(node[key], depth + 1)
-  }
-  return node
-}
+// Last step of building an option: remove anything a spec could have merged in
+// (through uninterpreted keys or the `echarts` block) that ECharts would render
+// as HTML or CSS in the page. Shared with the server-side renderer.
+export { scrubRenderedHtml }
 
 // ---------------------------------------------------------------------------
 // Encoding resolution — pick sensible default columns when not specified
