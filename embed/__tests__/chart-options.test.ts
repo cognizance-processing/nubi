@@ -271,6 +271,90 @@ describe('buildChartOption — every chart type returns a valid option', () => {
     expect((free.series as any[])[0].barMaxWidth).toBeUndefined()
   })
 
+  describe('bar & line styling (barMaxWidth / barBorder* / barFillOpacity / line*)', () => {
+    const rows = [{ m: 'Jan', v: 5, g: 'A' }, { m: 'Feb', v: 7, g: 'B' }]
+    const bar = (config, encoding: any = { x: 'm', y: 'v' }) =>
+      buildChartOption({ type: 'bar', table: rows, encoding, config }).series as any[]
+
+    test('unset keys leave bar output unchanged', () => {
+      const [s] = bar(undefined)
+      expect(s.barMaxWidth).toBe(40)
+      expect(s.itemStyle).toEqual({ color: DEFAULT_PALETTE[0], borderRadius: [2, 2, 0, 0] })
+      const grouped = bar(undefined, { x: 'm', y: 'v', color: 'g' })
+      expect(grouped[0].barMaxWidth).toBe(28)
+      expect(grouped[0].itemStyle).toEqual({ borderRadius: [2, 2, 0, 0] })
+    })
+
+    test('barMaxWidth number / null on single, grouped and waterfall bars', () => {
+      expect(bar({ barMaxWidth: 80 })[0].barMaxWidth).toBe(80)
+      expect(bar({ barMaxWidth: null })[0].barMaxWidth).toBeUndefined()
+      const grouped = { x: 'm', y: 'v', color: 'g' }
+      expect(bar({ barMaxWidth: 60 }, grouped).every((s) => s.barMaxWidth === 60)).toBe(true)
+      expect(bar({ barMaxWidth: null }, grouped).every((s) => s.barMaxWidth === undefined)).toBe(true)
+      const wf = (config) => buildChartOption({ type: 'waterfall', table: rows, encoding: { x: 'm', y: 'v' }, config }).series as any[]
+      expect(wf(undefined).every((s) => !('barMaxWidth' in s))).toBe(true)
+      expect(wf({ barMaxWidth: 30 }).every((s) => s.barMaxWidth === 30)).toBe(true)
+    })
+
+    test('barMaxWidth is not leaked to the top-level option', () => {
+      const opt = buildChartOption({ type: 'bar', table: rows, encoding: { x: 'm', y: 'v' }, config: { barMaxWidth: 50, lineWidth: 3 } })
+      expect(opt).not.toHaveProperty('barMaxWidth')
+      expect(opt).not.toHaveProperty('lineWidth')
+    })
+
+    test('outline defaults to the bar colour; explicit colour wins', () => {
+      expect(bar({ barBorderWidth: 2 })[0].itemStyle).toMatchObject({ borderWidth: 2, borderColor: DEFAULT_PALETTE[0] })
+      expect(bar({ barBorderWidth: 2, barBorderColor: '#000' })[0].itemStyle.borderColor).toBe('#000')
+      expect(bar({ barBorderWidth: 0 })[0].itemStyle).not.toHaveProperty('borderWidth')
+      const grouped = bar({ barBorderWidth: 1 }, { x: 'm', y: 'v', color: 'g' })
+      expect(grouped.map((s) => s.itemStyle.borderColor)).toEqual([DEFAULT_PALETTE[0], DEFAULT_PALETTE[1]])
+      const byPoint = bar({ barBorderWidth: 1, colorByPoint: true })[0].data
+      expect(byPoint.map((d) => d.itemStyle.borderColor)).toEqual([DEFAULT_PALETTE[0], DEFAULT_PALETTE[1]])
+    })
+
+    test('fill opacity on bars; waterfall base bar stays untouched', () => {
+      expect(bar({ barFillOpacity: 0.5 })[0].itemStyle.opacity).toBe(0.5)
+      const [base, up] = buildChartOption({ type: 'waterfall', table: rows, encoding: { x: 'm', y: 'v' }, config: { barFillOpacity: 0.5, barBorderWidth: 1 } }).series as any[]
+      expect(base.itemStyle).toEqual({ color: 'transparent' })
+      expect(up.itemStyle).toMatchObject({ opacity: 0.5, borderWidth: 1 })
+    })
+
+    test('funnel: outline only, unset keeps the 1px theme border', () => {
+      const f = (config) => (buildChartOption({ type: 'funnel', table: rows, encoding: { x: 'm', y: 'v' }, config }).series as any[])[0].itemStyle
+      expect(f(undefined).borderWidth).toBe(1)
+      expect(f({ barBorderWidth: 3, barBorderColor: '#fff' })).toEqual({ borderWidth: 3, borderColor: '#fff' })
+    })
+
+    test('combo: bar outline + width on bars, line width/opacity on lines', () => {
+      const opt = buildChartOption({
+        type: 'combo', table: [{ m: 'Jan', a: 1, b: 2 }], encoding: { x: 'm', bars: ['a'], lines: ['b'] },
+        config: { barMaxWidth: 50, barBorderWidth: 2, lineWidth: 4, lineOpacity: 0.6, symbolSize: 8 },
+      })
+      const [b, l] = opt.series as any[]
+      expect(b.barMaxWidth).toBe(50)
+      expect(b.itemStyle.borderWidth).toBe(2)
+      expect(l.lineStyle).toMatchObject({ width: 4, opacity: 0.6 })
+      expect(l.symbolSize).toBe(8)
+    })
+
+    test('line/area/fan honour lineWidth + lineOpacity; unset unchanged', () => {
+      const line = (type, config, encoding: any = { x: 'm', y: 'v' }) =>
+        buildChartOption({ type, table: rows, encoding, config }).series as any[]
+      expect(line('line', undefined)[0].lineStyle).toEqual({ color: DEFAULT_PALETTE[0] })
+      expect(line('line', { lineWidth: 3, lineOpacity: 0.4 })[0].lineStyle).toMatchObject({ width: 3, opacity: 0.4 })
+      expect(line('area', { lineWidth: 5 })[0].lineStyle.width).toBe(5)
+      expect(line('line', undefined, { x: 'm', y: 'v', color: 'g' })[0]).not.toHaveProperty('lineStyle')
+      expect(line('line', { lineWidth: 3 }, { x: 'm', y: 'v', color: 'g' }).every((s) => s.lineStyle.width === 3)).toBe(true)
+      const fan = buildChartOption({
+        type: 'fan', table: [{ m: 'Jan', v: 5, lo: 4, hi: 6 }],
+        encoding: { x: 'm', y: 'v', lower: 'lo', upper: 'hi' }, config: { lineWidth: 4, lineOpacity: 0.5 },
+      }).series as any[]
+      expect(fan[0].lineStyle).toEqual({ opacity: 0 })
+      expect(fan[1].lineStyle).toEqual({ opacity: 0 })
+      expect(fan[2].lineStyle).toMatchObject({ width: 4, opacity: 0.5 })
+    })
+  })
+
   test('combo mixes bar + line series on dual y-axes', () => {
     const rows = [
       { branch: 'North', planned: 100, completed: 80, strike: 45.2 },
