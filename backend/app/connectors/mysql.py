@@ -153,6 +153,27 @@ def _rows_to_arrow(columns: list[str], rows: list[tuple[Any, ...]]) -> "pa.Table
     return pa.table(col_data)
 
 
+# Session rules for EVERY query session, whichever driver opens it: query
+# sessions never write, and a runaway SELECT is cancelled by the server
+# (max_execution_time is in milliseconds).  Each rule is one statement — the
+# server does not accept a transaction characteristic and a variable in the
+# same SET.
+SESSION_RULES: tuple[str, ...] = (
+    "SET SESSION TRANSACTION READ ONLY",
+    "SET SESSION max_execution_time = 60000",
+)
+
+
+def _accepts_session_setup(read_sql: Any) -> bool:
+    """True when this connectorx can run statements on the session before the query."""
+    import inspect  # noqa: PLC0415
+
+    try:
+        return "pre_execution_query" in inspect.signature(read_sql).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 # DSNs this process has already opened successfully at least once. Guards the
 # first-contact pre-flight in ``MySQLConnector._preflight`` — see its docstring
 # for why connectorx alone is not enough.
@@ -175,6 +196,9 @@ class MySQLConnector(Connector):
     installed.  A fresh connection is opened per ``execute`` call and closed
     afterwards; pooling is deferred (mirrors ``PostgresConnector``).
     """
+
+    #: Statements run on every query session before the query (see SESSION_RULES).
+    session_rules: tuple[str, ...] = SESSION_RULES
 
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
@@ -217,7 +241,7 @@ class MySQLConnector(Connector):
         # accepts and never replies, a tunnel that died mid-handshake — parks
         # the calling thread indefinitely, and the caller has no way to tell
         # "slow" from "never". An error the user can read beats a spinner.
-        return pymysql.connect(
+        conn = pymysql.connect(
             host=parsed.hostname or "localhost",
             port=parsed.port or 3306,
             user=unquote(parsed.username) if parsed.username else None,
@@ -227,13 +251,16 @@ class MySQLConnector(Connector):
             connect_timeout=10,
             read_timeout=60,
             write_timeout=60,
-            # Query sessions never write, and a runaway SELECT is cancelled by
-            # the server (max_execution_time is in milliseconds).
-            init_command=(
-                "SET SESSION TRANSACTION READ ONLY, "
-                "SESSION max_execution_time = 60000"
-            ),
         )
+        # A session that could not be given its rules is not handed out.
+        try:
+            with conn.cursor() as cur:
+                for rule in self.session_rules:
+                    cur.execute(rule)
+        except Exception:
+            conn.close()
+            raise
+        return conn
 
     # ------------------------------------------------------------------
     # Execution
@@ -296,10 +323,20 @@ class MySQLConnector(Connector):
         """Run a no-params plan through connectorx (zero-copy Arrow)."""
         self._preflight()
         cx = _import_connectorx()
+        # The session rules are applied on the same connection before the
+        # query.  A connectorx that cannot do that is not used: the query runs
+        # on the PyMySQL path, which always applies them.
+        if not _accepts_session_setup(cx.read_sql):
+            return self._execute_pymysql(plan)
         # SQL has no $N placeholders here (plan.params is empty), but a literal
         # statement may still be run verbatim.
         try:
-            return cx.read_sql(self._dsn, plan.sql, return_type="arrow")
+            return cx.read_sql(
+                self._dsn,
+                plan.sql,
+                return_type="arrow",
+                pre_execution_query=list(self.session_rules),
+            )
         except AppError:
             raise
         except Exception as exc:
