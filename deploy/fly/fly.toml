@@ -1,0 +1,86 @@
+# fly.toml — run Nubi on Fly.io (self-host reference config).
+#
+# ONE combined image (Dockerfile.ee: FastAPI + built SPA + app/ee/), TWO processes:
+#   app    — uvicorn serving /api/v1 + the embedded SPA (same origin)
+#   worker — flows worker (scheduler loop + worker pool, backend/worker.py)
+#
+# State lives elsewhere: Postgres (DATABASE_URL secret) and any S3-compatible
+# object store (FLOWS_MATERIALIZE_BASE_URI + S3_* / NUBI_ASSET_STORAGE_URI).
+# Machines are stateless and disposable.
+#
+# Usage (see deploy/fly/README.md):
+#   NUBI_FLY_APP=my-nubi deploy/fly/setup-fly.sh
+#   NUBI_FLY_APP=my-nubi deploy/fly/secrets.sh .env.fly
+#   NUBI_FLY_APP=my-nubi deploy/fly/deploy.sh
+# deploy.sh passes --app, so the `app` value below is only a fallback. Change
+# primary_region to the Fly region nearest your users / database.
+app = "nubi"           # overridden by deploy.sh --app $NUBI_FLY_APP
+primary_region = "jnb" # change to your region (fly platform regions)
+
+[build]
+  # deploy.sh passes --dockerfile Dockerfile.ee --ignorefile Dockerfile.ee.dockerignore
+  # from the repo root (flyctl resolves paths here relative to THIS file's dir).
+  # The EE layer in the image is inert unless NUBI_LICENSE_KEY is set.
+
+[deploy]
+  # Forward-only migration runner; runs in a one-off release machine before the
+  # new image is rolled out. Needs the DATABASE_URL secret. --ee also applies
+  # database/migrations/ee/ (billing tables; harmless when EE is inactive).
+  release_command = "python /app/database/migrate.py --ee"
+
+[processes]
+  # Working directory is /app/backend (see Dockerfile.ee). TWO processes:
+  # `app` serves the API + SPA (queries push down to the customer's warehouse or
+  # run in the browser kernel); `worker` runs the flows scheduler/worker pool.
+  app = "uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2"
+  worker = "python worker.py"
+
+[env]
+  ENV = "production"
+  STATIC_DIR = "/app/dist"
+  # Per-connection DuckDB memory cap for the in-process demo/seed engine: a
+  # too-big query fails with a clean error instead of OOM-killing the machine.
+  NUBI_DUCKDB_MEMORY_LIMIT = "512MB"
+  # Worker tuning (read by backend/worker.py in the worker process).
+  FLOWS_WORKER_CONCURRENCY = "4"
+  FLOWS_WORKER_INTERVAL_S = "5"
+  FLOWS_WORKER_LEASE_S = "300"
+
+[http_service]
+  processes = ["app"]
+  internal_port = 8000
+  force_https = true
+  # Fly's proxy stops idle app machines and wakes them on demand, but we keep
+  # at least one warm: embeds + SSE streams need fast first byte.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+[checks]
+  [checks.health]
+    processes = ["app"]
+    type = "http"
+    port = 8000
+    path = "/health"
+    method = "GET"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "30s"
+
+# The worker process has no [http_service]: it is never auto-stopped by the
+# proxy and runs always-on. Scale with `fly scale count worker=N`.
+
+[[vm]]
+  processes = ["app"]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+
+[[vm]]
+  processes = ["worker"]
+  size = "shared-cpu-1x"
+  memory = "1gb"
