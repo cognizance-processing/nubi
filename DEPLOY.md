@@ -17,3 +17,22 @@ every push to `dev`/`main` and on `vX.Y.Z` tags.
 
 Nubi Cloud (the hosted service) deploys these same public images from a private
 ops repository; nothing about that deployment is needed to self-host.
+
+## How Nubi Cloud ships (for contributors)
+
+Nothing in this repo deploys anything. The workflow only publishes images, and
+the private ops repo decides what runs where:
+
+| Git event | Image published | What happens next |
+|---|---|---|
+| push to `dev` | `nubi-ee:dev-<sha>` | ops repo deploys it to the **dev** environment automatically |
+| push to `main` | `nubi-ee:main-<sha>` | published only; **merging to `main` does not ship to prod** |
+| tag `vX.Y.Z` | `nubi-ee:X.Y.Z`, `nubi-ee:latest`, `nubi:X.Y.Z`, `nubi:latest` | ops repo stages a **prod** rollout that waits for a reviewer's approval |
+| tag `vX.Y.Z-rc.N` | `nubi-ee:X.Y.Z-rc.N` | published only, no auto-deploy (a QA environment is planned) |
+
+So a production release is: merge to `main`, bump `version` in `package.json`,
+tag `vX.Y.Z` on that commit, push the tag, then approve the rollout in the ops
+repo. The digest that ran on dev is the digest that reaches prod; nothing is
+rebuilt downstream. Before this (Nov 2026) `./deploy.sh` at the repo root
+built the working tree and pushed it straight to Fly; that path is gone, see
+[`deploy/fly/README.md`](deploy/fly/README.md#moved-from-the-repo-root).

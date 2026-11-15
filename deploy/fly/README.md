@@ -34,3 +34,26 @@ tasks so replicas don't collide.
 
 Multiple environments (staging + prod) are just multiple Fly apps: one env file
 each, same `fly.toml`, `NUBI_FLY_APP` selects the target.
+
+## Moved from the repo root
+
+Until November 2026 these scripts lived at the repo root and were Nubi Cloud's
+own deploy path, with the environment picked by a positional `main|dev`
+argument. They now live here, are generic, and pick the target from
+`NUBI_FLY_APP`. If you deployed with the old commands:
+
+| Before | Now |
+|---|---|
+| `./setup-fly.sh dev` | `NUBI_FLY_APP=<app> NUBI_FLY_ORG=<org> deploy/fly/setup-fly.sh` |
+| `./secrets.sh dev` (read `.env.dev`) | `NUBI_FLY_APP=<app> deploy/fly/secrets.sh .env.dev` |
+| `./deploy.sh dev` | `NUBI_FLY_APP=<app> deploy/fly/deploy.sh` |
+| `./deploy.sh` (prod) | not a Fly deploy any more, see below |
+| `cp .env.deploy.example .env.dev` | `cp deploy/fly/.env.fly.example .env.fly` |
+| `fly.toml` at the root | `deploy/fly/fly.toml` (no `app =` line; `--app` is required) |
+
+An existing `.env` / `.env.dev` keeps working: pass it as the file argument to
+`secrets.sh`. Local development (`docker compose`, `dev-local.sh`) is unchanged.
+
+Nubi Cloud itself no longer deploys from this repo at all. CI publishes an image
+on every push to `dev` and `main` and on `vX.Y.Z` tags, and a private ops repo
+rolls those images out to Cloud Run; see [`DEPLOY.md`](../../DEPLOY.md).
