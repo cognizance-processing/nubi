@@ -169,3 +169,96 @@ async def test_lazy_metric_load_registers_under_the_rows_org():
         assert reg.get("rev_zz") is None
     finally:
         mreg.reset_for_tests()
+
+
+# ---------------------------------------------------------------------------
+# Cache and operational endpoints (process-wide state)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def ops_client(client):
+    """The cache / ops routers are mounted by main.py ahead of the generic
+    resource routes; mount them the same way on a small app."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.errors import register_handlers
+    from app.routes.cache import router as cache_router
+    from app.routes.insights import router as insights_router
+    from app.routes.ops import router as ops_router
+
+    app = FastAPI()
+    register_handlers(app)
+    app.dependency_overrides = client.app.dependency_overrides
+    for r in (cache_router, ops_router, insights_router):
+        app.include_router(r, prefix="/api/v1")
+    with TestClient(app, raise_server_exceptions=False) as c:
+        c.repo = client.repo  # type: ignore[attr-defined]
+        yield c
+
+
+def _superadmin(is_admin: bool):
+    return patch("app.db.fetchrow", new=AsyncMock(return_value={"is_superadmin": is_admin}))
+
+
+@pytest.mark.parametrize("path", ["/api/v1/cache/stats", "/api/v1/ops/stats", "/api/v1/_cache/stats"])
+def test_process_wide_stats_are_operator_only(ops_client, path):
+    client = ops_client
+
+    with _superadmin(False):
+        assert client.get(path, headers=as_user("b")).status_code == 403
+    with _superadmin(True):
+        assert client.get(path, headers=as_user("b")).status_code == 200
+
+
+def test_cache_invalidation_is_scoped_to_the_callers_org(ops_client):
+    import asyncio
+
+    client = ops_client
+
+    from app.connectors.cache import get_cache
+
+    cache = get_cache()
+    cache.put("k_a", b"a", tags=[f"org:{ORG_A}", "board:board-a"])
+    cache.put("k_b", b"b", tags=[f"org:{ORG_B}"])
+    board_b = asyncio.run(
+        client.repo.create(resource="boards", org_id=ORG_B, created_by="u", name="B", config={})
+    )
+    cache.put("k_bb", b"bb", tags=[f"org:{ORG_B}", f"board:{board_b['id']}"])
+
+    def post(body, user="b"):
+        with _superadmin(False):
+            return client.post("/api/v1/cache/invalidate", json=body, headers=as_user(user))
+
+    assert post({"all": True}).status_code == 403
+    assert post({"tag": f"org:{ORG_A}"}).status_code == 403
+    assert post({"tag": "board:board-a"}).status_code == 403
+    assert post({"tag": "something-else"}).status_code == 403
+    assert cache.get("k_a") == b"a"
+    assert post({"tag": f"org:{ORG_B}"}, user="bv").status_code == 403  # read-only member
+
+    assert post({"tag": f"board:{board_b['id']}"}).status_code == 200
+    assert cache.get("k_bb") is None and cache.get("k_b") == b"b"
+    assert post({"tag": f"org:{ORG_B}"}).status_code == 200
+    assert cache.get("k_b") is None and cache.get("k_a") == b"a"
+
+    with _superadmin(True):
+        assert client.post("/api/v1/cache/invalidate", json={"all": True}, headers=as_user("b")).status_code == 200
+    assert cache.get("k_a") is None
+
+
+# ---------------------------------------------------------------------------
+# Rendered thumbnails
+# ---------------------------------------------------------------------------
+
+
+def test_thumbnail_cache_key_includes_the_org():
+    from app.routes.export_share import _policy_fingerprint
+
+    claims = {"policies": {}}
+    assert _policy_fingerprint(claims, ORG_A) != _policy_fingerprint(claims, ORG_B)
+    assert _policy_fingerprint(claims, ORG_A) == _policy_fingerprint({"policies": {}}, ORG_A)
+    assert _policy_fingerprint({"policies": {"region": "x"}}, ORG_A) != _policy_fingerprint(claims, ORG_A)
+    with pytest.raises(TypeError):
+        _policy_fingerprint(claims)  # type: ignore[call-arg]

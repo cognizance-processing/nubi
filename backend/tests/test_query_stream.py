@@ -398,7 +398,7 @@ async def test_render_reports_unresolved_filters(client):
 
 
 @pytest.mark.asyncio
-async def test_cache_stats_hits_after_hit(client):
+async def test_cache_stats_hits_after_hit(client, as_operator):
     """GET /_cache/stats → hits >= 1 after a cache HIT."""
     from app.connectors.cache import get_cache
     get_cache().clear()

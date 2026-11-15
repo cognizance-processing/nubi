@@ -402,15 +402,21 @@ def _collect_claims(user: dict[str, Any]) -> dict[str, Any]:
     return {"policies": {}}
 
 
-def _policy_fingerprint(claims: dict[str, Any]) -> str:
-    """Stable fingerprint of the RLS policies a render was performed under.
+def _policy_fingerprint(claims: dict[str, Any], org_id: str | None) -> str:
+    """Stable fingerprint of the organisation and RLS policies a render was
+    performed under.
 
-    Part of the thumbnail cache key so a cached render can never cross a policy
-    boundary. Empty policies fingerprint to a constant, so today's first-party
-    renders all share one cache entry per board — which is the intent.
+    Part of the thumbnail cache key so a cached render can never cross an
+    organisation or policy boundary. Within one organisation, empty policies
+    fingerprint to a constant, so first-party renders share one cache entry per
+    board — which is the intent.
     """
     policies = (claims or {}).get("policies") or {}
-    raw = json.dumps(policies, sort_keys=True, default=str).encode("utf-8")
+    raw = json.dumps(
+        {"org": str(org_id) if org_id else None, "policies": policies},
+        sort_keys=True,
+        default=str,
+    ).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
@@ -524,7 +530,7 @@ async def warm_board_thumbnails(
 
     # Warming happens as the saving user, so the stored objects carry that
     # caller's policy fingerprint — the same key material the read path uses.
-    policy_fp = _policy_fingerprint(claims)
+    policy_fp = _policy_fingerprint(claims, org_id)
     spec_hash = _spec_hash(spec_dict)
 
     try:
@@ -596,7 +602,6 @@ async def backfill_board_thumbnails(repo: Repo) -> int:
     # The same claims the read path renders under, so the keys checked here are
     # the keys the gallery will ask for.
     claims = _collect_claims({})
-    policy_fp = _policy_fingerprint(claims)
     warmed = 0
 
     async with get_pool().acquire() as conn:
@@ -606,6 +611,7 @@ async def backfill_board_thumbnails(repo: Repo) -> int:
             org_ids = [r["org_id"] for r in await conn.fetch("SELECT DISTINCT org_id FROM boards")]
             for org_id in org_ids:
                 org_id = str(org_id)
+                policy_fp = _policy_fingerprint(claims, org_id)
                 for board in await repo.list("boards", org_id):
                     board_id = str(board.get("id"))
                     try:
@@ -687,7 +693,7 @@ async def board_thumbnail_svg(
     # in the cache key, or a dark viewer gets served the light render.
     theme_key = "dark" if (theme or "").strip().lower() == "dark" else "light"
     cache_key = _spec_hash(spec_dict) + ":" + theme_key
-    policy_fp = _policy_fingerprint(claims)
+    policy_fp = _policy_fingerprint(claims, org_id)
 
     # Access is authorised BEFORE this lookup (_load_board is org-scoped and
     # 404s cross-org), and the key carries the policy fingerprint, so a hit can

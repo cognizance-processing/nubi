@@ -42,3 +42,20 @@ async def require_superadmin(
     if not is_superadmin:
         raise AppError("forbidden", "Superadmin access required.", 403)
     return {**user, "is_superadmin": True}
+
+
+async def caller_is_superadmin(
+    user: dict[str, Any] = Depends(current_user),
+) -> bool:
+    """Dependency: whether the CURRENT DB row marks the caller as superadmin.
+
+    The non-raising twin of :func:`require_superadmin`, for routes where an
+    operator may do more than a tenant can (rather than being the only caller).
+    """
+    try:
+        await require_superadmin(user)
+    except AppError:
+        return False
+    except Exception:  # noqa: BLE001 — cannot verify → not an operator
+        return False
+    return True

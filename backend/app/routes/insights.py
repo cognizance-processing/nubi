@@ -17,7 +17,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from app.auth.deps import current_user
+from app.auth.deps import current_user  # noqa: F401
+from app.auth.superadmin import require_superadmin
 from app.connectors.cache import get_cache
 from app.routes import api_router
 
@@ -26,7 +27,7 @@ router = APIRouter(tags=["insights"])
 
 @router.get("/_cache/stats")
 async def cache_stats(
-    _user: dict = Depends(current_user),
+    _user: dict = Depends(require_superadmin),
 ) -> dict:
     """Return current cache statistics.
 

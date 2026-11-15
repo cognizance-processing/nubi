@@ -94,7 +94,7 @@ async def test_cache_stats_rejects_unknown_user(client):
 
 
 @pytest.mark.asyncio
-async def test_cache_stats_returns_get_cache_stats(seeded_client):
+async def test_cache_stats_returns_get_cache_stats(seeded_client, as_operator):
     """A seeded, authenticated user gets back exactly get_cache().stats()."""
     ac, user_id = seeded_client
     fake_stats = {
@@ -113,7 +113,7 @@ async def test_cache_stats_returns_get_cache_stats(seeded_client):
 
 
 @pytest.mark.asyncio
-async def test_cache_stats_end_to_end_with_real_cache(seeded_client):
+async def test_cache_stats_end_to_end_with_real_cache(seeded_client, as_operator):
     """Prime the real in-process cache and verify the endpoint reflects it."""
     from app.connectors.cache import get_cache, reset_cache_for_tests
 

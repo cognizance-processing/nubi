@@ -711,3 +711,19 @@ async def pg_db(pg_pool):
                 )
 
     yield pg_pool
+
+
+@pytest.fixture
+def as_operator(app):
+    """Run the test's requests as a platform operator (superadmin).
+
+    For endpoints that expose or change process-wide state and are therefore
+    operator-only.
+    """
+    from app.auth.superadmin import caller_is_superadmin, require_superadmin
+
+    app.dependency_overrides[require_superadmin] = lambda: {"id": "operator", "is_superadmin": True}
+    app.dependency_overrides[caller_is_superadmin] = lambda: True
+    yield
+    app.dependency_overrides.pop(require_superadmin, None)
+    app.dependency_overrides.pop(caller_is_superadmin, None)
