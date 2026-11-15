@@ -103,3 +103,34 @@ def test_callers_without_policies_are_unaffected(dialect: str, sql: str) -> None
         plan(sql, claims={}, dialect=dialect)
     except AppError as exc:  # a refusal here must come from the read-only guard, not row policies
         assert "row-level policies" not in exc.message
+
+
+# A name the planner reads as a reference to a filtered block must be one the
+# engine reads the same way: engines fold unquoted names, so a quoted block
+# name and an unquoted reference (or the reverse) can be two different things.
+AMBIGUOUS_BLOCK_NAMES = [
+    ("postgres", 'WITH "ORDERS" AS (SELECT 1 AS x) SELECT * FROM ORDERS'),
+    ("snowflake", 'WITH "orders" AS (SELECT 1 AS x) SELECT * FROM orders'),
+    ("postgres", 'WITH orders AS (SELECT 1 AS x) SELECT * FROM "orders"'),
+    ("duckdb", 'WITH "Orders" AS (SELECT 1 AS x) SELECT * FROM Orders o JOIN customers c ON true'),
+    ("postgres", 'SELECT * FROM a WHERE EXISTS (WITH "ORDERS" AS (SELECT 1) SELECT 1 FROM ORDERS)'),
+]
+
+
+@pytest.mark.parametrize(("dialect", "sql"), AMBIGUOUS_BLOCK_NAMES)
+def test_a_block_name_that_differs_from_its_reference_by_quoting_is_refused(dialect: str, sql: str) -> None:
+    with pytest.raises(AppError) as exc:
+        plan(sql, claims=POLICIES, dialect=dialect)
+    assert exc.value.code == "UNSUPPORTED_QUERY"
+
+
+@pytest.mark.parametrize(
+    ("dialect", "sql"),
+    [
+        ("postgres", "WITH t AS (SELECT * FROM orders) SELECT * FROM t"),
+        ("postgres", 'WITH "T" AS (SELECT * FROM orders) SELECT * FROM "T"'),
+        ("snowflake", "WITH recent AS (SELECT * FROM orders) SELECT * FROM recent r JOIN recent r2 ON true"),
+    ],
+)
+def test_consistently_written_block_names_still_work(dialect: str, sql: str) -> None:
+    assert plan(sql, claims=POLICIES, dialect=dialect).sql.count("region = 'EU'") == 1

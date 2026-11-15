@@ -725,6 +725,19 @@ def _policy_refusal(what: str) -> AppError:
     )
 
 
+def _same_name_as_written(table: exp.Table, block_scope: Any) -> bool:
+    """True when *table* names the CTE behind *block_scope* exactly as it was
+    defined: same text and same quoting.  Anything else is not provably the
+    same object once the engine applies its own identifier folding."""
+    cte = block_scope.expression.parent
+    alias = cte.args.get("alias") if isinstance(cte, exp.CTE) else None
+    defined = alias.this if alias is not None else None
+    used = table.this
+    if not isinstance(defined, exp.Identifier) or not isinstance(used, exp.Identifier):
+        return False
+    return defined.this == used.this and bool(defined.quoted) == bool(used.quoted)
+
+
 def _is_row_generator(node: exp.Expression | None) -> bool:
     return isinstance(node, exp.Func) and _function_name(node) in _ROW_GENERATORS
 
@@ -781,10 +794,19 @@ def inject_row_policies(
             ):
                 raise _policy_refusal("A table function")
 
-            # References to another block (CTE / derived table) read filtered rows.
+            # References to another block (CTE / derived table) read filtered rows
+            # — provided the engine reads the name the same way.  Engines fold
+            # unquoted names, so a quoted block name and an unquoted reference
+            # (or the reverse) may be a block here and a real table there.
             for table in scope.tables:
-                if isinstance(scope.sources.get(table.alias_or_name), Scope):
-                    accounted.add(id(table))
+                source = scope.sources.get(table.alias_or_name)
+                if not isinstance(source, Scope):
+                    continue
+                if not _same_name_as_written(table, source):
+                    raise _policy_refusal(
+                        "Referring to a named query block with different quoting than it was defined with"
+                    )
+                accounted.add(id(table))
 
             base_tables: list[exp.Table] = []
             other_sources = False

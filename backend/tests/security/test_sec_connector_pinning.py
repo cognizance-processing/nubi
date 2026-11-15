@@ -233,3 +233,75 @@ def test_connection_paths_use_the_pinning_guard():
     for rel in ("routes/query.py", "connectors/resolve.py"):
         text = (root / rel).read_text()
         assert 'cfg["host"] = _target.host' not in text and "apply_network_target(" in text
+
+
+# ---------------------------------------------------------------------------
+# An address a connection string already names is checked like any other
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "dsn",
+    [
+        "postgresql://u:p@8.8.8.8:5432/db?hostaddr=127.0.0.1",
+        "postgresql://u:p@db.example.test/db?hostaddr=10.0.0.5",
+        "postgresql://u:p@db.example.test/db?sslmode=require&hostaddr=169.254.169.254",
+        "postgresql://u:p@db.example.test/db?hostaddr=8.8.8.8,127.0.0.1",
+        "postgresql://u:p@db.example.test/db?HOSTADDR=127.0.0.1",
+        "host=8.8.8.8 hostaddr=10.0.0.5 dbname=x",
+        "host=8.8.8.8 hostaddr='127.0.0.1' dbname=x",
+    ],
+)
+def test_a_connection_string_cannot_name_an_internal_address_to_dial(rebinding_dns, dsn):
+    from app.connectors.ssrf import pin_connector_target
+    from app.errors import AppError
+
+    with pytest.raises(AppError) as exc:
+        pin_connector_target({"connector_type": "postgres", "dsn": dsn})
+    assert exc.value.status == 400
+
+
+def test_a_public_address_in_a_connection_string_is_still_accepted(rebinding_dns):
+    from app.connectors.ssrf import pin_connector_target
+
+    cfg = {"connector_type": "postgres", "dsn": "postgresql://u:p@db.example.test/db?hostaddr=93.184.216.34"}
+    pin_connector_target(cfg)
+    assert cfg["dsn"].endswith("hostaddr=93.184.216.34")
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"port": "3306@127.0.0.1:3307"},
+        {"port": "3306/x?y=@127.0.0.1"},
+        {"port": "abc"},
+        {"port": 0},
+        {"port": 70000},
+        {"database": "db@127.0.0.1:3307/x"},
+        {"database": "db?socket=/var/run/mysqld/mysqld.sock"},
+        {"database": "a/b#c"},
+    ],
+    ids=lambda e: next(iter(e)) + ":" + str(next(iter(e.values())))[:12],
+)
+def test_mysql_connection_string_parts_cannot_move_the_target(extra):
+    from app.connectors.registry import _mysql_dsn_from_config
+    from app.errors import AppError
+
+    cfg = {"connector_type": "mysql", "host": "8.8.8.8", "port": 3306, "user": "u", "password": "p", "database": "d", **extra}
+    try:
+        dsn = _mysql_dsn_from_config(cfg)
+    except AppError as exc:
+        assert exc.status == 400
+        return
+    parts = urlsplit(dsn)
+    assert parts.hostname == "8.8.8.8" and parts.port == 3306
+    assert parts.query == "" and parts.fragment == "" and parts.path.count("/") == 1
+
+
+def test_mysql_connection_string_keeps_ordinary_values():
+    from app.connectors.registry import _mysql_dsn_from_config
+
+    parts = urlsplit(_mysql_dsn_from_config(
+        {"host": "8.8.8.8", "port": "3307", "user": "u", "password": "p@ss", "database": "sales_2026"}
+    ))
+    assert (parts.hostname, parts.port, parts.path) == ("8.8.8.8", 3307, "/sales_2026")

@@ -339,7 +339,17 @@ def _mysql_dsn_from_config(config: dict[str, Any]) -> str:
     host = connection_host(config.get("host"))
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"  # IPv6 literal
-    port = config.get("port", 3306)
+    # Each part is validated or URL-encoded, as in postgres_dsn, so a value
+    # can only be what its field says it is: the port a number, and the
+    # database name cannot add an authority, a path or parameters.
+    from app.errors import AppError
+
+    try:
+        port = int(config.get("port") or 3306)
+    except (TypeError, ValueError):
+        port = 0
+    if not 0 < port < 65536:
+        raise AppError("invalid_connector_config", "The port must be a number.", 400)
     database = config.get("database") or config.get("dbname") or ""
     user = config.get("user") or config.get("username") or "root"
     password = config.get("password", "")
@@ -347,4 +357,4 @@ def _mysql_dsn_from_config(config: dict[str, Any]) -> str:
     userinfo = quote(str(user), safe="")
     if password:
         userinfo += ":" + quote(str(password), safe="")
-    return f"mysql://{userinfo}@{host}:{port}/{database}"
+    return f"mysql://{userinfo}@{host}:{port}/{quote(str(database), safe='')}"

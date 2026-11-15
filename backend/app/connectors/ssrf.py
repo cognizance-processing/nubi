@@ -525,6 +525,12 @@ def ip_literals(value: Any) -> str:
     return ",".join(part.strip() for part in value.split(","))
 
 
+def _check_dialled_addresses(value: str) -> None:
+    """An address list a connection string already names is what the driver
+    will dial, so it must be IP literals and every one must pass the policy."""
+    _check_host(ip_literals(value))
+
+
 def _pin_postgres_dsn(dsn: str) -> str:
     """Add ``hostaddr`` for every host a Postgres connection string names."""
     text = dsn.strip()
@@ -536,7 +542,7 @@ def _pin_postgres_dsn(dsn: str) -> str:
             for key, raw in _KEYWORD_PAIR_RE.findall(text)
         }
         if pairs.get("hostaddr"):
-            ip_literals(pairs["hostaddr"])
+            _check_dialled_addresses(pairs["hostaddr"])
             return text
         if not pairs.get("host"):
             raise _not_allowed()
@@ -548,7 +554,7 @@ def _pin_postgres_dsn(dsn: str) -> str:
         raise _not_allowed() from None
     named = {k.lower(): v for k, v in params}
     if named.get("hostaddr"):
-        ip_literals(named["hostaddr"])
+        _check_dialled_addresses(named["hostaddr"])
         return text
     authority = [h for h in _netloc_hosts(parts.netloc) if h]
     if authority and named.get("host"):
