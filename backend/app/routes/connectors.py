@@ -192,8 +192,30 @@ _SECRET_KEYS: frozenset[str] = frozenset(
         "access_token",          # Databricks
         "aws_secret_access_key",  # Athena / object storage
         "private_key",            # Snowflake key-pair auth
+        "dsn",                    # a connection string embeds its password
+        "headers",                # request headers carry bearer tokens / keys
+        "s3_secret",              # object-storage secret key
     }
 )
+
+#: Credentials that clients (forms, files-as-code, the CLI) commonly place in
+#: ``config``.  They are moved into the encrypted secret blob on the way in
+#: instead of being refused, so nothing has to change on the client side.
+_RELOCATED_TO_SECRET: tuple[str, ...] = ("dsn", "headers", "s3_secret")
+
+
+def _relocate_credentials(data: Any) -> Any:
+    """Move credential-bearing ``config`` keys into ``secret`` (request pre-processing)."""
+    if not isinstance(data, dict) or not isinstance(data.get("config"), dict):
+        return data
+    config = dict(data["config"])
+    moved = {k: config.pop(k) for k in _RELOCATED_TO_SECRET if config.get(k) not in (None, "", {})}
+    if not moved:
+        return data
+    secret = dict(data.get("secret") or {})
+    for key, value in moved.items():
+        secret.setdefault(key, value)
+    return {**data, "config": config, "secret": secret}
 
 # ── Reserved config keys — server-only, never writable by users ───────────────
 # These flags are set exclusively by server-side provisioning code (app/sample.py,
@@ -241,6 +263,9 @@ class ConnectorSecret(BaseModel):
     access_token: str | None = None
     aws_secret_access_key: str | None = None
     private_key: str | None = None
+    dsn: str | None = None
+    headers: dict[str, str] | None = None
+    s3_secret: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return only the non-None values for storage in the secret store."""
@@ -262,6 +287,11 @@ class CreateConnectorIn(BaseModel):
     # with whatever config the caller supplies.
     seed: Literal["demo", "blank"] | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _credentials_belong_in_the_secret(cls, data: Any) -> Any:
+        return _relocate_credentials(data)
+
     @model_validator(mode="after")
     def assert_no_secret_in_config(self) -> "CreateConnectorIn":
         """Raise if the caller accidentally put secret keys inside config."""
@@ -281,6 +311,11 @@ class UpdateConnectorIn(BaseModel):
     name: str | None = None
     config: ConnectorConfig | None = None
     secret: ConnectorSecret | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _credentials_belong_in_the_secret(cls, data: Any) -> Any:
+        return _relocate_credentials(data)
 
     @model_validator(mode="after")
     def assert_no_secret_in_config(self) -> "UpdateConnectorIn":
@@ -756,6 +791,13 @@ async def update_connector(
             new_non_secret.pop(key, None)
 
         existing_config.update(new_non_secret)
+
+        # A credential that has just been moved into the secret blob must not
+        # linger in (and win from) the plaintext config of an older row.
+        if body.secret is not None:
+            for key in _RELOCATED_TO_SECRET:
+                if getattr(body.secret, key, None) is not None:
+                    existing_config.pop(key, None)
 
         # An explicit ``null`` clears that key (``to_safe_dict`` drops Nones, so
         # without this an edit that empties an optional field — schema,

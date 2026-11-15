@@ -276,23 +276,9 @@ def _resolve_flow_connector(
         _secret = None
 
     if _secret:
-        if ctype == "postgres":
-            if "password" not in cfg:
-                cfg["password"] = _secret.get("password", "")
-        elif ctype == "http_json":
-            _headers: dict = dict(cfg.get("headers") or {})
-            if "token" in _secret:
-                _headers["Authorization"] = f"Bearer {_secret['token']}"
-            elif "api_key" in _secret:
-                _headers["X-API-Key"] = _secret["api_key"]
-            cfg["headers"] = _headers
-        elif ctype == "bigquery":
-            if "service_account_json" in _secret:
-                cfg["service_account_json"] = _secret["service_account_json"]
-        else:
-            for k, v in _secret.items():
-                if k not in cfg:
-                    cfg[k] = v
+        from app.connectors.resolve import merge_connector_secret  # noqa: PLC0415
+
+        merge_connector_secret(cfg, ctype, _secret)
 
     # ── Build connector ───────────────────────────────────────────────────────
     factory = get_connector_registry().get(ctype or "duckdb")

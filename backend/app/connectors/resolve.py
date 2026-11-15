@@ -42,6 +42,64 @@ from app.connectors.registry import get_connector_registry
 from app.errors import AppError
 
 
+def template_claims(plan_claims: Any, org_id: str | None) -> dict[str, Any]:
+    """The claims a per-tenant datastore template may be resolved against.
+
+    Built only from verified material: the caller's policy claims (taken from
+    the verified token by the route) and the organisation the server resolved
+    for the request.  ``org`` is ALWAYS the server-resolved organisation — a
+    claim of the same name can never replace it.
+    """
+    source = dict(plan_claims or {})
+    policies = source.pop("policies", None)
+    claims: dict[str, Any] = {k: v for k, v in source.items() if k != "org"}
+    if isinstance(policies, dict):
+        claims.update({k: v for k, v in policies.items() if k != "org"})
+    if org_id:
+        claims["org"] = str(org_id)
+    return claims
+
+
+def merge_connector_secret(cfg: dict, ctype: str | None, secret: dict) -> None:
+    """Merge a connector's decrypted secret blob into its config, in place.
+
+    The ONE implementation used by every code path that builds a connector.
+    Non-secret config keys win over the blob, except request headers, where
+    the stored secret headers are layered on top of the non-secret ones.
+    """
+    if not secret:
+        return
+    if ctype == "http_json":
+        headers: dict = dict(cfg.get("headers") or {})
+        stored = secret.get("headers")
+        if isinstance(stored, dict):
+            headers.update(stored)
+        if "token" in secret:
+            headers["Authorization"] = f"Bearer {secret['token']}"
+        elif "api_key" in secret:
+            headers["X-API-Key"] = secret["api_key"]
+        cfg["headers"] = headers
+        for k, v in secret.items():
+            if k not in ("headers", "token", "api_key") and k not in cfg:
+                cfg[k] = v
+        return
+    if ctype == "postgres":
+        # A stored connection string is used as-is; otherwise the password is
+        # combined with the non-secret host/port/db/user parts by the caller.
+        if "dsn" in secret and "dsn" not in cfg:
+            cfg["dsn"] = secret["dsn"]
+        if "password" not in cfg:
+            cfg["password"] = secret.get("password", "")
+        return
+    if ctype == "bigquery":
+        if "service_account_json" in secret:
+            cfg["service_account_json"] = secret["service_account_json"]
+        return
+    for k, v in secret.items():
+        if k not in cfg:
+            cfg[k] = v
+
+
 async def resolve_datastore_connector(
     physical_plan: Any,
     effective_datastore_id: str,
@@ -113,9 +171,8 @@ async def resolve_datastore_connector(
             _template_cfg = None  # module absent — skip gracefully
 
         if _template_cfg:
-            _rls_claims: dict = dict(physical_plan.rls_claims or {})
             _resolved_fields = _get_tmpl_resolver().resolve_config(
-                _template_cfg, _rls_claims
+                _template_cfg, template_claims(physical_plan.rls_claims, org_id)
             )
             # Merge resolved fields into cfg — they override static config keys.
             cfg.update(_resolved_fields)
@@ -127,7 +184,7 @@ async def resolve_datastore_connector(
     # config to route to a vault-backed resolver.  Failure is hard — any
     # exception from the resolver propagates (no silent fallback to wrong-tenant
     # credentials).
-    _rls_claims_for_secret: dict = dict(physical_plan.rls_claims or {})
+    _rls_claims_for_secret: dict = template_claims(physical_plan.rls_claims, org_id)
     try:
         from app.connectors.secret_resolver import get_resolver as _get_resolver
 
@@ -152,25 +209,7 @@ async def resolve_datastore_connector(
             _secret = None
 
     if _secret:
-        if ctype == "postgres":
-            if "dsn" not in cfg and "password" not in cfg:
-                cfg["password"] = _secret.get("password", "")
-            elif "password" not in cfg:
-                cfg["password"] = _secret.get("password", "")
-        elif ctype == "http_json":
-            _headers: dict = dict(cfg.get("headers") or {})
-            if "token" in _secret:
-                _headers["Authorization"] = f"Bearer {_secret['token']}"
-            elif "api_key" in _secret:
-                _headers["X-API-Key"] = _secret["api_key"]
-            cfg["headers"] = _headers
-        elif ctype == "bigquery":
-            if "service_account_json" in _secret:
-                cfg["service_account_json"] = _secret["service_account_json"]
-        else:
-            for k, v in _secret.items():
-                if k not in cfg:
-                    cfg[k] = v
+        merge_connector_secret(cfg, ctype, _secret)
 
     # ── Network-mode resolution (M22-A / M22-B VPC bridge) ────────────────────
     from app.connectors.network import (

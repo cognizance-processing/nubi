@@ -279,13 +279,9 @@ class _FakeWebSocket:
 
 
 @pytest.mark.asyncio
-async def test_ws_legacy_plaintext_token_is_closed_once_v2_token_minted():
-    """A bridge with a v2 token must REJECT its old plaintext config token (§7).
-
-    The legacy ``config["token"]`` fallback is a downgrade hole: it has no
-    revocation. Once any hashed v2 token is minted for the bridge, the plaintext
-    path must be closed so a revoked bridge cannot be kept alive through it.
-    """
+async def test_ws_plaintext_config_token_never_authenticates():
+    """A plaintext ``config["token"]`` is not a credential: it cannot be
+    revoked or rotated, so only minted bridge tokens open the tunnel."""
     from app.routes.bridges import bridge_connect, get_bridge_store, get_bridge_token_store
 
     reset_bridge_store()
@@ -295,21 +291,20 @@ async def test_ws_legacy_plaintext_token_is_closed_once_v2_token_minted():
     bridge = await store.create(org_id, "u", "B", {"token": "plaintext-legacy"})
     bridge_id = bridge["id"]
 
-    # Before any v2 token exists, the legacy plaintext token still authenticates.
     ws = _FakeWebSocket({"x-bridge-token": "plaintext-legacy"}, {})
-    task = _asyncio.ensure_future(bridge_connect(bridge_id, ws))
+    await bridge_connect(bridge_id, ws)
+    assert ws.accepted is False
+    assert ws.close_code == 4401
+
+    # A minted token for the same bridge does authenticate.
+    raw, _row = await get_bridge_token_store().mint(org_id, bridge_id, "v2")
+    ws2 = _FakeWebSocket({"x-bridge-token": raw}, {})
+    task = _asyncio.ensure_future(bridge_connect(bridge_id, ws2))
     await _asyncio.sleep(0.05)
-    assert ws.accepted is True and ws.close_code is None
-    ws.release()
+    assert ws2.accepted is True and ws2.close_code is None
+    ws2.release()
     await task
     await get_broker().unregister(bridge_id)
-
-    # Mint a v2 token → the plaintext path is now CLOSED.
-    await get_bridge_token_store().mint(org_id, bridge_id, "v2")
-    ws2 = _FakeWebSocket({"x-bridge-token": "plaintext-legacy"}, {})
-    await bridge_connect(bridge_id, ws2)
-    assert ws2.accepted is False
-    assert ws2.close_code == 4401
 
 
 @pytest.mark.asyncio

@@ -1228,34 +1228,9 @@ async def query(
             _secret = None
 
         if _secret:
-            # Merge decrypted credentials into the connector config based on
-            # connector type.  The non-secret fields (host, port, dbname, user,
-            # url, etc.) remain in cfg unchanged; we only inject secrets.
-            if ctype == "postgres":
-                # Build a full DSN from non-secret host/port/db/user + decrypted
-                # password.  If cfg already contains a 'dsn' key we leave it as-is
-                # because the secret store would have provided the full DSN there;
-                # otherwise we assemble one from the config parts.
-                if "dsn" not in cfg and "password" not in cfg:
-                    cfg["password"] = _secret.get("password", "")
-                elif "password" not in cfg:
-                    cfg["password"] = _secret.get("password", "")
-            elif ctype == "http_json":
-                # Inject token / bearer into headers (or other header fields).
-                _headers: dict = dict(cfg.get("headers") or {})
-                if "token" in _secret:
-                    _headers["Authorization"] = f"Bearer {_secret['token']}"
-                elif "api_key" in _secret:
-                    _headers["X-API-Key"] = _secret["api_key"]
-                cfg["headers"] = _headers
-            elif ctype == "bigquery":
-                if "service_account_json" in _secret:
-                    cfg["service_account_json"] = _secret["service_account_json"]
-            else:
-                # Generic fallback: merge all secret keys not already in cfg.
-                for k, v in _secret.items():
-                    if k not in cfg:
-                        cfg[k] = v
+            from app.connectors.resolve import merge_connector_secret  # noqa: PLC0415
+
+            merge_connector_secret(cfg, ctype, _secret)
 
         # ── (b) Network-mode resolution (M22-A / M22-B VPC bridge) ────────────
         # resolve_network() / resolve_network_async() inspect cfg["network_mode"]

@@ -61,7 +61,7 @@ _BRIDGE_TOKEN_REVALIDATE_SECONDS = 30.0
 _BRIDGE_LIVENESS_TOUCH_SECONDS = 30.0
 
 from fastapi import APIRouter, Depends, Request, Response, WebSocket
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.auth.bridge_tokens import get_bridge_token_store
 from app.auth.deps import current_user
@@ -176,6 +176,14 @@ class BridgeOut(BaseModel):
     config: dict[str, Any]
     created_at: str
     updated_at: str
+
+    @field_validator("config", mode="before")
+    @classmethod
+    def _no_credentials(cls, value: Any) -> Any:
+        """A bridge row is never a way to read a credential back."""
+        if isinstance(value, dict):
+            return {k: v for k, v in value.items() if k not in ("token", "secret", "password")}
+        return value
 
 
 # ---------------------------------------------------------------------------
@@ -447,9 +455,9 @@ async def bridge_connect(
     * ``X-Bridge-Token: <token>`` request header
     * ``?token=<token>`` query parameter
 
-    The token is validated against ``bridge.config["token"]``.  If the bridge
-    row does not exist or the token does not match, the WebSocket is closed with
-    code 4401 before the connection is accepted.
+    The token is validated against the hashed, revocable bridge-token store.
+    If the bridge row does not exist or the token does not validate, the
+    WebSocket is closed before the connection is accepted.
 
     Protocol
     --------
@@ -485,8 +493,7 @@ async def bridge_connect(
     # Hashed, rotatable bridge token (§7): validate against the bridge_tokens
     # store, which binds the token to (org_id, bridge_id). A revoked token (or
     # one past its rotation grace window) fails here, so the handshake is
-    # rejected before accept(). ADDITIVE: fall back to the legacy plaintext
-    # ``config["token"]`` so existing bridges keep working unchanged.
+    # rejected before accept().
     token_store = get_bridge_token_store()
     authed = False
     binding = await token_store.validate(supplied_token)
@@ -494,17 +501,8 @@ async def bridge_connect(
         token_org_id, token_bridge_id = binding
         if token_bridge_id == bridge_id and token_org_id == str(row.get("org_id")):
             authed = True
-    if not authed:
-        # Legacy plaintext-token fallback (ADDITIVE) — only honoured while the
-        # bridge has NOT yet adopted any hashed v2 token. Once a v2 token is
-        # minted, this downgrade path is CLOSED so a revoked/rotated bridge can
-        # never be kept alive through the un-revocable plaintext config token
-        # (§7: "the legacy plaintext-token fallback isn't a downgrade hole").
-        # Compared with secrets.compare_digest to avoid a timing side channel.
-        if not await token_store.has_any_for_bridge(str(row.get("org_id")), bridge_id):
-            legacy_token: str = str(row.get("config", {}).get("token") or "")
-            if legacy_token and secrets.compare_digest(supplied_token, legacy_token):
-                authed = True
+    # (The old plaintext ``config["token"]`` is no longer accepted: it could
+    # not be revoked or rotated. Mint a bridge token to connect.)
     if not authed:
         await websocket.close(code=4401)
         return
@@ -525,9 +523,7 @@ async def bridge_connect(
     # live socket; to make revocation robust across workers / direct-DB revokes we
     # also re-validate the token on an interval here and drop the tunnel ourselves
     # the moment it stops validating (§7: "broker rejects next handshake/heartbeat
-    # and drops the live tunnel"). The legacy plaintext path is intentionally NOT
-    # re-validated (no revocation semantics) — but the moment a v2 token is minted
-    # for the bridge the connect-time check already closed that path.
+    # and drops the live tunnel").
     revalidate_every_s = _BRIDGE_TOKEN_REVALIDATE_SECONDS
     using_v2_token = binding is not None
 

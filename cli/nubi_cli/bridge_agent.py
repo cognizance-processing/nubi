@@ -512,6 +512,22 @@ class WebsocketControlChannel:
                 continue
 
 
+def control_plane_url_allowed(url: str) -> bool:
+    """The control channel carries the bridge token, so it must be ``wss://``
+    unless it stays on this machine (local development)."""
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    if parts.scheme == "wss":
+        return True
+    if parts.scheme != "ws":
+        return False
+    return (parts.hostname or "").lower() in ("localhost", "127.0.0.1", "::1")
+
+
 async def serve(
     identity: Any,
     opener: SourceOpener,
@@ -538,6 +554,11 @@ async def serve(
 
         async def connect(url: str, headers: dict[str, str]) -> Any:  # noqa: F811
             return await websockets.connect(url, additional_headers=headers)
+
+    if not control_plane_url_allowed(str(identity.control_plane_url)):
+        raise BridgeRevoked(
+            "control plane URL must use wss:// (ws:// is only accepted for localhost)"
+        )
 
     ws_url = f"{identity.control_plane_url}/bridges/{identity.bridge_id}/connect"
     headers = {"X-Bridge-Token": identity.token}
