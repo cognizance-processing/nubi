@@ -1329,6 +1329,7 @@ async def query(
             effective_network as _effective_network,
             resolve_network as _resolve_network,
             resolve_network_async as _resolve_network_async,
+            apply_network_target as _apply_network_target,
         )
 
         # Propagate network_mode / bridge_id from the datastore row into cfg
@@ -1360,8 +1361,7 @@ async def query(
             _target = await _resolve_network_async(cfg, _bridge)
             # Substitute the connector's dial target with the local proxy
             # endpoint BEFORE the connector is built, so it dials the tunnel.
-            cfg["host"] = _target.host
-            cfg["port"] = _target.port
+            _apply_network_target(cfg, _target)
             _net_cleanup = _target.cleanup
         else:
             # bridge-without-bridge-row, ssh_tunnel, psc, cloudsql_proxy, or an

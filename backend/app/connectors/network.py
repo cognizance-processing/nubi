@@ -108,6 +108,38 @@ class NetworkTarget:
     cleanup: Callable[[], None] = field(default=lambda: None, compare=False)
 
 
+#: Config keys through which a driver could be given a target of its own.
+_CONNECTION_STRING_KEYS = ("dsn", "url", "base_url", "connection_string", "jdbc_url", "uri")
+
+
+def apply_network_target(config: dict[str, Any], target: "NetworkTarget") -> None:
+    """Point *config* at a resolved tunnel endpoint, and at nothing else."""
+    config["host"] = target.host
+    config["port"] = target.port
+    config.pop("hostaddr", None)
+    for key in _CONNECTION_STRING_KEYS:
+        config.pop(key, None)
+
+
+def pin_direct_target(datastore: dict[str, Any], config: dict[str, Any]) -> None:
+    """For a code path that can only dial a target itself.
+
+    Such a path has no tunnel to offer, so any network mode other than
+    ``direct`` is refused rather than dialled directly; a direct target is
+    checked and pinned (see ``app.connectors.ssrf.pin_connector_target``).
+    """
+    from app.connectors.ssrf import pin_connector_target  # noqa: PLC0415
+
+    mode, _bridge_id = effective_network({**datastore, "config": config})
+    if mode != "direct":
+        raise AppError(
+            "network_mode_unavailable",
+            f"A datastore with network_mode={mode!r} cannot be used here.",
+            501,
+        )
+    pin_connector_target(config)
+
+
 def effective_network(ds: dict[str, Any]) -> tuple[str, str | None]:
     """Return the ``(network_mode, bridge_id)`` a datastore row actually uses.
 
@@ -172,6 +204,17 @@ async def resolve_network_async(
             raise AppError(
                 "bridge_id_missing",
                 "network_mode='bridge' requires a valid bridge_id.",
+                400,
+            )
+
+        # The tunnel is the only route for a bridged connection.  A config
+        # that also carries its own connection string would have the driver
+        # dial that from the platform instead, so it is refused.
+        if any(datastore_config.get(key) for key in _CONNECTION_STRING_KEYS):
+            raise AppError(
+                "bridge_target_invalid",
+                "A bridged connection is configured with 'host' and 'port', "
+                "not a connection string or URL.",
                 400,
             )
 
@@ -281,9 +324,11 @@ def resolve_network(
 
     # ── direct mode: the platform dials the target itself ──────────────────────
     if mode == "direct":
-        from app.connectors.ssrf import guard_connector_target  # noqa: PLC0415
+        from app.connectors.ssrf import pin_connector_target  # noqa: PLC0415
 
-        guard_connector_target(datastore_config)
+        # Checks the target and, for Postgres/MySQL, pins the checked address
+        # into the config so the driver does not resolve the name again.
+        pin_connector_target(datastore_config)
         return NetworkTarget(
             host=datastore_config.get("host"),
             port=datastore_config.get("port"),
