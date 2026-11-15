@@ -86,6 +86,21 @@ def resolve_signing_key(
     return _select_key_from_jwks(jwks, kid, alg)
 
 
+async def resolve_signing_key_async(
+    issuer_row: dict[str, Any], kid: str | None, alg: str
+) -> Any:
+    """:func:`resolve_signing_key` for async callers.
+
+    A statically configured key is used directly; a ``jwks_url`` is fetched off
+    the event loop (and cached), so verification never stalls other requests.
+    """
+    if issuer_row.get("static_jwks_json") is None and issuer_row.get("jwks_url"):
+        from app.auth.jwks_cache import get_jwks_async  # noqa: PLC0415
+
+        await get_jwks_async(str(issuer_row["jwks_url"]))  # warms the cache
+    return resolve_signing_key(issuer_row, kid, alg)
+
+
 def jwks_from_pasted_key(text: str) -> dict[str, Any]:
     """Turn a pasted public key into a JWKS dict for ``static_jwks_json``.
 

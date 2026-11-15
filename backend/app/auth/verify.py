@@ -205,10 +205,32 @@ def _select_key_from_jwks(
         raise AppError("invalid_token", "Token is invalid or has expired.", 401)
 
 
-def _resolve_jwks(issuer_cfg: Any) -> dict[str, Any]:
+def _static_jwks(issuer_cfg: Any) -> dict[str, Any] | None:
+    """The issuer's key set when it is configured statically, else ``None``."""
+    return _resolve_jwks(issuer_cfg, _static_only=True)
+
+
+async def _resolve_jwks_async(issuer_cfg: Any) -> dict[str, Any]:
+    """:func:`_resolve_jwks` for the async path: a network fetch runs off the
+    event loop."""
+    static = _static_jwks(issuer_cfg)
+    if static is not None:
+        return static
+    from app.auth.jwks_cache import get_jwks_async  # noqa: PLC0415
+
+    return await get_jwks_async(issuer_cfg.jwks_uri)
+
+
+def _resolve_jwks(
+    issuer_cfg: Any, *, allow_fetch: bool = True, _static_only: bool = False
+) -> Any:
     """Return the JWKS for *issuer_cfg*, using static data when available.
 
     Priority: ``static_jwks`` > ``static_public_key`` > ``jwks_uri`` (network).
+
+    ``allow_fetch=False`` is for callers running ON the event loop (the
+    synchronous verifier used by middleware): they use an already-cached key
+    set and never start a network request.
     """
     if issuer_cfg.static_jwks is not None:
         _sjwks = issuer_cfg.static_jwks
@@ -226,9 +248,18 @@ def _resolve_jwks(issuer_cfg: Any) -> dict[str, Any]:
     if issuer_cfg.static_public_key is not None:
         return _build_jwks_from_static_key(issuer_cfg.static_public_key)
 
-    # Live network fetch (TTL-cached).
-    from app.auth.jwks_cache import get_jwks
+    if _static_only:
+        return None
 
+    from app.auth.jwks_cache import get_cached, get_jwks  # noqa: PLC0415
+
+    if not allow_fetch:
+        cached = get_cached(issuer_cfg.jwks_uri)
+        if cached is None:
+            raise AppError("invalid_token", "Token is invalid or has expired.", 401)
+        return cached
+
+    # Live network fetch (TTL-cached).
     return get_jwks(issuer_cfg.jwks_uri)
 
 
@@ -397,7 +428,8 @@ def _verify_embed_token(
     if issuer_cfg is None:
         raise AppError("invalid_token", "Token is invalid or has expired.", 401)
 
-    jwks = _resolve_jwks(issuer_cfg)
+    # On the event loop: cached keys only (the async path fetches and caches).
+    jwks = _resolve_jwks(issuer_cfg, allow_fetch=False)
     kid: str | None = header.get("kid") or None
     public_key = _select_key_from_jwks(jwks, kid, alg)
 
@@ -540,7 +572,7 @@ async def _verify_embed_token_async(
     issuer_cfg = _registry_issuer_for(iss, resolved_org)
 
     if issuer_cfg is not None:
-        jwks = _resolve_jwks(issuer_cfg)
+        jwks = await _resolve_jwks_async(issuer_cfg)
         public_key = _select_key_from_jwks(jwks, kid, alg)
         return _finish_embed_verification(
             token, alg, iss, public_key, issuer_cfg.aud, expected_origin,
@@ -566,9 +598,9 @@ async def _verify_embed_token_async(
     if db_row is None or not db_row.get("org_id"):
         raise AppError("invalid_token", "Token is invalid or has expired.", 401)
 
-    from app.security.jwks import resolve_signing_key  # noqa: PLC0415
+    from app.security.jwks import resolve_signing_key_async  # noqa: PLC0415
 
-    public_key = resolve_signing_key(db_row, kid, alg)
+    public_key = await resolve_signing_key_async(db_row, kid, alg)
     return _finish_embed_verification(
         token, alg, iss, public_key, db_row.get("audience", ""), expected_origin,
         org_override=str(db_row["org_id"]),

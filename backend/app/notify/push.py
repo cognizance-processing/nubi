@@ -73,12 +73,57 @@ def _subscription_info(subscription: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+#: Hosts of the browser push services.  A push "endpoint" is a URL the server
+#: POSTs to, supplied by the client — so it must be one of these.
+_PUSH_HOSTS = (
+    "fcm.googleapis.com",
+    "android.googleapis.com",
+    "updates.push.services.mozilla.com",
+    "web.push.apple.com",
+)
+_PUSH_HOST_SUFFIXES = (
+    ".push.services.mozilla.com",
+    ".push.apple.com",
+    ".notify.windows.com",
+)
+
+
+def push_endpoint_allowed(endpoint: Any) -> bool:
+    """True when *endpoint* is an HTTPS URL of a known browser push service.
+
+    ``NUBI_PUSH_ALLOWED_HOSTS`` (comma-separated host names) adds more.
+    """
+    import os  # noqa: PLC0415
+    from urllib.parse import urlsplit  # noqa: PLC0415
+
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        return False
+    try:
+        parts = urlsplit(endpoint.strip())
+        port = parts.port
+    except ValueError:
+        return False
+    if parts.scheme != "https" or parts.username or parts.password or port not in (None, 443):
+        return False
+    host = (parts.hostname or "").lower().rstrip(".")
+    extra = tuple(
+        h.strip().lower() for h in os.environ.get("NUBI_PUSH_ALLOWED_HOSTS", "").split(",") if h.strip()
+    )
+    return host in _PUSH_HOSTS or host in extra or host.endswith(_PUSH_HOST_SUFFIXES)
+
+
 def send_push(subscription: dict[str, Any], payload: dict[str, Any]) -> str:
     """Send *payload* (JSON) to one push *subscription*. Best-effort; never raises.
 
     Returns one of :data:`PUSH_OK`, :data:`PUSH_GONE` (prune the subscription),
     :data:`PUSH_SKIPPED` (push not configured) or :data:`PUSH_ERROR`.
     """
+    # Never POST to an endpoint that is not a push service (older rows may
+    # predate the check at subscribe time): report it gone so it is pruned.
+    if not push_endpoint_allowed(subscription.get("endpoint")):
+        logger.info("send_push: endpoint is not a known push service — pruning.")
+        return PUSH_GONE
+
     if not push_configured():
         logger.debug("send_push: VAPID keys unset — skipping (no-op).")
         return PUSH_SKIPPED

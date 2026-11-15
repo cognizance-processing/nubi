@@ -31,6 +31,16 @@ from typing import Any
 
 _cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
+#: jwks_uri -> monotonic time of the last failed fetch (negative cache).
+_failures: dict[str, float] = {}
+_NEGATIVE_TTL_SECONDS = 60.0
+_FETCH_TIMEOUT_SECONDS = 5.0
+_MAX_JWKS_BYTES = 256 * 1024
+
+# Imported at module level so tests can substitute them.
+from app.connectors.http_json import _fetch_pinned  # noqa: E402
+from app.connectors.ssrf import resolve_and_pin  # noqa: E402
+
 DEFAULT_TTL_SECONDS: int = 300  # 5 minutes
 
 
@@ -81,29 +91,59 @@ def get_jwks(
         if now - fetched_at < ttl_seconds:
             return jwks
 
-    # Cache miss or expired — fetch from network.
+    invalid = AppError("invalid_token", "Token is invalid or has expired.", 401)
+
+    # A recent failure is remembered, so a stream of tokens naming an
+    # unreachable key set costs one outbound attempt, not one per request.
+    failed_at = _failures.get(jwks_uri)
+    if failed_at is not None and now - failed_at < _NEGATIVE_TTL_SECONDS:
+        raise invalid
+
+    # Cache miss or expired — fetch from the network, through a target that
+    # has been resolved once, checked (no loopback / private / link-local /
+    # metadata address) and pinned, so the host cannot be re-pointed between
+    # the check and the connection.
     try:
         import httpx  # lazy import: keeps startup fast and simplifies test mocking
 
-        response = httpx.get(jwks_uri, timeout=10.0)
+        pinned = resolve_and_pin(jwks_uri)
+        response = _fetch_pinned(
+            httpx, "GET", pinned, {"Accept": "application/json"},
+            timeout=httpx.Timeout(_FETCH_TIMEOUT_SECONDS),
+        )
         response.raise_for_status()
+        if len(getattr(response, "content", b"") or b"") > _MAX_JWKS_BYTES:
+            raise ValueError("JWKS document too large")
         jwks: dict[str, Any] = response.json()
+        if not isinstance(jwks, dict) or not isinstance(jwks.get("keys"), list):
+            raise ValueError("not a JWKS document")
     except Exception:
-        raise AppError(
-            "invalid_token",
-            "Token is invalid or has expired.",
-            401,
-        )
+        _failures[jwks_uri] = now
+        raise invalid from None
 
-    if not isinstance(jwks, dict) or "keys" not in jwks:
-        raise AppError(
-            "invalid_token",
-            "Token is invalid or has expired.",
-            401,
-        )
-
+    _failures.pop(jwks_uri, None)
     _cache[jwks_uri] = (now, jwks)
     return jwks
+
+
+def get_cached(jwks_uri: str, ttl_seconds: float = DEFAULT_TTL_SECONDS) -> dict[str, Any] | None:
+    """The cached key set for *jwks_uri* if it is still fresh — never fetches."""
+    entry = _cache.get(jwks_uri)
+    if entry is None:
+        return None
+    fetched_at, jwks = entry
+    return jwks if time.monotonic() - fetched_at < ttl_seconds else None
+
+
+async def get_jwks_async(jwks_uri: str, ttl_seconds: float = DEFAULT_TTL_SECONDS) -> dict[str, Any]:
+    """:func:`get_jwks` for async callers: a cache hit returns immediately and a
+    network fetch runs in a worker thread, so the event loop is never blocked."""
+    import asyncio  # noqa: PLC0415
+
+    cached = get_cached(jwks_uri, ttl_seconds)
+    if cached is not None:
+        return cached
+    return await asyncio.to_thread(get_jwks, jwks_uri, ttl_seconds)
 
 
 def invalidate(jwks_uri: str) -> None:
@@ -114,3 +154,4 @@ def invalidate(jwks_uri: str) -> None:
 def clear_cache() -> None:
     """Evict all cached JWKS entries.  Call this in test teardown."""
     _cache.clear()
+    _failures.clear()
