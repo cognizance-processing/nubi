@@ -280,7 +280,13 @@ async def _maybe_pin_host_mode_org(identity: "VerifiedIdentity") -> None:
         owner_org = str(db_row["org_id"]) if db_row.get("org_id") else None
 
     if not host_mode:
-        return  # standard embed token — org_members membership required
+        # Standard embed token — org_members membership required, and only a
+        # membership of the issuer's own org counts.
+        if owner_org is not None:
+            from app.routes._org import embed_issuer_org  # noqa: PLC0415
+
+            embed_issuer_org.set(owner_org)
+        return
 
     org_val = identity.raw_claims.get(claim_name or "org")
     # SECURITY: org claim must be a plain string — reject arrays, objects,

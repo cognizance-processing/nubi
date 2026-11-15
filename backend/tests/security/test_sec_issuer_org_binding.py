@@ -49,17 +49,19 @@ def _token(key, kid, *, iss=ISS, **claims) -> str:
 @pytest.fixture(autouse=True)
 def _stores():
     from app.auth.issuers import get_issuer_registry
-    from app.routes._org import host_mode_org_pin
+    from app.routes._org import embed_issuer_org, host_mode_org_pin
     from app.security.issuers_store import InMemoryIssuersStore, set_issuers_store
 
     store = InMemoryIssuersStore()
     set_issuers_store(store)
     get_issuer_registry().clear()
     host_mode_org_pin.set(None)
+    embed_issuer_org.set(None)
     yield store
     get_issuer_registry().clear()
     set_issuers_store(None)
     host_mode_org_pin.set(None)
+    embed_issuer_org.set(None)
 
 
 async def _register(store, org, jwks, *, iss=ISS, sync=True, **kw):
@@ -149,6 +151,44 @@ async def test_token_without_org_claim_gets_the_issuer_org(_stores, sync):
     await _register(_stores, ORG_A, _JWKS_A, sync=sync)
     identity, _ = await _verify_and_pin(_token(_KEY_A, "key-a"))
     assert identity.org == ORG_A
+
+
+class _Req:
+    def __init__(self, org=None):
+        self.headers = {"x-org-id": org} if org else {}
+        self.state = type("S", (), {})()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [True, False], ids=["registry", "db-fallback"])
+@pytest.mark.parametrize("header", [None, ORG_B], ids=["default-org", "x-org-id"])
+async def test_subject_cannot_carry_the_token_into_another_org(_stores, sync, header):
+    """The issuer's org is the only org its tokens resolve to, whoever the
+    token says its subject is."""
+    from app.errors import AppError
+    from app.repos.memory import InMemoryRepo
+    from app.routes._org import embed_issuer_org, get_user_org, resolve_org_id
+
+    shared_user = str(uuid.uuid4())
+    repo = InMemoryRepo()
+    repo.seed_org_member(ORG_B, shared_user, "member")  # first / only membership: B
+    await _register(_stores, ORG_A, _JWKS_A, sync=sync)
+    embed_issuer_org.set(None)
+    try:
+        identity, _ = await _verify_and_pin(_token(_KEY_A, "key-a", sub=shared_user))
+        assert identity.org == ORG_A
+        with pytest.raises(AppError) as exc:
+            await resolve_org_id(identity.user_id, repo, _Req(header))
+        assert exc.value.status == 403
+        if header is None:
+            with pytest.raises(AppError):
+                await get_user_org(identity.user_id, repo)
+
+        # A subject who is a member of the issuer's own org still resolves to it.
+        repo.seed_org_member(ORG_A, shared_user, "member")
+        assert await resolve_org_id(identity.user_id, repo, _Req(ORG_A)) == ORG_A
+    finally:
+        embed_issuer_org.set(None)
 
 
 def test_sync_verify_rejects_another_org(_stores):
