@@ -21,6 +21,14 @@ Conventions:
   `gaugeArcStart`, `gaugeArcEnd`, `gaugeArcColor`, `gaugeArcCaps`) and
   honoured by both needle and ring styles in-app, in embeds and in static
   exports. Unset keys keep the existing look.
+- **Bar & line styling.** The chart inspector's Display section gains **Bar
+  width** (Default / Auto fill / Max px), bar **Stroke width** + colour
+  (defaults to the bar's fill), bar **Fill opacity**, and **Line width** /
+  **Line opacity**. Stored as optional `widget.config` keys (`barMaxWidth`,
+  `barBorderWidth`, `barBorderColor`, `barFillOpacity`, `lineWidth`,
+  `lineOpacity`) and honoured in-app, in embeds and in static exports.
+  Grouped (colour-split) bars now honour `barMaxWidth` too. Unset keys keep
+  the existing look.
 - **LiteLLM multi-provider AI + token-passthrough billing.** `LiteLLMProvider`
   is now the primary completion path for Anthropic/OpenAI/Gemini (`litellm`
   is a real dependency, not optional) — every metered call is priced via
