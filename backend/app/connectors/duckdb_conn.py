@@ -328,7 +328,16 @@ def validate_duckdb_config(
             raise _bad("'parquet_path' is not an allowed location")
 
 
-_DUCKDB_CONFIG_KEYS = ("view_sql", "s3_views", "parquet_path", "path")
+def datastore_connector_type(cfg: Any) -> str:
+    """The connector type a datastore config is read as.
+
+    A config that names no type is a DuckDB config: that is how the data
+    browser and the query tools open it, so the write guard below must judge
+    it the same way.  This is the only place that default is decided.
+    """
+    if not isinstance(cfg, dict):
+        return "duckdb"
+    return cfg.get("connector_type") or cfg.get("type") or "duckdb"
 
 
 def guard_datastore_config(
@@ -338,15 +347,13 @@ def guard_datastore_config(
 
     A no-op for non-duckdb connector types.  Every route that persists a
     caller-supplied datastore config calls this, so a config that could only
-    ever be skipped at read time is refused up front with a clear 400.
+    ever be skipped at read time is refused up front with a clear 400.  An
+    untyped config is checked as DuckDB — see ``datastore_connector_type``.
     """
     if not isinstance(cfg, dict):
         return
-    ctype = cfg.get("connector_type") or cfg.get("type")
-    if ctype not in (None, "", "duckdb"):
+    if datastore_connector_type(cfg) != "duckdb":
         return
-    if not ctype and not any(cfg.get(k) for k in _DUCKDB_CONFIG_KEYS):
-        return  # an untyped bookkeeping row with nothing duckdb-specific
     validate_duckdb_config(cfg, org_id, existing=existing)
 
 

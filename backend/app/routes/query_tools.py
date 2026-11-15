@@ -487,6 +487,7 @@ import re as _re
 
 from fastapi import Path, Request
 
+from app.connectors.duckdb_conn import datastore_connector_type
 from app.connectors.introspect import (
     introspect_tables as _introspect_tables_shared,
     resolve_table_ref as _resolve_table_ref,
@@ -587,7 +588,7 @@ async def _resolve_datastore_connector(
         raise AppError("not_found", f"Datastore {datastore_id!r} not found.", 404)
 
     cfg: dict = dict(ds.get("config") or {})
-    ctype = cfg.get("connector_type") or cfg.get("type") or "duckdb"
+    ctype = datastore_connector_type(cfg)
 
     if ctype != "duckdb":
         raise AppError(
