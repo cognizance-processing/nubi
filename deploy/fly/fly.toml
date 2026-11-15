@@ -12,9 +12,10 @@
 #   NUBI_FLY_APP=my-nubi deploy/fly/setup-fly.sh
 #   NUBI_FLY_APP=my-nubi deploy/fly/secrets.sh .env.fly
 #   NUBI_FLY_APP=my-nubi deploy/fly/deploy.sh
-# deploy.sh passes --app, so the `app` value below is only a fallback. Change
-# primary_region to the Fly region nearest your users / database.
-app = "nubi"           # overridden by deploy.sh --app $NUBI_FLY_APP
+# There is deliberately NO `app = ...` line: flyctl requires --app, which
+# deploy.sh passes from NUBI_FLY_APP, so a stray `fly deploy -c` can never
+# target someone else's app. Change primary_region to the region nearest your
+# users / database.
 primary_region = "jnb" # change to your region (fly platform regions)
 
 [build]

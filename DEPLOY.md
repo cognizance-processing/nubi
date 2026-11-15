@@ -8,7 +8,7 @@ embedded, plus a `worker` entrypoint for flows. Run it anywhere containers run.
 | Docker Compose (simplest self-host) | [`docs/self-host.md`](docs/self-host.md), `docker-compose.yml` |
 | Whole stack locally in one container | `dev-local.sh`, `docker-compose.local.yml` |
 | Fly.io | [`deploy/fly/`](deploy/fly/README.md) |
-| Any other platform (Cloud Run, Kubernetes, …) | Build `Dockerfile` (OSS) or `Dockerfile.ee`; run `python /app/database/migrate.py` before each rollout, serve `uvicorn main:app` on 8000, and run `python worker.py` as a separate always-on process |
+| Any other platform (Cloud Run, Kubernetes, …) | Build `Dockerfile` (OSS) or `Dockerfile.ee`; run `python /app/database/migrate.py` (add `--ee` for `Dockerfile.ee`) before each rollout, serve `uvicorn main:app` on 8000, and run `python worker.py` as a separate always-on process |
 
 Published images: `ghcr.io/cognizance-processing/nubi` (OSS) and
 `ghcr.io/cognizance-processing/nubi-ee` (includes the inert billing layer), built

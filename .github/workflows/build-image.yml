@@ -48,8 +48,10 @@ jobs:
             case "$VERSION" in *-*) ENVIRONMENT="" ;; *) ENVIRONMENT="prod" ;; esac   # rc → no auto-deploy yet (qa later)
           elif [[ "$GITHUB_REF_NAME" == "dev" ]]; then
             VERSION="${BASE}-dev.${SHA}"; TAG="dev-${SHA}"; ENVIRONMENT="dev"
-          else
+          elif [[ "$GITHUB_REF_NAME" == "main" ]]; then
             VERSION="${BASE}-main.${SHA}"; TAG="main-${SHA}"; ENVIRONMENT=""
+          else
+            echo "unsupported ref '$GITHUB_REF': only dev, main and v*.*.* tags publish images" >&2; exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -82,8 +84,8 @@ jobs:
           tags: ${{ steps.meta_ee.outputs.tags }}
           labels: ${{ steps.meta_ee.outputs.labels }}
           build-args: NUBI_VERSION=${{ steps.ver.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=ee
+          cache-to: type=gha,scope=ee,mode=max
 
       # OSS image only for releases — self-hosters pull versioned tags.
       - name: OSS image tags
@@ -107,8 +109,8 @@ jobs:
           tags: ${{ steps.meta_oss.outputs.tags }}
           labels: ${{ steps.meta_oss.outputs.labels }}
           build-args: NUBI_VERSION=${{ steps.ver.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=oss
+          cache-to: type=gha,scope=oss,mode=max
 
   # Tell the private ops repo an image is ready. It decides whether/when to
   # deploy (dev: automatic; prod: waits for a reviewer). Needs the
@@ -122,6 +124,20 @@ jobs:
     env:
       TOKEN: ${{ secrets.NUBI_CLOUD_DISPATCH_TOKEN }}
     steps:
+      # Build the payload with jq so a ref or tag can never break or inject JSON.
+      - name: Build payload
+        if: env.TOKEN != ''
+        id: payload
+        env:
+          ENVIRONMENT: ${{ needs.build.outputs.environment }}
+          IMAGE_TAG: ${{ needs.build.outputs.tag }}
+          REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          jq -cn --arg environment "$ENVIRONMENT" --arg image_tag "$IMAGE_TAG" --arg sha "$GITHUB_SHA" --arg ref "$REF" \
+            '{environment: $environment, image_tag: $image_tag, sha: $sha, ref: $ref}' > payload.json
+          echo "json=$(cat payload.json)" >> "$GITHUB_OUTPUT"
+
       - name: Dispatch image-published
         if: env.TOKEN != ''
         uses: peter-evans/repository-dispatch@v3
@@ -129,4 +145,4 @@ jobs:
           token: ${{ secrets.NUBI_CLOUD_DISPATCH_TOKEN }}
           repository: ${{ github.repository_owner }}/nubi-cloud
           event-type: image-published
-          client-payload: '{"environment": "${{ needs.build.outputs.environment }}", "image_tag": "${{ needs.build.outputs.tag }}", "sha": "${{ github.sha }}", "ref": "${{ github.ref_name }}"}'
+          client-payload: ${{ steps.payload.outputs.json }}

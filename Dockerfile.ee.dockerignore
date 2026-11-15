@@ -1,7 +1,7 @@
 # Dockerfile.ee.dockerignore — build-context ignore for the EE image.
 #
 # BuildKit pairs this file with Dockerfile.ee automatically
-# (docker build -f Dockerfile.ee .); fly.toml also sets it via build.ignorefile.
+# (docker build -f Dockerfile.ee .); deploy/fly/deploy.sh passes it via --ignorefile.
 #
 # IDENTICAL to .dockerignore EXCEPT backend/app/ee/ is NOT excluded — the EE
 # image ships the commercial backend (billing, licensing, SSO). Keep the two
