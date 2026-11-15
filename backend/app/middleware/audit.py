@@ -61,6 +61,7 @@ NEVER broken by a failed audit write.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
@@ -98,8 +99,45 @@ _API_PREFIX = "/api/v1/"
 # ---------------------------------------------------------------------------
 
 
+#: Reads that take data out of the product (or hand out its shape) are
+#: audited too.  ``(pattern, action, resource_type)``.
+_AUDITED_READS: tuple[tuple["re.Pattern[str]", str, str], ...] = (
+    (re.compile(r"\A/api/v1/boards/([^/]+)/export\.(csv|json|pdf)\Z"), "board.export", "board"),
+    (re.compile(r"\A/api/v1/export/[^/]+/([^/]+)\Z"), "resource.export", "export"),
+    (re.compile(r"\A/api/v1/projects/([^/]+)/export\Z"), "project.export", "project"),
+    (re.compile(r"\A/api/v1/boards/([^/]+)/thumbnail\.svg\Z"), "board.thumbnail", "board"),
+    (re.compile(r"\A/api/v1/embed/config/([^/]+)\Z"), "embed.config", "board"),
+    (re.compile(r"\A/api/v1/query/registry()\Z"), "query_registry.list", "query_registry"),
+)
+
+#: Mutations under an otherwise-skipped prefix that are still worth a row.
+_AUDITED_EXCEPTIONS = frozenset({("PATCH", "/api/v1/auth/me")})
+
+
+def _audited_read(method: str, path: str) -> str | None:
+    """The audit action for a sensitive read, or ``None`` for an ordinary one."""
+    if method != "GET":
+        return None
+    for pattern, action, _rtype in _AUDITED_READS:
+        if pattern.match(path):
+            return action
+    return None
+
+
+def _read_target(path: str) -> tuple[str, str | None]:
+    for pattern, _action, rtype in _AUDITED_READS:
+        m = pattern.match(path)
+        if m:
+            return rtype, (m.group(1) or None)
+    return "unknown", None
+
+
 def _should_audit(method: str, path: str) -> bool:
     """Return True when this request should be audited by the middleware."""
+    if (method, path) in _AUDITED_EXCEPTIONS:
+        return True
+    if _audited_read(method, path) is not None:
+        return True
     if method not in _MUTATING_METHODS:
         return False
 
@@ -207,12 +245,28 @@ class AuditMiddleware(BaseHTTPMiddleware):
         if already_logged:
             return response
 
+        # The handler's own (membership-checked) org resolution is the best
+        # attribution: a session token carries no org claim, and an opaque
+        # credential cannot be decoded here at all.
+        resolved_org = getattr(request.state, "resolved_org_id", None)
+        resolved_user = getattr(request.state, "resolved_user_id", None)
+        if resolved_org:
+            org_id = str(resolved_org)
+        if resolved_user and not actor_user_id:
+            actor_user_id = str(resolved_user)
+            actor_kind = "access"
+
         # Skip if we have no org_id — cannot scope the audit row.
         if not org_id:
             return response
 
+        read_action = _audited_read(method, path)
+
         # Derive resource type and ID from the URL path (no PII).
-        resource_type, resource_id = _extract_resource(path)
+        if read_action is not None:
+            resource_type, resource_id = _read_target(path)
+        else:
+            resource_type, resource_id = _extract_resource(path)
 
         # Determine action verb from HTTP method.
         _verb_map: dict[str, str] = {
@@ -222,7 +276,9 @@ class AuditMiddleware(BaseHTTPMiddleware):
             "DELETE": "delete",
         }
         verb = _verb_map.get(method, method.lower())
-        action = f"{resource_type}.{verb}"
+        action = read_action or f"{resource_type}.{verb}"
+        if (method, path) in _AUDITED_EXCEPTIONS:
+            action, resource_type, resource_id = "profile.update", "user", actor_user_id
 
         # Fire-and-forget audit write.  record_audit itself never raises.
         try:

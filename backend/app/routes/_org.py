@@ -132,6 +132,23 @@ async def _user_is_member(user_id: str, org_id: str, repo: Repo) -> bool:
 
 
 async def resolve_org_id(user_id: str, repo: Repo, request: Request) -> str:
+    """Resolve the effective org_id for the current request (membership-checked).
+
+    Also records what was resolved on ``request.state`` (``resolved_org_id`` /
+    ``resolved_user_id``) so cross-cutting code that runs after the handler —
+    the audit middleware — can attribute the request without trusting a header.
+    See :func:`_resolve_org_id` for the resolution rules.
+    """
+    org_id = await _resolve_org_id(user_id, repo, request)
+    try:
+        request.state.resolved_org_id = str(org_id)
+        request.state.resolved_user_id = str(user_id)
+    except Exception:  # noqa: BLE001 — attribution only; never affects the request
+        pass
+    return org_id
+
+
+async def _resolve_org_id(user_id: str, repo: Repo, request: Request) -> str:
     """Resolve the effective org_id for the current request.
 
     The caller may pass ``X-Org-Id`` to switch to a different org.  We verify
