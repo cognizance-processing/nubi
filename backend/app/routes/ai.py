@@ -1166,6 +1166,58 @@ def _persist_dashboard_from_actions(
 
 
 @api_router.post(
+    "/ai/actions/{action_id}/confirm",
+    tags=["ai"],
+    dependencies=[Depends(require_writer)],
+)
+async def confirm_ai_action(
+    action_id: str,
+    request: Request,
+    _user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict[str, Any]:
+    """Run a destructive action the assistant proposed — as the confirming person.
+
+    The assistant can only *propose* deleting or replacing a dashboard.  This
+    is the person saying yes: the action runs with their own role and scope,
+    once, and only if it was proposed to them in this organisation.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from app.ai import pending_actions  # noqa: PLC0415
+
+    org_id = await _resolve_org_id(_user, request)
+    claims = await _tool_claims(identity, org_id, get_repo())
+    claims["sub"] = str(_user.get("id", "")) or claims["sub"]
+    result = await asyncio.to_thread(
+        pending_actions.confirm,
+        action_id,
+        user_id=claims["sub"],
+        org_id=str(org_id or ""),
+        claims=claims,
+    )
+    return {"confirmed": True, "result": result}
+
+
+@api_router.post(
+    "/ai/actions/{action_id}/dismiss",
+    tags=["ai"],
+    status_code=204,
+    dependencies=[Depends(require_writer)],
+)
+async def dismiss_ai_action(
+    action_id: str,
+    request: Request,
+    _user: dict[str, Any] = Depends(current_user),
+) -> None:
+    """Drop an action the assistant proposed, without running it."""
+    from app.ai import pending_actions  # noqa: PLC0415
+
+    org_id = await _resolve_org_id(_user, request)
+    pending_actions.dismiss(action_id, user_id=str(_user.get("id", "")), org_id=str(org_id or ""))
+
+
+@api_router.post(
     "/ai/chat/async",
     response_model=ChatAsyncResponse,
     tags=["ai"],

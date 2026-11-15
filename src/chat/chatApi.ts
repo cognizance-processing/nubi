@@ -122,3 +122,20 @@ export async function pinAnswer(body: PinAnswerBody): Promise<{
 }> {
   return post('/ai/pin', body)
 }
+
+
+/**
+ * Confirm a destructive action the assistant proposed (delete / replace a
+ * dashboard). The assistant can only propose these; nothing runs until the
+ * person confirms here, and it runs with their own permissions.
+ *
+ * POST /api/v1/ai/actions/{id}/confirm → { confirmed: true, result }
+ */
+export function confirmPendingAction(actionId: string) {
+  return post(`/ai/actions/${encodeURIComponent(actionId)}/confirm`, {})
+}
+
+/** Drop a proposed action without running it. POST /api/v1/ai/actions/{id}/dismiss */
+export function dismissPendingAction(actionId: string) {
+  return post(`/ai/actions/${encodeURIComponent(actionId)}/dismiss`, {})
+}

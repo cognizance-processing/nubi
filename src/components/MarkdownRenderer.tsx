@@ -13,6 +13,7 @@ import { Link } from 'react-router-dom'
 import { resolveDocIllustration } from './illustrations/docMap.js'
 import { useTheme } from '../contexts/ThemeContext.jsx'
 import './marketing/code.css'
+import { isSafeChatImageSrc } from './markdownImages.js'
 
 /**
  * Sanitize schema for raw HTML embedded in *docs* markdown (opt-in via
@@ -602,7 +603,27 @@ function urlTransform(url) {
  * dashboard text widgets, where raw-HTML parsing isn't needed and is one
  * fewer thing to reason about for content that isn't repo-reviewed.
  */
-export default function MarkdownRenderer({ content, allowRawHtml = false }) {
+// Chat transcripts: same component set, but images are limited to this
+// origin and inline data — see isSafeChatImageSrc.
+const chatComponents = {
+  ...components,
+  img(props: any) {
+    if (!isSafeChatImageSrc(props?.src)) {
+      return (
+        <span className="font-mono text-[12px] text-muted" data-blocked-image="true">
+          [external image not shown{props?.alt ? `: ${props.alt}` : ''}]
+        </span>
+      )
+    }
+    return (components as any).img(props)
+  },
+}
+
+/**
+ * `remoteImages={false}` is for surfaces that render text an assistant
+ * produced (chat): only same-origin and inline images are shown there.
+ */
+export default function MarkdownRenderer({ content, allowRawHtml = false, remoteImages = true }) {
   const rehypePlugins: any[] = allowRawHtml ? [rehypeRaw, [rehypeSanitize, docsHtmlSchema]] : []
   return (
     <article className="max-w-none">
@@ -610,7 +631,7 @@ export default function MarkdownRenderer({ content, allowRawHtml = false }) {
         remarkPlugins={[remarkGfm]}
         rehypePlugins={rehypePlugins}
         urlTransform={urlTransform}
-        components={components}
+        components={remoteImages ? components : chatComponents}
       >
         {content}
       </ReactMarkdown>

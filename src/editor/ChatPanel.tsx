@@ -164,7 +164,7 @@ function MessageBubble({ message, onInsertSql }) {
 
         {message.content && (
           <div className="prose-chat text-[13px] leading-relaxed text-fg bg-surface-2 border border-border px-3.5 py-2.5 rounded-2xl rounded-bl-sm overflow-hidden">
-            <MarkdownRenderer content={message.content} />
+            <MarkdownRenderer content={message.content} remoteImages={false} />
             {message.streaming && (
               <span
                 className="inline-block w-[7px] h-[14px] -mb-0.5 ml-0.5 bg-[var(--ink)] align-middle"

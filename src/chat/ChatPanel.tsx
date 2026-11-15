@@ -24,7 +24,7 @@ import MarkdownRenderer from '../components/MarkdownRenderer.jsx'
 import '../components/app/appPatterns.css'
 import ToolCard from './ToolCard.jsx'
 import { toolLabel } from './toolMeta.js'
-import { streamChatMessage, sendChatMessageAsync, pinAnswer } from './chatApi.js'
+import { streamChatMessage, sendChatMessageAsync, pinAnswer, confirmPendingAction, dismissPendingAction } from './chatApi.js'
 import { useUi } from '../contexts/UiContext.jsx'
 import ModelPicker, { MODEL_DEFAULT_VALUE } from '../components/ai/ModelPicker.jsx'
 
@@ -168,8 +168,48 @@ function PinButton({ tool, result }: { tool: string; result: Record<string, any>
 // adding a Pin-to-dashboard footer for pinnable results.
 // ---------------------------------------------------------------------------
 
+/**
+ * A destructive step the assistant proposed. It has NOT run: the assistant can
+ * only ask, and the person decides here.
+ */
+function PendingActionFooter({ result }: { result: any }) {
+  const [state, setState] = useState<'idle' | 'busy' | 'confirmed' | 'dismissed' | 'error'>('idle')
+  const [error, setError] = useState<string | null>(null)
+
+  async function run(kind: 'confirm' | 'dismiss') {
+    setState('busy'); setError(null)
+    try {
+      if (kind === 'confirm') { await confirmPendingAction(result.action_id); setState('confirmed') }
+      else { await dismissPendingAction(result.action_id); setState('dismissed') }
+    } catch (e: any) {
+      setError(e?.message ?? 'That action is no longer available.')
+      setState('error')
+    }
+  }
+
+  if (state === 'confirmed') return <p className="mt-2 text-xs text-muted" role="status">Confirmed — done.</p>
+  if (state === 'dismissed') return <p className="mt-2 text-xs text-muted" role="status">Dismissed — nothing was changed.</p>
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2" role="group" aria-label="Confirm proposed action">
+      <span className="text-xs text-fg">{result.summary || 'The assistant proposed a change'} — needs your confirmation.</span>
+      <Button variant="danger" size="xs" onClick={() => run('confirm')} disabled={state === 'busy'}>Confirm</Button>
+      <Button variant="ghost" size="xs" onClick={() => run('dismiss')} disabled={state === 'busy'}>Dismiss</Button>
+      {error && <span className="text-xs text-danger" role="alert">{error}</span>}
+    </div>
+  )
+}
+
 function ToolBlock({ action }: { action: StreamAction }) {
   const pinnable = isPinnable(action.tool, action.result)
+  const pending = action.result && typeof action.result === 'object' && (action.result as any).pending_confirmation === true
+  if (pending) {
+    return (
+      <ToolCard
+        action={{ id: action.id, tool: action.tool, args: action.arguments, result: action.result, status: action.status }}
+        footer={<PendingActionFooter result={action.result} />}
+      />
+    )
+  }
   return (
     <ToolCard
       action={{
@@ -235,7 +275,7 @@ function MessageBubble({ message }: { message: ChatUiMessage }) {
 
         {message.content && (
           <div className="prose-chat overflow-hidden text-sm leading-relaxed text-fg">
-            <MarkdownRenderer content={message.content} />
+            <MarkdownRenderer content={message.content} remoteImages={false} />
             {message.streaming && (
               <span
                 className="ml-0.5 inline-block h-[14px] w-[7px] -mb-0.5 align-middle"

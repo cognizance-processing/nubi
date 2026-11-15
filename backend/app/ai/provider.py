@@ -236,6 +236,25 @@ class LLMProvider(ABC):
     #: Human-readable name for the provider (used in API responses).
     name: str = "unknown"
 
+    #: True when :meth:`complete_with_tools` is implemented.  The agent then
+    #: uses native tool calling instead of the text protocol.
+    supports_tools: bool = False
+
+    def complete_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        model: str | None = None,
+    ) -> dict:
+        """Run one chat turn with native tool calling.
+
+        *messages* are structured chat messages (``system`` / ``user`` /
+        ``assistant`` with ``tool_calls`` / ``tool``); *tools* are function
+        schemas.  Returns ``{"text": str, "tool_calls": [{"id", "name",
+        "arguments": dict}]}``.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def complete(
         self,
@@ -651,6 +670,74 @@ class LiteLLMProvider(LLMProvider):
         self._record(litellm, response, effective_model)
 
         return response.choices[0].message.content or ""
+
+    supports_tools = True
+
+    def complete_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        model: str | None = None,
+    ) -> dict:
+        """One chat turn with native tool calling through LiteLLM.
+
+        Tool calls come back as structured objects from the provider; the
+        returned text is never parsed for them.
+        """
+        import json as _json  # noqa: PLC0415
+
+        effective_model = resolve_model(model, self._default_model, self._allowed)
+        try:
+            import litellm  # noqa: PLC0415
+        except ImportError as exc:
+            raise ImportError(
+                "The 'litellm' package is required for LiteLLMProvider. "
+                "Install it with: pip install litellm"
+            ) from exc
+
+        if (
+            self._max_budget_usd is not None
+            and _PROCESS_USAGE.cost_usd >= self._max_budget_usd
+        ):
+            from app.errors import AppError  # noqa: PLC0415
+
+            raise AppError(
+                "llm_budget_exceeded",
+                f"LLM spend cap of ${self._max_budget_usd:.2f} reached.",
+                429,
+            )
+
+        kwargs: dict = {"model": effective_model, "messages": messages, "max_tokens": 1024}
+        if tools:
+            kwargs["tools"] = tools
+        if self._api_key:
+            kwargs["api_key"] = self._api_key
+        if self._num_retries is not None:
+            kwargs["num_retries"] = self._num_retries
+        if self._timeout is not None:
+            kwargs["timeout"] = self._timeout
+        litellm.drop_params = True
+
+        response = litellm.completion(**kwargs)
+        self._record(litellm, response, effective_model)
+
+        message = response.choices[0].message
+        calls: list[dict] = []
+        for call in getattr(message, "tool_calls", None) or []:
+            fn = getattr(call, "function", None)
+            raw_args = getattr(fn, "arguments", None) or "{}"
+            try:
+                arguments = _json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+            except (ValueError, TypeError):
+                arguments = {}
+            calls.append(
+                {
+                    "id": getattr(call, "id", None) or "",
+                    "name": getattr(fn, "name", "") or "",
+                    "arguments": arguments if isinstance(arguments, dict) else {},
+                }
+            )
+        return {"text": getattr(message, "content", None) or "", "tool_calls": calls}
 
     def _record(self, litellm, response, model: str) -> None:
         """Fold one completion's tokens + USD cost into both usage accumulators."""
