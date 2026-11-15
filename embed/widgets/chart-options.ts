@@ -606,9 +606,105 @@ function tooltipConfig(config, theme, { trigger = 'axis', locale }: { trigger?: 
       base.valueFormatter = (v) => fmt(v)
       delete t.valueFormat
     }
-    return deepMerge(base, t)
+    // Only look-and-feel keys pass through from the spec — see safeTooltip.
+    return deepMerge(base, safeTooltip(t))
   }
   return base
+}
+
+// ---------------------------------------------------------------------------
+// Spec-supplied options and the page they render into
+// ---------------------------------------------------------------------------
+//
+// A widget's `config` is data that travels with a board (imports, API writes,
+// AI-generated specs). ECharts renders a tooltip as HTML in the viewer's page
+// and applies some of its fields as raw CSS, so a tooltip coming from the spec
+// may only carry look-and-feel values — never markup, CSS text or a formatter.
+
+const COLOR_RE = /^(#[0-9a-f]{3,8}|(rgb|hsl)a?\([\d\s.,%/a-z-]{1,60}\)|[a-z]{3,24}|transparent)$/i
+const FONT_FAMILY_RE = /^[\w\s,'"-]{1,120}$/
+const TOOLTIP_TRIGGERS = new Set(['item', 'axis', 'none'])
+const TOOLTIP_ORDERS = new Set(['seriesAsc', 'seriesDesc', 'valueAsc', 'valueDesc'])
+const POINTER_TYPES = new Set(['line', 'shadow', 'cross', 'none'])
+
+function safeColor(v: any): string | undefined {
+  return typeof v === 'string' && COLOR_RE.test(v.trim()) ? v.trim() : undefined
+}
+
+function finiteNumber(v: any): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+}
+
+/** The whitelisted subset of a spec-supplied tooltip object. */
+export function safeTooltip(t: any): Record<string, any> {
+  const out: Record<string, any> = {}
+  if (!isDeepObject(t)) return out
+  if (typeof t.show === 'boolean') out.show = t.show
+  if (typeof t.confine === 'boolean') out.confine = t.confine
+  if (TOOLTIP_TRIGGERS.has(t.trigger)) out.trigger = t.trigger
+  if (TOOLTIP_ORDERS.has(t.order)) out.order = t.order
+  for (const key of ['backgroundColor', 'borderColor']) {
+    const c = safeColor(t[key])
+    if (c) out[key] = c
+  }
+  for (const key of ['borderWidth', 'borderRadius', 'padding', 'showDelay', 'hideDelay']) {
+    const n = finiteNumber(t[key])
+    if (n !== undefined) out[key] = n
+  }
+  if (isDeepObject(t.textStyle)) {
+    const ts: Record<string, any> = {}
+    const c = safeColor(t.textStyle.color)
+    if (c) ts.color = c
+    const size = finiteNumber(t.textStyle.fontSize)
+    if (size !== undefined) ts.fontSize = size
+    const weight = t.textStyle.fontWeight
+    if (typeof weight === 'number' || ['normal', 'bold', 'bolder', 'lighter'].includes(weight)) ts.fontWeight = weight
+    if (typeof t.textStyle.fontFamily === 'string' && FONT_FAMILY_RE.test(t.textStyle.fontFamily)) {
+      ts.fontFamily = t.textStyle.fontFamily
+    }
+    if (Object.keys(ts).length) out.textStyle = ts
+  }
+  if (isDeepObject(t.axisPointer) && POINTER_TYPES.has(t.axisPointer.type)) {
+    out.axisPointer = { type: t.axisPointer.type }
+  }
+  return out
+}
+
+const TOOLTIP_HTML_SINKS = ['extraCssText', 'className', 'renderMode', 'appendTo', 'appendToBody', 'enterable', 'alwaysShowContent']
+
+/**
+ * Last step of building an option: remove anything a spec could have merged in
+ * (through uninterpreted keys or the `echarts` block) that ECharts would render
+ * as HTML or CSS in the page. Formatter FUNCTIONS are ours — a spec is JSON and
+ * can only ever supply strings — so only string formatters are dropped.
+ */
+export function scrubRenderedHtml(node: any, depth = 0): any {
+  if (depth > 12 || node == null || typeof node !== 'object') return node
+  if (Array.isArray(node)) {
+    for (const item of node) scrubRenderedHtml(item, depth + 1)
+    return node
+  }
+  for (const key of Object.keys(node)) {
+    const value = node[key]
+    if (key === 'tooltip' && isDeepObject(value)) {
+      if (typeof value.formatter === 'string') delete value.formatter
+      if (typeof value.position === 'string' && !/^(inside|top|left|right|bottom)$/.test(value.position)) delete value.position
+      for (const sink of TOOLTIP_HTML_SINKS) delete value[sink]
+      for (const c of ['backgroundColor', 'borderColor']) {
+        if (c in value && typeof value[c] === 'string' && !safeColor(value[c])) delete value[c]
+      }
+      if (isDeepObject(value.textStyle)) {
+        delete value.textStyle.rich
+        delete value.textStyle.formatter
+        if (typeof value.textStyle.color === 'string' && !safeColor(value.textStyle.color)) delete value.textStyle.color
+      }
+    } else if ((key === 'link' || key === 'sublink') && typeof value === 'string' && !/^https?:\/\//i.test(value.trim())) {
+      delete node[key]
+      continue
+    }
+    scrubRenderedHtml(node[key], depth + 1)
+  }
+  return node
 }
 
 // ---------------------------------------------------------------------------
@@ -1739,5 +1835,5 @@ export function buildChartOption({ type, table, encoding, config, theme }: { typ
   if (Object.keys(passthrough).length) option = deepMerge(option, passthrough)
   if (isDeepObject(cfg.echarts)) option = deepMerge(option, cfg.echarts)
 
-  return option
+  return scrubRenderedHtml(option)
 }

@@ -596,6 +596,44 @@ class MetricBinding(BaseModel):
     )
 
 
+_TOOLTIP_HTML_SINKS = (
+    "extraCssText", "className", "renderMode", "appendTo", "appendToBody",
+    "enterable", "alwaysShowContent",
+)
+
+
+def _scrub_chart_config(node: Any, _depth: int = 0) -> Any:
+    """Return *node* without the chart options that render as HTML/CSS (recursive)."""
+    if _depth > 12:
+        return node
+    if isinstance(node, list):
+        return [_scrub_chart_config(item, _depth + 1) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if key in ("link", "sublink") and isinstance(value, str):
+            if not value.strip().lower().startswith(("http://", "https://")):
+                continue
+        if key == "tooltip" and isinstance(value, dict):
+            tip = {
+                k: v
+                for k, v in value.items()
+                if k not in _TOOLTIP_HTML_SINKS
+                and not (k == "formatter" and isinstance(v, str))
+                and not (k == "position" and isinstance(v, str)
+                         and v not in ("inside", "top", "left", "right", "bottom"))
+            }
+            if isinstance(tip.get("textStyle"), dict):
+                tip["textStyle"] = {
+                    k: v for k, v in tip["textStyle"].items() if k not in ("rich", "formatter")
+                }
+            out[key] = _scrub_chart_config(tip, _depth + 1)
+            continue
+        out[key] = _scrub_chart_config(value, _depth + 1)
+    return out
+
+
 class Widget(BaseModel):
     """A single dashboard widget.
 
@@ -807,6 +845,20 @@ class Widget(BaseModel):
             "what the author configured."
         ),
     )
+
+    @field_validator("config", mode="before")
+    @classmethod
+    def _drop_rendered_html(cls, v: Any) -> Any:
+        """Remove options a chart library would render as HTML or CSS.
+
+        ``config`` is otherwise an opaque pass-through owned by the frontend
+        chart builder, but a spec is data that travels (imports, API writes,
+        generated boards) and a tooltip is rendered as markup in the viewer's
+        page.  The same rule is applied again in the browser
+        (``scrubRenderedHtml`` in embed/widgets/chart-options.ts); this keeps
+        such values out of stored specs and server-side renders too.
+        """
+        return _scrub_chart_config(v)
     style: dict[str, Any] = Field(
         default_factory=dict,
         description=(

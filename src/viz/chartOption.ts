@@ -338,7 +338,7 @@ function buildScatter(table, xCol, yCol, colorCol) {
     trigger: 'item',
     formatter: (params) => {
       const [px, py] = params.value
-      return `${xCol}: ${px}<br/>${yCol}: ${py}`
+      return `${esc(xCol)}: ${esc(px)}<br/>${esc(yCol)}: ${esc(py)}`
     },
     confine: true,
   }
@@ -746,7 +746,7 @@ function buildHeatmap(table, xCol, yCol, valueCol) {
       confine: true,
       formatter: (p) => {
         const [xi, yi, val] = p.value
-        return `${xCats[xi]} · ${yCats[yi]}<br/>${valueCol}: ${val}`
+        return `${esc(xCats[xi])} · ${esc(yCats[yi])}<br/>${esc(valueCol)}: ${esc(val)}`
       },
     },
     grid: { top: 12, right: 16, bottom: 60, left: 8, containLabel: true },
@@ -873,7 +873,7 @@ function buildWaterfall(table: any, xCol: string, yCol: string, props: Record<st
       const p = params.find(p => p.seriesName !== '__spacer__')
       if (!p) return ''
       const idx = p.dataIndex
-      return `${xLabels[idx]}: ${deltas[idx] >= 0 ? '+' : ''}${deltas[idx]}`
+      return `${esc(xLabels[idx])}: ${deltas[idx] >= 0 ? '+' : ''}${esc(deltas[idx])}`
     },
   }
   opt.xAxis = {
@@ -1018,8 +1018,8 @@ function buildQuadrant(table: any, xCol: string, yCol: string, colorCol: string,
     confine: true,
     formatter: (params) => {
       const idx = params.dataIndex
-      const szPart = sizeVals ? `<br/>${sizeColName}: ${sizeVals[idx]}` : ''
-      return `${xCol}: ${xVals[idx]}<br/>${yCol}: ${yVals[idx]}${szPart}`
+      const szPart = sizeVals ? `<br/>${esc(sizeColName)}: ${esc(sizeVals[idx])}` : ''
+      return `${esc(xCol)}: ${esc(xVals[idx])}<br/>${esc(yCol)}: ${esc(yVals[idx])}${szPart}`
     },
   }
 
@@ -1349,6 +1349,19 @@ function buildMultiSeries(table, xCol, seriesDefs, stackId) {
  * }} params
  * @returns {object} ECharts option (ready for chart.setOption())
  */
+/**
+ * Escape a value for a tooltip formatter. Tooltip formatters return HTML, and
+ * what they interpolate (column names, cell values) comes from the data source.
+ */
+function esc(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 export function buildChartOption({ chartType, table, x, y, color, encoding = {}, props = {} }: {
   chartType?: string
   table: any
