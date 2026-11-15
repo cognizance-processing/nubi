@@ -283,8 +283,12 @@ def _finish_embed_verification(
     aud: str,
     expected_origin: str | None,
     org_override: str | None = None,
+    allowed_origins: list[str] | None = None,
 ) -> VerifiedIdentity:
     """Run the final PyJWT decode + origin check + build VerifiedIdentity.
+
+    ``allowed_origins`` is the issuer's own origin allow-list; when it is
+    non-empty the request must come from one of those origins.
 
     This is split out so both the sync and async paths share the same
     signature-verification + claims-building logic.
@@ -310,7 +314,7 @@ def _finish_embed_verification(
             audience=aud,
             issuer=iss,
             options={
-                "require": ["exp", "aud", "iss", "sub"],
+                "require": ["exp", "iat", "aud", "iss", "sub"],
                 "verify_exp": True,
                 "verify_aud": True,
                 "verify_iss": True,
@@ -318,6 +322,23 @@ def _finish_embed_verification(
         )
     except PyJWTError:
         raise AppError("invalid_token", "Token is invalid or has expired.", 401)
+
+    # Lifetime cap: an embed token is a bearer credential handed to a browser,
+    # so it must be short-lived however the host minted it.
+    try:
+        lifetime = float(claims["exp"]) - float(claims["iat"])
+    except (TypeError, ValueError):
+        raise AppError("invalid_token", "Token is invalid or has expired.", 401)
+    if lifetime <= 0 or lifetime > _embed_max_ttl_seconds():
+        raise AppError("invalid_token", "Token is invalid or has expired.", 401)
+
+    # Issuer-level origin allow-list (independent of the per-token claim).
+    if allowed_origins and (expected_origin is None or expected_origin not in allowed_origins):
+        raise AppError(
+            "origin_mismatch",
+            "Request origin is not allowed for this issuer.",
+            403,
+        )
 
     # Origin enforcement.
     embed_origin: str | None = claims.get("embed_origin")
@@ -383,6 +404,7 @@ def _verify_embed_token(
     return _finish_embed_verification(
         token, alg, iss, public_key, issuer_cfg.aud, expected_origin,
         org_override=issuer_cfg.org_id,
+        allowed_origins=list(issuer_cfg.allowed_origins or []),
     )
 
 
@@ -405,6 +427,39 @@ def _registry_issuer_for(iss: str, org: str | None) -> Any:
 # ---------------------------------------------------------------------------
 # Embed-path verification — async (registry + DB-backed fallback)
 # ---------------------------------------------------------------------------
+
+def _embed_max_ttl_seconds() -> float:
+    """Longest accepted embed-token lifetime (``EMBED_TOKEN_MAX_TTL_SECONDS``, default 15 min)."""
+    import os  # noqa: PLC0415
+
+    try:
+        value = float(os.environ.get("EMBED_TOKEN_MAX_TTL_SECONDS", "900"))
+    except ValueError:
+        value = 900.0
+    return value if value > 0 else 900.0
+
+
+def embed_board_scope(identity: "VerifiedIdentity") -> set[str] | None:
+    """The boards an embed token is limited to, or ``None`` when unrestricted.
+
+    A host may bind a token to one board (``board`` / ``dashboard``) or several
+    (``boards``).  A malformed restriction raises ``ValueError`` — callers
+    treat that as "refuse", never as "unrestricted".
+    """
+    claims = identity.raw_claims or {}
+    present = [k for k in ("board", "dashboard", "boards") if claims.get(k) is not None]
+    if not present:
+        return None
+    allowed: set[str] = set()
+    for key in present:
+        value = claims[key]
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("malformed board restriction")
+            allowed.add(item.strip())
+    return allowed
+
 
 def _looks_like_uuid(value: str) -> bool:
     """True when *value* parses as a UUID (Nubi's internal org id shape)."""
@@ -491,6 +546,7 @@ async def _verify_embed_token_async(
             token, alg, iss, public_key, issuer_cfg.aud, expected_origin,
             # Operator-registered issuers (no owner) keep the token's own org.
             org_override=issuer_cfg.org_id or resolved_org,
+            allowed_origins=list(issuer_cfg.allowed_origins or []),
         )
 
     # 2. DB fallback — scoped to the org the token names, or, when it names
@@ -516,6 +572,7 @@ async def _verify_embed_token_async(
     return _finish_embed_verification(
         token, alg, iss, public_key, db_row.get("audience", ""), expected_origin,
         org_override=str(db_row["org_id"]),
+        allowed_origins=list(db_row.get("allowed_origins") or []),
     )
 
 

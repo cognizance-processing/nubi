@@ -312,6 +312,14 @@ async def _maybe_pin_host_mode_org(identity: "VerifiedIdentity") -> None:
         identity.scope = _strip_host_mode_write_scopes(list(identity.scope))
 
 
+def embed_revocation_key(org_id: str | None, iss: str | None, jti: str) -> str:
+    """Denylist key for one embed token (its ``jti`` within its org's issuer)."""
+    import hashlib  # noqa: PLC0415
+
+    raw = f"{org_id or ''}\x1f{iss or ''}\x1f{jti}".encode("utf-8")
+    return "embed:" + hashlib.sha256(raw).hexdigest()
+
+
 async def verified_identity(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
@@ -394,11 +402,15 @@ async def verified_identity(
     if identity.kind == "embed":
         await _maybe_pin_host_mode_org(identity)
 
-    # Denylist check for first-party (HS256) access tokens only.
-    # Embed tokens are short-lived, audience-scoped and host-signed; they
-    # cannot be revoked via Nubi logout so we skip the check for them.
-    if identity.kind == "access":
+    # Denylist check.  First-party tokens are keyed by their ``jti``; an embed
+    # token's ``jti`` is only unique within its issuer, so it is keyed by
+    # (org, issuer, jti) — see ``embed_revocation_key``.
+    if identity.kind in ("access", "embed"):
         jti: str | None = identity.raw_claims.get("jti")
+        if jti and identity.kind == "embed":
+            jti = embed_revocation_key(
+                identity.org, identity.raw_claims.get("iss"), str(jti)
+            )
         if jti:
             try:
                 if await get_token_denylist().is_revoked(jti):

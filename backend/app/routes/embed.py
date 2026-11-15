@@ -281,6 +281,24 @@ def _board_to_descriptor(dashboard_id: str, board: dict[str, Any]) -> dict[str, 
 # ---------------------------------------------------------------------------
 
 
+def require_board_in_token(identity: VerifiedIdentity, dashboard_id: str) -> None:
+    """Refuse (403) a board the caller's embed token is not bound to.
+
+    Tokens with no board restriction are unaffected; a malformed restriction
+    is refused rather than ignored.
+    """
+    from app.auth.verify import embed_board_scope  # noqa: PLC0415
+
+    if identity.kind != "embed":
+        return
+    try:
+        allowed = embed_board_scope(identity)
+    except ValueError:
+        raise AppError("forbidden", "This token is not valid for that dashboard.", 403) from None
+    if allowed is not None and str(dashboard_id) not in allowed:
+        raise AppError("forbidden", "This token is not valid for that dashboard.", 403)
+
+
 @router.get("/config/{dashboard_id}")
 async def get_embed_config(
     dashboard_id: str,
@@ -338,6 +356,9 @@ async def get_embed_config(
             "Token does not carry the required scope: read:query",
             403,
         )
+
+    # ── Board binding: a token minted for one board opens only that board ────
+    require_board_in_token(identity, dashboard_id)
 
     # ── Resolve org_id ────────────────────────────────────────────────────────
     # Embed tokens carry the org in their claims; first-party tokens look it up.
