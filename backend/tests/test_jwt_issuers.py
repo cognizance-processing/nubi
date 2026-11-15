@@ -325,8 +325,9 @@ async def test_disabled_issuer_rejected(_clean_store):
 
 
 @pytest.mark.asyncio
-async def test_token_without_org_claim_rejected(_clean_store):
-    """A token with no org claim cannot be looked up in the DB → 401."""
+async def test_token_without_org_claim_uses_issuer_org(_clean_store):
+    """No org claim: the only org that configured the issuer is used; if a
+    second org configures the same issuer the token is ambiguous → 401."""
     from app.auth.verify import verify_token_async
     from app.errors import AppError
 
@@ -340,7 +341,7 @@ async def test_token_without_org_claim_rejected(_clean_store):
         enabled=True,
     )
 
-    # Mint without org claim — DB lookup requires org to scope the query.
+    # Mint without org claim.
     private_pem = _PRIVATE_KEY.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.TraditionalOpenSSL,
@@ -359,6 +360,17 @@ async def test_token_without_org_claim_rejected(_clean_store):
         payload, private_pem, algorithm="RS256", headers={"kid": _KID}
     )
 
+    assert (await verify_token_async(token)).org == _ORG_ID
+
+    await _clean_store.create(
+        org_id=str(uuid.uuid4()),
+        name="Other",
+        issuer=_HOST_ISS,
+        audience=_HOST_AUD,
+        created_by=_USER_ID,
+        static_jwks_json=_STATIC_JWKS,
+        enabled=True,
+    )
     with pytest.raises(AppError) as exc_info:
         await verify_token_async(token)
     assert exc_info.value.status == 401

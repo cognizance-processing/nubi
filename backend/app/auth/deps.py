@@ -231,71 +231,68 @@ async def _maybe_pin_host_mode_org(identity: "VerifiedIdentity") -> None:
     - RLS policies come from the ``policies`` claim (already extracted into
       ``identity.policies``); the org claim only selects the tenant.
     """
-    from app.auth.issuers import get_issuer_registry  # noqa: PLC0415
+    from app.auth.verify import _registry_issuer_for, _resolve_embed_org  # noqa: PLC0415
     from app.routes._org import host_mode_org_pin  # noqa: PLC0415
 
     iss: str | None = identity.raw_claims.get("iss")
     if not iss:
         return  # no iss claim — non-host-mode embed token, skip
 
-    # 1. In-process registry (fast path)
-    registry = get_issuer_registry()
-    issuer_cfg = registry.get(iss)
+    # Find the SAME issuer configuration that verified the token:
+    # ``identity.org`` is already that configuration's owner (see verify.py).
+    host_mode = False
+    claim_name: str | None = None
+    owner_org: str | None = None
 
+    issuer_cfg = _registry_issuer_for(iss, identity.org)
     if issuer_cfg is not None:
-        if not issuer_cfg.host_mode:
-            return  # standard embed token — org_members membership required
-        claim_name = issuer_cfg.org_claim or "org"
-        org_val = identity.raw_claims.get(claim_name)
-        # SECURITY: org claim must be a plain string — reject arrays, objects,
-        # numbers, and booleans.  A non-string claim that stringifies to a
-        # non-empty value (e.g. ["tenant_a"]) would otherwise bypass the empty
-        # check and pin a garbage org_id like "['tenant_a']".
-        if not isinstance(org_val, str) or not org_val.strip():
-            raise AppError(
-                "forbidden",
-                "Host-mode token is missing the required org claim.",
-                403,
-            )
-        host_mode_org_pin.set(org_val.strip())
-        # SECURITY (Residual 1 fix): strip write/admin/author:sql scopes so
-        # the host-mode token is unconditionally limited to read-only access.
-        # Only the host-mode code path reaches this line; non-host-mode tokens
-        # are never passed through _strip_host_mode_write_scopes.
-        if identity.scope is not None:
-            identity.scope = _strip_host_mode_write_scopes(list(identity.scope))
-        return
+        host_mode = bool(issuer_cfg.host_mode)
+        claim_name = issuer_cfg.org_claim
+        owner_org = issuer_cfg.org_id
+    else:
+        if not identity.org:
+            return
+        try:
+            from app.security.issuers_store import get_issuers_store  # noqa: PLC0415
 
-    # 2. DB fallback — check the issuers store
-    org_hint: str | None = identity.raw_claims.get("org")
-    if not org_hint:
-        return  # no org hint to scope the query; skip (non-host-mode)
+            db_row = await get_issuers_store().get_enabled_by_iss(identity.org, iss)
+        except Exception:  # noqa: BLE001
+            db_row = None
+        if db_row is None:
+            return  # issuer not found or not enabled; skip
+        host_mode = bool(db_row.get("host_mode", False))
+        claim_name = db_row.get("org_claim")
+        owner_org = str(db_row["org_id"]) if db_row.get("org_id") else None
 
-    try:
-        from app.security.issuers_store import get_issuers_store  # noqa: PLC0415
+    if not host_mode:
+        return  # standard embed token — org_members membership required
 
-        db_row = await get_issuers_store().get_enabled_by_iss(org_hint, iss)
-    except Exception:  # noqa: BLE001
-        db_row = None
-
-    if db_row is None:
-        return  # issuer not found or not enabled; skip
-
-    if not db_row.get("host_mode", False):
-        return  # issuer found but not host_mode
-
-    claim_name = db_row.get("org_claim") or "org"
-    org_val = identity.raw_claims.get(claim_name)
-    # SECURITY: org claim must be a plain string (same type guard as the
-    # in-process registry path above).
+    org_val = identity.raw_claims.get(claim_name or "org")
+    # SECURITY: org claim must be a plain string — reject arrays, objects,
+    # numbers, and booleans.  A non-string claim that stringifies to a
+    # non-empty value (e.g. ["tenant_a"]) would otherwise bypass the empty
+    # check and pin a garbage org_id like "['tenant_a']".
     if not isinstance(org_val, str) or not org_val.strip():
         raise AppError(
             "forbidden",
             "Host-mode token is missing the required org claim.",
             403,
         )
-    host_mode_org_pin.set(org_val.strip())
-    # SECURITY (Residual 1 fix): strip write/admin/author:sql scopes (DB path).
+
+    if owner_org is not None:
+        # SECURITY: an org-owned issuer pins its OWN org. The claim must agree
+        # with it (as an id or the org's external key); it can never select a
+        # different organisation.
+        if await _resolve_embed_org(org_val.strip()) != owner_org:
+            raise AppError("invalid_token", "Token is invalid or has expired.", 401)
+        pinned = owner_org
+    else:
+        # Operator-registered issuer: trusted to name the tenant.
+        pinned = org_val.strip()
+
+    host_mode_org_pin.set(pinned)
+    # SECURITY: strip write/admin/author:sql scopes so a host-mode token is
+    # unconditionally read-only, whatever the external issuer embedded.
     if identity.scope is not None:
         identity.scope = _strip_host_mode_write_scopes(list(identity.scope))
 

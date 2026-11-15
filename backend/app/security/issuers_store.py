@@ -219,6 +219,14 @@ class InMemoryIssuersStore:
                 return deepcopy(row)
         return None
 
+    async def list_enabled_by_iss(self, iss: str) -> list[JwtIssuerRow]:
+        """Every enabled row for *iss*, across orgs (to detect ambiguity)."""
+        return [
+            deepcopy(row)
+            for row in self._rows.values()
+            if row["issuer"] == iss and row["enabled"]
+        ]
+
 
 # ---------------------------------------------------------------------------
 # PgIssuersStore
@@ -466,6 +474,23 @@ class PgIssuersStore:
         if row is None:
             return None
         return _pg_row_to_dict(row)
+
+    async def list_enabled_by_iss(self, iss: str) -> list[JwtIssuerRow]:
+        """Every enabled row for *iss*, across orgs (to detect ambiguity)."""
+        from app.db import fetch as db_fetch  # noqa: PLC0415
+
+        rows = await db_fetch(
+            """
+            SELECT id, org_id, name, issuer, jwks_url, static_jwks_json,
+                   algorithms, audience, enabled, created_by, created_at, updated_at,
+                   host_mode, org_claim
+            FROM jwt_issuers
+            WHERE issuer = $1 AND enabled = TRUE
+            LIMIT 2
+            """,
+            iss,
+        )
+        return [_pg_row_to_dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------

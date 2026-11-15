@@ -533,7 +533,7 @@ def test_same_org_users_share_one_bucket(limited_app_6b):
         tok = token_a if i % 2 == 0 else token_b
         codes.append(
             client.post(
-                "/api/v1/auth/login",
+                "/api/v1/query",
                 headers={"Authorization": f"Bearer {tok}"},
             ).status_code
         )
@@ -562,7 +562,7 @@ def test_different_orgs_have_independent_buckets(limited_app_6b):
     # Drain org-beta completely (4 requests → 3 pass, 1 throttled).
     beta_codes = [
         client.post(
-            "/api/v1/auth/login",
+            "/api/v1/query",
             headers={"Authorization": f"Bearer {token_beta}"},
         ).status_code
         for _ in range(4)
@@ -571,7 +571,7 @@ def test_different_orgs_have_independent_buckets(limited_app_6b):
 
     # org-gamma is untouched — first request must be allowed.
     gamma_first = client.post(
-        "/api/v1/auth/login",
+        "/api/v1/query",
         headers={"Authorization": f"Bearer {token_gamma}"},
     ).status_code
     assert gamma_first == 200, (

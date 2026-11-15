@@ -33,7 +33,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from app.auth.deps import current_user
-from app.auth.roles import require_writer
+from app.auth.roles import require_approver
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
@@ -125,31 +125,12 @@ def _sync_registry(org_id: str, rows: list[dict[str, Any]]) -> None:
 
         registry = get_issuer_registry()
 
-        # Remove the current org's entries first so stale / deleted issuers
-        # are evicted.
-        # IssuerRegistry stores by iss string — we unregister any iss that
-        # belongs to this org by re-checking rows.
-        existing_iss_for_org: set[str] = set()
+        # Entries are keyed by (org, iss): replace exactly this org's set so
+        # deleted or disabled issuers are evicted and other orgs are untouched.
+        for cfg in registry.for_org(org_id):
+            registry.unregister(cfg.iss, org_id=org_id)
         for row in rows:
-            if row.get("org_id") == str(org_id):
-                existing_iss_for_org.add(row["issuer"])
-
-        # Unregister issuers that are no longer in the DB list (deleted/disabled).
-        for iss in list(getattr(registry, "_issuers", {}).keys()):
-            cfg = registry.get(iss)
-            if cfg is None:
-                continue
-            # Only touch entries that we might have registered from this org.
-            # We can't tell which org a registry entry came from (the legacy
-            # IssuerRegistry is not org-scoped), so we re-register only the
-            # active set and leave others alone.
-
-        # Register / update enabled issuers.
-        for row in rows:
-            if row.get("org_id") != str(org_id):
-                continue
-            if not row.get("enabled", True):
-                registry.unregister(row["issuer"])
+            if row.get("org_id") != str(org_id) or not row.get("enabled", True):
                 continue
             registry.register(
                 row["issuer"],
@@ -158,19 +139,36 @@ def _sync_registry(org_id: str, rows: list[dict[str, Any]]) -> None:
                 static_jwks=row.get("static_jwks_json"),
                 host_mode=row.get("host_mode", False),
                 org_claim=row.get("org_claim"),
+                org_id=str(org_id),
             )
     except Exception:  # noqa: BLE001
         pass  # best-effort; verification falls through to DB lookup
 
 
-def _unregister_issuer(iss: str) -> None:
-    """Best-effort removal of *iss* from the in-process ``IssuerRegistry``."""
-    try:
-        from app.auth.issuers import get_issuer_registry  # noqa: PLC0415
+async def _audit(
+    org_id: str, user: dict[str, Any], verb: str, row: dict[str, Any], **extra: Any
+) -> None:
+    """Record an issuer change. Who may sign tokens for an org is security-relevant."""
+    from app.audit import record_audit  # noqa: PLC0415
 
-        get_issuer_registry().unregister(iss)
-    except Exception:  # noqa: BLE001
-        pass
+    await record_audit(
+        org_id=str(org_id),
+        actor_user_id=str(user["id"]),
+        actor_kind="access",
+        action=f"jwt_issuer.{verb}",
+        resource_type="jwt_issuer",
+        resource_id=str(row.get("id")) if row.get("id") else None,
+        summary={
+            "issuer": row.get("issuer"),
+            "audience": row.get("audience"),
+            "jwks_url": row.get("jwks_url"),
+            "has_static_key": bool(row.get("static_jwks_json")),
+            "enabled": row.get("enabled"),
+            "host_mode": row.get("host_mode"),
+            "org_claim": row.get("org_claim"),
+            **extra,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -192,8 +190,8 @@ async def list_jwt_issuers(
     return await get_issuers_store().list_for_org(org_id)
 
 
-@router.post("", status_code=201, dependencies=[Depends(require_writer)])
-@router.post("/", status_code=201, dependencies=[Depends(require_writer)], include_in_schema=False)
+@router.post("", status_code=201, dependencies=[Depends(require_approver)])
+@router.post("/", status_code=201, dependencies=[Depends(require_approver)], include_in_schema=False)
 async def create_jwt_issuer(
     body: _IssuerCreate,
     request: Request,
@@ -236,6 +234,7 @@ async def create_jwt_issuer(
     # Sync the in-process registry so immediately-following embed requests work.
     all_rows = await store.list_for_org(org_id)
     _sync_registry(org_id, all_rows)
+    await _audit(org_id, user, "create", row)
 
     return row
 
@@ -257,7 +256,7 @@ async def get_jwt_issuer(
     return row
 
 
-@router.put("/{issuer_id}", dependencies=[Depends(require_writer)])
+@router.put("/{issuer_id}", dependencies=[Depends(require_approver)])
 async def update_jwt_issuer(
     issuer_id: str,
     body: _IssuerUpdate,
@@ -306,17 +305,16 @@ async def update_jwt_issuer(
     if row is None:
         raise AppError("issuer_not_found", "JWT issuer not found.", 404)
 
-    # A renamed ``iss`` must stop verifying under the old value.
-    if row["issuer"] != existing["issuer"]:
-        _unregister_issuer(existing["issuer"])
-
+    # The sync replaces this org's whole set, so a renamed ``iss`` stops
+    # verifying under the old value.
     all_rows = await store.list_for_org(org_id)
     _sync_registry(org_id, all_rows)
+    await _audit(org_id, user, "update", row, changed=sorted(update_kwargs))
 
     return row
 
 
-@router.delete("/{issuer_id}", status_code=204, dependencies=[Depends(require_writer)])
+@router.delete("/{issuer_id}", status_code=204, dependencies=[Depends(require_approver)])
 async def delete_jwt_issuer(
     issuer_id: str,
     request: Request,
@@ -329,9 +327,11 @@ async def delete_jwt_issuer(
     org_id = await _resolve_org_id(user["id"], repo, request)
     store = get_issuers_store()
 
+    existing = await store.get_by_id(issuer_id, org_id)
     deleted = await store.delete(issuer_id, org_id)
     if not deleted:
         raise AppError("issuer_not_found", "JWT issuer not found.", 404)
+    await _audit(org_id, user, "delete", existing or {"id": issuer_id})
 
     # Unregister from the in-process registry.
     try:

@@ -66,6 +66,14 @@ class IssuerConfig:
     static_public_key: str | None = None
     host_mode: bool = False
     org_claim: str | None = None
+    # The organisation that owns this issuer. A tenant-managed issuer only
+    # ever authenticates its own organisation. ``None`` marks an
+    # operator-registered (process-level) issuer.
+    org_id: str | None = None
+
+
+class AmbiguousIssuer(Exception):
+    """The same ``iss`` is configured by several orgs and the token names none."""
 
 
 class IssuerRegistry:
@@ -76,7 +84,9 @@ class IssuerRegistry:
     """
 
     def __init__(self) -> None:
-        self._issuers: dict[str, IssuerConfig] = {}
+        # Keyed by (owning org id | None, iss) so two orgs may configure the
+        # same issuer string without sharing keys or trust.
+        self._issuers: dict[tuple[str | None, str], IssuerConfig] = {}
 
     def register(
         self,
@@ -89,8 +99,12 @@ class IssuerRegistry:
         static_public_key: str | None = None,
         host_mode: bool = False,
         org_claim: str | None = None,
+        org_id: str | None = None,
     ) -> IssuerConfig:
         """Register (or overwrite) an issuer configuration.
+
+        ``org_id`` is the owning organisation; tenant-managed issuers always
+        pass it. Operator-registered issuers leave it ``None``.
 
         Parameters
         ----------
@@ -127,17 +141,69 @@ class IssuerRegistry:
             static_public_key=static_public_key,
             host_mode=host_mode,
             org_claim=org_claim,
+            org_id=str(org_id) if org_id else None,
         )
-        self._issuers[iss] = cfg
+        self._issuers[(cfg.org_id, iss)] = cfg
         return cfg
 
-    def get(self, iss: str) -> IssuerConfig | None:
-        """Return the config for *iss*, or ``None`` if not registered."""
-        return self._issuers.get(iss)
+    def candidates(self, iss: str) -> list[IssuerConfig]:
+        """Every configuration registered for *iss*, across owners."""
+        return [cfg for (_org, i), cfg in self._issuers.items() if i == iss]
 
-    def unregister(self, iss: str) -> None:
-        """Remove an issuer from the registry (idempotent)."""
-        self._issuers.pop(iss, None)
+    def resolve(self, iss: str, org: str | None = None) -> IssuerConfig | None:
+        """Pick the configuration that may authenticate a token.
+
+        ``org`` is the (normalised) org the token names, if any. It only ever
+        *selects among* configurations — the organisation a token acts for is
+        the selected configuration's ``org_id``:
+
+        * an org-owned configuration matches only its own org;
+        * an operator-registered configuration matches any org;
+        * with no org named, a single configuration is used, several are
+          ambiguous (:class:`AmbiguousIssuer`).
+        """
+        cands = self.candidates(iss)
+        if not cands:
+            return None
+        if org:
+            for cfg in cands:
+                if cfg.org_id == str(org):
+                    return cfg
+        for cfg in cands:
+            if cfg.org_id is None:
+                return cfg
+        if org:
+            return None
+        if len(cands) == 1:
+            return cands[0]
+        raise AmbiguousIssuer(iss)
+
+    def get(self, iss: str, org_id: str | None = None) -> IssuerConfig | None:
+        """Return the config for *iss* owned by *org_id*.
+
+        With no ``org_id``: the operator-registered entry, else the only
+        org-owned entry, else ``None``. Not for token verification — use
+        :meth:`resolve`.
+        """
+        if org_id:
+            return self._issuers.get((str(org_id), iss))
+        cfg = self._issuers.get((None, iss))
+        if cfg is not None:
+            return cfg
+        cands = self.candidates(iss)
+        return cands[0] if len(cands) == 1 else None
+
+    def for_org(self, org_id: str) -> list[IssuerConfig]:
+        """Configurations owned by *org_id*."""
+        return [cfg for (o, _i), cfg in self._issuers.items() if o == str(org_id)]
+
+    def unregister(self, iss: str, org_id: str | None = None) -> None:
+        """Remove an issuer from the registry (idempotent).
+
+        With ``org_id`` only that org's entry is removed; without it the
+        operator-registered entry is.
+        """
+        self._issuers.pop((str(org_id) if org_id else None, iss), None)
 
     def clear(self) -> None:
         """Remove all registered issuers (useful in test teardown)."""

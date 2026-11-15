@@ -684,10 +684,25 @@ def _extract_verified_identity(request: Request) -> tuple[str | None, bool]:
     is_embed = identity.kind == "embed"
 
     if org:
-        return f"org:{org}", is_embed
+        # Embed traffic gets its own bucket: an externally-issued token must
+        # never be able to drain the org's first-party allowance.
+        return (f"embed:{org}" if is_embed else f"org:{org}"), is_embed
 
     # Verified token but no org claim: fall back to IP (unusual but safe).
     return None, is_embed
+
+
+def _bucket_identity(request: Request, route_class: str, token_key: str | None) -> str:
+    """The identity half of the bucket key for *route_class*.
+
+    Credential endpoints are always keyed by the client address — holding a
+    valid token for some org must not buy a separate allowance for guessing
+    credentials. Everything else prefers the verified token key.
+    """
+    if token_key is not None and route_class != "auth":
+        return token_key
+    ip = _client_ip(request)
+    return f"ip:{ip}" if ip else _UNKNOWN_IDENTITY
 
 
 # Opaque credentials (API keys, OAuth access tokens) aren't JWTs, so
@@ -841,15 +856,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if is_verified_embed and _is_embed_exempt_path(path):
             return await call_next(request)
 
-        if token_key is None:
+        if token_key is None and route_class != "auth":
             token_key = await _opaque_identity(request)
 
-        # Identity: use verified org key when available; else IP fallback.
-        if token_key is not None:
-            identity = token_key
-        else:
-            ip = _client_ip(request)
-            identity = f"ip:{ip}" if ip else _UNKNOWN_IDENTITY
+        # Identity: verified org key when available (never on credential
+        # endpoints); else IP fallback.
+        identity = _bucket_identity(request, route_class, token_key)
 
         # FINDING 3: we do NOT pass 'unknown' through unthrottled.  When the
         # caller can't be identified they share a single conservative bucket

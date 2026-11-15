@@ -368,10 +368,11 @@ def _verify_embed_token(
     """
     from app.auth.issuers import get_issuer_registry  # noqa: PLC0415
 
-    iss, _unverified = _peek_embed_token(token, alg)
+    iss, unverified = _peek_embed_token(token, alg)
+    org_from_token = unverified.get("org")
+    org_hint = org_from_token if isinstance(org_from_token, str) and org_from_token else None
 
-    registry = get_issuer_registry()
-    issuer_cfg = registry.get(iss)
+    issuer_cfg = _registry_issuer_for(iss, org_hint)
     if issuer_cfg is None:
         raise AppError("invalid_token", "Token is invalid or has expired.", 401)
 
@@ -380,8 +381,25 @@ def _verify_embed_token(
     public_key = _select_key_from_jwks(jwks, kid, alg)
 
     return _finish_embed_verification(
-        token, alg, iss, public_key, issuer_cfg.aud, expected_origin
+        token, alg, iss, public_key, issuer_cfg.aud, expected_origin,
+        org_override=issuer_cfg.org_id,
     )
+
+
+def _registry_issuer_for(iss: str, org: str | None) -> Any:
+    """The in-process issuer configuration allowed to authenticate (*iss*, *org*).
+
+    The organisation a token acts for is the configuration's owner; the
+    token's own ``org`` claim only selects among configurations sharing an
+    ``iss`` (see :meth:`IssuerRegistry.resolve`). An ambiguous ``iss`` with no
+    org named is a verification failure.
+    """
+    from app.auth.issuers import AmbiguousIssuer, get_issuer_registry  # noqa: PLC0415
+
+    try:
+        return get_issuer_registry().resolve(iss, org)
+    except AmbiguousIssuer:
+        raise AppError("invalid_token", "Token is invalid or has expired.", 401)
 
 
 # ---------------------------------------------------------------------------
@@ -443,8 +461,6 @@ async def _verify_embed_token_async(
 
     Unknown or disabled ``iss`` → 401.
     """
-    from app.auth.issuers import get_issuer_registry  # noqa: PLC0415
-
     iss, unverified_payload = _peek_embed_token(token, alg)
     kid: str | None = header.get("kid") or None
 
@@ -454,35 +470,44 @@ async def _verify_embed_token_async(
     # lookup and ``identity.org`` (via org_override), so a host never has to
     # capture Nubi's generated id. A UUID / unknown key passes through unchanged.
     org_from_token: str | None = unverified_payload.get("org")
+    if org_from_token is not None and not isinstance(org_from_token, str):
+        raise AppError("invalid_token", "Token is invalid or has expired.", 401)
     resolved_org: str | None = (
         await _resolve_embed_org(org_from_token) if org_from_token else None
     )
 
+    # The organisation a token acts for is ALWAYS the owner of the issuer
+    # configuration whose key verified it. ``resolved_org`` only selects among
+    # configurations that share an ``iss``; it can never widen trust to an
+    # organisation that did not configure the signing key.
+
     # 1. In-process registry (fast path, always tried first).
-    registry = get_issuer_registry()
-    issuer_cfg = registry.get(iss)
+    issuer_cfg = _registry_issuer_for(iss, resolved_org)
 
     if issuer_cfg is not None:
         jwks = _resolve_jwks(issuer_cfg)
         public_key = _select_key_from_jwks(jwks, kid, alg)
         return _finish_embed_verification(
             token, alg, iss, public_key, issuer_cfg.aud, expected_origin,
-            org_override=resolved_org,
+            # Operator-registered issuers (no owner) keep the token's own org.
+            org_override=issuer_cfg.org_id or resolved_org,
         )
 
-    # 2. DB fallback — requires the token to carry an ``org`` claim so we can
-    #    scope the lookup to the correct org's configured issuers.
-    if not org_from_token:
-        raise AppError("invalid_token", "Token is invalid or has expired.", 401)
-
+    # 2. DB fallback — scoped to the org the token names, or, when it names
+    #    none, to the single org that configured this ``iss``.
     try:
         from app.security.issuers_store import get_issuers_store  # noqa: PLC0415
 
-        db_row = await get_issuers_store().get_enabled_by_iss(resolved_org, iss)
+        store = get_issuers_store()
+        if resolved_org:
+            db_row = await store.get_enabled_by_iss(resolved_org, iss)
+        else:
+            rows = await store.list_enabled_by_iss(iss)
+            db_row = rows[0] if len(rows) == 1 else None
     except Exception:  # noqa: BLE001
         db_row = None
 
-    if db_row is None:
+    if db_row is None or not db_row.get("org_id"):
         raise AppError("invalid_token", "Token is invalid or has expired.", 401)
 
     from app.security.jwks import resolve_signing_key  # noqa: PLC0415
@@ -490,7 +515,7 @@ async def _verify_embed_token_async(
     public_key = resolve_signing_key(db_row, kid, alg)
     return _finish_embed_verification(
         token, alg, iss, public_key, db_row.get("audience", ""), expected_origin,
-        org_override=resolved_org,
+        org_override=str(db_row["org_id"]),
     )
 
 

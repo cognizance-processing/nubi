@@ -537,6 +537,7 @@ def test_sync_registry_disabled_issuer_unregisters(_clean_registry):
         aud=_HOST_AUD,
         static_jwks=_STATIC_JWKS,
         host_mode=True,
+        org_id=_ORG_ID,
     )
     assert registry.get(_HOST_ISS) is not None
 

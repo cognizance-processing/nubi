@@ -2465,6 +2465,35 @@ async def _finish_parameterize(
 # ---------------------------------------------------------------------------
 
 
+def _registry_entry(rq: Any, identity: VerifiedIdentity) -> dict:
+    """Public shape of one registry entry.
+
+    Embed identities run queries by id and never need the SQL text, so it is
+    left out for them — the canonical SQL stays server-side.
+    """
+    entry: dict = {
+        "id": rq.id,
+        "name": rq.name,
+        "sql": rq.sql,
+        "metric": rq.metric,
+        "required_scope": rq.required_scope,
+        "datastore_id": rq.datastore_id,
+        "params": [
+            {
+                "name": p.name,
+                "type": p.type,
+                "default": p.default,
+                "required": p.required,
+                "options_query_id": p.options_query_id,
+            }
+            for p in rq.params
+        ],
+    }
+    if identity.kind == "embed":
+        entry.pop("sql")
+    return entry
+
+
 async def _visible_registry_row_ids(
     request: Request, identity: VerifiedIdentity
 ) -> set[str] | None:
@@ -2488,7 +2517,8 @@ async def _visible_registry_row_ids(
             if identity.org:
                 rows = await repo.list("queries", identity.org)
                 return {str(r["id"]) for r in rows}
-            return None
+            # An embed identity bound to no org sees no persisted queries.
+            return set()
         from app.routes._org import (  # noqa: PLC0415
             resolve_org_id as _resolve_org_id,
             resolve_project_filter as _resolve_project_filter,
@@ -2706,29 +2736,7 @@ async def list_query_registry(
     if row_ids is not None:
         entries = [rq for rq in entries if rq.system or rq.id in row_ids]
 
-    queries = []
-    for rq in entries:
-        queries.append(
-            {
-                "id": rq.id,
-                "name": rq.name,
-                "sql": rq.sql,
-                "metric": rq.metric,
-                "required_scope": rq.required_scope,
-                "datastore_id": rq.datastore_id,
-                "params": [
-                    {
-                        "name": p.name,
-                        "type": p.type,
-                        "default": p.default,
-                        "required": p.required,
-                        "options_query_id": p.options_query_id,
-                    }
-                    for p in rq.params
-                ],
-            }
-        )
-    return {"queries": queries}
+    return {"queries": [_registry_entry(rq, identity) for rq in entries]}
 
 
 @router.get("/query/registry/{query_id}")
@@ -2791,24 +2799,7 @@ async def get_registered_query(
             404,
         )
 
-    return {
-        "id": rq.id,
-        "name": rq.name,
-        "sql": rq.sql,
-        "metric": rq.metric,
-        "required_scope": rq.required_scope,
-        "datastore_id": rq.datastore_id,
-        "params": [
-            {
-                "name": p.name,
-                "type": p.type,
-                "default": p.default,
-                "required": p.required,
-                "options_query_id": p.options_query_id,
-            }
-            for p in rq.params
-        ],
-    }
+    return _registry_entry(rq, identity)
 
 
 @router.get("/query/registry/{query_id}/widgets")
