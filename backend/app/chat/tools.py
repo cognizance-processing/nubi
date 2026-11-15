@@ -530,13 +530,15 @@ def _tool_list_registered_queries(context: ToolContext | None = None) -> dict[st
     return {"queries": queries}
 
 
-def _tool_propose_dashboard_spec(instruction: str) -> dict[str, Any]:
+def _tool_propose_dashboard_spec(
+    instruction: str, context: ToolContext | None = None
+) -> dict[str, Any]:
     """Generate a DashboardSpec — reuses ``app.ai.dashboard.generate_dashboard_spec``."""
     from app.ai.dashboard import generate_dashboard_spec  # noqa: PLC0415
     from app.ai.grounding import build_catalog  # noqa: PLC0415
     from app.ai.provider import get_provider  # noqa: PLC0415
 
-    catalog = build_catalog()
+    catalog = build_catalog(context.org_id if context else None)
     provider = get_provider()
     spec = generate_dashboard_spec(instruction, catalog, provider)
     spec_dict = spec.model_dump()
@@ -747,7 +749,7 @@ def execute_tool(
         instruction = str(arguments.get("instruction") or "").strip()
         if not instruction:
             return {"error": "instruction is required"}, {}
-        result = _tool_propose_dashboard_spec(instruction)
+        result = _tool_propose_dashboard_spec(instruction, context)
         # The tool RESULT sent back to the model is a compact summary (the spec
         # is large and the model does not need to re-read every field); the full
         # spec rides in *extra* so the final message can carry it.

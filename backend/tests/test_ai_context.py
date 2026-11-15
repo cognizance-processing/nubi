@@ -30,7 +30,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.ai.grounding import build_catalog, ground
+from app.ai.grounding import ALL_ORGS, build_catalog, ground
 from app.auth.jwt import mint_access_token
 from app.queries.registry import (
     OutputColumn,
@@ -169,7 +169,7 @@ class TestCatalogEnrichment:
 
     def test_every_query_has_new_fields(self):
         _register_fixture_query()
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         for qd in catalog["queries"]:
             assert "params" in qd
             assert "output_schema" in qd
@@ -180,7 +180,7 @@ class TestCatalogEnrichment:
     def test_existing_keys_preserved(self):
         """ADD-ONLY: original keys are untouched."""
         _register_fixture_query()
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         for qd in catalog["queries"]:
             assert "id" in qd
             assert "name" in qd
@@ -189,7 +189,7 @@ class TestCatalogEnrichment:
 
     def test_fixture_query_surfaces_real_params_and_outputs(self):
         qid = _register_fixture_query()
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         entry = next(q for q in catalog["queries"] if q["id"] == qid)
 
         # params
@@ -210,7 +210,7 @@ class TestCatalogEnrichment:
     def test_ground_exposes_related_query_details(self):
         """ground() keeps related_queries (ids) and adds related_query_details."""
         _register_fixture_query()
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         grounding = ground("show me orders by region", catalog)
 
         # Existing key unchanged: list of id strings.

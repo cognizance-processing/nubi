@@ -25,7 +25,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.ai.grounding import build_catalog, build_prompt, ground
+from app.ai.grounding import ALL_ORGS, build_catalog, build_prompt, ground
 from app.ai.provider import NullProvider, get_provider
 from app.auth.jwt import mint_access_token
 from app.repos.memory import InMemoryRepo
@@ -189,20 +189,20 @@ class TestBuildCatalog:
     """build_catalog includes registered demo queries and has the right shape."""
 
     def test_returns_dict_with_tables_and_queries(self):
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         assert isinstance(catalog, dict)
         assert "tables" in catalog
         assert "queries" in catalog
 
     def test_tables_is_dict_of_lists(self):
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         tables = catalog["tables"]
         assert isinstance(tables, dict)
         for v in tables.values():
             assert isinstance(v, list)
 
     def test_queries_is_list_of_dicts(self):
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         for qd in catalog["queries"]:
             assert isinstance(qd, dict)
             assert "id" in qd
@@ -212,13 +212,13 @@ class TestBuildCatalog:
 
     def test_catalog_includes_demo_query_id(self):
         """demo_all must appear in the queries list."""
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         query_ids = {qd["id"] for qd in catalog["queries"]}
         assert "demo_all" in query_ids
 
     def test_catalog_includes_demo_table(self):
         """The 'demo' table must appear in catalog tables (from demo_all / demo_active)."""
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         # demo_all: SELECT * FROM demo — sqlglot parse gives tables=["demo"]
         # but columns may be empty (SELECT *). Check tables dict has the entry
         # OR that demo_all's tables list includes "demo".
@@ -230,13 +230,13 @@ class TestBuildCatalog:
 
     def test_catalog_includes_point_cloud_queries(self):
         """Point-cloud queries seeded in M5-B must be present."""
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         query_ids = {qd["id"] for qd in catalog["queries"]}
         assert "demo_points_10k" in query_ids
 
     def test_column_lists_are_sorted(self):
         """Column lists per table must be sorted (determinism)."""
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         for tbl, cols in catalog["tables"].items():
             assert cols == sorted(cols), f"columns for {tbl!r} are not sorted"
 

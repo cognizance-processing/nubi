@@ -335,7 +335,7 @@ def _tool_generate_sql(
     from app.ai.provider import get_provider  # noqa: PLC0415
     from app.ai.sql import generate_sql  # noqa: PLC0415
 
-    catalog = build_catalog()
+    catalog = build_catalog(claims.get("org"))
     provider = get_provider()
     return generate_sql(
         question=question,
@@ -493,7 +493,7 @@ def _tool_list_filterable_columns(query_id: str, claims: dict[str, Any]) -> dict
     row, _ = _resolve_query_row(query_id, claims)
     cfg = row.get("config") or {}
     dialect = _dialect_for_datastore(cfg.get("datastore_id"), claims)
-    table_columns = build_catalog()["tables"]
+    table_columns = build_catalog(org_id)["tables"]
     return {
         "columns": filterable_columns(
             cfg.get("sql") or "", dialect=dialect, table_columns=table_columns
@@ -564,7 +564,7 @@ def _tool_add_filter_param(
         return {"ok": False, "applied": False, "reason": f"This query already declares a {param!r} parameter."}
 
     dialect = _dialect_for_datastore(datastore_id, claims)
-    table_columns = build_catalog()["tables"]
+    table_columns = build_catalog(org_id)["tables"]
     result = parameterize_sql(
         original_sql, param=param, column=column, dialect=dialect, subtype=subtype,
         table_columns=table_columns,
@@ -1082,7 +1082,7 @@ def _tool_create_dashboard(
     from app.ai.provider import get_provider  # noqa: PLC0415
     from app.dashboards.spec import spec_to_html  # noqa: PLC0415
 
-    catalog = build_catalog()
+    catalog = build_catalog(claims.get("org"))
     provider = get_provider()
     spec = generate_dashboard_spec(question, catalog, provider)
     html_out = spec_to_html(spec)

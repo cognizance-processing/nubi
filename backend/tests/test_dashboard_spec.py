@@ -51,7 +51,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.ai.dashboard import generate_dashboard_spec
-from app.ai.grounding import build_catalog
+from app.ai.grounding import ALL_ORGS, build_catalog
 from app.ai.provider import NullProvider
 from app.auth.jwt import mint_access_token
 from app.repos.memory import InMemoryRepo
@@ -522,7 +522,7 @@ class TestGenerateDashboardSpecNullProvider:
     """generate_dashboard_spec with NullProvider returns a real spec."""
 
     def _gen(self, question: str = "show me demo data") -> DashboardSpec:
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         return generate_dashboard_spec(question, catalog, NullProvider())
 
     def test_returns_dashboard_spec(self):
@@ -586,7 +586,7 @@ class TestGenerateDashboardSpecNullProvider:
 
     def test_deterministic_output(self):
         """Calling twice with the same question yields identical specs."""
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         s1 = generate_dashboard_spec("list demo rows", catalog, NullProvider())
         s2 = generate_dashboard_spec("list demo rows", catalog, NullProvider())
         assert s1.model_dump() == s2.model_dump()

@@ -892,7 +892,7 @@ async def _resolve_request_plan(
     if body.filters:
         from app.ai.grounding import build_catalog  # noqa: PLC0415
 
-        filter_table_columns = build_catalog()["tables"]
+        filter_table_columns = build_catalog(_allowlist_org_id)["tables"]
 
     # ── Plan (RLS predicates injected at the AST level) ──────────────────────
     # [LOW event-loop] planner_plan() is pure-Python (sqlglot parse + RLS AST
@@ -1862,7 +1862,7 @@ async def query_filterable_columns(
     # logging a DB error on every call.
     _ds = cfg.get("datastore_id")
     dialect = await _resolve_target_dialect(None if _ds == _DEMO_ID else _ds, identity, request)
-    table_columns = build_catalog()["tables"]
+    table_columns = build_catalog(org_id)["tables"]
     return {"columns": filterable_columns(sql, dialect=dialect, table_columns=table_columns)}
 
 
@@ -1933,7 +1933,7 @@ async def parameterize_query(
         )
 
     dialect = await _resolve_target_dialect(datastore_id, identity, request)
-    table_columns = build_catalog()["tables"]
+    table_columns = build_catalog(org_id)["tables"]
     result = parameterize_sql(
         original_sql,
         param=body.param,
@@ -2314,7 +2314,7 @@ async def _finish_parameterize(
     """Efficacy probe + optional persist for :func:`parameterize_query`."""
     from app.ai.grounding import build_catalog  # noqa: PLC0415
 
-    table_columns = build_catalog()["tables"]
+    table_columns = build_catalog(org_id)["tables"]
 
     # Does the filter actually bite? A no-op filter is not a failure (the
     # column may be constant in the current data) but the author should know.

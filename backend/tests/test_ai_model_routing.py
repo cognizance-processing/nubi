@@ -251,10 +251,10 @@ class TestAgentThreadsModel:
         assert result["reply"]
 
     def test_generate_dashboard_spec_threads_model(self):
-        from app.ai.grounding import build_catalog  # noqa: PLC0415
+        from app.ai.grounding import ALL_ORGS, build_catalog  # noqa: PLC0415
 
         p = FakeProvider()
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         # FakeProvider returns "done with ..." which is not valid dashboard JSON,
         # so the repair loop runs to exhaustion and raises dashboard_generation_failed.
         # That is fine — we only need to prove complete() was reached with our model.
@@ -264,10 +264,10 @@ class TestAgentThreadsModel:
         assert all(c["model"] == "fake-alt" for c in p.calls)
 
     def test_generate_dashboard_spec_unknown_model_raises_not_allowed(self):
-        from app.ai.grounding import build_catalog  # noqa: PLC0415
+        from app.ai.grounding import ALL_ORGS, build_catalog  # noqa: PLC0415
 
         p = FakeProvider()
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         with pytest.raises(AppError) as exc:
             generate_dashboard_spec("a dashboard of orders", catalog, p, model="bad")
         assert exc.value.code == "model_not_allowed"

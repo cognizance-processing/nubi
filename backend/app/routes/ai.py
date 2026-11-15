@@ -129,6 +129,14 @@ async def _resolve_org_id(user: dict[str, Any], request: Request | None = None) 
         if request is not None:
             return await resolve_org_id(str(user["id"]), repo, request)
         return await get_user_org(str(user["id"]), repo)
+    except AppError as exc:
+        # A REFUSAL (the caller asked for an org they are not a member of, or
+        # a key pinned elsewhere) must stay a refusal — swallowing it would
+        # continue the request with no org at all.
+        if exc.status == 403:
+            raise
+        logger.warning("ai: could not resolve org for user=%s", user.get("id"))
+        return None
     except Exception:  # noqa: BLE001 — attribution is best-effort, never a 500
         logger.warning(
             "ai: could not resolve org for user=%s — "
@@ -320,7 +328,7 @@ async def ask(
     """
     provider, org_id, is_byo = await _prepare_ai_call(_user, request)
 
-    catalog = build_catalog()
+    catalog = build_catalog(org_id)
     grounding = ground(body.question, catalog)
     system_prompt, user_prompt = build_prompt(body.question, grounding)
     # Offload the blocking LLM call (+ any multi-round repair) to a thread so
@@ -394,7 +402,7 @@ async def create_dashboard(
 
     provider, org_id, is_byo = await _prepare_ai_call(_user, request)
 
-    catalog = build_catalog()
+    catalog = build_catalog(org_id)
     # Offload the blocking generate_dashboard_spec call (LLM + multi-round repair)
     # to a thread so the asyncio event loop is not blocked.
     spec = await asyncio.to_thread(
@@ -841,7 +849,8 @@ async def ai_context(
     if q:
         # Rank + filter via the deterministic grounding scorer so the response
         # only carries the queries most relevant to the agent's intent.
-        catalog = build_catalog()
+        # Rank over exactly the entries this caller may see (gated above).
+        catalog = build_catalog(caller_org, queries=all_queries)
         grounding = ground(q, catalog)
         # related_queries is an ordered (most-relevant-first) list of ids.
         ranked_ids = list(grounding.get("related_queries", []))
@@ -1364,7 +1373,7 @@ async def generate_sql_endpoint(
 
     provider, org_id, is_byo = await _prepare_ai_call(_user, request)
 
-    catalog = build_catalog()
+    catalog = build_catalog(org_id)
     grounding = ground(body.question, catalog)
 
     # Offload the blocking generate_sql call (LLM + sqlglot validation)
