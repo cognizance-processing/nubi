@@ -624,7 +624,6 @@ def _execute_query_with_bridge(
     from app.connectors.duckdb_conn import DuckDBConnector  # noqa: PLC0415
     from app.connectors.planner import plan, resolve_named_params  # noqa: PLC0415
     from app.errors import AppError  # noqa: PLC0415
-    from app.queries.registry import get_query_registry  # noqa: PLC0415
 
     query_id: str | None = config.get("query_id")
     sql: str | None = config.get("sql")
@@ -638,8 +637,12 @@ def _execute_query_with_bridge(
     positional_params: list[Any] = []
 
     if query_id is not None:
-        registry = get_query_registry()
-        rq = registry.get(query_id)
+        from app.queries.registry import registered_query_for_org  # noqa: PLC0415
+
+        # Org-scoped: a flow can only bind its own organisation's queries.
+        rq = registered_query_for_org(
+            query_id, ctx.org_id or (claims or {}).get("org") or (claims or {}).get("org_id")
+        )
         if rq is None:
             raise AppError(
                 "query_not_found",

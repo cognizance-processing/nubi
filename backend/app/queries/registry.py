@@ -732,12 +732,25 @@ async def resolve_registered_query(
     (typically a slug or a content hash) is the only handle, exactly like the
     built-in seed queries.
     """
-    registry = get_query_registry()
-    rq = registry.get(query_id)
+    rq = get_query_registry().get(query_id)
     if rq is None:
         rq = await ensure_persisted_query(query_id, org_id)
-    if rq is None:
-        return None
-    if rq.system or rq.owner_org_id is None:
-        return rq
-    return rq if _owned_by(rq, org_id) else None
+    return rq if rq is not None and _resolvable_by(rq, org_id) else None
+
+
+def _resolvable_by(rq: RegisteredQuery, org_id: str | None) -> bool:
+    """The one visibility rule for resolving a query by id (see
+    ``resolve_registered_query``): built-ins and unowned in-memory entries
+    resolve for anyone holding the id; an owned entry only for its owner."""
+    return rq.system or rq.owner_org_id is None or _owned_by(rq, org_id)
+
+
+def registered_query_for_org(query_id: str, org_id: str | None) -> RegisteredQuery | None:
+    """Synchronous form of ``resolve_registered_query`` for code that cannot
+    await (flow and job handlers): the registered entry for *query_id* when
+    *org_id* may resolve it, else ``None``.  It does not load from the
+    database; persisted queries are hydrated at startup and on first use by
+    the request paths.  Use this instead of a bare ``registry.get(id)``.
+    """
+    rq = get_query_registry().get(query_id)
+    return rq if rq is not None and _resolvable_by(rq, org_id) else None

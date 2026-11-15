@@ -281,7 +281,7 @@ def _iter_widget_tables(board: dict[str, Any], params: dict[str, Any]):
     stay on the canonical planner path (named params are NEVER string-concat'd
     into SQL).
     """
-    from app.queries.registry import get_query_registry
+    from app.queries.registry import registered_query_for_org
     from app.connectors import planner
     from app.connectors.duckdb_conn import DuckDBConnector
     from app.errors import AppError
@@ -295,7 +295,6 @@ def _iter_widget_tables(board: dict[str, Any], params: dict[str, Any]):
     if not widgets:
         return
 
-    registry = get_query_registry()
     connector = DuckDBConnector()
     placeholder_re = _re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")
 
@@ -307,7 +306,8 @@ def _iter_widget_tables(board: dict[str, Any], params: dict[str, Any]):
             yield widget_id, None, f"(no query_id for widget {widget_id!r})"
             continue
 
-        rq = registry.get(query_id)
+        # Org-scoped: a board's report only reads its own organisation's queries.
+        rq = registered_query_for_org(query_id, board.get("org_id"))
         if rq is None:
             yield widget_id, None, f"query_id={query_id!r} not found in registry — skipped"
             continue
