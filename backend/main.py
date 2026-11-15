@@ -632,6 +632,18 @@ def create_app() -> FastAPI:
     # write.  Fail-open: a failed audit write NEVER breaks the response.
     register_audit_middleware(application)
 
+    # ── Browser security headers (CSP, HSTS, nosniff, Referrer-Policy) ───────
+    # The app shell's inline bootstrap script is admitted by hash, computed
+    # from the built index.html (absent in tests/dev → no inline hashes).
+    from app.middleware.security_headers import register_security_headers  # noqa: PLC0415
+
+    _static_dir = os.getenv("STATIC_DIR") or str(Path(__file__).resolve().parents[1] / "dist")
+    register_security_headers(
+        application,
+        index_html=os.path.join(_static_dir, "index.html"),
+        env=settings.ENV,
+    )
+
     # ── Error handlers ────────────────────────────────────────────────────────
     register_handlers(application)
 
