@@ -66,7 +66,7 @@ const require = createRequire(import.meta.url)
 // a directory that contains node_modules/echarts/core.js.  This is robust when
 // the script is invoked from a git worktree (which has no node_modules of its
 // own) because it will walk up to the real repo root where node_modules lives.
-import { fileURLToPath } from 'url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, resolve } from 'path'
 import { existsSync, readFileSync } from 'fs'
 import { safeColor, safePalette } from './colors.mjs'
@@ -100,6 +100,11 @@ const REPO_ROOT = existsSync(resolve(DIRECT_ROOT, 'node_modules', 'echarts', 'co
   ? DIRECT_ROOT
   : findEchartsRoot(__dirname)
 
+/** Dynamic import by absolute path (Windows ESM requires file:// URLs). */
+function importAbs(absPath) {
+  return import(pathToFileURL(absPath).href)
+}
+
 // Dynamic import of echarts — lets us emit a clear install error if missing.
 let echartsInit
 let echartsRegisterMap
@@ -107,8 +112,8 @@ try {
   if (!REPO_ROOT) throw new Error(
     'node_modules/echarts not found — run `npm install` in the repo root'
   )
-  const echarts = await import(resolve(REPO_ROOT, 'node_modules/echarts/core.js'))
-  const { SVGRenderer } = await import(resolve(REPO_ROOT, 'node_modules/echarts/renderers.js'))
+  const echarts = await importAbs(resolve(REPO_ROOT, 'node_modules/echarts/core.js'))
+  const { SVGRenderer } = await importAbs(resolve(REPO_ROOT, 'node_modules/echarts/renderers.js'))
   const {
     BarChart, LineChart, ScatterChart, PieChart, HeatmapChart, GaugeChart,
     // Server renders used to fall back to a BAR chart for every type without a
@@ -120,7 +125,7 @@ try {
     // geometry was registered on this side. The geometry ships in the repo, so
     // the honest answer is to register it and draw the map.
     MapChart,
-  } = await import(resolve(REPO_ROOT, 'node_modules/echarts/charts.js'))
+  } = await importAbs(resolve(REPO_ROOT, 'node_modules/echarts/charts.js'))
   const {
     GridComponent, TooltipComponent, LegendComponent,
     VisualMapComponent, DataZoomComponent, TitleComponent,
@@ -132,7 +137,7 @@ try {
     RadarComponent,
     // A map series needs the geo coordinate system registered alongside it.
     GeoComponent,
-  } = await import(resolve(REPO_ROOT, 'node_modules/echarts/components.js'))
+  } = await importAbs(resolve(REPO_ROOT, 'node_modules/echarts/components.js'))
 
   echarts.use([
     SVGRenderer,
@@ -253,6 +258,30 @@ function baseAxesOption(xData, isDark = false) {
   }
 }
 
+// Bar / line styling — mirrors barStyle / lineStyleOverrides in
+// embed/widgets/chart-options.ts. Each returns only the keys the author set,
+// so an unset config renders exactly as before. SSR bars have no default cap,
+// so barMaxWidth applies only when it's a number (null = no cap = today).
+function barStyle(color, config) {
+  const out = {}
+  const w = Number(config.barBorderWidth)
+  if (w > 0) { out.borderWidth = w; out.borderColor = config.barBorderColor || color }
+  if (typeof config.barFillOpacity === 'number') out.opacity = config.barFillOpacity
+  return out
+}
+
+function lineStyleOverrides(config) {
+  const out = {}
+  const w = Number(config.lineWidth)
+  if (w > 0) out.width = w
+  if (typeof config.lineOpacity === 'number') out.opacity = config.lineOpacity
+  return out
+}
+
+function barWidthProps(config) {
+  return typeof config.barMaxWidth === 'number' ? { barMaxWidth: config.barMaxWidth } : {}
+}
+
 function buildBar(colMap, xCol, yCol, colorCol, config = {}) {
   const xData = toStrings(colMap[xCol] || [])
   const yData = toNumbers(colMap[yCol] || [])
@@ -270,7 +299,8 @@ function buildBar(colMap, xCol, yCol, colorCol, config = {}) {
       return {
         type: 'bar', name: g.category,
         data: allCats.map((c) => (m.has(c) ? m.get(c) : 0)),
-        itemStyle: { color: palette[i % palette.length] },
+        ...barWidthProps(config),
+        itemStyle: { color: palette[i % palette.length], ...barStyle(palette[i % palette.length], config) },
       }
     })
     return { ...baseAxesOption(allCats), color: palette, series }
@@ -278,7 +308,7 @@ function buildBar(colMap, xCol, yCol, colorCol, config = {}) {
   return {
     ...baseAxesOption(xData),
     color: palette,
-    series: [{ type: 'bar', data: yData, itemStyle: { color: palette[0] } }],
+    series: [{ type: 'bar', data: yData, ...barWidthProps(config), itemStyle: { color: palette[0], ...barStyle(palette[0], config) } }],
   }
 }
 
@@ -297,7 +327,7 @@ function buildLine(colMap, xCol, yCol, area = false, colorCol, config = {}) {
       return {
         type: 'line', name: g.category,
         data: allCats.map((c) => (m.has(c) ? m.get(c) : null)),
-        itemStyle: { color: col }, lineStyle: { color: col },
+        itemStyle: { color: col }, lineStyle: { color: col, ...lineStyleOverrides(config) },
         areaStyle: area ? { opacity: 0.25, color: col } : undefined,
       }
     })
@@ -306,7 +336,7 @@ function buildLine(colMap, xCol, yCol, area = false, colorCol, config = {}) {
   const series = {
     type: 'line', data: yData,
     itemStyle: { color: palette[0] },
-    lineStyle: { color: palette[0] },
+    lineStyle: { color: palette[0], ...lineStyleOverrides(config) },
   }
   if (area) {
     series.areaStyle = { opacity: 0.25, color: palette[0] }
@@ -467,6 +497,10 @@ function buildFunnel(colMap, xCol, yCol, config = {}) {
       orient: config.orientation === 'horizontal' ? 'horizontal' : 'vertical',
       label: { fontSize: 10 },
       emphasis: { disabled: true },
+      // Outline only when the author set one (SSR funnels have none by default).
+      ...(Number(config.barBorderWidth) > 0
+        ? { itemStyle: { borderWidth: Number(config.barBorderWidth), borderColor: config.barBorderColor || '#2d3748' } }
+        : {}),
     }],
   }
 }
@@ -492,13 +526,13 @@ function buildWaterfall(colMap, xCol, yCol, config = {}) {
     ...baseAxesOption(cats),
     color: palette,
     series: [
-      { type: 'bar', stack: 'wf', silent: true, itemStyle: { color: 'transparent' }, data: support },
+      { type: 'bar', stack: 'wf', silent: true, ...barWidthProps(config), itemStyle: { color: 'transparent' }, data: support },
       {
-        type: 'bar', stack: 'wf',
-        data: deltas.map((d, i) => ({
-          value: bars[i],
-          itemStyle: { color: d >= 0 ? (palette[2] || '#10b981') : (palette[3] || '#ef4444') },
-        })),
+        type: 'bar', stack: 'wf', ...barWidthProps(config),
+        data: deltas.map((d, i) => {
+          const color = d >= 0 ? (palette[2] || '#10b981') : (palette[3] || '#ef4444')
+          return { value: bars[i], itemStyle: { color, ...barStyle(color, config) } }
+        }),
       },
     ],
   }
@@ -643,7 +677,7 @@ function buildFan(colMap, enc, config = {}) {
       },
     )
   }
-  series.push({ type: 'line', symbol: 'none', smooth: true, lineStyle: { width: 2, color: palette[0] }, data: mid })
+  series.push({ type: 'line', symbol: 'none', smooth: true, lineStyle: { width: 2, color: palette[0], ...lineStyleOverrides(config) }, data: mid })
   return { ...baseAxesOption(xs), color: palette, series }
 }
 
@@ -660,7 +694,7 @@ function buildHBar(colMap, xCol, yCol, config = {}) {
     xAxis: { type: 'value', axisLabel: { fontSize: 11 } },
     yAxis: { type: 'category', data: catData, axisLabel: { fontSize: 11 } },
     tooltip: { show: false },
-    series: [{ type: 'bar', data: valData, itemStyle: { color: palette[0] } }],
+    series: [{ type: 'bar', data: valData, ...barWidthProps(config), itemStyle: { color: palette[0], ...barStyle(palette[0], config) } }],
   }
 }
 
@@ -687,17 +721,18 @@ function buildCombo(colMap, enc, config = {}) {
   const barSeries = barCols.map((col, i) => ({
     type: 'bar', name: col, yAxisIndex: linesLeft ? 1 : 0,
     data: byPoint
-      ? toNumbers(colMap[col] || []).map((v, k) => ({ value: v, itemStyle: { color: palette[k % palette.length] } }))
+      ? toNumbers(colMap[col] || []).map((v, k) => ({ value: v, itemStyle: { color: palette[k % palette.length], ...barStyle(palette[k % palette.length], config) } }))
       : toNumbers(colMap[col] || []),
     stack: stacked ? 'total' : undefined,
-    itemStyle: { color: palette[i % palette.length] },
+    ...barWidthProps(config),
+    itemStyle: { color: palette[i % palette.length], ...barStyle(palette[i % palette.length], config) },
   }))
   const lineSeries = lineCols.map((col, i) => ({
     type: 'line', name: col, yAxisIndex: barCols.length && lineCols.length && !linesLeft ? 1 : 0,
     data: toNumbers(colMap[col] || []),
     itemStyle: { color: lineColor(i) },
     ...(config.symbolSize ? { symbol: 'circle', symbolSize: config.symbolSize } : {}),
-    lineStyle: { color: lineColor(i), width: 2 },
+    lineStyle: { color: lineColor(i), width: 2, ...lineStyleOverrides(config) },
   }))
 
   const option = {
@@ -714,33 +749,176 @@ function buildCombo(colMap, enc, config = {}) {
   return option
 }
 
+// Gauge arc colours — mirrors gaugeArc / lerpGaugeArcColor / gaugeArcStops /
+// gaugeUnderlay in embed/widgets/chart-options.ts. Gradient = the arc track
+// split into colour stops sampled along the SCALE and filled up to the value
+// (a bbox gradient on `progress` would run left->right and squeeze into a
+// short fill), plus a half-segment-offset underlay that hides the seams.
+const GAUGE_ARC_START = '#E24B4A'
+const GAUGE_ARC_END = '#1D9E75'
+const GAUGE_TRACK = 'rgba(148,163,184,0.18)'
+const GAUGE_CLEAR = 'rgba(0,0,0,0)'
+const GAUGE_ARC_SEGMENTS = 96
+
+function parseRgbColor(c) {
+  if (typeof c !== 'string') return null
+  const s = c.trim()
+  let m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(s)
+  if (m) {
+    const h = m[1].length === 3 ? [...m[1]].map((x) => x + x).join('') : m[1]
+    return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16))
+  }
+  m = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i.exec(s)
+  return m ? [m[1], m[2], m[3]].map((x) => Math.max(0, Math.min(255, Number(x)))) : null
+}
+
+function lerpGaugeArcColor(start, end, t) {
+  const a = parseRgbColor(start) || parseRgbColor(GAUGE_ARC_START)
+  const b = parseRgbColor(end) || parseRgbColor(GAUGE_ARC_END)
+  const k = Math.max(0, Math.min(1, Number(t) || 0))
+  return '#' + a.map((x, i) => Math.round(x + (b[i] - x) * k).toString(16).padStart(2, '0')).join('')
+}
+
+function gaugeArcStops(grad, frac, shift, rest) {
+  const n = GAUGE_ARC_SEGMENTS
+  const out = []
+  let prev = 0
+  for (let i = 1; prev < frac; i++) {
+    const t = Math.min(frac, (i - shift) / n)
+    if (t <= prev) continue
+    out.push([t, lerpGaugeArcColor(grad.start, grad.end, (prev + t) / 2)])
+    prev = t
+  }
+  if (frac < 1) out.push([1, rest])
+  return out
+}
+
+// One-shot render (no merge), so the underlay is only emitted for a gradient.
+function gaugeUnderlay(grad, { min, max, startAngle, endAngle, width, frac, round = false }) {
+  return {
+    type: 'gauge', silent: true, z: 1, min, max, startAngle, endAngle,
+    axisLine: { show: true, roundCap: !!round, lineStyle: { width, color: gaugeArcStops(grad, frac, 0.5, GAUGE_TRACK) } },
+    progress: { show: false }, pointer: { show: false }, anchor: { show: false },
+    axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
+    title: { show: false }, detail: { show: false },
+    data: [],
+  }
+}
+
+function gaugeArc(config) {
+  const grad = config.gaugeArcGradient
+    ? { start: config.gaugeArcStart || GAUGE_ARC_START, end: config.gaugeArcEnd || GAUGE_ARC_END }
+    : null
+  return { grad, solid: grad ? null : (config.gaugeArcColor || null) }
+}
+
+// Mirrors resolveGaugeArcCaps in embed/widgets/chart-options.ts.
+function resolveGaugeArcCaps(config, { grad, solid }) {
+  const c = config?.gaugeArcCaps
+  if (c === 'flat' || c === 'round') return c
+  if (grad) return 'flat'
+  if (solid && config?.gaugeStyle === 'ring') return 'round'
+  return null
+}
+
+// Mirrors positiveOr / gaugeTextSize in embed/widgets/chart-options.ts:
+// "Axis text size" -> needle scale labels / ring centre text; "Y axis ticks"
+// -> needle splitNumber. Unset keeps this renderer's existing defaults.
+function positiveOr(v, fallback) {
+  const n = Number(v)
+  return v != null && Number.isFinite(n) && n > 0 ? n : fallback
+}
+function gaugeTextSize(config, fallback) {
+  return positiveOr(config.yAxis?.axisLabel?.fontSize ?? config.xAxis?.axisLabel?.fontSize, fallback)
+}
+
+// Needle arc tick labels — mirrors gaugeScaleLabelFormatter in
+// embed/widgets/chart-options.ts (auto decimals from the tick step; gauge
+// 'percent' on a range past 1 = value + '%'). This renderer has no
+// makeFormatter, so the author formats are a compact copy of its kinds
+// (number / currency / percent / percent100 / si; 'date' -> auto).
+function gaugeScaleLabelFormatter({ min = 0, max = 100, splitNumber = 10, format, locale } = {}) {
+  const lo = Number(min), hi = Number(max)
+  const step = Math.abs(hi - lo) / Math.max(Number(splitNumber) || 1, 1)
+  // Fewest decimals (0..2) that show the step exactly (0.25 -> 2, 2.5 -> 1);
+  // a step that never comes out exact (100/6) rounds by size instead.
+  const exactDp = [0, 1, 2].find((d) => {
+    const x = step * 10 ** d
+    return Math.abs(x - Math.round(x)) < 1e-9 * Math.max(1, x)
+  })
+  const autoDp = exactDp ?? (!(step < 1) ? 0 : step >= 0.1 ? 1 : 2)
+  const spec = typeof format === 'string' && format ? { kind: format }
+    : (format && typeof format === 'object' && !Array.isArray(format) ? format : null)
+  const kind = spec ? (spec.kind || 'number') : null
+  const loc = (spec && spec.locale) || locale
+  const nf = (opts) => new Intl.NumberFormat(loc, opts)
+  let fmt
+  if (!kind || kind === 'date') {
+    const f = nf({ maximumFractionDigits: autoDp }); fmt = (n) => f.format(n)
+  } else if (kind === 'percent' && (hi > 1 || hi - lo > 1)) {
+    const f = nf({ maximumFractionDigits: spec.decimals ?? autoDp }); fmt = (n) => `${f.format(n)}%`
+  } else if (kind === 'percent') {
+    const f = nf({ style: 'percent', maximumFractionDigits: spec.decimals ?? 1 }); fmt = (n) => f.format(n)
+  } else if (kind === 'percent100') {
+    fmt = (n) => `${n.toFixed(spec.decimals ?? 1)}%`
+  } else if (kind === 'currency') {
+    const f = nf({ style: 'currency', currency: spec.currency || 'USD', maximumFractionDigits: spec.decimals ?? 0 })
+    fmt = (n) => f.format(n)
+  } else if (kind === 'si') {
+    const d = spec.decimals ?? 1
+    const units = [[1e12, 'T'], [1e9, 'B'], [1e6, 'M'], [1e3, 'k']]
+    fmt = (n) => {
+      const u = units.find(([v]) => Math.abs(n) >= v)
+      return u ? (n / u[0]).toFixed(d).replace(/\.0+$/, '') + u[1] : String(Math.round(n * 100) / 100)
+    }
+  } else {
+    const f = nf({ maximumFractionDigits: spec.decimals ?? 2 }); fmt = (n) => f.format(n)
+  }
+  return (v) => {
+    if (v == null || v === '') return ''
+    const n = Number(v)
+    return Number.isFinite(n) ? fmt(n) : ''
+  }
+}
+
 function buildGauge(colMap, valueCol, props = {}, config = {}) {
   const vals = toNumbers(colMap[valueCol] || [])
   const value = vals[0] ?? 0
-  const max = props.max ?? config.max ?? Math.max(value * 1.5, 100)
-  const min = props.min ?? config.min ?? 0
+  // Same chain as the in-app path: ChartWidget.resolveConfig fills each of
+  // config.yAxis.max/min from legacy props.max/min when that field is unset
+  // (even if yAxis holds other keys, e.g. format), then embed's buildGauge
+  // falls back to config.max/min, then 0..100.
+  const max = config.yAxis?.max ?? props.max ?? config.max ?? 100
+  const min = config.yAxis?.min ?? props.min ?? config.min ?? 0
   const palette = resolvePalette(config)
+  const { grad, solid } = gaugeArc(config)
+  const span = max - min
+  const frac = span > 0 && Number.isFinite(value) ? Math.max(0, Math.min(1, (value - min) / span)) : 0
+  const splitNumber = positiveOr(config.yAxis?.splitNumber, 10)
+  const caps = resolveGaugeArcCaps(config, { grad, solid })
+  const progressRound = caps ? caps === 'round' : config.gaugeStyle === 'ring'
+  const axisRound = caps === 'round'
   // 'ring' — radial progress ring (Apex radialBar look), mirroring the
-  // browser builder in embed/widgets/chart-options.js so thumbnails match.
+  // browser builder in embed/widgets/chart-options.ts so thumbnails match.
   if (config.gaugeStyle === 'ring') {
-    const ringColor = palette[0]
+    const ringColor = solid || palette[0]
     return {
       backgroundColor: 'transparent',
       animation: false,
       series: [{
         type: 'gauge', min, max,
         startAngle: 90, endAngle: -270,
-        progress: { show: true, width: 12, roundCap: true, itemStyle: { color: ringColor } },
-        axisLine: { lineStyle: { width: 12, color: [[1, 'rgba(148,163,184,0.18)']] } },
+        progress: { show: true, width: 12, roundCap: progressRound, itemStyle: { color: grad ? GAUGE_CLEAR : ringColor } },
+        axisLine: { roundCap: axisRound, lineStyle: { width: 12, color: grad ? gaugeArcStops(grad, frac, 0, GAUGE_CLEAR) : [[1, GAUGE_TRACK]] } },
         pointer: { show: false },
         axisTick: { show: false },
         splitLine: { show: false },
         axisLabel: { show: false },
-        detail: { fontSize: 18, fontWeight: 700, offsetCenter: [0, 0],
+        detail: { fontSize: gaugeTextSize(config, 18), fontWeight: 700, offsetCenter: [0, 0],
                   formatter: (v) => `${Number(v).toFixed(2)}%` },
         title: { show: false },
         data: [{ value: Math.max(min, Math.min(max, value)) }],
-      }],
+      }, ...(grad ? [gaugeUnderlay(grad, { min, max, startAngle: 90, endAngle: -270, width: 12, frac, round: axisRound })] : [])],
     }
   }
   return {
@@ -749,10 +927,27 @@ function buildGauge(colMap, valueCol, props = {}, config = {}) {
     animation: false,
     series: [{
       type: 'gauge', min, max,
+      splitNumber,
       data: [{ value }],
-      axisLabel: { fontSize: 10 },
+      // Banded dial like embed's default needle (theme bands come from the
+      // default palette, as there); any arc key swaps in a neutral track +
+      // the filled-to-value arc.
+      progress: grad
+        ? { show: true, width: 14, roundCap: progressRound, itemStyle: { color: GAUGE_CLEAR } }
+        : solid
+          ? { show: true, width: 14, roundCap: progressRound, itemStyle: { color: solid } }
+          : { show: true, width: 14, roundCap: progressRound },
+      axisLine: { roundCap: axisRound, lineStyle: { width: 14, color: grad
+        ? gaugeArcStops(grad, frac, 0, GAUGE_CLEAR)
+        : solid
+          ? [[1, GAUGE_TRACK]]
+          : [[0.5, PALETTE[3]], [0.8, PALETTE[1]], [1, PALETTE[2]]] } },
+      axisLabel: {
+        fontSize: gaugeTextSize(config, 10),
+        formatter: gaugeScaleLabelFormatter({ min, max, splitNumber, format: config.yAxis?.format }),
+      },
       detail: { fontSize: 18 },
-    }],
+    }, ...(grad ? [gaugeUnderlay(grad, { min, max, startAngle: 225, endAngle: -45, width: 14, frac, round: axisRound })] : [])],
   }
 }
 
