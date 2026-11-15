@@ -69,6 +69,7 @@ const require = createRequire(import.meta.url)
 import { fileURLToPath } from 'url'
 import { dirname, resolve } from 'path'
 import { existsSync, readFileSync } from 'fs'
+import { safeColor, safePalette } from './colors.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -199,8 +200,8 @@ function isNumericCol(arr) {
  * Mirrors `resolvePalette` in embed/widgets/chart-options.js.
  */
 function resolvePalette(config) {
-  const p = config && config.palette
-  return Array.isArray(p) && p.length ? p : PALETTE
+  // Colours end up in SVG attributes: keep only plain colour values.
+  return safePalette(config && config.palette, PALETTE)
 }
 
 /**
@@ -970,8 +971,9 @@ function resolveColor(value, theme, fallback = null) {
   }
   // Anything containing a var()/color-mix we can't statically resolve.
   if (/var\(|color-mix\(/i.test(s)) return fallback
-  // A plain colour: hex, rgb(), hsl(), or a named colour.
-  return s
+  // A plain colour: hex, rgb(), hsl(), or a named colour — and nothing else,
+  // because the value is written into SVG attributes.
+  return safeColor(s) ?? fallback
 }
 
 /**

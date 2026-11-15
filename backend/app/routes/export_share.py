@@ -104,6 +104,29 @@ _EMBED_TOKEN_MAX_TTL_MIN = 15
 # ---------------------------------------------------------------------------
 
 
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+_CSV_PLAIN_NUMBER_RE = re.compile(r"\A[+-]?\d+(\.\d+)?\Z")
+
+
+def csv_safe_cell(value: Any) -> Any:
+    """Return *value* in a form a spreadsheet will not evaluate.
+
+    A text cell that starts with ``=``, ``+``, ``-``, ``@`` (or a tab / carriage
+    return, or whitespace followed by one of those) is run as a formula by
+    spreadsheet applications.  Such cells get a leading apostrophe so they are
+    shown as text.  Real numbers — including numeric strings like ``-5`` — and
+    non-text values are left as they are; ``None`` becomes an empty cell.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        return value
+    probe = value.lstrip(" ")
+    if probe.startswith(_CSV_FORMULA_PREFIXES) and not _CSV_PLAIN_NUMBER_RE.match(value.strip()):
+        return "'" + value
+    return value
+
+
 async def _load_board(board_id: str, user_id: str, repo: Repo, request: Request) -> dict[str, Any]:
     """Load an org-scoped board row or raise 404.
 
@@ -200,9 +223,9 @@ async def export_board_csv(
         writer.writerow([f"# widget: {t['widget_id']} (query: {t['query_id']})"])
         try:
             columns, rows = await run_query_rows(t["query_id"], org_id, repo, policies)
-            writer.writerow(columns)
+            writer.writerow([csv_safe_cell(c) for c in columns])
             for row in rows:
-                writer.writerow(["" if v is None else v for v in row])
+                writer.writerow([csv_safe_cell(v) for v in row])
         except AppError as exc:
             writer.writerow([f"# error: {exc.code} — {exc.message}"])
         except Exception as exc:  # noqa: BLE001 — best-effort export

@@ -27,6 +27,7 @@
  */
 
 import DOMPurify from 'dompurify'
+import { WIDGET_ATTRS, FORBIDDEN_WIDGET_ATTRS, sanitizeInlineStyle } from './sanitizeStyle.js'
 
 // ---------------------------------------------------------------------------
 // Allowed custom element tags — Nubi widgets
@@ -60,41 +61,6 @@ const FORBID_TAGS = [
 // Widget + layout attributes that must survive sanitization
 // ---------------------------------------------------------------------------
 
-const WIDGET_ATTRS = [
-  // nubi-kpi
-  'query-id',
-  'value-col',
-  'label',
-  'format',
-  // nubi-table
-  'limit',
-  'columns',
-  // nubi-chart
-  'type',
-  'x',
-  'y',
-  'color',
-  // shared widget attrs
-  'backend',
-  'token',
-  'get-token',
-  // layout / styling (safe — no execution semantics)
-  'style',
-  'class',
-  // standard safe HTML attrs (already allowed by DOMPurify, listed for clarity)
-  'id',
-  'title',
-  'alt',
-  'src',
-  'href',
-  'rel',
-  'target',
-  'colspan',
-  'rowspan',
-  'width',
-  'height',
-]
-
 // ---------------------------------------------------------------------------
 // DOMPurify configuration (assembled once, reused per call)
 // ---------------------------------------------------------------------------
@@ -112,10 +78,10 @@ const PURIFY_CONFIG = {
   // Hard-block these tags regardless of attribute safety.
   FORBID_TAGS,
 
-  // on* event-handler attributes are stripped by DOMPurify by default.
-  // We add an explicit empty FORBID_ATTR list here; actual on* removal is
-  // enforced by DOMPurify's built-in sanitizer + the SANITIZE_DOM hook below.
-  FORBID_ATTR: [],
+  // on* event-handler attributes are stripped by DOMPurify by default (and
+  // again in the hook below). Widget elements may not be redirected to another
+  // backend or handed a credential by authored HTML.
+  FORBID_ATTR: FORBIDDEN_WIDGET_ATTRS,
 
   // Wrap output in a <body> fragment — prevents mXSS via broken parser context.
   FORCE_BODY: true,
@@ -141,6 +107,19 @@ if (typeof window !== 'undefined' && !(DOMPurify as any)._nubiHookInstalled) {
     // Strip any on* attribute that slipped through.
     if (name.startsWith('on')) {
       data.keepAttr = false
+      return
+    }
+
+    if (FORBIDDEN_WIDGET_ATTRS.includes(name)) {
+      data.keepAttr = false
+      return
+    }
+
+    // Inline styles may not move the element out of its card or load anything.
+    if (name === 'style') {
+      const cleaned = sanitizeInlineStyle(data.attrValue)
+      if (!cleaned) { data.keepAttr = false; return }
+      data.attrValue = cleaned
       return
     }
 

@@ -28,7 +28,9 @@ logger = logging.getLogger(__name__)
 _MAX_AVATAR_BYTES = 2 * 1024 * 1024
 
 # Allowed MIME type prefixes for avatars.
-_ALLOWED_CONTENT_TYPES = ("image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml")
+# Raster formats only: an SVG is a document that can carry script, and an
+# avatar is served from our own origin.
+_ALLOWED_CONTENT_TYPES = ("image/jpeg", "image/png", "image/gif", "image/webp")
 
 # Extension map from MIME type.
 _MIME_TO_EXT: dict[str, str] = {
@@ -36,7 +38,6 @@ _MIME_TO_EXT: dict[str, str] = {
     "image/png": ".png",
     "image/gif": ".gif",
     "image/webp": ".webp",
-    "image/svg+xml": ".svg",
 }
 
 
