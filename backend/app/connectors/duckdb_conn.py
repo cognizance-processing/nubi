@@ -584,9 +584,16 @@ def setup_s3_httpfs(
         # B4: block pointing httpfs at the cloud-metadata IP / link-local via a
         # crafted s3_endpoint (IMDS credential theft). Private/loopback stay
         # allowed — self-hosted MinIO legitimately lives there.
-        from app.connectors.ssrf import guard_s3_endpoint  # noqa: PLC0415
+        from app.connectors.ssrf import (  # noqa: PLC0415
+            guard_connector_endpoint,
+            guard_s3_endpoint,
+        )
 
         guard_s3_endpoint(endpoint)
+        # An endpoint supplied in the datastore config (rather than by the
+        # operator's environment) is a tenant-chosen outbound target.
+        if cfg.get("s3_endpoint") or cfg.get("endpoint_url"):
+            guard_connector_endpoint(endpoint)
         parts.append(f"ENDPOINT '{_sq(endpoint)}'")
         # USE_SSL: explicit cfg/env override, else inferred from the endpoint
         # scheme (http→false for MinIO, https→true). Without this DuckDB defaults
@@ -643,7 +650,11 @@ class DuckDBConnector(Connector):
         if connection is not None:
             self._conn = connection
         else:
+            # A connector's own scratch database only ever holds tables that
+            # are registered into it, so it never needs the host filesystem
+            # or the network.
             self._conn = duckdb.connect(database=":memory:")
+            harden_connection(self._conn, disable_external_access=True)
 
         # Per-instance lock for thread-safe execute() / estimate() calls.
         #

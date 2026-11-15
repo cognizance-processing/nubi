@@ -39,6 +39,7 @@ from __future__ import annotations
 import ipaddress
 import os
 import socket
+from typing import Any
 from urllib.parse import urlsplit
 
 from app.errors import AppError
@@ -344,3 +345,73 @@ def guard_s3_endpoint(endpoint: str) -> None:
                 "targets are never valid endpoints.",
                 status=400,
             )
+
+
+# ---------------------------------------------------------------------------
+# Connector targets (database hosts, DSNs, tenant-supplied endpoints)
+# ---------------------------------------------------------------------------
+
+#: Config keys that may name a host directly.
+_HOST_KEYS = ("host", "hostname", "server")
+#: Config keys that carry a URL / DSN whose host must be checked too.
+_URL_KEYS = ("dsn", "url", "base_url", "connection_string", "jdbc_url", "uri")
+
+
+def _not_allowed() -> AppError:
+    # Deliberately generic: no resolved address, no hint about what answered.
+    return AppError(
+        "connector_target_not_allowed",
+        "This connection target is not allowed.",
+        status=400,
+    )
+
+
+def _check_host(host: Any) -> None:
+    if not host or not isinstance(host, str):
+        return
+    host = host.strip()
+    if host.startswith("["):
+        host = host[1:].split("]", 1)[0]
+    allow_private = _allow_private()
+    for ip in _resolve_addresses(host):
+        if _is_forbidden(ip, allow_private=allow_private):
+            raise _not_allowed()
+
+
+def _host_of(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.lower().startswith("jdbc:"):
+        text = text[5:]
+    if "://" not in text:
+        text = "x://" + text
+    try:
+        return urlsplit(text).hostname
+    except ValueError:
+        raise _not_allowed() from None
+
+
+def guard_connector_target(config: dict[str, Any]) -> None:
+    """Refuse a connector config whose host or DSN points at the platform's
+    own network (loopback, private ranges, link-local, cloud metadata).
+
+    Applied to every DIRECT connection before a connector is built — the
+    platform dials these targets itself, so a tenant-supplied host is an
+    outbound request made on the tenant's behalf.  Bridge-mode connections are
+    dialled from the customer's network and are not subject to this check.
+
+    ``NUBI_SSRF_ALLOW_PRIVATE`` (operators only) reopens private and loopback
+    ranges for self-hosted deployments; link-local and metadata never open.
+    """
+    if not isinstance(config, dict):
+        return
+    for key in _HOST_KEYS:
+        _check_host(config.get(key))
+    for key in _URL_KEYS:
+        _check_host(_host_of(config.get(key)))
+
+
+def guard_connector_endpoint(endpoint: str) -> None:
+    """The same policy for a tenant-supplied endpoint (e.g. object storage)."""
+    _check_host(_host_of(endpoint))

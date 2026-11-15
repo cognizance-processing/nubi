@@ -279,8 +279,11 @@ def resolve_network(
     """
     mode: str = (datastore_config.get("network_mode") or "direct").strip().lower()
 
-    # ── direct mode: pass-through ──────────────────────────────────────────────
+    # ── direct mode: the platform dials the target itself ──────────────────────
     if mode == "direct":
+        from app.connectors.ssrf import guard_connector_target  # noqa: PLC0415
+
+        guard_connector_target(datastore_config)
         return NetworkTarget(
             host=datastore_config.get("host"),
             port=datastore_config.get("port"),

@@ -296,14 +296,18 @@ def _resolve_flow_connector(
 
     # ── Build connector ───────────────────────────────────────────────────────
     factory = get_connector_registry().get(ctype or "duckdb")
-    if ctype == "duckdb":
-        _db_path = cfg.get("database") or cfg.get("path")
-        if _db_path and _db_path != ":memory:":
-            from app.connectors.duckdb_conn import open_duckdb_readonly  # noqa: PLC0415
+    if ctype != "duckdb":
+        # Flow tasks dial direct connections from the platform: same target
+        # policy as every other connector build.
+        from app.connectors.network import effective_network  # noqa: PLC0415
+        from app.connectors.ssrf import guard_connector_target  # noqa: PLC0415
 
-            connector = factory(open_duckdb_readonly(_db_path))
-        else:
-            connector = factory()
+        if effective_network({**ds, "config": cfg})[0] == "direct":
+            guard_connector_target(cfg)
+    if ctype == "duckdb":
+        from app.connectors.duckdb_conn import connect_duckdb_datastore  # noqa: PLC0415
+
+        connector = factory(connect_duckdb_datastore(cfg, org_id))
     elif ctype == "postgres":
         _dsn: str | None = cfg.get("dsn")
         if _dsn is None:

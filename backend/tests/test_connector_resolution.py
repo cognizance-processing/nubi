@@ -310,10 +310,11 @@ def test_resolve_network_direct_returns_target():
 
 def test_resolve_network_direct_default_when_absent():
     """Unit: resolve_network with no network_mode key defaults to 'direct'."""
-    config = {"host": "localhost", "port": 5432}
+    # A public address: direct mode refuses the platform's own network.
+    config = {"host": "8.8.8.8", "port": 5432}
     target = resolve_network(config)
     assert target.mode == "direct"
-    assert target.host == "localhost"
+    assert target.host == "8.8.8.8"
 
 
 # ---------------------------------------------------------------------------
