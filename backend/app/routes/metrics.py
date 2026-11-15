@@ -175,7 +175,7 @@ async def _resolve_metric(
     (same 404 either way — no cross-org existence leak).
     """
     registry = get_metric_registry()
-    metric = registry.get(metric_id)
+    metric = registry.get(metric_id, org_id)
     if metric is not None and org_id is not None:
         from app.metrics.registry import metric_belongs_to_org  # noqa: PLC0415
 
@@ -512,7 +512,7 @@ async def list_metrics(
     _require_read_scope(identity)
 
     registry = get_metric_registry()
-    metrics = registry.all()
+    metrics = registry.for_org(await _caller_org(identity, request))
 
     # ── Org scoping (best-effort) ────────────────────────────────────────────
     # Metrics are query-backed: the visible set is the slugs exposed by this
@@ -605,11 +605,11 @@ async def create_metric(
     if canonical_id != metric.id:
         metric = MetricDefinition.from_dict({**metric.to_dict(), "id": canonical_id})
 
-    get_metric_registry().register(metric)
+    _capture_org = await _caller_org(identity, request)
+    get_metric_registry().register(metric, _capture_org)
 
     # Snapshot version 1 for this new metric (store the *resolved* org so the
     # org-scoped version reads match — identity.org is None for first-party).
-    _capture_org = await _caller_org(identity, request)
     await _capture_metric_version(canonical_id, identity, _capture_org, metric.to_dict())
 
     return metric.to_dict()
@@ -637,7 +637,7 @@ async def update_metric(
     # _persist_metric's get_user_org → INSERT/UPDATE on this org's rows).
     if not str(data.get("name") or "").strip():
         org_id = await _caller_org(identity, request)
-        existing = get_metric_registry().get(metric_id)
+        existing = get_metric_registry().get(metric_id, org_id)
         if existing is not None and org_id is not None:
             from app.metrics.registry import metric_belongs_to_org  # noqa: PLC0415
 
@@ -654,10 +654,10 @@ async def update_metric(
         raise AppError(exc.code, exc.message, 400) from exc
 
     await _persist_metric(metric, identity, request)
-    get_metric_registry().register(metric)
+    _capture_org = await _caller_org(identity, request)
+    get_metric_registry().register(metric, _capture_org)
 
     # Snapshot the updated spec as a new version (resolved org — see create_metric).
-    _capture_org = await _caller_org(identity, request)
     await _capture_metric_version(metric_id, identity, _capture_org, metric.to_dict())
 
     return metric.to_dict()
@@ -692,7 +692,7 @@ async def delete_metric(
     org_id = await _caller_org(identity, request)
     await _resolve_metric(metric_id, org_id)
 
-    get_metric_registry().unregister(metric_id)
+    get_metric_registry().unregister(metric_id, org_id)
     try:
         from app.db import execute  # noqa: PLC0415
 
@@ -1306,7 +1306,7 @@ async def revert_metric_to_version(
 
     # Re-persist + re-register (mirrors update_metric).
     await _persist_metric(metric, identity, request)
-    get_metric_registry().register(metric)
+    get_metric_registry().register(metric, await _caller_org(identity, request))
 
     # Record the revert as a new version entry so it appears in the audit trail
     # (org_id resolved above at the top of this handler).

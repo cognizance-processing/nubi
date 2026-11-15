@@ -165,8 +165,12 @@ async def sync_resources(
     items: list[dict[str, str]] = []
 
     # ── Registered queries ─────────────────────────────────────────────────
+    # The registry is process-wide: commit only the built-in queries and the
+    # ones this org owns into this org's repository.
+    from app.queries.registry import visible_to_org  # noqa: PLC0415
+
     registry = get_query_registry()
-    for rq in registry.all():
+    for rq in visible_to_org(registry.all(), org_id):
         # Build a resource-like dict from the RegisteredQuery
         rq_resource: dict[str, Any] = {
             "id": rq.id,

@@ -204,7 +204,7 @@ async def chat_stream(
     chat_id = body.chat_id
     board_id = body.board_id
     if chat_id:
-        chat = await store.get_chat(org_id, chat_id)
+        chat = await store.get_chat(org_id, chat_id, user_id)
         if chat is None:
             raise AppError("chat_not_found", f"No chat with id {chat_id!r}.", 404)
         board_id = chat.get("board_id") or board_id
@@ -339,11 +339,11 @@ async def chat_conversations(
     board_id: str | None = None,
     user: dict[str, Any] = Depends(current_user),
 ) -> list[dict[str, Any]]:
-    """List conversations for the caller's org — ``[{id, title, updated_at}]``."""
+    """List the caller's own conversations in the org — ``[{id, title, updated_at}]``."""
     from app.chat import store  # noqa: PLC0415
 
     org_id = await _resolve_org_id(user, request)
-    return await store.list_conversations(org_id, board_id)
+    return await store.list_conversations(org_id, board_id, str(user["id"]))
 
 
 @router.get("/conversations/{chat_id}")
@@ -356,7 +356,7 @@ async def chat_conversation(
     from app.chat import store  # noqa: PLC0415
 
     org_id = await _resolve_org_id(user, request)
-    convo = await store.get_conversation(org_id, chat_id)
+    convo = await store.get_conversation(org_id, chat_id, str(user["id"]))
     if convo is None:
         raise AppError("chat_not_found", f"No chat with id {chat_id!r}.", 404)
     return convo

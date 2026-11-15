@@ -127,8 +127,10 @@ async def test_load_metrics_from_queries_registers_by_slug(monkeypatch):
 
     loaded = await reg.load_metrics_from_queries()
     assert loaded == 1  # the plain query is skipped
-    metric = reg.get_metric_registry().get("revenue")
+    # Registered under the row's own org — and only resolvable for that org.
+    metric = reg.get_metric_registry().get("revenue", rows[0]["org_id"])
     assert metric is not None and metric.id == "revenue"
+    assert reg.get_metric_registry().get("revenue") is None
     reg.reset_for_tests()
 
 

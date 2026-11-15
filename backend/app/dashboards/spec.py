@@ -1645,7 +1645,7 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
             if widget.metric is None:
                 continue
             mid = widget.metric.metric_id
-            if mid and metric_registry.get(mid) is None:
+            if mid and not metric_registry.exists(mid):
                 issues.append(
                     f"[warn] Widget {widget.id!r}: metric_id {mid!r} is not in the "
                     "registered metric registry (may be a forward reference)."

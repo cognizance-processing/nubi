@@ -917,7 +917,7 @@ def _tool_list_metrics(claims: dict[str, Any]) -> dict[str, Any]:
     # singleton, so an unfiltered listing hands every other tenant's metric
     # names, measures and dimensions to whoever holds an API key. Shares its
     # implementation with GET /metrics so the two cannot drift.
-    visible = _run_sync(metrics_visible_to_org(list(registry.all()), claims.get("org")))
+    visible = _run_sync(metrics_visible_to_org(registry.for_org(claims.get("org")), claims.get("org")))
     metrics: list[dict[str, Any]] = []
     for m in visible:
         td = m.time_dimension
@@ -976,7 +976,7 @@ def _tool_query_metric(
 
     # ── Resolve the governed metric definition (unknown → structured error) ──
     registry = get_metric_registry()
-    metric = registry.get(metric_id)
+    metric = registry.get(metric_id, claims.get("org"))
     if metric is None:
         return {
             "error": {

@@ -865,7 +865,13 @@ async def ai_context(
     # Additive: a `metrics` list alongside `queries` so an agent discovers the
     # governed semantic-layer definitions it can query via POST /metrics/{id}/query.
     metric_registry = _get_metric_registry()
-    all_metrics = _metrics_from(metric_registry)
+    # Start from this org's own + shared metrics, so the slug filter below can
+    # only ever narrow that set, even when it is unavailable.
+    all_metrics = (
+        list(metric_registry.for_org(caller_org))
+        if hasattr(metric_registry, "for_org")
+        else _metrics_from(metric_registry)
+    )
     # TENANT ISOLATION: keep only this org's query-backed metrics (by slug) plus
     # the in-code seeds (which belong to no tenant). Unscopable (no org / no DB)
     # leaves the list unfiltered — same fallback as GET /metrics.

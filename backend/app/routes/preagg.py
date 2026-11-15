@@ -315,7 +315,7 @@ async def preagg_build_from_metric(
         from app.metrics.registry import metrics_visible_to_org  # noqa: PLC0415
 
         metric_reg = get_metric_registry()
-        metric = metric_reg.get(body.metric_id)
+        metric = metric_reg.get(body.metric_id, resolved_org_id)
         # Only a metric this org can see may drive a build.
         if metric is not None and not await metrics_visible_to_org(
             [metric], resolved_org_id

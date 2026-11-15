@@ -547,7 +547,7 @@ async def _resolve_metric_for_watch(metric_id: str, org_id: str | None = None):
     legacy unscoped resolution.
     """
     registry = get_metric_registry()
-    metric = registry.get(metric_id)
+    metric = registry.get(metric_id, org_id)
     if metric is not None and org_id is not None:
         from app.metrics.registry import metric_belongs_to_org  # noqa: PLC0415
 

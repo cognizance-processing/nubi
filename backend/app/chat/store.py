@@ -92,17 +92,22 @@ async def create_chat(
     return chat_id
 
 
-async def get_chat(org_id: str, chat_id: str) -> dict[str, Any] | None:
-    """Return the chat row (org-scoped) or None."""
+async def get_chat(org_id: str, chat_id: str, user_id: str) -> dict[str, Any] | None:
+    """Return the chat row if it belongs to *user_id* in *org_id*, else None.
+
+    A conversation is private to the person who had it — other members of the
+    same organisation cannot read or continue it.
+    """
     await ensure_tables()
     row = await fetchrow(
         """
         SELECT id, org_id, user_id, board_id, title, created_at, updated_at
         FROM chats
-        WHERE id = $1::uuid AND org_id = $2::uuid
+        WHERE id = $1::uuid AND org_id = $2::uuid AND user_id = $3::uuid
         """,
         chat_id,
         org_id,
+        user_id,
     )
     return dict(row) if row is not None else None
 
@@ -129,18 +134,21 @@ async def add_message(chat_id: str, role: str, content: dict[str, Any]) -> str:
     return message_id
 
 
-async def list_conversations(org_id: str, board_id: str | None) -> list[dict[str, Any]]:
-    """List conversations for an org (optionally filtered by board), newest first."""
+async def list_conversations(
+    org_id: str, board_id: str | None, user_id: str
+) -> list[dict[str, Any]]:
+    """List *user_id*'s conversations in an org (optionally per board), newest first."""
     await ensure_tables()
     if board_id:
         rows = await fetch(
             """
             SELECT id, title, updated_at
             FROM chats
-            WHERE org_id = $1::uuid AND board_id = $2
+            WHERE org_id = $1::uuid AND user_id = $2::uuid AND board_id = $3
             ORDER BY updated_at DESC
             """,
             org_id,
+            user_id,
             board_id,
         )
     else:
@@ -148,10 +156,11 @@ async def list_conversations(org_id: str, board_id: str | None) -> list[dict[str
             """
             SELECT id, title, updated_at
             FROM chats
-            WHERE org_id = $1::uuid
+            WHERE org_id = $1::uuid AND user_id = $2::uuid
             ORDER BY updated_at DESC
             """,
             org_id,
+            user_id,
         )
     return [
         {"id": str(r["id"]), "title": r["title"], "updated_at": r["updated_at"].isoformat()}
@@ -159,9 +168,9 @@ async def list_conversations(org_id: str, board_id: str | None) -> list[dict[str
     ]
 
 
-async def get_conversation(org_id: str, chat_id: str) -> dict[str, Any] | None:
-    """Return the full conversation (chat + ordered messages), org-scoped, or None."""
-    chat = await get_chat(org_id, chat_id)
+async def get_conversation(org_id: str, chat_id: str, user_id: str) -> dict[str, Any] | None:
+    """Return *user_id*'s full conversation (chat + ordered messages), or None."""
+    chat = await get_chat(org_id, chat_id, user_id)
     if chat is None:
         return None
     rows = await fetch(
