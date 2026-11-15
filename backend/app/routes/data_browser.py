@@ -37,7 +37,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.encoders import jsonable_encoder
 
 from app.auth.deps import current_user
-from app.auth.roles import require_writer
+from app.auth.roles import require_raw_data_author, require_raw_data_read, require_writer
 from app.connectors.arrow_io import ipc_stream_from_bytes, table_to_ipc_bytes
 from app.connectors.duckdb_conn import (  # noqa: F401
     DuckDBConnector,
@@ -585,7 +585,7 @@ async def _browse_connector(
 _TABLE_LIST_SENTINEL = "tables"  # distinguishes literal "tables" from a UUID
 
 
-@router.get("/data/tables")
+@router.get("/data/tables", dependencies=[Depends(require_raw_data_read)])
 async def list_demo_tables(
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
@@ -595,7 +595,7 @@ async def list_demo_tables(
     return {"tables": tables, "datastore_id": None}
 
 
-@router.get("/data/{datastore_id}/tables")
+@router.get("/data/{datastore_id}/tables", dependencies=[Depends(require_raw_data_author)])
 async def list_tables(
     datastore_id: str,
     request: Request,
@@ -613,7 +613,7 @@ async def list_tables(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/data/tables/{table}/columns")
+@router.get("/data/tables/{table}/columns", dependencies=[Depends(require_raw_data_read)])
 async def list_demo_columns(
     table: str,
     user: dict[str, Any] = Depends(current_user),
@@ -635,7 +635,7 @@ async def list_demo_columns(
     }
 
 
-@router.get("/data/{datastore_id}/tables/{table}/columns")
+@router.get("/data/{datastore_id}/tables/{table}/columns", dependencies=[Depends(require_raw_data_author)])
 async def list_columns(
     datastore_id: str,
     table: str,
@@ -723,7 +723,7 @@ def _rows_response(arrow_table: "pa.Table", fmt: str):
     )
 
 
-@router.get("/data/tables/{table}/rows")
+@router.get("/data/tables/{table}/rows", dependencies=[Depends(require_raw_data_read)])
 async def get_demo_rows(
     table: str,
     limit: int = Query(default=500, ge=1, le=5000),
@@ -744,7 +744,7 @@ async def get_demo_rows(
     return await asyncio.to_thread(_rows_response, arrow_table, format)
 
 
-@router.get("/data/{datastore_id}/tables/{table}/rows")
+@router.get("/data/{datastore_id}/tables/{table}/rows", dependencies=[Depends(require_raw_data_author)])
 async def get_rows(
     datastore_id: str,
     table: str,

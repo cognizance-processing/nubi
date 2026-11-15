@@ -66,6 +66,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from app.auth.deps import current_user
+from app.auth.roles import require_raw_data_author
 from app.repos.provider import Repo, get_repo
 from app.routes._org import resolve_org_id as _resolve_org_id
 
@@ -632,7 +633,11 @@ def _count_rows(connector: Any, table: str) -> int | None:
         return None
 
 
-@router.get("/datastores/{datastore_id}/tables", response_model=TablesOut)
+@router.get(
+    "/datastores/{datastore_id}/tables",
+    response_model=TablesOut,
+    dependencies=[Depends(require_raw_data_author)],
+)
 async def list_datastore_tables(
     request: Request,
     datastore_id: str = Path(...),
@@ -679,6 +684,7 @@ async def list_datastore_tables(
 @router.get(
     "/datastores/{datastore_id}/tables/{table}/preview",
     response_model=PreviewOut,
+    dependencies=[Depends(require_raw_data_author)],
 )
 async def preview_datastore_table(
     request: Request,

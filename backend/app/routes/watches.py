@@ -615,7 +615,11 @@ async def watches_tick(
     would resolve each watch's owning identity, which is out of scope here.
     """
     secret = os.getenv("WATCHES_TICK_SECRET") or os.getenv("FLOWS_TICK_SECRET")
-    if not secret or x_nubi_tick_secret != secret:
+    import hmac  # noqa: PLC0415
+
+    if not secret or not hmac.compare_digest(
+        (x_nubi_tick_secret or "").encode("utf-8"), secret.encode("utf-8")
+    ):
         raise AppError("forbidden", "Invalid or missing tick secret.", 403)
 
     results: list[dict[str, Any]] = []

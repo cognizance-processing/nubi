@@ -32,7 +32,7 @@ from typing import Any
 from fastapi import Depends, Request
 
 from app import db
-from app.auth.deps import current_user
+from app.auth.deps import current_user, verified_identity
 from app.auth.jwt import decode_access_token
 from app.auth.scopes import parse_scopes
 from app.errors import AppError
@@ -252,3 +252,48 @@ async def require_approver_default(
     user_id = str(user["id"])
     org_id = await get_user_org(user_id, repo)
     _require_approver_role(await get_org_role(user_id, org_id, repo))
+
+
+def _raw_data_identity(identity: Any) -> None:
+    """Checks every raw-table read shares, whatever the data source."""
+    if identity.kind != "access":
+        raise AppError(
+            "insufficient_scope", "This credential cannot browse raw tables.", 403
+        )
+    if not any(sc == "*" or sc.startswith("read:") for sc in (identity.scope or [])):
+        raise AppError(
+            "insufficient_scope", "Token does not carry a read scope.", 403
+        )
+    if identity.policies:
+        # Raw table reads are not rewritten with row-level predicates, so a
+        # credential restricted by row policies never gets them.
+        raise AppError(
+            "forbidden",
+            "This credential is restricted by row-level policies and cannot browse raw tables.",
+            403,
+        )
+
+
+async def require_raw_data_read(
+    identity: Any = Depends(verified_identity),
+) -> None:
+    """Guard for the shared demo tables: a first-party, unrestricted reader."""
+    _raw_data_identity(identity)
+
+
+async def require_raw_data_author(
+    request: Request,
+    identity: Any = Depends(verified_identity),
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> None:
+    """Guard for browsing an organisation's own data sources.
+
+    Reading raw tables is an authoring capability — the same bar as running
+    ad-hoc SQL — so it needs write access in the workspace, on top of the
+    identity checks above.
+    """
+    _raw_data_identity(identity)
+    user_id = str(user["id"])
+    org_id = await resolve_org_id(user_id, repo, request)
+    _forbid_viewer(await get_org_role(user_id, org_id, repo))
