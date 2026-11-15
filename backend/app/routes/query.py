@@ -3100,16 +3100,21 @@ async def register_query(
 
     # Register in the in-memory singleton (immediately runnable).
     registry = get_query_registry()
-    rq = registry.register(
-        id=query_id,
-        sql=body.sql,
-        name=body.name,
-        required_scope=body.required_scope,
-        params=param_objs,
-        datastore_id=datastore_id,
-        metric=config.get("metric"),
-        owner_org_id=org_id,
-    )
+    try:
+        rq = registry.register(
+            id=query_id,
+            sql=body.sql,
+            name=body.name,
+            required_scope=body.required_scope,
+            params=param_objs,
+            datastore_id=datastore_id,
+            metric=config.get("metric"),
+            owner_org_id=org_id,
+        )
+    except ValueError as _exc:
+        from app.errors import AppError as _AppError  # noqa: PLC0415
+
+        raise _AppError("query_id_conflict", "That query id is already in use.", 409) from _exc
 
     return {
         "id": rq.id,

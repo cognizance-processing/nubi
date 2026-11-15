@@ -448,14 +448,17 @@ def _tool_create_query(
         registry_id = _re.sub(r"[^a-z0-9_]", "", display_name.lower().replace(" ", "_")) or "query"
 
     registry = get_query_registry()
-    rq = registry.register(
-        id=registry_id,
-        sql=sql,
-        name=display_name,
-        params=param_objs if param_objs else None,
-        datastore_id=datastore_id,
-        owner_org_id=str(org_id) if org_id else None,
-    )
+    try:
+        rq = registry.register(
+            id=registry_id,
+            sql=sql,
+            name=display_name,
+            params=param_objs if param_objs else None,
+            datastore_id=datastore_id,
+            owner_org_id=str(org_id) if org_id else None,
+        )
+    except ValueError:
+        return {"error": "That query id is already in use; choose another name."}
     return {"id": rq.id, "name": rq.name, "registered": True}
 
 

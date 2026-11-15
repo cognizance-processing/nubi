@@ -223,11 +223,24 @@ async def chat_stream(
     host_system = body.system
     host_mcp_servers = body.resolved_mcp_servers()
 
+    # Tools act as THIS caller: their org owns anything a tool creates, and
+    # tools that change state need more than read-only membership.
+    from app.auth.roles import get_org_role  # noqa: PLC0415
+    from app.chat.tools import ToolContext  # noqa: PLC0415
+    from app.repos.provider import get_repo as _get_repo  # noqa: PLC0415
+
+    tool_context = ToolContext(
+        user_id=user_id,
+        org_id=org_id,
+        role=await get_org_role(user_id, org_id, _get_repo()),
+    )
+
     def _sync_events():
         last_turn = None
         errored = False
         for event, turn in stream_chat(
-            history, model, system=host_system, mcp_servers=host_mcp_servers
+            history, model, system=host_system, mcp_servers=host_mcp_servers,
+            tool_context=tool_context,
         ):
             last_turn = turn
             if event.get("type") == "error":

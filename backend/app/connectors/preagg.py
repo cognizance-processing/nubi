@@ -1137,6 +1137,7 @@ def build_rollup(
                 sql=f"SELECT * FROM {_quote_ident(rollup_table)}",
                 name=f"Rollup — {table}",
                 datastore_id=datastore_id,
+                owner_org_id=str(org_id) if org_id else None,
             )
         except Exception:
             # Best-effort runtime registration; the materialized file is the
