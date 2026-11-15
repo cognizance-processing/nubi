@@ -181,6 +181,8 @@ async def _has_editable_demo(
 # into config.  This list is used for validation, not filtering — callers may
 # omit secret keys if they are not applicable.
 
+from app.connectors.duckdb_conn import guard_datastore_config as _guard_datastore_config  # noqa: E402
+
 _SECRET_KEYS: frozenset[str] = frozenset(
     {
         "password",
@@ -548,6 +550,7 @@ async def create_connector(
         safe_config = non_secret_config_override
     else:
         safe_config = _build_config(body.type, body.config.to_safe_dict())
+        _guard_datastore_config(safe_config, org_id)
 
     # CRITICAL: assert the secret is not leaking into config
     for key in _SECRET_KEYS:
@@ -762,6 +765,9 @@ async def update_connector(
         for key, value in explicit.items():
             if value is None and key not in _RESERVED_CONFIG_KEYS and key != "connector_type":
                 existing_config.pop(key, None)
+        _guard_datastore_config(
+            existing_config, org_id, existing=dict(existing.get("config") or {})
+        )
         fields["config"] = existing_config
 
     row = await repo.update("datastores", org_id, connector_id, fields)

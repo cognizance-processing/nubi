@@ -412,11 +412,8 @@ def _build_demo_connector() -> DuckDBConnector:
     table (backward-compatible — existing tests and fixtures rely on
     ``SELECT * FROM demo`` returning 5 rows).
     """
-    import duckdb  # noqa: PLC0415
-
-    from app.connectors.duckdb_conn import harden_connection  # noqa: PLC0415
+    from app.connectors.duckdb_conn import connect_duckdb_datastore  # noqa: PLC0415
     from app.demo_bundle import (  # noqa: PLC0415
-        LOCAL_PARQUET_DIR,
         export_demo_parquet_local,
         local_parquet_datastore_config,
     )
@@ -425,28 +422,10 @@ def _build_demo_connector() -> DuckDBConnector:
     export_demo_parquet_local()
     cfg = local_parquet_datastore_config()
 
-    # Build a fresh :memory: DuckDB connection with the parquet-backed views.
-    mem_conn = duckdb.connect(database=":memory:")
-    view_sql: str = cfg.get("view_sql") or ""
-    for stmt in view_sql.split(";"):
-        stmt = stmt.strip()
-        if stmt:
-            try:
-                mem_conn.execute(stmt)
-            except Exception:  # noqa: BLE001 — skip malformed stmts
-                pass
-
-    # Harden AFTER the views are created (they need external access to read
-    # their backing parquet at CREATE VIEW time) but BEFORE any tenant SQL
-    # runs: this is the default connector for every user's Queries workspace,
-    # so without this it lets arbitrary authenticated users read host files
-    # via read_csv_auto('/etc/passwd') etc. Views are read lazily, so allow
-    # only the parquet export directory they point at.
-    harden_connection(
-        mem_conn,
-        disable_external_access=True,
-        allowed_directories=[str(LOCAL_PARQUET_DIR)],
-    )
+    # A fresh :memory: connection, hardened before the parquet-backed views
+    # are created: this is the default connector for every user's Queries
+    # workspace, so it must never reach beyond the parquet export directory.
+    mem_conn = connect_duckdb_datastore(cfg, None)
 
     # Legacy 5-row ``demo`` table — kept for backward compatibility with
     # existing tests and fixtures that query ``SELECT * FROM demo``.
@@ -1326,49 +1305,11 @@ async def query(
         # Falls back to a fresh in-memory DB when no path is configured, which
         # preserves demo/fixture/conformance parity.
         if ctype == "duckdb":
-            _db_path = cfg.get("database") or cfg.get("path")
-            if _db_path and _db_path != ":memory:":
-                import duckdb
+            from app.connectors.duckdb_conn import connect_duckdb_datastore
 
-                _conn = duckdb.connect(database=_db_path, read_only=True)
-                # Defence-in-depth: a read-only file source has no need to
-                # touch the local FS / network at query time.
-                from app.connectors.duckdb_conn import harden_connection as _harden
-
-                _harden(_conn, disable_external_access=True)
-                connector = factory(_conn)
-            else:
-                import duckdb as _duckdb_mem
-
-                _mem_conn = _duckdb_mem.connect(database=":memory:")
-                # Execute view_sql if present (e.g. the local-parquet demo/sample
-                # datastore config registers ``CREATE VIEW <t> AS
-                # read_parquet('<local path>')`` — see
-                # app.demo_bundle.local_parquet_datastore_config).
-                _view_sql: str | None = cfg.get("view_sql")
-                if _view_sql:
-                    for _stmt in _view_sql.split(";"):
-                        _stmt = _stmt.strip()
-                        if not _stmt:
-                            continue
-                        try:
-                            _mem_conn.execute(_stmt)
-                        except Exception:  # noqa: BLE001
-                            pass
-                from app.connectors.duckdb_conn import harden_connection as _harden
-                from app.demo_bundle import LOCAL_PARQUET_DIR
-
-                # The only view_sql source for a ":memory:" duckdb datastore
-                # is the local-parquet demo/sample config, which points at
-                # LOCAL_PARQUET_DIR — allow-list just that directory rather
-                # than leaving external access (incl. local-file reads)
-                # wide open.
-                _harden(
-                    _mem_conn,
-                    disable_external_access=True,
-                    allowed_directories=[str(LOCAL_PARQUET_DIR)],
-                )
-                connector = factory(_mem_conn)
+            connector = factory(
+                await asyncio.to_thread(connect_duckdb_datastore, cfg, org_id)
+            )
         elif ctype == "postgres":
             # PostgresConnector takes a DSN string, not a raw config dict.
             # Assemble the DSN from the (now secret-enriched) config dict.

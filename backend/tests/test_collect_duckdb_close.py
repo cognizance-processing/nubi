@@ -36,6 +36,12 @@ _ORG = "org-close-test"
 
 
 @pytest.fixture(autouse=True)
+def _managed_duckdb_dir(tmp_path, monkeypatch):
+    """On-disk DuckDB datastores must live in a server-managed directory."""
+    monkeypatch.setenv("NUBI_DUCKDB_DATA_DIRS", str(tmp_path))
+
+
+@pytest.fixture(autouse=True)
 def _stub_secret_store(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stub the secret store — these tests are about connection lifecycle.
 

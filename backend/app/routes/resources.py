@@ -292,6 +292,11 @@ async def create_resource(
     """
     _require_valid_resource(resource)
     org_id = await resolve_org_id(str(user["id"]), repo, request)
+    if resource == "datastores":
+        from app.connectors.duckdb_conn import guard_datastore_config  # noqa: PLC0415
+
+        guard_datastore_config(body.config, org_id)
+
     project_id = await resolve_project_id_for_create(org_id, request)
 
     # A query with a `config.metric` block IS a governed metric — validate it
@@ -415,6 +420,14 @@ async def update_resource(
             existing["deduped"] = True
             response.status_code = 200
             return existing
+
+    if resource == "datastores" and body.config is not None:
+        from app.connectors.duckdb_conn import guard_datastore_config  # noqa: PLC0415
+
+        _current = await repo.get(resource, org_id, id)
+        guard_datastore_config(
+            body.config, org_id, existing=dict((_current or {}).get("config") or {})
+        )
 
     fields: dict[str, Any] = {}
     if body.name is not None:

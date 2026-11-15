@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import TYPE_CHECKING, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
 
 if TYPE_CHECKING:
     import duckdb as _duckdb_t
@@ -98,6 +98,9 @@ def harden_connection(
     statements: list[str] = [
         "SET autoinstall_known_extensions=false",
         "SET autoload_known_extensions=false",
+        # Secrets are created per connection; never read or write the host's
+        # persistent secret store.
+        "SET allow_persistent_secrets=false",
     ]
     # Default to a hard memory ceiling so an unset env can never leave a
     # connection uncapped. Allow an explicit opt-out (empty / 0 / none / off).
@@ -139,6 +142,298 @@ def harden_connection(
             continue
 
 
+# ---------------------------------------------------------------------------
+# Datastore connections (the ONE place a duckdb datastore config is opened)
+# ---------------------------------------------------------------------------
+#
+# A duckdb datastore config is tenant-writable data.  Nothing in it is ever
+# executed as SQL: the only thing a config can express is "expose this parquet
+# file as a view named X", and both halves are parsed out, checked against an
+# allow-list and re-rendered by the server.  The connection is hardened BEFORE
+# any view is created, so even a path the checks missed cannot be read.
+
+import logging as _logging  # noqa: E402
+import re as _re  # noqa: E402
+
+_log = _logging.getLogger("app.connectors.duckdb")
+
+_VIEW_STMT_RE = _re.compile(
+    r"""\A\s*CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+
+        (?:"(?P<qname>[A-Za-z_][A-Za-z0-9_]*)"|(?P<name>[A-Za-z_][A-Za-z0-9_]*))
+        \s+AS\s+SELECT\s+\*\s+FROM\s+read_parquet\s*\(\s*
+        '(?P<target>(?:[^'\\]|'')+)'\s*\)\s*\Z""",
+    _re.IGNORECASE | _re.VERBOSE,
+)
+_VIEW_NAME_RE = _re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
+_S3_URI_RE = _re.compile(r"\As3://[A-Za-z0-9.\-_]+/[^\x00-\x1f'\\]+\Z")
+
+
+def _seed_data_dir() -> str:
+    here = os.path.dirname(os.path.abspath(__file__))  # backend/app/connectors
+    return os.path.join(os.path.dirname(os.path.dirname(here)), "seed_data")
+
+
+def _extra_dirs() -> list[str]:
+    """Operator-supplied extra data directories (``NUBI_DUCKDB_DATA_DIRS``)."""
+    raw = os.getenv("NUBI_DUCKDB_DATA_DIRS", "")
+    return [d for d in (p.strip() for p in raw.split(os.pathsep)) if d]
+
+
+def _materialize_base() -> str:
+    try:
+        from app.flows.incremental import _default_local_base  # noqa: PLC0415
+
+        return _default_local_base()
+    except Exception:  # noqa: BLE001
+        return os.path.join(_seed_data_dir(), "materialized")
+
+
+def duckdb_view_dirs(org_id: str | None) -> list[str]:
+    """Local directories a duckdb datastore's parquet views may read.
+
+    The shared demo parquet export plus the organisation's own materialised
+    datasets — never another organisation's directory or the wider host.
+    """
+    from app.demo_bundle import LOCAL_PARQUET_DIR  # noqa: PLC0415
+
+    dirs = [str(LOCAL_PARQUET_DIR)]
+    if org_id and _re.fullmatch(r"[A-Za-z0-9_\-]+", str(org_id)):
+        dirs.append(os.path.join(_materialize_base(), str(org_id)))
+    dirs.extend(_extra_dirs())
+    return [os.path.realpath(d) for d in dirs]
+
+
+def duckdb_database_dirs() -> list[str]:
+    """Server-managed directories that may hold a datastore's DuckDB file."""
+    dirs = [os.path.join(_seed_data_dir(), "blends"), *_extra_dirs()]
+    return [os.path.realpath(d) for d in dirs]
+
+
+def _within(path: str, dirs: list[str]) -> bool:
+    if not os.path.isabs(path):
+        return False
+    real = os.path.realpath(path)
+    return any(real.startswith(d.rstrip(os.sep) + os.sep) for d in dirs)
+
+
+def _cfg_has_own_s3_credentials(cfg: dict) -> bool:
+    return bool(cfg.get("s3_key_id") or cfg.get("aws_access_key_id"))
+
+
+def _org_s3_prefix(org_id: str | None) -> str | None:
+    """The platform-bucket prefix belonging to *org_id*, if one is configured.
+
+    ``NUBI_S3_ORG_PREFIX`` is a template such as
+    ``s3://bucket/datasets/{org_id}/``.  Platform credentials are only ever
+    used for paths under it.
+    """
+    template = os.getenv("NUBI_S3_ORG_PREFIX", "").strip()
+    if not template or not org_id or "{org_id}" not in template:
+        return None
+    prefix = template.format(org_id=org_id)
+    return prefix if prefix.endswith("/") else prefix + "/"
+
+
+def _target_problem(target: str, cfg: dict, org_id: str | None) -> str | None:
+    """Why *target* may not back a view, or ``None`` when it may."""
+    if target.lower().startswith("s3://"):
+        if not _S3_URI_RE.match(target) or "/../" in target or target.endswith("/.."):
+            return "is not a valid s3:// location"
+        if _cfg_has_own_s3_credentials(cfg):
+            return None  # the datastore brings its own bucket credentials
+        prefix = _org_s3_prefix(org_id)
+        if prefix and target.startswith(prefix):
+            return None
+        return "is outside this organisation's storage"
+    if "://" in target:
+        return "uses an unsupported location scheme"
+    if not _within(target, duckdb_view_dirs(org_id)):
+        return "is outside the directories this datastore may read"
+    return None
+
+
+def duckdb_views(cfg: dict) -> tuple[list[tuple[str, str]], list[str]]:
+    """Parse a config's view definitions into ``(name, target)`` pairs.
+
+    Returns ``(views, rejected)``.  ``s3_views`` (a ``{name: location}`` dict)
+    takes precedence over ``view_sql``.  A ``view_sql`` statement is accepted
+    only when it is exactly ``CREATE [OR REPLACE] VIEW <name> AS SELECT * FROM
+    read_parquet('<location>')``; anything else lands in *rejected* and is
+    never executed.
+    """
+    views: list[tuple[str, str]] = []
+    rejected: list[str] = []
+    s3_views = cfg.get("s3_views")
+    if isinstance(s3_views, dict) and s3_views:
+        for name, target in s3_views.items():
+            if isinstance(name, str) and _VIEW_NAME_RE.match(name) and isinstance(target, str) and target:
+                views.append((name, target))
+            else:
+                rejected.append(str(name))
+        return views, rejected
+    view_sql = cfg.get("view_sql")
+    if view_sql is None or view_sql == "":
+        return views, rejected
+    if not isinstance(view_sql, str):
+        return views, ["view_sql"]
+    for stmt in view_sql.split(";"):
+        if not stmt.strip():
+            continue
+        m = _VIEW_STMT_RE.match(stmt)
+        if m is None:
+            rejected.append(stmt.strip()[:80])
+            continue
+        views.append((m.group("qname") or m.group("name"), m.group("target").replace("''", "'")))
+    return views, rejected
+
+
+def validate_duckdb_config(
+    cfg: dict, org_id: str | None, *, existing: dict | None = None
+) -> None:
+    """Reject a tenant-supplied duckdb datastore config that names anything
+    other than allowed parquet views.  Raises ``AppError(400)``.
+
+    Call on every path that persists a datastore config.  *existing* is the
+    currently stored config on an update: a ``database`` value the server put
+    there itself may be sent back unchanged.
+    """
+    if not isinstance(cfg, dict):
+        return
+
+    def _bad(detail: str) -> AppError:
+        return AppError("invalid_connector_config", f"Unsupported DuckDB datastore config: {detail}.", 400)
+
+    for key in ("database", "path"):
+        value = cfg.get(key)
+        if value in (None, "", ":memory:"):
+            continue
+        if existing is not None and existing.get(key) == value:
+            continue
+        raise _bad(f"'{key}' cannot be set")
+
+    views, rejected = duckdb_views(cfg)
+    if rejected:
+        raise _bad("view definitions must be plain parquet views")
+    unchanged = existing is not None and all(
+        existing.get(k) == cfg.get(k) for k in ("view_sql", "s3_views")
+    )
+    if not unchanged:
+        for _name, target in views:
+            problem = _target_problem(target, cfg, org_id)
+            if problem:
+                raise _bad(f"a view location {problem}")
+    parquet_path = cfg.get("parquet_path")
+    if parquet_path and not (existing is not None and existing.get("parquet_path") == parquet_path):
+        if not isinstance(parquet_path, str) or _target_problem(parquet_path, cfg, org_id):
+            raise _bad("'parquet_path' is not an allowed location")
+
+
+_DUCKDB_CONFIG_KEYS = ("view_sql", "s3_views", "parquet_path", "path")
+
+
+def guard_datastore_config(
+    cfg: Any, org_id: str | None, *, existing: dict | None = None
+) -> None:
+    """Write-time check for ANY datastore config a caller supplies.
+
+    A no-op for non-duckdb connector types.  Every route that persists a
+    caller-supplied datastore config calls this, so a config that could only
+    ever be skipped at read time is refused up front with a clear 400.
+    """
+    if not isinstance(cfg, dict):
+        return
+    ctype = cfg.get("connector_type") or cfg.get("type")
+    if ctype not in (None, "", "duckdb"):
+        return
+    if not ctype and not any(cfg.get(k) for k in _DUCKDB_CONFIG_KEYS):
+        return  # an untyped bookkeeping row with nothing duckdb-specific
+    validate_duckdb_config(cfg, org_id, existing=existing)
+
+
+def connect_duckdb_datastore(
+    cfg: dict, org_id: str | None, *, read_only: bool = True
+) -> "_duckdb_t.DuckDBPyConnection":
+    """Open the DuckDB connection for a datastore config.
+
+    * ``database`` / ``path`` naming a file: it must live in a server-managed
+      directory; opened (read-only by default) with all external access off.
+    * otherwise an in-memory database: hardened FIRST (external access off,
+      allow-list = the directories / storage prefixes this org may read), then
+      the config's validated parquet views are created from server-rendered
+      SQL.  Unsupported definitions are skipped and logged.
+
+    The returned connection is owned by the caller.
+    """
+    try:
+        import duckdb  # noqa: PLC0415
+    except ImportError as exc:
+        raise AppError(
+            "driver_unavailable",
+            "DuckDB is not installed.  Add 'duckdb>=1.0' to requirements.txt.",
+            status=500,
+        ) from exc
+
+    cfg = cfg or {}
+    db_path = cfg.get("database") or cfg.get("path")
+    if db_path and db_path != ":memory:" and not str(db_path).lower().startswith("s3://"):
+        if not isinstance(db_path, str) or not _within(db_path, duckdb_database_dirs()):
+            raise AppError(
+                "invalid_connector_config",
+                "This datastore's database location is not available.",
+                400,
+            )
+        conn = duckdb.connect(database=db_path, read_only=read_only)
+        harden_connection(conn, disable_external_access=True)
+        return conn
+
+    views, rejected = duckdb_views(cfg)
+    allowed: list[tuple[str, str]] = []
+    for name, target in views:
+        problem = _target_problem(target, cfg, org_id)
+        if problem:
+            rejected.append(name)
+            continue
+        allowed.append((name, target))
+    if rejected:
+        _log.warning(
+            "duckdb datastore: skipped %d unsupported view definition(s) (org=%s)",
+            len(rejected), org_id,
+        )
+
+    conn = duckdb.connect(database=":memory:")
+    try:
+        s3_targets = [t for _n, t in allowed if t.lower().startswith("s3://")]
+        allowed_dirs = duckdb_view_dirs(org_id)
+        if s3_targets:
+            own = _cfg_has_own_s3_credentials(cfg)
+            try:
+                # Platform credentials are bound to the org's own prefix and
+                # never combined with tenant-supplied endpoint settings.
+                setup_s3_httpfs(
+                    conn,
+                    cfg if own else {"s3_scope": _org_s3_prefix(org_id)},
+                    use_env_credentials=not own,
+                )
+            except AppError:
+                raise
+            except Exception:  # noqa: BLE001 — views then fail closed below
+                pass
+            allowed_dirs = allowed_dirs + sorted({t.rsplit("/", 1)[0] + "/" for t in s3_targets})
+        harden_connection(conn, disable_external_access=True, allowed_directories=allowed_dirs)
+        for name, target in allowed:
+            escaped = target.replace("'", "''")
+            try:
+                conn.execute(
+                    f'CREATE OR REPLACE VIEW "{name}" AS SELECT * FROM read_parquet(\'{escaped}\')'
+                )
+            except Exception:  # noqa: BLE001 — introspection surfaces the gap
+                _log.warning("duckdb datastore: view %s could not be created (org=%s)", name, org_id)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
 def open_duckdb_readonly(db_path: str) -> "_duckdb_t.DuckDBPyConnection":
     """Open *db_path* read-only and apply defence-in-depth hardening.
 
@@ -167,6 +462,8 @@ def open_duckdb_readonly(db_path: str) -> "_duckdb_t.DuckDBPyConnection":
 def setup_s3_httpfs(
     conn: "_duckdb_t.DuckDBPyConnection",
     cfg: "dict | None" = None,
+    *,
+    use_env_credentials: bool = True,
 ) -> None:
     """Install/load the httpfs extension and register an S3 SECRET on *conn*.
 
@@ -218,17 +515,15 @@ def setup_s3_httpfs(
     conn.execute("LOAD httpfs")
 
     # ---- credential resolution (cfg → env) --------------------------------
-    key_id = (
-        cfg.get("s3_key_id")
-        or cfg.get("aws_access_key_id")
-        or os.getenv("AWS_ACCESS_KEY_ID")
-        or os.getenv("S3_ACCESS_KEY", "")
+    # ``use_env_credentials=False``: the config brings its own bucket
+    # credentials, so the platform's are never mixed in.
+    key_id = cfg.get("s3_key_id") or cfg.get("aws_access_key_id") or (
+        (os.getenv("AWS_ACCESS_KEY_ID") or os.getenv("S3_ACCESS_KEY", ""))
+        if use_env_credentials else ""
     )
-    secret = (
-        cfg.get("s3_secret")
-        or cfg.get("aws_secret_access_key")
-        or os.getenv("AWS_SECRET_ACCESS_KEY")
-        or os.getenv("S3_SECRET_KEY", "")
+    secret = cfg.get("s3_secret") or cfg.get("aws_secret_access_key") or (
+        (os.getenv("AWS_SECRET_ACCESS_KEY") or os.getenv("S3_SECRET_KEY", ""))
+        if use_env_credentials else ""
     )
 
     # Raw endpoint value may include a scheme (http:// / https://).  DuckDB's

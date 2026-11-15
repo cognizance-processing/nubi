@@ -39,7 +39,12 @@ from fastapi.encoders import jsonable_encoder
 from app.auth.deps import current_user
 from app.auth.roles import require_writer
 from app.connectors.arrow_io import ipc_stream_from_bytes, table_to_ipc_bytes
-from app.connectors.duckdb_conn import DuckDBConnector, open_duckdb_readonly, setup_s3_httpfs
+from app.connectors.duckdb_conn import (  # noqa: F401
+    DuckDBConnector,
+    connect_duckdb_datastore,
+    open_duckdb_readonly,
+    setup_s3_httpfs,
+)
 from app.connectors.introspect import (
     SYSTEM_SCHEMAS as _SYSTEM_SCHEMAS,
     introspect_tables as _introspect_tables_shared,
@@ -178,7 +183,7 @@ def _build_view_sql_from_s3_views(s3_views: dict[str, str]) -> str:
     return ";\n".join(stmts)
 
 
-def _build_duckdb_connector(cfg: dict[str, Any]) -> DuckDBConnector:
+def _build_duckdb_connector(cfg: dict[str, Any], org_id: str | None = None) -> DuckDBConnector:
     """Build a DuckDB connector from datastore config (read-only file or memory).
 
     Supported config shapes
@@ -204,48 +209,8 @@ def _build_duckdb_connector(cfg: dict[str, Any]) -> DuckDBConnector:
     variables before any view SQL is executed.
     Local ``/path/to/file`` paths continue to work without any changes.
     """
-    db_path = cfg.get("database") or cfg.get("path")
-    if db_path and db_path != ":memory:" and not db_path.startswith("s3://"):
-        return DuckDBConnector(open_duckdb_readonly(db_path))
-
-    # In-memory path (also used for s3:// Parquet datasets and multi-table views):
-    # 1. Create a fresh in-memory connection.
-    # 2. If any s3:// references are present, install httpfs + register SECRET.
-    # 3. Build / execute all view SQL statements so every table is visible for
-    #    introspection and row-sampling.
-    import duckdb as _duckdb_mem
-
-    _conn = _duckdb_mem.connect(database=":memory:")
-
-    if _cfg_references_s3(cfg):
-        try:
-            setup_s3_httpfs(_conn, cfg)
-        except Exception:
-            pass  # best-effort; let the view_sql fail with a clear error
-
-    # --- Collect all view SQL statements -----------------------------------
-    # Priority: s3_views dict > view_sql string.
-    # When both are present, s3_views takes precedence and view_sql is ignored
-    # to avoid registering stale / conflicting views.
-    _s3_views: dict[str, str] | None = cfg.get("s3_views")
-    if isinstance(_s3_views, dict) and _s3_views:
-        _view_sql_combined = _build_view_sql_from_s3_views(_s3_views)
-    else:
-        _view_sql_combined = cfg.get("view_sql") or ""
-
-    # Execute each semicolon-delimited statement individually.  This means a
-    # failure on one view does not silently prevent subsequent views from being
-    # registered (important for the multi-table demo connector).
-    if _view_sql_combined:
-        for _stmt in _view_sql_combined.split(";"):
-            _stmt = _stmt.strip()
-            if _stmt:
-                try:
-                    _conn.execute(_stmt)
-                except Exception:
-                    pass  # best-effort; introspection will surface any gap
-
-    return DuckDBConnector(_conn)
+    # All opening, validation and hardening lives in the shared helper.
+    return DuckDBConnector(connect_duckdb_datastore(cfg, org_id))
 
 
 def _make_plan(sql: str) -> PhysicalPlan:
@@ -535,7 +500,7 @@ async def _resolve_connector_and_tables(
     ctype = cfg.get("connector_type") or cfg.get("type") or "duckdb"
 
     if ctype == "duckdb":
-        connector = _build_duckdb_connector(cfg)
+        connector = await asyncio.to_thread(_build_duckdb_connector, cfg, org_id)
         tables = await asyncio.to_thread(_introspect_tables_duckdb, connector)
         return connector, tables, _noop
 
@@ -936,7 +901,7 @@ async def _resolve_writable_connector(
             409,
         )
 
-    connector = await asyncio.to_thread(_build_writable_duckdb_connector, cfg)
+    connector = await asyncio.to_thread(_build_writable_duckdb_connector, cfg, org_id)
     tables = await asyncio.to_thread(_introspect_tables_duckdb, connector)
     known = {t["name"] for t in tables}
     if table not in known:
@@ -970,23 +935,15 @@ async def _resolve_writable_connector(
     )
 
 
-def _build_writable_duckdb_connector(cfg: dict[str, Any]) -> DuckDBConnector:
+def _build_writable_duckdb_connector(cfg: dict[str, Any], org_id: str | None = None) -> DuckDBConnector:
     """Build a DuckDB connector opened READ-WRITE for DML.
 
-    Only an on-disk DuckDB file (``database`` / ``path`` that is a real local
-    path, not ``:memory:`` / ``s3://``) yields a write-capable connector.  An
-    in-memory / view-only config produces a connector with no native tables,
-    so the writability gate downstream rejects every table on it.
+    Only an on-disk DuckDB file in a server-managed directory yields a
+    write-capable connector.  An in-memory / view-only config produces a
+    connector with no native tables, so the writability gate downstream
+    rejects every table on it.
     """
-    db_path = cfg.get("database") or cfg.get("path")
-    if db_path and db_path != ":memory:" and not str(db_path).startswith("s3://"):
-        import duckdb as _duckdb
-
-        conn = _duckdb.connect(database=db_path, read_only=False)
-        return DuckDBConnector(conn)
-    # No writable local store: fall back to the standard (view) builder so the
-    # table list resolves; the writability gate will then reject the table.
-    return _build_duckdb_connector(cfg)
+    return DuckDBConnector(connect_duckdb_datastore(cfg, org_id, read_only=False))
 
 
 def _validate_columns(

@@ -34,6 +34,8 @@ the capability-gated RLS refusal. Do not add a second path — add a parameter.
 
 from __future__ import annotations
 
+import asyncio
+
 from typing import Any, Callable
 
 from app.connectors.registry import get_connector_registry
@@ -204,46 +206,13 @@ async def resolve_datastore_connector(
     # ── Build the connector ───────────────────────────────────────────────────
     factory = get_connector_registry().get(ctype)
     if ctype == "duckdb":
-        _db_path = cfg.get("database") or cfg.get("path")
-        if _db_path and _db_path != ":memory:":
-            import duckdb
+        # One shared, hardened open path for every duckdb datastore config —
+        # see connect_duckdb_datastore.
+        from app.connectors.duckdb_conn import connect_duckdb_datastore
 
-            _conn = duckdb.connect(database=_db_path, read_only=True)
-            from app.connectors.duckdb_conn import harden_connection as _harden
-
-            _harden(_conn, disable_external_access=True)
-            connector = factory(_conn)
-        else:
-            import duckdb as _duckdb_mem
-
-            _mem_conn = _duckdb_mem.connect(database=":memory:")
-            # Execute view_sql if present — e.g. the local-parquet demo/sample
-            # datastore config registers ``CREATE VIEW <t> AS
-            # read_parquet('<local path>')`` statements here (see
-            # app.demo_bundle.local_parquet_datastore_config).
-            _view_sql: str | None = cfg.get("view_sql")
-            if _view_sql:
-                for _stmt in _view_sql.split(";"):
-                    _stmt = _stmt.strip()
-                    if not _stmt:
-                        continue
-                    try:
-                        _mem_conn.execute(_stmt)
-                    except Exception:  # noqa: BLE001
-                        pass
-            from app.connectors.duckdb_conn import harden_connection as _harden
-            from app.demo_bundle import LOCAL_PARQUET_DIR
-
-            # The only view_sql source for a ":memory:" duckdb datastore is
-            # the local-parquet demo/sample config, which points at
-            # LOCAL_PARQUET_DIR — allow-list just that directory rather than
-            # leaving external access (incl. local-file reads) wide open.
-            _harden(
-                _mem_conn,
-                disable_external_access=True,
-                allowed_directories=[str(LOCAL_PARQUET_DIR)],
-            )
-            connector = factory(_mem_conn)
+        connector = factory(
+            await asyncio.to_thread(connect_duckdb_datastore, cfg, org_id)
+        )
     elif ctype == "postgres":
         _dsn: str | None = cfg.get("dsn")
         if _dsn is None:

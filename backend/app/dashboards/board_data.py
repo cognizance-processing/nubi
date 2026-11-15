@@ -1141,16 +1141,9 @@ async def _resolve_org_connector(
             return _get_demo_connector(), False
 
         if ctype == "duckdb":
-            db_path = cfg.get("database") or cfg.get("path")
-            if db_path and db_path != ":memory:":
-                import duckdb  # noqa: PLC0415
+            from app.connectors.duckdb_conn import connect_duckdb_datastore  # noqa: PLC0415
 
-                from app.connectors.duckdb_conn import harden_connection as _harden  # noqa: PLC0415
-
-                conn = duckdb.connect(database=db_path, read_only=True)
-                _harden(conn, disable_external_access=True)
-                return factory(conn), True
-            return factory(), True
+            return factory(connect_duckdb_datastore(cfg, org_id)), True
         if ctype == "postgres":
             dsn = cfg.get("dsn")
             if dsn is None:

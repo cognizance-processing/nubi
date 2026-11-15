@@ -47,6 +47,12 @@ from app.repos.provider import set_repo
 import app.routes.data_browser  # noqa: F401, E402
 
 
+@pytest.fixture(autouse=True)
+def _managed_duckdb_dir(tmp_path, monkeypatch):
+    """On-disk DuckDB datastores must live in a server-managed directory."""
+    monkeypatch.setenv("NUBI_DUCKDB_DATA_DIRS", str(tmp_path))
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

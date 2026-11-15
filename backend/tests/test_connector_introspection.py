@@ -179,8 +179,6 @@ class TestResolveTableRef:
 # to this list is a deliberate act — a connector that can resolve to
 # network_mode="bridge" must NEVER appear here.
 _LOOP_BLOCKING_ALLOWLIST = {
-    ("app/connectors/resolve.py", "resolve_datastore_connector"),  # in-memory CREATE VIEW
-    ("app/routes/query.py", "query"),                              # in-memory CREATE VIEW
     ("app/routes/compute.py", "compute_run"),                      # demo connector
     ("app/jobs/drift_sweep.py", "_fetch_live_columns"),            # fresh local DuckDB
 }
