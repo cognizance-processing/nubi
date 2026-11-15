@@ -190,3 +190,160 @@ def test_send_skips_endpoints_that_are_no_longer_allowed():
     with patch.object(push, "push_configured", side_effect=AssertionError("went on to send")):
         result = push.send_push({"endpoint": "https://evil.example/x", "keys": {"p256dh": "a", "auth": "b"}}, {"t": 1})
     assert result == push.PUSH_GONE  # treated as a dead subscription and pruned
+
+
+# ---------------------------------------------------------------------------
+# Each rule on its own
+# ---------------------------------------------------------------------------
+
+
+def test_a_successful_fetch_forgets_an_earlier_failure(monkeypatch):
+    from app.auth import jwks_cache
+    from app.errors import AppError
+
+    clock = {"now": 1000.0}
+    outcomes = [RuntimeError("down"), _Resp()]
+
+    def _fetch(*_a, **_k):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(jwks_cache.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(jwks_cache, "resolve_and_pin", lambda url: url)
+    monkeypatch.setattr(jwks_cache, "_fetch_pinned", _fetch)
+    uri = "https://idp.example.com/a.json"
+
+    with pytest.raises(AppError):
+        jwks_cache.get_jwks(uri)
+    assert uri in jwks_cache._failures
+    clock["now"] += jwks_cache._NEGATIVE_TTL_SECONDS + 1  # the remembered failure has lapsed
+    assert jwks_cache.get_jwks(uri) == JWKS
+    assert uri not in jwks_cache._failures  # nothing left behind for a healthy key set
+
+
+def test_clearing_the_cache_also_forgets_failures(monkeypatch):
+    from app.auth import jwks_cache
+    from app.errors import AppError
+
+    calls: list = []
+
+    def _fetch(*_a, **_k):
+        calls.append(1)
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(jwks_cache, "resolve_and_pin", lambda url: url)
+    monkeypatch.setattr(jwks_cache, "_fetch_pinned", _fetch)
+    uri = "https://idp.example.com/a.json"
+    with pytest.raises(AppError):
+        jwks_cache.get_jwks(uri)
+    jwks_cache.clear_cache()
+    with pytest.raises(AppError):
+        jwks_cache.get_jwks(uri)
+    assert len(calls) == 2  # tried again: the failure was not kept across a clear
+
+
+def test_jwks_fetch_gives_up_quickly(monkeypatch):
+    from app.auth import jwks_cache
+
+    seen: dict = {}
+
+    def _fetch(httpx, method, pinned, headers, timeout=None):
+        seen["timeout"] = timeout
+        return _Resp()
+
+    monkeypatch.setattr(jwks_cache, "resolve_and_pin", lambda url: url)
+    monkeypatch.setattr(jwks_cache, "_fetch_pinned", _fetch)
+    jwks_cache.get_jwks("https://idp.example.com/a.json")
+    timeout = seen["timeout"]
+    limits = [timeout.connect, timeout.read, timeout.write, timeout.pool]
+    assert all(limit is not None and limit <= 10 for limit in limits), limits
+
+
+@pytest.mark.parametrize("body", [{"keys": "nope"}, {"keys": {"kid": "k"}}, {"keys": None}, {"nokeys": []}, ["keys"], "keys"])
+def test_a_document_without_a_key_list_is_refused_and_not_cached(monkeypatch, body):
+    from app.auth import jwks_cache
+    from app.errors import AppError
+
+    monkeypatch.setattr(jwks_cache, "resolve_and_pin", lambda url: url)
+    monkeypatch.setattr(jwks_cache, "_fetch_pinned", lambda *a, **k: _Resp(body=body))
+    uri = "https://idp.example.com/odd.json"
+    with pytest.raises(AppError) as exc:
+        jwks_cache.get_jwks(uri)
+    assert exc.value.status == 401
+    assert jwks_cache.get_cached(uri) is None
+
+
+@pytest.mark.asyncio
+async def test_stored_issuer_keys_are_fetched_off_the_event_loop(monkeypatch):
+    from app.security import jwks as jwks_mod
+
+    fetch = AsyncMock(return_value=JWKS)
+    monkeypatch.setattr("app.auth.jwks_cache.get_jwks_async", fetch)
+    monkeypatch.setattr(jwks_mod, "resolve_signing_key", lambda row, kid, alg: "KEY")
+
+    row = {"jwks_url": "https://idp.example.com/a.json", "static_jwks_json": None}
+    assert await jwks_mod.resolve_signing_key_async(row, "k", "RS256") == "KEY"
+    fetch.assert_awaited_once_with("https://idp.example.com/a.json")
+
+    fetch.reset_mock()
+    static = {"jwks_url": "https://idp.example.com/a.json", "static_jwks_json": JWKS}
+    assert await jwks_mod.resolve_signing_key_async(static, "k", "RS256") == "KEY"
+    fetch.assert_not_awaited()  # a configured key set needs no request at all
+
+
+@pytest.mark.asyncio
+async def test_async_verifier_resolves_a_stored_issuers_key_asynchronously(monkeypatch):
+    from app.auth import verify
+    from app.security import jwks as jwks_mod
+
+    org = str(uuid.uuid4())
+    row = {"org_id": org, "jwks_url": "https://idp.example.com/a.json", "audience": "aud", "allowed_origins": []}
+    store = AsyncMock()
+    store.get_enabled_by_iss = AsyncMock(return_value=row)
+    resolve_async = AsyncMock(return_value="KEY")
+
+    def _sync_resolver(*_a, **_k):
+        raise AssertionError("the blocking key resolver ran on the event loop")
+
+    monkeypatch.setattr(verify, "_peek_embed_token", lambda token, alg: ("https://idp.example.com", {"org": org}))
+    monkeypatch.setattr(verify, "_registry_issuer_for", lambda iss, org_id: None)
+    monkeypatch.setattr("app.security.issuers_store.get_issuers_store", lambda: store)
+    monkeypatch.setattr(jwks_mod, "resolve_signing_key_async", resolve_async)
+    monkeypatch.setattr(jwks_mod, "resolve_signing_key", _sync_resolver)
+    monkeypatch.setattr(verify, "_finish_embed_verification", lambda token, alg, iss, key, *a, **k: ("verified-with", key))
+
+    out = await verify._verify_embed_token_async("tok", {"kid": "k"}, "RS256", None)
+    assert out == ("verified-with", "KEY")
+    resolve_async.assert_awaited_once_with(row, "k", "RS256")
+
+
+@pytest.mark.parametrize(
+    "endpoint,ok",
+    [
+        ("https://fcm.googleapis.com:443/fcm/send/abc", True),
+        ("https://fcm.googleapis.com:8443/fcm/send/abc", False),
+        ("https://fcm.googleapis.com:80/fcm/send/abc", False),
+        ("https://api.push.apple.com/3/device/x", True),
+        ("https://evilpush.apple.com/3/device/x", False),
+        ("https://notpush.services.mozilla.com/wpush/v2/x", False),
+        ("https://evilnotify.windows.com/w/?token=x", False),
+        ("https://db5.notify.windows.com/w/?token=x", True),
+    ],
+)
+def test_push_endpoint_port_and_host_boundaries(endpoint, ok):
+    from app.notify.push import push_endpoint_allowed
+
+    assert push_endpoint_allowed(endpoint) is ok
+
+
+def test_operator_can_allow_additional_push_hosts(monkeypatch):
+    from app.notify.push import push_endpoint_allowed
+
+    monkeypatch.delenv("NUBI_PUSH_ALLOWED_HOSTS", raising=False)
+    assert push_endpoint_allowed("https://push.example.org/send/x") is False
+    monkeypatch.setenv("NUBI_PUSH_ALLOWED_HOSTS", "other.example.org, Push.Example.org")
+    assert push_endpoint_allowed("https://push.example.org/send/x") is True
+    assert push_endpoint_allowed("https://sub.push.example.org/send/x") is False  # exact hosts only
+    assert push_endpoint_allowed("http://push.example.org/send/x") is False  # still https only

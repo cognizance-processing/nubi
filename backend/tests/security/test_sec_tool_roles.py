@@ -262,3 +262,105 @@ def test_only_owner_or_admin_register_external_mcp_servers(role, expected):
                 assert c.post(f"/api/v1/mcp/servers/{uuid.uuid4()}/test", headers=as_user("u")).status_code == 403
     finally:
         set_repo(None)
+
+
+def _mcp_app(members):
+    from unittest.mock import AsyncMock, MagicMock
+
+    server = {"id": str(uuid.uuid4()), "name": "ext", "url": "https://mcp.example.com/mcp"}
+    store = MagicMock()
+    store.create = AsyncMock(return_value=server)
+    store.update = AsyncMock(return_value=server)
+    store.delete = AsyncMock(return_value=True)
+    store.get = AsyncMock(return_value=server)
+    app, repo, users = make_tenant_app(members, modules=("app.routes.mcp",))
+    return app, repo, users, store, server
+
+
+@pytest.mark.parametrize("role,allowed", [("viewer", False), ("member", False), ("admin", True), ("owner", True)])
+def test_only_owner_or_admin_change_or_remove_external_mcp_servers(role, allowed):
+    from unittest.mock import patch
+
+    from fastapi.testclient import TestClient
+
+    from app.repos.provider import set_repo
+
+    app, _repo, _users, store, server = _mcp_app({"u": (ORG, role)})
+    try:
+        with (
+            patch("app.mcp.store.get_mcp_store", return_value=store),
+            patch("app.routes.mcp.guard_url", lambda url: None),
+            TestClient(app, raise_server_exceptions=False) as c,
+        ):
+            changed = c.put(f"/api/v1/mcp/servers/{server['id']}", json={"name": "renamed"}, headers=as_user("u"))
+            removed = c.delete(f"/api/v1/mcp/servers/{server['id']}", headers=as_user("u"))
+        if allowed:
+            assert changed.status_code == 200, changed.text
+            assert removed.status_code == 204, removed.text
+            assert store.update.await_count == 1 and store.delete.await_count == 1
+        else:
+            assert changed.status_code == 403, changed.text
+            assert removed.status_code == 403, removed.text
+            assert store.update.await_count == 0 and store.delete.await_count == 0
+    finally:
+        set_repo(None)
+
+
+def test_mcp_server_management_is_judged_in_the_acting_organisation():
+    """An owner of one workspace is not thereby an approver in another."""
+    from unittest.mock import patch
+
+    from fastapi.testclient import TestClient
+
+    from app.repos.provider import set_repo
+
+    other_org = str(uuid.uuid4())
+    app, repo, users, store, server = _mcp_app({"u": (ORG, "owner")})
+    repo.seed_org_member(other_org, users["u"], "member")
+    try:
+        with (
+            patch("app.mcp.store.get_mcp_store", return_value=store),
+            patch("app.routes.mcp.guard_url", lambda url: None),
+            TestClient(app, raise_server_exceptions=False) as c,
+        ):
+            there = {**as_user("u"), "X-Org-Id": other_org}
+            body = {"name": "ext", "url": "https://mcp.example.com/mcp"}
+            assert c.post("/api/v1/mcp/servers", json=body, headers=there).status_code == 403
+            assert c.put(f"/api/v1/mcp/servers/{server['id']}", json={"name": "x"}, headers=there).status_code == 403
+            assert c.delete(f"/api/v1/mcp/servers/{server['id']}", headers=there).status_code == 403
+            assert store.create.await_count == store.update.await_count == store.delete.await_count == 0
+
+            here = {**as_user("u"), "X-Org-Id": ORG}
+            assert c.post("/api/v1/mcp/servers", json=body, headers=here).status_code == 201
+    finally:
+        set_repo(None)
+
+
+def test_a_read_only_credential_cannot_manage_mcp_servers():
+    from unittest.mock import patch
+
+    from fastapi.testclient import TestClient
+
+    from app.auth.jwt import mint_access_token
+    from app.repos.provider import set_repo
+
+    app, _repo, users, store, server = _mcp_app({"u": (ORG, "owner")})
+    read_only = mint_access_token(users["u"], extra_claims={"scope": ["read:*"]})
+    full = mint_access_token(users["u"])
+    try:
+        with (
+            patch("app.mcp.store.get_mcp_store", return_value=store),
+            patch("app.routes.mcp.guard_url", lambda url: None),
+            TestClient(app, raise_server_exceptions=False) as c,
+        ):
+            body = {"name": "ext", "url": "https://mcp.example.com/mcp"}
+            headers = {**as_user("u"), "Authorization": f"Bearer {read_only}"}
+            assert c.post("/api/v1/mcp/servers", json=body, headers=headers).status_code == 403
+            assert c.put(f"/api/v1/mcp/servers/{server['id']}", json={"name": "x"}, headers=headers).status_code == 403
+            assert c.delete(f"/api/v1/mcp/servers/{server['id']}", headers=headers).status_code == 403
+            assert store.create.await_count == store.update.await_count == store.delete.await_count == 0
+
+            headers = {**as_user("u"), "Authorization": f"Bearer {full}"}
+            assert c.post("/api/v1/mcp/servers", json=body, headers=headers).status_code == 201
+    finally:
+        set_repo(None)
