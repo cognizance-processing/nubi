@@ -423,19 +423,29 @@ def _run_real_provider_loop(
     return {"reply": final_reply, "actions": actions}
 
 
-def _run_native_tool_loop(
+def _native_tool_steps(
     messages: list[dict[str, Any]],
     provider: LLMProvider,
     claims: dict[str, Any],
     max_steps: int,
     model: str | None = None,
-) -> dict[str, Any]:
-    """Tool loop for providers with native tool calling.
+) -> Iterator[dict[str, Any]]:
+    """The one tool loop for providers with native tool calling.
 
     The conversation is sent as structured messages: the model's tool calls
     are structured objects, and each tool result is its own ``tool`` message.
     Nothing a tool returns is ever concatenated into the instructions or the
     user's turn, and the model's text is never parsed for tool calls.
+
+    Both the non-streaming and the streaming entry points drive this
+    generator, so they cannot drift apart.  It yields, in order:
+
+    * ``{"step": "tool_start", "id", "tool", "arguments"}`` before a tool runs;
+    * ``{"step": "tool_result", "id", "tool", "arguments", "result"}`` after;
+    * ``{"step": "budget", "tokens_used", "budget"}`` if the turn's token
+      budget stops the loop;
+    * finally ``{"step": "final", "reply"}`` — ``reply`` is the model's text,
+      or ``""`` when the loop ended without one.
     """
     tools = [
         {
@@ -466,18 +476,14 @@ def _run_native_tool_loop(
             )
         convo.append({"role": role, "content": str(content)})
 
-    actions: list[dict[str, Any]] = []
     budget = _agent_turn_budget()
     tokens_used = 0
     steps = 0
-    final_reply: str | None = None
+    final_reply = ""
 
     while steps <= max_steps:
         if tokens_used >= budget:
-            final_reply = (
-                f"Turn token budget ({budget}) reached after approximately "
-                f"{tokens_used} tokens. Here is what was gathered so far."
-            )
+            yield {"step": "budget", "tokens_used": tokens_used, "budget": budget}
             break
         try:
             turn = provider.complete_with_tools(convo, tools, model=model)
@@ -518,15 +524,50 @@ def _run_native_tool_loop(
             if steps >= max_steps:
                 result: Any = {"error": {"code": "step_limit", "message": "Tool step limit reached."}}
             else:
+                step_id = f"t{steps + 1}"
+                yield {"step": "tool_start", "id": step_id, "tool": name, "arguments": arguments}
                 try:
                     result = _dispatch_tool(name, arguments, claims)
                 except Exception as exc:  # noqa: BLE001 — surface tool errors to the model.
                     result = {"error": {"code": "tool_error", "message": str(exc)}}
-                actions.append({"tool": name, "arguments": arguments, "result": result})
+                yield {
+                    "step": "tool_result", "id": step_id, "tool": name,
+                    "arguments": arguments, "result": result,
+                }
                 steps += 1
             convo.append(
                 {"role": "tool", "tool_call_id": ids[i], "content": _wrap_tool_result(name, result)}
             )
+
+    yield {"step": "final", "reply": final_reply}
+
+
+def _run_native_tool_loop(
+    messages: list[dict[str, Any]],
+    provider: LLMProvider,
+    claims: dict[str, Any],
+    max_steps: int,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Non-streaming tool loop for providers with native tool calling.
+
+    Collects :func:`_native_tool_steps` into ``{reply, actions}``.
+    """
+    actions: list[dict[str, Any]] = []
+    final_reply = ""
+    for step in _native_tool_steps(messages, provider, claims, max_steps, model):
+        kind = step["step"]
+        if kind == "tool_result":
+            actions.append(
+                {"tool": step["tool"], "arguments": step["arguments"], "result": step["result"]}
+            )
+        elif kind == "budget":
+            final_reply = (
+                f"Turn token budget ({step['budget']}) reached after approximately "
+                f"{step['tokens_used']} tokens. Here is what was gathered so far."
+            )
+        elif kind == "final":
+            final_reply = step["reply"] or final_reply
 
     if not final_reply:
         final_reply = _synthesise_reply(actions)
@@ -875,6 +916,57 @@ def _final_reply_text(
         return _scripted()
 
 
+def _stream_native_tool_loop(
+    messages: list[dict[str, Any]],
+    provider: LLMProvider,
+    claims: dict[str, Any],
+    *,
+    max_steps: int,
+    pace: float,
+    model: str | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Stream :func:`_native_tool_steps` as live UI events."""
+    actions: list[dict[str, Any]] = []
+    final_reply = ""
+    for step in _native_tool_steps(messages, provider, claims, max_steps, model):
+        kind = step["step"]
+        if kind == "tool_start":
+            yield {"type": "status", "text": f"Calling {step['tool']}…"}
+            yield {
+                "type": "tool_start", "id": step["id"], "tool": step["tool"],
+                "arguments": step["arguments"],
+            }
+            time.sleep(pace * 6)
+        elif kind == "tool_result":
+            result = step["result"]
+            ok = not (isinstance(result, dict) and "error" in result)
+            summary = _summarise_result(step["tool"], result)
+            actions.append({"tool": step["tool"], "arguments": step["arguments"], "result": summary})
+            yield {
+                "type": "tool_result", "id": step["id"], "tool": step["tool"],
+                "ok": ok, "result": summary,
+            }
+        elif kind == "budget":
+            yield {
+                "type": "error",
+                "message": (
+                    f"Turn token budget ({step['budget']}) reached after approximately "
+                    f"{step['tokens_used']} tokens. Response truncated."
+                ),
+            }
+        elif kind == "final":
+            final_reply = step["reply"]
+
+    if not final_reply:
+        final_reply = _synthesise_reply(actions)
+
+    yield {"type": "status", "text": "Writing response…"}
+    for chunk in _tokenise_for_stream(final_reply):
+        yield {"type": "text", "delta": chunk}
+        time.sleep(pace)
+    yield {"type": "done", "reply": final_reply, "actions": actions}
+
+
 def _stream_real_provider_loop(
     messages: list[dict[str, Any]],
     provider: LLMProvider,
@@ -889,7 +981,17 @@ def _stream_real_provider_loop(
     Mirrors :func:`_run_real_provider_loop` but yields ``tool_start`` /
     ``tool_result`` / ``text`` / ``done`` events as each step happens. Every
     tool execution threads *claims* for RLS; bounded by *max_steps*.
+
+    A provider with native tool calling is driven through the same structured
+    loop as the non-streaming path (:func:`_native_tool_steps`); the text
+    protocol below is only for providers that cannot call tools natively.
     """
+    if getattr(provider, "supports_tools", False):
+        yield from _stream_native_tool_loop(
+            messages, provider, claims, max_steps=max_steps, pace=pace, model=model
+        )
+        return
+
     system = _tool_use_system_prompt(claims)
     transcript: list[dict[str, Any]] = []
     actions: list[dict[str, Any]] = []
