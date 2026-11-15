@@ -57,7 +57,7 @@ EXEMPT: dict[tuple[str, str], str] = {
     ("POST", "/dashboards/validate"): READ, ("POST", "/transpile"): READ,
     ("POST", "/flows/codegen"): READ, ("POST", "/flows/validate"): READ, ("POST", "/flows/{flow_id}/codegen"): READ,
     # ── agent surfaces ──
-    ("POST", "/mcp"): TOOLS, ("POST", "/chat/stream"): TOOLS,
+    ("POST", "/mcp"): TOOLS,
 }
 
 

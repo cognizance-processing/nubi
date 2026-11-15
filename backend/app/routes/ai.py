@@ -147,6 +147,37 @@ async def _resolve_org_id(user: dict[str, Any], request: Request | None = None) 
         return None
 
 
+#: Background agent turns currently running, per user (this worker).
+_ASYNC_JOBS: dict[str, int] = {}
+
+
+def _async_job_limit() -> int:
+    try:
+        return max(1, int(os.environ.get("NUBI_AI_ASYNC_MAX_PER_USER", "2")))
+    except (ValueError, TypeError):
+        return 2
+
+
+def _claim_async_slot(user_id: str) -> None:
+    """Reserve a background-turn slot for *user_id*, or raise 429."""
+    running = _ASYNC_JOBS.get(user_id, 0)
+    if running >= _async_job_limit():
+        raise AppError(
+            "too_many_background_jobs",
+            "You already have background AI tasks running. Wait for one to finish.",
+            429,
+        )
+    _ASYNC_JOBS[user_id] = running + 1
+
+
+def _release_async_slot(user_id: str) -> None:
+    remaining = _ASYNC_JOBS.get(user_id, 0) - 1
+    if remaining > 0:
+        _ASYNC_JOBS[user_id] = remaining
+    else:
+        _ASYNC_JOBS.pop(user_id, None)
+
+
 async def _prepare_ai_call(
     user: dict[str, Any], request: Request | None = None,
 ) -> tuple[Any, str | None, bool]:
@@ -174,6 +205,16 @@ async def _prepare_ai_call(
     from app.features import resolve_ai_provider  # noqa: PLC0415
 
     provider, is_byo = await resolve_ai_provider(org_id)
+
+    # Spend ceiling — every AI route passes through here.  Only real providers
+    # can spend, and an org on its own vendor key is not spending the
+    # operator's money.
+    from app.ai.provider import NullProvider  # noqa: PLC0415
+
+    if not isinstance(provider, NullProvider) and not is_byo:
+        from app.ai.cost_ceiling import check_chat_budget  # noqa: PLC0415
+
+        await check_chat_budget(str(org_id or ""), str(user.get("id", "")))
     return provider, org_id, is_byo
 
 
@@ -217,6 +258,12 @@ async def _meter_ai_call(
         units=float(total_tokens),
         tier=endpoint,
     )
+
+    # Feed the daily spend ceiling (operator-key spend only).
+    if usd_cost > 0 and not is_byo:
+        from app.ai.cost_ceiling import record_chat_cost  # noqa: PLC0415
+
+        await record_chat_cost(str(org_id or ""), user_id, usd_cost)
 
     from app.features import meter_ai_usage  # noqa: PLC0415
 
@@ -1264,7 +1311,15 @@ async def ai_chat_async(
     user_id = str(_user.get("id", ""))
     user = _user  # captured for _meter_ai_call inside the closure
 
+    _claim_async_slot(user_id)
+
     async def _run() -> None:
+        try:
+            await _run_turn()
+        finally:
+            _release_async_slot(user_id)
+
+    async def _run_turn() -> None:
         store = get_notification_store()
         timeout_s = _ai_turn_timeout()
         try:

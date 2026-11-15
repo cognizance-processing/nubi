@@ -71,24 +71,39 @@ _WINDOW_S = 86_400
 # ---------------------------------------------------------------------------
 
 
-def _user_daily_limit() -> float | None:
-    """Return per-(org, user) daily USD ceiling, or None for unlimited."""
-    raw = os.environ.get("NUBI_CHAT_USER_DAILY_USD", "0").strip()
+#: Ceilings that apply when the operator has configured nothing.
+_DEFAULT_USER_DAILY_USD = 5.0
+_DEFAULT_ORG_DAILY_USD = 50.0
+_UNLIMITED = frozenset({"0", "0.0", "off", "none", "unlimited", "false"})
+
+
+def _limit(env_name: str, default: float) -> float | None:
+    """A daily USD ceiling, or ``None`` when the operator explicitly lifted it.
+
+    Unset → *default* (a ceiling is on unless someone turns it off).  ``0`` /
+    ``off`` / ``unlimited`` → no ceiling.  An unparseable value falls back to
+    the default rather than to "unlimited".
+    """
+    raw = os.environ.get(env_name)
+    if raw is None or not raw.strip():
+        return default
+    if raw.strip().lower() in _UNLIMITED:
+        return None
     try:
         val = float(raw)
     except (ValueError, TypeError):
-        return None
+        return default
     return val if val > 0 else None
+
+
+def _user_daily_limit() -> float | None:
+    """Return per-(org, user) daily USD ceiling, or None for unlimited."""
+    return _limit("NUBI_CHAT_USER_DAILY_USD", _DEFAULT_USER_DAILY_USD)
 
 
 def _org_daily_limit() -> float | None:
     """Return per-org daily USD ceiling, or None for unlimited."""
-    raw = os.environ.get("NUBI_CHAT_ORG_DAILY_USD", "0").strip()
-    try:
-        val = float(raw)
-    except (ValueError, TypeError):
-        return None
-    return val if val > 0 else None
+    return _limit("NUBI_CHAT_ORG_DAILY_USD", _DEFAULT_ORG_DAILY_USD)
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +214,36 @@ async def _get_spend(
         return 0.0
 
 
+async def _spend_or_raise(org_id: str, user_id: str | None) -> float:
+    """Rolling 24-h spend for the ceiling check — FAILS CLOSED.
+
+    If spend cannot be read the turn is refused (503) instead of allowed: a
+    metering outage must not turn into unmetered spend on the operator's key.
+    """
+    since_ts = time.time() - _WINDOW_S
+    try:
+        from app.compute.metering import InMemorySink, get_sink  # noqa: PLC0415
+
+        sink = get_sink()
+        if isinstance(sink, InMemorySink):
+            return _sum_from_memory(
+                sink.get_events(), org_id=org_id, user_id=user_id, since_ts=since_ts
+            )
+        return await _query_spend_pg(org_id=org_id, user_id=user_id, since_ts=since_ts)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "cost_ceiling: cannot read spend for org=%s user=%s — refusing the turn",
+            org_id, user_id,
+        )
+        from app.errors import AppError  # noqa: PLC0415
+
+        raise AppError(
+            "chat_budget_unavailable",
+            "AI usage cannot be checked right now. Please try again shortly.",
+            503,
+        ) from exc
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -216,8 +261,8 @@ async def check_chat_budget(
     **after** recording the turn cost (``cost_usd=actual``) for the post-turn
     check.  Both calls share the same enforcement logic.
 
-    Fail-open: when the metering store is unavailable the function returns
-    normally and does NOT block the turn.
+    Fail-closed: when the metering store is unavailable the turn is refused
+    (503) rather than allowed to spend unmetered.
 
     Parameters
     ----------
@@ -239,7 +284,7 @@ async def check_chat_budget(
 
     # ── Per-user ceiling ────────────────────────────────────────────────────
     if user_limit is not None:
-        user_spend = await _get_spend(org_id, user_id) + cost_usd
+        user_spend = await _spend_or_raise(org_id, user_id) + cost_usd
         if user_spend > user_limit:
             from app.errors import AppError  # noqa: PLC0415
 
@@ -255,7 +300,7 @@ async def check_chat_budget(
 
     # ── Per-org ceiling ─────────────────────────────────────────────────────
     if org_limit is not None:
-        org_spend = await _get_spend(org_id, None) + cost_usd
+        org_spend = await _spend_or_raise(org_id, None) + cost_usd
         if org_spend > org_limit:
             from app.errors import AppError  # noqa: PLC0415
 

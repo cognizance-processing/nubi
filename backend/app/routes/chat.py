@@ -38,6 +38,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 
 from app.auth.deps import current_user
+from app.auth.roles import require_writer
 from app.chat.mcp_client import McpServerSpec
 from app.errors import AppError
 
@@ -145,7 +146,7 @@ async def chat_models(_user: dict[str, Any] = Depends(current_user)) -> list[dic
     return list_models()
 
 
-@router.post("/stream")
+@router.post("/stream", dependencies=[Depends(require_writer)])
 async def chat_stream(
     body: ChatStreamRequest,
     request: Request,
