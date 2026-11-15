@@ -584,6 +584,8 @@ def create_app() -> FastAPI:
         openapi_tags=NUBI_OPENAPI_TAGS,
         docs_url="/docs" if settings.ENV != "production" else None,
         redoc_url="/redoc" if settings.ENV != "production" else None,
+        # The schema lists every route and model; it is a development aid.
+        openapi_url="/openapi.json" if settings.ENV != "production" else None,
         lifespan=lifespan,
     )
 

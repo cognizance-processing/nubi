@@ -143,12 +143,29 @@ async def _seed_demo(user_id: str) -> None:
     print(f"  demo health    [SEEDED ]  {len(_demo_freshness)} dataset_freshness rows")
 
 
+def _refuse_unsafe_seed() -> None:
+    """The seed creates a privileged account with a known-to-the-operator
+    password, for development and first-run setup only."""
+    if str(getattr(_s, "ENV", "")).lower() == "production" and "--allow-production" not in sys.argv:
+        raise SystemExit(
+            "seed.py refuses to run with ENV=production. Create the first admin "
+            "through sign-up and grant superadmin with SQL, or pass "
+            "--allow-production if you really mean to seed this database."
+        )
+    if not (TEST_PASSWORD or "").strip() or len(TEST_PASSWORD) < 12:
+        raise SystemExit(
+            "Set SUPERUSER_PASSWORD (12+ characters) in the environment before seeding; "
+            "there is no default password."
+        )
+
+
 async def main() -> None:
+    _refuse_unsafe_seed()
     demo = "--demo" in sys.argv
     await init_db()
     try:
         user_id = await _ensure_superuser()
-        print(f"Superuser: {TEST_EMAIL} / {TEST_PASSWORD}")
+        print(f"Superuser: {TEST_EMAIL} (password from SUPERUSER_PASSWORD)")
         if demo:
             await _ensure_workspace(user_id)
             await _seed_demo(user_id)

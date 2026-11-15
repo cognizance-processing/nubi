@@ -312,6 +312,18 @@ async def login(
     """
     email = str(body.email).lower()
 
+    # Per-account throttle (in addition to the per-client one in the
+    # middleware), checked before any password work.
+    from app.middleware.ratelimit import consume_login_attempt  # noqa: PLC0415
+
+    allowed, retry_after = consume_login_attempt(email)
+    if not allowed:
+        raise AppError(
+            "rate_limited",
+            f"Too many sign-in attempts for this account. Try again in {retry_after} second(s).",
+            429,
+        )
+
     user_row = await fetchrow(
         "SELECT id, email, password_hash, name, avatar_url, email_verified, created_at FROM users WHERE email = $1",
         email,

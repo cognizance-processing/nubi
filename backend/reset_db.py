@@ -61,7 +61,7 @@ def main() -> None:
         subprocess.run([sys.executable, "seed.py"], check=True, cwd=str(_BACKEND), env=env)
 
     print("\n[reset] done.")
-    print(f"        superuser: {s.SUPERUSER_EMAIL} / {s.SUPERUSER_PASSWORD}")
+    print(f"        superuser: {s.SUPERUSER_EMAIL} (password from the environment)")
 
 
 if __name__ == "__main__":

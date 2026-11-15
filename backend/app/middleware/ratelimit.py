@@ -157,6 +157,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import ipaddress
 import os
 import threading
 import time
@@ -588,6 +589,58 @@ _EMBED_EXEMPT_PREFIXES = (
 )
 
 
+def _is_trusted_proxy(peer: str) -> bool:
+    """True when *peer* is the proxy in front of this app.
+
+    ``NUBI_TRUSTED_PROXY_CIDRS`` (comma-separated CIDRs) names it explicitly.
+    On Fly (``FLY_APP_NAME`` set) the app is only reachable through the Fly
+    proxy, which connects from a private address — so a private or loopback
+    peer is the proxy and a public one never is.
+    """
+    try:
+        ip = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    cidrs = [c.strip() for c in os.environ.get("NUBI_TRUSTED_PROXY_CIDRS", "").split(",") if c.strip()]
+    if cidrs:
+        for cidr in cidrs:
+            try:
+                if ip in ipaddress.ip_network(cidr, strict=False):
+                    return True
+            except ValueError:
+                continue
+        return False
+    if os.environ.get("FLY_APP_NAME"):
+        return ip.is_private or ip.is_loopback
+    return False
+
+
+def consume_login_attempt(email: str) -> tuple[bool, int]:
+    """Count one sign-in attempt against *email*'s own allowance.
+
+    Independent of the per-client limit: guessing one account's password from
+    many addresses still hits this.  Returns ``(allowed, retry_after_seconds)``;
+    always allowed when rate limiting is disabled.
+    """
+    if not _cfg.enabled:
+        return True, 0
+    try:
+        rpm = max(1, int(os.environ.get("NUBI_RATELIMIT_LOGIN_PER_ACCOUNT_RPM", "10")))
+    except ValueError:
+        rpm = 10
+    digest = hashlib.sha256(str(email or "").strip().lower().encode("utf-8")).hexdigest()[:32]
+    key = (f"acct:{digest}", "login-account")
+    client = get_redis()
+    if client is not None:
+        try:
+            return _redis_consume(client, key, rpm, time.time())
+        except Exception:  # noqa: BLE001 — degrade to the in-process bucket
+            pass
+    now = time.monotonic()
+    _maybe_cleanup(now)
+    return _get_or_create_bucket(key, rpm).consume(now)
+
+
 def _client_ip(request: Request) -> str | None:
     """Return the *trusted* client IP, or ``None`` if none is available.
 
@@ -607,7 +660,18 @@ def _client_ip(request: Request) -> str | None:
     """
     # 1. Real TCP peer (preferred, non-forgeable at this layer).
     if request.client and request.client.host:
-        return request.client.host
+        peer = request.client.host
+        # Behind the platform proxy every request arrives from the proxy's
+        # address, so the per-client key is the address the PROXY reports —
+        # and only when the peer really is that proxy.
+        if _is_trusted_proxy(peer):
+            reported = request.headers.get("fly-client-ip", "").strip()
+            if reported:
+                try:
+                    return str(ipaddress.ip_address(reported))
+                except ValueError:
+                    pass
+        return peer
 
     # 2. Fallback: RIGHT-most XFF entry (appended by the trusted proxy).
     #    Never the left-most — that is the attacker-controlled value.
