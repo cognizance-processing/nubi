@@ -82,6 +82,7 @@ export default function MembersSettings() {
   const [inviteRole, setInviteRole] = useState('member')
   const [inviting, setInviting] = useState(false)
   const [copiedToken, setCopiedToken] = useState(null)
+  const [linkTokens, setLinkTokens] = useState({})
   const inviteEmailRef = useRef(null)
 
   function focusInvite() {
@@ -109,7 +110,11 @@ export default function MembersSettings() {
   async function sendInvite(e) {
     e.preventDefault()
     setErr(null); setInviting(true)
-    try { await createInvite(orgId, inviteEmail.trim(), inviteRole); setInviteEmail(''); refreshMembers() }
+    try {
+      const created = await createInvite(orgId, inviteEmail.trim(), inviteRole)
+      rememberLink(created)
+      setInviteEmail(''); refreshMembers()
+    }
     catch (e2) { setErr(e2?.message ?? 'Failed to create invite.') }
     finally { setInviting(false) }
   }
@@ -121,12 +126,27 @@ export default function MembersSettings() {
     finally { setBusyRow(null) }
   }
 
-  function copyLink(token) {
+  // The secret link is only returned when an invite is created or re-sent —
+  // the pending list never carries it. Links made in this session are kept
+  // here; for any other invite, copying issues a fresh link (which replaces
+  // the previous one).
+  function rememberLink(created) {
+    if (created?.id && created?.token) {
+      setLinkTokens((prev) => ({ ...prev, [created.id]: created.token }))
+    }
+    return created?.token ?? null
+  }
+
+  async function copyLink(inv) {
+    setErr(null)
     try {
-      navigator.clipboard.writeText(inviteLink(token))
-      setCopiedToken(token)
+      let token = linkTokens[inv.id]
+      if (!token) token = rememberLink(await createInvite(orgId, inv.email, inv.role))
+      if (!token) return
+      await navigator.clipboard.writeText(inviteLink(token))
+      setCopiedToken(inv.id)
       setTimeout(() => setCopiedToken(null), 2000)
-    } catch { /* clipboard blocked */ }
+    } catch (e) { setErr(e?.message ?? 'Could not copy the invite link.') }
   }
 
   const selectCls = 'nubi-input nubi-select nubi-input-sm w-auto'
@@ -287,11 +307,12 @@ export default function MembersSettings() {
                 <Button
                   variant="secondary"
                   size="xs"
-                  onClick={() => copyLink(inv.token)}
-                  aria-label={copiedToken === inv.token ? 'Invite link copied' : `Copy invite link for ${inv.email}`}
+                  onClick={() => copyLink(inv)}
+                  title={linkTokens[inv.id] ? undefined : 'Creates a fresh link; any earlier link for this invite stops working'}
+                  aria-label={copiedToken === inv.id ? 'Invite link copied' : `Copy invite link for ${inv.email}`}
                 >
-                  {copiedToken === inv.token ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
-                  {copiedToken === inv.token ? 'Copied' : 'Copy link'}
+                  {copiedToken === inv.id ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+                  {copiedToken === inv.id ? 'Copied' : 'Copy link'}
                 </Button>
                 <Button
                   variant="ghost"

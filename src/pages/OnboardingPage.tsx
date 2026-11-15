@@ -190,9 +190,14 @@ export default function OnboardingPage() {
                     {invites.map(inv => (
                       <li key={inv.id}>
                         <span style={{ flex: 1, minWidth: 0 }}><b>{inv.org_name}</b><small>{inv.role}</small></span>
-                        <button type="button" onClick={() => handleAccept(inv)} disabled={acceptingId !== null} className="nubi-btn nubi-btn-primary nubi-btn-md" aria-busy={acceptingId === inv.id}>
-                          <SubmitLabel pending={acceptingId === inv.id} idle="Accept" busy="Joining…" />
-                        </button>
+                        {inv.token ? (
+                          <button type="button" onClick={() => handleAccept(inv)} disabled={acceptingId !== null} className="nubi-btn nubi-btn-primary nubi-btn-md" aria-busy={acceptingId === inv.id}>
+                            <SubmitLabel pending={acceptingId === inv.id} idle="Accept" busy="Joining…" />
+                          </button>
+                        ) : (
+                          /* The link is only handed to addresses a sign-in provider has verified. */
+                          <small className="mk-small">Open the invite link you were sent to join.</small>
+                        )}
                       </li>
                     ))}
                   </ul>

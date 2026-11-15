@@ -84,9 +84,10 @@ class ApiKeyStore:
         """Revoke a key owned by *user_id* in *org_id*. Return True if revoked."""
         raise NotImplementedError
 
-    async def revoke_all_for_user(self, user_id: str, org_id: str) -> int:
+    async def revoke_all_for_user(self, user_id: str, org_id: str | None = None) -> int:
         """Revoke every live key *user_id* holds in *org_id* (they left the
-        org). Return how many were revoked."""
+        org), or in every org when *org_id* is ``None`` (the account changed
+        hands). Return how many were revoked."""
         raise NotImplementedError
 
 
@@ -203,18 +204,25 @@ class PgApiKeyStore(ApiKeyStore):
         except (IndexError, ValueError, AttributeError):
             return False
 
-    async def revoke_all_for_user(self, user_id: str, org_id: str) -> int:
+    async def revoke_all_for_user(self, user_id: str, org_id: str | None = None) -> int:
         from app.db import execute  # local import
 
-        status = await execute(
-            """
-            UPDATE api_keys
-            SET revoked_at = now()
-            WHERE user_id = $1::uuid AND org_id = $2::uuid AND revoked_at IS NULL
-            """,
-            user_id,
-            org_id,
-        )
+        if org_id is None:
+            status = await execute(
+                "UPDATE api_keys SET revoked_at = now() "
+                "WHERE user_id = $1::uuid AND revoked_at IS NULL",
+                user_id,
+            )
+        else:
+            status = await execute(
+                """
+                UPDATE api_keys
+                SET revoked_at = now()
+                WHERE user_id = $1::uuid AND org_id = $2::uuid AND revoked_at IS NULL
+                """,
+                user_id,
+                org_id,
+            )
         try:
             return int(status.split()[-1])
         except (IndexError, ValueError, AttributeError):
@@ -282,12 +290,12 @@ class InMemoryApiKeyStore(ApiKeyStore):
         row["revoked_at"] = datetime.now(tz=timezone.utc)
         return True
 
-    async def revoke_all_for_user(self, user_id: str, org_id: str) -> int:
+    async def revoke_all_for_user(self, user_id: str, org_id: str | None = None) -> int:
         count = 0
         for row in self._store.values():
             if (
                 str(row["user_id"]) == str(user_id)
-                and str(row["org_id"]) == str(org_id)
+                and (org_id is None or str(row["org_id"]) == str(org_id))
                 and row["revoked_at"] is None
             ):
                 row["revoked_at"] = datetime.now(tz=timezone.utc)

@@ -190,7 +190,9 @@ class InviteOut(BaseModel):
     email: str
     role: str
     status: str
-    token: str
+    # The secret link token. Returned ONCE, to the person who creates (or
+    # re-sends) the invite; listings never include it.
+    token: str | None = None
     invited_by: str | None = None
     created_at: str
     expires_at: str
@@ -767,13 +769,13 @@ async def _revoke_member_credentials(user_id: str, org_id: str) -> None:
 
 # ── Invites ─────────────────────────────────────────────────────────────────--
 
-def _invite_row_to_out(r: dict[str, Any]) -> InviteOut:
+def _invite_row_to_out(r: dict[str, Any], *, with_token: bool = False) -> InviteOut:
     return InviteOut(
         id=str(r["id"]),
         email=str(r["email"]),
         role=r["role"],
         status=r["status"],
-        token=r["token"],
+        token=r["token"] if with_token else None,
         invited_by=str(r["invited_by"]) if r["invited_by"] else None,
         created_at=r["created_at"].isoformat(),
         expires_at=r["expires_at"].isoformat(),
@@ -845,7 +847,7 @@ async def create_invite(
             "RETURNING id, email, role, status, token, invited_by, created_at, expires_at",
             org_id, email, body.role, token, str(user["id"]),
         )
-    return _invite_row_to_out(dict(row))
+    return _invite_row_to_out(dict(row), with_token=True)
 
 
 @router.delete("/{org_id}/invites/{invite_id}", status_code=204)
@@ -890,11 +892,18 @@ async def accept_invite(
     token: str,
     user: dict[str, Any] = Depends(current_user),
 ) -> OrgDetailResponse:
-    """Accept an invite: join the org with the invited role. Idempotent — if the
-    caller is already a member, their role is updated to the invited role."""
+    """Accept an invite: join the org with the invited role.
+
+    Acceptance needs the invite's secret link AND an account whose address is
+    the one that was invited, before the invite expires. Someone who is
+    already a member keeps the role they have — accepting an invite never
+    raises or lowers an existing role.
+    """
+    from datetime import datetime, timezone  # noqa: PLC0415
+
     user_id = str(user["id"])
     row = await fetchrow(
-        "SELECT id, org_id, role, status, expires_at FROM org_invites WHERE token = $1",
+        "SELECT id, org_id, role, status, email, expires_at FROM org_invites WHERE token = $1",
         token,
     )
     if row is None:
@@ -902,18 +911,44 @@ async def accept_invite(
     if row["status"] != "pending":
         raise AppError("invite_unavailable", f"This invite is {row['status']}.", 409)
 
+    expires_at = row["expires_at"]
+    if expires_at is not None:
+        if not isinstance(expires_at, datetime):
+            expires_at = datetime.fromisoformat(str(expires_at))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= datetime.now(tz=timezone.utc):
+            raise AppError("invite_unavailable", "This invite has expired.", 409)
+
+    if str(user.get("email") or "").strip().lower() != str(row["email"] or "").strip().lower():
+        raise AppError(
+            "forbidden", "This invite was sent to a different email address.", 403
+        )
+
     org_id = str(row["org_id"])
-    await execute(
-        "INSERT INTO org_members (org_id, user_id, role) VALUES ($1::uuid, $2::uuid, $3) "
-        "ON CONFLICT (org_id, user_id) DO UPDATE SET role = EXCLUDED.role",
-        org_id, user_id, row["role"],
-    )
+    role = await _member_role(user_id, org_id)
+    if role is None:
+        role = row["role"]
+        await execute(
+            "INSERT INTO org_members (org_id, user_id, role) VALUES ($1::uuid, $2::uuid, $3) "
+            "ON CONFLICT (org_id, user_id) DO NOTHING",
+            org_id, user_id, role,
+        )
     await execute(
         "UPDATE org_invites SET status = 'accepted', accepted_at = now() WHERE id = $1",
         row["id"],
     )
     org_name = await _get_org_name(org_id) or "Organization"
-    return OrgDetailResponse(id=org_id, name=org_name, role=row["role"])
+    return OrgDetailResponse(id=org_id, name=org_name, role=role)
+
+
+async def _member_role(user_id: str, org_id: str) -> str | None:
+    """The caller's current role in *org_id*, or ``None`` if not a member."""
+    row = await fetchrow(
+        "SELECT role FROM org_members WHERE org_id = $1::uuid AND user_id = $2::uuid",
+        org_id, user_id,
+    )
+    return row["role"] if row else None
 
 
 # ── Register on the shared api_router ─────────────────────────────────────────

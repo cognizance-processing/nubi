@@ -519,13 +519,19 @@ async def my_invites(
     is exactly what an org-less (freshly OAuth-signed-up) user calls during
     onboarding to discover invitations.
 
+    The secret link ``token`` is included only when the caller's address has
+    been verified by their sign-in provider. An address typed at registration
+    proves nothing about who owns the mailbox, so such an account sees that an
+    invite exists but needs the link itself to accept it.
+
     Returns
     -------
-    200 {invites: [{id, org_id, org_name, role, token, created_at, expires_at}]}
+    200 {invites: [{id, org_id, org_name, role, token?, created_at, expires_at}]}
     """
     from datetime import datetime, timezone  # noqa: PLC0415
 
     email = str(user["email"]).strip().lower()
+    verified = bool(user.get("email_verified"))
     rows = await fetch(
         """
         SELECT i.id, i.org_id, i.role, i.token, i.created_at, i.expires_at,
@@ -562,7 +568,7 @@ async def my_invites(
                 "org_id": str(r["org_id"]),
                 "org_name": r["org_name"],
                 "role": r["role"],
-                "token": r["token"],
+                "token": r["token"] if verified else None,
                 "created_at": (
                     created_at.isoformat()
                     if hasattr(created_at, "isoformat")
@@ -839,6 +845,9 @@ async def google_callback(
                 user_id,
             )
 
+    # ── First link: end any earlier password access to this account ──────────
+    await _secure_account_on_first_provider_link(user_id, "google")
+
     # ── Upsert oauth_accounts ─────────────────────────────────────────────────
     oauth_id = str(uuid.uuid4())
     await execute(
@@ -869,6 +878,45 @@ async def google_callback(
     _clear_oauth_cookie(redirect, _OAUTH_VERIFIER_COOKIE, settings_obj.COOKIE_SECURE)
 
     return redirect
+
+
+async def _secure_account_on_first_provider_link(user_id: str, provider: str) -> bool:
+    """Hand an account to the verified owner of its address.
+
+    Registration does not verify email, so an account with a password may
+    have been created by someone who does not own the address. The first time
+    a provider that HAS verified the address is linked, any password is
+    cleared and every existing session and API key is revoked — whoever set
+    them can no longer get in. Later sign-ins with the same provider, and
+    accounts that never had a password, are left alone.
+
+    Returns ``True`` when the account was locked down.
+    """
+    try:
+        linked = await fetchrow(
+            "SELECT 1 AS ok FROM oauth_accounts WHERE user_id = $1::uuid AND provider = $2 LIMIT 1",
+            user_id,
+            provider,
+        )
+        if linked is not None:
+            return False
+        row = await fetchrow("SELECT password_hash FROM users WHERE id = $1::uuid", user_id)
+        if row is None or row["password_hash"] is None:
+            return False
+    except Exception:  # noqa: BLE001 — cannot tell → do not touch the account
+        return False
+
+    await execute(
+        "UPDATE users SET password_hash = NULL, email_verified = true, updated_at = now() "
+        "WHERE id = $1::uuid",
+        user_id,
+    )
+    from app.auth import sessions as _sessions  # noqa: PLC0415
+    from app.auth.api_keys import get_api_key_store  # noqa: PLC0415
+
+    await _sessions.revoke_all_for_user(user_id)
+    await get_api_key_store().revoke_all_for_user(user_id)
+    return True
 
 
 # ── Private OAuth cookie helpers ──────────────────────────────────────────────

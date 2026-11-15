@@ -1007,7 +1007,10 @@ export function createOrg(name) {
  *
  * Returns [] on any failure so onboarding degrades gracefully.
  *
- * @returns {Promise<Array<{ id: string, org_id: string, org_name: string, role: string, token: string, created_at: string, expires_at: string }>>}
+ * `token` is null unless the account's address was verified by its sign-in
+ * provider; such invites can only be accepted from the invite link itself.
+ *
+ * @returns {Promise<Array<{ id: string, org_id: string, org_name: string, role: string, token: string | null, created_at: string, expires_at: string }>>}
  */
 export async function getMyInvites() {
   try {
