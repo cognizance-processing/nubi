@@ -118,7 +118,9 @@ def test_execute_imports_dbapi_submodule(fake_adbc):
     out = conn.execute(_plan())
     assert out.equals(fake_adbc.table)
     assert fake_adbc.connected == ["postgresql://u@h/db"]
-    assert fake_adbc.cursor.executed == [("SELECT 1 AS ok", None)]
+    # The caller's statement runs last, after the read-only session guards.
+    assert fake_adbc.cursor.executed[-1] == ("SELECT 1 AS ok", None)
+    assert all(sql.startswith("SET ") for sql, _ in fake_adbc.cursor.executed[:-1])
 
 
 def test_execute_stream_iterates_record_batch_reader(fake_adbc):

@@ -227,6 +227,12 @@ class MySQLConnector(Connector):
             connect_timeout=10,
             read_timeout=60,
             write_timeout=60,
+            # Query sessions never write, and a runaway SELECT is cancelled by
+            # the server (max_execution_time is in milliseconds).
+            init_command=(
+                "SET SESSION TRANSACTION READ ONLY, "
+                "SESSION max_execution_time = 60000"
+            ),
         )
 
     # ------------------------------------------------------------------

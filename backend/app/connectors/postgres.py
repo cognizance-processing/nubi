@@ -67,6 +67,30 @@ def _import_adbc() -> tuple[Any, Any]:
         ) from exc
 
 
+def _statement_timeout_ms() -> int:
+    """Per-statement time limit for query sessions (``NUBI_SQL_STATEMENT_TIMEOUT_S``, default 120s)."""
+    import os  # noqa: PLC0415
+
+    try:
+        seconds = float(os.environ.get("NUBI_SQL_STATEMENT_TIMEOUT_S", "120"))
+    except ValueError:
+        seconds = 120.0
+    return int(max(1.0, seconds) * 1000)
+
+
+def _guard_session(cur: Any) -> None:
+    """Make the session that is about to run a query read-only and time-limited.
+
+    Defence in depth behind the planner's read-only check: even SQL that got
+    past it cannot write, and a runaway statement is cancelled by the server.
+    The statements are plain ``SET``s, so they work through connection poolers
+    that refuse startup options.
+    """
+    cur.execute(f"SET statement_timeout = {_statement_timeout_ms()}")
+    cur.execute("SET TRANSACTION READ ONLY")
+    cur.execute("SET default_transaction_read_only = on")
+
+
 class PostgresConnector(Connector):
     """Connector backed by PostgreSQL / Neon via ADBC.
 
@@ -157,6 +181,7 @@ class PostgresConnector(Connector):
 
             with pg_dbapi.connect(self._dsn) as db_conn:
                 with db_conn.cursor() as cur:
+                    _guard_session(cur)
                     cur.execute(plan.sql, plan.params if plan.params else None)
                     return cur.fetch_arrow_table()
         except AppError:
@@ -199,6 +224,7 @@ class PostgresConnector(Connector):
 
             with pg_dbapi.connect(self._dsn) as db_conn:
                 with db_conn.cursor() as cur:
+                    _guard_session(cur)
                     cur.execute(plan.sql, plan.params if plan.params else None)
                     # fetch_record_batch() returns a RecordBatchReader (the
                     # whole result), not a single batch.
