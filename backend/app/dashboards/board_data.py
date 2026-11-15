@@ -1150,14 +1150,9 @@ async def _resolve_org_connector(
         if effective_network({**real_ds, "config": cfg})[0] == "direct":
             guard_connector_target(cfg)
         if ctype == "postgres":
-            dsn = cfg.get("dsn")
-            if dsn is None:
-                host = cfg.get("host", "localhost")
-                port = cfg.get("port", 5432)
-                dbname = cfg.get("dbname") or cfg.get("database") or "postgres"
-                user = cfg.get("user") or cfg.get("username") or "postgres"
-                password = cfg.get("password", "")
-                dsn = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
+            from app.connectors.registry import postgres_dsn  # noqa: PLC0415
+
+            dsn = postgres_dsn(cfg)
             return factory(dsn), True
 
         return factory(cfg), True

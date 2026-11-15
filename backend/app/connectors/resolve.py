@@ -253,14 +253,9 @@ async def resolve_datastore_connector(
             await asyncio.to_thread(connect_duckdb_datastore, cfg, org_id)
         )
     elif ctype == "postgres":
-        _dsn: str | None = cfg.get("dsn")
-        if _dsn is None:
-            _host = cfg.get("host", "localhost")
-            _port = cfg.get("port", 5432)
-            _dbname = cfg.get("dbname") or cfg.get("database") or "postgres"
-            _user = cfg.get("user") or cfg.get("username") or "postgres"
-            _password = cfg.get("password", "")
-            _dsn = f"postgresql://{_user}:{_password}@{_host}:{_port}/{_dbname}"
+        from app.connectors.registry import postgres_dsn  # noqa: PLC0415
+
+        _dsn = postgres_dsn(cfg)
         connector = factory(_dsn)
     else:
         connector = factory(cfg)

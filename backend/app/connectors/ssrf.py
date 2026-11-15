@@ -38,9 +38,10 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 import socket
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from app.errors import AppError
 
@@ -352,9 +353,19 @@ def guard_s3_endpoint(endpoint: str) -> None:
 # ---------------------------------------------------------------------------
 
 #: Config keys that may name a host directly.
-_HOST_KEYS = ("host", "hostname", "server")
+_HOST_KEYS = ("host", "hostname", "server", "hostaddr")
 #: Config keys that carry a URL / DSN whose host must be checked too.
 _URL_KEYS = ("dsn", "url", "base_url", "connection_string", "jdbc_url", "uri")
+#: Connection-string parameters a database driver takes its target from.
+_TARGET_PARAMS = ("host", "hostaddr")
+#: Schemes whose driver falls back to a local socket when no host is given.
+_SOCKET_FALLBACK_SCHEMES = ("postgres", "postgresql", "redshift", "cockroachdb", "mysql")
+
+_HOSTNAME_RE = re.compile(
+    r"^(?=.{1,253}$)[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,62})(?:\.[A-Za-z0-9_-]{1,63})*\.?$"
+)
+_KEYWORD_DSN_RE = re.compile(r"^\s*[A-Za-z_]+\s*=")
+_KEYWORD_PAIR_RE = re.compile(r"([A-Za-z_]+)\s*=\s*('(?:[^'\\]|\\.)*'|\S*)")
 
 
 def _not_allowed() -> AppError:
@@ -366,30 +377,82 @@ def _not_allowed() -> AppError:
     )
 
 
-def _check_host(host: Any) -> None:
-    if not host or not isinstance(host, str):
-        return
+def _check_one_host(host: str) -> None:
     host = host.strip()
     if host.startswith("["):
         host = host[1:].split("]", 1)[0]
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        # Anything that is not a plain host name is refused rather than left
+        # for the driver to interpret in its own way.
+        if not _HOSTNAME_RE.match(host):
+            raise _not_allowed() from None
     allow_private = _allow_private()
     for ip in _resolve_addresses(host):
         if _is_forbidden(ip, allow_private=allow_private):
             raise _not_allowed()
 
 
-def _host_of(value: Any) -> str | None:
+def _check_host(host: Any) -> None:
+    """Check a host value; a comma-separated list is checked entry by entry."""
+    if host is None or host == "":
+        return
+    if not isinstance(host, str):
+        raise _not_allowed()
+    for part in host.split(","):
+        _check_one_host(part)
+
+
+def _netloc_hosts(netloc: str) -> list[str]:
+    hosts: list[str] = []
+    for entry in netloc.rsplit("@", 1)[-1].split(","):
+        entry = entry.strip()
+        if entry.startswith("["):
+            entry = entry.split("]", 1)[0] + "]"
+        elif ":" in entry:
+            entry = entry.rsplit(":", 1)[0]
+        hosts.append(entry)
+    return hosts
+
+
+def _hosts_of(value: Any) -> list[str]:
+    """Every host a URL or connection string names: the authority (each entry
+    of a multi-host list), plus ``host`` / ``hostaddr`` parameters, in either
+    URL or ``key=value`` form.  Raises when the string names no host but its
+    driver would then use a local socket."""
     if not isinstance(value, str) or not value.strip():
-        return None
+        return []
     text = value.strip()
     if text.lower().startswith("jdbc:"):
         text = text[5:]
-    if "://" not in text:
+    if "://" not in text and _KEYWORD_DSN_RE.match(text):
+        found = [
+            raw[1:-1] if raw.startswith("'") else raw
+            for key, raw in _KEYWORD_PAIR_RE.findall(text)
+            if key.lower() in _TARGET_PARAMS
+        ]
+        if not any(found):
+            raise _not_allowed()
+        return found
+    bare = "://" not in text
+    if bare:
         text = "x://" + text
     try:
-        return urlsplit(text).hostname
+        parts = urlsplit(text)
+        params = parse_qsl(parts.query, keep_blank_values=True)
     except ValueError:
         raise _not_allowed() from None
+    hosts = [h for h in _netloc_hosts(parts.netloc) if h]
+    hosts += [v for k, v in params if k.lower() in _TARGET_PARAMS]
+    if not hosts and not bare and parts.scheme.lower().split("+", 1)[0] in _SOCKET_FALLBACK_SCHEMES:
+        raise _not_allowed()
+    return hosts
+
+
+def _host_of(value: Any) -> str | None:
+    hosts = _hosts_of(value)
+    return ",".join(hosts) if hosts else None
 
 
 def guard_connector_target(config: dict[str, Any]) -> None:
@@ -410,6 +473,30 @@ def guard_connector_target(config: dict[str, Any]) -> None:
         _check_host(config.get(key))
     for key in _URL_KEYS:
         _check_host(_host_of(config.get(key)))
+
+
+def connection_host(host: Any, *, default: str = "localhost") -> str:
+    """Return *host* for use inside an assembled connection string.
+
+    Only plain host names and IP literals (or a comma-separated list of them)
+    are accepted, so the value cannot carry anything else into the string.
+    When the config names no host the driver would dial *default*; that
+    implied target goes through the same policy as an explicit one.
+    """
+    if host is None or host == "":
+        _check_host(default)
+        return default
+    if not isinstance(host, str):
+        raise _not_allowed()
+    for part in host.split(","):
+        part = part.strip()
+        literal = part[1:-1] if part.startswith("[") and part.endswith("]") else part
+        try:
+            ipaddress.ip_address(literal)
+        except ValueError:
+            if not _HOSTNAME_RE.match(part):
+                raise _not_allowed() from None
+    return host.strip()
 
 
 def guard_connector_endpoint(endpoint: str) -> None:

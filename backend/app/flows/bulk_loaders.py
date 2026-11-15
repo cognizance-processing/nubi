@@ -472,12 +472,6 @@ def _rowcount_from_cursor(cur: Any) -> int | None:
 
 def _redshift_dsn(cfg: dict[str, Any]) -> str:  # pragma: no cover — live-creds path
     """Build a Redshift (Postgres-wire) DSN from connector config."""
-    dsn = cfg.get("dsn")
-    if dsn:
-        return str(dsn)
-    host = cfg.get("host", "localhost")
-    port = cfg.get("port", 5439)
-    dbname = cfg.get("dbname") or cfg.get("database") or "dev"
-    user = cfg.get("user") or cfg.get("username") or "awsuser"
-    password = cfg.get("password", "")
-    return f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
+    from app.connectors.registry import postgres_dsn  # noqa: PLC0415
+
+    return postgres_dsn(cfg, default_port=5439, default_database="dev", default_user="awsuser")

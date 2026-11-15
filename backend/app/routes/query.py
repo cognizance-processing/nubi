@@ -1354,16 +1354,9 @@ async def query(
         elif ctype == "postgres":
             # PostgresConnector takes a DSN string, not a raw config dict.
             # Assemble the DSN from the (now secret-enriched) config dict.
-            _dsn: str | None = cfg.get("dsn")
-            if _dsn is None:
-                _host = cfg.get("host", "localhost")
-                _port = cfg.get("port", 5432)
-                _dbname = cfg.get("dbname") or cfg.get("database") or "postgres"
-                _user = cfg.get("user") or cfg.get("username") or "postgres"
-                _password = cfg.get("password", "")
-                _dsn = (
-                    f"postgresql://{_user}:{_password}@{_host}:{_port}/{_dbname}"
-                )
+            from app.connectors.registry import postgres_dsn  # noqa: PLC0415
+
+            _dsn = postgres_dsn(cfg)
             connector = factory(_dsn)
         else:
             connector = factory(cfg)
