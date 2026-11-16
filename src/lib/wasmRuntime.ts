@@ -45,6 +45,7 @@ import { fetchRetryingRateLimit } from './rateLimitRetry.js'
 import * as arrow from 'apache-arrow'
 import { getAccessToken, tenantHeaders } from './api.js'
 import { descaleDecimalTable } from './arrowDecimal.js'
+import { ENGINE_STALL_MS, createShareQueue, startEngine } from './engineStart.js'
 
 // DuckDB-WASM is ONLY needed for the local/demo query paths (initDuckDB below),
 // never for live server-backed boards — yet a static import made every
@@ -174,21 +175,21 @@ export function initDuckDB() {
   if (_db) return Promise.resolve(_db)
   if (_initPromise) return _initPromise
 
-  _initPromise = (async () => {
-    const { duckdb, bundles } = await loadDuckDBModule()
-    const bundle = await duckdb.selectBundle(bundles)
-
-    // Same-origin worker URL → classic Worker (the browser blocks constructing a
-    // Worker from a cross-origin URL, which is why the CDN bundle failed).
-    const worker = new Worker(bundle.mainWorker)
-    const logger = new duckdb.VoidLogger()
-    const db = new duckdb.AsyncDuckDB(logger, worker)
-
-    await db.instantiate(bundle.mainModule, bundle.pthreadWorker)
-
-    _db = db
-    return _db
-  })()
+  _initPromise = startEngine({
+    load: loadDuckDBModule,
+    createWorker: (url) => new Worker(url),
+    stallMs: ENGINE_STALL_MS,
+  }).then(
+    (db) => {
+      _db = db
+      return db
+    },
+    (err) => {
+      // Forget the failed attempt so the next call starts a fresh one.
+      _initPromise = null
+      throw err
+    },
+  )
 
   return _initPromise
 }
@@ -674,6 +675,26 @@ export async function fetchPreaggSuggestions() {
  * @param {arrow.Table} table
  * @returns {Promise<void>}
  */
+// Results being handed to the engine in the background. Local queries wait for
+// these, so a cell that reads an earlier cell's result still finds it.
+const _shares = createShareQueue((name, table) => registerArrowTable(name, table))
+
+/**
+ * Hand a result to the in-browser engine under each of *names* WITHOUT making
+ * the caller wait: a result is already on screen by the time this runs, and
+ * starting the engine can take minutes on a slow connection.  The first name is
+ * the one other cells rely on — if it cannot be registered, *onError* is called
+ * with the reason; the remaining names are best-effort aliases.
+ *
+ * @param {string[]} names
+ * @param {arrow.Table} table
+ * @param {(err: Error) => void} [onError]
+ * @returns {Promise<void>} settles when the hand-off is done; never rejects
+ */
+export function shareArrowTable(names, table, onError = undefined) {
+  return _shares.share(names, table, onError)
+}
+
 export async function registerArrowTable(name, table) {
   const db = await initDuckDB()
   const conn = await db.connect()
@@ -696,6 +717,7 @@ export async function registerArrowTable(name, table) {
  * @returns {Promise<arrow.Table>}
  */
 export async function queryLocal(sql) {
+  await _shares.settled()
   const db = await initDuckDB()
   const conn = await db.connect()
   try {

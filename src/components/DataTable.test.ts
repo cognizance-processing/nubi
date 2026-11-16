@@ -430,6 +430,24 @@ describe('formatNumber', () => {
 // Date columns
 // ---------------------------------------------------------------------------
 
+describe('arrowToRows date columns', () => {
+  test('shows date and timestamp columns as dates, not epoch numbers', () => {
+    const t = new arrow.Table({
+      day: arrow.vectorFromArray([Date.UTC(2017, 0, 1), null], new arrow.DateDay()),
+      at: arrow.vectorFromArray([new Date('2024-06-01T14:30:00Z')]).concat(
+        arrow.vectorFromArray([new Date('2024-06-02T00:00:00Z')]),
+      ),
+      n: arrow.vectorFromArray([1483228800000, 2], new arrow.Float64()),
+    })
+    const rows = arrowToRows(t)
+    assert.equal(rows[0].day, '2017-01-01')
+    assert.equal(rows[1].day, null)
+    assert.equal(rows[0].at, '2024-06-01 14:30:00')
+    assert.equal(rows[0].n, 1483228800000)
+    assert.deepEqual(deriveColumns(t).map((c) => c.type), ['date', 'date', 'number'])
+  })
+})
+
 describe('isArrowDateType', () => {
   test('recognises dates and timestamps, not numbers or text', () => {
     assert.equal(isArrowDateType(new arrow.DateDay()), true)

@@ -69,6 +69,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse
 
 from app.config import get_settings
+from app.static_assets import LargeAssetStaticFiles
 from app.db import close_db, fetchrow, init_db
 from app.errors import register_handlers
 from app.middleware.audit import register_audit_middleware
@@ -734,7 +735,7 @@ def create_app() -> FastAPI:
     if os.path.isdir(static_dir):
         assets_dir = os.path.join(static_dir, "assets")
         if os.path.isdir(assets_dir):
-            application.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+            application.mount("/assets", LargeAssetStaticFiles(directory=assets_dir), name="assets")
 
         index_html = os.path.join(static_dir, "index.html")
 

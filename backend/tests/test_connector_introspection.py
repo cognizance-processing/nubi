@@ -142,6 +142,55 @@ class TestFailureIsNotAnEmptyList:
 # ---------------------------------------------------------------------------
 
 
+class TestNativeTableListing:
+    """Engines with no catalog-wide information_schema list tables themselves."""
+
+    def test_a_connector_listing_is_used_instead_of_sql(self) -> None:
+        class _Native:
+            def list_tables(self) -> list[dict[str, str]]:
+                return [
+                    {"schema": "sales", "name": "orders"},
+                    {"schema": "information_schema", "name": "tables"},
+                ]
+
+            def execute(self, plan: Any) -> pa.Table:
+                raise AssertionError("SQL introspection must not run")
+
+        assert introspect_tables(_Native()) == [{"schema": "sales", "name": "orders"}]
+
+    def test_a_failed_listing_is_an_error_not_an_empty_schema(self) -> None:
+        class _Broken:
+            def list_tables(self) -> list[dict[str, str]]:
+                raise RuntimeError("permission denied")
+
+        with pytest.raises(AppError) as err:
+            introspect_tables(_Broken())
+        assert err.value.code == "introspection_failed"
+
+    def test_bigquery_lists_every_readable_dataset(self, monkeypatch) -> None:
+        from types import SimpleNamespace as NS
+
+        from app.connectors.bigquery import BigQueryConnector
+
+        class _Client:
+            def list_datasets(self):
+                return [NS(dataset_id=d, reference=d) for d in ("b_ds", "a_ds", "locked")]
+
+            def list_tables(self, ref):
+                if ref == "locked":
+                    raise PermissionError("403")
+                return [NS(table_id=f"{ref}_t2"), NS(table_id=f"{ref}_t1")]
+
+        connector = BigQueryConnector({"project": "p"})
+        monkeypatch.setattr(connector, "_build_client", lambda: _Client())
+        assert introspect_tables(connector) == [
+            {"schema": "a_ds", "name": "a_ds_t1"},
+            {"schema": "a_ds", "name": "a_ds_t2"},
+            {"schema": "b_ds", "name": "b_ds_t1"},
+            {"schema": "b_ds", "name": "b_ds_t2"},
+        ]
+
+
 class TestResolveTableRef:
     TABLES = [
         {"schema": "inventory", "name": "asset"},

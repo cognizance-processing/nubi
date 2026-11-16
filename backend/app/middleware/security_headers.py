@@ -7,6 +7,10 @@ Applied to every response:
 * A ``Content-Security-Policy``:
     - API and other non-document responses get ``default-src 'none'`` — they
       are data, never a page.
+    - Same-origin script files get a policy of their own: a script started as
+      a Web Worker is governed by the policy on *its own* response, not the
+      page's, so ``default-src 'none'`` there stops the in-browser query
+      engine from fetching and compiling its WebAssembly module.
     - HTML documents (the app shell) get a policy that only runs the app's own
       scripts: same-origin files plus the inline bootstrap scripts, admitted
       by hash.  No ``unsafe-inline`` and no other origins for scripts
@@ -33,6 +37,18 @@ from starlette.responses import Response
 
 _INLINE_SCRIPT_RE = re.compile(r"<script(?P<attrs>[^>]*)>(?P<body>.*?)</script>", re.DOTALL | re.IGNORECASE)
 _API_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+# Policy for a script file, which only takes effect when that file runs as a
+# worker: same-origin scripts and WebAssembly, and the fetches the data layer
+# makes.  Still no inline script and no third-party script origins.
+_SCRIPT_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' blob:; "
+    "connect-src 'self' https: wss: blob: data:; "
+    "worker-src 'self' blob:; "
+    "object-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+)
+_SCRIPT_TYPES = ("text/javascript", "application/javascript")
+_SCRIPT_SUFFIXES = (".js", ".mjs")
 
 
 def _inline_script_hashes(index_html: str | None) -> list[str]:
@@ -97,6 +113,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
         headers = response.headers
+        path = request.url.path
         headers.setdefault("X-Content-Type-Options", "nosniff")
         headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         if self._env == "production":
@@ -105,9 +122,18 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if "content-security-policy" in headers or "content-security-policy-report-only" in headers:
             return response  # a route set its own policy
 
-        path = request.url.path
         frameable = path.startswith("/embed/")
-        is_document = headers.get("content-type", "").lower().startswith("text/html")
+        content_type = headers.get("content-type", "").lower()
+        is_document = content_type.startswith("text/html")
+        # A "not modified" reply carries no content type, and a browser merges
+        # its headers into the cached copy — so it must repeat the script
+        # policy, or a revalidated worker would run under the data policy.
+        is_script = content_type.startswith(_SCRIPT_TYPES) or (
+            response.status_code == 304 and path.endswith(_SCRIPT_SUFFIXES)
+        )
+        if not is_document and not frameable and is_script:
+            headers["Content-Security-Policy"] = _SCRIPT_CSP
+            return response
         if not is_document:
             # /embed/* scripts and styles are loaded by host pages; a
             # default-src 'none' policy on a script response is harmless but
