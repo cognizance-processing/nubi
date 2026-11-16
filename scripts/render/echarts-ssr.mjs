@@ -264,7 +264,8 @@ function baseAxesOption(xData, isDark = false) {
 function barStyle(color, config) {
   const out = {}
   const w = Number(config.barBorderWidth)
-  if (w > 0) { out.borderWidth = w; out.borderColor = config.barBorderColor || color }
+  // safeColor: the value lands in an SVG attribute (see colors.mjs).
+  if (w > 0) { out.borderWidth = w; out.borderColor = safeColor(config.barBorderColor) || color }
   if (typeof config.barFillOpacity === 'number') out.opacity = config.barFillOpacity
   return out
 }
@@ -480,7 +481,7 @@ function buildSankey(colMap, enc, config = {}) {
 }
 
 /** Funnel — stages ordered largest-first. */
-function buildFunnel(colMap, xCol, yCol, config = {}) {
+function buildFunnel(colMap, xCol, yCol, config = {}, theme = 'light') {
   const names = toStrings(colMap[xCol] || [])
   const vals = toNumbers(colMap[yCol] || [])
   if (!names.length) return emptyOption()
@@ -496,10 +497,12 @@ function buildFunnel(colMap, xCol, yCol, config = {}) {
       orient: config.orientation === 'horizontal' ? 'horizontal' : 'vertical',
       label: { fontSize: 10 },
       emphasis: { disabled: true },
-      // Outline only when the author set one (SSR funnels have none by default).
-      ...(Number(config.barBorderWidth) > 0
-        ? { itemStyle: { borderWidth: Number(config.barBorderWidth), borderColor: config.barBorderColor || '#2d3748' } }
-        : {}),
+      // Mirrors chart-options.ts buildFunnel: unset keeps a 1px theme border;
+      // barBorderWidth 0 = no outline.
+      itemStyle: {
+        borderWidth: Number(config.barBorderWidth ?? 1),
+        borderColor: safeColor(config.barBorderColor) || THEME_TOKENS[theme]['--border'],
+      },
     }],
   }
 }
@@ -955,9 +958,10 @@ function buildGauge(colMap, valueCol, props = {}, config = {}) {
  *
  * @param {object} widget   – Widget object (type, chart_type, encoding, props).
  * @param {object} colMap   – Column data as { colName: any[] }.
+ * @param {string} [theme]  – 'light' | 'dark' (funnel's default border).
  * @returns {object}        – ECharts option object.
  */
-function buildChartOption(widget, colMap) {
+function buildChartOption(widget, colMap, theme = 'light') {
   const chartType = (widget.chart_type || 'bar').toLowerCase()
   const enc = widget.encoding || {}
   const props = widget.props || {}
@@ -979,7 +983,7 @@ function buildChartOption(widget, colMap) {
     case 'polar':     option = buildPolar(colMap, xCol, yCol, config); break
     case 'radialbar': option = buildRadialBar(colMap, xCol, yCol, config); break
     case 'sankey':      option = buildSankey(colMap, enc, config); break
-    case 'funnel':      option = buildFunnel(colMap, xCol, yCol, config); break
+    case 'funnel':      option = buildFunnel(colMap, xCol, yCol, config, theme); break
     case 'waterfall':   option = buildWaterfall(colMap, xCol, yCol, config); break
     case 'heatmap':     option = buildHeatmap(colMap, enc, config); break
     case 'radar':       option = buildRadar(colMap, enc, config); break
@@ -1022,7 +1026,7 @@ function buildChartOption(widget, colMap) {
  * @returns {string}  SVG string
  */
 function renderChart(widget, colMap, width, height, theme = 'light') {
-  const option = buildChartOption(widget, colMap)
+  const option = buildChartOption(widget, colMap, theme)
   // A chart type with no server-side equivalent (currently only 'map', which
   // needs a GeoJSON registry this process does not have) returns null. A
   // labelled placeholder is the honest answer; drawing some other chart in its
@@ -1902,7 +1906,15 @@ async function main() {
   process.stdout.write(JSON.stringify({ widgets: results }) + '\n')
 }
 
-main().catch(err => {
-  process.stderr.write(`[echarts-ssr] fatal: ${err.message}\n${err.stack}\n`)
-  process.exit(1)
-})
+// Run only as a CLI (stdin -> stdout); importing for tests must not read stdin.
+// Case-insensitive on Windows, where the caller's drive-letter case can differ.
+const samePath = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b)
+if (process.argv[1] && samePath(resolve(process.argv[1]), fileURLToPath(import.meta.url))) {
+  main().catch(err => {
+    process.stderr.write(`[echarts-ssr] fatal: ${err.message}\n${err.stack}\n`)
+    process.exit(1)
+  })
+}
+
+// Test-only: scripts/render/chart-styling.test.mjs.
+export { buildChartOption }
