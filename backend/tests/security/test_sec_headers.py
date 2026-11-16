@@ -6,7 +6,7 @@ import base64
 import hashlib
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, Response
 from fastapi.testclient import TestClient
 
@@ -33,8 +33,12 @@ def _app(tmp_path, env="production"):
         return "<html></html>"
 
     @app.get("/assets/engine.worker.js")
-    async def worker_script():
-        return Response("self.onmessage = () => {}", media_type="text/javascript")
+    async def worker_script(request: Request):
+        if request.headers.get("if-none-match") == '"v1"':
+            return Response(status_code=304, headers={"ETag": '"v1"'})
+        return Response(
+            "self.onmessage = () => {}", media_type="text/javascript", headers={"ETag": '"v1"'}
+        )
 
     @app.get("/embed/nubi-embed.js")
     async def embed_script():
@@ -66,6 +70,10 @@ def test_script_files_can_run_as_workers_that_load_webassembly(tmp_path):
     assert "'self'" in directives["connect-src"]
     assert "'unsafe-inline'" not in directives["script-src"]
     assert directives["frame-ancestors"] == "'none'"
+    # A revalidation reply is merged into the cached copy, so it repeats the policy.
+    again = client.get("/assets/engine.worker.js", headers={"if-none-match": '"v1"'})
+    assert again.status_code == 304
+    assert again.headers["content-security-policy"] == csp
     # Embed scripts keep their own (host-loadable) policy.
     embed = client.get("/embed/nubi-embed.js").headers["content-security-policy"]
     assert embed == "default-src 'none'; base-uri 'none'"

@@ -48,6 +48,7 @@ _SCRIPT_CSP = (
     "object-src 'none'; frame-ancestors 'none'; base-uri 'none'"
 )
 _SCRIPT_TYPES = ("text/javascript", "application/javascript")
+_SCRIPT_SUFFIXES = (".js", ".mjs")
 
 
 def _inline_script_hashes(index_html: str | None) -> list[str]:
@@ -112,6 +113,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
         headers = response.headers
+        path = request.url.path
         headers.setdefault("X-Content-Type-Options", "nosniff")
         headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         if self._env == "production":
@@ -120,11 +122,16 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if "content-security-policy" in headers or "content-security-policy-report-only" in headers:
             return response  # a route set its own policy
 
-        path = request.url.path
         frameable = path.startswith("/embed/")
         content_type = headers.get("content-type", "").lower()
         is_document = content_type.startswith("text/html")
-        if not is_document and not frameable and content_type.startswith(_SCRIPT_TYPES):
+        # A "not modified" reply carries no content type, and a browser merges
+        # its headers into the cached copy — so it must repeat the script
+        # policy, or a revalidated worker would run under the data policy.
+        is_script = content_type.startswith(_SCRIPT_TYPES) or (
+            response.status_code == 304 and path.endswith(_SCRIPT_SUFFIXES)
+        )
+        if not is_document and not frameable and is_script:
             headers["Content-Security-Policy"] = _SCRIPT_CSP
             return response
         if not is_document:
