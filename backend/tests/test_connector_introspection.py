@@ -291,3 +291,51 @@ class TestRoutesResolveOrgFromTheRequest:
             "these handlers take a Request but resolve the org with "
             "get_user_org, ignoring X-Org-Id:\n  " + "\n  ".join(offenders)
         )
+
+
+# ---------------------------------------------------------------------------
+# 5. Native catalog hook (BigQuery-style engines with no project-wide
+#    information_schema.tables)
+# ---------------------------------------------------------------------------
+
+
+class _NativeCatalogConnector(_StubConnector):
+    """Exposes ``list_tables()``; ``execute`` must never be called for listing."""
+
+    def __init__(self, tables: list[dict[str, str]] | None, *, raises: Exception | None = None) -> None:
+        super().__init__(None, raises=RuntimeError("execute() must not be used"))
+        self._tables = tables
+        self._native_raises = raises
+
+    def list_tables(self) -> list[dict[str, str]]:
+        if self._native_raises is not None:
+            raise self._native_raises
+        return list(self._tables or [])
+
+
+class TestNativeCatalogHook:
+    def test_native_listing_is_preferred_over_sql(self) -> None:
+        conn = _NativeCatalogConnector([
+            {"schema": "analytics", "name": "orders"},
+            {"schema": "analytics", "name": "customers"},
+        ])
+        assert introspect_tables(conn) == [
+            {"schema": "analytics", "name": "orders"},
+            {"schema": "analytics", "name": "customers"},
+        ]
+        assert conn.calls == []  # no information_schema / SHOW TABLES round-trips
+
+    def test_native_failure_is_classified_not_retried_via_sql(self) -> None:
+        conn = _NativeCatalogConnector(None, raises=RuntimeError("403 Access Denied"))
+        with pytest.raises(AppError) as exc_info:
+            introspect_tables(conn)
+        assert exc_info.value.code == "introspection_failed"
+        assert "403 Access Denied" in str(exc_info.value)
+        assert conn.calls == []
+
+    def test_native_apperror_propagates_unchanged(self) -> None:
+        err = AppError("driver_unavailable", "no bigquery", 500)
+        conn = _NativeCatalogConnector(None, raises=err)
+        with pytest.raises(AppError) as exc_info:
+            introspect_tables(conn)
+        assert exc_info.value is err

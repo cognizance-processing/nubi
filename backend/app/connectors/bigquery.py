@@ -289,6 +289,33 @@ class BigQueryConnector(Connector):
     # Execution
     # ------------------------------------------------------------------
 
+    def list_tables(self) -> list[dict[str, str]]:
+        """Return ``[{"schema": dataset_id, "name": table_id}, …]`` via the API.
+
+        BigQuery has no project-wide ``information_schema.tables``: the view is
+        only addressable per dataset (``ds.INFORMATION_SCHEMA.TABLES``) or per
+        region, and the region form needs project-wide read permissions. The
+        REST API honours narrow, dataset-scoped grants instead, so this is what
+        the data browser uses. Needs ``bigquery.datasets.get`` +
+        ``bigquery.tables.list`` on each dataset (``roles/bigquery.metadataViewer``
+        on the dataset is the minimal grant).
+
+        ``config["dataset"]`` restricts listing to that one dataset; otherwise
+        every dataset the credentials can see in the project is listed.
+        """
+        client = self._build_client()
+        only = (self._config.get("dataset") or "").strip() or None
+        if only:
+            dataset_ids = [only]
+        else:
+            dataset_ids = [d.dataset_id for d in client.list_datasets()]
+        out: list[dict[str, str]] = []
+        for ds in dataset_ids:
+            for t in client.list_tables(ds):
+                out.append({"schema": ds, "name": t.table_id})
+        out.sort(key=lambda r: (r["schema"], r["name"]))
+        return out
+
     def execute(self, plan: PhysicalPlan) -> "pa.Table":
         """Execute *plan* and return the full result as a PyArrow Table.
 
