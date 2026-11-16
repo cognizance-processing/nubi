@@ -60,6 +60,8 @@ export function aggregate(kind, values) {
 
 export function arrowTypeToColumnType(dtype) {
   if (!dtype) return 'string'
+  // Checked by typeId first: class names do not survive minification.
+  if (isArrowDateType(dtype)) return 'date'
   const name = dtype.constructor?.name ?? ''
   // Integers
   if (name.startsWith('Int') || name.startsWith('Uint')) return 'number'
@@ -112,6 +114,8 @@ export function arrowToRows(arrowTable) {
 
   // Pre-fetch column vectors for performance
   const vectors = fields.map((f) => arrowTable.getChild(f.name))
+  // Date and timestamp columns read as epoch milliseconds; show them as dates.
+  const isDate = fields.map((f) => isArrowDateType(f.type))
 
   for (let i = 0; i < numRows; i++) {
     const row = {}
@@ -120,7 +124,8 @@ export function arrowToRows(arrowTable) {
       if (v) {
         const val = v.get(i)
         // BigInt → Number for display (Arrow Int64 returns BigInt)
-        row[fields[j].name] = typeof val === 'bigint' ? Number(val) : val
+        const plain = typeof val === 'bigint' ? Number(val) : val
+        row[fields[j].name] = isDate[j] ? dateCellText(plain) : plain
       } else {
         row[fields[j].name] = null
       }
