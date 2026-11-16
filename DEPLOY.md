@@ -11,7 +11,7 @@ embedded, plus a `worker` entrypoint for flows. Run it anywhere containers run.
 | Any other platform (Cloud Run, Kubernetes, …) | Build `Dockerfile` (OSS) or `Dockerfile.ee`; run `python /app/database/migrate.py` (add `--ee` for `Dockerfile.ee`) before each rollout, serve `uvicorn main:app` on 8000, and run `python worker.py` as a separate always-on process |
 
 Published images: `ghcr.io/cognizance-processing/nubi` (OSS) and
-`ghcr.io/cognizance-processing/nubi-ee` (includes the inert billing layer), built
+`ghcr.io/cognizance-processing/nubi-ee` (includes the inert billing layer and every pure-Python connector driver from `requirements-cloud.txt`), built
 by [`.github/workflows/build-image.yml`](.github/workflows/build-image.yml) on
 every push to `dev`/`main` and on `vX.Y.Z` tags.
 
