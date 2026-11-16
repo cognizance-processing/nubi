@@ -42,6 +42,7 @@ from app.connectors.arrow_io import ipc_stream_from_bytes, table_to_ipc_bytes
 from app.connectors.duckdb_conn import (  # noqa: F401
     DuckDBConnector,
     connect_duckdb_datastore,
+    datastore_connector_type,
     open_duckdb_readonly,
     setup_s3_httpfs,
 )
@@ -497,7 +498,7 @@ async def _resolve_connector_and_tables(
         raise AppError("not_found", f"Datastore {datastore_id!r} not found.", 404)
 
     cfg: dict = dict(ds.get("config") or {})
-    ctype = cfg.get("connector_type") or cfg.get("type") or "duckdb"
+    ctype = datastore_connector_type(cfg)
 
     if ctype == "duckdb":
         connector = await asyncio.to_thread(_build_duckdb_connector, cfg, org_id)
@@ -657,9 +658,7 @@ async def list_columns(
             if datastore_id != _DEMO_CONNECTOR_ID
             else None
         )
-        ctype = (
-            (cfg.get("connector_type") or cfg.get("type") or "duckdb") if cfg else "duckdb"
-        )
+        ctype = datastore_connector_type(cfg)
 
         # Non-DuckDB connectors (postgres/bigquery/snowflake/…): derive columns from a
         # zero-row Arrow probe through the resolved connector.  Remote SQL sources are
@@ -887,7 +886,7 @@ async def _resolve_writable_connector(
         raise AppError("not_found", f"Datastore {datastore_id!r} not found.", 404)
 
     cfg: dict = dict(ds.get("config") or {})
-    ctype = cfg.get("connector_type") or cfg.get("type") or "duckdb"
+    ctype = datastore_connector_type(cfg)
     if ctype != "duckdb":
         raise AppError(
             "not_supported",

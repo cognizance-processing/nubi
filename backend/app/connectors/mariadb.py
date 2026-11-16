@@ -29,6 +29,13 @@ class MariaDBConnector(MySQLConnector):
     placeholder translation, and capability flags.
     """
 
+    # Same rules as MySQL; MariaDB names the statement time limit differently
+    # (max_statement_time, in seconds).
+    session_rules = (
+        "SET SESSION TRANSACTION READ ONLY",
+        "SET SESSION max_statement_time = 60",
+    )
+
     # No overrides: MariaDB is wire-compatible with MySQL for the SELECT-only
     # query path Nubi uses.  Capabilities, execution, and streaming are
     # inherited verbatim from MySQLConnector.

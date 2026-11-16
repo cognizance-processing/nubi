@@ -83,7 +83,7 @@ from app.compute.runner import LocalSubprocessRunner, KernelResult
 from app.connectors.arrow_io import table_to_ipc_bytes
 from app.errors import AppError
 from app.features import enforce_quota
-from app.queries.registry import get_query_registry
+from app.queries.registry import resolve_registered_query
 from app.routes import api_router
 
 logger = logging.getLogger("nubi.compute")
@@ -368,13 +368,14 @@ async def compute_run(
     inputs: dict[str, pa.Table] = {}
 
     if binding_spec:
-        registry = get_query_registry()
         # Execute via the DuckDB demo connector.
         from app.connectors import plan as planner_plan
 
         demo_conn = _get_demo_connector()
         for name, query_id in binding_spec.items():
-            registered = registry.get(query_id)
+            # Org-scoped: an id that belongs to another organisation resolves
+            # to nothing, exactly like an id that does not exist.
+            registered = await resolve_registered_query(query_id, org_id)
             if registered is None:
                 raise AppError(
                     "query_not_found",

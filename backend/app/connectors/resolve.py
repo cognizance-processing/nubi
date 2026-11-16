@@ -216,6 +216,7 @@ async def resolve_datastore_connector(
         effective_network as _effective_network,
         resolve_network as _resolve_network,
         resolve_network_async as _resolve_network_async,
+        apply_network_target as _apply_network_target,
     )
 
     # Config wins over the legacy top-level columns (see effective_network).
@@ -236,8 +237,7 @@ async def resolve_datastore_connector(
         _resolve_network(cfg, _bridge)
     elif _mode == "bridge" and _bridge is not None:
         _target = await _resolve_network_async(cfg, _bridge)
-        cfg["host"] = _target.host
-        cfg["port"] = _target.port
+        _apply_network_target(cfg, _target)
         _net_cleanup = _target.cleanup
     else:
         _resolve_network(cfg, _bridge)

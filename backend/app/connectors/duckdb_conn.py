@@ -179,13 +179,14 @@ def _extra_dirs() -> list[str]:
     return [d for d in (p.strip() for p in raw.split(os.pathsep)) if d]
 
 
-def _materialize_base() -> str:
+def _org_materialize_root(org_id: str | None) -> str | None:
+    """The organisation's materialization root — the same one flows write to."""
     try:
-        from app.flows.incremental import _default_local_base  # noqa: PLC0415
+        from app.flows.incremental import org_materialize_root  # noqa: PLC0415
 
-        return _default_local_base()
+        return org_materialize_root(org_id)
     except Exception:  # noqa: BLE001
-        return os.path.join(_seed_data_dir(), "materialized")
+        return None
 
 
 def duckdb_view_dirs(org_id: str | None) -> list[str]:
@@ -197,8 +198,9 @@ def duckdb_view_dirs(org_id: str | None) -> list[str]:
     from app.demo_bundle import LOCAL_PARQUET_DIR  # noqa: PLC0415
 
     dirs = [str(LOCAL_PARQUET_DIR)]
-    if org_id and _re.fullmatch(r"[A-Za-z0-9_\-]+", str(org_id)):
-        dirs.append(os.path.join(_materialize_base(), str(org_id)))
+    root = _org_materialize_root(org_id)
+    if root and "://" not in root:
+        dirs.append(root)
     dirs.extend(_extra_dirs())
     return [os.path.realpath(d) for d in dirs]
 
@@ -234,6 +236,16 @@ def _org_s3_prefix(org_id: str | None) -> str | None:
     return prefix if prefix.endswith("/") else prefix + "/"
 
 
+def _org_s3_prefixes(org_id: str | None) -> list[str]:
+    """Every platform-bucket prefix that belongs to *org_id*: the configured
+    template and, when materializations go to object storage, their root."""
+    prefixes = [p for p in (_org_s3_prefix(org_id),) if p]
+    root = _org_materialize_root(org_id)
+    if root and root.lower().startswith("s3://"):
+        prefixes.append(root.rstrip("/") + "/")
+    return prefixes
+
+
 def _target_problem(target: str, cfg: dict, org_id: str | None) -> str | None:
     """Why *target* may not back a view, or ``None`` when it may."""
     if target.lower().startswith("s3://"):
@@ -241,9 +253,9 @@ def _target_problem(target: str, cfg: dict, org_id: str | None) -> str | None:
             return "is not a valid s3:// location"
         if _cfg_has_own_s3_credentials(cfg):
             return None  # the datastore brings its own bucket credentials
-        prefix = _org_s3_prefix(org_id)
-        if prefix and target.startswith(prefix):
-            return None
+        for prefix in _org_s3_prefixes(org_id):
+            if target.startswith(prefix):
+                return None
         return "is outside this organisation's storage"
     if "://" in target:
         return "uses an unsupported location scheme"
@@ -328,7 +340,16 @@ def validate_duckdb_config(
             raise _bad("'parquet_path' is not an allowed location")
 
 
-_DUCKDB_CONFIG_KEYS = ("view_sql", "s3_views", "parquet_path", "path")
+def datastore_connector_type(cfg: Any) -> str:
+    """The connector type a datastore config is read as.
+
+    A config that names no type is a DuckDB config: that is how the data
+    browser and the query tools open it, so the write guard below must judge
+    it the same way.  This is the only place that default is decided.
+    """
+    if not isinstance(cfg, dict):
+        return "duckdb"
+    return cfg.get("connector_type") or cfg.get("type") or "duckdb"
 
 
 def guard_datastore_config(
@@ -338,15 +359,13 @@ def guard_datastore_config(
 
     A no-op for non-duckdb connector types.  Every route that persists a
     caller-supplied datastore config calls this, so a config that could only
-    ever be skipped at read time is refused up front with a clear 400.
+    ever be skipped at read time is refused up front with a clear 400.  An
+    untyped config is checked as DuckDB — see ``datastore_connector_type``.
     """
     if not isinstance(cfg, dict):
         return
-    ctype = cfg.get("connector_type") or cfg.get("type")
-    if ctype not in (None, "", "duckdb"):
+    if datastore_connector_type(cfg) != "duckdb":
         return
-    if not ctype and not any(cfg.get(k) for k in _DUCKDB_CONFIG_KEYS):
-        return  # an untyped bookkeeping row with nothing duckdb-specific
     validate_duckdb_config(cfg, org_id, existing=existing)
 
 
@@ -409,9 +428,13 @@ def connect_duckdb_datastore(
             try:
                 # Platform credentials are bound to the org's own prefix and
                 # never combined with tenant-supplied endpoint settings.
+                scope = next(
+                    (p for p in _org_s3_prefixes(org_id) if s3_targets[0].startswith(p)),
+                    _org_s3_prefix(org_id),
+                )
                 setup_s3_httpfs(
                     conn,
-                    cfg if own else {"s3_scope": _org_s3_prefix(org_id)},
+                    cfg if own else {"s3_scope": scope},
                     use_env_credentials=not own,
                 )
             except AppError:

@@ -436,6 +436,14 @@ async def mcp_endpoint(
         claims: dict[str, Any] = await tool_claims(identity, org_id, repo)
         claims["sub"] = str(user.get("id", "")) or claims["sub"]
 
+        if changes_saved_board_tool(tool_name, arguments) and not _may_change_saved_boards(
+            claims.get("role")
+        ):
+            return _jsonrpc_result(
+                rpc_id,
+                {"content": [{"type": "text", "text": _SAVED_BOARD_REFUSAL}], "isError": True},
+            )
+
         try:
             result = await asyncio.to_thread(execute_tool, tool_name, arguments, claims)
             return _jsonrpc_result(
@@ -533,6 +541,46 @@ _API_ALLOW: tuple[tuple[frozenset[str], "re.Pattern[str]"], ...] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Changing a saved dashboard over MCP
+# ---------------------------------------------------------------------------
+#
+# In the app, the in-app assistant can only PROPOSE deleting or replacing a
+# saved dashboard; the person confirms it.  An external MCP client has no such
+# step, so over MCP those operations are limited to the roles that approve
+# things in a workspace (owner / admin).  Creating boards, editing a spec the
+# client holds in hand, and everything read-only are unaffected.
+
+_SAVED_BOARD_PATHS = (
+    re.compile(rf"\A/boards/{_S}\Z"),
+)
+_SAVED_BOARD_RESTORE = re.compile(rf"\A/versions/(board|boards|dashboard|dashboards)/{_S}/{_S}/restore\Z")
+_SAVED_BOARD_REFUSAL = (
+    "Changing or deleting a saved dashboard over MCP needs an owner or admin "
+    "of this workspace. You can still create a new dashboard."
+)
+
+
+def changes_saved_board_tool(name: str, arguments: dict[str, Any] | None) -> bool:
+    """True for a tool call that changes or removes a saved dashboard — the
+    same set the in-app assistant may only propose."""
+    from app.ai.pending_actions import needs_confirmation  # noqa: PLC0415
+
+    return needs_confirmation(name, arguments)
+
+
+def changes_saved_board_api(method: str, path: str) -> bool:
+    """True for a REST call (relative to /api/v1) that changes or removes a
+    saved dashboard, including restoring one of its earlier versions."""
+    if method in ("PUT", "PATCH", "DELETE") and any(p.match(path) for p in _SAVED_BOARD_PATHS):
+        return True
+    return method == "POST" and bool(_SAVED_BOARD_RESTORE.match(path))
+
+
+def _may_change_saved_boards(role: str | None) -> bool:
+    return role in ("owner", "admin")
+
+
 def _api_allowed(method: str, path: str) -> bool:
     """True when *method* *path* (relative to /api/v1) is on the agent allowlist."""
     return any(method in methods and pattern.match(path) for methods, pattern in _API_ALLOW)
@@ -550,7 +598,8 @@ _API_REQUEST_TOOL: dict[str, Any] = {
         "query results are returned as JSON rows (first 1000). Only the "
         "working surface is reachable: boards, queries, metrics, variables and "
         "reading data; credentials, membership, connectors, integrations, code "
-        "execution, billing and workspace deletion are not."
+        "execution, billing and workspace deletion are not. Changing or "
+        "deleting a saved dashboard needs an owner or admin."
     ),
     "inputSchema": {
         "type": "object",
@@ -599,6 +648,11 @@ async def _api_request(
     path = _normalise_api_path(arguments.get("path"))
     if not _api_allowed(method, path):
         raise _ApiRequestRefused(f"{method} {path} is not reachable over MCP.")
+    if changes_saved_board_api(method, path):
+        from app.auth.roles import get_org_role  # noqa: PLC0415
+
+        if not _may_change_saved_boards(await get_org_role(str(user["id"]), org_id, get_repo())):
+            raise _ApiRequestRefused(_SAVED_BOARD_REFUSAL)
 
     headers = {
         "Authorization": request.headers.get("authorization", ""),

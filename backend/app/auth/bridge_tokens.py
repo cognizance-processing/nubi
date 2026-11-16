@@ -88,7 +88,9 @@ def _now() -> datetime:
 class BridgeTokenStore:
     """Interface for bridge-token persistence (structural duck-typing, no ABC)."""
 
-    async def mint(self, org_id: str, bridge_id: str, name: str) -> tuple[str, dict[str, Any]]:
+    async def mint(
+        self, org_id: str, bridge_id: str, name: str, created_by: str | None = None
+    ) -> tuple[str, dict[str, Any]]:
         """Mint a new token for ``(org_id, bridge_id)``. Return ``(raw, row)``."""
         raise NotImplementedError
 
@@ -120,6 +122,7 @@ class BridgeTokenStore:
         org_id: str,
         bridge_id: str,
         grace: timedelta = DEFAULT_ROTATION_GRACE,
+        created_by: str | None = None,
     ) -> tuple[str, dict[str, Any]] | None:
         """Mint a replacement token and put the old one into a grace window.
 
@@ -130,6 +133,12 @@ class BridgeTokenStore:
 
     async def revoke(self, token_id: str, org_id: str, bridge_id: str) -> bool:
         """Revoke a token in ``(org_id, bridge_id)``. Return True if revoked."""
+        raise NotImplementedError
+
+    async def revoke_all_for_user(self, user_id: str, org_id: str) -> list[str]:
+        """Revoke every live token *user_id* created in *org_id* (they left the
+        org, or may no longer manage bridges).  Returns the ids of the bridges
+        that had a token revoked, so their live tunnels can be dropped."""
         raise NotImplementedError
 
 
@@ -148,6 +157,7 @@ def _public_row(row: dict[str, Any]) -> dict[str, Any]:
         "last_used_at": _iso(row.get("last_used_at")),
         "grace_until": _iso(row.get("grace_until")),
         "revoked_at": _iso(row.get("revoked_at")),
+        "created_by": str(row["created_by"]) if row.get("created_by") else None,
     }
 
 
@@ -170,7 +180,9 @@ def _row_is_live(row: dict[str, Any], now: datetime) -> bool:
 class PgBridgeTokenStore(BridgeTokenStore):
     """asyncpg-backed bridge-token store over the ``bridge_tokens`` table."""
 
-    async def mint(self, org_id: str, bridge_id: str, name: str) -> tuple[str, dict[str, Any]]:
+    async def mint(
+        self, org_id: str, bridge_id: str, name: str, created_by: str | None = None
+    ) -> tuple[str, dict[str, Any]]:
         from app.db import fetchrow  # local import to avoid circular load
 
         raw = generate_bridge_token()
@@ -180,10 +192,10 @@ class PgBridgeTokenStore(BridgeTokenStore):
         row = await fetchrow(
             """
             INSERT INTO bridge_tokens
-                (id, org_id, bridge_id, token_hash, name, last_four)
-            VALUES ($1, $2, $3, $4, $5, $6)
+                (id, org_id, bridge_id, token_hash, name, last_four, created_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7::uuid)
             RETURNING id, org_id, bridge_id, name, last_four, grace_until,
-                      revoked_at, last_used_at, created_at
+                      revoked_at, last_used_at, created_at, created_by
             """,
             token_id,
             org_id,
@@ -191,6 +203,7 @@ class PgBridgeTokenStore(BridgeTokenStore):
             token_hash,
             (name or "bridge token").strip() or "bridge token",
             last_four,
+            str(created_by) if created_by else None,
         )
         return raw, dict(row) if row is not None else {"id": token_id, "name": name}
 
@@ -226,7 +239,7 @@ class PgBridgeTokenStore(BridgeTokenStore):
 
         rows = await fetch(
             """
-            SELECT id, org_id, bridge_id, name, last_four, grace_until,
+            SELECT id, org_id, bridge_id, name, last_four, created_by, grace_until,
                    revoked_at, last_used_at, created_at
             FROM bridge_tokens
             WHERE org_id = $1::uuid AND bridge_id = $2::uuid
@@ -258,6 +271,7 @@ class PgBridgeTokenStore(BridgeTokenStore):
         org_id: str,
         bridge_id: str,
         grace: timedelta = DEFAULT_ROTATION_GRACE,
+        created_by: str | None = None,
     ) -> tuple[str, dict[str, Any]] | None:
         from app.db import execute  # local import
 
@@ -282,7 +296,7 @@ class PgBridgeTokenStore(BridgeTokenStore):
         if affected <= 0:
             return None
         # Mint the replacement.
-        return await self.mint(org_id, bridge_id, "rotated bridge token")
+        return await self.mint(org_id, bridge_id, "rotated bridge token", created_by)
 
     async def revoke(self, token_id: str, org_id: str, bridge_id: str) -> bool:
         from app.db import execute  # local import
@@ -304,6 +318,22 @@ class PgBridgeTokenStore(BridgeTokenStore):
             return False
 
 
+    async def revoke_all_for_user(self, user_id: str, org_id: str) -> list[str]:
+        from app.db import fetch  # local import
+
+        rows = await fetch(
+            """
+            UPDATE bridge_tokens
+            SET revoked_at = now()
+            WHERE created_by = $1::uuid AND org_id = $2::uuid AND revoked_at IS NULL
+            RETURNING bridge_id
+            """,
+            user_id,
+            org_id,
+        )
+        return sorted({str(r["bridge_id"]) for r in rows or []})
+
+
 # ---------------------------------------------------------------------------
 # In-memory implementation (tests)
 # ---------------------------------------------------------------------------
@@ -319,7 +349,9 @@ class InMemoryBridgeTokenStore(BridgeTokenStore):
     def reset(self) -> None:
         self._store.clear()
 
-    async def mint(self, org_id: str, bridge_id: str, name: str) -> tuple[str, dict[str, Any]]:
+    async def mint(
+        self, org_id: str, bridge_id: str, name: str, created_by: str | None = None
+    ) -> tuple[str, dict[str, Any]]:
         raw = generate_bridge_token()
         token_id = str(uuid.uuid4())
         now = _now()
@@ -330,6 +362,7 @@ class InMemoryBridgeTokenStore(BridgeTokenStore):
             "token_hash": hash_bridge_token(raw),
             "name": (name or "bridge token").strip() or "bridge token",
             "last_four": raw[-4:],
+            "created_by": str(created_by) if created_by else None,
             "grace_until": None,
             "revoked_at": None,
             "last_used_at": None,
@@ -370,6 +403,7 @@ class InMemoryBridgeTokenStore(BridgeTokenStore):
         org_id: str,
         bridge_id: str,
         grace: timedelta = DEFAULT_ROTATION_GRACE,
+        created_by: str | None = None,
     ) -> tuple[str, dict[str, Any]] | None:
         old = self._store.get(str(token_id))
         if old is None:
@@ -379,7 +413,7 @@ class InMemoryBridgeTokenStore(BridgeTokenStore):
         if old["revoked_at"] is not None:
             return None
         old["grace_until"] = _now() + grace
-        return await self.mint(org_id, bridge_id, "rotated bridge token")
+        return await self.mint(org_id, bridge_id, "rotated bridge token", created_by)
 
     async def revoke(self, token_id: str, org_id: str, bridge_id: str) -> bool:
         row = self._store.get(str(token_id))
@@ -391,6 +425,19 @@ class InMemoryBridgeTokenStore(BridgeTokenStore):
             return False
         row["revoked_at"] = _now()
         return True
+
+
+    async def revoke_all_for_user(self, user_id: str, org_id: str) -> list[str]:
+        bridges: set[str] = set()
+        for row in self._store.values():
+            if (
+                row.get("created_by") == str(user_id)
+                and str(row["org_id"]) == str(org_id)
+                and row["revoked_at"] is None
+            ):
+                row["revoked_at"] = _now()
+                bridges.add(str(row["bridge_id"]))
+        return sorted(bridges)
 
 
 # ---------------------------------------------------------------------------

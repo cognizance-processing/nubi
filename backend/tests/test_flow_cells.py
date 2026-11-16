@@ -350,6 +350,17 @@ class TestForEachExecution:
 # ===========================================================================
 
 
+@pytest.fixture(autouse=True)
+def _operator_base(tmp_path, monkeypatch):
+    """Materializations land under the operator's base (a temp dir here)."""
+    monkeypatch.setattr(
+        "app.flows.incremental._operator_base",
+        lambda settings=None: (
+            getattr(settings, "FLOWS_MATERIALIZE_BASE_URI", "") or str(tmp_path / "materialized")
+        ).rstrip("/"),
+    )
+
+
 def _materialized_query_spec(base_uri: str, target: str, kind: str) -> dict[str, Any]:
     return {
         "version": 1,
@@ -379,7 +390,6 @@ def _materialized_query_spec(base_uri: str, target: str, kind: str) -> dict[str,
                     "materialized": {
                         "kind": kind,
                         "target": target,
-                        "base_uri": base_uri,
                         **({"time_column": "ts"} if kind == "incremental" else {}),
                     },
                 },

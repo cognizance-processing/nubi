@@ -602,36 +602,87 @@ _TOOLTIP_HTML_SINKS = (
 )
 
 
+# Objects nested deeper than this are dropped rather than left unchecked.
+_CHART_CONFIG_MAX_DEPTH = 64
+_TOOLTIP_POSITIONS = ("inside", "top", "left", "right", "bottom")
+
+
+def _scrub_tooltip(tip: dict[str, Any]) -> dict[str, Any]:
+    """A tooltip keeps its look-and-feel values only."""
+    out = {
+        k: v
+        for k, v in tip.items()
+        if k not in _TOOLTIP_HTML_SINKS
+        and k not in ("formatter", "content")
+        and not (k == "position" and isinstance(v, str) and v not in _TOOLTIP_POSITIONS)
+    }
+    if isinstance(out.get("textStyle"), dict):
+        out["textStyle"] = {
+            k: v for k, v in out["textStyle"].items() if k not in ("rich", "formatter")
+        }
+    return out
+
+
 def _scrub_chart_config(node: Any, _depth: int = 0) -> Any:
-    """Return *node* without the chart options that render as HTML/CSS (recursive)."""
-    if _depth > 12:
+    """Return *node* without the chart options that render as HTML/CSS.
+
+    Applies at every depth and to list-form components; a container nested past
+    ``_CHART_CONFIG_MAX_DEPTH`` is dropped instead of being passed through
+    unchecked.  Mirrors ``scripts/render/option-scrub.mjs`` — keep them in step.
+    """
+    if not isinstance(node, (dict, list)):
         return node
+    if _depth > _CHART_CONFIG_MAX_DEPTH:
+        return None
     if isinstance(node, list):
         return [_scrub_chart_config(item, _depth + 1) for item in node]
-    if not isinstance(node, dict):
-        return node
     out: dict[str, Any] = {}
     for key, value in node.items():
+        if isinstance(value, (dict, list)) and _depth + 1 > _CHART_CONFIG_MAX_DEPTH:
+            continue
+        if key == "dataView":  # an HTML panel built from option strings
+            continue
         if key in ("link", "sublink") and isinstance(value, str):
             if not value.strip().lower().startswith(("http://", "https://")):
                 continue
-        if key == "tooltip" and isinstance(value, dict):
-            tip = {
-                k: v
-                for k, v in value.items()
-                if k not in _TOOLTIP_HTML_SINKS
-                and not (k == "formatter" and isinstance(v, str))
-                and not (k == "position" and isinstance(v, str)
-                         and v not in ("inside", "top", "left", "right", "bottom"))
+        if key == "tooltip":
+            if isinstance(value, dict):
+                value = _scrub_tooltip(value)
+            elif isinstance(value, list):
+                value = [_scrub_tooltip(t) if isinstance(t, dict) else t for t in value]
+        elif key == "feature" and isinstance(value, dict):
+            value = {
+                name: ({k: v for k, v in feat.items() if k != "lang"} if isinstance(feat, dict) else feat)
+                for name, feat in value.items()
+                if name != "dataView"
             }
-            if isinstance(tip.get("textStyle"), dict):
-                tip["textStyle"] = {
-                    k: v for k, v in tip["textStyle"].items() if k not in ("rich", "formatter")
-                }
-            out[key] = _scrub_chart_config(tip, _depth + 1)
-            continue
         out[key] = _scrub_chart_config(value, _depth + 1)
     return out
+
+
+def scrub_board_config(config: Any, _depth: int = 0) -> Any:
+    """Return a board's stored config with every widget's chart options scrubbed.
+
+    A board can be written without going through spec validation (the plain
+    resource routes store ``config`` as given), so the same rule
+    ``Widget.config`` applies on validation is applied here on write.  Only
+    widget ``config`` blocks are touched — a widget being any object with a
+    ``type`` and a ``config`` — at any nesting (grouped or stepped widgets);
+    everything else on the board is returned as it came.
+    """
+    if _depth > _CHART_CONFIG_MAX_DEPTH or not isinstance(config, (dict, list)):
+        return config
+    if isinstance(config, list):
+        return [scrub_board_config(item, _depth + 1) for item in config]
+    is_widget = isinstance(config.get("type"), str) and isinstance(config.get("config"), dict)
+    return {
+        key: (
+            _scrub_chart_config(value)
+            if is_widget and key == "config"
+            else scrub_board_config(value, _depth + 1)
+        )
+        for key, value in config.items()
+    }
 
 
 class Widget(BaseModel):

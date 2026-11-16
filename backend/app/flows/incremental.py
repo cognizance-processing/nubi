@@ -139,38 +139,93 @@ def _default_local_base() -> str:
     return os.path.join(backend, *_DEFAULT_LOCAL_SUBDIR)
 
 
+def _operator_base(settings: Any = None) -> str:
+    """The storage base for materializations.  Set by the operator only:
+    ``FLOWS_MATERIALIZE_BASE_URI``, else the local ``seed_data/materialized``."""
+    if settings is None:
+        try:
+            from app.config import get_settings  # noqa: PLC0415
+
+            settings = get_settings()
+        except Exception:  # noqa: BLE001
+            settings = None
+    from_settings = (getattr(settings, "FLOWS_MATERIALIZE_BASE_URI", "") or "") if settings else ""
+    if from_settings:
+        return str(from_settings).rstrip("/")
+    return _default_local_base()
+
+
+_ORG_SEGMENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-]{0,127}")
+
+
+def org_materialize_root(org_id: Any, settings: Any = None) -> str | None:
+    """The one storage root that belongs to *org_id*: ``<operator base>/<org id>``.
+
+    Writers put every materialization under it and readers allow exactly it,
+    so the two can never disagree about which organisation a file belongs to.
+    ``None`` when *org_id* is not a plain identifier.
+    """
+    org = str(org_id or "")
+    if not _ORG_SEGMENT_RE.fullmatch(org):
+        return None
+    base = _operator_base(settings)
+    return f"{base}/{org}" if _is_remote(base) else os.path.join(base, org)
+
+
+def _caller_supplied_base(materialized: dict[str, Any], flow: dict[str, Any] | None) -> Any:
+    explicit = (materialized or {}).get("base_uri")
+    if explicit:
+        return explicit
+    if flow:
+        for holder in (flow, flow.get("spec")):
+            rc = holder.get("runtime_config") if isinstance(holder, dict) else None
+            if isinstance(rc, dict) and rc.get("materialize_base_uri"):
+                return rc["materialize_base_uri"]
+    return None
+
+
 def _base_uri(
     materialized: dict[str, Any],
     flow: dict[str, Any] | None,
     settings: Any,
+    org_id: Any = None,
 ) -> str:
-    """Resolve the base URI precedence chain.
+    """The organisation's storage root for this materialization.
 
-    Precedence: ``materialized.base_uri`` → ``flow.runtime_config
-    ['materialize_base_uri']`` → ``settings.FLOWS_MATERIALIZE_BASE_URI`` →
-    local ``<backend>/seed_data/materialized``.
+    The base is the operator's; a flow cannot move it.  A ``base_uri`` on the
+    task or a ``materialize_base_uri`` in the flow's runtime config is refused
+    rather than ignored, so a spec that expects another location fails loudly.
     """
-    explicit = (materialized or {}).get("base_uri")
-    if explicit:
-        return str(explicit).rstrip("/")
+    if _caller_supplied_base(materialized, flow):
+        raise AppError(
+            "invalid_task_config",
+            "A materialization's storage location is set by the platform; "
+            "remove 'base_uri' / 'materialize_base_uri' from the flow.",
+            400,
+        )
+    root = org_materialize_root(org_id or (flow or {}).get("org_id"), settings)
+    if root is None:
+        raise AppError(
+            "invalid_task_config",
+            "A materialization needs the organisation that owns the flow.",
+            400,
+        )
+    return root
 
-    if flow:
-        rc = flow.get("runtime_config")
-        if not isinstance(rc, dict):
-            # Flow spec may nest runtime_config under spec.
-            spec = flow.get("spec")
-            rc = spec.get("runtime_config") if isinstance(spec, dict) else None
-        if isinstance(rc, dict):
-            from_rc = rc.get("materialize_base_uri")
-            if from_rc:
-                return str(from_rc).rstrip("/")
 
-    if settings is not None:
-        from_settings = getattr(settings, "FLOWS_MATERIALIZE_BASE_URI", "") or ""
-        if from_settings:
-            return str(from_settings).rstrip("/")
+def usable_watermark(watermark: str | None, target_uri: str) -> str | None:
+    """The stored watermark, unless the target it describes is not there.
 
-    return _default_local_base()
+    A watermark says "rows up to here are already in the target".  When the
+    local target file is missing that is not true, and using the mark would
+    skip the rows for good — so the run starts from the beginning instead.
+    Object-storage targets are not probed.
+    """
+    if not watermark:
+        return None
+    if _is_remote(target_uri):
+        return watermark
+    return watermark if os.path.exists(target_uri) else None
 
 
 def _is_remote(uri: str) -> bool:
@@ -292,12 +347,16 @@ def resolve_target_uri(
     materialized: dict[str, Any],
     flow: dict[str, Any] | None = None,
     settings: Any = None,
+    *,
+    org_id: str | None = None,
 ) -> str:
-    """Resolve the env-scoped physical target URI for a materialization.
+    """Resolve the physical target URI for a materialization.
 
-    The logical ``materialized.target`` is joined under ``<base_uri>/<env>/``
-    so dev and prod never clobber each other.  A ``.parquet`` suffix is added
-    when the target has no recognised extension.
+    The logical ``materialized.target`` is joined under
+    ``<operator base>/<org id>/<env>/`` so organisations never share a path
+    and dev and prod never clobber each other.  The organisation is *org_id*
+    or the flow's own ``org_id``; without one nothing is resolved.  A
+    ``.parquet`` suffix is added when the target has no recognised extension.
 
     SECURITY: ``target`` and ``env`` are sanitized via
     :func:`_sanitize_target_segment` and :func:`_sanitize_env_segment` before
@@ -317,7 +376,7 @@ def resolve_target_uri(
     materialized:
         The ``materialized`` config block (must include ``target``).
     flow:
-        The flow dict (for ``runtime_config.materialize_base_uri``).
+        The flow dict (its ``org_id`` names the owning organisation).
     settings:
         The app settings object (for ``FLOWS_MATERIALIZE_BASE_URI``).
 
@@ -343,7 +402,7 @@ def resolve_target_uri(
     safe_env = _sanitize_env_segment((env or "prod").strip() or "prod")
     safe_target = _sanitize_target_segment(target)
 
-    base = _base_uri(materialized, flow, settings)
+    base = _base_uri(materialized, flow, settings, org_id)
 
     if _is_remote(base):
         joined = f"{base}/{safe_env}/{safe_target}"

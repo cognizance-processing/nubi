@@ -357,7 +357,9 @@ async def mint_bridge_token(
 
     from app.auth.bridge_tokens import _public_row  # noqa: PLC0415
 
-    raw, row = await get_bridge_token_store().mint(org_id, bridge_id, body.name)
+    raw, row = await get_bridge_token_store().mint(
+        org_id, bridge_id, body.name, created_by=str(user["id"])
+    )
     return {"token": raw, "bridge_token": _public_row(row)}
 
 
@@ -399,7 +401,9 @@ async def rotate_bridge_token(
 
     from app.auth.bridge_tokens import _public_row  # noqa: PLC0415
 
-    result = await get_bridge_token_store().rotate(token_id, org_id, bridge_id)
+    result = await get_bridge_token_store().rotate(
+        token_id, org_id, bridge_id, created_by=str(user["id"])
+    )
     if result is None:
         raise AppError("bridge_token_not_found", f"Token {token_id!r} not found.", 404)
     raw, row = result

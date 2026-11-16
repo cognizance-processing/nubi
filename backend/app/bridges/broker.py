@@ -272,6 +272,55 @@ class _BridgeConnection:
 # ---------------------------------------------------------------------------
 
 
+def _random_loopback_address() -> str:
+    """A random host address in 127.0.0.0/8 (never .0 or .255 in the last octet)."""
+    import secrets  # noqa: PLC0415
+
+    return "127.{}.{}.{}".format(
+        secrets.randbelow(256), secrets.randbelow(256), 1 + secrets.randbelow(254)
+    )
+
+
+def _peer_is_this_process(writer: asyncio.StreamWriter) -> bool:
+    """True when the client end of *writer*'s connection is a socket this
+    process holds.
+
+    The peer of a loopback connection is identified by its address and port.
+    That exact socket is in this process's descriptor table only if this
+    process made the connection (drivers run in-process, on worker threads).
+    On platforms without ``/proc/self/fd`` the check cannot be made and the
+    connection is allowed; the per-tunnel address is then the only guard.
+    """
+    import os  # noqa: PLC0415
+    import socket  # noqa: PLC0415
+    import stat  # noqa: PLC0415
+
+    peer = writer.get_extra_info("peername")
+    local = writer.get_extra_info("sockname")
+    if not peer or not local:
+        return False
+    try:
+        fds = os.listdir("/proc/self/fd")
+    except OSError:
+        return True
+    for name in fds:
+        try:
+            fd = int(name)
+            if not stat.S_ISSOCK(os.fstat(fd).st_mode):
+                continue
+            probe = socket.socket(fileno=os.dup(fd))
+        except (OSError, ValueError):
+            continue
+        try:
+            if probe.getsockname()[:2] == peer[:2] and probe.getpeername()[:2] == local[:2]:
+                return True
+        except (OSError, TypeError, IndexError):
+            pass
+        finally:
+            probe.close()
+    return False
+
+
 class _TcpProxy:
     """Ephemeral 127.0.0.1 TCP listener that funnels connections through a bridge.
 
@@ -288,17 +337,26 @@ class _TcpProxy:
         self._local_port: int = 0
 
     async def start(self) -> tuple[str, int]:
-        """Start the local TCP listener; return (host, port)."""
-        self._server = await asyncio.start_server(
-            self._handle_client,
-            host="127.0.0.1",
-            port=0,  # OS assigns a free port
-        )
+        """Start the local TCP listener; return (host, port).
+
+        The listener is the way into a customer network, and the database
+        driver that dials it cannot present a credential, so the address is
+        the secret: each tunnel listens on its own random address in
+        127.0.0.0/8 (plus an OS-assigned port), known only to the connection
+        it was opened for.  Where that range is not routable to loopback the
+        listener falls back to 127.0.0.1.
+        """
+        host = _random_loopback_address()
+        try:
+            self._server = await asyncio.start_server(self._handle_client, host=host, port=0)
+        except OSError:
+            host = "127.0.0.1"
+            self._server = await asyncio.start_server(self._handle_client, host=host, port=0)
         sockets = self._server.sockets
         if not sockets:
             raise RuntimeError("TCP proxy server has no sockets after start")
         self._local_port = sockets[0].getsockname()[1]
-        return "127.0.0.1", self._local_port
+        return host, self._local_port
 
     async def close(self) -> None:
         """Stop the TCP listener."""
@@ -312,6 +370,16 @@ class _TcpProxy:
         writer: asyncio.StreamWriter,
     ) -> None:
         """Handle one inbound TCP connection — open a stream and pipe bytes."""
+        # Only this server process dials its own tunnels.  Anything else on
+        # the host that finds the listener is turned away before a stream is
+        # opened into the customer network.
+        if not _peer_is_this_process(writer):
+            logger.warning(
+                "bridge %s: refused a tunnel connection from outside the server process",
+                self._bridge_conn.bridge_id,
+            )
+            writer.close()
+            return
         stream = await self._bridge_conn.open_stream(self._remote_host, self._remote_port)
 
         try:

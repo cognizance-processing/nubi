@@ -377,7 +377,8 @@ def _not_allowed() -> AppError:
     )
 
 
-def _check_one_host(host: str) -> None:
+def _checked_addresses(host: str) -> list[ipaddress._BaseAddress]:
+    """Resolve *host* once and return its addresses; refuse if any is forbidden."""
     host = host.strip()
     if host.startswith("["):
         host = host[1:].split("]", 1)[0]
@@ -389,9 +390,15 @@ def _check_one_host(host: str) -> None:
         if not _HOSTNAME_RE.match(host):
             raise _not_allowed() from None
     allow_private = _allow_private()
-    for ip in _resolve_addresses(host):
+    addrs = _resolve_addresses(host)
+    for ip in addrs:
         if _is_forbidden(ip, allow_private=allow_private):
             raise _not_allowed()
+    return addrs
+
+
+def _check_one_host(host: str) -> None:
+    _checked_addresses(host)
 
 
 def _check_host(host: Any) -> None:
@@ -473,6 +480,156 @@ def guard_connector_target(config: dict[str, Any]) -> None:
         _check_host(config.get(key))
     for key in _URL_KEYS:
         _check_host(_host_of(config.get(key)))
+
+
+# ---------------------------------------------------------------------------
+# Pinning: the driver dials the address that was checked
+# ---------------------------------------------------------------------------
+#
+# Checking a host name and then handing the NAME to a database driver leaves a
+# second lookup at connect time, which need not give the same answer.  For the
+# engines below the checked address itself is put into the connection, the way
+# resolve_and_pin does for HTTP:
+#
+# * Postgres family — libpq's ``hostaddr`` carries the address; ``host`` stays
+#   the name, so TLS verification and authentication are unchanged.
+# * MySQL family — the address replaces the host (these connections carry no
+#   host-name verification to preserve).
+
+_POSTGRES_TYPES = frozenset({"postgres", "postgresql", "redshift", "cockroachdb", "cloudsql"})
+_MYSQL_TYPES = frozenset({"mysql", "mariadb"})
+
+
+def _pinned_address(host: str) -> str:
+    """The one checked address to dial for *host*; refused when there is none."""
+    addrs = _checked_addresses(host)
+    if not addrs:
+        # A name that does not resolve now could resolve to anything later.
+        raise _not_allowed()
+    return str(addrs[0])
+
+
+def _pinned_list(hosts: str) -> str:
+    return ",".join(_pinned_address(part) for part in hosts.split(","))
+
+
+def ip_literals(value: Any) -> str:
+    """Return *value* if it is an IP literal or a comma-separated list of them."""
+    if not isinstance(value, str) or not value.strip():
+        raise _not_allowed()
+    for part in value.split(","):
+        try:
+            ipaddress.ip_address(part.strip())
+        except ValueError:
+            raise _not_allowed() from None
+    return ",".join(part.strip() for part in value.split(","))
+
+
+def _check_dialled_addresses(value: str) -> None:
+    """An address list a connection string already names is what the driver
+    will dial, so it must be IP literals and every one must pass the policy."""
+    _check_host(ip_literals(value))
+
+
+def _pin_postgres_dsn(dsn: str) -> str:
+    """Add ``hostaddr`` for every host a Postgres connection string names."""
+    text = dsn.strip()
+    if "://" not in text:
+        if not _KEYWORD_DSN_RE.match(text):
+            raise _not_allowed()
+        pairs = {
+            key.lower(): (raw[1:-1] if raw.startswith("'") else raw)
+            for key, raw in _KEYWORD_PAIR_RE.findall(text)
+        }
+        if pairs.get("hostaddr"):
+            _check_dialled_addresses(pairs["hostaddr"])
+            return text
+        if not pairs.get("host"):
+            raise _not_allowed()
+        return f"{text} hostaddr={_pinned_list(pairs['host'])}"
+    try:
+        parts = urlsplit(text)
+        params = parse_qsl(parts.query, keep_blank_values=True)
+    except ValueError:
+        raise _not_allowed() from None
+    named = {k.lower(): v for k, v in params}
+    if named.get("hostaddr"):
+        _check_dialled_addresses(named["hostaddr"])
+        return text
+    authority = [h for h in _netloc_hosts(parts.netloc) if h]
+    if authority and named.get("host"):
+        raise _not_allowed()  # two sources for the target: which one is dialled is the driver's call
+    hosts = ",".join(authority) or named.get("host") or ""
+    if not hosts:
+        raise _not_allowed()
+    sep = "&" if parts.query else "?"
+    base, frag = (text.split("#", 1) + [""])[:2]
+    return f"{base}{sep}hostaddr={_pinned_list(hosts)}" + (f"#{frag}" if frag else "")
+
+
+def _pin_mysql_dsn(dsn: str) -> str:
+    """Replace the host of a MySQL connection string with its checked address."""
+    try:
+        parts = urlsplit(dsn.strip())
+        host = parts.hostname
+    except ValueError:
+        raise _not_allowed() from None
+    if not host or "," in parts.netloc.rsplit("@", 1)[-1]:
+        raise _not_allowed()
+    ip = _pinned_address(host)
+    userinfo, at, hostport = parts.netloc.rpartition("@")
+    port = hostport.rsplit(":", 1)[1] if (":" in hostport and not hostport.endswith("]")) else ""
+    literal = f"[{ip}]" if ":" in ip else ip
+    netloc = f"{userinfo}{at}{literal}" + (f":{port}" if port else "")
+    return parts._replace(netloc=netloc).geturl()
+
+
+def pin_connector_target(config: dict[str, Any]) -> None:
+    """``guard_connector_target`` for a connection that is about to be opened.
+
+    Applies the same policy, and for Postgres- and MySQL-family configs also
+    rewrites *config* in place so the driver dials the checked address:
+    ``hostaddr`` is set (Postgres) or ``host`` is replaced (MySQL), and a
+    ``dsn`` is rewritten the same way.  Call it on the working copy of a
+    config, never on one that will be stored.
+    """
+    if not isinstance(config, dict):
+        return
+    ctype = str(config.get("connector_type") or config.get("type") or "").lower()
+    if ctype not in _POSTGRES_TYPES and ctype not in _MYSQL_TYPES:
+        guard_connector_target(config)
+        return
+
+    # Everything that is not the dialled target still goes through the guard.
+    for key in _HOST_KEYS:
+        if key not in ("host", "hostaddr"):
+            _check_host(config.get(key))
+    for key in _URL_KEYS:
+        if key != "dsn":
+            _check_host(_host_of(config.get(key)))
+
+    dsn = config.get("dsn")
+    host = config.get("host")
+    if host is not None and host != "" and not isinstance(host, str):
+        raise _not_allowed()
+    if ctype in _POSTGRES_TYPES:
+        if dsn:
+            config["dsn"] = _pin_postgres_dsn(str(dsn))
+            _check_host(host)  # unused by the driver, but never left unchecked
+            _check_host(config.get("hostaddr"))
+        elif host:
+            config["hostaddr"] = _pinned_list(host)
+        else:
+            config.pop("hostaddr", None)
+    else:
+        if dsn:
+            config["dsn"] = _pin_mysql_dsn(str(dsn))
+            _check_host(host)
+        elif host:
+            if "," in host:
+                raise _not_allowed()
+            config["host"] = _pinned_address(host)
+        _check_host(config.get("hostaddr"))
 
 
 def connection_host(host: Any, *, default: str = "localhost") -> str:

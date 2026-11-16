@@ -697,6 +697,51 @@ def assert_read_only(tree: exp.Expression) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Table functions that only compute rows from their arguments.  Anything else
+# in a FROM clause may read a table the planner cannot see, so it is refused
+# for callers with row policies.
+_ROW_GENERATORS: frozenset[str] = frozenset(
+    {
+        "generate_series", "explodinggenerateseries", "exploding_generate_series", "range",
+        "generator", "generate_array", "generate_date_array", "generate_timestamp_array",
+        "unnest", "explode", "explode_outer", "posexplode", "posexplode_outer", "flatten",
+        "inline", "stack",
+        "json_each", "json_each_text", "jsonb_each", "jsonb_each_text",
+        "json_array_elements", "json_array_elements_text",
+        "jsonb_array_elements", "jsonb_array_elements_text",
+        "json_object_keys", "jsonb_object_keys",
+        "regexp_split_to_table", "string_to_table", "string_split", "split_to_table",
+    }
+)
+# Dialects whose WHERE resolves a name to a SELECT-list alias before a column.
+_ALIAS_FIRST_DIALECTS: frozenset[str] = frozenset({"clickhouse"})
+
+
+def _policy_refusal(what: str) -> AppError:
+    return AppError(
+        "UNSUPPORTED_QUERY",
+        f"{what} is not supported for callers with row-level policies.",
+        status=400,
+    )
+
+
+def _same_name_as_written(table: exp.Table, block_scope: Any) -> bool:
+    """True when *table* names the CTE behind *block_scope* exactly as it was
+    defined: same text and same quoting.  Anything else is not provably the
+    same object once the engine applies its own identifier folding."""
+    cte = block_scope.expression.parent
+    alias = cte.args.get("alias") if isinstance(cte, exp.CTE) else None
+    defined = alias.this if alias is not None else None
+    used = table.this
+    if not isinstance(defined, exp.Identifier) or not isinstance(used, exp.Identifier):
+        return False
+    return defined.this == used.this and bool(defined.quoted) == bool(used.quoted)
+
+
+def _is_row_generator(node: exp.Expression | None) -> bool:
+    return isinstance(node, exp.Func) and _function_name(node) in _ROW_GENERATORS
+
+
 def inject_row_policies(
     tree: exp.Expression, policies: dict[str, Any], dialect: str
 ) -> list[str]:
@@ -709,6 +754,14 @@ def inject_row_policies(
     table gets the predicates itself; blocks that only read other blocks need
     none, because what they read is already filtered.
 
+    The rule is "filtered or refused": after the predicates are placed, every
+    table reference in the tree must be accounted for — a base table inside a
+    block that received the predicates, a reference to another (already
+    filtered) block, or a function that only computes rows from its arguments.
+    Anything else raises ``UNSUPPORTED_QUERY``: statements that are not SELECT
+    blocks, joins whose joined side the block's WHERE cannot see, pivoted
+    tables, dynamically named tables, and table functions that may read data.
+
     A base table may not be given a column-renaming alias (``t AS x(a, b)``)
     while policies apply — that would rename the policy column out from under
     its predicate.
@@ -718,45 +771,105 @@ def inject_row_policies(
     if not policies:
         return []
 
-    from sqlglot.optimizer.scope import traverse_scope  # noqa: PLC0415
+    from sqlglot.optimizer.scope import Scope, traverse_scope  # noqa: PLC0415
 
     predicates: list[exp.Expression] = []
     for col_name, col_value in sorted(policies.items()):
         predicates.extend(_make_rls_predicates(col_name, col_value))
     rendered = [p.sql(dialect=dialect) for p in predicates]
+    policy_columns = {str(c).casefold() for c in policies}
 
+    # Scope analysis is lazy and raises on shapes it cannot model; anything it
+    # cannot reason about is refused, never passed through.
     try:
         scopes = traverse_scope(tree)
-    except Exception as exc:  # noqa: BLE001 — cannot reason about it → refuse
-        raise AppError(
-            "UNSUPPORTED_QUERY",
-            "This query shape is not supported for callers with row-level policies.",
-            status=400,
-        ) from exc
+        accounted: set[int] = set()  # id() of every exp.Table known to be safe
+        blocks: list[tuple[exp.Select, list[exp.Table], bool]] = []
+        for scope in scopes:
+            block = scope.expression
+            if isinstance(block, exp.TableFromRows) and not _is_row_generator(block.this):
+                raise _policy_refusal("A table function")
+            if isinstance(block, exp.Lateral) and not (
+                isinstance(block.this, exp.Subquery) or _is_row_generator(block.this)
+            ):
+                raise _policy_refusal("A table function")
 
-    blocks: list[exp.Select] = []
-    for scope in scopes:
-        block = scope.expression
-        if not isinstance(block, exp.Select):
-            continue
-        reads_base_table = False
-        for _name, (_node, source) in scope.selected_sources.items():
-            if isinstance(source, exp.Table) and isinstance(source.this, exp.Identifier):
-                reads_base_table = True
+            # References to another block (CTE / derived table) read filtered rows
+            # — provided the engine reads the name the same way.  Engines fold
+            # unquoted names, so a quoted block name and an unquoted reference
+            # (or the reverse) may be a block here and a real table there.
+            for table in scope.tables:
+                source = scope.sources.get(table.alias_or_name)
+                if not isinstance(source, Scope):
+                    continue
+                if not _same_name_as_written(table, source):
+                    raise _policy_refusal(
+                        "Referring to a named query block with different quoting than it was defined with"
+                    )
+                accounted.add(id(table))
+
+            base_tables: list[exp.Table] = []
+            other_sources = False
+            for _name, (node, source) in scope.selected_sources.items():
+                if not isinstance(source, exp.Table):
+                    other_sources = True
+                    continue
+                if _is_row_generator(source.this):
+                    accounted.add(id(source))
+                    other_sources = True
+                    continue
+                if not isinstance(source.this, exp.Identifier) or not isinstance(block, exp.Select):
+                    raise _policy_refusal("Reading from a table function or a dynamically named table")
                 alias = source.args.get("alias")
                 if alias is not None and alias.args.get("columns"):
-                    raise AppError(
-                        "UNSUPPORTED_QUERY",
-                        "Renaming a table's columns in its alias is not supported "
-                        "for callers with row-level policies.",
-                        status=400,
-                    )
-        if reads_base_table and not any(block is b for b in blocks):
-            blocks.append(block)
+                    raise _policy_refusal("Renaming a table's columns in its alias")
+                if source.args.get("pivots"):
+                    raise _policy_refusal("Pivoting a table directly (wrap it in a subquery)")
+                base_tables.append(source)
+                accounted.add(id(source))
 
-    for block in blocks:
+            if not base_tables or any(block is b for b, _t, _o in blocks):
+                continue
+            if block.args.get("match"):
+                raise _policy_refusal("MATCH_RECOGNIZE over a table")
+            if dialect in _ALIAS_FIRST_DIALECTS:
+                for projection in block.expressions:
+                    if (
+                        isinstance(projection, exp.Alias)
+                        and projection.alias.casefold() in policy_columns
+                        and not (
+                            isinstance(projection.this, exp.Column)
+                            and projection.this.name.casefold() == projection.alias.casefold()
+                        )
+                    ):
+                        raise _policy_refusal("Giving an output column the name of a policy column")
+            blocks.append((block, base_tables, other_sources))
+
+        # Filtered or refused: no table reference may be left unaccounted for.
+        for table in tree.find_all(exp.Table):
+            if id(table) not in accounted:
+                raise _policy_refusal(
+                    "Reading a table through this construct (SEMI/ANTI join, SUMMARIZE, "
+                    "DESCRIBE, PIVOT statement or similar)"
+                )
+    except AppError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise _policy_refusal("This query shape") from exc
+
+    for block, base_tables, other_sources in blocks:
+        # One base table next to derived sources: pin the predicate to the
+        # table so a derived column of the same name cannot stand in for it.
+        qualifier = (
+            base_tables[0].alias_or_name if other_sources and len(base_tables) == 1 else None
+        )
         for predicate in predicates:
-            block.where(predicate.copy(), copy=False)
+            placed = predicate.copy()
+            if qualifier:
+                for column in placed.find_all(exp.Column):
+                    if not column.table:
+                        column.set("table", exp.to_identifier(qualifier))
+            block.where(placed, copy=False)
     return rendered
 
 

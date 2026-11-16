@@ -1144,11 +1144,10 @@ async def _resolve_org_connector(
             from app.connectors.duckdb_conn import connect_duckdb_datastore  # noqa: PLC0415
 
             return factory(connect_duckdb_datastore(cfg, org_id)), True
-        from app.connectors.network import effective_network  # noqa: PLC0415
-        from app.connectors.ssrf import guard_connector_target  # noqa: PLC0415
+        from app.connectors.network import pin_direct_target  # noqa: PLC0415
 
-        if effective_network({**real_ds, "config": cfg})[0] == "direct":
-            guard_connector_target(cfg)
+        # This path dials the target itself: direct mode only, pinned.
+        pin_direct_target(real_ds, cfg)
         if ctype == "postgres":
             from app.connectors.registry import postgres_dsn  # noqa: PLC0415
 

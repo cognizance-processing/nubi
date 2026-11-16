@@ -284,12 +284,10 @@ def _resolve_flow_connector(
     factory = get_connector_registry().get(ctype or "duckdb")
     if ctype != "duckdb":
         # Flow tasks dial direct connections from the platform: same target
-        # policy as every other connector build.
-        from app.connectors.network import effective_network  # noqa: PLC0415
-        from app.connectors.ssrf import guard_connector_target  # noqa: PLC0415
+        # policy as every other connector build, direct mode only, pinned.
+        from app.connectors.network import pin_direct_target  # noqa: PLC0415
 
-        if effective_network({**ds, "config": cfg})[0] == "direct":
-            guard_connector_target(cfg)
+        pin_direct_target(ds, cfg)
     if ctype == "duckdb":
         from app.connectors.duckdb_conn import connect_duckdb_datastore  # noqa: PLC0415
 
@@ -347,7 +345,6 @@ def _handle_query(
 
     from app.connectors.duckdb_conn import DuckDBConnector  # noqa: PLC0415
     from app.connectors.planner import plan, resolve_named_params  # noqa: PLC0415
-    from app.queries.registry import get_query_registry  # noqa: PLC0415
 
     query_id: str | None = config.get("query_id")
     sql: str | None = config.get("sql")
@@ -359,8 +356,13 @@ def _handle_query(
     positional_params: list[Any] = []
 
     if query_id is not None:
-        query_registry = get_query_registry()
-        rq = query_registry.get(query_id)
+        from app.queries.registry import registered_query_for_org  # noqa: PLC0415
+
+        # Org-scoped: a flow can only bind its own organisation's queries.
+        rq = registered_query_for_org(
+            query_id,
+            getattr(ctx, "org_id", None) or (claims or {}).get("org") or (claims or {}).get("org_id"),
+        )
         if rq is None:
             raise AppError(
                 "query_not_found",

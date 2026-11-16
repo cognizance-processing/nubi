@@ -38,9 +38,30 @@ from typing import Any
 
 import pytest
 
-from app.flows.materialize import materialize_blend, register_parquet_query
+from app.flows.materialize import materialize_blend as _materialize_blend
+from app.flows.materialize import register_parquet_query
 from app.flows.store import InMemoryFlowStore
 from app.queries.registry import get_query_registry
+
+
+# The storage root belongs to the organisation that owns the flow.
+_FLOW = {"id": "flow-under-test", "org_id": "org-under-test"}
+
+
+def materialize_blend(config, inputs, **kwargs):
+    kwargs.setdefault("flow", _FLOW)
+    return _materialize_blend(config, inputs, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _operator_base(tmp_path, monkeypatch):
+    """Materializations land under the operator's base (a temp dir here)."""
+    monkeypatch.setattr(
+        "app.flows.incremental._operator_base",
+        lambda settings=None: (
+            getattr(settings, "FLOWS_MATERIALIZE_BASE_URI", "") or str(tmp_path / "materialized")
+        ).rstrip("/"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +87,8 @@ def _read_parquet(path: str) -> list[dict[str, Any]]:
 
 
 def _blend_cfg(base_uri: str, *, kind: str, query_id: str, datastore_id: str, **mat: Any) -> dict[str, Any]:
-    materialized = {"kind": kind, "base_uri": base_uri, **mat}
+    # *base_uri* is unused: the base is the operator's, not the task's.
+    materialized = {"kind": kind, **mat}
     return {
         "combine_sql": "SELECT * FROM src",
         "sources": ["src"],
@@ -317,15 +339,18 @@ class TestOrgIsolation:
             cfg_a = _blend_cfg(base_a, kind="full", target="sales", query_id=q1, datastore_id=ds1)
             cfg_b = _blend_cfg(base_b, kind="full", target="sales", query_id=q2, datastore_id=ds2)
 
+            # Same target name, same base: the owning org is what separates them.
             m_a = materialize_blend(
                 cfg_a,
                 {"src": _src([{"org": "A", "v": 1}])},
                 env="prod",
+                flow={"id": "fa", "org_id": "org-a"},
             )
             m_b = materialize_blend(
                 cfg_b,
                 {"src": _src([{"org": "B", "v": 99}])},
                 env="prod",
+                flow={"id": "fb", "org_id": "org-b"},
             )
 
             assert m_a["physical_target"] != m_b["physical_target"]
@@ -391,7 +416,6 @@ class TestEndToEndManagedTable:
                             "materialized": {
                                 "kind": "full",
                                 "target": "category_totals",
-                                "base_uri": base,
                             },
                         },
                     },

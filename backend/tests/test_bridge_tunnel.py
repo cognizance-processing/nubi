@@ -325,7 +325,7 @@ async def test_resolve_network_async_bridge_returns_proxy_when_connected():
             result = await resolve_network_async(datastore_config, bridge_row)
             assert isinstance(result, NetworkTarget)
             assert result.mode == "bridge"
-            assert result.host == "127.0.0.1"
+            assert result.host.startswith("127.")  # each tunnel has its own loopback address
             assert isinstance(result.port, int)
             assert result.port != target_port  # ephemeral port, not the original
             assert callable(result.cleanup)

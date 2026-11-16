@@ -88,19 +88,34 @@ def test_postgres_sessions_are_read_only_with_a_timeout(monkeypatch):
 def test_mysql_parameterised_sessions_are_read_only_with_a_timeout(monkeypatch):
     from app.connectors import mysql
 
-    captured: dict = {}
+    ran: list[str] = []
+
+    class _Cur:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def execute(self, sql, *_a):
+            ran.append(sql.lower())
+
+    class _Session:
+        def cursor(self):
+            return _Cur()
+
+        def close(self):
+            pass
 
     class _PyMySQL:
         @staticmethod
-        def connect(**kwargs):
-            captured.update(kwargs)
-            return _Conn([])
+        def connect(**_kwargs):
+            return _Session()
 
     monkeypatch.setattr(mysql, "_import_pymysql", lambda: _PyMySQL)
     connector = mysql.MySQLConnector("mysql://u:p@db.example.com/x")
     connector._connect_pymysql()
-    init = str(captured.get("init_command") or "").lower()
-    assert "read only" in init and "max_execution_time" in init
+    assert any("read only" in sql for sql in ran) and any("max_execution_time" in sql for sql in ran)
 
 
 @pytest.mark.skipif(not os.environ.get("NUBI_TEST_PG_DSN"), reason="needs a live Postgres (NUBI_TEST_PG_DSN)")

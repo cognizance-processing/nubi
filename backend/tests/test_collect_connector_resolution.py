@@ -44,6 +44,23 @@ from app.repos.memory import InMemoryRepo
 from app.repos.provider import set_repo
 
 _ORG = "11111111-2222-3333-4444-555555555555"
+_FIXTURE_ADDRESS = "93.184.216.34"
+
+
+@pytest.fixture(autouse=True)
+def _fixture_hosts_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fixture host names ("h", "db.internal") resolve to one public address.
+
+    A direct MySQL/Postgres connection is pinned to the address its host
+    resolved to, so a name that resolves to nothing is refused.
+    """
+    import ipaddress
+
+    from app.connectors import ssrf
+
+    monkeypatch.setattr(
+        ssrf, "_resolve_addresses", lambda _host: [ipaddress.ip_address(_FIXTURE_ADDRESS)]
+    )
 
 
 def _set_single_key() -> None:
@@ -312,8 +329,9 @@ class TestBridgeFetchFallback:
 
         assert conn_kind == "mysql"
         assert connector is not None
-        # Direct mode: the connector still dials the datastore's own host.
+        # Direct mode: the connector still dials the datastore's own host —
+        # by the address that host was checked at.
         cfg = _CapturingConnector.last_cfg
         assert cfg is not None, "factory was never called"
-        assert cfg["host"] == "db.internal"
+        assert cfg["host"] == _FIXTURE_ADDRESS
         net_cleanup()

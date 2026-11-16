@@ -299,8 +299,21 @@ def postgres_dsn(
     if password:
         userinfo += ":" + quote(str(password), safe="")
     dsn = f"postgresql://{userinfo}@{host}:{port}/{quote(str(database), safe='')}"
+    params: list[str] = []
     if sslmode:
-        dsn += f"?sslmode={quote(str(sslmode), safe='')}"
+        params.append(f"sslmode={quote(str(sslmode), safe='')}")
+    # The address to dial for *host* (set by pin_connector_target): one IP
+    # literal per host, nothing else.
+    hostaddr = config.get("hostaddr")
+    if hostaddr:
+        from app.connectors.ssrf import ip_literals
+
+        hostaddr = ip_literals(hostaddr)
+        if hostaddr.count(",") != host.count(","):
+            raise AppError("invalid_connector_config", "The host list is not valid.", 400)
+        params.append(f"hostaddr={quote(hostaddr, safe=',:')}")
+    if params:
+        dsn += "?" + "&".join(params)
     return dsn
 
 
@@ -321,8 +334,22 @@ def _mysql_dsn_from_config(config: dict[str, Any]) -> str:
 
     from urllib.parse import quote
 
-    host = config.get("host", "localhost")
-    port = config.get("port", 3306)
+    from app.connectors.ssrf import connection_host
+
+    host = connection_host(config.get("host"))
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"  # IPv6 literal
+    # Each part is validated or URL-encoded, as in postgres_dsn, so a value
+    # can only be what its field says it is: the port a number, and the
+    # database name cannot add an authority, a path or parameters.
+    from app.errors import AppError
+
+    try:
+        port = int(config.get("port") or 3306)
+    except (TypeError, ValueError):
+        port = 0
+    if not 0 < port < 65536:
+        raise AppError("invalid_connector_config", "The port must be a number.", 400)
     database = config.get("database") or config.get("dbname") or ""
     user = config.get("user") or config.get("username") or "root"
     password = config.get("password", "")
@@ -330,4 +357,4 @@ def _mysql_dsn_from_config(config: dict[str, Any]) -> str:
     userinfo = quote(str(user), safe="")
     if password:
         userinfo += ":" + quote(str(password), safe="")
-    return f"mysql://{userinfo}@{host}:{port}/{database}"
+    return f"mysql://{userinfo}@{host}:{port}/{quote(str(database), safe='')}"

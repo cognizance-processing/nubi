@@ -145,7 +145,7 @@ async def test_demo_tables_still_return_rows(opener):
 async def test_materialized_dataset_still_reads_but_only_for_its_org(opener, tmp_path, monkeypatch):
     import duckdb
 
-    monkeypatch.setattr("app.connectors.duckdb_conn._materialize_base", lambda: str(tmp_path))
+    monkeypatch.setattr("app.flows.incremental._operator_base", lambda settings=None: str(tmp_path))
     for org in (ORG, OTHER_ORG):
         (tmp_path / org).mkdir()
         c = duckdb.connect()
@@ -326,3 +326,65 @@ def test_no_route_opens_duckdb_datastores_itself():
             ):
                 offenders.append(f"{rel}:{node.lineno}")
     assert offenders == [], offenders
+
+
+# ---------------------------------------------------------------------------
+# A config with no connector type is a DuckDB config everywhere
+# ---------------------------------------------------------------------------
+
+UNTYPED_BAD = [
+    {"database": "/abs/x.duckdb"},
+    {"database": "/abs/x.duckdb", "host": "db.internal"},
+    {"path": "/abs/x.duckdb"},
+    {"type": "", "database": "/abs/x.duckdb"},
+]
+
+
+@pytest.mark.parametrize("cfg", UNTYPED_BAD, ids=lambda c: ",".join(c))
+def test_untyped_config_is_guarded_as_duckdb(cfg):
+    from app.connectors.duckdb_conn import datastore_connector_type, guard_datastore_config
+    from app.errors import AppError
+
+    assert datastore_connector_type(cfg) == "duckdb"
+    with pytest.raises(AppError) as exc:
+        guard_datastore_config(cfg, ORG)
+    assert exc.value.status == 400
+
+
+def test_typed_and_empty_configs_pass_the_guard():
+    from app.connectors.duckdb_conn import datastore_connector_type, guard_datastore_config
+
+    guard_datastore_config({}, ORG)
+    guard_datastore_config({"note": "bookkeeping"}, ORG)
+    guard_datastore_config({"connector_type": "postgres", "host": "db.example.com", "database": "app"}, ORG)
+    assert datastore_connector_type({"type": "mysql"}) == "mysql"
+    assert datastore_connector_type({"connector_type": "postgres", "type": "x"}) == "postgres"
+    assert datastore_connector_type(None) == "duckdb"
+
+
+@pytest.mark.parametrize("cfg", UNTYPED_BAD[:3], ids=lambda c: ",".join(c))
+def test_untyped_datastore_writes_reject(client, cfg):
+    c, _repo = client
+    resp = c.post("/api/v1/datastores", json={"name": "x", "config": cfg})
+    assert resp.status_code == 400, resp.text
+
+    import asyncio
+
+    row = asyncio.run(_repo.create(resource="datastores", org_id=ORG, created_by="u", name="ok", config={}))
+    resp = c.put(f"/api/v1/datastores/{row['id']}", json={"name": "x", "config": cfg})
+    assert resp.status_code == 400, resp.text
+
+
+def test_one_rule_decides_what_an_untyped_config_is():
+    """Readers and the write guard must agree, so only one place may default the type."""
+    import pathlib
+    import re
+
+    app_dir = pathlib.Path(__file__).resolve().parents[2] / "app"
+    pattern = re.compile(r"""get\(\s*["']type["']\s*\)\s*or\s*["']duckdb["']""")
+    offenders = [
+        str(p.relative_to(app_dir))
+        for p in app_dir.rglob("*.py")
+        if p.name != "duckdb_conn.py" and pattern.search(p.read_text())
+    ]
+    assert offenders == []

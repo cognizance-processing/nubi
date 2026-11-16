@@ -157,5 +157,156 @@ def test_connect_route_refuses_unsafe_bindings(body):
             )
         assert resp.status_code == 400, resp.text
         update.assert_not_awaited()
+        store.return_value.put.assert_not_awaited()  # no token kept for a refused binding
     finally:
         set_repo(None)
+
+
+# ---------------------------------------------------------------------------
+# Each rule, at each place git is actually run
+# ---------------------------------------------------------------------------
+
+GOOD_URL = "https://github.com/acme/w.git"
+BAD_URLS = ["--upload-pack=touch /tmp/x", "ext::sh -c id", "ssh://git@github.com/acme/w.git", "https://127.0.0.1/acme/w.git"]
+BAD_BRANCHES = ["--force", "-x", "a..b", "main:refs/heads/other"]
+
+
+class _Result:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+@pytest.fixture
+def public_hosts(monkeypatch):
+    monkeypatch.setattr(
+        "app.git.safety._host_is_public", lambda host: host not in ("127.0.0.1", "localhost")
+    )
+
+
+@pytest.mark.parametrize("env", [None, {"PATH": "/usr/bin", "GIT_ASKPASS": "/tmp/askpass"}])
+def test_every_git_process_gets_the_restricted_environment(monkeypatch, tmp_path, env):
+    import subprocess
+
+    from app.git import remotes
+    from app.git.env_sync import ProjectGit
+
+    seen: list[dict] = []
+
+    def _fake_run(cmd, **kwargs):
+        seen.append(kwargs.get("env") or {})
+        return _Result()
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    remotes._run_git(tmp_path, "status", env=env)
+    ProjectGit(tmp_path)._git("status", env=env)
+    assert len(seen) == 2
+    for used in seen:
+        assert used.get("GIT_ALLOW_PROTOCOL") == "https"
+        assert used.get("GIT_TERMINAL_PROMPT") == "0"
+        assert used.get("GIT_CONFIG_NOSYSTEM") == "1"
+        if env:
+            assert used.get("GIT_ASKPASS") == "/tmp/askpass"
+
+
+def _recording_run_git(calls, *, dirty=True):
+    def _fake(repo_dir, *args, allow_fail=False, env=None):
+        calls.append(args)
+        if args[:2] == ("status", "--porcelain"):
+            return _Result(stdout=" M file\n" if dirty else "")
+        if args[:1] == ("rev-parse",):
+            return _Result(stdout="abc123\n")
+        return _Result()
+
+    return _fake
+
+
+def test_remote_fetch_and_push_separate_options_from_values(monkeypatch, tmp_path, public_hosts):
+    from app.git import remotes
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(remotes, "_run_git", _recording_run_git(calls))
+    monkeypatch.setattr(remotes.RemoteProvider, "_ensure_identity", lambda self, *a, **k: None)
+    (tmp_path / ".git").mkdir()
+    provider = remotes.GitHubProvider(repo_url=GOOD_URL, branch="main", token="t")
+
+    provider.clone_or_pull(tmp_path)
+    fetch = next(c for c in calls if c[0] == "fetch")
+    assert fetch.index("--") < fetch.index("origin") < fetch.index("main")
+
+    calls.clear()
+    out = provider.push(tmp_path, "msg")
+    assert out["pushed"] is True
+    push = next(c for c in calls if c[0] == "push")
+    assert push.index("--") < push.index(GOOD_URL)
+    assert push[-1] == "HEAD:main"
+
+
+@pytest.mark.parametrize(
+    ("url", "branch"), [(u, "main") for u in BAD_URLS] + [(GOOD_URL, b) for b in BAD_BRANCHES]
+)
+def test_remote_push_refuses_an_unsafe_target(monkeypatch, tmp_path, public_hosts, url, branch):
+    from app.errors import AppError
+    from app.git import remotes
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(remotes, "_run_git", _recording_run_git(calls))
+    monkeypatch.setattr(remotes.RemoteProvider, "_ensure_identity", lambda self, *a, **k: None)
+    provider = remotes.GitHubProvider(repo_url=url, branch=branch, token="t")
+    with pytest.raises(AppError):
+        provider.push(tmp_path, "msg")
+    assert not [c for c in calls if c[0] == "push"]
+
+
+def _project_git(monkeypatch, tmp_path):
+    from app.git.env_sync import ProjectGit
+
+    calls: list[tuple] = []
+    repo = ProjectGit(tmp_path)
+    monkeypatch.setattr(repo, "_git", lambda *args, **kwargs: calls.append(args) or _Result())
+    return repo, calls
+
+
+@pytest.mark.parametrize("token", ["", "t"])
+def test_project_fetch_and_push_separate_options_from_values(monkeypatch, tmp_path, public_hosts, token):
+    repo, calls = _project_git(monkeypatch, tmp_path)
+
+    repo.fetch_branch(GOOD_URL, "env/dev", token=token)
+    fetch = calls[-1]
+    assert fetch[0] == "fetch" and fetch.index("--") < fetch.index(GOOD_URL)
+
+    for lease in (False, True):
+        repo.push_branch(GOOD_URL, "env/dev", force_with_lease=lease, token=token)
+        push = calls[-1]
+        assert push[0] == "push" and push.index("--") < push.index(GOOD_URL)
+        assert push[-1] == "refs/heads/env/dev:refs/heads/env/dev"
+        assert ("--force-with-lease" in push) is lease
+        if lease:
+            assert push.index("--force-with-lease") < push.index("--")
+
+
+@pytest.mark.parametrize(
+    ("url", "branch"), [(u, "main") for u in BAD_URLS] + [(GOOD_URL, b) for b in BAD_BRANCHES]
+)
+@pytest.mark.parametrize("operation", ["fetch_branch", "push_branch"])
+def test_project_fetch_and_push_refuse_an_unsafe_target(monkeypatch, tmp_path, public_hosts, operation, url, branch):
+    from app.errors import AppError
+
+    repo, calls = _project_git(monkeypatch, tmp_path)
+    with pytest.raises(AppError):
+        getattr(repo, operation)(url, branch, token="t")
+    assert calls == []  # git never ran
+
+
+def test_project_git_failures_do_not_echo_command_output(monkeypatch, tmp_path):
+    import subprocess
+
+    from app.git.env_sync import GitEnvError, ProjectGit
+
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: _Result(128, "", "fatal: could not read '/etc/shadow': root:$6$secret-hash"),
+    )
+    with pytest.raises(GitEnvError) as exc:
+        ProjectGit(tmp_path)._git("fetch", "origin", "main")
+    assert "secret-hash" not in str(exc.value) and "/etc/shadow" not in str(exc.value)
+    assert "fetch" in str(exc.value)  # which step failed is still reported
