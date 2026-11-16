@@ -18,7 +18,7 @@
  *   onChange  (w)=>void — full widget update callback
  */
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Plus, Trash2, Database, SlidersHorizontal, BarChart3, Layers, Map as MapIcon, Sparkles } from 'lucide-react'
 import {
   inputCls, selectCls, FieldLabel, Section, ToggleRow, ColumnSelect, ColorSwatch,
@@ -31,6 +31,9 @@ import { titleText, withTitleText } from './titleValue.js'
 import { parseNumberInput } from './numberInput.js'
 import { registeredMaps, mapLabel, mapCategory } from '../../lib/maps.js'
 import { DEFAULT_PALETTE, GAUGE_ARC_START, GAUGE_ARC_END } from '../../lib/chartOptionShared.js'
+
+// Neutral chip for an unset bar/funnel stroke colour ("auto").
+const STROKE_AUTO_SWATCH = '#9ca3af'
 
 // Chart types that use an x/y cartesian axis system (show axis config +
 // reference lines). Combo is cartesian too — buildCombo() honours axes and
@@ -171,6 +174,13 @@ export function ChartConfig({ widget, onChange }) {
   const isGauge = baseType === 'gauge'
   const isRadialBar = baseType === 'radialbar'
   const isMap = baseType === 'map'
+  // Bars & lines styling (see embed/widgets/chart-options.ts barStyle / lineStyleOverrides).
+  const hasBars = baseType === 'bar' || baseType === 'waterfall' || baseType === 'combo'
+  const isFunnel = baseType === 'funnel'
+  const hasLines = baseType === 'line' || baseType === 'area' || baseType === 'fan' || baseType === 'combo'
+  const barWidthMode = cfg.barMaxWidth === undefined ? 'default' : cfg.barMaxWidth === null ? 'auto' : 'max'
+  // Max px text while the field is focused (null = show the stored value).
+  const [barMaxDraft, setBarMaxDraft] = useState<string | null>(null)
   const availableMaps = registeredMaps()
     .map(m => ({ value: m, label: mapLabel(m), category: mapCategory(m) }))
     .sort((a, b) => a.label.localeCompare(b.label))
@@ -666,6 +676,114 @@ export function ChartConfig({ widget, onChange }) {
             checked={cfg.smooth !== false}
             onChange={v => setConfig('smooth', v)}
           />
+        )}
+
+        {/* Bars & lines — Keydash column width / marker stroke parity. Unset
+            keys keep the builder defaults (barMaxWidth: unset = default cap,
+            null = auto/fill). Funnel has outlines only — no bar width. */}
+        {(hasBars || isFunnel) && (
+          <div className="space-y-1.5">
+            <FieldLabel>Bars</FieldLabel>
+            {hasBars && (
+              <div className="flex gap-1.5">
+                <div className="flex-1">
+                  <FieldLabel>Bar width</FieldLabel>
+                  <select
+                    className={selectCls}
+                    value={barWidthMode}
+                    onChange={e => {
+                      const v = e.target.value
+                      setConfig('barMaxWidth', v === 'default' ? undefined : v === 'auto' ? null : 40)
+                    }}
+                  >
+                    <option value="default">Default</option>
+                    <option value="auto">Auto (fill)</option>
+                    <option value="max">Max width (px)</option>
+                  </select>
+                </div>
+                {barWidthMode === 'max' && (
+                  <div className="flex-1">
+                    <FieldLabel>Max px</FieldLabel>
+                    {/* Raw draft while typing; clamp + commit on blur/Enter, so
+                        typing "120" doesn't snap to 6 on the first keystroke.
+                        Empty/invalid blur keeps the stored width. */}
+                    <input type="number" min={6} max={500} className={inputCls}
+                      value={barMaxDraft ?? cfg.barMaxWidth ?? ''}
+                      onFocus={() => setBarMaxDraft(String(cfg.barMaxWidth ?? ''))}
+                      onChange={e => setBarMaxDraft(e.target.value)}
+                      onBlur={() => {
+                        const n = parseNumberInput(barMaxDraft, { min: 6, max: 500 })
+                        setBarMaxDraft(null)
+                        if (n !== undefined && n !== cfg.barMaxWidth) setConfig('barMaxWidth', n)
+                      }}
+                      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }} />
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="flex gap-1.5 items-end">
+              <div className="flex-1">
+                <FieldLabel>Stroke width</FieldLabel>
+                <input type="number" min={0} max={10} className={inputCls} placeholder={isFunnel ? '1' : 'none'}
+                  value={cfg.barBorderWidth ?? ''}
+                  onChange={e => setConfig('barBorderWidth', parseNumberInput(e.target.value, { min: 0, max: 10 }))} />
+              </div>
+              <div className="flex items-center gap-1.5">
+                {/* Unset = each bar's own fill (funnel: theme border), so the
+                    chip shows a neutral grey rather than a palette colour. */}
+                <ColorSwatch
+                  title={isFunnel ? 'Stroke colour (default: theme border)' : 'Stroke colour (default: bar colour)'}
+                  value={cfg.barBorderColor}
+                  fallback={STROKE_AUTO_SWATCH}
+                  onChange={v => setConfig('barBorderColor', v || undefined)}
+                />
+                {cfg.barBorderColor ? (
+                  <button type="button" className="text-[12px] text-muted hover:underline whitespace-nowrap"
+                    title="Reset stroke colour to auto"
+                    onClick={() => setConfig('barBorderColor', undefined)}>Auto</button>
+                ) : (
+                  <span className="text-[12px] text-muted whitespace-nowrap">Auto</span>
+                )}
+              </div>
+            </div>
+            {hasBars && (
+              <div>
+                <FieldLabel>Fill opacity</FieldLabel>
+                <input
+                  type="range" min={0} max={1} step={0.05} className="w-full"
+                  value={cfg.barFillOpacity ?? 1}
+                  onChange={e => {
+                    const v = parseFloat(e.target.value)
+                    setConfig('barFillOpacity', v >= 1 ? undefined : v)
+                  }}
+                />
+              </div>
+            )}
+          </div>
+        )}
+        {hasLines && (
+          <div className="space-y-1.5">
+            <FieldLabel>Lines</FieldLabel>
+            <div className="flex gap-1.5">
+              <div className="flex-1">
+                <FieldLabel>Line width</FieldLabel>
+                <input type="number" min={1} max={10} className={inputCls} placeholder="2"
+                  value={cfg.lineWidth ?? ''}
+                  onChange={e => setConfig('lineWidth', parseNumberInput(e.target.value, { min: 1, max: 10 }))} />
+              </div>
+              <div className="flex-1">
+                <FieldLabel>Line opacity</FieldLabel>
+                <input
+                  type="range" min={0} max={1} step={0.05} className="w-full"
+                  value={cfg.lineOpacity ?? 1}
+                  onChange={e => {
+                    const v = parseFloat(e.target.value)
+                    setConfig('lineOpacity', v >= 1 ? undefined : v)
+                  }}
+                />
+              </div>
+            </div>
+          </div>
         )}
 
         {/* Custom palette */}
