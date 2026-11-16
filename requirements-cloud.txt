@@ -1,0 +1,24 @@
+# requirements-cloud.txt — extra drivers for the HOSTED (Dockerfile.ee) image.
+#
+# requirements.txt keeps the OSS image slim: every connector below is
+# lazy-imported and optional there. The hosted service enables them all so any
+# datastore type a customer picks in the UI works out of the box. Installed by
+# Dockerfile.ee on top of requirements.txt; self-hosters can do the same
+# (pip install -r requirements.txt -r requirements-cloud.txt).
+#
+# Deliberately NOT included (need system libraries / vendor clients):
+#   oracledb (Oracle), pyodbc (SQL Server / Azure SQL / Synapse), JayDeBeApi+JPype (JDBC)
+
+# Object storage: gs:// URIs (NUBI_ASSET_STORAGE_URI, FLOWS_MATERIALIZE_BASE_URI on GCP)
+google-cloud-storage>=2.10
+
+# Cloud warehouses
+google-cloud-bigquery>=3.11            # bigquery  (google-auth comes transitively)
+snowflake-connector-python[pandas]>=3.0 # snowflake (pandas extra = Arrow result path)
+databricks-sql-connector>=3.0          # databricks
+clickhouse-connect>=0.7                # clickhouse
+pyathena[arrow]>=3.0                   # athena (arrow extra = native Arrow cursor)
+trino>=0.330                           # trino / presto
+
+# File transfer
+paramiko>=3.4                          # sftp
