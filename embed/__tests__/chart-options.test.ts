@@ -323,6 +323,8 @@ describe('buildChartOption — every chart type returns a valid option', () => {
       const f = (config) => (buildChartOption({ type: 'funnel', table: rows, encoding: { x: 'm', y: 'v' }, config }).series as any[])[0].itemStyle
       expect(f(undefined).borderWidth).toBe(1)
       expect(f({ barBorderWidth: 3, barBorderColor: '#fff' })).toEqual({ borderWidth: 3, borderColor: '#fff' })
+      // Colour only = 1px in that colour (scripts/render/chart-styling.test.mjs mirrors this).
+      expect(f({ barBorderColor: '#f00' })).toEqual({ borderWidth: 1, borderColor: '#f00' })
     })
 
     test('combo: bar outline + width on bars, line width/opacity on lines', () => {
