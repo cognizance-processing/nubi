@@ -510,6 +510,8 @@ def register_blend_query(
         sql=f'SELECT * FROM "{table}"',
         name=f"Blend — {table}",
         datastore_id=str(datastore_id),
+        # Server-side refresh of the dataset's own query: keeps its owner.
+        internal=True,
     )
 
 
@@ -570,6 +572,8 @@ def register_parquet_query(
         sql=f'SELECT * FROM "{table}"',
         name=f"Managed table — {table}",
         datastore_id=str(datastore_id),
+        # Server-side refresh of the dataset's own query: keeps its owner.
+        internal=True,
     )
 
     # Also update the datastore's in-process config if the datastore registry

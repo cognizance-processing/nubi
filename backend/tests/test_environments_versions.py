@@ -984,3 +984,96 @@ class TestRegistrySavedQueryVersioning:
         # No queries row is created for slug ids (row PKs are uuids).
         rows = await ctx["repo"].list("queries", ctx["org_id"])
         assert all(r["name"] != "Embed query" for r in rows)
+
+
+class TestPromoteNonUuidQueryIds:
+    """A board referencing a BUILT-IN query must still promote.
+
+    Regression: widget ``query_id``s are not all persisted queries — the demo/
+    seed queries live only in the runtime registry under plain-string ids like
+    ``demo_all``, which is the DEFAULT query_id for every widget the editor
+    creates. The promote route fed those straight into ``Repo.get``, whose SQL
+    reads ``WHERE id = $1::uuid``, so Postgres raised an invalid-uuid error and
+    the endpoint 500'd — AFTER it had already written its pointers. The publish
+    half-succeeded while reporting failure, which is the worst outcome for a
+    button called "Push to live".
+
+    Note InMemoryRepo does a plain dict lookup and would happily return None for
+    a non-uuid, so a naive test here passes with or without the fix. The repo is
+    therefore wrapped to reject non-uuid ids the way the real Postgres repo does.
+    """
+
+    @staticmethod
+    def _strict_uuid_repo(repo):
+        """Wrap repo.get so a non-uuid id raises, as ``WHERE id = $1::uuid`` does."""
+        real_get = repo.get
+
+        async def guarded_get(resource, org_id, id, *a, **kw):
+            if resource == "queries":
+                uuid.UUID(str(id))  # raises ValueError on 'demo_all'
+            return await real_get(resource, org_id, id, *a, **kw)
+
+        repo.get = guarded_get
+        return repo
+
+    def test_is_promotable_query_id_accepts_only_uuids(self):
+        from app.routes.environments import _is_promotable_query_id
+
+        assert _is_promotable_query_id(str(uuid.uuid4())) is True
+        # The built-in registry ids that caused the 500.
+        assert _is_promotable_query_id("demo_all") is False
+        assert _is_promotable_query_id("") is False
+        assert _is_promotable_query_id("not-a-uuid") is False
+        assert _is_promotable_query_id(None) is False
+
+    @pytest.mark.asyncio
+    async def test_board_with_builtin_query_id_promotes(self, env_ctx):
+        client, ctx = env_ctx
+        self._strict_uuid_repo(ctx["repo"])
+
+        create = await client.post(
+            "/api/v1/boards",
+            json={
+                "name": "Builtin query board",
+                "config": {"spec": {"widgets": [{"id": "k1", "type": "kpi", "query_id": "demo_all"}]}},
+            },
+            headers=_auth_headers(ctx["alice_id"]),
+        )
+        assert create.status_code == 201, create.text
+        bid = create.json()["id"]
+
+        await _checkpoint(client, ctx, "board", bid, message="v1")
+
+        resp = await _promote(client, ctx, "board", bid, "dev", "prod")
+        assert resp.status_code in (200, 201), resp.text
+
+        # The board itself went live; the built-in query is simply not a dependency.
+        body = resp.json()
+        assert [p["kind"] for p in body["promoted"]] == ["board"]
+        assert _pointer_for(await _versions(client, ctx, "board", bid), "prod") is not None
+
+    @pytest.mark.asyncio
+    async def test_real_query_dependencies_still_promote_alongside_builtins(self, env_ctx):
+        """The uuid guard must skip built-ins WITHOUT dropping real dependencies."""
+        client, ctx = env_ctx
+        qid = ctx["query"]["id"]
+        await _checkpoint(client, ctx, "query", qid, message="dep v1")
+
+        create = await client.post(
+            "/api/v1/boards",
+            json={
+                "name": "Mixed board",
+                "config": {"spec": {"widgets": [
+                    {"id": "k1", "type": "kpi", "query_id": "demo_all"},
+                    {"id": "k2", "type": "kpi", "query_id": qid},
+                ]}},
+            },
+            headers=_auth_headers(ctx["alice_id"]),
+        )
+        bid = create.json()["id"]
+        await _checkpoint(client, ctx, "board", bid, message="v1")
+
+        resp = await _promote(client, ctx, "board", bid, "dev", "prod")
+        assert resp.status_code in (200, 201), resp.text
+        kinds = sorted(p["kind"] for p in resp.json()["promoted"])
+        assert kinds == ["board", "query"], "the real query must still ride along"

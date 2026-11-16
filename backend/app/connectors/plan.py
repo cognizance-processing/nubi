@@ -99,6 +99,17 @@ class PhysicalPlan(BaseModel):
         default_factory=dict,
         description="Raw RLS claims used during predicate injection",
     )
+    unresolved_filters: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Dashboard filter columns (from plan()'s filters= argument) that no "
+            "scope of this query could expose, so they were NOT injected. "
+            "Observability only — deliberately excluded from to_canonical_dict() "
+            "since it does not affect cache-key derivation. A caller applying "
+            "filters should surface this rather than let a widget silently "
+            "ignore a filter it claims to honour."
+        ),
+    )
     cache_key: str = Field(
         description="SHA-256 hex digest of the canonical plan inputs (cache-key-spec.md)",
     )

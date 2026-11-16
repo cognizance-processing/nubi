@@ -42,6 +42,7 @@ from pydantic import BaseModel
 
 from app.ai.watch import Watch, run_watch
 from app.auth.deps import verified_identity
+from app.auth.roles import require_writer
 from app.auth.scopes import has_scope
 from app.auth.verify import VerifiedIdentity
 from app.errors import AppError
@@ -112,11 +113,16 @@ def _slugify(value: str) -> str:
     return slug.strip("_") or "watch"
 
 
-async def _caller_org(identity: VerifiedIdentity) -> str:
-    """Resolve the caller's org id (used to tenant-scope every watch operation)."""
-    from app.routes._org import get_user_org  # noqa: PLC0415
+async def _caller_org(identity: VerifiedIdentity, request: Request) -> str:
+    """Resolve the caller's org id (used to tenant-scope every watch operation).
 
-    return await get_user_org(identity.user_id, get_repo())
+    Uses ``resolve_org_id`` so the active org (``X-Org-Id``) is honoured;
+    ``get_user_org`` would pin the user's FIRST org and make every watch in any
+    other org invisible.
+    """
+    from app.routes._org import resolve_org_id  # noqa: PLC0415
+
+    return await resolve_org_id(identity.user_id, get_repo(), request)
 
 
 # ---------------------------------------------------------------------------
@@ -135,10 +141,13 @@ async def _persist_watch(
 
     try:
         from app.db import execute, fetchrow
-        from app.routes._org import get_user_org, resolve_project_id_for_create
+        from app.routes._org import resolve_org_id, resolve_project_id_for_create
 
         repo = get_repo()
-        org_id = await get_user_org(identity.user_id, repo)
+        # resolve_org_id, not get_user_org: `request` is right here (the
+        # next line uses it) and get_user_org would pin the user's FIRST
+        # org, persisting this record into the wrong tenant.
+        org_id = await resolve_org_id(identity.user_id, repo, request)
         project_id = await resolve_project_id_for_create(org_id, request)
         # Stamp the resolved org onto the in-process record so every later
         # registry read/write can be tenant-scoped (closes a cross-org IDOR).
@@ -332,6 +341,7 @@ def _record_view(record: dict[str, Any]) -> dict[str, Any]:
 
 @api_router.get("/watches")
 async def list_watches(
+    request: Request,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict:
     """List the caller's org watches (auth mirrors GET /metrics).
@@ -341,7 +351,7 @@ async def list_watches(
     org's watches.
     """
     _require_read_scope(identity)
-    org_id = await _caller_org(identity)
+    org_id = await _caller_org(identity, request)
     visible = [
         r for r in _registry_all() if str(r.get("org_id")) == str(org_id)
     ]
@@ -355,12 +365,13 @@ async def list_watches(
 
 @api_router.get("/watches/{watch_id}")
 async def get_watch(
+    request: Request,
     watch_id: str,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict:
     """Return a single watch's full record (tenant-scoped → 404 cross-org)."""
     _require_read_scope(identity)
-    org_id = await _caller_org(identity)
+    org_id = await _caller_org(identity, request)
     record = await _resolve_watch(watch_id, org_id)
     return _record_view(record)
 
@@ -370,7 +381,7 @@ async def get_watch(
 # ---------------------------------------------------------------------------
 
 
-@api_router.post("/watches", status_code=201)
+@api_router.post("/watches", status_code=201, dependencies=[Depends(require_writer)])
 async def create_watch(
     body: WatchIn,
     request: Request,
@@ -378,7 +389,7 @@ async def create_watch(
 ) -> dict:
     """Create + register a watch. First-party only."""
     _require_first_party_write(identity)
-    org_id = await _caller_org(identity)
+    org_id = await _caller_org(identity, request)
 
     data = body.model_dump()
     provisional_id = _slugify(str(data.get("name") or ""))
@@ -400,7 +411,7 @@ async def create_watch(
 # ---------------------------------------------------------------------------
 
 
-@api_router.put("/watches/{watch_id}")
+@api_router.put("/watches/{watch_id}", dependencies=[Depends(require_writer)])
 async def update_watch(
     watch_id: str,
     body: WatchIn,
@@ -409,7 +420,7 @@ async def update_watch(
 ) -> dict:
     """Update a watch: re-validate, re-register, re-persist (tenant-scoped)."""
     _require_first_party_write(identity)
-    org_id = await _caller_org(identity)
+    org_id = await _caller_org(identity, request)
 
     # Tenant guard: if a watch with this id exists for ANOTHER org, it is
     # invisible to this caller → 404 (never silently overwrite a foreign watch).
@@ -443,14 +454,15 @@ async def update_watch(
 # ---------------------------------------------------------------------------
 
 
-@api_router.delete("/watches/{watch_id}")
+@api_router.delete("/watches/{watch_id}", dependencies=[Depends(require_writer)])
 async def delete_watch(
+    request: Request,
     watch_id: str,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict:
     """Unregister the watch and delete its persisted row (tenant-scoped)."""
     _require_first_party_write(identity)
-    org_id = await _caller_org(identity)
+    org_id = await _caller_org(identity, request)
 
     # Tenant guard: 404 if the watch belongs to another org (no cross-org delete).
     await _resolve_watch(watch_id, org_id)
@@ -475,7 +487,11 @@ async def delete_watch(
 
 
 async def _feed_breach(
-    summary: dict[str, Any], watch: Watch, *, identity: VerifiedIdentity | None
+    summary: dict[str, Any],
+    watch: Watch,
+    *,
+    identity: VerifiedIdentity | None,
+    org_id: str | None = None,
 ) -> None:
     """Also land a breached watch in the in-app feed + Web Push (best-effort).
 
@@ -484,6 +500,10 @@ async def _feed_breach(
     through the unified ``notify_event`` dispatch so it shows up in the
     notification center and as a push. Never raises — a feed/push failure must
     not regress a watch evaluation.
+
+    *org_id* is the org that owns the watch (the one the caller resolved via
+    ``X-Org-Id``). Pass it whenever it is known: falling back to the caller's
+    DEFAULT org lands a multi-org user's breach in the wrong org's feed.
     """
     if not summary.get("breached"):
         return
@@ -492,8 +512,7 @@ async def _feed_breach(
         from app.repos.provider import get_repo
         from app.routes._org import get_user_org
 
-        org_id = None
-        if identity is not None and getattr(identity, "user_id", None):
+        if not org_id and identity is not None and getattr(identity, "user_id", None):
             org_id = await get_user_org(identity.user_id, get_repo())
         if not org_id:
             return  # No tenant context (system tick) — nothing to scope the feed to.
@@ -529,8 +548,10 @@ async def _resolve_metric_for_watch(metric_id: str, org_id: str | None = None):
     legacy unscoped resolution.
     """
     registry = get_metric_registry()
-    metric = registry.get(metric_id)
-    if metric is not None and org_id is not None:
+    metric = registry.get(metric_id, org_id)
+    # A registration under the org's own key is that org's metric; only a hit
+    # on a SHARED (org-less) entry still needs proving.
+    if metric is not None and org_id is not None and registry.owned(metric_id, org_id) is None:
         from app.metrics.registry import metric_belongs_to_org  # noqa: PLC0415
 
         if not await metric_belongs_to_org(metric_id, org_id):
@@ -546,8 +567,9 @@ async def _resolve_metric_for_watch(metric_id: str, org_id: str | None = None):
     return metric
 
 
-@api_router.post("/watches/{watch_id}/evaluate")
+@api_router.post("/watches/{watch_id}/evaluate", dependencies=[Depends(require_writer)])
 async def evaluate_watch_now(
+    request: Request,
     watch_id: str,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict:
@@ -558,7 +580,7 @@ async def evaluate_watch_now(
     alert. Returns ``{breached, value, state, explanation?, sent, result}``.
     """
     _require_read_scope(identity)
-    org_id = await _caller_org(identity)
+    org_id = await _caller_org(identity, request)
     record = await _resolve_watch(watch_id, org_id)
     watch = _watch_from_record(record)
     metric = await _resolve_metric_for_watch(watch.metric_id, org_id)
@@ -568,7 +590,7 @@ async def evaluate_watch_now(
     claims = {"policies": identity.policies, "org_id": org_id}
     summary = await run_watch(watch, metric, claims)
     summary["id"] = watch.id
-    await _feed_breach(summary, watch, identity=identity)
+    await _feed_breach(summary, watch, identity=identity, org_id=org_id)
     return summary
 
 
@@ -593,7 +615,11 @@ async def watches_tick(
     would resolve each watch's owning identity, which is out of scope here.
     """
     secret = os.getenv("WATCHES_TICK_SECRET") or os.getenv("FLOWS_TICK_SECRET")
-    if not secret or x_nubi_tick_secret != secret:
+    import hmac  # noqa: PLC0415
+
+    if not secret or not hmac.compare_digest(
+        (x_nubi_tick_secret or "").encode("utf-8"), secret.encode("utf-8")
+    ):
         raise AppError("forbidden", "Invalid or missing tick secret.", 403)
 
     results: list[dict[str, Any]] = []

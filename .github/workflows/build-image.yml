@@ -1,0 +1,148 @@
+name: Build image
+
+# Builds and publishes the container images to GHCR. This is the ONLY place
+# images are built: Nubi Cloud deploys these exact digests from its private ops
+# repo, and self-hosters can pull them too.
+#
+#   push to dev   → nubi-ee:dev-<sha>   (+ notifies the ops repo → deploys dev)
+#   push to main  → nubi-ee:main-<sha>  (published only)
+#   tag vX.Y.Z    → nubi-ee:X.Y.Z, nubi:X.Y.Z, :latest (+ notifies ops → prod, gated there)
+#   tag vX.Y.Z-rc.N → nubi-ee:X.Y.Z-rc.N (pre-release; no auto-deploy until a qa env exists)
+
+on:
+  push:
+    branches: [dev, main]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_EE: ghcr.io/${{ github.repository_owner }}/nubi-ee
+  IMAGE_OSS: ghcr.io/${{ github.repository_owner }}/nubi
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      environment: ${{ steps.ver.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version + target
+        id: ver
+        run: |
+          set -euo pipefail
+          BASE="$(python3 -c "import json;print(json.load(open('package.json'))['version'])")"
+          SHA="${GITHUB_SHA::12}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"; TAG="$VERSION"
+            case "$VERSION" in *-*) ENVIRONMENT="" ;; *) ENVIRONMENT="prod" ;; esac   # rc → no auto-deploy yet (qa later)
+          elif [[ "$GITHUB_REF_NAME" == "dev" ]]; then
+            VERSION="${BASE}-dev.${SHA}"; TAG="dev-${SHA}"; ENVIRONMENT="dev"
+          elif [[ "$GITHUB_REF_NAME" == "main" ]]; then
+            VERSION="${BASE}-main.${SHA}"; TAG="main-${SHA}"; ENVIRONMENT=""
+          else
+            echo "unsupported ref '$GITHUB_REF': only dev, main and v*.*.* tags publish images" >&2; exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION tag=$TAG environment=${ENVIRONMENT:-none}"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: EE image tags
+        id: meta_ee
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_EE }}
+          tags: |
+            type=raw,value=${{ steps.ver.outputs.tag }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
+
+      - name: Build & push EE image (Dockerfile.ee)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.ee
+          push: true
+          tags: ${{ steps.meta_ee.outputs.tags }}
+          labels: ${{ steps.meta_ee.outputs.labels }}
+          build-args: NUBI_VERSION=${{ steps.ver.outputs.version }}
+          cache-from: type=gha,scope=ee
+          cache-to: type=gha,scope=ee,mode=max
+
+      # OSS image only for releases — self-hosters pull versioned tags.
+      - name: OSS image tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: meta_oss
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_OSS }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - name: Build & push OSS image (Dockerfile)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.meta_oss.outputs.tags }}
+          labels: ${{ steps.meta_oss.outputs.labels }}
+          build-args: NUBI_VERSION=${{ steps.ver.outputs.version }}
+          cache-from: type=gha,scope=oss
+          cache-to: type=gha,scope=oss,mode=max
+
+  # Tell the private ops repo an image is ready. It decides whether/when to
+  # deploy (dev: automatic; prod: waits for a reviewer). Needs the
+  # NUBI_CLOUD_DISPATCH_TOKEN secret: a fine-grained PAT with Contents: read &
+  # write on the ops repo. Skipped silently when the secret is absent, so forks
+  # and self-hosters are unaffected.
+  notify-ops:
+    needs: build
+    if: needs.build.outputs.environment != ''
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.NUBI_CLOUD_DISPATCH_TOKEN }}
+    steps:
+      # Build the payload with jq so a ref or tag can never break or inject JSON.
+      - name: Build payload
+        if: env.TOKEN != ''
+        id: payload
+        env:
+          ENVIRONMENT: ${{ needs.build.outputs.environment }}
+          IMAGE_TAG: ${{ needs.build.outputs.tag }}
+          REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          jq -cn --arg environment "$ENVIRONMENT" --arg image_tag "$IMAGE_TAG" --arg sha "$GITHUB_SHA" --arg ref "$REF" \
+            '{environment: $environment, image_tag: $image_tag, sha: $sha, ref: $ref}' > payload.json
+          echo "json=$(cat payload.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch image-published
+        if: env.TOKEN != ''
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.NUBI_CLOUD_DISPATCH_TOKEN }}
+          repository: ${{ github.repository_owner }}/nubi-cloud
+          event-type: image-published
+          client-payload: ${{ steps.payload.outputs.json }}

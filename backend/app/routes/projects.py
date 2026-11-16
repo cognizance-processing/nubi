@@ -438,7 +438,7 @@ async def delete_project(
 
 # ── Sample bundle remove / restore ────────────────────────────────────────────
 
-@router.post("/sample/remove")
+@router.post("/sample/remove", dependencies=[Depends(require_writer)])
 async def remove_sample(
     request: Request,
     user: dict[str, Any] = Depends(current_user),
@@ -461,7 +461,7 @@ async def remove_sample(
     return {"removed": counts, "project_id": str(project_id)}
 
 
-@router.post("/sample/restore")
+@router.post("/sample/restore", dependencies=[Depends(require_writer)])
 async def restore_sample(
     request: Request,
     user: dict[str, Any] = Depends(current_user),

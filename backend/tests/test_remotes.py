@@ -384,7 +384,8 @@ def test_push_dirty_tree_commits_and_pushes(tmp_path: Path):
     push_calls = [c for c in calls if c[1] == "push"]
     assert push_calls
     # The bare URL (no embedded token) must be what's passed to `git push`.
-    assert push_calls[0][2] == "https://github.com/o/r.git"
+    # (after the "--" that ends git's own options).
+    assert push_calls[0][2:4] == ("--", "https://github.com/o/r.git")
     assert "tok" not in push_calls[0]
 
 

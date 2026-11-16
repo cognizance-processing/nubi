@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from app.auth.deps import current_user
 from app.errors import AppError
-from app.notify.push import get_push_store, vapid_public_key
+from app.notify.push import get_push_store, push_endpoint_allowed, vapid_public_key
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
 from app.routes._org import resolve_org_id
@@ -71,6 +71,12 @@ async def subscribe(
         raise AppError(
             "validation_error",
             "A push subscription requires endpoint + keys.p256dh + keys.auth.",
+            400,
+        )
+    if not push_endpoint_allowed(endpoint):
+        raise AppError(
+            "invalid_request",
+            "That push endpoint is not a supported browser push service.",
             400,
         )
 

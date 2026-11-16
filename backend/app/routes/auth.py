@@ -50,7 +50,7 @@ from app.errors import AppError
 from app.repos import projects as projects_repo
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
-from app.routes._org import get_user_org
+from app.routes._org import get_user_org, resolve_org_id
 
 # A pre-computed argon2id hash of an arbitrary dummy string.  Used so that
 # the login path always performs an argon2 verification regardless of whether
@@ -312,6 +312,18 @@ async def login(
     """
     email = str(body.email).lower()
 
+    # Per-account throttle (in addition to the per-client one in the
+    # middleware), checked before any password work.
+    from app.middleware.ratelimit import consume_login_attempt  # noqa: PLC0415
+
+    allowed, retry_after = consume_login_attempt(email)
+    if not allowed:
+        raise AppError(
+            "rate_limited",
+            f"Too many sign-in attempts for this account. Try again in {retry_after} second(s).",
+            429,
+        )
+
     user_row = await fetchrow(
         "SELECT id, email, password_hash, name, avatar_url, email_verified, created_at FROM users WHERE email = $1",
         email,
@@ -459,6 +471,7 @@ async def me(
 
 @router.get("/scope")
 async def scope(
+    request: Request,
     identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -491,11 +504,16 @@ async def scope(
     # For first-party tokens the org is usually pinned at request time via
     # membership rather than carried in the token; resolve it the same way the
     # rest of the app does so the scope reflects the org the caller operates in.
-    # The org is STILL derived from server-side state (token / membership), not
-    # the request body.
+    # Header-aware: the scope a route enforces is the scope in the org that
+    # route acts on, so reporting the DEFAULT org's scope told a multi-workspace
+    # user their permissions in the wrong workspace — the UI then showed or hid
+    # controls that did not match what the API would actually allow.
+    # ``resolve_org_id`` verifies membership (403 for a non-member) and honours
+    # the API-key/embed pin, so the org still comes from server-side state, never
+    # from the request body.
     if not identity.org and identity.kind == "access":
         try:
-            identity.org = await get_user_org(str(identity.user_id), repo)
+            identity.org = await resolve_org_id(str(identity.user_id), repo, request)
         except AppError:
             # Org-less caller (mid-onboarding) — resolve_scope returns raw.
             pass
@@ -513,13 +531,19 @@ async def my_invites(
     is exactly what an org-less (freshly OAuth-signed-up) user calls during
     onboarding to discover invitations.
 
+    The secret link ``token`` is included only when the caller's address has
+    been verified by their sign-in provider. An address typed at registration
+    proves nothing about who owns the mailbox, so such an account sees that an
+    invite exists but needs the link itself to accept it.
+
     Returns
     -------
-    200 {invites: [{id, org_id, org_name, role, token, created_at, expires_at}]}
+    200 {invites: [{id, org_id, org_name, role, token?, created_at, expires_at}]}
     """
     from datetime import datetime, timezone  # noqa: PLC0415
 
     email = str(user["email"]).strip().lower()
+    verified = bool(user.get("email_verified"))
     rows = await fetch(
         """
         SELECT i.id, i.org_id, i.role, i.token, i.created_at, i.expires_at,
@@ -556,7 +580,7 @@ async def my_invites(
                 "org_id": str(r["org_id"]),
                 "org_name": r["org_name"],
                 "role": r["role"],
-                "token": r["token"],
+                "token": r["token"] if verified else None,
                 "created_at": (
                     created_at.isoformat()
                     if hasattr(created_at, "isoformat")
@@ -580,10 +604,22 @@ async def my_invites(
 @router.post("/api-keys", status_code=201)
 async def create_api_key(
     body: ApiKeyCreateIn,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """Mint a long-lived API key scoped to the caller's (default) org.
+    """Mint a long-lived API key scoped to the org the caller is VIEWING.
+
+    Header-aware (``X-Org-Id``), falling back to the caller's default org.
+    That matters more here than on a normal route, because a key's org is
+    permanent: ``resolve_org_id`` pins every request made WITH an API key to
+    the org it was minted for and refuses a mismatching ``X-Org-Id`` outright.
+    Minting against the default org unconditionally therefore made the default
+    workspace the only one any key — and so any CLI, CI job, or MCP client —
+    could ever reach. There was no way to mint a key for a second workspace.
+
+    A caller who is themselves using an API key can only mint within that key's
+    own org, since ``resolve_org_id`` returns the pin.
 
     The raw key is returned ONCE in ``key`` — it is never retrievable again.
     Store it as ``NUBI_TOKEN`` for the CLI / CI.
@@ -593,7 +629,7 @@ async def create_api_key(
     201 {key, api_key: {id, name, last_four, created_at, ...}}
     """
     user_id = str(user["id"])
-    org_id = await get_user_org(user_id, repo)
+    org_id = await resolve_org_id(user_id, repo, request)
 
     raw, row = await get_api_key_store().create(
         user_id, org_id, (body.name or "CLI token")
@@ -605,17 +641,22 @@ async def create_api_key(
 
 @router.get("/api-keys")
 async def list_api_keys(
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """List the caller's API keys in their (default) org — never any secret.
+    """List the caller's API keys in the org they are VIEWING — never a secret.
+
+    Header-aware, matching ``POST /api-keys``: a key minted in a second
+    workspace has to be listable and revocable from that same workspace, or
+    creating one would be a one-way door.
 
     Returns
     -------
     200 {api_keys: [{id, name, last_four, created_at, last_used_at, revoked_at}]}
     """
     user_id = str(user["id"])
-    org_id = await get_user_org(user_id, repo)
+    org_id = await resolve_org_id(user_id, repo, request)
     keys = await get_api_key_store().list_for_org(user_id, org_id)
     return {"api_keys": keys}
 
@@ -623,16 +664,19 @@ async def list_api_keys(
 @router.delete("/api-keys/{key_id}", status_code=204)
 async def revoke_api_key(
     key_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> None:
     """Revoke one of the caller's API keys (idempotent-ish: 404 if not found).
 
-    Cross-user / cross-org keys are invisible (404, never 403) so no key's
-    existence leaks across tenants.
+    Header-aware, matching the mint and list routes. Cross-user / cross-org
+    keys stay invisible (404, never 403) so no key's existence leaks across
+    tenants — ``resolve_org_id`` has already verified membership of the
+    requested org, so a 404 here means "not your key", not "wrong workspace".
     """
     user_id = str(user["id"])
-    org_id = await get_user_org(user_id, repo)
+    org_id = await resolve_org_id(user_id, repo, request)
     revoked = await get_api_key_store().revoke(key_id, user_id, org_id)
     if not revoked:
         raise AppError("not_found", "API key not found.", 404)
@@ -813,6 +857,9 @@ async def google_callback(
                 user_id,
             )
 
+    # ── First link: end any earlier password access to this account ──────────
+    await _secure_account_on_first_provider_link(user_id, "google")
+
     # ── Upsert oauth_accounts ─────────────────────────────────────────────────
     oauth_id = str(uuid.uuid4())
     await execute(
@@ -843,6 +890,45 @@ async def google_callback(
     _clear_oauth_cookie(redirect, _OAUTH_VERIFIER_COOKIE, settings_obj.COOKIE_SECURE)
 
     return redirect
+
+
+async def _secure_account_on_first_provider_link(user_id: str, provider: str) -> bool:
+    """Hand an account to the verified owner of its address.
+
+    Registration does not verify email, so an account with a password may
+    have been created by someone who does not own the address. The first time
+    a provider that HAS verified the address is linked, any password is
+    cleared and every existing session and API key is revoked — whoever set
+    them can no longer get in. Later sign-ins with the same provider, and
+    accounts that never had a password, are left alone.
+
+    Returns ``True`` when the account was locked down.
+    """
+    try:
+        linked = await fetchrow(
+            "SELECT 1 AS ok FROM oauth_accounts WHERE user_id = $1::uuid AND provider = $2 LIMIT 1",
+            user_id,
+            provider,
+        )
+        if linked is not None:
+            return False
+        row = await fetchrow("SELECT password_hash FROM users WHERE id = $1::uuid", user_id)
+        if row is None or row["password_hash"] is None:
+            return False
+    except Exception:  # noqa: BLE001 — cannot tell → do not touch the account
+        return False
+
+    await execute(
+        "UPDATE users SET password_hash = NULL, email_verified = true, updated_at = now() "
+        "WHERE id = $1::uuid",
+        user_id,
+    )
+    from app.auth import sessions as _sessions  # noqa: PLC0415
+    from app.auth.api_keys import get_api_key_store  # noqa: PLC0415
+
+    await _sessions.revoke_all_for_user(user_id)
+    await get_api_key_store().revoke_all_for_user(user_id)
+    return True
 
 
 # ── Private OAuth cookie helpers ──────────────────────────────────────────────

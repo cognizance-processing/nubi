@@ -144,6 +144,20 @@ class _BridgeConnection:
         """Start the background frame-reader coroutine."""
         self._reader_task = asyncio.ensure_future(self._reader_loop())
 
+    async def wait_closed(self) -> None:
+        """Block until the reader loop exits (agent disconnect / socket error).
+
+        The reader loop owns the only ``recv()`` on this WebSocket (§M22-B) —
+        callers must NOT also call ``receive_bytes()`` on the same socket, or
+        the two concurrent readers race and the connection dies uncleanly.
+        Use this instead to detect disconnect.
+        """
+        if self._reader_task is not None:
+            try:
+                await self._reader_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+
     async def close(self) -> None:
         """Stop the reader loop and cancel all in-flight streams."""
         self._closed = True
@@ -393,7 +407,7 @@ class BridgeBroker:
     # Agent registration
     # ------------------------------------------------------------------
 
-    async def register(self, bridge_id: str, ws: Any) -> None:
+    async def register(self, bridge_id: str, ws: Any) -> "_BridgeConnection":
         """Register a connected bridge agent WebSocket for *bridge_id*.
 
         Parameters
@@ -403,6 +417,14 @@ class BridgeBroker:
         ws:
             A WebSocket object (FastAPI ``WebSocket`` OR ``websockets`` client).
             The broker wraps it in a ``_WsAdapter`` internally.
+
+        Returns
+        -------
+        _BridgeConnection
+            The connection just registered. The reader loop it starts owns the
+            only ``recv()`` on *ws* — callers must not also read from *ws*
+            directly (see ``_BridgeConnection.wait_closed``). Callers that only
+            need to detect disconnect should ``await conn.wait_closed()``.
         """
         adapter = _WsAdapter(ws)
         conn = _BridgeConnection(bridge_id, adapter)
@@ -414,6 +436,7 @@ class BridgeBroker:
             self._agents[bridge_id] = conn
         conn.start()
         logger.info("bridge %s registered", bridge_id)
+        return conn
 
     async def unregister(self, bridge_id: str) -> None:
         """Unregister the bridge agent for *bridge_id* and clean up streams."""

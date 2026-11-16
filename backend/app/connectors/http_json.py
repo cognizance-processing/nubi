@@ -289,13 +289,17 @@ def _fetch_pinned(
     # even though we connect to an IP literal.
     extensions = {"sni_hostname": pinned.host}
 
-    return httpx.request(
-        method,
-        target_url,
-        headers=request_headers,
-        extensions=extensions,
-        timeout=timeout,
-    )
+    # Built and sent through a Client: the module-level ``httpx.request()``
+    # shortcut does not accept ``extensions`` (httpx 0.28), so passing it there
+    # raised TypeError on every real fetch. ``Client.build_request`` does.
+    with httpx.Client(timeout=timeout) as client:
+        request = client.build_request(
+            method,
+            target_url,
+            headers=request_headers,
+            extensions=extensions,
+        )
+        return client.send(request)
 
 
 def _navigate_record_path(

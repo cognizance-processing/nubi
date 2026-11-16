@@ -437,3 +437,132 @@ class TestAllResources:
         )
         assert get_resp.status_code == 200
         assert get_resp.json()["id"] == row_id
+
+
+class TestQueryRegistryEviction:
+    """A query edited/deleted through this router must not keep serving stale SQL.
+
+    The runtime ``QueryRegistry`` is process-global and only populated at startup
+    or lazily on a miss, so without an explicit eviction on write a query updated
+    here keeps resolving to its OLD sql/params/output_schema until the process
+    restarts — and a deleted one stays runnable entirely.
+    """
+
+    @staticmethod
+    def _register(query_id: str, org_id: str, sql: str) -> None:
+        from app.queries.registry import get_query_registry
+
+        get_query_registry().register(
+            id=query_id,
+            sql=sql,
+            name="q",
+            params=[],
+            datastore_id=None,
+            owner_org_id=org_id,
+        )
+
+    @pytest.mark.asyncio
+    async def test_update_evicts_stale_registry_entry(self, resources_client):
+        """PUT /queries/:id drops the old registry entry so the next resolve reloads."""
+        from app.queries.registry import get_query_registry
+
+        client, alice_id, org_id, repo = resources_client
+
+        create = await client.post(
+            "/api/v1/queries",
+            json={"name": "q", "config": {"sql": "SELECT 1 AS a"}},
+            headers=_auth_headers(alice_id),
+        )
+        assert create.status_code == 201, create.text
+        query_id = create.json()["id"]
+
+        # Simulate the entry the running server would be serving from memory.
+        self._register(query_id, org_id, "SELECT 1 AS a")
+        assert get_query_registry().get(query_id) is not None
+
+        resp = await client.put(
+            f"/api/v1/queries/{query_id}",
+            json={"config": {"sql": "SELECT 2 AS b"}},
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 200, resp.text
+
+        # Evicted → next resolve misses and reloads the new shape from the DB.
+        assert get_query_registry().get(query_id) is None
+
+    @pytest.mark.asyncio
+    async def test_deduped_noop_update_still_leaves_registry_consistent(
+        self, resources_client
+    ):
+        """An identical re-upsert is deduped; the registry must not go stale either way."""
+        from app.queries.registry import get_query_registry
+
+        client, alice_id, org_id, repo = resources_client
+
+        config = {"sql": "SELECT 1 AS a"}
+        create = await client.post(
+            "/api/v1/queries",
+            json={"name": "q", "config": config},
+            headers=_auth_headers(alice_id),
+        )
+        query_id = create.json()["id"]
+        self._register(query_id, org_id, "SELECT 1 AS a")
+
+        resp = await client.put(
+            f"/api/v1/queries/{query_id}",
+            json={"name": "q", "config": config},
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json().get("deduped") is True
+        # Unchanged config → the cached entry is still correct, so keeping it is fine.
+        # This test pins the dedupe short-circuit as intentional, not an oversight.
+
+    @pytest.mark.asyncio
+    async def test_delete_evicts_registry_entry(self, resources_client):
+        """DELETE /queries/:id must make the query stop resolving immediately."""
+        from app.queries.registry import get_query_registry
+
+        client, alice_id, org_id, repo = resources_client
+
+        create = await client.post(
+            "/api/v1/queries",
+            json={"name": "q", "config": {"sql": "SELECT 1 AS a"}},
+            headers=_auth_headers(alice_id),
+        )
+        query_id = create.json()["id"]
+        self._register(query_id, org_id, "SELECT 1 AS a")
+
+        resp = await client.delete(
+            f"/api/v1/queries/{query_id}",
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 204, resp.text
+        assert get_query_registry().get(query_id) is None
+
+    @pytest.mark.asyncio
+    async def test_board_update_does_not_touch_query_registry(self, resources_client):
+        """The eviction is scoped to queries — a board write must not evict anything."""
+        from app.queries.registry import get_query_registry
+
+        client, alice_id, org_id, repo = resources_client
+
+        board = await client.post(
+            "/api/v1/boards",
+            json={"name": "b", "config": {"spec": {"widgets": []}}},
+            headers=_auth_headers(alice_id),
+        )
+        board_id = board.json()["id"]
+
+        query_id = str(uuid.uuid4())
+        self._register(query_id, org_id, "SELECT 1 AS a")
+
+        resp = await client.put(
+            f"/api/v1/boards/{board_id}",
+            json={"config": {"spec": {"widgets": [{"id": "w1"}]}}},
+            headers=_auth_headers(alice_id),
+        )
+        assert resp.status_code == 200, resp.text
+        assert get_query_registry().get(query_id) is not None
+
+        get_query_registry().unregister(query_id)

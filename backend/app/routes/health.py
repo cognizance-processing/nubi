@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from app.auth.deps import verified_identity
 from app.auth.verify import VerifiedIdentity
@@ -55,10 +55,10 @@ _router = APIRouter(prefix="/health", tags=["health"])
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _org_id(identity: VerifiedIdentity) -> str:
+async def _org_id(identity: VerifiedIdentity, request: Request) -> str:
     """Resolve the caller's org_id via the repo (mirrors watches/metrics pattern)."""
-    from app.routes._org import get_user_org  # noqa: PLC0415
-    return await get_user_org(identity.user_id, get_repo())
+    from app.routes._org import resolve_org_id  # noqa: PLC0415
+    return await resolve_org_id(identity.user_id, get_repo(), request)
 
 
 # ---------------------------------------------------------------------------
@@ -68,13 +68,14 @@ async def _org_id(identity: VerifiedIdentity) -> str:
 
 @_router.get("/freshness")
 async def list_freshness(
+    request: Request,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict[str, Any]:
     """Return pre-computed freshness for every dataset in the caller's org.
 
     O(index scan on org_id) — no live computation.
     """
-    org_id = await _org_id(identity)
+    org_id = await _org_id(identity, request)
     store = get_freshness_store()
     records = await store.list_for_org(org_id)
     return {
@@ -86,6 +87,7 @@ async def list_freshness(
 @_router.get("/freshness/{dataset_key:path}")
 async def get_freshness(
     dataset_key: str,
+    request: Request,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict[str, Any]:
     """Return the pre-computed freshness row for one dataset.
@@ -93,7 +95,7 @@ async def get_freshness(
     Single primary-key lookup: O(1).
     Read SLO target: < 5 ms p99 (single indexed row, no live compute).
     """
-    org_id = await _org_id(identity)
+    org_id = await _org_id(identity, request)
     store = get_freshness_store()
     rec = await store.get(org_id, dataset_key)
     if rec is None:
@@ -112,6 +114,7 @@ async def get_freshness(
 
 @_router.get("/score")
 async def get_health_score(
+    request: Request,
     dataset_key: str | None = Query(None, description="Filter to a single dataset key"),
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict[str, Any]:
@@ -125,7 +128,7 @@ async def get_health_score(
     Default weights:
         freshness=0.50, completeness=0.30, availability=0.20.
     """
-    org_id = await _org_id(identity)
+    org_id = await _org_id(identity, request)
     store = get_freshness_store()
 
     # Resolve the dataset(s) to score.
@@ -190,6 +193,7 @@ async def get_health_score(
 
 @_router.get("/estate")
 async def get_health_estate(
+    request: Request,
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict[str, Any]:
     """Return a source→raw→model→feature flow map annotated with health.
@@ -204,7 +208,7 @@ async def get_health_estate(
     When no flows or datasets exist the graph is empty (``nodes: []``,
     ``edges: []``).
     """
-    org_id = await _org_id(identity)
+    org_id = await _org_id(identity, request)
     store = get_freshness_store()
 
     # Build freshness index for annotation.

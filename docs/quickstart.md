@@ -4,7 +4,7 @@ This guide takes you from a fresh checkout to a running Nubi instance with demo
 data and your first dashboard in under five minutes. All steps run locally; no
 cloud account is required.
 
-![Nubi query editor — SQL workspace with live results](illustration:HeroIllustration)
+![A dashboard board open in a browser tab: the finished result of this guide](illustration:HeroIllustration)
 
 ---
 

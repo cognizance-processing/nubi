@@ -154,8 +154,10 @@ Response format (HTTP 429)
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
+import ipaddress
 import os
 import threading
 import time
@@ -205,9 +207,12 @@ class _Config:
         "_loaded",
         "enabled",
         "auth_rpm",
+        "auth_session_rpm",
         "query_rpm",
         "flowrun_rpm",
         "chat_rpm",
+        "mcp_rpm",
+        "oauth_rpm",
         "burst_factor",
     )
 
@@ -229,11 +234,31 @@ class _Config:
         # WEB_CONCURRENCY alongside `--workers`), this estimate becomes exact.
         workers = max(1, _int_env("WEB_CONCURRENCY", _int_env("UVICORN_WORKERS", 1)))
         self.auth_rpm = max(1, _int_env("NUBI_RATELIMIT_AUTH_RPM", default=30) // workers)
+        # Routine session-probe endpoints (/auth/refresh, /auth/config, /auth/me,
+        # /auth/scope) are hit on every page load/reload — they don't guess
+        # credentials (refresh needs a valid HttpOnly cookie; me/scope need a
+        # valid access token; config is public), so they must not share the
+        # credential-guessing bucket meant for /auth/login and /auth/register.
+        # Lumping them together made ordinary reload-heavy use (and any e2e
+        # test that reloads the page) self-throttle into 429s within seconds.
+        self.auth_session_rpm = max(
+            1, _int_env("NUBI_RATELIMIT_AUTH_SESSION_RPM", default=120) // workers
+        )
         self.query_rpm = max(1, _int_env("NUBI_RATELIMIT_QUERY_RPM", default=120) // workers)
         self.flowrun_rpm = max(1, _int_env("NUBI_RATELIMIT_FLOWRUN_RPM", default=60) // workers)
         # Chat/AI endpoints are expensive (LLM cost per turn) — default 20 rpm,
         # burst 1.5× (30 burst ceiling).  Set NUBI_RATELIMIT_CHAT_RPM to override.
         self.chat_rpm = max(1, _int_env("NUBI_RATELIMIT_CHAT_RPM", default=20) // workers)
+        # MCP: every tool call from an external AI client (Claude, ChatGPT,
+        # Claude Code) lands on one endpoint, and a single question can fan out
+        # into a dozen calls — so the cap is per caller, not per org.
+        self.mcp_rpm = max(1, _int_env("NUBI_RATELIMIT_MCP_RPM", default=120) // workers)
+        # OAuth client endpoints (register/authorize/token/revoke) are anonymous,
+        # so they can only be keyed by IP — and hosted AI apps reach us from a
+        # few shared egress IPs on behalf of every user. Generous by default;
+        # the codes and tokens they handle are 256-bit, so this guards load,
+        # not guessing.
+        self.oauth_rpm = max(1, _int_env("NUBI_RATELIMIT_OAUTH_RPM", default=300) // workers)
         self.burst_factor = _float_env("NUBI_RATELIMIT_BURST_FACTOR", default=1.5)
         self._loaded = True
 
@@ -448,14 +473,25 @@ _SKIP_PREFIXES = (
 )
 
 
+_OAUTH_CLIENT_PATHS = frozenset(
+    f"/api/v1/oauth/{name}" for name in ("register", "authorize", "token", "revoke")
+)
+
+
 def _classify(path: str) -> tuple[str | None, int]:
     """Return (route_class, rpm) or (None, 0) to skip.
 
-    route_class values: 'auth', 'query', 'flow-run', 'chat'
+    route_class values: 'auth', 'auth-session', 'query', 'flow-run', 'chat',
+    'mcp', 'oauth'
     """
     for pfx in _SKIP_PREFIXES:
         if path == pfx or path.startswith(pfx):
             return None, 0
+
+    if path.rstrip("/") == "/api/v1/mcp":
+        return "mcp", _cfg.mcp_rpm
+    if path in _OAUTH_CLIENT_PATHS:
+        return "oauth", _cfg.oauth_rpm
 
     # Chat/AI: the streaming chat editor and the AI agentic endpoints.
     # These trigger LLM calls (high cost) so they get their own conservative
@@ -489,6 +525,18 @@ def _classify(path: str) -> tuple[str | None, int]:
         return "flow-run", _cfg.flowrun_rpm
 
     # Auth: anything under /api/v1/auth/
+    # Routine session-probe endpoints — called on every page load/reload, never
+    # credential-guessing targets (refresh needs a valid HttpOnly cookie;
+    # me/scope need a valid access token; config is public) — get their own,
+    # more generous bucket so they can't be starved by (or starve) the strict
+    # login/register brute-force bucket.
+    if path in (
+        "/api/v1/auth/refresh",
+        "/api/v1/auth/config",
+        "/api/v1/auth/me",
+        "/api/v1/auth/scope",
+    ):
+        return "auth-session", _cfg.auth_session_rpm
     if path.startswith("/api/v1/auth/") or path == "/api/v1/auth":
         return "auth", _cfg.auth_rpm
 
@@ -541,6 +589,58 @@ _EMBED_EXEMPT_PREFIXES = (
 )
 
 
+def _is_trusted_proxy(peer: str) -> bool:
+    """True when *peer* is the proxy in front of this app.
+
+    ``NUBI_TRUSTED_PROXY_CIDRS`` (comma-separated CIDRs) names it explicitly.
+    On Fly (``FLY_APP_NAME`` set) the app is only reachable through the Fly
+    proxy, which connects from a private address — so a private or loopback
+    peer is the proxy and a public one never is.
+    """
+    try:
+        ip = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    cidrs = [c.strip() for c in os.environ.get("NUBI_TRUSTED_PROXY_CIDRS", "").split(",") if c.strip()]
+    if cidrs:
+        for cidr in cidrs:
+            try:
+                if ip in ipaddress.ip_network(cidr, strict=False):
+                    return True
+            except ValueError:
+                continue
+        return False
+    if os.environ.get("FLY_APP_NAME"):
+        return ip.is_private or ip.is_loopback
+    return False
+
+
+def consume_login_attempt(email: str) -> tuple[bool, int]:
+    """Count one sign-in attempt against *email*'s own allowance.
+
+    Independent of the per-client limit: guessing one account's password from
+    many addresses still hits this.  Returns ``(allowed, retry_after_seconds)``;
+    always allowed when rate limiting is disabled.
+    """
+    if not _cfg.enabled:
+        return True, 0
+    try:
+        rpm = max(1, int(os.environ.get("NUBI_RATELIMIT_LOGIN_PER_ACCOUNT_RPM", "10")))
+    except ValueError:
+        rpm = 10
+    digest = hashlib.sha256(str(email or "").strip().lower().encode("utf-8")).hexdigest()[:32]
+    key = (f"acct:{digest}", "login-account")
+    client = get_redis()
+    if client is not None:
+        try:
+            return _redis_consume(client, key, rpm, time.time())
+        except Exception:  # noqa: BLE001 — degrade to the in-process bucket
+            pass
+    now = time.monotonic()
+    _maybe_cleanup(now)
+    return _get_or_create_bucket(key, rpm).consume(now)
+
+
 def _client_ip(request: Request) -> str | None:
     """Return the *trusted* client IP, or ``None`` if none is available.
 
@@ -560,7 +660,18 @@ def _client_ip(request: Request) -> str | None:
     """
     # 1. Real TCP peer (preferred, non-forgeable at this layer).
     if request.client and request.client.host:
-        return request.client.host
+        peer = request.client.host
+        # Behind the platform proxy every request arrives from the proxy's
+        # address, so the per-client key is the address the PROXY reports —
+        # and only when the peer really is that proxy.
+        if _is_trusted_proxy(peer):
+            reported = request.headers.get("fly-client-ip", "").strip()
+            if reported:
+                try:
+                    return str(ipaddress.ip_address(reported))
+                except ValueError:
+                    pass
+        return peer
 
     # 2. Fallback: RIGHT-most XFF entry (appended by the trusted proxy).
     #    Never the left-most — that is the attacker-controlled value.
@@ -637,10 +748,77 @@ def _extract_verified_identity(request: Request) -> tuple[str | None, bool]:
     is_embed = identity.kind == "embed"
 
     if org:
-        return f"org:{org}", is_embed
+        # Embed traffic gets its own bucket: an externally-issued token must
+        # never be able to drain the org's first-party allowance.
+        return (f"embed:{org}" if is_embed else f"org:{org}"), is_embed
 
     # Verified token but no org claim: fall back to IP (unusual but safe).
     return None, is_embed
+
+
+def _bucket_identity(request: Request, route_class: str, token_key: str | None) -> str:
+    """The identity half of the bucket key for *route_class*.
+
+    Credential endpoints are always keyed by the client address — holding a
+    valid token for some org must not buy a separate allowance for guessing
+    credentials. Everything else prefers the verified token key.
+    """
+    if token_key is not None and route_class != "auth":
+        return token_key
+    ip = _client_ip(request)
+    return f"ip:{ip}" if ip else _UNKNOWN_IDENTITY
+
+
+# Opaque credentials (API keys, OAuth access tokens) aren't JWTs, so
+# ``verify_token`` can't key them and they used to fall back to the client IP.
+# For an AI app hosted elsewhere that IP is the vendor's shared egress, which
+# put every user of that app in one bucket. Resolving the credential against
+# its store gives a per-user key that is as forge-proof as a verified JWT: an
+# invalid or revoked credential resolves to nothing and keeps the IP key.
+#
+# Results are cached briefly (by digest, never the raw credential) so the
+# limiter doesn't add a DB round-trip to every request. The cache only decides
+# which bucket a request counts against; authentication still resolves the
+# credential on every request, so a revocation takes effect immediately.
+_OPAQUE_KEY_TTL = 60.0
+_OPAQUE_KEY_MAX = 10_000
+_opaque_keys: dict[str, tuple[str, float]] = {}
+
+
+async def _opaque_identity(request: Request) -> str | None:
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        return None
+    token = auth_header[7:].strip()
+
+    from app.auth.api_keys import get_api_key_store, looks_like_api_key  # noqa: PLC0415
+    from app.auth.oauth import get_oauth_store, looks_like_oauth_access_token  # noqa: PLC0415
+
+    is_key, is_oauth = looks_like_api_key(token), looks_like_oauth_access_token(token)
+    if not (is_key or is_oauth):
+        return None
+
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    now = time.monotonic()
+    cached = _opaque_keys.get(digest)
+    if cached and cached[1] > now:
+        return cached[0]
+
+    try:
+        if is_key:
+            row = await get_api_key_store().resolve(token)
+        else:
+            row = await get_oauth_store().resolve_access(token)
+    except Exception:  # noqa: BLE001 — never fail a request over bucket choice
+        return None
+    if not row:
+        return None
+
+    key = f"user:{row['user_id']}"
+    if len(_opaque_keys) >= _OPAQUE_KEY_MAX:
+        _opaque_keys.clear()
+    _opaque_keys[digest] = (key, now + _OPAQUE_KEY_TTL)
+    return key
 
 
 def _extract_identity(request: Request) -> str:
@@ -742,12 +920,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if is_verified_embed and _is_embed_exempt_path(path):
             return await call_next(request)
 
-        # Identity: use verified org key when available; else IP fallback.
-        if token_key is not None:
-            identity = token_key
-        else:
-            ip = _client_ip(request)
-            identity = f"ip:{ip}" if ip else _UNKNOWN_IDENTITY
+        if token_key is None and route_class != "auth":
+            token_key = await _opaque_identity(request)
+
+        # Identity: verified org key when available (never on credential
+        # endpoints); else IP fallback.
+        identity = _bucket_identity(request, route_class, token_key)
 
         # FINDING 3: we do NOT pass 'unknown' through unthrottled.  When the
         # caller can't be identified they share a single conservative bucket

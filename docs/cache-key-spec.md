@@ -18,6 +18,8 @@ constraints collapse to a single warehouse hit and share cached results.
 The key is deliberately **independent** of non-data-affecting JWT claims (`exp`,
 `iat`, `sub`) so that token rotation never causes unnecessary cache misses.
 
+![Interactive: change the viewer count, the number of distinct security scopes, or turn the shared cache off. Keys are real SHA-256 hashes of canonical JSON.](illustration:EdgeCacheKeys)
+
 ---
 
 ## Algorithm

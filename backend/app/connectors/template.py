@@ -86,6 +86,7 @@ from __future__ import annotations
 
 import re
 import threading
+from collections.abc import Iterable
 from typing import Any, Callable
 
 import jinja2
@@ -206,6 +207,9 @@ def _filter_inclause(value: Any) -> _RawSQL:
     value:
         An iterable of scalar values to be bound.  Strings, ints, floats, etc.
         are all accepted.  Each element becomes a separate bound parameter.
+        A bare scalar (str/bytes/int/…) is treated as a ONE-element list: a
+        widget click emits the single value the user clicked, and `list("EU")`
+        would otherwise silently explode it into ``('E', 'U')``.
 
     Returns
     -------
@@ -221,7 +225,12 @@ def _filter_inclause(value: Any) -> _RawSQL:
     ValueError
         If *value* is empty (an empty IN clause is invalid SQL).
     """
-    items = list(value)
+    # A string IS iterable, so `list()` would split it into characters. Any
+    # non-iterable or string-like value means "one value".
+    if isinstance(value, (str, bytes)) or not isinstance(value, Iterable):
+        items = [value]
+    else:
+        items = list(value)
     if not items:
         raise ValueError("inclause filter received an empty list; IN () is invalid SQL.")
 
@@ -234,6 +243,9 @@ def _filter_inclause(value: Any) -> _RawSQL:
     # Return as _RawSQL so finalize emits the placeholder string directly
     # without trying to bind it as yet another parameter value.
     return _RawSQL("(" + ", ".join(placeholders) + ")")
+
+
+_SAFE_IDENTIFIER_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,3}\Z")
 
 
 def _filter_sqlsafe(value: Any) -> _RawSQL:
@@ -252,6 +264,15 @@ def _filter_sqlsafe(value: Any) -> _RawSQL:
         # → "SELECT revenue FROM t", params=[]
 
     """
+    # Guard: the only thing that may be spliced in unbound is an identifier
+    # (optionally dotted).  Anything else — operators, quotes, whitespace,
+    # sub-selects — is refused, so a template that forwards request input here
+    # cannot be turned into an injection point.
+    if not isinstance(value, str) or not _SAFE_IDENTIFIER_RE.match(value):
+        raise ValueError(
+            "sqlsafe only accepts a plain identifier (letters, digits, underscore, "
+            "optionally dotted)."
+        )
     return _RawSQL(value)
 
 
@@ -336,6 +357,16 @@ def _build_env(style: str) -> SandboxedEnvironment:
 # references, not filter chains or expressions.
 _SIMPLE_VAR_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
 
+# Matches the start of a filter chain on a name, e.g. `{{ X | inclause }}` or
+# `{{X|upper}}`. A name used through a filter ANYWHERE in the template must
+# always resolve to its real value there -- a filter like `inclause` calls
+# `len()`/iterates the value, which a `_FirstOnceValue` proxy can't do. Used
+# below to exclude such names from the bare-dedup optimization entirely,
+# rather than just skipping the filtered occurrence (Jinja resolves a context
+# name once per lookup and shares it across every reference to it, so a name
+# can't be "wrapped for its bare uses but not its filtered one").
+_FILTERED_VAR_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\|")
+
 
 def _build_dedup_context(
     sql: str,
@@ -385,6 +416,14 @@ def _build_dedup_context(
             multi_names.add(name)
         names_seen.add(name)
 
+    # A name also used through a filter (e.g. `{{ X | inclause }}`) must never
+    # be wrapped -- see _FILTERED_VAR_RE above. Bug: a query mixing a bare
+    # scalar use of X with an `X | inclause` use elsewhere (both legitimately
+    # referencing the same param) raised "'_FirstOnceValue' object is not
+    # iterable" from the filtered site, since it received the dedup proxy
+    # instead of the real value.
+    multi_names -= {m.group(1) for m in _FILTERED_VAR_RE.finditer(sql)}
+
     if not multi_names:
         # No duplicates — return context as-is (no wrapping needed).
         return dict(context)
@@ -431,6 +470,20 @@ class _FirstOnceValue:
         """Return the already-bound placeholder (called on subsequent emits)."""
         assert self._slot_ref is not None
         return self._slot_ref.placeholder
+
+    def __bool__(self) -> bool:
+        # {% if name %} on a deduplicated name must test the underlying value,
+        # not the proxy — otherwise an empty value ('' / []) is truthy and the
+        # guard's else-branch is unreachable.
+        return bool(self._value)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _FirstOnceValue):
+            other = other._value
+        return self._value == other
+
+    def __hash__(self) -> int:  # keep hashable despite __eq__
+        return id(self)
 
 
 # ---------------------------------------------------------------------------

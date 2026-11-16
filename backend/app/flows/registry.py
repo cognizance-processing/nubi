@@ -276,43 +276,28 @@ def _resolve_flow_connector(
         _secret = None
 
     if _secret:
-        if ctype == "postgres":
-            if "password" not in cfg:
-                cfg["password"] = _secret.get("password", "")
-        elif ctype == "http_json":
-            _headers: dict = dict(cfg.get("headers") or {})
-            if "token" in _secret:
-                _headers["Authorization"] = f"Bearer {_secret['token']}"
-            elif "api_key" in _secret:
-                _headers["X-API-Key"] = _secret["api_key"]
-            cfg["headers"] = _headers
-        elif ctype == "bigquery":
-            if "service_account_json" in _secret:
-                cfg["service_account_json"] = _secret["service_account_json"]
-        else:
-            for k, v in _secret.items():
-                if k not in cfg:
-                    cfg[k] = v
+        from app.connectors.resolve import merge_connector_secret  # noqa: PLC0415
+
+        merge_connector_secret(cfg, ctype, _secret)
 
     # ── Build connector ───────────────────────────────────────────────────────
     factory = get_connector_registry().get(ctype or "duckdb")
-    if ctype == "duckdb":
-        _db_path = cfg.get("database") or cfg.get("path")
-        if _db_path and _db_path != ":memory:":
-            from app.connectors.duckdb_conn import open_duckdb_readonly  # noqa: PLC0415
+    if ctype != "duckdb":
+        # Flow tasks dial direct connections from the platform: same target
+        # policy as every other connector build.
+        from app.connectors.network import effective_network  # noqa: PLC0415
+        from app.connectors.ssrf import guard_connector_target  # noqa: PLC0415
 
-            connector = factory(open_duckdb_readonly(_db_path))
-        else:
-            connector = factory()
+        if effective_network({**ds, "config": cfg})[0] == "direct":
+            guard_connector_target(cfg)
+    if ctype == "duckdb":
+        from app.connectors.duckdb_conn import connect_duckdb_datastore  # noqa: PLC0415
+
+        connector = factory(connect_duckdb_datastore(cfg, org_id))
     elif ctype == "postgres":
-        _dsn: str | None = cfg.get("dsn")
-        if _dsn is None:
-            _host = cfg.get("host", "localhost")
-            _port = cfg.get("port", 5432)
-            _dbname = cfg.get("dbname") or cfg.get("database") or "postgres"
-            _user = cfg.get("user") or cfg.get("username") or "postgres"
-            _password = cfg.get("password", "")
-            _dsn = f"postgresql://{_user}:{_password}@{_host}:{_port}/{_dbname}"
+        from app.connectors.registry import postgres_dsn  # noqa: PLC0415
+
+        _dsn = postgres_dsn(cfg)
         connector = factory(_dsn)
     else:
         connector = factory(cfg)
@@ -555,6 +540,12 @@ def _handle_python(
     ``code`` — required Python source code string.
     """
     import json  # noqa: PLC0415
+    # Refuse before any spool/artifact work: covers interactive, scheduled
+    # and worker-driven runs alike.
+    from app.compute.policy import require_host_python  # noqa: PLC0415
+
+    require_host_python("Running Python cells")
+
     import subprocess  # noqa: PLC0415
     import sys  # noqa: PLC0415
     import tempfile  # noqa: PLC0415

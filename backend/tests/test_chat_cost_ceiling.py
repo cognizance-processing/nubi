@@ -180,10 +180,10 @@ class TestCheckChatBudget:
             set_sink(None)
 
     @pytest.mark.asyncio
-    async def test_unset_ceiling_is_unlimited(self, monkeypatch):
-        """With no env vars set, no ceiling is enforced."""
-        monkeypatch.delenv("NUBI_CHAT_USER_DAILY_USD", raising=False)
-        monkeypatch.delenv("NUBI_CHAT_ORG_DAILY_USD", raising=False)
+    async def test_explicitly_lifted_ceiling_is_unlimited(self, monkeypatch):
+        """An operator can turn the ceiling off; unset means the default applies."""
+        monkeypatch.setenv("NUBI_CHAT_USER_DAILY_USD", "0")
+        monkeypatch.setenv("NUBI_CHAT_ORG_DAILY_USD", "unlimited")
 
         from app.ai.cost_ceiling import check_chat_budget, record_chat_cost
 
@@ -193,7 +193,7 @@ class TestCheckChatBudget:
         try:
             # Record an absurdly large cost.
             await record_chat_cost(org_id, user_id, 99999.0)
-            # No ceiling configured → must NOT raise.
+            # Ceiling explicitly lifted → must NOT raise.
             await check_chat_budget(org_id, user_id)
         finally:
             set_sink(None)
@@ -236,8 +236,8 @@ class TestCheckChatBudget:
             set_sink(None)
 
     @pytest.mark.asyncio
-    async def test_fail_open_on_metering_store_unavailable(self, monkeypatch):
-        """When _get_spend raises, check_chat_budget fails OPEN (no exception)."""
+    async def test_fail_closed_on_metering_store_unavailable(self, monkeypatch):
+        """When spend cannot be read the turn is REFUSED (503), not allowed."""
         monkeypatch.setenv("NUBI_CHAT_USER_DAILY_USD", "0.001")
 
         from app.ai.cost_ceiling import check_chat_budget
@@ -250,9 +250,12 @@ class TestCheckChatBudget:
                 raise RuntimeError("metering store unavailable")
 
         set_sink(BrokenSink())
+        from app.errors import AppError
+
         try:
-            # Should NOT raise AppError — must fail open.
-            await check_chat_budget(org_id, user_id)
+            with pytest.raises(AppError) as exc_info:
+                await check_chat_budget(org_id, user_id)
+            assert exc_info.value.status == 503
         finally:
             set_sink(None)
 

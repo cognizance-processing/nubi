@@ -228,7 +228,14 @@ async def _list_tools_async(server: MCPServer, timeout: float) -> list[MCPToolDe
     called by the public entry point (list_tools_sync) for cheap pre-flight
     validation before reaching here.
     """
-    from mcp.client.streamable_http import streamablehttp_client  # noqa: PLC0415
+    # mcp >= 2.0 renamed the transport helper (streamablehttp_client ->
+    # streamable_http_client); the call signature is unchanged, so alias it.
+    try:
+        from mcp.client.streamable_http import (  # noqa: PLC0415
+            streamable_http_client as streamablehttp_client,
+        )
+    except ImportError:  # pragma: no cover - mcp 1.x
+        from mcp.client.streamable_http import streamablehttp_client  # noqa: PLC0415
     from mcp import ClientSession  # noqa: PLC0415
 
     headers = _build_headers(server.auth_token)
@@ -289,7 +296,14 @@ async def _call_tool_async(
     connects to that IP directly (no second DNS lookup).  guard_url was already
     called by call_tool_sync for cheap pre-flight validation.
     """
-    from mcp.client.streamable_http import streamablehttp_client  # noqa: PLC0415
+    # mcp >= 2.0 renamed the transport helper (streamablehttp_client ->
+    # streamable_http_client); the call signature is unchanged, so alias it.
+    try:
+        from mcp.client.streamable_http import (  # noqa: PLC0415
+            streamable_http_client as streamablehttp_client,
+        )
+    except ImportError:  # pragma: no cover - mcp 1.x
+        from mcp.client.streamable_http import streamablehttp_client  # noqa: PLC0415
     from mcp import ClientSession  # noqa: PLC0415
 
     headers = _build_headers(server.auth_token)
@@ -329,6 +343,40 @@ async def _call_tool_async(
 
     is_error = bool(getattr(result, "isError", False))
     return {"content": content, "is_error": is_error}
+
+
+# ---------------------------------------------------------------------------
+# Public async API — connection testing
+# ---------------------------------------------------------------------------
+
+
+async def test_connection_async(
+    server: MCPServer, *, timeout: float = 10.0,
+) -> tuple[list[MCPToolDef], str | None]:
+    """Run the real MCP handshake against *server* and report what happened.
+
+    Unlike ``list_tools_sync`` (used by the agent's tool loop, which only
+    needs "give me the tools, empty list on any failure"), a connection TEST
+    needs to tell "connected, zero tools" apart from "couldn't connect at
+    all" — so this surfaces the actual error instead of swallowing it.
+
+    Returns
+    -------
+    (tools, error)
+        ``error`` is ``None`` on success. On failure ``tools`` is ``[]`` and
+        ``error`` is a short, safe-to-display message (SSRF guard rejection,
+        connection failure, or protocol error).
+    """
+    try:
+        guard_url(server.url)
+    except Exception as exc:  # noqa: BLE001
+        return [], str(exc)
+
+    try:
+        tools = await _list_tools_async(server, timeout)
+        return tools, None
+    except Exception as exc:  # noqa: BLE001
+        return [], str(exc)[:500]
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,1169 @@
+/**
+ * DataGrid.jsx — MUI-DataGrid-Premium-class grid for Nubi.
+ *
+ * Headless core: @tanstack/react-table (v8) + @tanstack/react-virtual.
+ * Styled with the app's Tailwind design tokens (bg-surface, border-border,
+ * text-fg/muted, primary) so it drops into both the Playground and the
+ * dashboard TableWidget unchanged.
+ *
+ * ── Public API ──────────────────────────────────────────────────────────────
+ *   <DataGrid
+ *     columns={[{                       // column descriptors
+ *       key, label, type,               //   type: 'number'|'string'|'date'|'bool'
+ *       width?, align?,                 //   align: 'left'|'right'|'center'
+ *       aggregation?,                   //   'sum'|'mean'|'min'|'max'|'count' (grouping subtotals)
+ *       renderCell?,                    //   (value, row) => ReactNode  (custom cell)
+ *       exportValue?,                   //   (value, row) => string|number (export override)
+ *     }]}
+ *     rows={[{...}]}                    // plain row objects
+ *     loading={bool}
+ *     error={string|null}
+ *     title={string}
+ *     toolbar={true}                    // show the toolbar
+ *     meta={{ cacheStatus, elapsedMs }} // optional badges
+ *     pageSize={50}                     // initial page size; 0 / 'all' → virtualized, no pagination
+ *     paginate={true}                   // false → pure virtualization for huge datasets
+ *     density={'comfortable'}           // initial: 'compact'|'comfortable'|'spacious'
+ *     stickyFirstCol={false}            // pin first column left
+ *     enableGrouping={true}
+ *     getRowStyle={(row) => style|null} // per-row inline style (conditional formatting)
+ *     getCellStyle={(row, col) => style|null}  // per-cell inline style
+ *     exportFileName={'data'}
+ *     onCellClick={(value, row, col) => void}
+ *     onCellDoubleClick={(value, row, col) => void}
+ *     className, style                  // applied to the outer card (transparent-friendly)
+ *   />
+ *
+ * Features: multi-column sort, per-column filter + global search, pagination
+ * AND row virtualization, column resize / reorder (drag header) / pin
+ * (left|right) / show-hide, row grouping with aggregation subtotals, CSV +
+ * Excel export, density toggle, sticky header.
+ */
+
+import {
+  useState,
+  useMemo,
+  useRef,
+  useCallback,
+  useEffect,
+} from 'react'
+import {
+  useReactTable,
+  getCoreRowModel,
+  getSortedRowModel,
+  getFilteredRowModel,
+  getPaginationRowModel,
+  getExpandedRowModel,
+  getGroupedRowModel,
+  flexRender,
+} from '@tanstack/react-table'
+import { useVirtualizer } from '@tanstack/react-virtual'
+import Tag from './ui/Tag.jsx'
+import Button from './ui/Button.jsx'
+import EmptyState from './ui/EmptyState.jsx'
+import Skeleton from './ui/Skeleton.jsx'
+import { ErrorFigure, EmptyData } from './illustrations'
+
+declare module '@tanstack/react-table' {
+  interface ColumnMeta<TData, TValue> {
+    type?: string
+    align?: string
+    descriptor?: any
+  }
+}
+import {
+  ChevronUp,
+  ChevronDown,
+  ChevronsUpDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronRight as ChevronExpand,
+  Search,
+  Download,
+  Filter,
+  X,
+  AlignJustify,
+  Rows3,
+  Rows4,
+  Zap,
+  Clock,
+  Database,
+  AlertCircle,
+  Columns3,
+  Pin,
+  PinOff,
+  Group,
+  FileSpreadsheet,
+  FileText,
+} from 'lucide-react'
+
+import { downloadCSV, downloadExcel } from './gridExport.js'
+import { aggregate } from './dataTableUtils.js'
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const PAGE_SIZE_OPTIONS = [25, 50, 100, 250]
+const DEFAULT_COL_WIDTH = 160
+const REPORT_COL_WIDTH = 120
+const MIN_COL_WIDTH = 64
+const ROW_HEIGHT = { compact: 28, comfortable: 36, spacious: 46 }
+const REPORT_ROW_HEIGHT = { compact: 36, comfortable: 47, spacious: 60 }
+const AGGREGATION_TAG = { sum: 'SUM', mean: 'AVG', avg: 'AVG', min: 'MIN', max: 'MAX', count: 'COUNT' }
+
+const NUMERIC_OPS = ['eq', 'ne', 'gt', 'gte', 'lt', 'lte']
+const STRING_OPS = ['contains', 'eq', 'ne']
+const OP_LABELS = { eq: '=', ne: '≠', gt: '>', gte: '≥', lt: '<', lte: '≤', contains: '~' }
+
+// ---------------------------------------------------------------------------
+// Pure helpers
+// ---------------------------------------------------------------------------
+
+function formatNumber(n) {
+  if (n == null) return ''
+  if (typeof n === 'bigint') return n.toLocaleString('en-US')
+  if (!Number.isFinite(n)) return String(n)
+  if (Number.isInteger(n)) return n.toLocaleString('en-US')
+  return n.toLocaleString('en-US', { maximumFractionDigits: 6 })
+}
+
+/** Custom column filter: typed comparison driven by {op, value}. */
+function typedFilter(row, columnId, filterValue) {
+  if (!filterValue || filterValue.value === '' || filterValue.value == null) return true
+  const value = row.getValue(columnId)
+  const { op = 'contains', value: fv, type = 'string' } = filterValue
+
+  if (value == null) return false
+
+  if (type === 'number') {
+    const num = typeof value === 'number' ? value : Number(value)
+    const fnum = Number(fv)
+    if (Number.isNaN(fnum)) return true
+    switch (op) {
+      case 'eq': return num === fnum
+      case 'ne': return num !== fnum
+      case 'gt': return num > fnum
+      case 'gte': return num >= fnum
+      case 'lt': return num < fnum
+      case 'lte': return num <= fnum
+      default: return true
+    }
+  }
+
+  if (type === 'bool') {
+    const a = String(value).toLowerCase()
+    const b = String(fv).toLowerCase()
+    return op === 'ne' ? a !== b : a === b
+  }
+
+  const sv = String(value).toLowerCase()
+  const sf = String(fv).toLowerCase()
+  switch (op) {
+    case 'eq': return sv === sf
+    case 'ne': return sv !== sf
+    default: return sv.includes(sf)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Small presentational bits
+// ---------------------------------------------------------------------------
+
+function NullBadge() {
+  return (
+    <span className="inline-block select-none border border-border px-1.5 font-mono text-[11px] leading-4 text-subtle" style={{ borderRadius: 2 }}>
+      NULL
+    </span>
+  )
+}
+
+function BoolPill({ value }) {
+  return value
+    ? <Tag variant="success" dot caps={false} className="select-none">true</Tag>
+    : <Tag variant="danger" dot caps={false} className="select-none">false</Tag>
+}
+
+/** Default cell renderer (used when a column has no custom renderCell). */
+function DefaultCell({ value, type }) {
+  if (value == null) return <NullBadge />
+  if (type === 'bool') return <BoolPill value={value} />
+  if (type === 'number') {
+    return <span className="font-mono tabular-nums">{formatNumber(value)}</span>
+  }
+  if (type === 'date') {
+    const str = value instanceof Date ? value.toLocaleString() : String(value)
+    return <span className="font-mono text-[11px]">{str}</span>
+  }
+  const str = String(value)
+  return (
+    <span className="truncate block" title={str.length > 60 ? str : undefined}>
+      {str}
+    </span>
+  )
+}
+
+function CacheBadge({ cacheStatus }) {
+  if (!cacheStatus || cacheStatus === 'MISS') return null
+  if (cacheStatus === 'SAMPLE') {
+    return <Tag variant="warning" dot title="Showing a sample of the result"><Database size={10} aria-hidden="true" /> Sample</Tag>
+  }
+  return <Tag variant="success" dot title="Served from cache"><Zap size={10} aria-hidden="true" /> {cacheStatus}</Tag>
+}
+
+/** Toolbar dropdown panel (columns / pin / group config). */
+function Popover({ open, onClose, children, align = 'right' }) {
+  const ref = useRef(null)
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) onClose()
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [open, onClose])
+  if (!open) return null
+  return (
+    <div
+      ref={ref}
+      className={[
+        'nubi-dropdown top-full mt-1 z-50 min-w-[200px] max-h-80 overflow-auto p-1.5',
+        align === 'right' ? 'right-0' : 'left-0',
+      ].join(' ')}
+    >
+      {children}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+
+export default function DataGrid({
+  columns: columnDescriptors = [],
+  rows = [],
+  loading = false,
+  error = null,
+  title = undefined,
+  toolbar = true,
+  meta = undefined,
+  pageSize: pageSizeProp = 50,
+  paginate: paginateProp = true,
+  density: densityProp = 'comfortable',
+  stickyFirstCol = false,
+  enableGrouping = true,
+  // Initial grouping / pinning. The user can still change both from the
+  // toolbar; these only seed the state, so a board can be AUTHORED with
+  // "grouped by region, ID column pinned left" the way the legacy tables were.
+  initialGrouping = undefined,
+  initialPinning = undefined,
+  // Presentation overrides for boards that style their tables (legacy parity:
+  // headingColor / headerTextColor / rowColorEven / rowColorOdd).
+  headerStyle = undefined,
+  rowStripe = undefined,
+  // Body-cell text colour. Applied inline because the cells carry a `text-fg`
+  // class, which beats a colour merely inherited from the card wrapper — that
+  // is why an author-set text colour never reached table cells before.
+  bodyColor = undefined,
+  // A widget's `exportSettings` block — sheet name, column exclude/reorder/
+  // rename, header + cell styling, number formats, freeze panes. Applies to the
+  // Excel export only; the on-screen grid and the CSV are unaffected.
+  exportSettings = undefined,
+  getRowStyle = undefined,
+  getCellStyle = undefined,
+  exportFileName = 'data',
+  onCellClick = undefined,
+  onCellDoubleClick = undefined,
+  className = '',
+  style = undefined,
+  emptyMessage = 'No rows returned.',
+  // 'report': a framed table for printed-style boards — labelled toolbar, solid
+  // header with SUM/AVG tags, plain group subtotals, a "Total Rows" footer.
+  appearance = 'default',
+  // Adds a pinned bottom row with each aggregated column over all filtered rows.
+  summaryRow = false,
+  truncated = false,
+}) {
+  const report = appearance === 'report'
+  // ── Local UI state ────────────────────────────────────────────────────────
+  const [sorting, setSorting] = useState(() => (report && Array.isArray(initialGrouping) ? initialGrouping.map((id) => ({ id, desc: false })) : []))
+  const [columnFilters, setColumnFilters] = useState([])
+  const [globalFilter, setGlobalFilter] = useState('')
+  const [columnVisibility, setColumnVisibility] = useState({})
+  const [columnOrder, setColumnOrder] = useState([])
+  const [columnSizing, setColumnSizing] = useState({})
+  const [columnPinning, setColumnPinning] = useState(() => ({
+    left: initialPinning?.left ?? [],
+    right: initialPinning?.right ?? [],
+  }))
+  const [grouping, setGrouping] = useState(() => (Array.isArray(initialGrouping) ? initialGrouping : []))
+
+  /**
+   * Explicit zebra-stripe background for a body row, or null to keep the
+   * theme's own alternating classes. `rowStripe` may set either band or both;
+   * a band left unset falls back to no inline colour for THAT band, so
+   * `{even: '#fff'}` tints only the even rows and leaves the odd ones themed.
+   */
+  const stripeFor = (index) => {
+    if (!rowStripe) return null
+    const color = index % 2 === 0 ? rowStripe.even : rowStripe.odd
+    return color ? { background: color } : null
+  }
+  const [expanded, setExpanded] = useState({})
+  const [showFilters, setShowFilters] = useState(false)
+  const [density, setDensity] = useState(densityProp)
+  const [pagination, setPagination] = useState({
+    pageIndex: 0,
+    pageSize: paginateProp ? pageSizeProp : 100000,
+  })
+
+  // popovers
+  const [openMenu, setOpenMenu] = useState(null) // 'columns' | 'pin' | 'group' | 'export' | null
+
+  const descByKey = useMemo(() => {
+    const m = {}
+    for (const d of columnDescriptors) m[d.key] = d
+    return m
+  }, [columnDescriptors])
+
+  // Apply initial first-col pin if requested
+  useEffect(() => {
+    if (stickyFirstCol && columnDescriptors.length > 0) {
+      setColumnPinning((prev) =>
+        prev.left.length ? prev : { ...prev, left: [columnDescriptors[0].key] },
+      )
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stickyFirstCol, columnDescriptors.length])
+
+  // ── Build TanStack column defs ────────────────────────────────────────────
+  const columns = useMemo(
+    () =>
+      columnDescriptors.map((d) => ({
+        id: d.key,
+        accessorKey: d.key,
+        header: d.label ?? d.key,
+        size: d.width ?? (report ? REPORT_COL_WIDTH : DEFAULT_COL_WIDTH),
+        minSize: MIN_COL_WIDTH,
+        enableResizing: true,
+        enableGrouping: enableGrouping,
+        filterFn: typedFilter,
+        meta: { type: d.type ?? 'string', align: d.align, descriptor: d },
+        aggregationFn: undefined,
+        aggregatedCell: ({ row, column }) => {
+          const kind = d.aggregation
+          if (!kind || d.type === 'date') return null
+          const leafValues = row.getLeafRows().map((r) => r.getValue(column.id))
+          const result = aggregate(kind, leafValues)
+          if (result == null) return null
+          if (report) return d.renderCell ? d.renderCell(result, row.original) : formatNumber(result)
+          const display =
+            kind === 'count'
+              ? `${result}`
+              : (d.type === 'number' ? formatNumber(result) : String(result))
+          return (
+            <span className="font-mono text-[11px] text-muted">
+              {kind === 'count' ? '' : `${kind}: `}
+              {display}
+            </span>
+          )
+        },
+        cell: ({ getValue, row }) => {
+          const value = getValue()
+          if (d.renderCell) return d.renderCell(value, row.original)
+          return <DefaultCell value={value} type={d.type ?? 'string'} />
+        },
+      })),
+    [columnDescriptors, enableGrouping, report],
+  )
+
+  // ── Table instance ────────────────────────────────────────────────────────
+  const table = useReactTable({
+    data: rows,
+    columns,
+    state: {
+      sorting,
+      columnFilters,
+      globalFilter,
+      columnVisibility,
+      columnOrder,
+      columnSizing,
+      columnPinning,
+      grouping,
+      expanded,
+      pagination: paginateProp ? pagination : undefined,
+    },
+    onSortingChange: setSorting,
+    onColumnFiltersChange: setColumnFilters,
+    onGlobalFilterChange: setGlobalFilter,
+    onColumnVisibilityChange: setColumnVisibility,
+    onColumnOrderChange: setColumnOrder,
+    onColumnSizingChange: setColumnSizing,
+    onColumnPinningChange: setColumnPinning,
+    onGroupingChange: setGrouping,
+    onExpandedChange: setExpanded,
+    onPaginationChange: setPagination,
+    columnResizeMode: 'onChange',
+    enableMultiSort: true,
+    isMultiSortEvent: () => true, // every header click stacks (shift not required)
+    globalFilterFn: (row, _colId, filterValue) => {
+      if (!filterValue) return true
+      const q = String(filterValue).toLowerCase()
+      return row.getAllCells().some((c) => {
+        const v = c.getValue()
+        return v != null && String(v).toLowerCase().includes(q)
+      })
+    },
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+    getGroupedRowModel: getGroupedRowModel(),
+    getExpandedRowModel: getExpandedRowModel(),
+    getPaginationRowModel: paginateProp ? getPaginationRowModel() : undefined,
+    autoResetPageIndex: true,
+  })
+
+  // ── Virtualization ────────────────────────────────────────────────────────
+  const scrollRef = useRef(null)
+  const visibleRows = table.getRowModel().rows
+  const rowVirtualizer = useVirtualizer({
+    count: visibleRows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => (report ? REPORT_ROW_HEIGHT : ROW_HEIGHT)[density],
+    overscan: 12,
+  })
+  const virtualRows = rowVirtualizer.getVirtualItems()
+  const totalSize = rowVirtualizer.getTotalSize()
+  const paddingTop = virtualRows.length ? virtualRows[0].start : 0
+  const paddingBottom = virtualRows.length
+    ? totalSize - virtualRows[virtualRows.length - 1].end
+    : 0
+
+  // remeasure when density changes
+  useEffect(() => {
+    rowVirtualizer.measure()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [density])
+
+  // ── Column drag-reorder ───────────────────────────────────────────────────
+  const dragColRef = useRef(null)
+  const handleColDrop = useCallback(
+    (targetId) => {
+      const src = dragColRef.current
+      dragColRef.current = null
+      if (!src || src === targetId) return
+      const order = table.getState().columnOrder.length
+        ? [...table.getState().columnOrder]
+        : table.getAllLeafColumns().map((c) => c.id)
+      const from = order.indexOf(src)
+      const to = order.indexOf(targetId)
+      if (from === -1 || to === -1) return
+      order.splice(to, 0, order.splice(from, 1)[0])
+      setColumnOrder(order)
+    },
+    [table],
+  )
+
+  // ── Export ────────────────────────────────────────────────────────────────
+  const exportColumns = useMemo(
+    () =>
+      table
+        .getVisibleLeafColumns()
+        .filter((c) => c.id !== '__group')
+        .map((c) => ({ key: c.id, label: String(c.columnDef.header ?? c.id) })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [table, columns, columnVisibility, columnOrder],
+  )
+
+  const exportRows = useMemo(
+    () => table.getFilteredRowModel().rows.filter((r) => !r.getIsGrouped()).map((r) => r.original),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [table, rows, columnFilters, globalFilter, sorting],
+  )
+
+  const getExportValue = useCallback(
+    (row, col) => {
+      const desc = descByKey[col.key]
+      const raw = row[col.key]
+      if (desc?.exportValue) return desc.exportValue(raw, row)
+      return raw
+    },
+    [descByKey],
+  )
+
+  const doExportCSV = useCallback(() => {
+    downloadCSV(`${exportFileName}.csv`, exportRows, exportColumns, getExportValue)
+    setOpenMenu(null)
+  }, [exportFileName, exportRows, exportColumns, getExportValue])
+
+  const doExportExcel = useCallback(() => {
+    downloadExcel(
+      `${exportFileName}.xls`, exportRows, exportColumns, exportFileName,
+      getExportValue, exportSettings,
+    )
+    setOpenMenu(null)
+  }, [exportFileName, exportRows, exportColumns, getExportValue, exportSettings])
+
+  // ── Density classes ───────────────────────────────────────────────────────
+  const rowH = (report ? REPORT_ROW_HEIGHT : ROW_HEIGHT)[density]
+  const fontSize = report ? 'text-sm' : density === 'compact' ? 'text-[11px]' : 'text-xs'
+  const cellPx = density === 'spacious' ? 'px-4' : 'px-3'
+
+  const allColumns = table.getAllLeafColumns()
+  const activeFilterCount = columnFilters.length
+  const totalFilteredRows = table.getFilteredRowModel().rows.filter((r) => !r.getIsGrouped()).length
+
+  // Helper: pinned offset style for a header/cell
+  const pinStyle = (column): Record<string, any> => {
+    const pinned = column.getIsPinned()
+    if (!pinned) return {}
+    return {
+      position: 'sticky',
+      [pinned]: pinned === 'left' ? column.getStart('left') : column.getAfter('right'),
+      zIndex: 11,
+    }
+  }
+
+  // ── Error state ───────────────────────────────────────────────────────────
+  if (error && !loading) {
+    return (
+      <div
+        className={`flex h-full flex-col overflow-hidden border border-frame-line ${className}`}
+        style={{ borderRadius: 2, ...style }}
+      >
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-auto p-6">
+          <EmptyState
+            kind="error"
+            compact
+            art={<ErrorFigure />}
+            title="This query failed"
+            description={
+              /* Engine errors are multi-line and can contain very long SQL
+                 fragments. Preserve the line breaks, wrap long tokens, and let a
+                 big message scroll inside its own box instead of overflowing. */
+              <span className="block max-h-48 max-w-xl overflow-auto whitespace-pre-wrap break-words text-left font-mono text-xs">
+                {typeof error === 'string' ? error : (error?.message ?? String(error))}
+              </span>
+            }
+          />
+        </div>
+      </div>
+    )
+  }
+
+  const toolbarBtn = 'nubi-btn nubi-btn-secondary nubi-btn-xs'
+  const reportBtn = 'inline-flex items-center gap-2 text-sm font-bold text-fg hover:opacity-70 transition-opacity'
+
+  return (
+    <div
+      className={`relative flex h-full flex-col overflow-hidden border border-frame-line ${className}`}
+      data-grid-appearance={report ? 'report' : undefined}
+      style={{ borderRadius: report ? 16 : 2, ...style }}
+    >
+      {/* ── Toolbar ──────────────────────────────────────────────────────── */}
+      {toolbar && report && (
+        <div className="relative flex shrink-0 flex-wrap items-center justify-end gap-5 bg-surface px-4 py-3" data-export-hide>
+          <div className="relative">
+            <button type="button" className={reportBtn} onClick={() => setOpenMenu((m) => (m === 'columns' ? null : 'columns'))}>
+              <Columns3 size={18} aria-hidden="true" /> Columns
+            </button>
+            <Popover open={openMenu === 'columns'} onClose={() => setOpenMenu(null)}>
+              <p className="t-label m-0 px-2 py-1">Columns</p>
+              {allColumns.map((col) => (
+                <label key={col.id} className="flex cursor-pointer items-center gap-2 px-2 py-1 text-xs text-fg hover:bg-frame-hover">
+                  <input type="checkbox" checked={col.getIsVisible()} onChange={col.getToggleVisibilityHandler()} className="accent-[var(--ink)]" />
+                  <span className="truncate">{String(col.columnDef.header ?? col.id)}</span>
+                </label>
+              ))}
+            </Popover>
+          </div>
+          <button type="button" className={reportBtn} aria-pressed={showFilters} onClick={() => setShowFilters((v) => !v)}>
+            <Filter size={18} aria-hidden="true" /> Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+          </button>
+          <button
+            type="button"
+            className={reportBtn}
+            title={`Density: ${density}`}
+            onClick={() => setDensity((d) => (d === 'compact' ? 'comfortable' : d === 'comfortable' ? 'spacious' : 'compact'))}
+          >
+            <AlignJustify size={18} aria-hidden="true" /> Density
+          </button>
+          <div className="relative">
+            <button type="button" className={reportBtn} onClick={() => setOpenMenu((m) => (m === 'export' ? null : 'export'))}>
+              <Download size={18} aria-hidden="true" /> Export
+            </button>
+            <Popover open={openMenu === 'export'} onClose={() => setOpenMenu(null)}>
+              <button onClick={doExportCSV} className="nubi-dropdown-item">
+                <FileText size={13} className="text-muted" /> Export CSV
+              </button>
+              <button onClick={doExportExcel} className="nubi-dropdown-item">
+                <FileSpreadsheet size={13} className="text-muted" /> Export Excel
+              </button>
+            </Popover>
+          </div>
+        </div>
+      )}
+      {toolbar && !report && (
+        <div className="relative flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-surface px-3 py-2">
+          {title && (
+            <span className="mr-1 shrink-0 text-xs font-semibold text-fg">{title}</span>
+          )}
+          {meta?.cacheStatus && <CacheBadge cacheStatus={meta.cacheStatus} />}
+          {meta?.elapsedMs != null && (
+            <span className="inline-flex items-center gap-1 font-mono text-[11px] text-muted">
+              <Clock size={11} aria-hidden="true" /> {meta.elapsedMs} ms
+            </span>
+          )}
+
+          <div className="flex-1" />
+
+          {/* Global search */}
+          <div className="relative" data-export-hide>
+            <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+            <input
+              type="text"
+              className="nubi-input nubi-input-xs w-32 focus:w-48"
+              style={{ paddingLeft: 26 }}
+              placeholder="Search"
+              aria-label="Search rows"
+              value={globalFilter}
+              onChange={(e) => setGlobalFilter(e.target.value)}
+            />
+            {globalFilter && (
+              <button
+                type="button"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted hover:text-fg"
+                onClick={() => setGlobalFilter('')}
+                aria-label="Clear search"
+              >
+                <X size={12} aria-hidden="true" />
+              </button>
+            )}
+          </div>
+
+          {/* Filter toggle */}
+          <button
+            type="button"
+            data-export-hide
+            onClick={() => setShowFilters((s) => !s)}
+            className={`nubi-btn nubi-btn-xs ${showFilters ? 'nubi-btn-outline' : 'nubi-btn-secondary'}`}
+            aria-pressed={showFilters}
+            title="Toggle column filters"
+            aria-label="Toggle column filters"
+          >
+            <Filter size={13} aria-hidden="true" />
+            {activeFilterCount > 0 && (
+              <span className="ap-mono inline-flex h-4 min-w-4 items-center justify-center bg-ink px-1 text-[11px] font-semibold" style={{ background: 'var(--ink)', color: 'var(--ink-fg)', borderRadius: 2 }}>
+                {activeFilterCount}
+              </span>
+            )}
+          </button>
+
+          {/* Grouping menu */}
+          {enableGrouping && (
+            <div className="relative" data-export-hide>
+              <button
+                type="button"
+                onClick={() => setOpenMenu((m) => (m === 'group' ? null : 'group'))}
+                className={`nubi-btn nubi-btn-xs ${grouping.length ? 'nubi-btn-outline' : 'nubi-btn-secondary'}`}
+                title="Group rows"
+                aria-label="Group rows"
+                aria-haspopup="menu"
+              >
+                <Group size={13} aria-hidden="true" />
+                {grouping.length > 0 && (
+                  <span className="ap-mono inline-flex h-4 min-w-4 items-center justify-center px-1 text-[11px] font-semibold" style={{ background: 'var(--ink)', color: 'var(--ink-fg)', borderRadius: 2 }}>
+                    {grouping.length}
+                  </span>
+                )}
+              </button>
+              <Popover open={openMenu === 'group'} onClose={() => setOpenMenu(null)}>
+                <p className="t-label m-0 px-2 py-1">Group by</p>
+                {allColumns.map((col) => (
+                  <label
+                    key={col.id}
+                    className="flex cursor-pointer items-center gap-2 px-2 py-1 text-xs text-fg hover:bg-frame-hover"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={col.getIsGrouped()}
+                      onChange={() => col.toggleGrouping()}
+                      className="accent-[var(--ink)]"
+                    />
+                    {String(col.columnDef.header ?? col.id)}
+                  </label>
+                ))}
+                {grouping.length > 0 && (
+                  <button
+                    className="mt-1 w-full px-2 py-1 text-left text-xs text-muted hover:bg-frame-hover hover:text-fg"
+                    onClick={() => setGrouping([])}
+                  >
+                    Clear grouping
+                  </button>
+                )}
+              </Popover>
+            </div>
+          )}
+
+          {/* Columns (show/hide + pin) menu */}
+          <div className="relative" data-export-hide>
+            <button
+              onClick={() => setOpenMenu((m) => (m === 'columns' ? null : 'columns'))}
+              className={toolbarBtn}
+              title="Columns"
+            >
+              <Columns3 size={12} />
+            </button>
+            <Popover open={openMenu === 'columns'} onClose={() => setOpenMenu(null)}>
+              <p className="t-label m-0 px-2 py-1">Columns</p>
+              {allColumns.map((col) => {
+                const pinned = col.getIsPinned()
+                return (
+                  <div
+                    key={col.id}
+                    className="flex items-center gap-1.5 px-2 py-1 text-xs text-fg hover:bg-frame-hover"
+                  >
+                    <label className="flex items-center gap-2 flex-1 cursor-pointer min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={col.getIsVisible()}
+                        onChange={col.getToggleVisibilityHandler()}
+                        className="accent-[var(--ink)]"
+                      />
+                      <span className="truncate">{String(col.columnDef.header ?? col.id)}</span>
+                    </label>
+                    <button
+                      className={`p-0.5 hover:bg-surface ${pinned === 'left' ? 'text-accent' : 'text-subtle hover:text-fg'}`}
+                      aria-label="Pin left" aria-pressed={pinned === 'left'}
+                      title="Pin left"
+                      onClick={() => col.pin(pinned === 'left' ? false : 'left')}
+                    >
+                      <Pin size={11} />
+                    </button>
+                    <button
+                      className={`p-0.5 hover:bg-surface ${pinned === 'right' ? 'text-accent' : 'text-subtle hover:text-fg'}`}
+                      aria-label="Pin right" aria-pressed={pinned === 'right'}
+                      title="Pin right"
+                      onClick={() => col.pin(pinned === 'right' ? false : 'right')}
+                    >
+                      <Pin size={11} className="rotate-90" />
+                    </button>
+                  </div>
+                )
+              })}
+            </Popover>
+          </div>
+
+          {/* Density */}
+          <button
+            data-export-hide
+            onClick={() =>
+              setDensity((d) =>
+                d === 'compact' ? 'comfortable' : d === 'comfortable' ? 'spacious' : 'compact',
+              )
+            }
+            className={toolbarBtn}
+            title={`Density: ${density}`}
+          >
+            {density === 'compact' ? <Rows4 size={12} /> : density === 'comfortable' ? <Rows3 size={12} /> : <AlignJustify size={12} />}
+          </button>
+
+          {/* Export menu */}
+          <div className="relative" data-export-hide>
+            <button
+              onClick={() => setOpenMenu((m) => (m === 'export' ? null : 'export'))}
+              className={toolbarBtn}
+              title="Export"
+            >
+              <Download size={12} />
+            </button>
+            <Popover open={openMenu === 'export'} onClose={() => setOpenMenu(null)}>
+              <button
+                onClick={doExportCSV}
+                className="nubi-dropdown-item"
+              >
+                <FileText size={13} className="text-muted" /> Export CSV
+              </button>
+              <button
+                onClick={doExportExcel}
+                className="nubi-dropdown-item"
+              >
+                <FileSpreadsheet size={13} className="text-muted" /> Export Excel
+              </button>
+            </Popover>
+          </div>
+        </div>
+      )}
+
+      {/* ── Grid body ────────────────────────────────────────────────────── */}
+      <div ref={scrollRef} className="flex-1 overflow-auto relative">
+        {loading ? (
+          <GridSkeleton cols={Math.min(columnDescriptors.length || 5, 7)} />
+        ) : columnDescriptors.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center p-6">
+            <EmptyState compact art={<EmptyData />} title="No data" description="Run a query to see rows here." />
+          </div>
+        ) : (
+          <table className="border-collapse w-full" style={{ minWidth: table.getTotalSize() }}>
+            {/* Header */}
+            <thead className="sticky top-0 z-20">
+              {table.getHeaderGroups().map((hg) => (
+                <tr key={hg.id} className="bg-surface-2" style={{ boxShadow: report ? 'none' : 'inset 0 -2px 0 var(--ink)', ...headerStyle }}>
+                  {hg.headers.map((header) => {
+                    const col = header.column
+                    const type = col.columnDef.meta?.type
+                    const sortDir = col.getIsSorted()
+                    const sortIndex = col.getSortIndex()
+                    const isMultiSorted = sorting.length > 1 && sortIndex >= 0
+                    return (
+                      <th
+                        key={header.id}
+                        colSpan={header.colSpan}
+                        className={`group relative select-none bg-surface-2 ${report ? '' : 'border-r border-border last:border-r-0'}`}
+                        style={{ width: header.getSize(), ...pinStyle(col), ...(headerStyle ?? {}) }}
+                        draggable
+                        onDragStart={() => (dragColRef.current = col.id)}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={() => handleColDrop(col.id)}
+                        aria-sort={sortDir ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+                      >
+                        <div
+                          className={[
+                            // An authored header colour is set on the <th>; the
+                            // default muted ink must not override it.
+                            'flex w-full items-center gap-1 py-2',
+                            report ? 'font-bold min-h-[60px]' : 'font-medium',
+                            headerStyle?.color ? '' : 'text-muted',
+                            cellPx,
+                            type === 'number' && !report ? 'flex-row-reverse' : '',
+                            report ? 'text-[15px] leading-tight' : fontSize,
+                          ].join(' ')}
+                        >
+                          <button
+                            className="flex items-center gap-1 min-w-0 hover:text-fg transition-colors"
+                            onClick={col.getToggleSortingHandler()}
+                            title={`Sort by ${String(col.columnDef.header)}`}
+                          >
+                            <span className={report ? 'text-left' : 'truncate'}>{flexRender(col.columnDef.header, header.getContext())}</span>
+                            <span data-export-hide className={sortDir ? 'shrink-0 text-fg' : `shrink-0 text-subtle opacity-40 group-hover:opacity-100${report ? ' hidden group-hover:inline' : ''}`}>
+                              {sortDir === 'asc' && <ChevronUp size={12} style={report ? { color: 'inherit' } : undefined} />}
+                              {sortDir === 'desc' && <ChevronDown size={12} style={report ? { color: 'inherit' } : undefined} />}
+                              {!sortDir && <ChevronsUpDown size={11} />}
+                            </span>
+                            {isMultiSorted && (
+                              <span className="ap-mono shrink-0 text-[11px] font-semibold text-accent">{sortIndex + 1}</span>
+                            )}
+                          </button>
+                          {report && col.columnDef.meta?.descriptor?.aggregationTag && col.columnDef.meta?.descriptor?.aggregation && (
+                            <span className="absolute right-1.5 bottom-0.5 text-[11px] font-normal uppercase">
+                              {AGGREGATION_TAG[col.columnDef.meta.descriptor.aggregation] ?? col.columnDef.meta.descriptor.aggregation}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Resize handle */}
+                        {col.getCanResize() && (
+                          <div
+                            onMouseDown={header.getResizeHandler()}
+                            onTouchStart={header.getResizeHandler()}
+                            className="absolute right-0 top-0 bottom-0 w-2 flex items-center justify-center cursor-col-resize opacity-0 group-hover:opacity-100 z-10"
+                          >
+                            <div className="h-4 w-0.5 bg-frame-line hover:bg-accent" />
+                          </div>
+                        )}
+                      </th>
+                    )
+                  })}
+                </tr>
+              ))}
+
+              {/* Filter row */}
+              {showFilters && (
+                <tr className="sticky top-[37px] z-10 border-b border-border bg-surface-2">
+                  {table.getVisibleLeafColumns().map((col) => {
+                    const type = col.columnDef.meta?.type ?? 'string'
+                    const ops = type === 'number' ? NUMERIC_OPS : type === 'bool' ? ['eq', 'ne'] : STRING_OPS
+                    const fv: { op: string; value: any; type: string } =
+                      (col.getFilterValue() as any) ?? { op: ops[0], value: '', type }
+                    return (
+                      <th
+                        key={col.id}
+                        className="border-r border-border bg-surface-2 px-1 py-1 last:border-r-0"
+                        style={{ width: col.getSize(), ...pinStyle(col) }}
+                      >
+                        <div className="flex items-center gap-1">
+                          <select
+                            className="nubi-input nubi-input-xs cursor-pointer !px-0.5 text-[11px]"
+                            value={fv.op}
+                            onChange={(e) => col.setFilterValue({ ...fv, op: e.target.value, type })}
+                            style={{ width: 30 }}
+                          >
+                            {ops.map((op) => (
+                              <option key={op} value={op}>{OP_LABELS[op]}</option>
+                            ))}
+                          </select>
+                          <input
+                            type="text"
+                            className="nubi-input nubi-input-xs min-w-0 flex-1 text-xs"
+                            placeholder="Filter…"
+                            value={fv.value}
+                            onChange={(e) => {
+                              const v = e.target.value
+                              col.setFilterValue(v === '' ? undefined : { ...fv, value: v, type })
+                            }}
+                          />
+                          {fv.value && (
+                            <button
+                              className="text-muted hover:text-fg shrink-0 p-0.5 rounded hover:bg-surface-2"
+                              onClick={() => col.setFilterValue(undefined)}
+                              title="Clear"
+                            >
+                              <X size={10} />
+                            </button>
+                          )}
+                        </div>
+                      </th>
+                    )
+                  })}
+                </tr>
+              )}
+            </thead>
+
+            {/* Body (virtualized) */}
+            <tbody>
+              {paddingTop > 0 && (
+                <tr><td style={{ height: paddingTop }} colSpan={table.getVisibleLeafColumns().length} /></tr>
+              )}
+              {visibleRows.length === 0 ? (
+                <tr>
+                  <td colSpan={table.getVisibleLeafColumns().length} className="py-12 text-center text-xs text-muted">
+                    {globalFilter || activeFilterCount > 0 ? 'No rows match the current filter.' : emptyMessage}
+                  </td>
+                </tr>
+              ) : (
+                virtualRows.map((vr) => {
+                  const row = visibleRows[vr.index]
+                  const isGrouped = row.getIsGrouped()
+                  const rowStyle = !isGrouped && getRowStyle ? getRowStyle(row.original) : null
+                  return (
+                    <tr
+                      key={row.id}
+                      data-index={vr.index}
+                      ref={rowVirtualizer.measureElement}
+                      className={[
+                        'group transition-colors',
+                        isGrouped && !report
+                          ? 'bg-surface-2 font-medium'
+                          // An explicit stripe colour replaces the token
+                          // classes entirely — leaving them on would win the
+                          // cascade over the inline background.
+                          : stripeFor(vr.index) ? '' : 'bg-surface',
+                        'hover:bg-frame-hover',
+                      ].join(' ')}
+                      style={{
+                        height: rowH,
+                        ...(isGrouped && !report ? null : stripeFor(vr.index)),
+                        // Conditional formatting is authored per row and must
+                        // still beat the zebra stripe underneath it.
+                        ...(rowStyle ?? {}),
+                      }}
+                    >
+                      {row.getVisibleCells().map((cell) => {
+                        const col = cell.column
+                        const type = col.columnDef.meta?.type
+                        const align = col.columnDef.meta?.align
+                        const cellStyle =
+                          !isGrouped && getCellStyle ? getCellStyle(row.original, col.id) : null
+                        const textAlign =
+                          align === 'right' || (!align && type === 'number' && !report)
+                            ? 'text-right'
+                            : align === 'center'
+                            ? 'text-center'
+                            : ''
+                        return (
+                          <td
+                            key={cell.id}
+                            className={[
+                              report ? 'text-fg transition-colors' : 'border-b border-border text-fg transition-colors',
+                              cellPx,
+                              fontSize,
+                              textAlign,
+                              (onCellClick || onCellDoubleClick) && !isGrouped ? 'cursor-pointer' : '',
+                              col.getIsPinned() ? 'bg-surface group-hover:bg-surface-2' : '',
+                            ].join(' ')}
+                            style={{
+                              width: cell.column.getSize(),
+                              ...pinStyle(col),
+                              ...(bodyColor ? { color: bodyColor } : null),
+                              // Conditional formatting is per cell and must win
+                              // over the card-wide body colour.
+                              ...(cellStyle ?? {}),
+                            }}
+                            onClick={
+                              onCellClick && !isGrouped
+                                ? () => onCellClick(cell.getValue(), row.original, col.id)
+                                : undefined
+                            }
+                            onDoubleClick={
+                              onCellDoubleClick && !isGrouped
+                                ? () => onCellDoubleClick(cell.getValue(), row.original, col.id)
+                                : undefined
+                            }
+                          >
+                            {cell.getIsGrouped() ? (
+                              <button
+                                className={report ? 'flex items-center gap-4 hover:text-fg' : 'flex items-center gap-1 hover:text-fg'}
+                                onClick={row.getToggleExpandedHandler()}
+                              >
+                                <ChevronExpand
+                                  size={report ? 16 : 12}
+                                  className={`transition-transform ${row.getIsExpanded() ? 'rotate-90' : ''}`}
+                                />
+                                <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                                  <span className={report ? '' : 'text-subtle'}>({row.subRows.length})</span>
+                                </span>
+                              </button>
+                            ) : cell.getIsAggregated() ? (
+                              flexRender(
+                                cell.column.columnDef.aggregatedCell ?? cell.column.columnDef.cell,
+                                cell.getContext(),
+                              )
+                            ) : cell.getIsPlaceholder() ? null : (
+                              flexRender(cell.column.columnDef.cell, cell.getContext())
+                            )}
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  )
+                })
+              )}
+              {paddingBottom > 0 && (
+                <tr><td style={{ height: paddingBottom }} colSpan={table.getVisibleLeafColumns().length} /></tr>
+              )}
+            </tbody>
+            {summaryRow && (
+              <tfoot className="sticky bottom-0 z-10">
+                <tr className="bg-surface" style={{ height: rowH }}>
+                  {table.getVisibleLeafColumns().map((col) => {
+                    const d = col.columnDef.meta?.descriptor
+                    const kind = d?.aggregation
+                    const values = kind && !grouping.includes(col.id)
+                      ? table.getFilteredRowModel().rows.map((r) => r.getValue(col.id))
+                      : []
+                    // A text column has nothing to total, whatever its aggregation says.
+                    const hasNumbers = values.some((v) => v != null && v !== '' && Number.isFinite(Number(v)))
+                    const result = hasNumbers ? aggregate(kind, values) : null
+                    return (
+                      <td key={col.id} className={['border-t border-border bg-surface text-fg', cellPx, fontSize].join(' ')} style={{ width: col.getSize() }}>
+                        {result == null ? null : d.renderCell ? d.renderCell(result, {}) : formatNumber(result)}
+                      </td>
+                    )
+                  })}
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        )}
+      </div>
+
+      {/* ── Footer ───────────────────────────────────────────────────────── */}
+      <div className={report ? 'flex shrink-0 flex-wrap items-center justify-end gap-3 bg-surface px-4 py-3' : 'flex shrink-0 flex-wrap items-center gap-3 border-t border-border bg-surface px-3 py-2'}>
+        {report ? (
+          // Counts what the reader sees as rows: a group is one row until opened.
+          <span className="text-sm text-fg">Total Rows: {table.getGroupedRowModel().rows.length.toLocaleString()}{truncated ? '+' : ''}</span>
+        ) : (
+        <span className="ap-meta">
+          {totalFilteredRows === 0 ? (
+            '0 rows'
+          ) : (
+            <>
+              <span className="font-semibold" style={{ color: 'var(--text)' }}>{totalFilteredRows.toLocaleString()}</span>{' '}
+              {totalFilteredRows === 1 ? 'row' : 'rows'}
+              {totalFilteredRows !== rows.length && (
+                <span className="text-subtle"> (of {rows.length.toLocaleString()})</span>
+              )}
+            </>
+          )}
+        </span>
+        )}
+
+        {!report && <div className="flex-1" />}
+
+        {paginateProp && (
+          <>
+            <div className="flex items-center gap-1.5" data-export-hide>
+              <span className="ap-meta">Rows</span>
+              <select
+                className="nubi-input nubi-input-xs nubi-select w-16 cursor-pointer"
+                aria-label="Rows per page"
+                value={pagination.pageSize}
+                onChange={(e) => table.setPageSize(Number(e.target.value))}
+              >
+                {PAGE_SIZE_OPTIONS.map((n) => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-center gap-1" data-export-hide>
+              <button
+                className="nubi-btn nubi-btn-secondary nubi-btn-icon-xs"
+                onClick={() => table.previousPage()}
+                disabled={!table.getCanPreviousPage()}
+                aria-label="Previous page"
+              >
+                <ChevronLeft size={13} />
+              </button>
+              <span className="ap-meta px-1">
+                {table.getPageCount() > 0
+                  ? `${pagination.pageIndex + 1} / ${table.getPageCount()}`
+                  : '—'}
+              </span>
+              <button
+                className="nubi-btn nubi-btn-secondary nubi-btn-icon-xs"
+                onClick={() => table.nextPage()}
+                disabled={!table.getCanNextPage()}
+                aria-label="Next page"
+              >
+                <ChevronRight size={13} />
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Loading skeleton
+// ---------------------------------------------------------------------------
+
+function GridSkeleton({ rows = 8, cols = 5 }) {
+  return (
+    <table className="w-full text-xs" aria-hidden="true">
+      <thead className="sticky top-0 z-10 bg-surface-2" style={{ boxShadow: 'inset 0 -2px 0 var(--ink)' }}>
+        <tr>
+          {Array.from({ length: cols }).map((_, i) => (
+            <th key={i} className="px-3 py-2">
+              <Skeleton className="h-3" style={{ width: `${60 + i * 15}px` }} />
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {Array.from({ length: rows }).map((_, ri) => (
+          <tr key={ri}>
+            {Array.from({ length: cols }).map((_, ci) => (
+              <td key={ci} className="border-b border-border px-3 py-2.5">
+                <Skeleton className="h-3" style={{ width: `${40 + Math.sin(ri + ci) * 30 + 40}px` }} />
+              </td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}

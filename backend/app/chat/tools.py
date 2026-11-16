@@ -39,6 +39,7 @@ route surfaces in the final assistant message.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.chat import spec_ops
@@ -478,11 +479,37 @@ def openai_tool_specs() -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _tool_list_registered_queries() -> dict[str, Any]:
-    """Read the live query registry — reuses ``app.queries.get_query_registry``."""
+@dataclass(frozen=True)
+class ToolContext:
+    """Who a tool call acts for.  Built by the route from the authenticated
+    request — never from model output — and threaded into every tool."""
+
+    user_id: str | None = None
+    org_id: str | None = None
+    role: str | None = None
+    claims: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def can_write(self) -> bool:
+        """A member of an org with more than read-only access."""
+        return bool(self.org_id) and self.role is not None and self.role != "viewer"
+
+
+#: Tools that change server state.  They need :attr:`ToolContext.can_write`.
+_MUTATING_TOOLS = frozenset({"register_query"})
+
+
+def _tool_list_registered_queries(context: ToolContext | None = None) -> dict[str, Any]:
+    """The built-in queries plus the caller org's own — never another org's."""
     from app.queries.registry import get_query_registry  # noqa: PLC0415
 
     registry = get_query_registry()
+    org_id = context.org_id if context else None
+    visible = [
+        rq
+        for rq in registry.all()
+        if rq.system or (org_id is not None and rq.owner_org_id == org_id)
+    ]
     queries = [
         {
             "id": rq.id,
@@ -498,18 +525,20 @@ def _tool_list_registered_queries() -> dict[str, Any]:
                 for p in rq.params
             ],
         }
-        for rq in registry.all()
+        for rq in visible
     ]
     return {"queries": queries}
 
 
-def _tool_propose_dashboard_spec(instruction: str) -> dict[str, Any]:
+def _tool_propose_dashboard_spec(
+    instruction: str, context: ToolContext | None = None
+) -> dict[str, Any]:
     """Generate a DashboardSpec — reuses ``app.ai.dashboard.generate_dashboard_spec``."""
     from app.ai.dashboard import generate_dashboard_spec  # noqa: PLC0415
     from app.ai.grounding import build_catalog  # noqa: PLC0415
     from app.ai.provider import get_provider  # noqa: PLC0415
 
-    catalog = build_catalog()
+    catalog = build_catalog(context.org_id if context else None)
     provider = get_provider()
     spec = generate_dashboard_spec(instruction, catalog, provider)
     spec_dict = spec.model_dump()
@@ -528,8 +557,8 @@ def _slugify(name: str) -> str:
     return slug.strip("_") or "query"
 
 
-def _tool_register_query(arguments: dict[str, Any]) -> dict[str, Any]:
-    """Register/upsert a query in the runtime registry (POST /query/registry path)."""
+def _tool_register_query(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Register/upsert a query owned by the caller's org (POST /query/registry path)."""
     from app.queries.registry import QueryParam, get_query_registry  # noqa: PLC0415
 
     name = str(arguments.get("name") or "").strip()
@@ -558,14 +587,18 @@ def _tool_register_query(arguments: dict[str, Any]) -> dict[str, Any]:
 
     datastore_id = arguments.get("datastore_id")
     registry = get_query_registry()
-    rq = registry.register(
-        id=query_id,
-        sql=sql,
-        name=name,
-        required_scope=arguments.get("required_scope"),
-        params=param_objs,
-        datastore_id=str(datastore_id) if datastore_id else None,
-    )
+    try:
+        rq = registry.register(
+            id=query_id,
+            sql=sql,
+            name=name,
+            required_scope=arguments.get("required_scope"),
+            params=param_objs,
+            datastore_id=str(datastore_id) if datastore_id else None,
+            owner_org_id=str(context.org_id),
+        )
+    except ValueError:
+        return {"error": f"The id {query_id!r} is already in use; choose a different id."}
     return {
         "id": rq.id,
         "name": rq.name,
@@ -685,8 +718,15 @@ _SPEC_OP_NAMES = frozenset(
 )
 
 
-def execute_tool(name: str, arguments: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Execute the tool *name* with *arguments*.
+def execute_tool(
+    name: str,
+    arguments: dict[str, Any],
+    context: ToolContext | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Execute the tool *name* with *arguments* on behalf of *context*.
+
+    *context* identifies the authenticated caller.  Without one, tools that
+    change server state are refused and listings show built-ins only.
 
     Returns
     -------
@@ -696,17 +736,20 @@ def execute_tool(name: str, arguments: dict[str, Any]) -> tuple[dict[str, Any], 
         route — ``{"spec": {...}}`` when a dashboard spec was proposed/edited (so
         the final assistant message can include it for the frontend to apply).
     """
+    if name in _MUTATING_TOOLS and not (context is not None and context.can_write):
+        return {"error": "You do not have permission to make changes in this workspace."}, {}
+
     if name == "list_registered_queries":
-        return _tool_list_registered_queries(), {}
+        return _tool_list_registered_queries(context), {}
 
     if name == "register_query":
-        return _tool_register_query(arguments), {}
+        return _tool_register_query(arguments, context), {}
 
     if name == "propose_dashboard_spec":
         instruction = str(arguments.get("instruction") or "").strip()
         if not instruction:
             return {"error": "instruction is required"}, {}
-        result = _tool_propose_dashboard_spec(instruction)
+        result = _tool_propose_dashboard_spec(instruction, context)
         # The tool RESULT sent back to the model is a compact summary (the spec
         # is large and the model does not need to re-read every field); the full
         # spec rides in *extra* so the final message can carry it.

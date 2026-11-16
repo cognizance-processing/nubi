@@ -1,0 +1,488 @@
+/**
+ * pricing.js — marketing pricing model + grounded competitor comparison data.
+ *
+ * This is PRESENTATION data for the public /pricing page only. Billing
+ * ENFORCEMENT (metering, payment checkout, tier gating) lives in the EE tree
+ * (src/ee/billing/* + backend) per the open-core split and is intentionally
+ * NOT imported here.
+ *
+ * Competitor figures are sourced from public pricing pages (mid-2026); Looker
+ * and Sigma are quote-only and reconstructed from reseller/analyst data — these
+ * are marked `estimate: true`. See sourceUrl on each entry.
+ */
+
+// ── What we bill for (and what we never bill for) ───────────────────────────
+export const BILLING_MODEL = {
+  // The moat: browser compute ⇒ viewing a dashboard costs us ~$0, so we never
+  // meter it. We charge for value created, not for every view.
+  neverBilled: [
+    'Dashboard views — compute runs in your users’ browsers',
+    'Per-viewer “seats” for people who only look at dashboards',
+    'Unlimited editors, connectors, dashboards, and saved queries',
+  ],
+  metered: [
+    { label: 'Embedded sessions', desc: 'Embedded dashboard loads / mo — CDN egress + per-request edge compute cost.' },
+    { label: 'AI tokens', desc: 'Text-to-SQL, chat, and agent steps — real-time provider token pass-through (multi-model: Claude, GPT, Gemini) at cost + a small markup.' },
+    { label: 'Agent / kernel runs', desc: 'On-demand server kernels (native wheels) — scale-to-zero, only when used.' },
+  ],
+}
+
+// ── Overage rates (the "buy more when you need it" usage-wallet model) ───────
+// Prices are anchored in USD. Each tier
+// includes a monthly quota; usage beyond it draws from your prepaid wallet
+// first, then lands on your monthly invoice. No per-viewer / per-seat overage.
+//
+// AI tokens are billed differently from the other two dimensions: instead of
+// a flat per-unit rate, each metered call is charged in real time at the
+// LLM provider's actual USD token cost × (1 + 7.5% markup) — see
+// backend/app/ee/billing/token_billing.py. There is no single fixed
+// $/token rate (it depends on the model used); the reference figure below is
+// illustrative only (Haiku-class pricing). Bring your own provider key
+// (Settings → AI providers, paid tiers) and those calls skip the wallet
+// entirely — you pay the vendor directly.
+export const OVERAGE_RATES = [
+  { label: 'AI tokens', rate: 'cost + 7.5%', unit: '/ 1M tokens (est. ~$0.27)', desc: 'Text-to-SQL, chat, and agent steps — real-time pass-through of the provider\'s actual token cost, marked up 7.5%.' },
+  { label: 'Embedded sessions', rate: '$3', unit: '/ 10,000', desc: 'Embedded dashboard loads past your quota.' },
+  { label: 'Agent / kernel runs', rate: '$0.12', unit: '/ run', desc: 'On-demand server kernels (Team & Pro+).' },
+]
+
+export const OVERAGE_NOTE =
+  'Need more of one thing — say more AI tokens — without jumping a whole tier? ' +
+  'Top up your usage wallet and pay only for what you use: AI tokens are billed ' +
+  'in real time at the provider\'s actual cost plus a small markup (7.5%), never a ' +
+  'flat per-call fee. Overdraw and it’s simply added to your next invoice. ' +
+  'All prices are in USD.'
+
+// ── Tiers (USD / month) ──────────────────────────────────────────────────────
+// Source of truth: backend/app/ee/billing/tiers.py
+// 5 tiers: free / starter / team / pro / enterprise
+// ALL tiers — unlimited seats and viewers (no per-seat pricing at any tier).
+// Nubi has no hosted warehouse — metered: embedded sessions · AI calls · agent runs.
+export const TIERS = [
+  {
+    id: 'free',
+    name: 'Free',
+    price: '$0',
+    cadence: 'forever',
+    tagline: 'A real free tier — unlimited editors and viewers, no gotchas.',
+    cta: 'Start free',
+    href: '/register',
+    highlight: false,
+    features: [
+      'Unlimited editors & viewers — no per-seat charge',
+      'DuckDB-WASM kernel in the browser',
+      '3 connectors',
+      '5 dashboards · 2 scheduled flows',
+      '10k query row cap per execution',
+      '100K AI tokens / mo (chat, text-to-SQL)',
+      'Nubi branding on embeds',
+      'Community support',
+    ],
+  },
+  {
+    id: 'starter',
+    name: 'Starter',
+    price: '$9',
+    cadence: 'per month',
+    tagline: 'For individuals, side-projects, and early-stage startups.',
+    cta: 'Start free trial',
+    href: '/register',
+    highlight: false,
+    features: [
+      'Unlimited editors & viewers — no per-seat charge',
+      '1,000 embedded sessions / mo',
+      '5 connectors · 10 dashboards · 3 flows',
+      '1M AI tokens / mo included (wallet covers overage)',
+      'Basic row-level security',
+      'Google OAuth SSO',
+    ],
+  },
+  {
+    id: 'team',
+    name: 'Team',
+    price: '$49',
+    cadence: 'per month',
+    tagline: 'For small teams that outgrew Starter — without the Pro leap.',
+    cta: 'Start free trial',
+    href: '/register',
+    highlight: false,
+    features: [
+      'Everything in Starter, plus:',
+      'Unlimited editors & viewers — no per-seat charge',
+      '5,000 embedded sessions / mo',
+      '10 agent runs · 5M AI tokens / mo included',
+      '15 connectors · 30 dashboards · 8 flows',
+      'Full RLS with JWT claims · Google SSO',
+      'Remove Nubi branding',
+    ],
+  },
+  {
+    id: 'pro',
+    name: 'Pro',
+    price: '$149',
+    cadence: 'per month',
+    tagline: 'For growing teams shipping embedded analytics.',
+    cta: 'Start free trial',
+    href: '/register',
+    highlight: true,
+    badge: 'Most popular',
+    features: [
+      'Everything in Team, plus:',
+      'Unlimited editors & viewers — no per-seat charge',
+      '25,000 embedded sessions / mo',
+      '50 agent runs · 15M AI tokens / mo included',
+      'Bring your own AI provider key (skip the wallet)',
+      'All connectors · 100 dashboards · 20 flows',
+      'Full RLS with JWT claims · Google SSO',
+      'SAML SSO — coming soon',
+      'White-label embeds (coming soon) · custom domain (coming soon)',
+    ],
+  },
+  {
+    id: 'enterprise',
+    name: 'Enterprise',
+    price: '$1,000',
+    cadence: 'per month',
+    tagline: 'Unlimited scale and white-glove support.',
+    cta: 'Talk to us',
+    href: '/register',
+    highlight: false,
+    badge: 'Dedicated support',
+    sla: {
+      uptime: '99.95%',
+      p1_response_minutes: 30,
+      p2_response_hours: 2,
+      support: 'Dedicated CSM · 24/7 P1 on-call · private Slack channel',
+    },
+    features: [
+      'Everything in Pro, plus:',
+      'Unlimited editors & viewers — no per-seat charge',
+      'Unlimited embedded sessions',
+      '1,000 agent runs · 100M AI tokens / mo included',
+      'Bring your own AI provider key (skip the wallet)',
+      'Full RLS + HIPAA-alignable deployment',
+      'SAML SSO + SCIM provisioning (coming soon) · multi-tenant workspaces',
+      'Dedicated CSM · 99.95% uptime SLA · P1 < 30 min (contractual, at signing)',
+      'BAA on request',
+    ],
+  },
+]
+
+export const ENTERPRISE_NOTE =
+  'Enterprise contracts include a 99.95% uptime SLA, dedicated CSM, and 24/7 P1 on-call — terms are agreed at signing. Need custom pricing? Enterprise is custom-quoted.'
+
+// ── BI competitor comparison: the "viewer tax" ──────────────────────────────
+// cost500 = illustrative annual cost to serve ~500 dashboard viewers, derived
+// from each vendor's public model. Nubi has no hosted warehouse to bill
+// against — viewers run DuckDB-WASM client-side, so cost500 is $0.
+// annual_lo / annual_hi = the same figure as a numeric USD/yr range for the
+// to-scale chart on /pricing (null = unpriced: quote-only or usage-based).
+export const BI_COMPARISON = [
+  {
+    name: 'Nubi',
+    isNubi: true,
+    model: 'Flat plan — viewers are free (browser compute)',
+    cost500: '$0 / viewer',
+    annual_lo: 0,
+    annual_hi: 0,
+    computeExtra: 'None — runs client-side',
+    estimate: false,
+  },
+  {
+    name: 'Tableau',
+    model: 'Per-viewer seat ($15–$35/viewer/mo)',
+    cost500: '≈ $90k–$210k / yr',
+    annual_lo: 90000,
+    annual_hi: 210000,
+    computeExtra: 'Bundled (extracts) ',
+    sourceUrl: 'https://www.tableau.com/pricing',
+    estimate: false,
+  },
+  {
+    name: 'Looker',
+    model: 'Per-viewer seat (~$400/viewer/yr) + platform',
+    cost500: '≈ $200k / yr + ~$60k platform',
+    annual_lo: 200000,
+    annual_hi: 260000,
+    computeExtra: 'Your warehouse, per query',
+    sourceUrl: 'https://cloud.google.com/looker/pricing',
+    estimate: true,
+  },
+  {
+    name: 'Power BI',
+    model: 'Pro $14/viewer/mo — or F64 capacity (~$8.4k/mo) to free viewers',
+    cost500: '≈ $84k / yr (Pro seats)',
+    annual_lo: 84000,
+    annual_hi: 84000,
+    computeExtra: 'Capacity throttles under load',
+    sourceUrl: 'https://www.microsoft.com/en-us/power-platform/products/power-bi/pricing',
+    estimate: false,
+  },
+  {
+    name: 'Metabase',
+    model: 'Pro $575/mo + $12 / embedded user / mo',
+    cost500: '≈ $79k / yr',
+    annual_lo: 79000,
+    annual_hi: 79000,
+    computeExtra: 'Your database',
+    sourceUrl: 'https://www.metabase.com/pricing/',
+    estimate: false,
+  },
+  {
+    name: 'Hex',
+    model: '$36–$75 / editor + per-minute kernel compute; embed = Enterprise',
+    cost500: 'Custom (Enterprise)',
+    annual_lo: null,
+    annual_hi: null,
+    barNote: 'quote-only · embed needs Enterprise',
+    computeExtra: 'Per-minute server kernels',
+    sourceUrl: 'https://hex.tech/pricing/',
+    estimate: false,
+  },
+  {
+    name: 'Cube',
+    model: 'Consumption — $0.15–$0.30 / CCU (no per-viewer)',
+    cost500: 'Scales with query load',
+    annual_lo: null,
+    annual_hi: null,
+    barNote: 'usage-based · grows with query load',
+    computeExtra: 'Your warehouse + CCU burn',
+    sourceUrl: 'https://cube.dev/pricing',
+    estimate: false,
+  },
+  {
+    name: 'Sigma',
+    model: 'Per-seat + usage credits; embed adds 2–3×',
+    cost500: '≈ $60k+ / yr (quote)',
+    annual_lo: 60000,
+    annual_hi: 60000,
+    computeExtra: 'Live warehouse, per query',
+    sourceUrl: 'https://www.sigmacomputing.com/pricing',
+    estimate: true,
+  },
+  {
+    name: 'Preset',
+    model: 'Embedded viewers licensed — from $500/mo per 50',
+    cost500: '≈ $60k / yr (list)',
+    annual_lo: 60000,
+    annual_hi: 60000,
+    computeExtra: 'Your database',
+    sourceUrl: 'https://preset.io/pricing/',
+    estimate: false,
+  },
+]
+
+// ── Orchestration comparison: Flows vs standalone orchestrators ─────────────
+export const ORCH_COMPARISON = [
+  {
+    name: 'Nubi Flows',
+    isNubi: true,
+    model: 'Included in your plan',
+    floor: '$0 extra',
+    infra: 'Runs on the Postgres you already have',
+    meter: 'No per-task / per-credit metering',
+    estimate: false,
+  },
+  {
+    name: 'Astronomer (Astro)',
+    model: 'Usage — deployment + worker hours',
+    floor: '≈ $255/mo per env (before workers)',
+    infra: 'Managed Airflow control plane',
+    meter: 'Per compute-hour',
+    sourceUrl: 'https://www.astronomer.io/pricing/',
+    estimate: false,
+  },
+  {
+    name: 'AWS MWAA',
+    model: 'Per environment-hour + workers',
+    floor: '≈ $365/mo min (small env, 24/7)',
+    infra: 'Airflow + Celery (managed) in your VPC',
+    meter: 'Per env-hour + CloudWatch',
+    sourceUrl: 'https://aws.amazon.com/managed-workflows-for-apache-airflow/pricing/',
+    estimate: false,
+  },
+  {
+    name: 'GCP Composer',
+    model: 'Env fee + vCPU/GB + GKE/Cloud SQL',
+    floor: '≈ $250–$610/mo env fee',
+    infra: 'Airflow on always-on GKE',
+    meter: 'Per vCPU-hr + storage',
+    sourceUrl: 'https://cloud.google.com/composer/pricing',
+    estimate: false,
+  },
+  {
+    name: 'Prefect Cloud',
+    model: 'Per seat',
+    floor: '$100/mo Starter → $400/mo Team',
+    infra: 'Postgres-backed (self-host) or managed',
+    meter: 'Serverless-minute allowance',
+    sourceUrl: 'https://www.prefect.io/pricing',
+    estimate: false,
+  },
+  {
+    name: 'Microsoft Fabric',
+    model: 'Capacity SKU (F2+) billed per CU-hour',
+    floor: '≈ $263/mo (F2, pay-as-you-go, 24/7)',
+    infra: 'Always-on capacity; pipelines share the SKU',
+    meter: 'Per capacity-unit-hour (throttles at cap)',
+    sourceUrl: 'https://azure.microsoft.com/en-us/pricing/details/microsoft-fabric/',
+    estimate: false,
+  },
+  {
+    name: 'Apache Airflow (self-host)',
+    model: 'Free OSS — you run + operate it',
+    floor: '$0 license, but ~$300–$800/mo infra + ops',
+    infra: 'Scheduler + workers + Redis/Celery + metadata DB',
+    meter: 'None — you pay for the boxes + on-call',
+    sourceUrl: 'https://airflow.apache.org/',
+    estimate: true,
+  },
+  {
+    name: 'Dagster+',
+    model: 'Base + per-credit',
+    floor: '$100/mo + credits (no bundle since May 2026)',
+    infra: 'Postgres + agents / serverless',
+    meter: 'Per materialization + op',
+    sourceUrl: 'https://dagster.io/pricing',
+    estimate: false,
+  },
+  {
+    name: 'Temporal Cloud',
+    model: 'Base + per-Action',
+    floor: '$100/mo Essentials',
+    infra: 'Cassandra/Postgres + Elasticsearch (self-host)',
+    meter: 'Per Action ($50/M)',
+    sourceUrl: 'https://temporal.io/pricing',
+    estimate: false,
+  },
+]
+
+// ── Cost calculator ─────────────────────────────────────────────────────────
+// Illustrative ANNUAL USD cost as a function of dashboard viewers + editors,
+// derived from each vendor's public model (see BI_COMPARISON sources). These
+// are estimates for comparison, not quotes.
+//
+// NOTE: Nubi has NO per-seat pricing at any tier (seats are unlimited).
+// Tier selection is driven by embedded-session volume, not editor count.
+// Viewers map to embedded sessions (1 viewer ≈ ~10 sessions/mo estimate).
+function nubiAnnual(viewers: number, editors: number): number {
+  // Viewers and editors are always free of seat charges.
+  // Tier is chosen by estimated embedded-session volume.
+  const estimatedSessions = viewers * 10 // rough 10 sessions/viewer/month
+  let base
+  if (estimatedSessions <= 0 && editors <= 10) {
+    base = 0    // Free (no embedded sessions, small team)
+  } else if (estimatedSessions <= 1000) {
+    base = 9    // Starter — 1,000 sessions/mo
+  } else if (estimatedSessions <= 5000) {
+    base = 49   // Team — 5,000 sessions/mo
+  } else if (estimatedSessions <= 25000) {
+    base = 149  // Pro — 25,000 sessions/mo
+  } else {
+    base = 1000 // Enterprise — unlimited sessions
+  }
+  return base * 12
+}
+
+export const CALC_OPTIONS = [
+  {
+    name: 'Nubi', isNubi: true, note: 'Unlimited seats — viewers AND editors free; session-metered ($0/$9/$49/$149/$1k)',
+    // Editors are free at every tier — the bar never moves with editor count.
+    annual: (v: number, e: number) => nubiAnnual(v, e),
+  },
+  {
+    name: 'Power BI', note: 'Pro $14/user (viewers + editors), capped at F64 capacity',
+    annual: (v: number, e: number) => Math.min((v + (e || 0)) * 14 * 12, 8400 * 12),
+  },
+  {
+    name: 'Tableau', note: 'Viewers @ $15/mo + Creator (editor) seats @ $70/mo',
+    annual: (v: number, e: number) => v * 15 * 12 + (e || 0) * 70 * 12,
+  },
+  {
+    name: 'Metabase', note: 'Pro $575/mo + $12/embedded viewer + $12/editor seat',
+    annual: (v: number, e: number) => 575 * 12 + v * 12 * 12 + (e || 0) * 12 * 12,
+  },
+  {
+    name: 'Preset', note: 'Embedded viewers ($500 / 50) + Creator seats @ $40/mo',
+    annual: (v: number, e: number) => Math.ceil(Math.max(v, 1) / 50) * 500 * 12 + (e || 0) * 40 * 12,
+  },
+  {
+    name: 'Looker', note: 'Platform + ~$400/viewer/yr + ~$600/developer seat', estimate: true,
+    annual: (v: number, e: number) => 60000 + v * 400 + (e || 0) * 600,
+  },
+]
+
+// ── Orchestration cost calculator (the SECOND calculator) ───────────────────
+// FAIR, GROUNDED, apples-to-apples comparison metered on DATA VOLUME — the real
+// cost driver for a data orchestrator. ANNUAL USD as a function of
+// (environments, GB processed per month).
+//
+// Same-basis model: processing data takes compute. We convert GB → compute-hours
+// at a single disclosed throughput (~50 GB per compute-hour for a typical
+// scan/transform), then price each vendor as FIXED FLOOR (always-on infra /
+// capacity / seats, per their published model) + COMPUTE for the work. This is
+// directional (not a quote) but every term maps to a real published rate (see
+// ORCH_COMPARISON sourceUrl).
+//
+// The honest result: managed orchestrators carry a large per-ENVIRONMENT floor
+// you pay regardless of volume; Nubi Flows has NO floor and no data-volume
+// meter — flow orchestration runs on the same Postgres as the rest of Nubi
+// and is included in your platform subscription (only on-demand remote-kernel
+// agent runs are separately metered — see OVERAGE_RATES).
+const ORCH_GB_PER_COMPUTE_HOUR = 50          // ~50 GB processed per compute-hour
+const _ch = (gb: number | undefined) => Math.max(0, gb || 0) / ORCH_GB_PER_COMPUTE_HOUR   // compute-hours / mo
+
+export const ORCH_CALC_OPTIONS = [
+  {
+    name: 'Nubi Flows', isNubi: true,
+    note: 'Included in your plan — no per-env floor, no data-volume meter',
+    annual: () => 0,
+  },
+  {
+    name: 'Prefect Cloud', note: '$100/mo Starter → $400/mo Team (per-seat; serverless-minute allowance)',
+    annual: (envs: number) => (Math.max(1, envs) <= 1 ? 100 : 400) * 12,
+  },
+  {
+    name: 'Microsoft Fabric', note: 'F2 capacity 24/7 (~$263/mo per env); compute within capacity, throttles at cap',
+    annual: (envs: number) => 263 * 12 * Math.max(1, envs),
+  },
+  {
+    name: 'AWS MWAA', note: 'Small env ~$365/mo (24/7) per env + worker hours (~$0.55/hr)',
+    annual: (envs: number, gb: number) => Math.round((365 * Math.max(1, envs) + _ch(gb) * 0.55) * 12),
+  },
+  {
+    name: 'GCP Composer', note: 'Env fee + GKE/Cloud SQL (~$400/mo per env) + ~$0.20/vCPU-hr',
+    annual: (envs: number, gb: number) => Math.round((400 * Math.max(1, envs) + _ch(gb) * 0.20) * 12),
+  },
+  {
+    name: 'Apache Airflow (self-host)', note: 'Infra ~$400/mo per env + on-call ops + your own compute', estimate: true,
+    annual: (envs: number, gb: number) => Math.round((400 * Math.max(1, envs) + _ch(gb) * 0.10) * 12) + 6000,
+  },
+]
+
+export const PRICING_FAQ = [
+  {
+    q: 'Why don’t you charge per viewer?',
+    a: 'Because we don’t pay per viewer. Dashboards compute in the user’s browser (DuckDB-WASM), so an extra viewer costs us essentially nothing — and we pass that on. You’re billed for embedded sessions, AI calls, and agent runs, never for editors or for someone looking at a chart.',
+  },
+  {
+    q: 'What counts as an “embed view”?',
+    a: 'One load of an embedded dashboard in your app. Re-renders, cross-filters, and interactions within a session are free — and identical queries across viewers collapse to one warehouse hit via the content-hashed edge cache.',
+  },
+  {
+    q: 'Do I need a separate orchestrator like Airflow or Prefect?',
+    a: 'No. Flows is built in and runs on the same Postgres as the rest of Nubi — no Redis, no Celery, no separate control plane to pay for or operate. Retries, timeouts, result caching, and RLS-aware execution are included.',
+  },
+  {
+    q: 'Is there a free tier I can actually use in production?',
+    a: 'Yes. Free includes unlimited editors, unlimited dashboard views, and the in-browser kernel forever. You upgrade when you need more connectors, embed volume, AI calls, or governance — not to unlock basic usage.',
+  },
+  {
+    q: 'Can I self-host?',
+    a: 'Yes — the open-core is self-hostable. Managed cloud, SSO/RBAC/audit, and dedicated support are paid tiers.',
+  },
+  {
+    q: 'What does “dedicated support” on Enterprise include?',
+    a: 'A dedicated Customer Success Manager (CSM), a private Slack/Teams channel, 24/7 P1 on-call (< 30 min first response for site-down incidents), P2 < 2 hours, monthly business reviews, and a contractual 99.95% uptime SLA. Onboarding and architecture review are included.',
+  },
+]

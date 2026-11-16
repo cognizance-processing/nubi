@@ -7,7 +7,7 @@ GET    /connectors          — list connectors for the caller's org (no secrets
 GET    /connectors/{id}     — fetch a single connector (no secrets)
 PUT    /connectors/{id}     — update non-secret config and/or rotate the secret
 DELETE /connectors/{id}     — delete connector + secret blob
-POST   /connectors/{id}/test — validate config + secret are resolvable (no network)
+POST   /connectors/{id}/test — config + secret + a real SELECT 1 over the wire
 
 Security contract
 -----------------
@@ -18,6 +18,21 @@ Security contract
 - All operations are org-scoped; a row belonging to a different org is treated
   as not-found (no information leak).
 
+Org resolution
+--------------
+EVERY route resolves the org with the header-aware ``resolve_org_id`` — the org
+the caller is VIEWING (``X-Org-Id``), verified for membership, falling back to
+their default org when the header is absent. The write guards use the matching
+header-aware ``require_writer`` so the role checked is always the role in the
+org the route actually writes to (see ``app/auth/roles.py``).
+
+This must stay consistent across the whole file. When only ``GET /connectors``
+was header-aware, creating a connector while viewing any non-default org wrote
+it to the caller's DEFAULT org: it vanished from the list they were looking at,
+and every subsequent get/update/delete/test 404'd because those routes searched
+the wrong org too. There was effectively no way to attach a connector to a
+non-default org.
+
 The router self-registers on the shared ``api_router`` at import time so that
 ``main.py``'s ``include_router(api_router, prefix="/api/v1")`` picks it up
 automatically.
@@ -25,19 +40,25 @@ automatically.
 
 from __future__ import annotations
 
+import asyncio
+
 import json
+import logging
 from typing import Any, Literal
+
+logger = logging.getLogger("nubi.connectors")
 
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, model_validator
 
 from app.audit import record_audit as _record_audit
 from app.auth.deps import current_user
-from app.auth.roles import require_writer_default
+from app.auth.roles import require_writer
+from app.connectors.network import effective_network
 from app.errors import AppError
 from app.repos.provider import get_repo, Repo
 from app.routes import api_router
-from app.routes._org import get_user_org as _get_user_org
+from app.routes._org import resolve_org_id as _resolve_org_id
 
 # ── Sub-router ────────────────────────────────────────────────────────────────
 
@@ -160,6 +181,8 @@ async def _has_editable_demo(
 # into config.  This list is used for validation, not filtering — callers may
 # omit secret keys if they are not applicable.
 
+from app.connectors.duckdb_conn import guard_datastore_config as _guard_datastore_config  # noqa: E402
+
 _SECRET_KEYS: frozenset[str] = frozenset(
     {
         "password",
@@ -169,8 +192,30 @@ _SECRET_KEYS: frozenset[str] = frozenset(
         "access_token",          # Databricks
         "aws_secret_access_key",  # Athena / object storage
         "private_key",            # Snowflake key-pair auth
+        "dsn",                    # a connection string embeds its password
+        "headers",                # request headers carry bearer tokens / keys
+        "s3_secret",              # object-storage secret key
     }
 )
+
+#: Credentials that clients (forms, files-as-code, the CLI) commonly place in
+#: ``config``.  They are moved into the encrypted secret blob on the way in
+#: instead of being refused, so nothing has to change on the client side.
+_RELOCATED_TO_SECRET: tuple[str, ...] = ("dsn", "headers", "s3_secret")
+
+
+def _relocate_credentials(data: Any) -> Any:
+    """Move credential-bearing ``config`` keys into ``secret`` (request pre-processing)."""
+    if not isinstance(data, dict) or not isinstance(data.get("config"), dict):
+        return data
+    config = dict(data["config"])
+    moved = {k: config.pop(k) for k in _RELOCATED_TO_SECRET if config.get(k) not in (None, "", {})}
+    if not moved:
+        return data
+    secret = dict(data.get("secret") or {})
+    for key, value in moved.items():
+        secret.setdefault(key, value)
+    return {**data, "config": config, "secret": secret}
 
 # ── Reserved config keys — server-only, never writable by users ───────────────
 # These flags are set exclusively by server-side provisioning code (app/sample.py,
@@ -218,6 +263,9 @@ class ConnectorSecret(BaseModel):
     access_token: str | None = None
     aws_secret_access_key: str | None = None
     private_key: str | None = None
+    dsn: str | None = None
+    headers: dict[str, str] | None = None
+    s3_secret: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return only the non-None values for storage in the secret store."""
@@ -239,6 +287,11 @@ class CreateConnectorIn(BaseModel):
     # with whatever config the caller supplies.
     seed: Literal["demo", "blank"] | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _credentials_belong_in_the_secret(cls, data: Any) -> Any:
+        return _relocate_credentials(data)
+
     @model_validator(mode="after")
     def assert_no_secret_in_config(self) -> "CreateConnectorIn":
         """Raise if the caller accidentally put secret keys inside config."""
@@ -259,6 +312,11 @@ class UpdateConnectorIn(BaseModel):
     config: ConnectorConfig | None = None
     secret: ConnectorSecret | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _credentials_belong_in_the_secret(cls, data: Any) -> Any:
+        return _relocate_credentials(data)
+
     @model_validator(mode="after")
     def assert_no_secret_in_config(self) -> "UpdateConnectorIn":
         if self.config is not None:
@@ -272,7 +330,7 @@ class UpdateConnectorIn(BaseModel):
 
 
 # ── Org resolution helper — shared, pin-aware (app.routes._org). Imported at the
-#    top as ``_get_user_org``; the shared helper honours the API-key org pin,
+#    top as ``_resolve_org_id``; the shared helper honours the API-key org pin,
 #    which the old local copy did not (cross-tenant data op for API-key callers).
 
 
@@ -302,6 +360,10 @@ def _sanitise(row: dict[str, Any]) -> dict[str, Any]:
 
     # Never include a top-level 'secret' key.
     safe.pop("secret", None)
+
+    # Report the network mode / bridge the connection actually uses (config),
+    # not the legacy top-level columns the API never writes.
+    safe["network_mode"], safe["bridge_id"] = effective_network(row)
 
     # Belt-and-suspenders assertion — will surface in tests
     _assert_no_secret_leakage(safe)
@@ -354,6 +416,89 @@ async def _shape_row(row: dict[str, Any], org_id: str, repo: Repo) -> dict[str, 
     return _sanitise(row)
 
 
+# ── Live connection status — the whole point being: don't make the user dig
+#    through a separate Bridges settings page to find out if THIS connector
+#    is actually reachable right now ──────────────────────────────────────────
+
+
+def demo_connector_status() -> dict[str, Any]:
+    """Status block for the virtual demo connector — always ready, in-process."""
+    return {"kind": "demo", "state": "online", "detail": "Always ready", "checked_at": None}
+
+
+async def _attach_connector_status(
+    rows: list[dict[str, Any]], org_id: str,
+) -> list[dict[str, Any]]:
+    """Attach a computed ``status`` block to each (already-sanitised) row.
+
+    - **Bridge-mode** connectors derive LIVE status from the ``bridges`` table
+      — the same status the WS tunnel handler / heartbeat endpoint maintain
+      (see routes/bridges.py). This is the real signal; a bridge-mode
+      connector has no connection of its own to probe.
+    - **Direct-mode** connectors have no persistent connection to observe, so
+      status reflects the last ``POST /connectors/{id}/test`` result,
+      persisted into ``config.health`` by that route. ``state: "unknown"``
+      until the first test.
+
+    ``status`` shape: ``{kind, state: 'online'|'offline'|'unknown',
+    detail, checked_at}``.
+    """
+    from app.bridges.store import get_bridge_store  # noqa: PLC0415
+
+    bridge_ids: set[str] = set()
+    # Sanitised rows carry the effective network_mode / bridge_id (see _sanitise).
+    for row in rows:
+        mode, bid = effective_network(row)
+        if mode == "bridge" and bid:
+            bridge_ids.add(bid)
+
+    bridges_by_id: dict[str, dict[str, Any]] = {}
+    if bridge_ids:
+        for bridge in await get_bridge_store().list(org_id):
+            bid = str(bridge.get("id"))
+            if bid in bridge_ids:
+                bridges_by_id[bid] = bridge
+
+    for row in rows:
+        cfg = row.get("config") if isinstance(row.get("config"), dict) else {}
+        mode, bid = effective_network(row)
+        if mode == "bridge":
+            bridge = bridges_by_id.get(bid or "")
+            if bridge is None:
+                row["status"] = {
+                    "kind": "bridge", "state": "unknown",
+                    "detail": "Linked bridge not found", "checked_at": None,
+                }
+            else:
+                online = bridge.get("status") == "online"
+                row["status"] = {
+                    "kind": "bridge",
+                    "state": "online" if online else "offline",
+                    "detail": (
+                        f"Bridge “{bridge.get('name')}” online"
+                        if online
+                        else f"Bridge “{bridge.get('name')}” offline"
+                    ),
+                    "checked_at": bridge.get("last_seen_at"),
+                }
+        else:
+            health = cfg.get("health")
+            if not isinstance(health, dict):
+                row["status"] = {
+                    "kind": "direct", "state": "unknown",
+                    "detail": "Not tested yet", "checked_at": None,
+                }
+            else:
+                ok = bool(health.get("ok"))
+                row["status"] = {
+                    "kind": "direct",
+                    "state": "online" if ok else "offline",
+                    "detail": "Config verified" if ok else (health.get("error") or "Config check failed"),
+                    "checked_at": health.get("checked_at"),
+                }
+    return rows
+
+
 # ── Connector-type label for datastores.config ───────────────────────────────
 
 
@@ -399,7 +544,7 @@ async def _build_demo_seed_config(org_id: str, request: Request) -> dict[str, An
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 
-@router.post("", status_code=201, dependencies=[Depends(require_writer_default)])
+@router.post("", status_code=201, dependencies=[Depends(require_writer)])
 async def create_connector(
     body: CreateConnectorIn,
     request: Request,
@@ -413,7 +558,7 @@ async def create_connector(
 
     Returns the datastore row without any secret material.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     # ── Demo connector re-add ─────────────────────────────────────────────────
     # The demo connector is virtual; "creating" it simply clears the per-org
@@ -440,6 +585,7 @@ async def create_connector(
         safe_config = non_secret_config_override
     else:
         safe_config = _build_config(body.type, body.config.to_safe_dict())
+        _guard_datastore_config(safe_config, org_id)
 
     # CRITICAL: assert the secret is not leaking into config
     for key in _SECRET_KEYS:
@@ -486,8 +632,14 @@ async def list_connectors(
     The built-in virtual "Demo data" connector is surfaced ONLY in the org's
     demo/default project — other projects start empty and require a real
     connector. Real datastores remain org-wide.
+
+    Uses the header-aware ``resolve_org_id``: the connector picker must reflect
+    the workspace the user is VIEWING, not their default org. With a default-org
+    lookup, switching to any other org showed only that other org's connectors
+    were invisible and just the demo one remained, so every query there ran
+    against the wrong datastore and failed.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     all_datastores = await repo.list("datastores", org_id)
     # The active project (X-Project-Id else the org default) scopes the
@@ -516,6 +668,7 @@ async def list_connectors(
         )
     ]
     result = [await _shape_row(row, org_id, repo) for row in connectors]
+    result = await _attach_connector_status(result, org_id)
 
     # Inject the virtual (read-only) demo connector ONLY in the org's
     # demo/default project, unless the org removed it OR the active project
@@ -528,7 +681,9 @@ async def list_connectors(
         and not await _demo_is_hidden(org_id, repo)
         and not await _has_editable_demo(org_id, repo, active_project)
     ):
-        result.insert(0, _sanitise(_demo_connector_row(org_id)))
+        demo_row = _sanitise(_demo_connector_row(org_id))
+        demo_row["status"] = demo_connector_status()
+        result.insert(0, demo_row)
 
     return result
 
@@ -563,6 +718,7 @@ async def _in_demo_project(org_id: str, request: Request) -> bool:
 @router.get("/{connector_id}")
 async def get_connector(
     connector_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -570,26 +726,31 @@ async def get_connector(
 
     Returns 404 if not found or belongs to a different org.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     # Virtual demo connector — resolvable unless this org removed it.
     if connector_id == DEMO_CONNECTOR_ID:
         if await _demo_is_hidden(org_id, repo):
             raise AppError("not_found", "Connector not found.", 404)
-        return _sanitise(_demo_connector_row(org_id))
+        demo_row = _sanitise(_demo_connector_row(org_id))
+        demo_row["status"] = demo_connector_status()
+        return demo_row
 
     row = await repo.get("datastores", org_id, connector_id)
     if row is None:
         raise AppError("not_found", "Connector not found.", 404)
     if not isinstance(row.get("config"), dict) or "connector_type" not in row["config"]:
         raise AppError("not_found", "Connector not found.", 404)
-    return await _shape_row(row, org_id, repo)
+    shaped = await _shape_row(row, org_id, repo)
+    (await _attach_connector_status([shaped], org_id))
+    return shaped
 
 
-@router.put("/{connector_id}", dependencies=[Depends(require_writer_default)])
+@router.put("/{connector_id}", dependencies=[Depends(require_writer)])
 async def update_connector(
     connector_id: str,
     body: UpdateConnectorIn,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -599,7 +760,7 @@ async def update_connector(
     If ``secret`` is supplied, a new encrypted blob replaces the existing one.
     Returns the updated datastore row without any secret material.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     # Verify the row exists and belongs to this org
     existing = await repo.get("datastores", org_id, connector_id)
@@ -630,6 +791,25 @@ async def update_connector(
             new_non_secret.pop(key, None)
 
         existing_config.update(new_non_secret)
+
+        # A credential that has just been moved into the secret blob must not
+        # linger in (and win from) the plaintext config of an older row.
+        if body.secret is not None:
+            for key in _RELOCATED_TO_SECRET:
+                if getattr(body.secret, key, None) is not None:
+                    existing_config.pop(key, None)
+
+        # An explicit ``null`` clears that key (``to_safe_dict`` drops Nones, so
+        # without this an edit that empties an optional field — schema,
+        # warehouse, bridge_id — "saves" but the old value comes back on reload).
+        # Omitted keys are still left untouched (merge semantics).
+        explicit = body.config.model_dump(exclude_unset=True)
+        for key, value in explicit.items():
+            if value is None and key not in _RESERVED_CONFIG_KEYS and key != "connector_type":
+                existing_config.pop(key, None)
+        _guard_datastore_config(
+            existing_config, org_id, existing=dict(existing.get("config") or {})
+        )
         fields["config"] = existing_config
 
     row = await repo.update("datastores", org_id, connector_id, fields)
@@ -653,9 +833,10 @@ async def update_connector(
     return _sanitise(row)
 
 
-@router.delete("/{connector_id}", status_code=204, dependencies=[Depends(require_writer_default)])
+@router.delete("/{connector_id}", status_code=204, dependencies=[Depends(require_writer)])
 async def delete_connector(
     connector_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> Response:
@@ -663,7 +844,7 @@ async def delete_connector(
 
     Returns 204 on success, 404 if not found or belongs to a different org.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     # ── Demo connector removal ────────────────────────────────────────────────
     # The demo connector is virtual and shared across orgs — we never delete the
@@ -713,27 +894,49 @@ async def delete_connector(
     return Response(status_code=204)
 
 
-@router.post("/{connector_id}/test")
+@router.post("/{connector_id}/test", dependencies=[Depends(require_writer)])
 async def test_connector(
     connector_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """Validate that the config and secret are resolvable for a connector.
+    """Check that a connector can actually reach its database.
 
-    This is a *structural* check only — no network socket is opened.  It
-    confirms that:
+    Runs three layers in order, stopping at the first failure so the error
+    names the layer that broke:
     1. The datastore row exists and is accessible (config layer).
     2. The encrypted secret can be retrieved from the SecretStore (secret layer).
+    3. A trivial ``SELECT 1`` is executed over the real connector — the same
+       resolution path ``POST /query`` uses, so it opens the same socket,
+       through the same bridge tunnel, with the same credentials
+       (connection layer). Pass ``?probe=false`` to stop after layer 2.
+
+    Layer 3 exists because the first two passing is not the question anyone is
+    asking when they press Test. A structural-only check returns a green tick
+    for a connector whose host is unreachable, whose password is wrong, or
+    whose bridge agent is not running — and every one of those only surfaces
+    later, as a failed widget on somebody's dashboard.
+
+    For a **direct**-mode connector, the result is persisted into
+    ``config.health`` so it shows up at rest in ``GET /connectors`` (see
+    ``_attach_connector_status``) instead of only existing for the instant
+    this response is on screen — the whole point being a connector card can
+    say something true about itself without the user having to click Test
+    every time they look. A **bridge**-mode connector's real status comes
+    from the bridge itself (routes/bridges.py); this check still runs (it's
+    still useful — config/secret can be broken independently of the bridge)
+    but isn't persisted as the connector's headline status.
 
     Returns
     -------
     dict
-        ``{ok: True, checked: 'config+secret resolved', connector_id: ...,
-           type: ..., layers: {config: True, secret: True}}``
-        or a structured error result if a layer is missing.
+        ``{ok, checked, connector_id, type, layers: {config, secret,
+        connection}, elapsed_ms}``. ``checked`` is ``'connected'`` on success
+        and the engine's own failure text otherwise. ``layers.connection`` is
+        absent when the probe was skipped.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     # Virtual demo connector — always resolvable (no secret, in-process data).
     if connector_id == DEMO_CONNECTOR_ID:
@@ -743,7 +946,8 @@ async def test_connector(
             "checked": "demo dataset ready" if ok else "demo connector removed",
             "connector_id": connector_id,
             "type": "demo",
-            "layers": {"config": ok, "secret": ok},
+            # In-process DuckDB — being present IS being connected.
+            "layers": {"config": ok, "secret": ok, "connection": ok},
         }
 
     row = await repo.get("datastores", org_id, connector_id)
@@ -761,6 +965,8 @@ async def test_connector(
             "layers": {"config": False, "secret": False},
         }
 
+    is_bridge_mode = effective_network(row)[0] == "bridge"
+
     # Verify the secret layer resolves. ``get`` returns the decrypted dict when a
     # secret exists (proves the key works), or ``None`` when the connector simply
     # has no secret — both are valid. A secret-less connector includes any
@@ -777,6 +983,10 @@ async def test_connector(
     connector_type = row["config"].get("connector_type", "unknown")  # type: ignore[union-attr]
 
     if not secret_ok:
+        if not is_bridge_mode:
+            await _persist_and_notify_connector_health(
+                row, org_id, connector_id, ok=False, error="secret layer missing or decryption failed",
+            )
         return {
             "ok": False,
             "checked": "secret layer missing or decryption failed",
@@ -785,13 +995,177 @@ async def test_connector(
             "layers": {"config": True, "secret": False},
         }
 
+    layers = {"config": True, "secret": True}
+
+    probe_requested = str(request.query_params.get("probe", "true")).lower() not in (
+        "false", "0", "no",
+    )
+    if not probe_requested:
+        if not is_bridge_mode:
+            await _persist_and_notify_connector_health(row, org_id, connector_id, ok=True, error=None)
+        return {
+            "ok": True,
+            "checked": "config+secret resolved",
+            "connector_id": connector_id,
+            "type": connector_type,
+            "layers": layers,
+        }
+
+    # A hard ceiling on the whole probe, not just its two inner awaits. Pressing
+    # Test and getting nothing back is the worst outcome available: the user
+    # cannot tell a slow database from a wedged server, and a request that never
+    # returns holds a worker for as long as it lasts. An honest timeout is a
+    # result; a hang is not.
+    try:
+        probe_ok, probe_error, elapsed_ms = await asyncio.wait_for(
+            _probe_connection(row, org_id, connector_id, connector_type),
+            timeout=_PROBE_TIMEOUT_SECONDS * 2 + 5,
+        )
+    except asyncio.TimeoutError:
+        probe_ok, probe_error, elapsed_ms = (
+            False,
+            "the server did not finish the check in time — restart the backend "
+            "if this persists",
+            (_PROBE_TIMEOUT_SECONDS * 2 + 5) * 1000,
+        )
+    layers["connection"] = probe_ok
+
+    # Bridge-mode connectors take their headline status from the bridge itself
+    # (routes/bridges.py), so a probe result is reported but not persisted as
+    # the card's health — the same rule the secret layer already follows.
+    if not is_bridge_mode:
+        await _persist_and_notify_connector_health(
+            row, org_id, connector_id, ok=probe_ok, error=probe_error,
+        )
     return {
-        "ok": True,
-        "checked": "config+secret resolved",
+        "ok": probe_ok,
+        "checked": "connected" if probe_ok else (probe_error or "connection failed"),
         "connector_id": connector_id,
         "type": connector_type,
-        "layers": {"config": True, "secret": True},
+        "layers": layers,
+        "elapsed_ms": elapsed_ms,
     }
+
+
+# The probe binds a parameter rather than selecting a literal, for two
+# reasons: it proves the whole parameter-binding path, and — because
+# ``MySQLConnector.execute`` routes no-params plans through connectorx and
+# parameterised ones through PyMySQL — it avoids connectorx's r2d2 pool,
+# which retries a *fatal* auth error for thirty seconds and then reports
+# "timed out waiting for connection" instead of "Access denied". PyMySQL
+# returns the engine's real message in milliseconds.
+# MySQL needs a FROM before a WHERE, and naming DUAL is not an option: the
+# planner qualifies table names, so ``FROM DUAL`` comes out as
+# ``FROM alison_pos.DUAL`` and the probe fails on a healthy connector. A
+# one-row derived table is valid on every engine that has no DUAL, and needs
+# no qualification. Oracle keeps DUAL, where it is a real table.
+_PROBE_SQL = {"oracle": "SELECT 1 FROM dual WHERE 1 = $1"}
+_PROBE_SQL_DEFAULT = "SELECT 1 FROM (SELECT 1) AS probe_src WHERE 1 = $1"
+_PROBE_TIMEOUT_SECONDS = 15
+
+
+async def _probe_connection(
+    row: dict[str, Any], org_id: str, connector_id: str, connector_type: str,
+) -> tuple[bool, str | None, int]:
+    """Open a real connection and run a trivial query. Never raises.
+
+    Uses ``resolve_datastore_connector`` — the same shared resolver
+    ``POST /query`` goes through — so a bridge-mode connector is probed
+    through its tunnel exactly as a real query would be, and the failure text
+    the user sees here is the failure text a widget would have shown.
+    """
+    import asyncio  # noqa: PLC0415
+    import time  # noqa: PLC0415
+
+    from app.connectors.dialects import dialect_for  # noqa: PLC0415
+    from app.connectors.planner import plan as planner_plan  # noqa: PLC0415
+    from app.connectors.resolve import resolve_datastore_connector  # noqa: PLC0415
+
+    dialect = dialect_for(connector_type)
+    sql = _PROBE_SQL.get(dialect, _PROBE_SQL_DEFAULT)
+    started = time.monotonic()
+    connector = cleanup = None
+    try:
+        physical_plan = await asyncio.to_thread(
+            planner_plan, sql=sql, claims={"policies": []}, params=[1], dialect=dialect,
+        )
+        connector, _kind, cleanup = await asyncio.wait_for(
+            resolve_datastore_connector(physical_plan, connector_id, org_id, get_repo(), ds=row),
+            timeout=_PROBE_TIMEOUT_SECONDS,
+        )
+        await asyncio.wait_for(
+            asyncio.to_thread(connector.execute, physical_plan),
+            timeout=_PROBE_TIMEOUT_SECONDS,
+        )
+        return True, None, int((time.monotonic() - started) * 1000)
+    except asyncio.TimeoutError:
+        return False, f"no response within {_PROBE_TIMEOUT_SECONDS}s", int(
+            (time.monotonic() - started) * 1000
+        )
+    except AppError as exc:
+        # AppError carries the deliberately-worded messages (e.g. "Bridge X has
+        # no connected agent") — surface it rather than a generic failure.
+        return False, str(getattr(exc, "message", None) or exc), int(
+            (time.monotonic() - started) * 1000
+        )
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"[:400], int(
+            (time.monotonic() - started) * 1000
+        )
+    finally:
+        for close in (getattr(connector, "close", None), cleanup):
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+async def _persist_and_notify_connector_health(
+    row: dict[str, Any], org_id: str, connector_id: str, *, ok: bool, error: str | None,
+) -> None:
+    """Persist a direct-mode connector's test result into ``config.health``.
+
+    Fires an in-app notification only on a REAL ok<->fail transition (never
+    on the first-ever test, and never when consecutive tests agree) — same
+    "don't spam the bell" rule as the bridge status notifications.
+    """
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    existing_config = dict(row.get("config") or {})
+    previous_health = existing_config.get("health")
+    was_ok = previous_health.get("ok") if isinstance(previous_health, dict) else None
+
+    checked_at = datetime.now(timezone.utc).isoformat()
+    existing_config["health"] = {"ok": ok, "checked_at": checked_at, "error": error}
+    try:
+        await get_repo().update("datastores", org_id, connector_id, {"config": existing_config})
+    except Exception:  # noqa: BLE001 — persisting health must never break the test response
+        logger.warning("connectors: failed to persist health for %s", connector_id)
+        return
+
+    if was_ok is None or was_ok == ok:
+        return  # first-ever test, or no real transition — no notification
+    try:
+        from app.notify.notifications import get_notification_store  # noqa: PLC0415
+
+        name = row.get("name") or "Connector"
+        if ok:
+            severity, title, body = (
+                "success", f"{name} is reachable again", "The last connection test passed.",
+            )
+        else:
+            severity, title, body = (
+                "warning", f"{name} failed its connection test",
+                error or "The last connection test failed.",
+            )
+        await get_notification_store().create(
+            str(org_id), type="connector_health", severity=severity, title=title, body=body,
+            link="/connectors", metadata={"connector_id": connector_id},
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("connectors: health-change notification failed for %s", connector_id)
 
 
 # ── Register on the shared api_router ─────────────────────────────────────────

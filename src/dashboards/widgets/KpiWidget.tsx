@@ -1,0 +1,591 @@
+/**
+ * KpiWidget.jsx — Spec-driven KPI card widget for the SpecRenderer.
+ *
+ * Props
+ * -----
+ * widget  {object}  A spec Widget object with type === 'kpi'.
+ *                   Shape: { id, type, query_id,
+ *                            encoding:{ value, compare?, spark? },
+ *                            props:{ label, format, deltaFormat? },
+ *                            params?, pos }
+ *
+ * Encoding
+ * --------
+ * - encoding.value   {string}  Column whose first row is the headline number.
+ * - encoding.compare {string}  Optional. Column whose first row is the comparison
+ *                              baseline; the delta (headline − baseline) is shown
+ *                              with an up/down arrow and colour.
+ * - encoding.spark   {string}  Optional. Numeric column rendered as a tiny
+ *                              axis-less ECharts sparkline beneath the number.
+ *
+ * Props
+ * -----
+ * - props.label       {string}  Card label (defaults to a prettified value col).
+ * - props.format      {string}  Headline number format
+ *                              (number|integer|percent|percent100|currency);
+ *                              percent expects a 0-1 fraction, percent100 a
+ *                              value already on a 0-100 scale.
+ * - props.deltaFormat {string}  Delta display: 'percent' (default) or 'absolute'.
+ * - props.labelPosition {string} 'bottom' (default — value first) or 'top'
+ *                              (label above the value, stat-tile style).
+ * - props.progress    {object}  Optional progress bar: { segments, target, style }.
+ *                              Fraction filled = value / target (share the same scale,
+ *                              e.g. target: 100 for a 0-100 percent value).
+ *                              style: 'segments' (default pips) or 'bar' (continuous meter).
+ * - props.deltaStyle  {string}  'inline' (default) or 'triangle': a large up/down
+ *                              triangle at the right of the value, with the signed
+ *                              percentage beneath it and the label as a plain heading.
+ * - props.deltaDecimals {number} Decimals on the triangle's percentage (default 2).
+ * - props.deltaUpColor / props.deltaDownColor {string} Triangle colours.
+ * - props.valueSize   {number}  Headline font size in px (triangle layout).
+ * - props.labelSize   {number}  Label font size in px (triangle layout).
+ * - props.deltaBackground / props.deltaColor {string} Inline delta as a filled badge.
+ * - props.locale      {string}  Number locale for grouped formats, for a board that
+ *                              must read the same in every viewer's browser.
+ *
+ * Behaviour
+ * ---------
+ * - Fetches query_id via runArrowQueryById, threading resolved params as { namedParams }.
+ * - Re-queries whenever resolved params change (via useResolvedParams dependency).
+ * - Reads the first row of the encoding.value column as the primary number.
+ * - Optionally shows a delta vs encoding.compare and a sparkline from encoding.spark.
+ * - Shows loading skeleton and error notice gracefully.
+ * - With compare/spark unset the card renders exactly as before (regression-safe).
+ */
+
+import { useState, useEffect, useMemo } from 'react'
+import { runArrowQueryById } from '../../lib/wasmRuntime.js'
+import { runMetricQuery } from '../../lib/metricRuntime.js'
+import { useResolvedParams, useResolvedFilters } from '../VariableStore.jsx'
+import EChart from '../../viz/EChart.jsx'
+import { applySignal } from '../../viz/signals.js'
+import { useRefreshEpoch } from '../RefreshContext.jsx'
+import Skeleton from '../../components/ui/Skeleton.jsx'
+import Badge from '../../components/ui/Badge.jsx'
+import WidgetError from '../../components/app/WidgetError.jsx'
+import { findKpiIcon } from '../kpiIcons.jsx'
+import { ensureReadable } from '../../lib/contrast.js'
+import { resolveTextColors } from '../textColors.js'
+import { adaptBackgroundColor } from '../../lib/themeColor.js'
+import { useTheme } from '../../contexts/ThemeContext.jsx'
+import { computeTrend } from './kpiDelta'
+import { fitValueFontSize } from './kpiFit.js'
+
+/**
+ * Format a raw value for display.
+ *
+ * `decimals` overrides each format's own default precision — a percentage
+ * board that wants whole numbers ("85%") should not have to accept "85.0%".
+ * A non-numeric value is shown verbatim rather than as NaN.
+ */
+function formatValue(raw, format, decimals, locale = undefined) {
+  if (raw == null) return '—'
+  const num = Number(raw)
+  if (Number.isNaN(num)) return String(raw)
+  const d = Number.isInteger(decimals) && decimals >= 0 ? decimals : null
+
+  switch (format) {
+    case 'integer':
+      return num.toLocaleString(locale, { maximumFractionDigits: d ?? 0 })
+    case 'plain':
+      return num.toLocaleString(locale, { maximumFractionDigits: d ?? 0, useGrouping: false })
+    case 'percent':
+      return `${(num * 100).toFixed(d ?? 1)}%`
+    case 'percent100':
+      // value is already on a 0-100 scale (common for migrated legacy queries)
+      return `${num.toFixed(d ?? 1)}%`
+    case 'currency':
+      return `${num.toLocaleString(locale, { minimumFractionDigits: d ?? 2, maximumFractionDigits: d ?? 2 })}`
+    // Plain grouped digits with no K/M abbreviation — the legacy default for a
+    // KPI card, and the right choice whenever the exact figure matters.
+    case 'comma':
+      return num.toLocaleString(locale, {
+        minimumFractionDigits: d ?? 0, maximumFractionDigits: d ?? 0,
+      })
+    default:
+      // 'number' or unset — smart compact formatting
+      if (Math.abs(num) >= 1_000_000) return `${(num / 1_000_000).toFixed(d ?? 1)}M`
+      if (Math.abs(num) >= 1_000) return `${(num / 1_000).toFixed(d ?? 1)}K`
+      return num.toLocaleString(undefined, { maximumFractionDigits: d ?? 2 })
+  }
+}
+
+/**
+ * Compute a delta descriptor from a headline and a baseline value.
+ * Returns null when either value is missing/non-numeric.
+ *
+ * @param {*} value
+ * @param {*} baseline
+ * @param {'percent'|'absolute'} deltaFormat
+ * @returns {{ text: string, direction: 'up'|'down'|'flat' } | null}
+ */
+function computeDelta(value, baseline, deltaFormat) {
+  if (value == null || baseline == null) return null
+  const v = Number(value)
+  const b = Number(baseline)
+  if (Number.isNaN(v) || Number.isNaN(b)) return null
+
+  const diff = v - b
+  const direction = diff > 0 ? 'up' : diff < 0 ? 'down' : 'flat'
+  const arrow = direction === 'up' ? '▲' : direction === 'down' ? '▼' : '→'
+
+  let text
+  if (deltaFormat === 'absolute') {
+    const abs = Math.abs(diff)
+    const compact = abs >= 1_000_000 ? `${(abs / 1_000_000).toFixed(1)}M`
+      : abs >= 1_000 ? `${(abs / 1_000).toFixed(1)}K`
+      : abs.toLocaleString(undefined, { maximumFractionDigits: 2 })
+    text = `${arrow} ${compact}`
+  } else {
+    // percent (default)
+    const pct = b === 0 ? (diff === 0 ? 0 : Infinity) : (diff / Math.abs(b)) * 100
+    const pctText = Number.isFinite(pct) ? `${Math.abs(pct).toFixed(1)}%` : '—'
+    text = `${arrow} ${pctText}`
+  }
+  return { text, direction }
+}
+
+const DELTA_COLORS = { up: '#10b981', down: '#ef4444', flat: '#9ca3af' }
+
+/** The direction marker for props.deltaStyle 'triangle'. */
+function TrendTriangle({ direction, color }) {
+  if (direction === 'flat') {
+    return <span aria-hidden="true" style={{ display: 'block', width: 28, height: 4, background: color, margin: '10px 0' }} />
+  }
+  return (
+    <svg aria-hidden="true" width="50" height="25" viewBox="0 0 50 25" style={{ display: 'block' }}>
+      <polygon points={direction === 'up' ? '25,0 50,25 0,25' : '0,0 50,0 25,25'} fill={color} />
+    </svg>
+  )
+}
+
+/**
+ * Build a minimal axis-less sparkline ECharts option from a numeric array.
+ *
+ * @param {number[]} values
+ * @param {{type?: 'line'|'bar', color?: string, filled?: boolean, smooth?: boolean}} [opts]
+ */
+function sparkOption(values, opts: {
+  type?: string, color?: string, filled?: boolean, smooth?: boolean,
+} = {}) {
+  const color = opts.color || '#6366f1'
+  const asBar = opts.type === 'bar'
+  const base = {
+    backgroundColor: 'transparent',
+    animation: false,
+    grid: { top: 2, right: 2, bottom: 2, left: 2 },
+    xAxis: { type: 'category', show: false, boundaryGap: asBar,
+      data: values.map((_, i) => i) },
+    yAxis: { type: 'value', show: false, scale: !asBar },
+    tooltip: { show: false },
+  }
+  if (asBar) {
+    return {
+      ...base,
+      series: [{ type: 'bar', data: values, itemStyle: { color, borderRadius: 1 } }],
+    }
+  }
+  return {
+    ...base,
+    series: [{
+      type: 'line',
+      data: values,
+      smooth: opts.smooth !== false,
+      symbol: 'none',
+      lineStyle: { width: 1.5, color },
+      // A filled sparkline reads as a trend, an unfilled one as a series —
+      // both are wanted, so the fill is opt-out rather than baked in.
+      areaStyle: opts.filled === false ? undefined : { color, opacity: 0.15 },
+    }],
+  }
+}
+
+/**
+ * @param {{ widget: object, providerTable?: import('apache-arrow').Table | null }} props
+ *
+ * providerTable — when supplied by SpecRenderer (BET-3 DataProvider path) the
+ * widget skips its own query_id / metric fetch and renders from this table.
+ * When absent the legacy query_id / metric path is used unchanged.
+ */
+export default function KpiWidget({ widget, providerTable = null }) {
+  const { query_id, encoding = {}, props: wProps = {}, params: widgetParams, filters: widgetFilters, metric } = widget
+  const valueCol = encoding.value || encoding.y || encoding.x || ''
+  const compareCol = encoding.compare || ''
+  const sparkCol = encoding.spark || ''
+  const label = wProps.label || (valueCol ? valueCol.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'KPI')
+  const format = wProps.format || 'number'
+  const deltaFormat = wProps.deltaFormat || 'percent'
+  // 'top' renders the label as a small uppercase eyebrow above the value
+  // (stat-tile style); default 'bottom' keeps the historical value-first layout.
+  const labelOnTop = wProps.labelPosition === 'top'
+  // Signal rules for threshold coloring: widget.signalRules or widget.props.signalRules.
+  const signalRules = widget.signalRules ?? wProps.signalRules ?? null
+
+  const { theme } = useTheme()
+
+  // Resolve widget params against the variable store. Re-renders (and re-queries)
+  // whenever any referenced variable changes. Widgets with no params get {}.
+  const resolvedParams = useResolvedParams(widgetParams)
+  const resolvedFilters = useResolvedFilters(widgetFilters)
+
+  // Board-level refresh epoch for auto-refresh polling.
+  const refreshEpoch = useRefreshEpoch()
+
+  const [value, setValue] = useState(null)
+  const [compareValue, setCompareValue] = useState(null)
+  const [sparkValues, setSparkValues] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+  // Bumped by the error state's Retry button to re-run the fetch effect.
+  const [retryEpoch, setRetryEpoch] = useState(0)
+
+  /**
+   * Extract KPI values from an Arrow table (shared by both provider and legacy paths).
+   */
+  function extractFromTable(table) {
+    if (table && table.numRows > 0 && valueCol) {
+      const col = table.getChild(valueCol)
+      setValue(col ? col.get(0) : null)
+    } else if (table && table.numRows > 0) {
+      setValue(table.numRows)
+    } else {
+      // No rows: never leave the previous filter's number on screen.
+      setValue(null)
+    }
+    if (table && table.numRows > 0 && compareCol) {
+      const cmp = table.getChild(compareCol)
+      setCompareValue(cmp ? cmp.get(0) : null)
+    } else {
+      setCompareValue(null)
+    }
+    if (table && table.numRows > 0 && sparkCol) {
+      const sp = table.getChild(sparkCol)
+      if (sp) {
+        const arr = sp.toArray()
+        const nums = new Array(arr.length)
+        for (let i = 0; i < arr.length; i++) {
+          const v = arr[i]
+          nums[i] = v == null ? 0 : Number(v)
+        }
+        setSparkValues(nums)
+      } else {
+        setSparkValues(null)
+      }
+    } else {
+      setSparkValues(null)
+    }
+  }
+
+  // BET-3: when a providerTable is supplied, use it directly — skip the
+  // query_id / metric fetch entirely.
+  useEffect(() => {
+    if (providerTable !== null) {
+      extractFromTable(providerTable)
+      setLoading(false)
+      setError(null)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providerTable, valueCol, compareCol, sparkCol])
+
+  useEffect(() => {
+    // Skip own fetch when this widget is bound to a DataProvider.
+    if (providerTable !== null) return
+    // A widget binds to either a governed `metric` or a registered `query_id`.
+    if (!metric && !query_id) return
+    let cancelled = false
+
+    async function fetchData() {
+      setLoading(true)
+      setError(null)
+      try {
+        // Governed metric path: server-side compile + RLS injection.
+        // Otherwise the existing query_id path is used EXACTLY as before
+        // (resolved params threaded as { namedParams }; empty {} is a no-op).
+        const hasParams = Object.keys(resolvedParams).length > 0
+        const hasFilters = resolvedFilters.length > 0
+        const { table, error: queryError } = metric
+          ? await runMetricQuery(metric)
+          : await runArrowQueryById(
+              query_id,
+              (hasParams || hasFilters)
+                ? { namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined }
+                : undefined,
+            )
+        if (cancelled) return
+        // Failed query → the real reason, not a headline number we invented.
+        if (queryError) {
+          setError(queryError.message)
+        } else {
+          extractFromTable(table)
+        }
+      } catch (err) {
+        if (!cancelled) setError(err.message ?? 'Query failed.')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    fetchData()
+    return () => { cancelled = true }
+  // resolvedParams is a new object each render when vars change; JSON.stringify gives
+  // a stable dependency so the effect only re-fires when the actual values differ.
+  // refreshEpoch increments on board auto-refresh ticks.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query_id, JSON.stringify(metric), valueCol, compareCol, sparkCol, JSON.stringify(resolvedParams), JSON.stringify(resolvedFilters), refreshEpoch, providerTable, retryEpoch])
+
+  const triangle = wProps.deltaStyle === 'triangle'
+  const delta = useMemo(
+    () => (compareCol && !triangle ? computeDelta(value, compareValue, deltaFormat) : null),
+    [value, compareValue, compareCol, deltaFormat, triangle],
+  )
+  const trend = useMemo(
+    () => (compareCol && triangle ? computeTrend(value, compareValue, wProps.deltaDecimals ?? 2) : null),
+    [value, compareValue, compareCol, triangle, wProps.deltaDecimals],
+  )
+
+  const spark = useMemo(
+    () => (sparkValues && sparkValues.length > 1
+      ? sparkOption(sparkValues, {
+          type: wProps.sparkType,
+          // Default the sparkline to the card's accent so a themed KPI tile
+          // doesn't grow an unrelated indigo trend line.
+          color: wProps.sparkColor || wProps.accentColor,
+          filled: wProps.sparkFilled,
+          smooth: wProps.sparkSmooth,
+        })
+      : null),
+    [sparkValues, wProps.sparkType, wProps.sparkColor, wProps.accentColor, wProps.sparkFilled, wProps.sparkSmooth],
+  )
+
+  // Evaluate signal rules against the headline value for threshold coloring.
+  const signal = useMemo(
+    () => applySignal(value, signalRules),
+    [value, signalRules],
+  )
+
+  // Number vs progress colouring (decoupled so a headline can stay neutral/ink
+  // while the progress bar carries a separate accent):
+  //   - the headline NUMBER follows the card's own text colour (widget.style.color),
+  //     falling back to props.accentColor when no text colour is set;
+  //   - the PROGRESS pips prefer an explicit props.accentColor, falling back to
+  //     the card text colour, then the default indigo.
+  // A matched signal (threshold colouring) overrides both. When style.color +
+  // accentColor are the same (the common case) both stay in sync — backward
+  // compatible with tiles that set one colour for the whole card.
+  // On a tile with an explicit background, an author colour that fails a 3:1
+  // contrast check is swapped for readable ink. Boards migrated from other
+  // tools often carry ONE text colour stamped across every tile (a converter
+  // default), which lands unreadable on the darker ones; a legible colour is
+  // always kept as-is. See src/lib/contrast.js.
+  // The card's ACTUAL rendered background (SpecRenderer applies the same
+  // adaptation to the wrapper div's style) — not the raw authored value —
+  // so contrast decisions below match what's really on screen. A widget
+  // pinned via style.themeAdapt:false skips adaptation, matching the wrapper.
+  const rawTileBg = typeof widget.style?.background === 'string' ? widget.style.background : undefined
+  const tileBg = useMemo(() => {
+    if (widget.style?.themeAdapt === false) return rawTileBg
+    return adaptBackgroundColor(rawTileBg, theme).hex ?? rawTileBg
+  }, [rawTileBg, theme, widget.style?.themeAdapt])
+  // Per-role text colours (title / body / muted). The KPI's number is body and
+  // its caption is muted, so a card can now colour the two independently —
+  // previously the caption was derived from the tile and could not be set.
+  const textColors = useMemo(
+    () => resolveTextColors(widget.style, { background: tileBg }),
+    [widget.style, tileBg],
+  )
+  const valueColor = signal.matched
+    ? signal.color
+    : (textColors.body ?? ensureReadable(wProps.accentColor, tileBg))
+  const progressColor = signal.matched ? signal.color : (wProps.accentColor ?? widget.style?.color ?? '#6366f1')
+
+  // Optional Phosphor icon badge (props.icon = a key from kpiIcons.jsx). The
+  // badge tint follows the same accent chain as the progress bar, and a matched
+  // signal recolors it too so it stays consistent with the headline. Rendered
+  // in a translucent chip (color-mix keeps it readable on any card style,
+  // including the frosted Glass preset) above the value/eyebrow.
+  const IconCmp = findKpiIcon(wProps.icon)
+  const iconTint = signal.matched ? signal.color
+    : (wProps.accentColor ?? (typeof widget.style?.color === 'string' ? widget.style.color : null) ?? '#6366f1')
+
+  // A tile with an EXPLICIT background can't rely on the theme's muted label
+  // colour: dark-theme muted (light grey) disappears on a pastel tile, and
+  // light-theme muted on a dark one. Derive it from the tile instead; tiles
+  // without a baked background keep the theme default.
+  // style.mutedColor wins; otherwise a softened style.color; otherwise ink
+  // derived from the tile (the historical behaviour for tiles with a baked
+  // background). resolveTextColors owns that whole chain.
+  const labelColor = textColors.muted
+
+  // Optional segmented "pip" progress bar: props.progress = { segments, target }.
+  // Fraction filled = value / target, clamped to [0, segments]. `target`
+  // should share the headline value's scale (e.g. target: 100 for a 0-100
+  // percent value, target: 1 for a 0-1 fraction).
+  const progress = useMemo(() => {
+    const p = wProps.progress
+    if (!p || value == null) return null
+    const num = Number(value)
+    if (Number.isNaN(num)) return null
+    const segments = p.segments || 10
+    const target = p.target ?? 100
+    const ratio = target > 0 ? Math.max(0, Math.min(1, num / target)) : 0
+    return { segments, filled: Math.round(ratio * segments), ratio, style: p.style === 'bar' ? 'bar' : 'segments' }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, JSON.stringify(wProps.progress)])
+
+  // A failed query replaces the headline number — a KPI showing a fabricated
+  // figure is the single most misleading thing this app could render.
+  if (error) {
+    return (
+      <WidgetError
+        message={error}
+        queryId={query_id}
+        kind="kpi"
+        onRetry={() => setRetryEpoch(e => e + 1)}
+        compact
+      />
+    )
+  }
+
+  const valueText = `${wProps.prefix ?? ''}${formatValue(value, format, wProps.decimals, wProps.locale)}${wProps.suffix ?? ''}`
+
+  if (triangle && !loading) {
+    const trendColor = trend && ({
+      up: wProps.deltaUpColor ?? DELTA_COLORS.up,
+      down: wProps.deltaDownColor ?? DELTA_COLORS.down,
+      flat: DELTA_COLORS.flat,
+    })[trend.direction]
+    return (
+      <div className="flex flex-col h-full px-5 py-3 min-w-0">
+        <p className="text-sm font-bold leading-snug" style={{ color: labelColor ?? undefined, fontSize: wProps.labelSize }}>
+          {label}
+        </p>
+        <div className="flex-1 flex items-center justify-between gap-3 min-h-0 min-w-0">
+          <div className="flex-1 min-w-0" style={{ containerType: 'inline-size' }}>
+            <p
+              data-kpi-value
+              className="font-bold leading-none whitespace-nowrap"
+              style={{ color: valueColor ?? undefined, fontSize: fitValueFontSize(valueText, wProps.valueSize ?? 28) }}
+            >
+              {valueText}
+            </p>
+          </div>
+          {trend && (
+            <div className="flex flex-col items-center gap-2 shrink-0" aria-label={`Change: ${trend.text}`}>
+              <TrendTriangle direction={trend.direction} color={trendColor} />
+              <span className="text-sm font-bold tabular-nums" style={labelColor ? { color: labelColor } : undefined}>
+                {trend.text}
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col justify-center h-full px-5 py-4 gap-1">
+      {loading ? (
+        <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading KPI">
+          <Skeleton className="h-9 w-28" />
+          <Skeleton className="h-3.5 w-20" />
+        </div>
+      ) : (
+        <>
+          {IconCmp && (
+            <div
+              className="mb-2.5 inline-flex items-center justify-center rounded-xl shrink-0"
+              style={{
+                width: 38,
+                height: 38,
+                color: iconTint,
+                background: `color-mix(in srgb, ${iconTint} 15%, transparent)`,
+                boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${iconTint} 22%, transparent)`,
+              }}
+              aria-hidden="true"
+            >
+              <IconCmp size={21} weight="duotone" />
+            </div>
+          )}
+          {labelOnTop && (
+            <p
+              className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted leading-snug"
+              style={labelColor ? { color: labelColor } : undefined}
+            >
+              {label}
+            </p>
+          )}
+          <div className="flex items-baseline gap-2 flex-wrap" style={{ containerType: 'inline-size' }}>
+            <p
+              data-kpi-value
+              className="font-bold font-display leading-none tracking-tight whitespace-nowrap"
+              style={{ color: valueColor ?? undefined, fontSize: fitValueFontSize(valueText, 30) }}
+            >
+              {valueText}
+            </p>
+            {signal.matched && signal.label && (
+              <Badge
+                variant={
+                  signal.color === DELTA_COLORS.up ? 'success'
+                  : signal.color === DELTA_COLORS.down ? 'danger'
+                  : 'warning'
+                }
+                size="sm"
+              >
+                {signal.label}
+              </Badge>
+            )}
+            {delta && (
+              <span
+                className={`text-sm font-semibold tabular-nums${wProps.deltaBackground ? ' rounded px-1.5 py-0.5' : ''}`}
+                style={{ color: wProps.deltaColor ?? DELTA_COLORS[delta.direction], background: wProps.deltaBackground }}
+                aria-label={`Change: ${delta.text}`}
+              >
+                {delta.text}
+              </span>
+            )}
+          </div>
+          {!labelOnTop && (
+            <p
+              className="mt-1 text-sm font-medium text-muted leading-snug"
+              style={labelColor ? { color: labelColor } : undefined}
+            >
+              {label}
+            </p>
+          )}
+          {progress && progress.style === 'bar' && (
+            <div
+              className="mt-2.5 h-1 w-full rounded-full overflow-hidden"
+              style={{ backgroundColor: 'rgba(148,163,184,0.25)' }}
+              aria-hidden="true"
+            >
+              <div
+                className="h-full rounded-full"
+                style={{ width: `${progress.ratio * 100}%`, backgroundColor: progressColor }}
+              />
+            </div>
+          )}
+          {progress && progress.style === 'segments' && (
+            <div className="flex gap-1 mt-2" aria-hidden="true">
+              {Array.from({ length: progress.segments }).map((_, i) => (
+                <span
+                  key={i}
+                  className="h-1.5 flex-1 rounded-sm"
+                  style={{
+                    backgroundColor: i < progress.filled
+                      ? progressColor
+                      : 'rgba(148,163,184,0.25)',
+                  }}
+                />
+              ))}
+            </div>
+          )}
+          {spark && (
+            <div className="mt-2 -mx-1">
+              <EChart option={spark} height={36} />
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}

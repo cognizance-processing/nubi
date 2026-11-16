@@ -12,12 +12,17 @@ Two variants mirror the two org-resolution patterns in the codebase (see
 - ``require_writer``         — header-aware (``X-Org-Id``), like ``resolve_org_id``.
                                Use on resources / projects / datasets / preagg /
                                export-share / portability / git routes.
-- ``require_writer_default`` — default first-org, like ``get_user_org``.
-                               Use on flows / secrets / connectors / bridges /
-                               jobs routes (which ignore ``X-Org-Id``).
+- ``require_writer_default`` — default first-org, like ``get_user_org``. Only
+                               for a route that genuinely resolves its own org
+                               with ``get_user_org``; almost nothing should.
 
-Both resolve the org the SAME way the route does, so the role checked is always
-the role for the org the route actually operates on (never a different org).
+**Pair the guard with the route's own org resolution.** The role checked must be
+the role in the org the route actually writes to. A route that resolves with
+``resolve_org_id`` but guards with a ``*_default`` variant checks the role in the
+caller's DEFAULT org and then acts on the HEADER org — so a writer in workspace A
+who is only a viewer in workspace B passes the guard and writes to B. That
+mismatch was live across ai / bridges / data_browser / flows / access_grants
+until 2026-08-26; if you add a route, pick the guard that matches your resolver.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ from typing import Any
 from fastapi import Depends, Request
 
 from app import db
-from app.auth.deps import current_user
+from app.auth.deps import current_user, verified_identity
 from app.auth.jwt import decode_access_token
 from app.auth.scopes import parse_scopes
 from app.errors import AppError
@@ -68,12 +73,69 @@ async def get_org_role(user_id: str, org_id: str, repo: Repo) -> str | None:
 
 
 def _forbid_viewer(role: str | None) -> None:
-    if role == "viewer":
+    """Writers only: a viewer — or someone with no membership at all — is refused."""
+    if role is None or role == "viewer":
         raise AppError(
             "forbidden",
             "Viewers have read-only access and cannot perform this action.",
             403,
         )
+
+
+def is_writer_role(role: str | None) -> bool:
+    """True for a member of the org with more than read-only access."""
+    return role is not None and role != "viewer"
+
+
+def read_only_scopes(scopes: list[str]) -> list[str]:
+    """*scopes* with every write-capable entry removed (keeps ``read:`` only)."""
+    return [
+        s
+        for s in scopes
+        if s != "*" and s != "admin" and not s.startswith(("edit:", "write:", "author:", "admin:"))
+    ]
+
+
+async def tool_claims(identity: Any, org_id: str | None, repo: Repo) -> dict[str, Any]:
+    """Claims for tools run on a caller's behalf (MCP, AI agents).
+
+    Carries the caller's ACTUAL role in *org_id* and their token's scope —
+    never a fixed, elevated scope list.  A first-party session carries full
+    scopes whatever the member's role (the role is per-org and unknown when
+    the token is minted), so for a viewer or a non-member the write-capable
+    scopes are dropped here.
+    """
+    user_id = str(identity.user_id)
+    role = await get_org_role(user_id, org_id, repo) if org_id else None
+    scope = list(identity.scope or [])
+    if not is_writer_role(role):
+        scope = read_only_scopes(scope)
+    return {
+        "kind": identity.kind,
+        "sub": user_id,
+        "org": org_id,
+        "role": role,
+        "policies": dict(identity.policies or {}),
+        "scope": scope,
+    }
+
+
+def require_tool_writer(claims: dict[str, Any]) -> None:
+    """Raise 403 unless *claims* describe a first-party writer with a
+    write-capable scope.  Fails closed when the role is absent."""
+    if claims.get("kind", "access") != "access":
+        raise AppError(
+            "insufficient_scope",
+            "This credential cannot make changes or run ad-hoc SQL.",
+            403,
+        )
+    if not is_writer_role(claims.get("role")):
+        raise AppError(
+            "forbidden",
+            "You do not have permission to make changes or run ad-hoc SQL in this workspace.",
+            403,
+        )
+    _require_write_scope(list(claims.get("scope") or []))
 
 
 def _require_write_scope(scopes: list[str]) -> None:
@@ -156,6 +218,25 @@ def _require_approver_role(role: str | None) -> None:
         )
 
 
+async def require_approver(
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> None:
+    """Header-aware approver guard (mirrors ``resolve_org_id``).
+
+    The counterpart to ``require_writer`` for owner/admin-only routes. A route
+    that resolves its org with ``resolve_org_id`` MUST use this, not
+    ``require_approver_default``: checking the role in the caller's default org
+    while acting on the header org lets an owner of workspace A perform an
+    approver action in workspace B where they are only a member.
+    """
+    _require_write_scope_from_request(request)
+    user_id = str(user["id"])
+    org_id = await resolve_org_id(user_id, repo, request)
+    _require_approver_role(await get_org_role(user_id, org_id, repo))
+
+
 async def require_approver_default(
     request: Request,
     user: dict[str, Any] = Depends(current_user),
@@ -171,3 +252,48 @@ async def require_approver_default(
     user_id = str(user["id"])
     org_id = await get_user_org(user_id, repo)
     _require_approver_role(await get_org_role(user_id, org_id, repo))
+
+
+def _raw_data_identity(identity: Any) -> None:
+    """Checks every raw-table read shares, whatever the data source."""
+    if identity.kind != "access":
+        raise AppError(
+            "insufficient_scope", "This credential cannot browse raw tables.", 403
+        )
+    if not any(sc == "*" or sc.startswith("read:") for sc in (identity.scope or [])):
+        raise AppError(
+            "insufficient_scope", "Token does not carry a read scope.", 403
+        )
+    if identity.policies:
+        # Raw table reads are not rewritten with row-level predicates, so a
+        # credential restricted by row policies never gets them.
+        raise AppError(
+            "forbidden",
+            "This credential is restricted by row-level policies and cannot browse raw tables.",
+            403,
+        )
+
+
+async def require_raw_data_read(
+    identity: Any = Depends(verified_identity),
+) -> None:
+    """Guard for the shared demo tables: a first-party, unrestricted reader."""
+    _raw_data_identity(identity)
+
+
+async def require_raw_data_author(
+    request: Request,
+    identity: Any = Depends(verified_identity),
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> None:
+    """Guard for browsing an organisation's own data sources.
+
+    Reading raw tables is an authoring capability — the same bar as running
+    ad-hoc SQL — so it needs write access in the workspace, on top of the
+    identity checks above.
+    """
+    _raw_data_identity(identity)
+    user_id = str(user["id"])
+    org_id = await resolve_org_id(user_id, repo, request)
+    _forbid_viewer(await get_org_role(user_id, org_id, repo))

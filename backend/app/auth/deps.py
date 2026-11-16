@@ -25,6 +25,7 @@ verified_identity
 
 from __future__ import annotations
 
+import contextvars
 from typing import Any
 
 from fastapi import Depends, Request
@@ -41,7 +42,66 @@ from app.errors import AppError
 _bearer = HTTPBearer(auto_error=False)
 
 
+# ── Opaque bearer credentials ────────────────────────────────────────────────
+# Two credentials are opaque strings rather than JWTs: API keys (``nubi_ak_``)
+# and OAuth access tokens issued to remote MCP clients (``nubi_oat_``). Both
+# resolve to the same ``{user_id, org_id}`` binding, and from there the request
+# is handled identically — org pin, role checks, RLS — so an AI app connected
+# through OAuth can do exactly what the same user could with an API key.
+#
+# The one difference is audience. An OAuth token was issued for the MCP
+# endpoint (RFC 8707 resource), so it is only accepted there, or on a REST call
+# that endpoint's ``api_request`` tool makes in-process (which applies its own
+# deny-list first). Anywhere else it is rejected — a token leaked out of a
+# chat app cannot be used to, say, mint a permanent API key.
+
+_MCP_PATH = "/api/v1/mcp"
+
+#: Set by the MCP ``api_request`` tool around its in-process REST dispatch.
+mcp_inprocess_call: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "mcp_inprocess_call", default=False
+)
+
+
+async def _resolve_opaque_credential(
+    raw: str, request: Request | None
+) -> dict[str, Any] | None | bool:
+    """Resolve an opaque bearer credential.
+
+    Returns ``False`` when *raw* is not an opaque credential (decode it as a
+    JWT), ``None`` when it is one but is invalid here, else the binding row
+    ``{user_id, org_id}``.
+    """
+    from app.auth.api_keys import get_api_key_store, looks_like_api_key  # noqa: PLC0415
+    from app.auth.oauth import get_oauth_store, looks_like_oauth_access_token  # noqa: PLC0415
+
+    if looks_like_api_key(raw):
+        return await _still_a_member(await get_api_key_store().resolve(raw))
+    if looks_like_oauth_access_token(raw):
+        path = request.url.path.rstrip("/") if request is not None else ""
+        if path != _MCP_PATH and not mcp_inprocess_call.get():
+            return None
+        return await _still_a_member(await get_oauth_store().resolve_access(raw))
+    return False
+
+
+async def _still_a_member(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    """An org-pinned credential is valid only while its holder is still a
+    member of that org. Fails closed when membership cannot be confirmed."""
+    if not row:
+        return None
+    try:
+        from app.auth.roles import get_org_role  # noqa: PLC0415
+        from app.repos.provider import get_repo  # noqa: PLC0415
+
+        role = await get_org_role(str(row["user_id"]), str(row["org_id"]), get_repo())
+    except Exception:  # noqa: BLE001
+        return None
+    return row if role is not None else None
+
+
 async def current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> dict[str, Any]:
     """Dependency: resolve the bearer token to a verified user dict.
@@ -65,17 +125,15 @@ async def current_user(
     if credentials is None:
         raise AppError("unauthorized", "Authentication required.", 401)
 
-    # ── API-key bearer path (CLI / CI long-lived tokens) ────────────────────
-    # An opaque ``nubi_ak_…`` credential is NOT a JWT; resolve it against the
-    # api_keys store instead of decoding. A resolved key authenticates exactly
-    # like an access token but additionally PINS the request to the org the key
-    # was minted for (carried as ``_api_key_org_id`` so resolve_org_id/
-    # get_user_org honour it and reject any cross-org X-Org-Id).
-    from app.auth.api_keys import get_api_key_store, looks_like_api_key
-
+    # ── Opaque bearer path (API keys, OAuth access tokens) ──────────────────
+    # Not a JWT; resolve it against its store instead of decoding. A resolved
+    # credential authenticates exactly like an access token but additionally
+    # PINS the request to the org it was issued for (carried as
+    # ``_api_key_org_id`` so resolve_org_id/get_user_org honour it and reject
+    # any cross-org X-Org-Id).
     raw_credential: str = credentials.credentials
-    if looks_like_api_key(raw_credential):
-        key_row = await get_api_key_store().resolve(raw_credential)
+    key_row = await _resolve_opaque_credential(raw_credential, request)
+    if key_row is not False:
         if key_row is None:
             raise AppError("unauthorized", "Authentication required.", 401)
         user_row = await fetchrow(
@@ -90,7 +148,7 @@ async def current_user(
             raise AppError("unauthorized", "Authentication required.", 401)
         user = dict(user_row)
         user["_api_key_org_id"] = str(key_row["org_id"])
-        # Pin org resolution for the rest of this request to the key's org.
+        # Pin org resolution for the rest of this request to the credential's org.
         from app.routes._org import api_key_org_pin
 
         api_key_org_pin.set(str(key_row["org_id"]))
@@ -168,6 +226,24 @@ def _strip_host_mode_write_scopes(scopes: list[str]) -> list[str]:
     return safe
 
 
+def require_board_bound_route(identity: "VerifiedIdentity", method: str, path: str) -> None:
+    """Refuse (403) a board-bound embed token on any route outside the short
+    list that enforces the binding.  Unrestricted tokens are unaffected; a
+    malformed restriction is refused everywhere."""
+    from app.auth.verify import board_bound_route_allowed, embed_board_scope  # noqa: PLC0415
+
+    if identity.kind != "embed":
+        return
+    refused = AppError("forbidden", "This token is not valid for that request.", 403)
+    try:
+        if embed_board_scope(identity) is None:
+            return
+    except ValueError:
+        raise refused from None
+    if not board_bound_route_allowed(method, path):
+        raise refused
+
+
 async def _maybe_pin_host_mode_org(identity: "VerifiedIdentity") -> None:
     """Pin the request's org from a host-mode embed token's claim (async).
 
@@ -188,73 +264,84 @@ async def _maybe_pin_host_mode_org(identity: "VerifiedIdentity") -> None:
     - RLS policies come from the ``policies`` claim (already extracted into
       ``identity.policies``); the org claim only selects the tenant.
     """
-    from app.auth.issuers import get_issuer_registry  # noqa: PLC0415
+    from app.auth.verify import _registry_issuer_for, _resolve_embed_org  # noqa: PLC0415
     from app.routes._org import host_mode_org_pin  # noqa: PLC0415
 
     iss: str | None = identity.raw_claims.get("iss")
     if not iss:
         return  # no iss claim — non-host-mode embed token, skip
 
-    # 1. In-process registry (fast path)
-    registry = get_issuer_registry()
-    issuer_cfg = registry.get(iss)
+    # Find the SAME issuer configuration that verified the token:
+    # ``identity.org`` is already that configuration's owner (see verify.py).
+    host_mode = False
+    claim_name: str | None = None
+    owner_org: str | None = None
 
+    issuer_cfg = _registry_issuer_for(iss, identity.org)
     if issuer_cfg is not None:
-        if not issuer_cfg.host_mode:
-            return  # standard embed token — org_members membership required
-        claim_name = issuer_cfg.org_claim or "org"
-        org_val = identity.raw_claims.get(claim_name)
-        # SECURITY: org claim must be a plain string — reject arrays, objects,
-        # numbers, and booleans.  A non-string claim that stringifies to a
-        # non-empty value (e.g. ["tenant_a"]) would otherwise bypass the empty
-        # check and pin a garbage org_id like "['tenant_a']".
-        if not isinstance(org_val, str) or not org_val.strip():
-            raise AppError(
-                "forbidden",
-                "Host-mode token is missing the required org claim.",
-                403,
-            )
-        host_mode_org_pin.set(org_val.strip())
-        # SECURITY (Residual 1 fix): strip write/admin/author:sql scopes so
-        # the host-mode token is unconditionally limited to read-only access.
-        # Only the host-mode code path reaches this line; non-host-mode tokens
-        # are never passed through _strip_host_mode_write_scopes.
-        if identity.scope is not None:
-            identity.scope = _strip_host_mode_write_scopes(list(identity.scope))
+        host_mode = bool(issuer_cfg.host_mode)
+        claim_name = issuer_cfg.org_claim
+        owner_org = issuer_cfg.org_id
+    else:
+        if not identity.org:
+            return
+        try:
+            from app.security.issuers_store import get_issuers_store  # noqa: PLC0415
+
+            db_row = await get_issuers_store().get_enabled_by_iss(identity.org, iss)
+        except Exception:  # noqa: BLE001
+            db_row = None
+        if db_row is None:
+            return  # issuer not found or not enabled; skip
+        host_mode = bool(db_row.get("host_mode", False))
+        claim_name = db_row.get("org_claim")
+        owner_org = str(db_row["org_id"]) if db_row.get("org_id") else None
+
+    if not host_mode:
+        # Standard embed token — org_members membership required, and only a
+        # membership of the issuer's own org counts.
+        if owner_org is not None:
+            from app.routes._org import embed_issuer_org  # noqa: PLC0415
+
+            embed_issuer_org.set(owner_org)
         return
 
-    # 2. DB fallback — check the issuers store
-    org_hint: str | None = identity.raw_claims.get("org")
-    if not org_hint:
-        return  # no org hint to scope the query; skip (non-host-mode)
-
-    try:
-        from app.security.issuers_store import get_issuers_store  # noqa: PLC0415
-
-        db_row = await get_issuers_store().get_enabled_by_iss(org_hint, iss)
-    except Exception:  # noqa: BLE001
-        db_row = None
-
-    if db_row is None:
-        return  # issuer not found or not enabled; skip
-
-    if not db_row.get("host_mode", False):
-        return  # issuer found but not host_mode
-
-    claim_name = db_row.get("org_claim") or "org"
-    org_val = identity.raw_claims.get(claim_name)
-    # SECURITY: org claim must be a plain string (same type guard as the
-    # in-process registry path above).
+    org_val = identity.raw_claims.get(claim_name or "org")
+    # SECURITY: org claim must be a plain string — reject arrays, objects,
+    # numbers, and booleans.  A non-string claim that stringifies to a
+    # non-empty value (e.g. ["tenant_a"]) would otherwise bypass the empty
+    # check and pin a garbage org_id like "['tenant_a']".
     if not isinstance(org_val, str) or not org_val.strip():
         raise AppError(
             "forbidden",
             "Host-mode token is missing the required org claim.",
             403,
         )
-    host_mode_org_pin.set(org_val.strip())
-    # SECURITY (Residual 1 fix): strip write/admin/author:sql scopes (DB path).
+
+    if owner_org is not None:
+        # SECURITY: an org-owned issuer pins its OWN org. The claim must agree
+        # with it (as an id or the org's external key); it can never select a
+        # different organisation.
+        if await _resolve_embed_org(org_val.strip()) != owner_org:
+            raise AppError("invalid_token", "Token is invalid or has expired.", 401)
+        pinned = owner_org
+    else:
+        # Operator-registered issuer: trusted to name the tenant.
+        pinned = org_val.strip()
+
+    host_mode_org_pin.set(pinned)
+    # SECURITY: strip write/admin/author:sql scopes so a host-mode token is
+    # unconditionally read-only, whatever the external issuer embedded.
     if identity.scope is not None:
         identity.scope = _strip_host_mode_write_scopes(list(identity.scope))
+
+
+def embed_revocation_key(org_id: str | None, iss: str | None, jti: str) -> str:
+    """Denylist key for one embed token (its ``jti`` within its org's issuer)."""
+    import hashlib  # noqa: PLC0415
+
+    raw = f"{org_id or ''}\x1f{iss or ''}\x1f{jti}".encode("utf-8")
+    return "embed:" + hashlib.sha256(raw).hexdigest()
 
 
 async def verified_identity(
@@ -297,6 +384,36 @@ async def verified_identity(
     if credentials is None:
         raise AppError("unauthorized", "Authentication required.", 401)
 
+    # ── Opaque bearer path (API keys, OAuth access tokens) ──────────────────
+    # Not a JWT — verify_token_async would reject it at the JOSE-header-parse
+    # step. Resolve it the same way ``current_user`` does above and synthesize
+    # a VerifiedIdentity equivalent to a normal first-party login session
+    # (kind="access", default scopes, no RLS policy claim — same as a token
+    # minted by /auth/login with no explicit policies).
+    raw_credential: str = credentials.credentials
+    key_row = await _resolve_opaque_credential(raw_credential, request)
+    if key_row is not False:
+        if key_row is None:
+            raise AppError("unauthorized", "Authentication required.", 401)
+
+        from app.auth.verify import _FIRST_PARTY_SCOPES  # noqa: PLC0415
+        from app.routes._org import api_key_org_pin  # noqa: PLC0415
+
+        org_id = str(key_row["org_id"])
+        api_key_org_pin.set(org_id)
+        return VerifiedIdentity(
+            kind="access",
+            user_id=str(key_row["user_id"]),
+            org=org_id,
+            project=None,
+            roles=[],
+            policies={},
+            scope=list(_FIRST_PARTY_SCOPES),
+            embed_origin=None,
+            datastore=None,
+            raw_claims={},
+        )
+
     # Pass the request Origin header so verify_token can enforce embed_origin
     # pinning without any additional logic here.
     expected_origin: str | None = request.headers.get("origin")
@@ -307,13 +424,18 @@ async def verified_identity(
     # org-resolution helpers (get_user_org / resolve_org_id) never consult
     # org_members for this request.
     if identity.kind == "embed":
+        require_board_bound_route(identity, request.method, request.url.path)
         await _maybe_pin_host_mode_org(identity)
 
-    # Denylist check for first-party (HS256) access tokens only.
-    # Embed tokens are short-lived, audience-scoped and host-signed; they
-    # cannot be revoked via Nubi logout so we skip the check for them.
-    if identity.kind == "access":
+    # Denylist check.  First-party tokens are keyed by their ``jti``; an embed
+    # token's ``jti`` is only unique within its issuer, so it is keyed by
+    # (org, issuer, jti) — see ``embed_revocation_key``.
+    if identity.kind in ("access", "embed"):
         jti: str | None = identity.raw_claims.get("jti")
+        if jti and identity.kind == "embed":
+            jti = embed_revocation_key(
+                identity.org, identity.raw_claims.get("iss"), str(jti)
+            )
         if jti:
             try:
                 if await get_token_denylist().is_revoked(jti):

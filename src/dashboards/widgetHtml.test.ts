@@ -1,0 +1,114 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { backgroundToCss, styleToCss } from '../../src/dashboards/widgetHtml.js'
+
+test('backgroundToCss: transparent type → background:transparent', () => {
+  assert.deepEqual(backgroundToCss({ type: 'transparent' }), { background: 'transparent' })
+})
+
+test('backgroundToCss: existing types unchanged (regression)', () => {
+  assert.deepEqual(backgroundToCss({ type: 'solid', color: '#fff' }), { background: '#fff' })
+  assert.equal(backgroundToCss(undefined), undefined)
+  assert.equal(backgroundToCss({ type: 'none' }), undefined)
+})
+
+test('styleToCss: transparent background descriptor flows through', () => {
+  assert.deepEqual(
+    styleToCss({ background: { type: 'transparent' } }),
+    { background: 'transparent' },
+  )
+})
+
+test('styleToCss: string background still works (regression)', () => {
+  assert.deepEqual(styleToCss({ background: '#123456' }), { background: '#123456' })
+})
+
+// ---------------------------------------------------------------------------
+// Theme adaptation (ctx param) — see src/lib/themeColor.js for the policy.
+// ---------------------------------------------------------------------------
+
+test('styleToCss/backgroundToCss: omitting ctx is a byte-identical no-op', () => {
+  // The exact case that used to freeze white converter-default cards: with no
+  // ctx, a light-neutral background must render EXACTLY as before.
+  assert.deepEqual(styleToCss({ background: '#FFFFFF', color: '#000000' }), {
+    background: '#FFFFFF', color: '#000000',
+  })
+  assert.deepEqual(backgroundToCss({ type: 'solid', color: '#ffffff' }), { background: '#ffffff' })
+})
+
+test('styleToCss: with ctx, a light-neutral background becomes the surface token', () => {
+  const out = styleToCss({ background: '#FFFFFF', color: '#000000' }, { theme: 'dark' })
+  assert.equal(out.background, 'var(--surface)')
+  // Author's black text would be unreadable on the dark surface it now renders on.
+  assert.notEqual(out.color, '#000000')
+})
+
+test('styleToCss: with ctx, same-theme viewing is visually a no-op (resolves to the same hex)', () => {
+  const out = styleToCss({ background: '#ffffff', color: '#0e1729' }, { theme: 'light' })
+  assert.equal(out.background, 'var(--surface)') // == #ffffff in light mode
+  assert.equal(out.color, '#0e1729') // already readable, untouched
+})
+
+test('styleToCss: with ctx, a deliberately dark tile is left untouched', () => {
+  const out = styleToCss({ background: '#1a1a2e', color: '#ffffff' }, { theme: 'light' })
+  assert.equal(out.background, '#1a1a2e')
+  assert.equal(out.color, '#ffffff')
+})
+
+test('styleToCss: with ctx, a chromatic brand background is left untouched', () => {
+  const out = styleToCss({ background: '#7AC79B', color: '#000000' }, { theme: 'dark' })
+  assert.equal(out.background, '#7AC79B')
+})
+
+test('backgroundToCss: with ctx, solid light-neutral becomes the surface token', () => {
+  assert.deepEqual(
+    backgroundToCss({ type: 'solid', color: '#FAFAFA' }, { theme: 'dark' }),
+    { background: 'var(--surface)' },
+  )
+})
+
+test('styleToCss: typography is authorable, and unknown properties still are not', () => {
+  // A board needs a heading bigger than its body and a caption smaller. These
+  // were authorable for the Excel export long before they were authorable on
+  // screen, which had it backwards.
+  const out = styleToCss({
+    fontSize: '28px',
+    fontFamily: 'Georgia, serif',
+    fontWeight: 600,
+    letterSpacing: '-0.02em',
+    textAlign: 'center',
+    lineHeight: 1.3,
+    textTransform: 'uppercase',
+    fontStyle: 'italic',
+  })
+  assert.equal(out.fontSize, '28px')
+  assert.equal(out.fontFamily, 'Georgia, serif')
+  assert.equal(out.fontWeight, 600)
+  assert.equal(out.letterSpacing, '-0.02em')
+  assert.equal(out.textAlign, 'center')
+  assert.equal(out.lineHeight, 1.3)
+  assert.equal(out.textTransform, 'uppercase')
+  assert.equal(out.fontStyle, 'italic')
+
+  // The whitelist is still a whitelist.
+  const blocked = styleToCss({ fontSize: '20px', position: 'fixed', zIndex: 9999 })
+  assert.equal(blocked.fontSize, '20px')
+  assert.equal(blocked.position, undefined)
+  assert.equal(blocked.zIndex, undefined)
+})
+
+test('styleToCss: a background string and its solid descriptor render identically', () => {
+  // The editor can only author the descriptor form, but every WIDGET_STYLE_PRESET
+  // — and the API and MCP tools — write a plain CSS string. The Card background
+  // control coerces the string to `{type:'solid'}` so it is visible and editable;
+  // that coercion is only safe because both shapes land on the same declaration.
+  for (const color of ['var(--surface)', '#0b0f1a', 'color-mix(in srgb, var(--surface) 45%, transparent)']) {
+    for (const ctx of [undefined, { theme: 'light' as const }, { theme: 'dark' as const }]) {
+      assert.deepEqual(
+        styleToCss({ background: { type: 'solid', color } }, ctx),
+        styleToCss({ background: color }, ctx),
+        `string vs descriptor diverged for ${color} (${ctx?.theme ?? 'no ctx'})`,
+      )
+    }
+  }
+})

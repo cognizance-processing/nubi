@@ -169,7 +169,7 @@ async def test_row_cap_truncates_large_result(repo: InMemoryRepo) -> None:
 
         with mock.patch(
             "app.dashboards.collect._resolve_connector",
-            return_value=(_FakeConnector(), False),
+            return_value=(_FakeConnector(), False, lambda: None),
         ):
             cols, rows = await run_query_rows("q-big", _ORG, repo, {})
     finally:
@@ -206,7 +206,7 @@ async def test_row_cap_logs_warning_when_truncating(
 
         with mock.patch(
             "app.dashboards.collect._resolve_connector",
-            return_value=(_FakeConnector(), False),
+            return_value=(_FakeConnector(), False, lambda: None),
         ), caplog.at_level(logging.WARNING, logger="app.dashboards.collect"):
             cols, rows = await run_query_rows("q-warn", _ORG, repo, {})
     finally:
@@ -260,7 +260,7 @@ async def test_row_cap_limit_pushed_into_plan(repo: InMemoryRepo) -> None:
 
         with mock.patch(
             "app.dashboards.collect._resolve_connector",
-            return_value=(_CapturingConnector(), False),
+            return_value=(_CapturingConnector(), False, lambda: None),
         ):
             cols, rows = await run_query_rows("q-limit-push", _ORG, repo, {})
     finally:
@@ -311,7 +311,7 @@ async def test_row_cap_does_not_affect_small_results(repo: InMemoryRepo) -> None
 
         with mock.patch(
             "app.dashboards.collect._resolve_connector",
-            return_value=(_FakeConnector(), False),
+            return_value=(_FakeConnector(), False, lambda: None),
         ):
             cols, rows = await run_query_rows("q-small", _ORG, repo, {})
     finally:

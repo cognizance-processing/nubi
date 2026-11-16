@@ -251,10 +251,10 @@ class TestAgentThreadsModel:
         assert result["reply"]
 
     def test_generate_dashboard_spec_threads_model(self):
-        from app.ai.grounding import build_catalog  # noqa: PLC0415
+        from app.ai.grounding import ALL_ORGS, build_catalog  # noqa: PLC0415
 
         p = FakeProvider()
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         # FakeProvider returns "done with ..." which is not valid dashboard JSON,
         # so the repair loop runs to exhaustion and raises dashboard_generation_failed.
         # That is fine — we only need to prove complete() was reached with our model.
@@ -264,10 +264,10 @@ class TestAgentThreadsModel:
         assert all(c["model"] == "fake-alt" for c in p.calls)
 
     def test_generate_dashboard_spec_unknown_model_raises_not_allowed(self):
-        from app.ai.grounding import build_catalog  # noqa: PLC0415
+        from app.ai.grounding import ALL_ORGS, build_catalog  # noqa: PLC0415
 
         p = FakeProvider()
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         with pytest.raises(AppError) as exc:
             generate_dashboard_spec("a dashboard of orders", catalog, p, model="bad")
         assert exc.value.code == "model_not_allowed"
@@ -380,3 +380,40 @@ class TestAskRouteThreadsModel:
             json={"question": "show me orders", "model": "anything"},
         )
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# 6. /ai/chat "run query" tool must not be 403'd by its own claims (regression)
+# ---------------------------------------------------------------------------
+
+
+class TestChatRunQueryScope:
+    """Regression test for a HIGH finding: the AI chat "Run query" action
+    failed for every authenticated user because ``ai_chat`` hardcoded
+    ``claims["scope"]`` to ``["read:*", "write:*"]``, omitting ``author:sql``
+    — the scope the ``run_query`` tool requires for ad-hoc SQL (see
+    ``app/ai/tools.py``). The failure was invisible: ``_scripted_run_sequence``
+    catches the resulting ``insufficient_scope`` AppError and folds it into a
+    silent "0 rows" result.
+    """
+
+    @pytest.mark.asyncio
+    async def test_run_intent_actually_executes_the_query(self, ai_client, monkeypatch):
+        # Pin generate_sql's output so this test is only about the scope gate,
+        # not about the (separate, pre-existing) catalog/grounding SQL it
+        # produces for arbitrary questions.
+        monkeypatch.setattr(
+            "app.ai.sql.generate_sql",
+            lambda *a, **k: {"sql": "SELECT * FROM demo", "valid": True, "issues": []},
+        )
+        ac, user_id = ai_client
+        resp = await ac.post(
+            "/api/v1/ai/chat",
+            json={"messages": [{"role": "user", "content": "show me orders"}]},
+            headers=_auth_headers(user_id),
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        run_action = next(a for a in body["actions"] if a["tool"] == "run_query")
+        assert run_action["result"].get("row_count", 0) > 0, run_action
+        assert "error" not in run_action["result"]

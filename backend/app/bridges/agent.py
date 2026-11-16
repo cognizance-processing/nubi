@@ -180,6 +180,17 @@ class BridgeAgent:
 
     async def _open_tcp_stream(self, stream_id: int, host: str, port: int) -> None:
         """Dial host:port inside the VPC and register the stream."""
+        # The control plane asks; the agent's operator decides what it may reach.
+        if not target_allowed(host, port):
+            logger.warning(
+                "bridge %s stream %s: refused target %s:%s (not allowed by this agent)",
+                self.bridge_id, stream_id, host, port,
+            )
+            err_frame = encode_frame(
+                FrameType.ERROR, stream_id, b"target not allowed by this bridge agent"
+            )
+            await self._ws.send(err_frame)
+            return
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(host, port), timeout=10.0
@@ -267,6 +278,109 @@ class BridgeAgent:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# What the agent is willing to do (decided on the agent's side, not the server's)
+# ---------------------------------------------------------------------------
+
+
+def _is_link_local(host: str) -> bool:
+    """True when *host* is, or resolves to, a link-local / cloud-metadata address."""
+    import ipaddress  # noqa: PLC0415
+    import socket  # noqa: PLC0415
+
+    candidates: list[str] = []
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        candidates.append(host.strip("[]"))
+    except ValueError:
+        try:
+            candidates.extend(
+                info[4][0].split("%", 1)[0]
+                for info in socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+            )
+        except OSError:
+            return False
+    for raw in candidates:
+        try:
+            ip = ipaddress.ip_address(raw)
+        except ValueError:
+            continue
+        mapped = getattr(ip, "ipv4_mapped", None)
+        if mapped is not None:
+            ip = mapped
+        if ip.is_link_local or str(ip) in ("169.254.169.254", "fd00:ec2::254"):
+            return True
+    return False
+
+
+def _matches(entry: str, host: str, port: int) -> bool:
+    """Does one ``BRIDGE_ALLOWED_TARGETS`` entry cover *host*:*port*?
+
+    Entry forms: ``host``, ``host:port``, ``CIDR``, ``CIDR:port``, ``*.suffix``
+    (optionally ``:port``).  IPv6 literals use brackets: ``[::1]:5432``.
+    """
+    import ipaddress  # noqa: PLC0415
+
+    entry = entry.strip()
+    if not entry:
+        return False
+    want_port: int | None = None
+    target = entry
+    if entry.startswith("["):
+        target, _, rest = entry[1:].partition("]")
+        if rest.startswith(":") and rest[1:].isdigit():
+            want_port = int(rest[1:])
+    else:
+        head, sep, tail = entry.rpartition(":")
+        if sep and tail.isdigit() and ":" not in head:
+            target, want_port = head, int(tail)
+    if want_port is not None and want_port != int(port):
+        return False
+
+    host_l = host.strip("[]").lower()
+    target_l = target.lower()
+    if target_l.startswith("*."):
+        return host_l.endswith(target_l[1:])
+    if "/" in target_l:
+        try:
+            return ipaddress.ip_address(host_l) in ipaddress.ip_network(target_l, strict=False)
+        except ValueError:
+            return False
+    return host_l == target_l
+
+
+def target_allowed(host: str, port: int) -> bool:
+    """May this agent dial *host*:*port* for the control plane?
+
+    ``BRIDGE_ALLOWED_TARGETS`` (comma-separated, see :func:`_matches`) is the
+    operator's allow-list; when set, only listed targets are dialled.  Unset,
+    the agent reaches anything its network can — except link-local and
+    cloud-metadata addresses, which are refused unless listed explicitly.
+    """
+    entries = [e for e in os.environ.get("BRIDGE_ALLOWED_TARGETS", "").split(",") if e.strip()]
+    if any(_matches(e, host, port) for e in entries):
+        return True
+    if entries:
+        return False
+    return not _is_link_local(host)
+
+
+def control_plane_url_allowed(url: str) -> bool:
+    """The control channel carries the bridge token, so it must be ``wss://``
+    unless it stays on this machine (local development)."""
+    from urllib.parse import urlsplit  # noqa: PLC0415
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    if parts.scheme == "wss":
+        return True
+    if parts.scheme != "ws":
+        return False
+    return (parts.hostname or "").lower() in ("localhost", "127.0.0.1", "::1")
+
+
 async def _main() -> None:  # pragma: no cover
     try:
         import websockets  # type: ignore[import]
@@ -277,6 +391,11 @@ async def _main() -> None:  # pragma: no cover
     bridge_token = os.environ["BRIDGE_TOKEN"]
     base_url = os.environ["CONTROL_PLANE_URL"].rstrip("/")
     reconnect_delay = float(os.environ.get("BRIDGE_RECONNECT_DELAY", "5"))
+
+    if not control_plane_url_allowed(base_url):
+        raise SystemExit(
+            "CONTROL_PLANE_URL must use wss:// (ws:// is only accepted for localhost)."
+        )
 
     ws_url = f"{base_url}/bridges/{bridge_id}/connect"
     headers = {"X-Bridge-Token": bridge_token}

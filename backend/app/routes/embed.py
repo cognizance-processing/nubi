@@ -42,8 +42,10 @@ Org resolution
 --------------
 - Embed tokens (``identity.kind == "embed"``) carry an ``org`` claim that is
   used directly as the ``org_id``.
-- First-party tokens (including dev embed tokens) use ``get_user_org(user_id, repo)``
-  (same helper as the resources CRUD route).  For dev embed tokens that carry an
+- First-party tokens (including dev embed tokens) use
+  ``resolve_org_id(user_id, repo, request)`` — header-aware, so asking for the
+  embed config of a board in a non-default workspace resolves that workspace
+  (membership verified) instead of silently missing the board.  For dev embed tokens that carry an
   ``org`` claim in the JWT payload, callers should ensure the user_id exists in
   the DB OR pass an org that is resolvable.  A self-contained dev demo can mount
   a FakeRepo that returns the org from the token's ``org`` claim directly.
@@ -61,7 +63,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.auth.deps import current_user, verified_identity
@@ -279,9 +281,28 @@ def _board_to_descriptor(dashboard_id: str, board: dict[str, Any]) -> dict[str, 
 # ---------------------------------------------------------------------------
 
 
+def require_board_in_token(identity: VerifiedIdentity, dashboard_id: str) -> None:
+    """Refuse (403) a board the caller's embed token is not bound to.
+
+    Tokens with no board restriction are unaffected; a malformed restriction
+    is refused rather than ignored.
+    """
+    from app.auth.verify import embed_board_scope  # noqa: PLC0415
+
+    if identity.kind != "embed":
+        return
+    try:
+        allowed = embed_board_scope(identity)
+    except ValueError:
+        raise AppError("forbidden", "This token is not valid for that dashboard.", 403) from None
+    if allowed is not None and str(dashboard_id) not in allowed:
+        raise AppError("forbidden", "This token is not valid for that dashboard.", 403)
+
+
 @router.get("/config/{dashboard_id}")
 async def get_embed_config(
     dashboard_id: str,
+    request: Request,
     identity: VerifiedIdentity = Depends(verified_identity),
     repo: Repo = Depends(get_repo),
 ) -> dict:
@@ -336,15 +357,21 @@ async def get_embed_config(
             403,
         )
 
+    # ── Board binding: a token minted for one board opens only that board ────
+    require_board_in_token(identity, dashboard_id)
+
     # ── Resolve org_id ────────────────────────────────────────────────────────
     # Embed tokens carry the org in their claims; first-party tokens look it up.
     if identity.kind == "embed" and identity.org:
         org_id = identity.org
     else:
-        # First-party path — reuse the helper from routes/resources.
-        from app.routes.resources import get_user_org  # local import to avoid circulars
+        # First-party path — header-aware, so a signed-in user asking for the
+        # embed config of a board in a non-default workspace resolves THAT
+        # workspace. ``get_user_org`` returned their default org, so the lookup
+        # below then missed the board entirely.
+        from app.routes._org import resolve_org_id  # local import to avoid circulars
 
-        org_id = await get_user_org(identity.user_id, repo)
+        org_id = await resolve_org_id(identity.user_id, repo, request)
 
     # ── BILLING: embedded sessions are a metered dimension ───────────────────
     # Each embed-token config fetch starts one embedded view session

@@ -2,6 +2,7 @@ import js from '@eslint/js'
 import globals from 'globals'
 import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
+import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
@@ -17,7 +18,7 @@ export default defineConfig([
     },
   },
   {
-    files: ['**/*.{js,jsx}'],
+    files: ['**/*.{js,jsx,ts,tsx}'],
     extends: [
       js.configs.recommended,
       reactHooks.configs.flat.recommended,
@@ -50,9 +51,24 @@ export default defineConfig([
       'react-hooks/incompatible-library': 'off',
     },
   },
+  // TypeScript files only — the typescript-eslint parser understands type-only
+  // syntax (interfaces, type params, `declare`) that the base no-unused-vars
+  // rule does not, so it must be swapped for the TS-aware equivalent here
+  // rather than applied repo-wide (that misparsed every .js/.jsx file too).
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [...tseslint.configs.recommended],
+    rules: {
+      'no-unused-vars': 'off',
+      '@typescript-eslint/no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]', argsIgnorePattern: '^[A-Z_]', destructuredArrayIgnorePattern: '^[A-Z_]' }],
+      // Pragmatic incremental migration: TS files coexist with untyped JS
+      // (imports, third-party libs) for a long time yet — don't block on `any`.
+      '@typescript-eslint/no-explicit-any': 'off',
+    },
+  },
   // Test + e2e files run under Node/Vitest/Playwright — give them those globals.
   {
-    files: ['**/*.test.{js,mjs,jsx}', 'embed/__tests__/**/*.js', 'embed/e2e/**/*.js', 'src/**/*.test.mjs'],
+    files: ['**/*.test.{js,mjs,jsx,ts,tsx}', 'embed/__tests__/**/*.{js,ts,tsx}', 'embed/e2e/**/*.{js,ts}', 'src/**/*.test.{mjs,ts,tsx}'],
     languageOptions: {
       globals: { ...globals.node, ...globals.vitest },
     },

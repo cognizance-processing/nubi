@@ -64,29 +64,64 @@ class MetricRegistry:
     """
 
     def __init__(self) -> None:
-        self._store: dict[str, MetricDefinition] = {}
+        # Keyed by (owning org id | None, metric id).  Slugs are only unique
+        # per organisation, so two orgs may each have a "revenue" metric and
+        # must never see each other's definition.  ``None`` holds the built-in
+        # seeds and registrations made without an organisation.
+        self._store: dict[tuple[str | None, str], MetricDefinition] = {}
 
-    def register(self, metric: MetricDefinition) -> MetricDefinition:
-        """Register (or overwrite) *metric* by its ``id`` and return it.
+    @staticmethod
+    def _org(org_id: Any) -> str | None:
+        return str(org_id) if org_id else None
 
-        Overwrites any existing registration with the same id — intentional so
-        seed/persisted metrics can be refreshed and ``PUT /metrics/{id}``
-        re-registers.
+    def register(self, metric: MetricDefinition, org_id: str | None = None) -> MetricDefinition:
+        """Register (or overwrite) *metric* for *org_id* and return it.
+
+        Overwrites an existing registration with the same (org, id) —
+        intentional so seed/persisted metrics can be refreshed and
+        ``PUT /metrics/{id}`` re-registers.
         """
-        self._store[metric.id] = metric
+        self._store[(self._org(org_id), metric.id)] = metric
         return metric
 
-    def get(self, id: str) -> MetricDefinition | None:
-        """Return the :class:`MetricDefinition` for *id*, or ``None``."""
-        return self._store.get(id)
+    def get(self, id: str, org_id: str | None = None) -> MetricDefinition | None:
+        """Return *org_id*'s metric *id*, else the shared (org-less) one, else ``None``.
+
+        With no *org_id* only shared metrics resolve — an organisation's
+        metric is never returned to a caller that did not name that org.
+        """
+        org = self._org(org_id)
+        if org is not None:
+            hit = self._store.get((org, id))
+            if hit is not None:
+                return hit
+        return self._store.get((None, id))
+
+    def owned(self, id: str, org_id: str | None) -> MetricDefinition | None:
+        """*org_id*'s OWN registration of *id* (never a shared one), or ``None``.
+
+        A hit here is that organisation's metric by construction, so callers
+        need no further ownership proof for it.
+        """
+        org = self._org(org_id)
+        return self._store.get((org, id)) if org is not None else None
 
     def all(self) -> list[MetricDefinition]:
-        """Return all registered metrics as a list (insertion order)."""
+        """Every registered metric across all orgs (operator / loader use)."""
         return list(self._store.values())
 
-    def unregister(self, id: str) -> None:
-        """Remove a metric from the registry (no-op if absent)."""
-        self._store.pop(id, None)
+    def for_org(self, org_id: str | None) -> list[MetricDefinition]:
+        """The metrics *org_id* may see: its own plus the shared ones."""
+        org = self._org(org_id)
+        return [m for (o, _id), m in self._store.items() if o is None or o == org]
+
+    def exists(self, id: str) -> bool:
+        """True when any org has a metric *id* (existence only — for soft validation)."""
+        return any(_id == id for (_o, _id) in self._store)
+
+    def unregister(self, id: str, org_id: str | None = None) -> None:
+        """Remove *org_id*'s metric *id* (no-op if absent)."""
+        self._store.pop((self._org(org_id), id), None)
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +239,7 @@ async def load_persisted_metrics() -> int:
     try:
         from app.db import fetch
 
-        rows = await fetch("SELECT id, slug, name, definition FROM metrics")
+        rows = await fetch("SELECT id, org_id, slug, name, definition FROM metrics")
     except Exception as exc:  # noqa: BLE001 — best-effort; never crash startup.
         logger.warning("load_persisted_metrics: could not read metrics table: %s", exc)
         return 0
@@ -216,7 +251,7 @@ async def load_persisted_metrics() -> int:
             metric = _definition_from_row(row)
             if metric is None:
                 continue
-            registry.register(metric)
+            registry.register(metric, _row_org(row))
             loaded += 1
         except Exception as exc:  # noqa: BLE001 — skip one bad row, keep going.
             logger.warning(
@@ -295,6 +330,60 @@ def _definition_from_query_row(row: object) -> MetricDefinition | None:
     return MetricDefinition.from_dict(data)
 
 
+def _row_org(row: Any) -> str | None:
+    """The owning org of a persisted metric/query row, as a string (or None)."""
+    try:
+        org = row["org_id"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    return str(org) if org else None
+
+
+async def metrics_visible_to_org(
+    metrics: "list[MetricDefinition]", org_id: str | None, project_id: str | None = None
+) -> "list[MetricDefinition]":
+    """Filter a registry listing to the metrics *org_id* may see.
+
+    The metric registry is a process-global singleton shared by every org, so
+    ``registry.all()`` spans the whole estate. Metrics are query-backed, so the
+    visible set is the slugs exposed by that org's ``queries`` rows carrying
+    ``config.metric``, plus the in-code seeds (``SEED_METRIC_IDS``) which belong
+    to no tenant.
+
+    Best-effort by design: if the DB is unavailable the input list is returned
+    unfiltered, matching the behaviour ``GET /metrics`` has always had. That is
+    a deliberate availability trade-off for a metadata listing — it is NOT a
+    substitute for the execution-time org check.
+
+    Extracted from ``routes/metrics.list_metrics`` so the MCP ``list_metrics``
+    tool cannot drift from it; that tool had no scoping at all and returned
+    every tenant's metrics.
+    """
+    if org_id is None:
+        return [m for m in metrics if m.id in SEED_METRIC_IDS]
+    try:
+        from app.db import fetch  # noqa: PLC0415
+
+        if project_id:
+            rows = await fetch(
+                "SELECT config->'metric'->>'slug' AS slug FROM queries "
+                "WHERE org_id = $1::uuid AND project_id = $2::uuid AND config ? 'metric'",
+                org_id,
+                project_id,
+            )
+        else:
+            rows = await fetch(
+                "SELECT config->'metric'->>'slug' AS slug FROM queries "
+                "WHERE org_id = $1::uuid AND config ? 'metric'",
+                org_id,
+            )
+    except Exception:  # noqa: BLE001 — scoping unavailable → unfiltered list.
+        return list(metrics)
+
+    slugs = {str(r["slug"]) for r in rows if r.get("slug")}
+    return [m for m in metrics if m.id in slugs or m.id in SEED_METRIC_IDS]
+
+
 async def load_metrics_from_queries() -> int:
     """Load metrics from queries-with-``config.metric`` into the runtime registry.
 
@@ -326,7 +415,7 @@ async def load_metrics_from_queries() -> int:
             metric = _definition_from_query_row(row)
             if metric is None:
                 continue
-            registry.register(metric)
+            registry.register(metric, _row_org(row))
             loaded += 1
         except Exception as exc:  # noqa: BLE001 — skip one bad row, keep going.
             logger.warning(
@@ -388,11 +477,11 @@ async def ensure_persisted_metric(
         metric = _definition_from_query_row(row)
         if metric is None:
             return None
-        registry.register(metric)
+        registry.register(metric, _row_org(row))
     except Exception as exc:  # noqa: BLE001
         logger.warning("ensure_persisted_metric(%s): register failed: %s", metric_id, exc)
         return None
-    return registry.get(metric.id)
+    return registry.get(metric.id, _row_org(row))
 
 
 async def metric_belongs_to_org(metric_id: str, org_id: str) -> bool:

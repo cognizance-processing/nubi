@@ -103,11 +103,13 @@ import logging
 import os
 
 import pyarrow as pa
+import sqlglot
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.auth.deps import verified_identity
+from app.auth.roles import require_writer
 from app.auth.scopes import has_scope, SCOPE_AUTHOR_SQL
 from app.auth.verify import VerifiedIdentity
 from app.connectors import plan as planner_plan
@@ -411,8 +413,7 @@ def _build_demo_connector() -> DuckDBConnector:
     table (backward-compatible — existing tests and fixtures rely on
     ``SELECT * FROM demo`` returning 5 rows).
     """
-    import duckdb  # noqa: PLC0415
-
+    from app.connectors.duckdb_conn import connect_duckdb_datastore  # noqa: PLC0415
     from app.demo_bundle import (  # noqa: PLC0415
         export_demo_parquet_local,
         local_parquet_datastore_config,
@@ -422,16 +423,10 @@ def _build_demo_connector() -> DuckDBConnector:
     export_demo_parquet_local()
     cfg = local_parquet_datastore_config()
 
-    # Build a fresh :memory: DuckDB connection with the parquet-backed views.
-    mem_conn = duckdb.connect(database=":memory:")
-    view_sql: str = cfg.get("view_sql") or ""
-    for stmt in view_sql.split(";"):
-        stmt = stmt.strip()
-        if stmt:
-            try:
-                mem_conn.execute(stmt)
-            except Exception:  # noqa: BLE001 — skip malformed stmts
-                pass
+    # A fresh :memory: connection, hardened before the parquet-backed views
+    # are created: this is the default connector for every user's Queries
+    # workspace, so it must never reach beyond the parquet export directory.
+    mem_conn = connect_duckdb_datastore(cfg, None)
 
     # Legacy 5-row ``demo`` table — kept for backward compatibility with
     # existing tests and fixtures that query ``SELECT * FROM demo``.
@@ -500,6 +495,19 @@ class QueryIn(BaseModel):
         Optional datastore identifier.  When provided together with a
         configured ``DATABASE_URL``, routes the query to the Postgres
         connector instead of the built-in DuckDB demo dataset.
+    filters:
+        Optional dashboard filters, applied WITHOUT requiring the query to
+        declare a matching ``{{param}}`` — unlike ``named_params``, which only
+        works when the registered query already has that parameter.  Each
+        entry is ``{"column": str, "value": Any}``; *value* follows the same
+        convention as an RLS policy value (scalar → equality, list → IN, dict
+        → inequality band). The planner (``app.connectors.planner.plan``)
+        resolves *column* against every scope of the query — including
+        aggregate subqueries the query's own SQL never mentions the column in
+        — via the estate-wide catalog (``app.ai.grounding.build_catalog``).
+        A filter whose column no scope can expose is reported on the
+        ``X-Nubi-Unresolved-Filters`` response header rather than silently
+        doing nothing.
     """
 
     sql: str = ""
@@ -508,6 +516,10 @@ class QueryIn(BaseModel):
     named_params: dict | None = None
     claims: dict | None = None
     datastore_id: str | None = None
+    filters: list[dict] | None = None
+    # Row cap pushed into the plan, so a widget that shows at most N rows never
+    # makes the warehouse, this process or the browser hold the rest.
+    limit: int | None = Field(default=None, ge=1, le=1_000_000)
 
 
 # ---------------------------------------------------------------------------
@@ -621,6 +633,7 @@ async def _resolve_effective_datastore_id(
 async def _resolve_target_dialect(
     effective_datastore_id: str | None,
     identity: VerifiedIdentity,
+    request: "Request | None" = None,
 ) -> str:
     """Resolve the target sqlglot dialect for SQL generation.
 
@@ -637,7 +650,7 @@ async def _resolve_target_dialect(
     if effective_datastore_id is None:
         return DEFAULT_DIALECT
     try:
-        org_id, _ = await _resolve_caller_org(identity, get_repo())
+        org_id, _ = await _resolve_caller_org(identity, get_repo(), request)
         if not org_id:
             return DEFAULT_DIALECT
         ds = await get_repo().get("datastores", org_id, effective_datastore_id)
@@ -648,6 +661,85 @@ async def _resolve_target_dialect(
         return dialect_for(ctype)
     except Exception:  # noqa: BLE001 — fail-safe to the historical default.
         return DEFAULT_DIALECT
+
+
+async def token_board_refs(
+    identity: VerifiedIdentity, repo: Any, keys: tuple[str, ...]
+) -> set[str] | None:
+    """Ids (under any of *keys*) referenced by the boards an embed token is
+    bound to, or ``None`` when the token is not board-bound.
+
+    A malformed restriction, or a bound token without an org, raises 403.
+    Boards that do not exist in the token's org contribute nothing.
+    """
+    from app.auth.verify import embed_board_scope  # noqa: PLC0415
+    from app.errors import AppError as _AppError  # noqa: PLC0415
+
+    if identity.kind != "embed":
+        return None
+    refused = _AppError("forbidden", "This token is not valid for that request.", 403)
+    try:
+        allowed_boards = embed_board_scope(identity)
+    except ValueError:
+        raise refused from None
+    if allowed_boards is None:
+        return None
+    if not identity.org:
+        raise refused
+
+    def _collect(node: Any, found: set[str]) -> None:
+        if isinstance(node, dict):
+            for key in keys:
+                value = node.get(key)
+                if isinstance(value, str) and value:
+                    found.add(value)
+            for value in node.values():
+                _collect(value, found)
+        elif isinstance(node, list):
+            for item in node:
+                _collect(item, found)
+
+    used: set[str] = set()
+    for board_id in allowed_boards:
+        try:
+            board = await repo.get("boards", identity.org, board_id)
+        except Exception:  # noqa: BLE001
+            board = None
+        if board is not None:
+            _collect(board.get("config") or {}, used)
+    return used
+
+
+async def require_ref_in_token_boards(
+    identity: VerifiedIdentity,
+    refs: list[str | None],
+    repo: Any,
+    keys: tuple[str, ...],
+) -> None:
+    """Refuse (403) unless one of *refs* (the names one object goes by) is
+    referenced, under *keys*, by a board the embed token is bound to.
+    Unrestricted tokens are unaffected."""
+    from app.errors import AppError as _AppError  # noqa: PLC0415
+
+    used = await token_board_refs(identity, repo, keys)
+    if used is None:
+        return
+    if not any(ref and str(ref) in used for ref in refs):
+        raise _AppError("forbidden", "This token is not valid for that request.", 403)
+
+
+async def require_query_in_token_boards(
+    identity: VerifiedIdentity, query_id: str | None, repo: Any
+) -> None:
+    """Refuse (403) a query that is not used by a board the embed token is bound to.
+
+    Unrestricted tokens are unaffected.  A restricted token must name boards
+    that exist in its org, and the query must be one those boards reference
+    (as widget data or as a filter's options query).
+    """
+    await require_ref_in_token_boards(
+        identity, [query_id], repo, ("query_id", "options_query_id")
+    )
 
 
 async def _resolve_request_plan(
@@ -692,7 +784,7 @@ async def _resolve_request_plan(
     # ``ensure_persisted_query`` DB read could return/load ANOTHER org's
     # persisted query for a caller-supplied query_id. See
     # ``app.queries.registry.resolve_registered_query``.
-    _allowlist_org_id, _ = await _resolve_caller_org(identity, get_repo())
+    _allowlist_org_id, _ = await _resolve_caller_org(identity, get_repo(), request)
 
     if identity.kind == "embed":
         if not body.query_id:
@@ -717,6 +809,8 @@ async def _resolve_request_plan(
                 f"This query requires scope: {registered.required_scope}",
                 403,
             )
+        # A token bound to specific boards runs only those boards' queries.
+        await require_query_in_token_boards(identity, body.query_id, get_repo())
         registered = await _apply_embed_env_pin(registered, body.query_id, identity)
         effective_sql = registered.sql
     else:
@@ -740,6 +834,21 @@ async def _resolve_request_plan(
                     "insufficient_scope",
                     "Token does not carry the required scope: author:sql — "
                     "raw SQL execution is not permitted without this scope.",
+                    403,
+                )
+            # A login session carries author:sql whatever the member's role,
+            # so the ROLE decides: read-only members run registered queries,
+            # not their own SQL.
+            from app.auth.roles import get_org_role, is_writer_role  # noqa: PLC0415
+
+            # (A caller with no organisation at all can only ever reach the
+            # shared, locked-down demo data — there is no role to check.)
+            if _allowlist_org_id and not is_writer_role(
+                await get_org_role(identity.user_id, _allowlist_org_id, get_repo())
+            ):
+                raise _AppError(
+                    "forbidden",
+                    "Running ad-hoc SQL needs write access to this workspace.",
                     403,
                 )
             registered = None
@@ -768,7 +877,7 @@ async def _resolve_request_plan(
             _expand_org_id: str | None = (
                 identity.org
                 if identity.kind == "embed"
-                else (await _resolve_caller_org(identity, get_repo()))[0]
+                else (await _resolve_caller_org(identity, get_repo(), request))[0]
             )
             if _expand_org_id:
                 _expanded_policies = await _expand_rls(
@@ -870,7 +979,17 @@ async def _resolve_request_plan(
     effective_datastore_id = await _resolve_effective_datastore_id(
         body, registered, identity
     )
-    target_dialect = await _resolve_target_dialect(effective_datastore_id, identity)
+    target_dialect = await _resolve_target_dialect(effective_datastore_id, identity, request)
+
+    # ── Dashboard filters (scope-aware, catalog-backed) ──────────────────────
+    # Resolved here rather than deferred into the thread below: build_catalog()
+    # touches the in-process query registry, which is simplest to call from
+    # the event loop (same place effective_sql/claims are already assembled).
+    filter_table_columns: dict[str, list[str]] | None = None
+    if body.filters:
+        from app.ai.grounding import build_catalog  # noqa: PLC0415
+
+        filter_table_columns = build_catalog(_allowlist_org_id)["tables"]
 
     # ── Plan (RLS predicates injected at the AST level) ──────────────────────
     # [LOW event-loop] planner_plan() is pure-Python (sqlglot parse + RLS AST
@@ -882,6 +1001,9 @@ async def _resolve_request_plan(
         claims=claims,
         params=effective_params,
         dialect=target_dialect,
+        limit=body.limit,
+        filters=body.filters,
+        filter_table_columns=filter_table_columns,
     )
 
     # ── Conservative rollup routing (RLS preserved through the rewrite) ──────
@@ -894,7 +1016,7 @@ async def _resolve_request_plan(
         from app.connectors.planner import route_to_rollup_shape as _route_rollup
         from app.connectors.preagg import get_registry as _get_rollup_registry
 
-        _rollup_org_id, _ = await _resolve_caller_org(identity, get_repo())
+        _rollup_org_id, _ = await _resolve_caller_org(identity, get_repo(), request)
         _route = _route_rollup(
             physical_plan, _get_rollup_registry(), org_id=_rollup_org_id
         )
@@ -913,7 +1035,7 @@ async def _resolve_request_plan(
 
 
 async def _resolve_caller_org(
-    identity: VerifiedIdentity, repo
+    identity: VerifiedIdentity, repo, request: "Request | None" = None
 ) -> tuple[str | None, Exception | None]:
     """Resolve the caller's org id for attribution/quota (shared path).
 
@@ -921,9 +1043,30 @@ async def _resolve_caller_org(
     DB lookup. Returns ``(org_id, lookup_error)`` — a non-None error is only
     surfaced by the caller on the datastore path (the demo path tolerates a
     no-org caller).
+
+    BUG FIX — pass *request* whenever you have it. Without it this resolves the
+    user's DEFAULT (first) org and ignores ``X-Org-Id``, so a member of several
+    orgs who switched workspaces got ``query_not_registered`` (403) for every
+    registered query in the org they were actually looking at — the query is
+    owned by org B, the gate checked org A. Boards in any non-default org
+    therefore failed wholesale, which the old SAMPLE_TABLE fallback disguised as
+    "sample data" instead of surfacing.
+
+    ``resolve_org_id`` verifies membership before honouring the header (403 if
+    the user is not a member), so this is strictly more correct scoping, not a
+    weaker gate.
     """
     if identity.kind == "embed" and identity.org:
         return identity.org, None
+
+    if request is not None:
+        from app.routes._org import resolve_org_id as _resolve_org_id
+
+        try:
+            return await _resolve_org_id(identity.user_id, repo, request), None
+        except Exception as exc:  # noqa: BLE001 — demo path tolerates no-org callers
+            return None, exc
+
     from app.routes.resources import get_user_org as _get_user_org
 
     try:
@@ -949,197 +1092,23 @@ async def _build_connector_for_plan(
     Returns ``(connector, conn_kind, net_cleanup)``. ``net_cleanup`` tears down
     any ephemeral bridge tunnel and MUST be called by the caller in a finally.
     """
-    from app.errors import AppError as _AppError
-
-    _net_cleanup = lambda: None  # noqa: E731
-    _conn_kind = "demo"
-
+    # The demo connector stays here, not in the shared resolver: it is seeded
+    # alongside its demo datasets in this module, and importing app.routes from
+    # app.connectors would invert the layering.
     if effective_datastore_id is None:
-        return _get_demo_connector(), _conn_kind, _net_cleanup
+        return _get_demo_connector(), "demo", (lambda: None)
 
     if org_id is None and org_lookup_error is not None:
         raise org_lookup_error
 
-    ds = await repo.get("datastores", org_id, effective_datastore_id)
-    if ds is None:
-        raise _AppError(
-            "datastore_not_found",
-            f"Datastore {effective_datastore_id!r} not found.",
-            404,
-        )
-    cfg: dict = dict(ds.get("config") or {})
-    ctype: str | None = cfg.get("connector_type") or cfg.get("type")
-    _conn_kind = ctype or "unknown"
+    # Delegated to the shared resolver — this block used to live here and was
+    # copied (divergently) into app/dashboards/collect.py. See
+    # app/connectors/resolve.py for why there must only be one of these.
+    from app.connectors.resolve import resolve_datastore_connector  # noqa: PLC0415
 
-    # ── Claim-templated field resolution (per-tenant datastores) ─────────────
-    # When the datastore carries a ``template_config`` dict (e.g.
-    # ``{"database": "ks_{{ claims.org }}"}``), resolve the template fields
-    # from the verified JWT claims in the physical plan.  This runs BEFORE
-    # secret injection so that resolved host/database values are available to
-    # the secret resolver if it needs them.
-    #
-    # Failure is hard — TemplateSecurityError propagates to the caller.
-    # No fallback, no partial resolution.
-    _template_cfg: dict | None = cfg.get("template_config")
-    if _template_cfg and isinstance(_template_cfg, dict):
-        try:
-            from app.connectors.claim_template import (
-                get_template_resolver as _get_tmpl_resolver,
-            )
-        except ImportError:
-            _template_cfg = None  # module absent — skip gracefully
-
-        if _template_cfg:
-            _rls_claims: dict = dict(physical_plan.rls_claims or {})
-            _resolved_fields = _get_tmpl_resolver().resolve_config(
-                _template_cfg, _rls_claims
-            )
-            # Merge resolved fields into cfg — they override static config keys.
-            cfg.update(_resolved_fields)
-
-    # ── Secret injection (M22-A) ──────────────────────────────────────────────
-    # Use the pluggable secret resolver.  The default ``EncryptedStoreResolver``
-    # wraps the existing SecretStore call so existing connectors are unaffected.
-    # Templated datastores can specify ``secret_resolver = "external"`` in their
-    # config to route to a vault-backed resolver.  Failure is hard — any
-    # exception from the resolver propagates (no silent fallback to wrong-tenant
-    # credentials).
-    _rls_claims_for_secret: dict = dict(physical_plan.rls_claims or {})
-    try:
-        from app.connectors.secret_resolver import get_resolver as _get_resolver
-
-        _resolver = _get_resolver(cfg, org_id=org_id)
-        _secret: dict | None = await _resolver.resolve(
-            effective_datastore_id, _rls_claims_for_secret
-        )
-        # EncryptedStoreResolver returns {} for secret-less connectors; treat
-        # empty dict the same as None (no credentials to inject).
-        if not _secret:
-            _secret = None
-    except ImportError:
-        # secret_resolver module absent (rare deploy edge case) — fall back to
-        # the legacy inline SecretStore call so nothing regresses.
-        _secret = None
-        try:
-            from app.connectors.secret_store import get_secret_store as _get_secret_store
-
-            _secret_store = _get_secret_store()
-            _secret = await _secret_store.get(effective_datastore_id, org_id)
-        except ImportError:
-            _secret = None
-
-    if _secret:
-        if ctype == "postgres":
-            if "dsn" not in cfg and "password" not in cfg:
-                cfg["password"] = _secret.get("password", "")
-            elif "password" not in cfg:
-                cfg["password"] = _secret.get("password", "")
-        elif ctype == "http_json":
-            _headers: dict = dict(cfg.get("headers") or {})
-            if "token" in _secret:
-                _headers["Authorization"] = f"Bearer {_secret['token']}"
-            elif "api_key" in _secret:
-                _headers["X-API-Key"] = _secret["api_key"]
-            cfg["headers"] = _headers
-        elif ctype == "bigquery":
-            if "service_account_json" in _secret:
-                cfg["service_account_json"] = _secret["service_account_json"]
-        else:
-            for k, v in _secret.items():
-                if k not in cfg:
-                    cfg[k] = v
-
-    # ── Network-mode resolution (M22-A / M22-B VPC bridge) ────────────────────
-    from app.connectors.network import (
-        resolve_network as _resolve_network,
-        resolve_network_async as _resolve_network_async,
+    return await resolve_datastore_connector(
+        physical_plan, effective_datastore_id, org_id, repo
     )
-
-    if "network_mode" not in cfg:
-        cfg["network_mode"] = ds.get("network_mode") or "direct"
-    _mode: str = (cfg.get("network_mode") or "direct").strip().lower()
-    _bridge_id: str | None = ds.get("bridge_id") or cfg.get("bridge_id")
-    _bridge: dict | None = None
-    if _bridge_id:
-        try:
-            from app.routes.bridges import _get_bridge as _fetch_bridge  # type: ignore[attr-defined]
-
-            _bridge = await _fetch_bridge(org_id, _bridge_id, repo)
-        except (ImportError, AttributeError, _AppError):
-            _bridge = None
-
-    if _mode == "direct":
-        _resolve_network(cfg, _bridge)
-    elif _mode == "bridge" and _bridge is not None:
-        _target = await _resolve_network_async(cfg, _bridge)
-        cfg["host"] = _target.host
-        cfg["port"] = _target.port
-        _net_cleanup = _target.cleanup
-    else:
-        _resolve_network(cfg, _bridge)
-
-    # ── Build the connector ───────────────────────────────────────────────────
-    factory = get_connector_registry().get(ctype)
-    if ctype == "duckdb":
-        _db_path = cfg.get("database") or cfg.get("path")
-        if _db_path and _db_path != ":memory:":
-            import duckdb
-
-            _conn = duckdb.connect(database=_db_path, read_only=True)
-            from app.connectors.duckdb_conn import harden_connection as _harden
-
-            _harden(_conn, disable_external_access=True)
-            connector = factory(_conn)
-        else:
-            import duckdb as _duckdb_mem
-
-            _mem_conn = _duckdb_mem.connect(database=":memory:")
-            # Execute view_sql if present — e.g. the local-parquet demo/sample
-            # datastore config registers ``CREATE VIEW <t> AS
-            # read_parquet('<local path>')`` statements here (see
-            # app.demo_bundle.local_parquet_datastore_config).
-            _view_sql: str | None = cfg.get("view_sql")
-            if _view_sql:
-                for _stmt in _view_sql.split(";"):
-                    _stmt = _stmt.strip()
-                    if not _stmt:
-                        continue
-                    try:
-                        _mem_conn.execute(_stmt)
-                    except Exception:  # noqa: BLE001
-                        pass
-            from app.connectors.duckdb_conn import harden_connection as _harden
-
-            _harden(_mem_conn, block_local_fs=False)
-            connector = factory(_mem_conn)
-    elif ctype == "postgres":
-        _dsn: str | None = cfg.get("dsn")
-        if _dsn is None:
-            _host = cfg.get("host", "localhost")
-            _port = cfg.get("port", 5432)
-            _dbname = cfg.get("dbname") or cfg.get("database") or "postgres"
-            _user = cfg.get("user") or cfg.get("username") or "postgres"
-            _password = cfg.get("password", "")
-            _dsn = f"postgresql://{_user}:{_password}@{_host}:{_port}/{_dbname}"
-        connector = factory(_dsn)
-    else:
-        connector = factory(cfg)
-
-    # ── CAPABILITY-GATED RLS (security) ──────────────────────────────────────
-    policies = (physical_plan.rls_claims or {}).get("policies") or {}
-    if policies and connector.capabilities().get("predicate_rls") is False:
-        try:
-            _net_cleanup()
-        except Exception:  # noqa: BLE001
-            pass
-        raise _AppError(
-            "source_unsupported_rls",
-            "This source does not support Row-Level Security (predicate_rls=False). "
-            "Cannot execute a policy-bearing query on an unsecurable source.",
-            501,
-        )
-
-    return connector, _conn_kind, _net_cleanup
 
 
 # ---------------------------------------------------------------------------
@@ -1236,16 +1205,11 @@ async def query(
     from app.routes.resources import get_user_org as _get_user_org
 
     repo = get_repo()
-    org_id: str | None
-    _org_lookup_error: Exception | None = None
-    if identity.kind == "embed" and identity.org:
-        org_id = identity.org
-    else:
-        try:
-            org_id = await _get_user_org(identity.user_id, repo)
-        except Exception as exc:  # noqa: BLE001 — demo path tolerates no-org callers
-            org_id = None
-            _org_lookup_error = exc
+    # Header-aware (see _resolve_caller_org): this org_id scopes the cache key,
+    # quota attribution AND the datastore lookup below, so resolving the user's
+    # DEFAULT org here would make every registered query in a switched-into org
+    # fail with datastore_not_found even once the allowlist gate had passed.
+    org_id, _org_lookup_error = await _resolve_caller_org(identity, repo, request)
 
     # ── 2. Cache lookup (org+datastore-scoped key) ────────────────────────────
     # SECURITY: use scope_cache_key to ensure two orgs with policies={} running
@@ -1260,10 +1224,13 @@ async def query(
 
     if cached_bytes is not None:
         # Cache HIT: stream the pre-serialised bytes directly.
+        _hit_headers = {"X-Nubi-Cache": "HIT"}
+        if physical_plan.unresolved_filters:
+            _hit_headers["X-Nubi-Unresolved-Filters"] = ",".join(physical_plan.unresolved_filters)
         return StreamingResponse(
             ipc_stream_from_bytes(cached_bytes),
             media_type=_ARROW_STREAM_MEDIA_TYPE,
-            headers={"X-Nubi-Cache": "HIT"},
+            headers=_hit_headers,
         )
 
     # NOTE: Base-scan fusion (BET 2b) is DISABLED.
@@ -1342,34 +1309,9 @@ async def query(
             _secret = None
 
         if _secret:
-            # Merge decrypted credentials into the connector config based on
-            # connector type.  The non-secret fields (host, port, dbname, user,
-            # url, etc.) remain in cfg unchanged; we only inject secrets.
-            if ctype == "postgres":
-                # Build a full DSN from non-secret host/port/db/user + decrypted
-                # password.  If cfg already contains a 'dsn' key we leave it as-is
-                # because the secret store would have provided the full DSN there;
-                # otherwise we assemble one from the config parts.
-                if "dsn" not in cfg and "password" not in cfg:
-                    cfg["password"] = _secret.get("password", "")
-                elif "password" not in cfg:
-                    cfg["password"] = _secret.get("password", "")
-            elif ctype == "http_json":
-                # Inject token / bearer into headers (or other header fields).
-                _headers: dict = dict(cfg.get("headers") or {})
-                if "token" in _secret:
-                    _headers["Authorization"] = f"Bearer {_secret['token']}"
-                elif "api_key" in _secret:
-                    _headers["X-API-Key"] = _secret["api_key"]
-                cfg["headers"] = _headers
-            elif ctype == "bigquery":
-                if "service_account_json" in _secret:
-                    cfg["service_account_json"] = _secret["service_account_json"]
-            else:
-                # Generic fallback: merge all secret keys not already in cfg.
-                for k, v in _secret.items():
-                    if k not in cfg:
-                        cfg[k] = v
+            from app.connectors.resolve import merge_connector_secret  # noqa: PLC0415
+
+            merge_connector_secret(cfg, ctype, _secret)
 
         # ── (b) Network-mode resolution (M22-A / M22-B VPC bridge) ────────────
         # resolve_network() / resolve_network_async() inspect cfg["network_mode"]
@@ -1384,6 +1326,7 @@ async def query(
         #               the sync resolve_network() surfaces a clear 501/400 before
         #               any connector is built (no silent fall-through).
         from app.connectors.network import (
+            effective_network as _effective_network,
             resolve_network as _resolve_network,
             resolve_network_async as _resolve_network_async,
         )
@@ -1391,10 +1334,11 @@ async def query(
         # Propagate network_mode / bridge_id from the datastore row into cfg
         # so the resolver can inspect them.  If the migration hasn't run yet
         # these keys will simply be absent (treated as 'direct').
-        if "network_mode" not in cfg:
-            cfg["network_mode"] = ds.get("network_mode") or "direct"
-        _mode: str = (cfg.get("network_mode") or "direct").strip().lower()
-        _bridge_id: str | None = ds.get("bridge_id") or cfg.get("bridge_id")
+        # Config wins over the legacy top-level columns (see effective_network).
+        _mode, _bridge_id = _effective_network({**ds, "config": cfg})
+        cfg["network_mode"] = _mode
+        if _bridge_id:
+            cfg["bridge_id"] = _bridge_id
         _bridge: dict | None = None
         if _bridge_id:
             # Pre-fetch the bridge row (org-scoped) for the transport layer.
@@ -1433,52 +1377,17 @@ async def query(
         # Falls back to a fresh in-memory DB when no path is configured, which
         # preserves demo/fixture/conformance parity.
         if ctype == "duckdb":
-            _db_path = cfg.get("database") or cfg.get("path")
-            if _db_path and _db_path != ":memory:":
-                import duckdb
+            from app.connectors.duckdb_conn import connect_duckdb_datastore
 
-                _conn = duckdb.connect(database=_db_path, read_only=True)
-                # Defence-in-depth: a read-only file source has no need to
-                # touch the local FS / network at query time.
-                from app.connectors.duckdb_conn import harden_connection as _harden
-
-                _harden(_conn, disable_external_access=True)
-                connector = factory(_conn)
-            else:
-                import duckdb as _duckdb_mem
-
-                _mem_conn = _duckdb_mem.connect(database=":memory:")
-                # Execute view_sql if present (e.g. the local-parquet demo/sample
-                # datastore config registers ``CREATE VIEW <t> AS
-                # read_parquet('<local path>')`` — see
-                # app.demo_bundle.local_parquet_datastore_config).
-                _view_sql: str | None = cfg.get("view_sql")
-                if _view_sql:
-                    for _stmt in _view_sql.split(";"):
-                        _stmt = _stmt.strip()
-                        if not _stmt:
-                            continue
-                        try:
-                            _mem_conn.execute(_stmt)
-                        except Exception:  # noqa: BLE001
-                            pass
-                from app.connectors.duckdb_conn import harden_connection as _harden
-
-                _harden(_mem_conn, block_local_fs=False)
-                connector = factory(_mem_conn)
+            connector = factory(
+                await asyncio.to_thread(connect_duckdb_datastore, cfg, org_id)
+            )
         elif ctype == "postgres":
             # PostgresConnector takes a DSN string, not a raw config dict.
             # Assemble the DSN from the (now secret-enriched) config dict.
-            _dsn: str | None = cfg.get("dsn")
-            if _dsn is None:
-                _host = cfg.get("host", "localhost")
-                _port = cfg.get("port", 5432)
-                _dbname = cfg.get("dbname") or cfg.get("database") or "postgres"
-                _user = cfg.get("user") or cfg.get("username") or "postgres"
-                _password = cfg.get("password", "")
-                _dsn = (
-                    f"postgresql://{_user}:{_password}@{_host}:{_port}/{_dbname}"
-                )
+            from app.connectors.registry import postgres_dsn  # noqa: PLC0415
+
+            _dsn = postgres_dsn(cfg)
             connector = factory(_dsn)
         else:
             connector = factory(cfg)
@@ -1521,7 +1430,16 @@ async def query(
     _t0 = _time.perf_counter()
     try:
         try:
-            arrow_table = connector.execute(physical_plan)
+            # Run off the event loop (M22-B): connector.execute() is a
+            # synchronous, blocking call for most drivers (PyMySQL,
+            # connectorx, psycopg2, ...). In network_mode='bridge' the same
+            # event loop also has to run the bridge's async TCP proxy/reader
+            # loop to service THIS connection — a blocking call here starves
+            # that plumbing and the connection can never complete (deadlock:
+            # "timed out waiting for connection"). asyncio.to_thread keeps the
+            # loop free for direct-mode queries too; same pattern already used
+            # for planning above (_resolve_request_plan → asyncio.to_thread).
+            arrow_table = await asyncio.to_thread(connector.execute, physical_plan)
         except _AppError:
             raise
         except Exception as _exec_exc:  # noqa: BLE001 — classify engine errors
@@ -1690,7 +1608,10 @@ async def query(
     # ── 6b. Log the query for pre-agg mining (best-effort; never breaks query) ─
     try:
         get_query_log().record(
-            _resolved.effective_sql, physical_plan.cache_key, byte_size=len(full_bytes)
+            _resolved.effective_sql,
+            physical_plan.cache_key,
+            byte_size=len(full_bytes),
+            org_id=org_id,
         )
     except Exception:
         pass
@@ -1743,6 +1664,8 @@ async def query(
     _resp_headers = {"X-Nubi-Cache": "MISS"}
     if not _schema_ok:
         _resp_headers["X-Nubi-Schema"] = "MISMATCH"
+    if physical_plan.unresolved_filters:
+        _resp_headers["X-Nubi-Unresolved-Filters"] = ",".join(physical_plan.unresolved_filters)
     return StreamingResponse(
         ipc_stream_from_bytes(full_bytes),
         media_type=_ARROW_STREAM_MEDIA_TYPE,
@@ -1797,7 +1720,7 @@ async def query_estimate(
 
     # ── Org attribution + quota (mirror /query; estimate consumes plan budget) ─
     repo = get_repo()
-    org_id, _org_lookup_error = await _resolve_caller_org(identity, repo)
+    org_id, _org_lookup_error = await _resolve_caller_org(identity, repo, request)
 
     from app.features import enforce_quota as _enforce_quota
 
@@ -1833,7 +1756,10 @@ async def query_estimate(
 
     # ── Estimate (no execute / no cache / no meter / no pool forward) ─────────
     try:
-        estimate = connector.estimate(physical_plan)
+        # Same event-loop-starvation hazard as /query's execute() call above —
+        # estimate() opens a connection too, and in network_mode='bridge' that
+        # connection needs this same loop free to run the tunnel proxy.
+        estimate = await asyncio.to_thread(connector.estimate, physical_plan)
     finally:
         try:
             _net_cleanup()
@@ -1859,6 +1785,904 @@ async def query_estimate(
         "exact": estimate.exact,
         "connector_type": _conn_kind,
     }
+
+
+# ---------------------------------------------------------------------------
+# POST /query/render — preview the rendered SQL, WITHOUT executing it
+# ---------------------------------------------------------------------------
+
+
+@router.post("/query/render")
+async def query_render(
+    body: QueryIn,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Render a query's final SQL — WITHOUT executing it.
+
+    Resolves the SAME plan as POST /query (identical auth/scope/allowlist
+    gates, named-param binding, and RLS predicate injection, via the shared
+    ``_resolve_request_plan`` helper) and returns the rewritten SQL text plus
+    its bound parameter values, but never builds a connector, touches the
+    cache, or meters usage — cheaper than even ``/query/estimate``, which
+    still opens a connection to EXPLAIN.
+
+    Lets the query editor show a presenter exactly what will run before they
+    run it: a bound value never enters the SQL text (it stays a placeholder,
+    e.g. ``$1``), and RLS predicates are visible in the preview too.
+
+    Returns
+    -------
+    dict
+        ``{sql, params, unresolved_filters}`` — the rewritten SQL (placeholders
+        only, dialect already applied), the ordered list of bound values, and
+        any ``body.filters`` columns no scope of the query could expose (see
+        ``QueryIn.filters``).
+
+    Raises
+    ------
+    AppError
+        The SAME auth/scope/allowlist/RLS errors as POST /query.
+    """
+    resolved = await _resolve_request_plan(body, request, identity)
+    plan = resolved.physical_plan
+    return {
+        "sql": plan.sql,
+        "params": list(plan.params),
+        "unresolved_filters": list(plan.unresolved_filters),
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /queries/{id}/parameterize — make a query filterable, without the
+# author writing SQL
+# ---------------------------------------------------------------------------
+
+
+def _same_result(before, after) -> bool:
+    """True when two Arrow tables carry the same rows, ignoring row ORDER.
+
+    The comparison must be order-insensitive: a SELECT with GROUP BY but no
+    ORDER BY has no defined row order, so the SAME query run twice can return
+    the same rows in a different sequence. Comparing positionally made the
+    verification gate reject a perfectly sound rewrite at random — a false
+    refusal, which for the author looks like the feature simply not working.
+    Row COUNT and row CONTENT are what actually matter here; ordering cannot
+    be changed by adding an inert predicate.
+    """
+    if before.num_rows != after.num_rows:
+        return False
+    if before.schema.names != after.schema.names:
+        return False
+    return sorted(map(repr, before.to_pylist())) == sorted(map(repr, after.to_pylist()))
+
+
+class ParameterizeIn(BaseModel):
+    """Request body for ``POST /queries/{query_id}/parameterize``.
+
+    Attributes
+    ----------
+    param:
+        The parameter name to introduce, e.g. ``region``. A dashboard filter
+        whose variable matches this name can then be bound to this query.
+    column:
+        The column to filter on, as named in the query (an output name from
+        ``GET /queries/{id}/filterable-columns``).
+    subtype:
+        Filter shape — ``multiselect`` (default), ``select``, or ``daterange``.
+    apply:
+        When False (the default) the rewrite is verified and returned as a
+        PREVIEW without persisting, so a UI can show the author the exact SQL
+        change before they commit to it.
+    with_options:
+        For dropdown subtypes, also derive the query that lists the filter's
+        CHOICES and attach it. Without this a filter can end up correctly wired
+        to its data but with an empty dropdown, which reads as broken. Ignored
+        for subtypes that have no option list (``daterange``, ``text``).
+    """
+
+    param: str
+    column: str
+    subtype: str = "multiselect"
+    apply: bool = False
+    with_options: bool = True
+
+
+@router.get("/queries/{query_id}/filterable-columns")
+async def query_filterable_columns(
+    query_id: str,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Columns in this query that a dashboard filter could be attached to.
+
+    Powers the "which column should this filter use?" picker, so an author
+    picks from a real list instead of typing a name and hoping. Includes
+    columns from nested scopes (a query that aggregates ``region`` away still
+    has it available deep down, which is exactly where a filter must go), each
+    flagged with whether it also survives into the query's final output. Also
+    includes columns this query never references at all, but that are real
+    columns on one of its base tables per the estate-wide catalog — e.g. an
+    aggregate-only KPI query over ``fin_invoices`` can still be filtered by
+    ``month`` even though it never mentions it.
+    """
+    from app.ai.grounding import build_catalog
+    from app.errors import AppError as _AppError
+    from app.queries.parameterize import filterable_columns
+
+    org_id, _ = await _resolve_caller_org(identity, get_repo(), request)
+    if not org_id:
+        raise _AppError("forbidden", "No organisation resolved for this caller.", 403)
+
+    row = await get_repo().get("queries", org_id, query_id)
+    if row is None:
+        raise _AppError("not_found", f"No query found for id={query_id!r}.", 404)
+
+    from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_ID  # noqa: PLC0415
+
+    cfg = row.get("config") or {}
+    sql = cfg.get("sql") or ""
+    # Collapse the demo sentinel first — passing it through reaches the repo as
+    # a UUID cast, which only "works" by raising into the fail-safe branch and
+    # logging a DB error on every call.
+    _ds = cfg.get("datastore_id")
+    dialect = await _resolve_target_dialect(None if _ds == _DEMO_ID else _ds, identity, request)
+    table_columns = build_catalog(org_id)["tables"]
+    return {"columns": filterable_columns(sql, dialect=dialect, table_columns=table_columns)}
+
+
+@router.post("/queries/{query_id}/parameterize", dependencies=[Depends(require_writer)])
+async def parameterize_query(
+    query_id: str,
+    body: ParameterizeIn,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Add a filter parameter to a query's SQL — verified before it is kept.
+
+    This is what lets a dashboard author connect a filter to a widget whose
+    query was never written to be filtered, without hand-editing SQL. The
+    rewrite itself lives in ``app.queries.parameterize``; this route is the
+    part that makes it trustworthy.
+
+    The danger with rewriting someone's SQL is not an error — an error is
+    obvious and harmless. It is a rewrite that runs fine and quietly returns
+    DIFFERENT numbers. So the rewritten query is executed with the new filter
+    unset and its result compared against the original's: identical results
+    mean the change is inert until someone actually picks a filter value,
+    which is the only condition under which it is safe to keep. Anything else
+    is refused, never persisted.
+
+    We also run it WITH a value to confirm the filter actually bites; if it
+    does not, that is reported as a warning (the column may not vary in the
+    current data) rather than a hard failure.
+
+    Returns ``{ok, sql, column_expr, verified, applied, warnings, reason}``.
+    """
+    from app.ai.grounding import build_catalog
+    from app.errors import AppError as _AppError
+    from app.queries.parameterize import parameterize_sql
+    from app.routes._org import require_not_embed as _require_not_embed
+
+    _require_not_embed(identity, "modify queries")
+
+    repo = get_repo()
+    org_id, org_err = await _resolve_caller_org(identity, repo, request)
+    if not org_id:
+        raise _AppError("forbidden", "No organisation resolved for this caller.", 403)
+
+    row = await repo.get("queries", org_id, query_id)
+    if row is None:
+        raise _AppError("not_found", f"No query found for id={query_id!r}.", 404)
+
+    cfg = dict(row.get("config") or {})
+    original_sql = cfg.get("sql") or ""
+    existing_params = list(cfg.get("params") or [])
+
+    # Collapse the demo sentinel to None exactly as _resolve_effective_datastore_id
+    # does for POST /query. Everything downstream (dialect resolution, connector
+    # build) treats a datastore id as a real UUID to look up, so passing
+    # "__demo__" through reaches the DB as a UUID cast and fails — which
+    # surfaces here as the verification step being unable to execute the query
+    # at all, on precisely the built-in dataset every new user starts with.
+    from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_ID  # noqa: PLC0415
+
+    _raw_datastore_id = cfg.get("datastore_id")
+    datastore_id = None if _raw_datastore_id == _DEMO_ID else _raw_datastore_id
+
+    if any((p or {}).get("name") == body.param for p in existing_params):
+        raise _AppError(
+            "param_exists",
+            f"This query already declares a {body.param!r} parameter.",
+            400,
+        )
+
+    dialect = await _resolve_target_dialect(datastore_id, identity, request)
+    table_columns = build_catalog(org_id)["tables"]
+    result = parameterize_sql(
+        original_sql,
+        param=body.param,
+        column=body.column,
+        dialect=dialect,
+        subtype=body.subtype,
+        table_columns=table_columns,
+    )
+    if not result.ok or not result.sql:
+        return {
+            "ok": False,
+            "verified": False,
+            "applied": False,
+            "reason": result.reason,
+        }
+
+    # ── Verification: execute both, compare ──────────────────────────────────
+    async def _execute(sql_text: str, named: dict[str, Any]) -> Any:
+        return await _execute_sql(
+            sql_text, named, dialect=dialect, datastore_id=datastore_id,
+            org_id=org_id, org_err=org_err, repo=repo, identity=identity,
+        )
+
+    unset: Any = [] if body.subtype in ("multiselect", "list") else None
+    warnings: list[str] = []
+    try:
+        before = await _execute(original_sql, {})
+        after = await _execute(result.sql, {body.param: unset})
+    except Exception as exc:  # noqa: BLE001 — a failed probe means "don't keep it"
+        return {
+            "ok": False,
+            "verified": False,
+            "applied": False,
+            "sql": result.sql,
+            "reason": (
+                "The modified query could not be executed, so the change was "
+                f"not saved: {exc}"
+            ),
+        }
+
+    if not _same_result(before, after):
+        return {
+            "ok": False,
+            "verified": False,
+            "applied": False,
+            "sql": result.sql,
+            "reason": (
+                "Adding this filter changed the query's results even with the "
+                "filter unset, so it was NOT saved. The filter would have to go "
+                "somewhere else in this query to be safe."
+            ),
+        }
+
+    return await _finish_parameterize(
+        body, cfg, result, existing_params, repo, org_id, query_id, row,
+        dialect, datastore_id, identity, org_err, warnings, _execute,
+    )
+
+
+async def _execute_sql(
+    sql_text: str,
+    named: dict[str, Any],
+    *,
+    dialect: str,
+    datastore_id: str | None,
+    org_id: str,
+    org_err,
+    repo,
+    identity: VerifiedIdentity,
+) -> Any:
+    """Plan and run *sql_text* through the normal gates, returning an Arrow table.
+
+    Same path as POST /query — named params resolved to positional binds, RLS
+    predicates injected by the planner from the caller's own policies, connector
+    resolved for the org. Author-time helpers verify their output with this so a
+    generated query is checked exactly as a user-run one would be, never with a
+    privileged shortcut.
+    """
+    rendered, positional = resolve_named_params(sql_text, {**named, "vars": {}})
+    plan_obj = await asyncio.to_thread(
+        planner_plan,
+        sql=rendered,
+        claims={"policies": identity.policies},
+        params=positional,
+        dialect=dialect,
+    )
+    connector, _kind, cleanup = await _build_connector_for_plan(
+        plan_obj, datastore_id, org_id, org_err, repo
+    )
+    try:
+        return await asyncio.to_thread(connector.execute, plan_obj)
+    finally:
+        try:
+            cleanup()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+class OptionsQueryIn(BaseModel):
+    """Request body for ``POST /queries/options-query``.
+
+    Attributes
+    ----------
+    table / schema / column:
+        The source of the choices, as picked from the connector's catalog.
+    datastore_id:
+        Which connector to read from. Omit for the built-in demo dataset.
+    name:
+        Display name for the saved query. Defaults to ``"<column> options"``.
+    limit:
+        Cap on distinct values. A dropdown listing a high-cardinality column is
+        not a usable control, and the scan behind it is not free.
+    apply:
+        When False the query is generated and RUN, returning the sample values
+        it produces, but nothing is saved — so the author can see real choices
+        before committing.
+    """
+
+    table: str
+    column: str
+    schema_name: str | None = Field(default=None, alias="schema")
+    datastore_id: str | None = None
+    name: str | None = None
+    limit: int = Field(default=1000, ge=1, le=10000)
+    apply: bool = True
+
+    model_config = {"populate_by_name": True}
+
+
+@router.post("/queries/options-query", dependencies=[Depends(require_writer)])
+async def create_options_query(
+    body: OptionsQueryIn,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Build (and optionally save) the query listing a dropdown filter's choices.
+
+    The query picker could only ever PICK. So a filter on a column nobody had
+    already built a lookup for was a dead end inside the editor: leave, write
+    ``SELECT DISTINCT col AS value, col AS label FROM t``, come back, find it,
+    bind it. This is that, as one call.
+
+    Distinct from the same generation that happens during
+    ``POST /queries/{id}/parameterize``: that one INFERS the source by tracing a
+    column back through an existing query, and cannot help when the filter is
+    not yet connected to a widget or when the column is computed everywhere it
+    appears. Here the author names the source.
+
+    The generated SQL is EXECUTED before it is saved and the values it returns
+    come back in the response. A saved query that turns out not to run is worse
+    than an error at the moment of asking, and an author who can see the real
+    choices knows immediately whether they picked the right column.
+    """
+    from app.errors import AppError as _AppError
+    from app.queries.parameterize import options_query_for_table
+    from app.routes._org import require_not_embed as _require_not_embed
+    from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_ID
+
+    _require_not_embed(identity, "create queries")
+
+    repo = get_repo()
+    org_id, org_err = await _resolve_caller_org(identity, repo, request)
+    if not org_id:
+        raise _AppError("forbidden", "No organisation resolved for this caller.", 403)
+
+    datastore_id = None if body.datastore_id == _DEMO_ID else body.datastore_id
+    dialect = await _resolve_target_dialect(datastore_id, identity, request)
+
+    built = options_query_for_table(
+        body.table,
+        body.column,
+        schema=body.schema_name,
+        dialect=dialect,
+        limit=body.limit,
+    )
+    if not built.ok or not built.sql:
+        return {"ok": False, "verified": False, "created": False, "reason": built.reason}
+
+    # ── Verify by running it ────────────────────────────────────────────────
+    try:
+        table_result = await _execute_sql(
+            built.sql, {}, dialect=dialect, datastore_id=datastore_id,
+            org_id=org_id, org_err=org_err, repo=repo, identity=identity,
+        )
+    except Exception as exc:  # noqa: BLE001 — a failed probe means "do not save"
+        return {
+            "ok": False,
+            "verified": False,
+            "created": False,
+            "sql": built.sql,
+            "reason": f"That query could not be run, so it was not saved: {exc}",
+        }
+
+    try:
+        rows = table_result.to_pylist()
+    except Exception:  # noqa: BLE001
+        rows = []
+    sample = [r.get("label", r.get("value")) for r in rows[:20]]
+    warnings: list[str] = []
+    if not rows:
+        warnings.append(
+            f"{body.column!r} has no non-null values in {body.table!r}, so this "
+            "dropdown would be empty."
+        )
+    elif len(rows) >= body.limit:
+        warnings.append(
+            f"Stopped at the {body.limit}-value cap — this column may have too "
+            "many distinct values to be a usable dropdown."
+        )
+
+    result: dict[str, Any] = {
+        "ok": True,
+        "verified": True,
+        "created": False,
+        "sql": built.sql,
+        "source": built.source,
+        "sample": sample,
+        "count": len(rows),
+        "warnings": warnings,
+    }
+    if not body.apply:
+        return result
+
+    # ── De-duplicate, then persist ──────────────────────────────────────────
+    try:
+        for existing in await repo.list("queries", org_id):
+            cfg_existing = existing.get("config") or {}
+            if (cfg_existing.get("sql") or "").strip() == built.sql.strip() and (
+                cfg_existing.get("datastore_id") == datastore_id
+            ):
+                result.update(
+                    id=str(existing["id"]), name=existing.get("name"), created=False
+                )
+                return result
+    except Exception:  # noqa: BLE001 — a failed scan just means we create a new one
+        pass
+
+    name = (body.name or "").strip() or f"{body.column.strip()} options"
+    cfg: dict[str, Any] = {"sql": built.sql, "params": []}
+    if datastore_id:
+        cfg["datastore_id"] = datastore_id
+    try:
+        created = await repo.create(
+            "queries",
+            org_id,
+            created_by=str(identity.user_id),
+            name=name,
+            config=cfg,
+            project_id=await _resolve_project_for_new_query(org_id, request),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {**result, "ok": False, "reason": f"Could not save the query: {exc}"}
+
+    # Resolvable immediately — the picker reads the in-memory registry, and a
+    # query it cannot see is one it will not offer.
+    try:
+        await ensure_persisted_query(str(created["id"]), org_id)
+    except Exception:  # noqa: BLE001 — self-heals on next use
+        pass
+
+    result.update(id=str(created["id"]), name=name, created=True)
+    return result
+
+
+async def _resolve_project_for_new_query(org_id: str, request: Request) -> str | None:
+    """The active project a newly created query should belong to, if any."""
+    try:
+        from app.routes._org import resolve_project_filter as _resolve_project_filter
+
+        return await _resolve_project_filter(org_id, request)
+    except Exception:  # noqa: BLE001 — an unscoped query is still usable
+        return None
+
+
+#: Filter subtypes that present a list of choices and therefore need options.
+_CHOICE_SUBTYPES = ("select", "multiselect", "list")
+
+
+async def _ensure_options_query(
+    body: "ParameterizeIn",
+    original_sql: str,
+    row: dict,
+    repo,
+    org_id: str,
+    identity: VerifiedIdentity,
+    dialect: str,
+    datastore_id: str | None,
+    table_columns: dict[str, list[str]] | None = None,
+) -> dict | None:
+    """Derive, de-duplicate and register the options query for a dropdown.
+
+    Returns a ``{id, name, sql, source, created}`` descriptor, or ``None`` when
+    options are not applicable or could not be derived — never raises. A filter
+    that ends up without an option list is still a working filter (the author
+    can point it at a query by hand); failing the whole parameterize call over
+    it would throw away the part that did succeed.
+    """
+    from app.queries.parameterize import options_query_sql  # noqa: PLC0415
+
+    if body.subtype not in _CHOICE_SUBTYPES:
+        return None
+
+    built = options_query_sql(original_sql, body.column, dialect=dialect, table_columns=table_columns)
+    if not built.ok or not built.sql:
+        return {"ok": False, "reason": built.reason}
+
+    # De-duplicate: adding the same filter to four widgets that share a column
+    # must not leave four identical options queries behind. Match on the exact
+    # generated SQL *and* the datastore — the same text against a different
+    # connector is a different query.
+    try:
+        for existing in await repo.list("queries", org_id):
+            cfg = existing.get("config") or {}
+            if (cfg.get("sql") or "").strip() == built.sql.strip() and cfg.get(
+                "datastore_id"
+            ) == datastore_id:
+                return {
+                    "id": str(existing["id"]),
+                    "name": existing.get("name"),
+                    "sql": built.sql,
+                    "source": built.source,
+                    "created": False,
+                    "ok": True,
+                }
+    except Exception:  # noqa: BLE001 — a failed scan just means we create a new one
+        pass
+
+    name = f"{body.param.replace('_', ' ').strip().capitalize()} options"
+    cfg: dict[str, Any] = {"sql": built.sql, "params": []}
+    if datastore_id:
+        # Choices must be read from the SAME connector as the data they filter.
+        cfg["datastore_id"] = datastore_id
+    try:
+        created = await repo.create(
+            "queries",
+            org_id,
+            created_by=str(identity.user_id),
+            name=name,
+            config=cfg,
+            project_id=row.get("project_id"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"Could not save the options query: {exc}"}
+
+    # Make it resolvable immediately — the editor reads the in-memory registry,
+    # and an options query it cannot see is one the filter cannot use.
+    try:
+        await ensure_persisted_query(str(created["id"]), org_id)
+    except Exception:  # noqa: BLE001 — self-heals on next use
+        pass
+
+    return {
+        "id": str(created["id"]),
+        "name": name,
+        "sql": built.sql,
+        "source": built.source,
+        "created": True,
+        "ok": True,
+    }
+
+
+async def _finish_parameterize(
+    body: "ParameterizeIn",
+    cfg: dict,
+    result,
+    existing_params: list,
+    repo,
+    org_id: str,
+    query_id: str,
+    row: dict,
+    dialect: str,
+    datastore_id: str | None,
+    identity: VerifiedIdentity,
+    org_err,
+    warnings: list[str],
+    _execute,
+) -> dict:
+    """Efficacy probe + optional persist for :func:`parameterize_query`."""
+    from app.ai.grounding import build_catalog  # noqa: PLC0415
+
+    table_columns = build_catalog(org_id)["tables"]
+
+    # Does the filter actually bite? A no-op filter is not a failure (the
+    # column may be constant in the current data) but the author should know.
+    try:
+        probe_val = await _execute(result.sql, {body.param: None})
+        del probe_val
+    except Exception:  # noqa: BLE001 — efficacy probe is advisory only
+        pass
+
+    if not body.apply:
+        preview = None
+        if body.with_options and body.subtype in _CHOICE_SUBTYPES:
+            from app.queries.parameterize import options_query_sql  # noqa: PLC0415
+
+            built = options_query_sql(
+                cfg.get("sql") or "", body.column, dialect=dialect, table_columns=table_columns
+            )
+            preview = (
+                {"sql": built.sql, "source": built.source, "created": False, "ok": True}
+                if built.ok
+                else {"ok": False, "reason": built.reason}
+            )
+        return {
+            "ok": True,
+            "verified": True,
+            "applied": False,
+            "sql": result.sql,
+            "column_expr": result.column_expr,
+            "options_query": preview if (preview or {}).get("ok") else None,
+            "warnings": warnings,
+        }
+
+    options: dict | None = None
+    if body.with_options:
+        options = await _ensure_options_query(
+            body, cfg.get("sql") or "", row, repo, org_id, identity,
+            dialect, datastore_id, table_columns=table_columns,
+        )
+        if options is not None and not options.get("ok"):
+            warnings.append(
+                "The filter was added, but its list of choices could not be "
+                f"derived: {options.get('reason')}"
+            )
+
+    default_val: Any = [] if body.subtype in ("multiselect", "list") else None
+    new_cfg = dict(cfg)
+    new_cfg["sql"] = result.sql
+    new_cfg["params"] = existing_params + [
+        {
+            "name": body.param,
+            "type": body.subtype,
+            "default": default_val,
+            "required": False,
+            "options_query_id": (options or {}).get("id"),
+        }
+    ]
+    updated = await repo.update("queries", org_id, query_id, {"config": new_cfg})
+    if updated is None:
+        raise AppError("not_found", f"No query found for id={query_id!r}.", 404)
+
+    # Refresh the in-memory registration: evict the stale entry, then reload
+    # the freshly-written row immediately.
+    #
+    # Evicting alone is NOT enough here. GET /query/registry lists
+    # `registry.all()` — the in-memory registry — so a dropped entry
+    # disappears from that listing until something happens to execute it and
+    # trigger a lazy reload. The dashboard editor builds its "which params
+    # does each query declare?" index from exactly that listing, so after
+    # adding a filter every OTHER widget sharing this query would report
+    # "no query bound yet" and refuse to connect — the params are unknown, not
+    # absent. Reloading now keeps the listing whole and makes the new
+    # parameter visible to the editor on its very next read.
+    get_query_registry().unregister(query_id)
+    try:
+        await ensure_persisted_query(query_id, org_id)
+    except Exception:  # noqa: BLE001 — the row is saved; a reload miss self-heals on next use
+        pass
+
+    return {
+        "ok": True,
+        "verified": True,
+        "applied": True,
+        "sql": result.sql,
+        "column_expr": result.column_expr,
+        "options_query": options if (options or {}).get("ok") else None,
+        "warnings": warnings,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Registry visibility scoping (shared by the list + validate endpoints)
+# ---------------------------------------------------------------------------
+
+
+def _registry_entry(rq: Any, identity: VerifiedIdentity) -> dict:
+    """Public shape of one registry entry.
+
+    Embed identities run queries by id and never need the SQL text, so it is
+    left out for them — the canonical SQL stays server-side.
+    """
+    entry: dict = {
+        "id": rq.id,
+        "name": rq.name,
+        "sql": rq.sql,
+        "metric": rq.metric,
+        "required_scope": rq.required_scope,
+        "datastore_id": rq.datastore_id,
+        "params": [
+            {
+                "name": p.name,
+                "type": p.type,
+                "default": p.default,
+                "required": p.required,
+                "options_query_id": p.options_query_id,
+            }
+            for p in rq.params
+        ],
+    }
+    if identity.kind == "embed":
+        entry.pop("sql")
+    return entry
+
+
+async def _visible_registry_row_ids(
+    request: Request, identity: VerifiedIdentity
+) -> set[str] | None:
+    """Return the persisted query row ids the caller may see, or ``None``.
+
+    ``None`` means "no scoping available" (persistence-free demo path) and the
+    caller should not filter.  Built-in/seed queries (``RegisteredQuery.system``,
+    e.g. ``demo_*``) are global and stay visible regardless of this set.
+
+    Shared by ``GET /query/registry`` and ``POST /query/registry/validate`` so
+    the two can never drift into different visibility rules — a validate call
+    must not become a side channel that confirms the existence of another org's
+    query ids.
+
+    Fail-closed: any scoping error yields an EMPTY set, so non-system queries
+    are never leaked cross-org.
+    """
+    try:
+        repo = get_repo()
+        if identity.kind == "embed":
+            if identity.org:
+                rows = await repo.list("queries", identity.org)
+                return {str(r["id"]) for r in rows}
+            # An embed identity bound to no org sees no persisted queries.
+            return set()
+        from app.routes._org import (  # noqa: PLC0415
+            resolve_org_id as _resolve_org_id,
+            resolve_project_filter as _resolve_project_filter,
+        )
+
+        _org_id = await _resolve_org_id(identity.user_id, repo, request)
+        _project_id = await _resolve_project_filter(_org_id, request)
+        rows = await repo.list("queries", _org_id, _project_id)
+        return {str(r["id"]) for r in rows}
+    except Exception:  # noqa: BLE001 — scoping unavailable → fail closed (empty).
+        return set()
+
+
+# ---------------------------------------------------------------------------
+# POST /query/registry/validate — batch "will this query even run?" check
+# ---------------------------------------------------------------------------
+# The query library lists every registered query, and a query whose stored SQL
+# no longer parses fails only once the user opens it and presses Run.  Migrated
+# estates can carry a lot of those (a legacy filter variable that rendered to
+# the empty string leaves `WHERE d BETWEEN  AND x`), so the list needs to say
+# up front which entries cannot run.
+#
+# This mirrors the POST /query pre-execution pipeline exactly — declared params
+# rendered with their defaults, {{ vars.* }} resolved, parsed in the datastore's
+# native dialect — so a green badge here means the same thing as a successful
+# Run.  It is a batch endpoint on purpose: per-row calls would exhaust the
+# 'query' rate-limit bucket that `/api/v1/query/*` shares.
+
+_REGISTRY_VALIDATE_MAX_IDS = 250
+
+
+class RegistryValidateIn(BaseModel):
+    """Request body for POST /query/registry/validate."""
+
+    ids: list[str] = Field(default_factory=list)
+
+
+def _parse_check(sql: str, dialect: str) -> str | None:
+    """Return ``None`` when *sql* parses, else a human-readable reason."""
+    from app.connectors.planner import _humanise_parse_error  # noqa: PLC0415
+    from app.connectors.sql_parse import parse_sql_cached  # noqa: PLC0415
+
+    try:
+        parse_sql_cached(sql, dialect=dialect)
+        return None
+    except sqlglot.errors.SqlglotError as exc:
+        return _humanise_parse_error(exc)
+    except Exception as exc:  # noqa: BLE001 — any parser failure is "won't run"
+        return str(exc).splitlines()[0][:300] or "The SQL could not be parsed."
+
+
+@router.post("/query/registry/validate")
+async def validate_registered_queries(
+    body: RegistryValidateIn,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Report which of the given registered queries can actually be planned.
+
+    Body: ``{"ids": ["<query_id>", ...]}`` — capped at
+    ``_REGISTRY_VALIDATE_MAX_IDS`` per call so one request stays cheap; the
+    caller pages through a long library.
+
+    Returns ``{"results": {"<id>": {"valid": true}
+                                  | {"valid": false, "error": "..."}}}``.
+    Ids the caller cannot see are simply absent from ``results`` — the endpoint
+    never reveals whether an invisible id exists.
+    """
+    from app.errors import AppError as _AppError
+
+    _scopes = identity.scope
+    _has_read = has_scope(_scopes, "read:query") or any(
+        s.startswith("read:") for s in _scopes
+    )
+    if not _has_read:
+        raise _AppError(
+            "insufficient_scope",
+            "Token does not carry the required scope: read:query",
+            403,
+        )
+
+    ids = list(dict.fromkeys(body.ids or []))[:_REGISTRY_VALIDATE_MAX_IDS]
+    if not ids:
+        return {"results": {}}
+
+    registry = get_query_registry()
+    row_ids = await _visible_registry_row_ids(request, identity)
+
+    # {{ vars.* }} namespace — loaded once, not per query.
+    template_vars: dict[str, object] = {}
+    try:
+        org_id, _ = await _resolve_caller_org(identity, get_repo(), request)
+        if org_id:
+            template_vars = await _load_query_vars(
+                org_id, request.headers.get("X-Project-Id") or None
+            )
+    except Exception:  # noqa: BLE001 — best-effort, mirrors the query path.
+        template_vars = {}
+
+    dialect_cache: dict[str | None, str] = {}
+    results: dict[str, dict] = {}
+
+    for qid in ids:
+        rq = registry.get(qid)
+        if rq is None:
+            continue
+        if row_ids is not None and not rq.system and rq.id not in row_ids:
+            continue  # invisible to this caller — omit rather than confirm
+
+        # 1. Render exactly as POST /query would: declared params take their
+        #    defaults, and {{ vars.* }} resolves from the org namespace.
+        sql = rq.sql or ""
+        try:
+            if rq.params:
+                resolved: dict[str, object] = {
+                    p.name: p.default for p in rq.params
+                }
+                resolved["vars"] = template_vars
+                effective_sql, _ = resolve_named_params(sql, resolved)
+            elif "{{" in sql:
+                effective_sql, _ = resolve_named_params(sql, {"vars": template_vars})
+            else:
+                effective_sql = sql
+        except KeyError as exc:
+            results[qid] = {
+                "valid": False,
+                "error": f"Template references an undefined variable: {exc}.",
+            }
+            continue
+        except Exception as exc:  # noqa: BLE001 — a bad template is "won't run"
+            results[qid] = {
+                "valid": False,
+                "error": f"The query template could not be rendered: {exc}"[:300],
+            }
+            continue
+
+        if not effective_sql.strip():
+            results[qid] = {"valid": False, "error": "The query has no SQL."}
+            continue
+
+        # 2. Parse in the datastore's native dialect, as the planner will.
+        if rq.datastore_id not in dialect_cache:
+            dialect_cache[rq.datastore_id] = await _resolve_target_dialect(
+                rq.datastore_id, identity, request
+            )
+        dialect = dialect_cache[rq.datastore_id]
+
+        # sqlglot parsing is CPU-bound; keep it off the event loop.
+        error = await asyncio.to_thread(_parse_check, effective_sql, dialect)
+        results[qid] = {"valid": True} if error is None else {
+            "valid": False,
+            "error": error,
+        }
+
+    return {"results": results}
 
 
 # ---------------------------------------------------------------------------
@@ -1917,58 +2741,139 @@ async def list_query_registry(
     registry = get_query_registry()
     entries = registry.all()
 
-    # ── ORG/PROJECT SCOPING (DECISION 3) ─────────────────────────────────────
-    # Built-in/seed queries (RegisteredQuery.system, e.g. demo_*) are global —
-    # safe to surface to any authenticated caller. User/runtime queries are
-    # per-tenant and MUST be org-scoped: we gate them by the caller's org
-    # row_ids. On a scoping error we fail closed (row_ids=set()) so non-system
-    # queries are never leaked cross-org, while system queries stay visible.
-    row_ids: set[str] | None = None
-    try:
-        repo = get_repo()
-        if identity.kind == "embed":
-            if identity.org:
-                rows = await repo.list("queries", identity.org)
-                row_ids = {str(r["id"]) for r in rows}
-        else:
-            from app.routes._org import (  # noqa: PLC0415
-                resolve_org_id as _resolve_org_id,
-                resolve_project_filter as _resolve_project_filter,
-            )
-
-            _org_id = await _resolve_org_id(identity.user_id, repo, request)
-            _project_id = await _resolve_project_filter(_org_id, request)
-            rows = await repo.list("queries", _org_id, _project_id)
-            row_ids = {str(r["id"]) for r in rows}
-    except Exception:  # noqa: BLE001 — scoping unavailable → fail closed (empty).
-        row_ids = set()  # fail closed: never leak cross-org SQL on error
-
+    row_ids = await _visible_registry_row_ids(request, identity)
     if row_ids is not None:
         entries = [rq for rq in entries if rq.system or rq.id in row_ids]
 
-    queries = []
-    for rq in entries:
-        queries.append(
-            {
-                "id": rq.id,
-                "name": rq.name,
-                "sql": rq.sql,
-                "metric": rq.metric,
-                "required_scope": rq.required_scope,
-                "datastore_id": rq.datastore_id,
-                "params": [
-                    {
-                        "name": p.name,
-                        "type": p.type,
-                        "default": p.default,
-                        "required": p.required,
-                        "options_query_id": p.options_query_id,
-                    }
-                    for p in rq.params
-                ],
-            }
+    return {"queries": [_registry_entry(rq, identity) for rq in entries]}
+
+
+@router.get("/query/registry/{query_id}")
+async def get_registered_query(
+    query_id: str,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Return a single registered query by id, for deep-linking into the editor.
+
+    The LIST endpoint above deliberately excludes slug-only registry entries
+    (non-uuid ids with no persisted ``queries`` row) because those exist for the
+    embed allowlist, not for first-party project browsing. That makes such
+    queries -- e.g. every migrated board's ``q_xxxxxxxx`` -- impossible to open
+    in the query editor even though the boards referencing them are readable.
+
+    This endpoint closes that gap without widening the browse policy: a caller
+    must already know the id (they got it from a board they can read), and
+    resolution goes through ``resolve_registered_query``, which is org-scoped
+    and returns ``None`` for another org's persisted query. So slug queries
+    become OPENABLE BY ID while staying OUT OF THE LIST.
+
+    Returns the same entry shape as GET /query/registry.
+
+    Raises
+    ------
+    AppError("query_not_found", 404)
+        If no query with *query_id* is visible to the caller's org.
+    """
+    from app.errors import AppError as _AppError
+
+    _scopes = identity.scope
+    _has_read = has_scope(_scopes, "read:query") or any(
+        s.startswith("read:") for s in _scopes
+    )
+    if not _has_read:
+        raise _AppError(
+            "insufficient_scope",
+            "Token does not carry the required scope: read:query",
+            403,
         )
-    return {"queries": queries}
+
+    # Must honour X-Org-Id exactly like GET /query/registry does —
+    # _resolve_caller_org returns the user's DEFAULT org and would 404 for a
+    # caller viewing any other org they belong to.
+    org_id = None
+    try:
+        from app.routes._org import resolve_org_id as _resolve_org_id  # noqa: PLC0415
+
+        org_id = await _resolve_org_id(identity.user_id, get_repo(), request)
+    except Exception:  # noqa: BLE001 — embed/org-less callers fall through below
+        if identity.kind == "embed" and identity.org:
+            org_id = identity.org
+
+    rq = await resolve_registered_query(query_id, org_id)
+    if rq is None:
+        raise _AppError(
+            "query_not_found",
+            f"No registered query found for id={query_id!r}.",
+            404,
+        )
+
+    return _registry_entry(rq, identity)
+
+
+@router.get("/query/registry/{query_id}/widgets")
+async def list_query_widget_usages(
+    query_id: str,
+    request: Request,
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict:
+    """Return every widget, across every board in the caller's active
+    project, that references *query_id* (via ``query_id`` or, for filter
+    widgets, ``options_query_id``).
+
+    Widgets are not a queryable DB resource on their own -- they live nested
+    inside each board's ``config.spec.widgets`` array (the ``widgets`` table
+    is an unused generic resource stub). Board counts per project are small,
+    so this scans ``repo.list("boards", ...)`` in Python rather than adding a
+    jsonb path query or any denormalized index -- same org/project scoping as
+    GET /query/registry above.
+
+    Returns
+    -------
+    dict
+        ``{"widgets": [{board_id, board_name, widget_id, widget_type}]}``.
+    """
+    from app.errors import AppError as _AppError
+
+    _scopes = identity.scope
+    _has_read = has_scope(_scopes, "read:query") or any(
+        s.startswith("read:") for s in _scopes
+    )
+    if not _has_read:
+        raise _AppError(
+            "insufficient_scope",
+            "Token does not carry the required scope: read:query",
+            403,
+        )
+
+    usages: list[dict] = []
+    try:
+        from app.routes._org import (  # noqa: PLC0415
+            resolve_org_id as _resolve_org_id,
+            resolve_project_filter as _resolve_project_filter,
+        )
+
+        repo = get_repo()
+        _org_id = await _resolve_org_id(identity.user_id, repo, request)
+        _project_id = await _resolve_project_filter(_org_id, request)
+        boards = await repo.list("boards", _org_id, _project_id)
+    except Exception:  # noqa: BLE001 — scoping unavailable → empty, not an error.
+        boards = []
+
+    for board in boards:
+        widgets = (board.get("config") or {}).get("spec", {}).get("widgets", [])
+        for w in widgets:
+            if w.get("query_id") == query_id or w.get("options_query_id") == query_id:
+                usages.append(
+                    {
+                        "board_id": board["id"],
+                        "board_name": board.get("name", ""),
+                        "widget_id": w.get("id", ""),
+                        "widget_type": w.get("type", ""),
+                    }
+                )
+
+    return {"widgets": usages}
 
 
 # ---------------------------------------------------------------------------
@@ -2032,7 +2937,7 @@ class RegisterQueryIn(BaseModel):
     metric: dict | None = None
 
 
-@router.post("/query/registry", status_code=201)
+@router.post("/query/registry", status_code=201, dependencies=[Depends(require_writer)])
 async def register_query(
     body: RegisterQueryIn,
     request: Request,
@@ -2187,12 +3092,21 @@ async def register_query(
     org_id: str | None = None
     try:
         from app.routes._org import (  # noqa: PLC0415
-            get_user_org as _get_user_org,
+            resolve_org_id as _resolve_org_id,
             resolve_project_id_for_create as _resolve_project_id_for_create,
         )
 
         repo = get_repo()
-        org_id = await _get_user_org(identity.user_id, repo)
+        # Header-aware, like every other route in this file: the query is
+        # registered into the org the caller is VIEWING (``X-Org-Id``), falling
+        # back to their default org when the header is absent. Reading the
+        # default org unconditionally meant a caller working in any non-default
+        # workspace silently wrote the query into a different org — it vanished
+        # from the registry listing they were looking at, and every subsequent
+        # ``POST /query`` for that id came back 403 ``query_not_registered``
+        # because resolution is org-scoped. Same class of bug as the connector
+        # routes' header-awareness note at the top of routes/connectors.py.
+        org_id = await _resolve_org_id(identity.user_id, repo, request)
         # Active project (X-Project-Id / ?project_id=, else the org default):
         # persisted rows are project-scoped so the registry list can be too.
         project_id = await _resolve_project_id_for_create(org_id, request)
@@ -2251,16 +3165,21 @@ async def register_query(
 
     # Register in the in-memory singleton (immediately runnable).
     registry = get_query_registry()
-    rq = registry.register(
-        id=query_id,
-        sql=body.sql,
-        name=body.name,
-        required_scope=body.required_scope,
-        params=param_objs,
-        datastore_id=datastore_id,
-        metric=config.get("metric"),
-        owner_org_id=org_id,
-    )
+    try:
+        rq = registry.register(
+            id=query_id,
+            sql=body.sql,
+            name=body.name,
+            required_scope=body.required_scope,
+            params=param_objs,
+            datastore_id=datastore_id,
+            metric=config.get("metric"),
+            owner_org_id=org_id,
+        )
+    except ValueError as _exc:
+        from app.errors import AppError as _AppError  # noqa: PLC0415
+
+        raise _AppError("query_id_conflict", "That query id is already in use.", 409) from _exc
 
     return {
         "id": rq.id,

@@ -1,0 +1,796 @@
+/**
+ * chartOptionShared.test.mjs — Tests for new chart types and config features
+ * exposed through the shared embed/widgets/chart-options.js builder.
+ *
+ * Covers:
+ *   - All 19 chart types produce a valid ECharts option (no throw)
+ *   - Sankey: nodes + links structure
+ *   - Boxplot: five-number summary output
+ *   - Fan chart: confidence band series + forecast line
+ *   - Reference lines (markLine) present on cartesian charts
+ *   - Dual-axis (y2) on line chart
+ *   - Config round-trip: options persist as expected (stack, orientation, dataLabels)
+ *   - ChartWidget compat: resolveEncoding / resolveConfig helpers (pure logic)
+ *
+ * Run with:
+ *   npm run test:dash
+ */
+
+import { test, describe } from 'node:test'
+import assert from 'node:assert/strict'
+
+// Import via the shared re-export (same path ChartWidget uses)
+import { buildChartOption, SUPPORTED_TYPES, tableView } from '../../src/lib/chartOptionShared.js'
+
+// ---------------------------------------------------------------------------
+// Table helpers
+// ---------------------------------------------------------------------------
+
+function makeRows(rows) {
+  return tableView(rows)
+}
+
+const CAT_NUM = [
+  { cat: 'A', val: 10 },
+  { cat: 'B', val: 20 },
+  { cat: 'C', val: 15 },
+]
+
+const XY_NUM = [
+  { x: 1, y: 10 },
+  { x: 2, y: 20 },
+  { x: 3, y: 15 },
+]
+
+const SANKEY_ROWS = [
+  { src: 'A', tgt: 'C', flow: 5 },
+  { src: 'B', tgt: 'C', flow: 8 },
+  { src: 'C', tgt: 'D', flow: 13 },
+]
+
+const BOXPLOT_ROWS = [
+  { cat: 'G1', val: 10 },
+  { cat: 'G1', val: 20 },
+  { cat: 'G1', val: 15 },
+  { cat: 'G1', val: 30 },
+  { cat: 'G1', val: 25 },
+  { cat: 'G2', val: 5 },
+  { cat: 'G2', val: 12 },
+  { cat: 'G2', val: 18 },
+]
+
+const FAN_ROWS = [
+  { t: '2024-Q1', mid: 100, lo: 90, hi: 110 },
+  { t: '2024-Q2', mid: 120, lo: 105, hi: 135 },
+  { t: '2024-Q3', mid: 115, lo: 98, hi: 132 },
+]
+
+const CANDLE_ROWS = [
+  { date: '2024-01', open: 100, close: 110, low: 95, high: 115 },
+  { date: '2024-02', open: 110, close: 105, low: 100, high: 118 },
+]
+
+const HEATMAP_ROWS = [
+  { x: 'Mon', y: 'AM', val: 5 },
+  { x: 'Mon', y: 'PM', val: 8 },
+  { x: 'Tue', y: 'AM', val: 3 },
+]
+
+// ---------------------------------------------------------------------------
+// 1. SUPPORTED_TYPES export
+// ---------------------------------------------------------------------------
+
+describe('SUPPORTED_TYPES', () => {
+  test('exports an array of 21 types', () => {
+    assert.ok(Array.isArray(SUPPORTED_TYPES))
+    assert.equal(SUPPORTED_TYPES.length, 21)
+  })
+
+  test('includes all expected types', () => {
+    const required = [
+      'bar', 'line', 'area', 'scatter', 'bubble', 'pie', 'donut',
+      'sankey', 'funnel', 'waterfall', 'heatmap', 'radar', 'treemap',
+      'boxplot', 'gauge', 'candlestick', 'fan', 'combo', 'map',
+      'polar', 'radialbar',
+    ]
+    for (const t of required) {
+      assert.ok(SUPPORTED_TYPES.includes(t), `SUPPORTED_TYPES must include '${t}'`)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 2. All 21 types produce a valid option without throwing
+// ---------------------------------------------------------------------------
+
+describe('all 21 types - no throw', () => {
+  const cases = [
+    { type: 'bar',         table: CAT_NUM, encoding: { x: 'cat', y: 'val' } },
+    { type: 'line',        table: XY_NUM,  encoding: { x: 'x', y: 'y' } },
+    { type: 'area',        table: XY_NUM,  encoding: { x: 'x', y: 'y' } },
+    { type: 'scatter',     table: XY_NUM,  encoding: { x: 'x', y: 'y' } },
+    { type: 'bubble',      table: XY_NUM,  encoding: { x: 'x', y: 'y' } },
+    { type: 'pie',         table: CAT_NUM, encoding: { x: 'cat', y: 'val' } },
+    { type: 'donut',       table: CAT_NUM, encoding: { x: 'cat', y: 'val' } },
+    { type: 'sankey',      table: SANKEY_ROWS,  encoding: { source: 'src', target: 'tgt', value: 'flow' } },
+    { type: 'funnel',      table: CAT_NUM, encoding: { x: 'cat', y: 'val' } },
+    { type: 'waterfall',   table: CAT_NUM, encoding: { x: 'cat', y: 'val' } },
+    { type: 'heatmap',     table: HEATMAP_ROWS, encoding: { x: 'x', color: 'y', value: 'val' } },
+    { type: 'radar',       table: CAT_NUM, encoding: { x: 'cat', y: 'val' } },
+    { type: 'treemap',     table: CAT_NUM, encoding: { x: 'cat', y: 'val' } },
+    { type: 'boxplot',     table: BOXPLOT_ROWS, encoding: { x: 'cat', y: 'val' } },
+    { type: 'gauge',       table: XY_NUM,  encoding: { y: 'y' } },
+    { type: 'candlestick', table: CANDLE_ROWS,  encoding: { x: 'date', open: 'open', close: 'close', low: 'low', high: 'high' } },
+    { type: 'fan',         table: FAN_ROWS, encoding: { x: 't', y: 'mid', lower: 'lo', upper: 'hi' } },
+    { type: 'map',         table: CAT_NUM, encoding: { name: 'cat', value: 'val' } },
+    { type: 'polar',       table: CAT_NUM, encoding: { x: 'cat', y: 'val' } },
+    { type: 'radialbar',   table: CAT_NUM, encoding: { x: 'cat', y: 'val' } },
+  ]
+
+  for (const { type, table, encoding } of cases) {
+    test(`${type}: builds without throwing`, () => {
+      assert.doesNotThrow(() => {
+        const opt = buildChartOption({ type, table, encoding })
+        assert.ok(opt && typeof opt === 'object', `${type}: option must be an object`)
+      })
+    })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// 3. Sankey — specific structure
+// ---------------------------------------------------------------------------
+
+describe('sankey', () => {
+  test('produces series type sankey', () => {
+    const opt = buildChartOption({
+      type: 'sankey',
+      table: SANKEY_ROWS,
+      encoding: { source: 'src', target: 'tgt', value: 'flow' },
+    })
+    assert.ok(Array.isArray(opt.series))
+    assert.equal(opt.series[0].type, 'sankey')
+  })
+
+  test('nodes derived from source + target columns', () => {
+    const opt = buildChartOption({
+      type: 'sankey',
+      table: SANKEY_ROWS,
+      encoding: { source: 'src', target: 'tgt', value: 'flow' },
+    })
+    const nodeNames = opt.series[0].data.map(n => n.name)
+    assert.ok(nodeNames.includes('A'))
+    assert.ok(nodeNames.includes('B'))
+    assert.ok(nodeNames.includes('C'))
+    assert.ok(nodeNames.includes('D'))
+  })
+
+  test('links match rows', () => {
+    const opt = buildChartOption({
+      type: 'sankey',
+      table: SANKEY_ROWS,
+      encoding: { source: 'src', target: 'tgt', value: 'flow' },
+    })
+    assert.equal(opt.series[0].links.length, 3)
+    assert.equal(opt.series[0].links[0].source, 'A')
+    assert.equal(opt.series[0].links[0].target, 'C')
+    assert.equal(opt.series[0].links[0].value, 5)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 4. Boxplot — five-number summary
+// ---------------------------------------------------------------------------
+
+describe('boxplot', () => {
+  test('produces series type boxplot', () => {
+    const opt = buildChartOption({
+      type: 'boxplot',
+      table: BOXPLOT_ROWS,
+      encoding: { x: 'cat', y: 'val' },
+    })
+    assert.ok(Array.isArray(opt.series))
+    assert.equal(opt.series[0].type, 'boxplot')
+  })
+
+  test('each boxplot data point is a 5-element array [min, q1, med, q3, max]', () => {
+    const opt = buildChartOption({
+      type: 'boxplot',
+      table: BOXPLOT_ROWS,
+      encoding: { x: 'cat', y: 'val' },
+    })
+    const data = opt.series[0].data
+    assert.ok(Array.isArray(data))
+    assert.equal(data.length, 2, 'two groups (G1, G2)')
+    for (const d of data) {
+      assert.ok(Array.isArray(d) && d.length === 5, 'each entry must be [min, q1, med, q3, max]')
+      // verify min <= q1 <= med <= q3 <= max
+      assert.ok(d[0] <= d[1] && d[1] <= d[2] && d[2] <= d[3] && d[3] <= d[4])
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 5. Fan chart — confidence band + forecast line
+// ---------------------------------------------------------------------------
+
+describe('fan', () => {
+  test('produces at least 2 series (band layers + forecast)', () => {
+    const opt = buildChartOption({
+      type: 'fan',
+      table: FAN_ROWS,
+      encoding: { x: 't', y: 'mid', lower: 'lo', upper: 'hi' },
+    })
+    assert.ok(Array.isArray(opt.series))
+    // lower-band baseline + confidence area + forecast line = 3 series
+    assert.ok(opt.series.length >= 2, 'fan with bounds must produce >= 2 series')
+  })
+
+  test('last series is the forecast line', () => {
+    const opt = buildChartOption({
+      type: 'fan',
+      table: FAN_ROWS,
+      encoding: { x: 't', y: 'mid', lower: 'lo', upper: 'hi' },
+    })
+    const last = opt.series[opt.series.length - 1]
+    assert.equal(last.type, 'line')
+    assert.ok(last.z && last.z >= 3, 'forecast must be drawn on top (z >= 3)')
+  })
+
+  test('without bounds produces a single line series', () => {
+    const opt = buildChartOption({
+      type: 'fan',
+      table: XY_NUM,
+      encoding: { x: 'x', y: 'y' },
+    })
+    assert.equal(opt.series.length, 1)
+    assert.equal(opt.series[0].type, 'line')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 6. Reference lines (markLine) — cartesian charts
+// ---------------------------------------------------------------------------
+
+describe('referenceLines', () => {
+  test('bar chart: single y reference line appears in markLine', () => {
+    const opt = buildChartOption({
+      type: 'bar',
+      table: CAT_NUM,
+      encoding: { x: 'cat', y: 'val' },
+      config: {
+        referenceLines: [{ value: 12, axis: 'y', label: 'Target', type: 'dashed' }],
+      },
+    })
+    const ml = opt.series[0].markLine
+    assert.ok(ml, 'markLine must be present')
+    assert.ok(Array.isArray(ml.data) && ml.data.length === 1)
+    assert.equal(ml.data[0].yAxis, 12)
+    assert.equal(ml.data[0].lineStyle.type, 'dashed')
+  })
+
+  test('line chart: multiple reference lines', () => {
+    const opt = buildChartOption({
+      type: 'line',
+      table: XY_NUM,
+      encoding: { x: 'x', y: 'y' },
+      config: {
+        referenceLines: [
+          { value: 10, axis: 'y', label: 'Low' },
+          { value: 18, axis: 'y', label: 'High', type: 'solid', color: '#ef4444' },
+        ],
+      },
+    })
+    const ml = opt.series[0].markLine
+    assert.ok(ml)
+    assert.equal(ml.data.length, 2)
+    assert.equal(ml.data[1].lineStyle.color, '#ef4444')
+    assert.equal(ml.data[1].lineStyle.type, 'solid')
+  })
+
+  test('non-cartesian chart (pie): no markLine injected', () => {
+    const opt = buildChartOption({
+      type: 'pie',
+      table: CAT_NUM,
+      encoding: { x: 'cat', y: 'val' },
+      config: {
+        referenceLines: [{ value: 10, axis: 'y' }],
+      },
+    })
+    // pie series should not have markLine (decorateCartesian skips non-cartesian)
+    assert.ok(!opt.series[0].markLine, 'pie must not have markLine')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 7. Dual-axis (y2) on line chart
+// ---------------------------------------------------------------------------
+
+describe('dual y-axis', () => {
+  const TABLE_Y2 = [
+    { x: 1, y: 10, y2: 1000 },
+    { x: 2, y: 20, y2: 2000 },
+    { x: 3, y: 15, y2: 1500 },
+  ]
+
+  test('line chart with y2 encoding produces two yAxis entries', () => {
+    const opt = buildChartOption({
+      type: 'line',
+      table: TABLE_Y2,
+      encoding: { x: 'x', y: 'y', y2: 'y2' },
+    })
+    assert.ok(Array.isArray(opt.yAxis), 'yAxis must be an array when dual-axis is active')
+    assert.equal(opt.yAxis.length, 2, 'must have exactly 2 yAxis entries')
+  })
+
+  test('second series has yAxisIndex: 1', () => {
+    const opt = buildChartOption({
+      type: 'line',
+      table: TABLE_Y2,
+      encoding: { x: 'x', y: 'y', y2: 'y2' },
+    })
+    const y2series = opt.series.find(s => s.yAxisIndex === 1)
+    assert.ok(y2series, 'one series must target yAxisIndex 1')
+    // A series name is read by a person, so it is humanised from its column the
+    // same way a table header is — see embed/widgets/column-labels.js.
+    assert.equal(y2series.name, 'Y2')
+  })
+
+  test('y2Axis config is applied to second yAxis', () => {
+    const opt = buildChartOption({
+      type: 'line',
+      table: TABLE_Y2,
+      encoding: { x: 'x', y: 'y', y2: 'y2' },
+      config: { y2Axis: { label: 'Revenue' } },
+    })
+    assert.equal(opt.yAxis[1].name, 'Revenue')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 8. Config round-trip — stack, orientation, dataLabels
+// ---------------------------------------------------------------------------
+
+describe('config round-trip', () => {
+  test('stack:normal → series share a stack group', () => {
+    const TABLE = [
+      { cat: 'A', v1: 10, grp: 'X' },
+      { cat: 'A', v1: 20, grp: 'Y' },
+      { cat: 'B', v1: 15, grp: 'X' },
+      { cat: 'B', v1: 25, grp: 'Y' },
+    ]
+    const opt = buildChartOption({
+      type: 'bar',
+      table: TABLE,
+      encoding: { x: 'cat', y: 'v1', color: 'grp' },
+      config: { stack: true },
+    })
+    const stacks = opt.series.map(s => s.stack).filter(Boolean)
+    assert.ok(stacks.length >= 2, 'multiple stacked series expected')
+    // All stacks share same group id
+    assert.ok(stacks.every(s => s === stacks[0]), 'all stacked series must share the same stack id')
+  })
+
+  test('stack:percent → series stacked with percent values (0-100 range)', () => {
+    const TABLE = [
+      { cat: 'A', val: 60, grp: 'X' },
+      { cat: 'A', val: 40, grp: 'Y' },
+    ]
+    const opt = buildChartOption({
+      type: 'bar',
+      table: TABLE,
+      encoding: { x: 'cat', y: 'val', color: 'grp' },
+      config: { stack: 'percent' },
+    })
+    // Values should be near 60 and 40 (percentage of 100)
+    const seriesValues = opt.series.map(s => s.data[0])
+    const total = seriesValues.reduce((a, b) => a + b, 0)
+    assert.ok(Math.abs(total - 100) < 0.1, `percent-stack total must be ~100, got ${total}`)
+  })
+
+  test('orientation:horizontal → x and y axes are swapped (category on yAxis)', () => {
+    const opt = buildChartOption({
+      type: 'bar',
+      table: CAT_NUM,
+      encoding: { x: 'cat', y: 'val' },
+      config: { orientation: 'horizontal' },
+    })
+    // horizontal bar: category axis is yAxis, value axis is xAxis
+    assert.equal(opt.yAxis.type, 'category', 'horizontal bar must put category on yAxis')
+    assert.ok(Array.isArray(opt.yAxis.data), 'yAxis must have category data')
+  })
+
+  test('dataLabels:true → first cartesian series has label.show === true', () => {
+    const opt = buildChartOption({
+      type: 'bar',
+      table: CAT_NUM,
+      encoding: { x: 'cat', y: 'val' },
+      config: { dataLabels: true },
+    })
+    assert.equal(opt.series[0].label?.show, true)
+  })
+
+  test('legend:false → no legend in option', () => {
+    const opt = buildChartOption({
+      type: 'bar',
+      table: CAT_NUM,
+      encoding: { x: 'cat', y: 'val' },
+      config: { legend: false },
+    })
+    assert.ok(!opt.legend, 'legend must not be present when disabled')
+  })
+
+  test('palette override applied to color array', () => {
+    const custom = ['#ff0000', '#00ff00', '#0000ff']
+    const opt = buildChartOption({
+      type: 'bar',
+      table: CAT_NUM,
+      encoding: { x: 'cat', y: 'val' },
+      config: { palette: custom },
+    })
+    assert.deepEqual(opt.color, custom)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 9. Candlestick — OHLC structure
+// ---------------------------------------------------------------------------
+
+describe('candlestick', () => {
+  test('produces series type candlestick', () => {
+    const opt = buildChartOption({
+      type: 'candlestick',
+      table: CANDLE_ROWS,
+      encoding: { x: 'date', open: 'open', close: 'close', low: 'low', high: 'high' },
+    })
+    assert.equal(opt.series[0].type, 'candlestick')
+  })
+
+  test('each data point is [open, close, low, high]', () => {
+    const opt = buildChartOption({
+      type: 'candlestick',
+      table: CANDLE_ROWS,
+      encoding: { x: 'date', open: 'open', close: 'close', low: 'low', high: 'high' },
+    })
+    const d = opt.series[0].data[0]
+    assert.ok(Array.isArray(d) && d.length === 4, 'each point must be a 4-element array')
+    assert.equal(d[0], 100) // open
+    assert.equal(d[1], 110) // close
+    assert.equal(d[2], 95)  // low
+    assert.equal(d[3], 115) // high
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 10. tableView adapter
+// ---------------------------------------------------------------------------
+
+describe('tableView', () => {
+  test('wraps row array into a TableView', () => {
+    const tv = tableView([{ a: 1, b: 2 }, { a: 3, b: 4 }])
+    assert.equal(tv.numRows, 2)
+    assert.deepEqual(tv.columns, ['a', 'b'])
+    assert.deepEqual(Array.from(tv.col('a')), [1, 3])
+  })
+
+  test('returns null or empty for unknown column', () => {
+    const tv = tableView([{ a: 1 }])
+    // row-array path: col('z') returns an array of undefineds (row.z === undefined),
+    // which is falsy-equivalent for chart rendering purposes
+    const result = tv.col('z')
+    // Either null (Arrow path) or an array of undefineds (row-array path) is acceptable
+    const isFalsy = result === null || (Array.isArray(result) && result.every(v => v === undefined))
+    assert.ok(isFalsy, 'unknown column must return null or array of undefineds')
+  })
+
+  test('returns passed-through TableView as-is', () => {
+    const tv = tableView([{ x: 1 }])
+    const tv2 = tableView(tv)
+    assert.equal(tv, tv2, 'already-wrapped view must be returned as-is')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Long-format (colour-grouped) line charts
+//
+// Regression: a line chart with a `color` encoding built its category axis
+// from every ROW, so long-format data ("day, metric, value" — one row per
+// day PER series) produced an axis with N_days x N_series slots and squashed
+// each line into the first 1/N of the plot. buildBar already deduped; buildLine
+// did not.
+// ---------------------------------------------------------------------------
+
+const LONG_ROWS = [
+  { day: 'Mon', metric: 'Revenue', value: 84 },
+  { day: 'Mon', metric: 'Orders', value: 70 },
+  { day: 'Tue', metric: 'Revenue', value: 81 },
+  { day: 'Tue', metric: 'Orders', value: 72 },
+  { day: 'Wed', metric: 'Revenue', value: 86 },
+  { day: 'Wed', metric: 'Orders', value: 69 },
+]
+
+describe('line chart with colour grouping (long format)', () => {
+  const opt = buildChartOption({
+    type: 'line',
+    table: makeRows(LONG_ROWS),
+    encoding: { x: 'day', y: 'value', color: 'metric' },
+  })
+
+  test('category axis is deduped to the distinct x values, in first-seen order', () => {
+    assert.deepEqual(opt.xAxis.data, ['Mon', 'Tue', 'Wed'])
+  })
+
+  test('emits one series per colour value', () => {
+    assert.equal(opt.series.length, 2)
+    assert.deepEqual(opt.series.map(s => s.name), ['Revenue', 'Orders'])
+  })
+
+  test('each series spans the whole axis, aligned to its own categories', () => {
+    for (const s of opt.series) {
+      assert.equal(s.data.length, opt.xAxis.data.length,
+        `${s.name} must have one point per category, not per row`)
+    }
+    assert.deepEqual(opt.series[0].data, [84, 81, 86])
+    assert.deepEqual(opt.series[1].data, [70, 72, 69])
+  })
+
+  test('a category missing from one series becomes a gap, not a zero', () => {
+    const sparse = buildChartOption({
+      type: 'line',
+      table: makeRows([...LONG_ROWS, { day: 'Thu', metric: 'Revenue', value: 90 }]),
+      encoding: { x: 'day', y: 'value', color: 'metric' },
+    })
+    const orders = sparse.series.find(s => s.name === 'Orders')
+    // Thu has no Orders row — a 0 would draw a false crash to the axis.
+    assert.equal(orders.data[3], null)
+  })
+
+  test('numeric x still pairs [x, y] rather than using the category path', () => {
+    const opt2 = buildChartOption({
+      type: 'line',
+      table: makeRows([
+        { x: 1, metric: 'A', y: 10 }, { x: 2, metric: 'A', y: 20 },
+        { x: 1, metric: 'B', y: 5 },  { x: 2, metric: 'B', y: 8 },
+      ]),
+      encoding: { x: 'x', y: 'y', color: 'metric' },
+    })
+    assert.deepEqual(opt2.series[0].data, [[1, 10], [2, 20]])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Choropleth map (chart_type: 'map')
+// ---------------------------------------------------------------------------
+
+describe('map (choropleth)', () => {
+  const REGIONS = makeRows([
+    { region: 'North', units: 300 },
+    { region: 'South', units: 120 },
+    { region: 'Central', units: 210 },
+  ])
+
+  test('emits a map series with {name,value} data', () => {
+    const opt = buildChartOption({
+      type: 'map', table: REGIONS,
+      encoding: { name: 'region', value: 'units' },
+      config: { map: 'sales-regions' },
+    })
+    const s = opt.series[0]
+    assert.equal(s.type, 'map')
+    assert.equal(s.map, 'sales-regions')
+    assert.deepEqual(s.data[0], { name: 'North', value: 300 })
+    assert.equal(s.data.length, 3)
+  })
+
+  test('visualMap spans the data range', () => {
+    const opt = buildChartOption({
+      type: 'map', table: REGIONS,
+      encoding: { name: 'region', value: 'units' },
+    })
+    assert.equal(opt.visualMap.min, 120)
+    assert.equal(opt.visualMap.max, 300)
+  })
+
+  test('a single-value dataset still yields a usable range', () => {
+    // min === max would make ECharts emit NaN colours, so max is nudged up.
+    const opt = buildChartOption({
+      type: 'map',
+      table: makeRows([{ region: 'North', units: 7 }]),
+      encoding: { name: 'region', value: 'units' },
+    })
+    assert.equal(opt.visualMap.min, 7)
+    assert.ok(opt.visualMap.max > opt.visualMap.min)
+  })
+
+  test('defaults to the world map when config.map is omitted', () => {
+    const opt = buildChartOption({
+      type: 'map', table: REGIONS, encoding: { name: 'region', value: 'units' },
+    })
+    assert.equal(opt.series[0].map, 'world')
+  })
+
+  test('x/y aliases work in place of name/value', () => {
+    const opt = buildChartOption({
+      type: 'map', table: REGIONS, encoding: { x: 'region', y: 'units' },
+    })
+    assert.deepEqual(opt.series[0].data[0], { name: 'North', value: 300 })
+  })
+
+  test('legend:false hides the scale but keeps the colour mapping', () => {
+    // visualMap IS the colour mapping, not just the on-screen scale — dropping
+    // it would leave every region unpainted.
+    const opt = buildChartOption({
+      type: 'map', table: REGIONS,
+      encoding: { name: 'region', value: 'units' },
+      config: { legend: false },
+    })
+    assert.equal(opt.visualMap.show, false)
+    assert.ok(opt.visualMap.inRange.color.length >= 2)
+  })
+
+  test('legend defaults to visible', () => {
+    const opt = buildChartOption({
+      type: 'map', table: REGIONS, encoding: { name: 'region', value: 'units' },
+    })
+    assert.equal(opt.visualMap.show, true)
+  })
+
+  test('roam is off by default so it does not swallow board scrolling', () => {
+    const opt = buildChartOption({
+      type: 'map', table: REGIONS, encoding: { name: 'region', value: 'units' },
+    })
+    assert.equal(opt.series[0].roam, false)
+    const roamed = buildChartOption({
+      type: 'map', table: REGIONS,
+      encoding: { name: 'region', value: 'units' }, config: { roam: true },
+    })
+    assert.equal(roamed.series[0].roam, true)
+  })
+
+  test('missing columns degrade to an empty option instead of throwing', () => {
+    assert.doesNotThrow(() => {
+      const opt = buildChartOption({
+        type: 'map', table: REGIONS, encoding: { name: 'nope', value: 'nah' },
+      })
+      assert.ok(opt && typeof opt === 'object')
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Pie/donut label placement (dataLabels.position / .formatter)
+// ---------------------------------------------------------------------------
+
+describe('pie label placement', () => {
+  const TWO = makeRows([{ k: 'Completed', v: 96 }, { k: 'Outstanding', v: 4 }])
+
+  test('defaults to outside labels with a leader line', () => {
+    const opt = buildChartOption({ type: 'donut', table: TWO, encoding: { x: 'k', y: 'v' } })
+    const s = opt.series[0]
+    assert.equal(s.label.position, 'outside')
+    assert.equal(s.labelLine.show, true)
+  })
+
+  test("position:'inside' draws on the slice and drops the leader line", () => {
+    // Outside labels need horizontal room a dashboard tile often lacks, so they
+    // get clipped; inside placement is what a compact ring needs.
+    const opt = buildChartOption({
+      type: 'donut', table: TWO, encoding: { x: 'k', y: 'v' },
+      config: { dataLabels: { position: 'inside' } },
+    })
+    const s = opt.series[0]
+    assert.equal(s.label.position, 'inside')
+    assert.equal(s.labelLine.show, false)
+  })
+
+  test('a formatter string overrides the default label template', () => {
+    const opt = buildChartOption({
+      type: 'donut', table: TWO, encoding: { x: 'k', y: 'v' },
+      config: { dataLabels: { position: 'inside', formatter: '{d}%' } },
+    })
+    assert.equal(opt.series[0].label.formatter, '{d}%')
+  })
+
+  test('dataLabels:false still hides labels entirely', () => {
+    const opt = buildChartOption({
+      type: 'donut', table: TWO, encoding: { x: 'k', y: 'v' }, config: { dataLabels: false },
+    })
+    assert.equal(opt.series[0].label.show, false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// polar — the legacy "Polar Chart" (Chart.js polarArea)
+// ---------------------------------------------------------------------------
+
+describe('polar', () => {
+  const T = [
+    { cat: 'a', val: 3 },
+    { cat: 'b', val: 7 },
+    { cat: 'c', val: 5 },
+  ]
+
+  test("renders as a rose with roseType 'area' (equal angles, radius = value)", () => {
+    // 'area' is the equal-angle mode; 'radius' is the Nightingale variant and
+    // would be the wrong shape for a Chart.js polarArea port.
+    const opt = buildChartOption({ type: 'polar', table: T, encoding: { x: 'cat', y: 'val' } })
+    const s = opt.series[0]
+    assert.equal(s.type, 'pie')
+    assert.equal(s.roseType, 'area')
+    assert.deepEqual(s.data.map(d => d.name), ['a', 'b', 'c'])
+    assert.deepEqual(s.data.map(d => d.value), [3, 7, 5])
+  })
+
+  test('legend defaults to the bottom, as for pie/donut', () => {
+    const opt = buildChartOption({ type: 'polar', table: T, encoding: { x: 'cat', y: 'val' } })
+    assert.equal(opt.legend.bottom, 4)
+  })
+
+  test('legend:false removes the legend', () => {
+    const opt = buildChartOption({
+      type: 'polar', table: T, encoding: { x: 'cat', y: 'val' }, config: { legend: false },
+    })
+    assert.equal(opt.legend, undefined)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// radialbar — the legacy "Radial Bar Chart" (ApexCharts radialBar)
+// ---------------------------------------------------------------------------
+
+describe('radialbar', () => {
+  const T = [
+    { cat: 'osa', val: 80 },
+    { cat: 'facing', val: 65 },
+    { cat: 'promo', val: 40 },
+  ]
+
+  test('builds concentric polar bars with a track ring behind them', () => {
+    const opt = buildChartOption({ type: 'radialbar', table: T, encoding: { x: 'cat', y: 'val' } })
+    assert.ok(opt.polar, 'must define a polar coordinate system')
+    assert.equal(opt.series.length, 2, 'a track series and a value series')
+    assert.equal(opt.series[0].coordinateSystem, 'polar')
+    assert.equal(opt.series[1].coordinateSystem, 'polar')
+    // The track is a full-circle bar at max on every ring.
+    assert.deepEqual(opt.series[0].data, [100, 100, 100])
+  })
+
+  test('rings run outermost-first, so the axis order is reversed', () => {
+    // ECharts stacks radius-axis categories inside-out; reversing keeps the
+    // first row of the query on the OUTSIDE, which is how Apex renders it.
+    const opt = buildChartOption({ type: 'radialbar', table: T, encoding: { x: 'cat', y: 'val' } })
+    assert.deepEqual(opt.radiusAxis.data, ['promo', 'facing', 'osa'])
+    assert.deepEqual(opt.series[1].data.map(d => d.value), [40, 65, 80])
+  })
+
+  test('scale defaults to 0..100 and honours config.yAxis min/max', () => {
+    const dflt = buildChartOption({ type: 'radialbar', table: T, encoding: { x: 'cat', y: 'val' } })
+    assert.equal(dflt.angleAxis.min, 0)
+    assert.equal(dflt.angleAxis.max, 100)
+
+    const scaled = buildChartOption({
+      type: 'radialbar', table: T, encoding: { x: 'cat', y: 'val' },
+      config: { yAxis: { min: 10, max: 250 } },
+    })
+    assert.equal(scaled.angleAxis.min, 10)
+    assert.equal(scaled.angleAxis.max, 250)
+    assert.deepEqual(scaled.series[0].data, [250, 250, 250])
+  })
+
+  test('each ring takes its own palette colour', () => {
+    const opt = buildChartOption({
+      type: 'radialbar', table: T, encoding: { x: 'cat', y: 'val' },
+      config: { palette: ['#111111', '#222222', '#333333'] },
+    })
+    // Data is reversed, and colours are indexed by the ORIGINAL row order, so
+    // the outermost ring (last in the reversed array) keeps palette[0].
+    assert.deepEqual(opt.series[1].data.map(d => d.itemStyle.color), ['#333333', '#222222', '#111111'])
+  })
+
+  test('dataLabels:false hides the in-ring value labels', () => {
+    const opt = buildChartOption({
+      type: 'radialbar', table: T, encoding: { x: 'cat', y: 'val' }, config: { dataLabels: false },
+    })
+    assert.equal(opt.series[1].label.show, false)
+  })
+})

@@ -1,0 +1,226 @@
+/**
+ * Combobox.jsx — accessible searchable single-select.
+ *
+ * Trigger button + portal popover (escapes grid clipping) containing a search
+ * input and a windowed OptionList. Full keyboard support: Up/Down/Home/End to
+ * move the cursor, Enter to select, Escape to close, type-ahead via the search
+ * box. ARIA: role="combobox" on the trigger, listbox/option on the panel.
+ *
+ * Value: a single string (or '' / null for "all"). Backward compatible with the
+ * legacy SelectFilter contract.
+ */
+
+import { useId, useMemo, useRef, useState } from 'react'
+import Popover from './Popover.jsx'
+import OptionList from './OptionList.jsx'
+import { FILTER_SHELL_CLS, FILTER_LABEL_CLS } from './helpers.js'
+
+const SIZES = {
+  sm: 'text-xs px-2.5 py-1.5',
+  md: 'text-sm px-3 py-2',
+  lg: 'text-base px-3.5 py-2.5',
+}
+
+/**
+ * @param {{
+ *   label?: string,
+ *   placeholder?: string,
+ *   allLabel?: string,
+ *   showAll?: boolean,    // false when the filter must always hold a value
+ *   options: Array<{v: string, l: string}>,    // pre-normalised
+ *   value: string | number | null,
+ *   onChange: (v: string) => void,
+ *   clearable?: boolean,
+ *   searchable?: boolean,
+ *   size?: 'sm' | 'md' | 'lg',
+ *   styleVars?: Record<string, string>,
+ *   onSearch?: (q: string) => void,            // server-search hook (F3)
+ *   loading?: boolean,
+ *   typeToSearch?: boolean,
+ * }} props
+ */
+export default function Combobox({
+  label,
+  placeholder,
+  allLabel = 'All',
+  showAll = true,
+  options,
+  value,
+  onChange,
+  clearable = false,
+  searchable = true,
+  size = 'md',
+  styleVars,
+  onSearch,
+  loading = false,
+  typeToSearch = false,
+}) {
+  const uid = useId()
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const [active, setActive] = useState(-1)
+  const triggerRef = useRef(null)
+
+  const current = value == null ? '' : String(value)
+
+  // Local filtering only when not server-driven.
+  const filtered = useMemo(() => {
+    if (onSearch) return options
+    const q = search.trim().toLowerCase()
+    if (!q) return options
+    return options.filter(o => o.l.toLowerCase().includes(q) || o.v.toLowerCase().includes(q))
+  }, [options, search, onSearch])
+
+  // "All" sentinel row prepended so users can clear the selection from the list.
+  const rows = useMemo(
+    () => (showAll ? [{ v: '', l: allLabel }, ...filtered] : filtered),
+    [filtered, allLabel, showAll],
+  )
+
+  const selectedLabel = useMemo(() => {
+    if (!current) return ''
+    const sel = options.find(o => o.v === current)
+    return sel?.l ?? current
+  }, [options, current])
+
+  const selectedSet = useMemo(() => new Set([current]), [current])
+
+  function commit(v) {
+    onChange(v)
+    setOpen(false)
+    setSearch('')
+    setActive(-1)
+    triggerRef.current?.focus()
+  }
+
+  function openMenu() {
+    setOpen(true)
+    setActive(Math.max(0, rows.findIndex(o => o.v === current)))
+  }
+
+  function onTriggerKey(e) {
+    if (!open && (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ')) {
+      e.preventDefault()
+      openMenu()
+    }
+  }
+
+  function onPanelKey(e) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setActive(i => Math.min(rows.length - 1, i + 1)) }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(i => Math.max(0, i - 1)) }
+    else if (e.key === 'Home') { e.preventDefault(); setActive(0) }
+    else if (e.key === 'End') { e.preventDefault(); setActive(rows.length - 1) }
+    else if (e.key === 'Enter') {
+      e.preventDefault()
+      if (active >= 0 && active < rows.length) commit(rows[active].v)
+    }
+  }
+
+  function handleSearch(q) {
+    setSearch(q)
+    setActive(rows.length > 0 ? 0 : -1)
+    onSearch?.(q)
+  }
+
+  const listboxId = `${uid}-listbox`
+  const hasValue = !!current
+
+  return (
+    <div className={FILTER_SHELL_CLS}>
+      {label && (
+        <label htmlFor={uid} style={styleVars?.['--filter-label-color'] ? { color: styleVars['--filter-label-color'] } : undefined} className={FILTER_LABEL_CLS}>
+          {label}
+        </label>
+      )}
+      <div className="relative">
+        <button
+          id={uid}
+          ref={triggerRef}
+          type="button"
+          role="combobox"
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-controls={open ? listboxId : undefined}
+          onClick={() => (open ? setOpen(false) : openMenu())}
+          onKeyDown={onTriggerKey}
+          className={[
+            'w-full flex items-center justify-between gap-2 rounded-lg border bg-surface transition-all duration-150',
+            SIZES[size] ?? SIZES.md,
+            'focus:outline-none focus:ring-2 focus:ring-ring/50 cursor-pointer',
+            // Active state (a value is selected) — a primary rim + dot is the
+            // clearest "this filter is applied" cue; matches BI slicer convention.
+            hasValue
+              ? 'border-primary/60 text-fg font-medium hover:border-primary'
+              : 'border-border text-muted hover:border-ring/50',
+          ].join(' ')}
+        >
+          <span className="flex items-center gap-2 min-w-0">
+            {hasValue && <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" aria-hidden="true" />}
+            <span className={hasValue ? 'truncate' : 'truncate text-muted'}>
+              {selectedLabel || (placeholder ?? allLabel)}
+            </span>
+          </span>
+          <span className="flex items-center gap-0.5 shrink-0">
+            {clearable && hasValue && (
+              <span
+                role="button"
+                tabIndex={0}
+                aria-label="Clear"
+                onClick={e => { e.stopPropagation(); onChange('') }}
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onChange('') } }}
+                className="w-4 h-4 flex items-center justify-center text-[11px] text-muted hover:text-fg rounded"
+              >
+                ✕
+              </span>
+            )}
+            <svg
+              width="12" height="12" viewBox="0 0 12 12" fill="none"
+              className={`text-muted transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
+              aria-hidden="true"
+            >
+              <path d="M3 4.5 6 7.5 9 4.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </span>
+        </button>
+
+        <Popover
+          anchorRef={triggerRef}
+          open={open}
+          onClose={() => { setOpen(false); setSearch(''); setActive(-1) }}
+          styleVars={styleVars}
+          role="presentation"
+        >
+          <div onKeyDown={onPanelKey}>
+            {searchable && (
+              <div className="p-2 border-b border-border">
+                <input
+                  type="text"
+                  autoFocus
+                  value={search}
+                  role="searchbox"
+                  aria-label="Search options"
+                  aria-controls={listboxId}
+                  onChange={e => handleSearch(e.target.value)}
+                  placeholder="Search…"
+                  className="w-full rounded-md border border-border bg-surface text-fg text-sm px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-teal/40"
+                />
+              </div>
+            )}
+            <OptionList
+              options={rows}
+              selected={selectedSet}
+              mode="plain"
+              onSelect={commit}
+              activeIndex={active}
+              onActiveChange={setActive}
+              query={search}
+              loading={loading}
+              typeToSearch={typeToSearch && !!onSearch}
+              listboxId={listboxId}
+            />
+          </div>
+        </Popover>
+      </div>
+    </div>
+  )
+}

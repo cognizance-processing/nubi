@@ -57,6 +57,7 @@ from app.connectors.query_log import get_query_log
 from app.errors import AppError
 from app.repos.provider import get_repo
 from app.routes import api_router
+from app.auth.superadmin import require_superadmin
 from app.routes._org import resolve_org_id
 
 router = APIRouter(tags=["preagg"])
@@ -90,10 +91,10 @@ async def preagg_suggestions(
         Each candidate: ``{table, dimensions, measures, filters, score,
         sample_count, est_bytes, cluster_key}``, highest score first.
     """
-    # Resolve org for scoping/membership enforcement (raises 403/404 on misuse).
-    await resolve_org_id(str(user["id"]), get_repo(), request)
+    # Mined from THIS org's queries only (raises 403/404 on misuse).
+    org_id = await resolve_org_id(str(user["id"]), get_repo(), request)
 
-    candidates = mine(get_query_log(), min_hits=min_hits)
+    candidates = mine(get_query_log().for_org(org_id), min_hits=min_hits)
     return [c.to_dict() for c in candidates]
 
 
@@ -123,12 +124,9 @@ class BuildRollupIn(BaseModel):
     rls_keys:
         RLS-key columns that MUST be preserved (and grouped on) so read-time
         ``WHERE <key> = <claim>`` predicate injection stays sound per tenant.
-    source_database:
-        Absolute path to the DuckDB file holding the base fact table.  When
-        omitted, the base table must already be resolvable in a fresh DuckDB
-        context (test/demo path).
     datastore_id:
-        Datastore the materialized rollup is served through (read path wiring).
+        The caller's datastore holding the base table (omit for the demo
+        data).  The rollup is built from it and served through it.
     """
 
     cluster_key: str | None = None
@@ -136,8 +134,43 @@ class BuildRollupIn(BaseModel):
     dimensions: list[str] | None = None
     measures: list[str] | None = None
     rls_keys: list[str] = []
-    source_database: str | None = None
     datastore_id: str | None = None
+
+
+async def _build_from_org_table(
+    table: str,
+    datastore_id: str | None,
+    user: dict,
+    request: Request,
+    build: Any,
+) -> Any:
+    """Run *build(source_connector)* against a table the caller's org owns.
+
+    The source is always the org's own datastore (or the shared demo data):
+    *table* must be a plain table name that the datastore actually exposes.
+    A request can never name a file or another database to read from.
+    """
+    from app.connectors.preagg import _require_rollup_table  # noqa: PLC0415
+    from app.routes.data_browser import _resolve_connector_and_tables  # noqa: PLC0415
+
+    _require_rollup_table(table)
+    connector, tables, cleanup = await _resolve_connector_and_tables(
+        datastore_id, user, get_repo(), request
+    )
+    try:
+        known = {str(t.get("name", "")).lower() for t in tables}
+        if table.split(".")[-1].lower() not in known:
+            raise AppError(
+                "invalid_rollup_request",
+                "That table is not available in this datastore.",
+                400,
+            )
+        return await asyncio.to_thread(build, connector)
+    finally:
+        try:
+            cleanup()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @router.post("/preagg/build", status_code=201, dependencies=[Depends(require_writer)])
@@ -170,7 +203,7 @@ async def preagg_build(
     measures = list(body.measures or [])
 
     if body.cluster_key:
-        candidates = mine(get_query_log(), min_hits=min_hits)
+        candidates = mine(get_query_log().for_org(resolved_org_id), min_hits=min_hits)
         match = next(
             (c for c in candidates if c.cluster_key == body.cluster_key), None
         )
@@ -204,15 +237,18 @@ async def preagg_build(
     )
 
     try:
-        built = await asyncio.to_thread(
-            functools.partial(
-                build_rollup,
+        built = await _build_from_org_table(
+            table,
+            body.datastore_id,
+            user,
+            request,
+            lambda source: build_rollup(
                 candidate,
                 rls_keys=list(body.rls_keys),
-                source_database=body.source_database,
                 datastore_id=body.datastore_id,
                 org_id=resolved_org_id,
-            )
+                source_connector=source,
+            ),
         )
     except ValueError as exc:
         # e.g. an unsupported/malformed measure — see
@@ -238,17 +274,15 @@ class BuildFromMetricIn(BaseModel):
     grains:
         Time grains to include the time column for.  When ``None`` the time
         column is included if the metric declares one.  Pass ``[]`` to skip.
-    source_database:
-        Absolute path to the DuckDB file holding the base fact table.
     datastore_id:
-        Datastore the materialized rollup is served through.
+        The caller's datastore holding the metric's base table; the rollup is
+        built from it and served through it.
     rls_keys:
         Override the metric's declared rls_keys (merged with metric's).
     """
 
     metric_id: str
     grains: list[str] | None = None
-    source_database: str | None = None
     datastore_id: str | None = None
     rls_keys: list[str] = []
 
@@ -278,8 +312,15 @@ async def preagg_build_from_metric(
     # Resolve the metric from the metrics registry.
     try:
         from app.metrics.registry import get_metric_registry  # noqa: PLC0415
+        from app.metrics.registry import metrics_visible_to_org  # noqa: PLC0415
+
         metric_reg = get_metric_registry()
-        metric = metric_reg.get(body.metric_id)
+        metric = metric_reg.get(body.metric_id, resolved_org_id)
+        # Only a metric this org can see may drive a build.
+        if metric is not None and not await metrics_visible_to_org(
+            [metric], resolved_org_id
+        ):
+            metric = None
     except ImportError:
         metric = None
 
@@ -290,19 +331,26 @@ async def preagg_build_from_metric(
             404,
         )
 
+    _datastore_id = body.datastore_id or getattr(metric, "datastore_id", None)
+    _base_table = getattr(metric, "base_table", None)
     try:
-        built = await asyncio.to_thread(
-            functools.partial(
-                build_rollup_for_metric,
+        built = await _build_from_org_table(
+            _base_table or "",
+            _datastore_id,
+            user,
+            request,
+            lambda source: build_rollup_for_metric(
                 metric,
                 grains=body.grains,
-                source_database=body.source_database,
                 registry=get_registry(),
                 register_query=True,
-                datastore_id=body.datastore_id,
+                datastore_id=_datastore_id,
                 org_id=resolved_org_id,
-            )
+                source_connector=source,
+            ),
         )
+    except AppError:
+        raise
     except (ValueError, Exception) as exc:
         raise AppError(
             "rollup_build_failed",
@@ -324,8 +372,8 @@ async def preagg_list(
     user: dict = Depends(current_user),
 ) -> list[dict[str, Any]]:
     """List the rollups that have been built, with their routed-query HIT counts."""
-    await resolve_org_id(str(user["id"]), get_repo(), request)
-    return [r.to_dict() for r in get_registry().all_rollups()]
+    org_id = await resolve_org_id(str(user["id"]), get_repo(), request)
+    return [r.to_dict() for r in get_registry().rollups_for_org(org_id)]
 
 
 # ===========================================================================
@@ -335,11 +383,13 @@ async def preagg_list(
 
 @router.get("/_preagg/suggestions")
 async def legacy_preagg_suggestions(
+    request: Request,
     min_hits: int = 3,
     _user: dict = Depends(current_user),
 ) -> list[dict]:
-    """Legacy: sig-based pre-aggregation suggestions from the query log."""
-    suggestions = suggest(get_query_log(), min_hits=min_hits)
+    """Legacy: sig-based pre-aggregation suggestions from the caller org's queries."""
+    org_id = await resolve_org_id(str(_user["id"]), get_repo(), request)
+    suggestions = suggest(get_query_log().for_org(org_id), min_hits=min_hits)
     return [s.to_dict() for s in suggestions]
 
 
@@ -353,9 +403,13 @@ class RegisterRollupIn(BaseModel):
 @router.post("/_preagg/register", dependencies=[Depends(require_writer)])
 async def legacy_register_rollup(
     body: RegisterRollupIn,
-    _user: dict = Depends(current_user),
+    _admin: dict = Depends(require_superadmin),
 ) -> dict:
-    """Legacy: register a rollup table for an exact ``groupby_sig``."""
+    """Legacy: register a rollup table for an exact ``groupby_sig``.
+
+    The sig registry is process-wide (not org-scoped), so this is an
+    operator-only maintenance endpoint.
+    """
     get_registry().register(body.sig, body.table)
     return {"registered": True, "sig": body.sig, "table": body.table}
 

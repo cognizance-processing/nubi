@@ -49,6 +49,11 @@ from typing import Any, Generator
 from urllib.parse import urlparse
 
 from app.errors import AppError
+from app.git.safety import git_env, safe_branch, safe_repo_url
+
+import logging  # noqa: E402
+
+logger = logging.getLogger("app.git")
 
 # Author used for sync commits when none is supplied.
 DEFAULT_AUTHOR_NAME = "Nubi Git Sync"
@@ -145,15 +150,19 @@ def _run_git(
         cwd=str(repo_dir) if repo_dir is not None else None,
         capture_output=True,
         text=True,
-        env=env,
+        env=git_env(env),
         check=False,
     )
     if result.returncode != 0 and not allow_fail:
-        # Scrub any token that may have leaked into stderr (defence in depth).
-        stderr = _scrub(result.stderr)
+        # git's own output can quote file contents or remote responses, so it
+        # is logged for the operator and never returned to the caller.
+        logger.warning(
+            "git %s failed (exit %s): %s",
+            args[0] if args else "", result.returncode, _scrub(result.stderr)[:400],
+        )
         raise AppError(
             "git_command_failed",
-            f"git {' '.join(_scrub(a) for a in args)} failed: {stderr[:400]}",
+            f"The git {args[0] if args else 'command'} step failed.",
             502,
         )
     return result
@@ -211,7 +220,8 @@ class RemoteProvider(ABC):
         The bare repo URL (no ``user:token@``) is used in all git commands.
         """
         repo_dir = Path(repo_dir)
-        bare_url = self.repo_url  # no credentials — bare HTTPS URL only
+        bare_url = safe_repo_url(self.repo_url)  # no credentials — bare HTTPS URL only
+        branch = safe_branch(self.branch)
 
         with _askpass_env(self._askpass_username, self.token) as auth_env:
             if (repo_dir / ".git").exists():
@@ -219,14 +229,14 @@ class RemoteProvider(ABC):
                 # any previously stored credential URL), then fetch + reset.
                 _run_git(repo_dir, "remote", "set-url", "origin", bare_url, allow_fail=True)
                 fetched = _run_git(
-                    repo_dir, "fetch", "origin", self.branch,
+                    repo_dir, "fetch", "--", "origin", branch,
                     allow_fail=True, env=auth_env,
                 )
                 if fetched.returncode == 0:
-                    _run_git(repo_dir, "checkout", "-B", self.branch, "FETCH_HEAD")
+                    _run_git(repo_dir, "checkout", "-B", branch, "FETCH_HEAD")
                 else:
                     # Remote branch does not exist yet — ensure we are on it locally.
-                    _run_git(repo_dir, "checkout", "-B", self.branch)
+                    _run_git(repo_dir, "checkout", "-B", branch)
                 self._ensure_identity(repo_dir)
                 return
 
@@ -237,8 +247,9 @@ class RemoteProvider(ABC):
                 None,
                 "clone",
                 "--branch",
-                self.branch,
+                branch,
                 "--single-branch",
+                "--",
                 bare_url,
                 str(repo_dir),
                 allow_fail=True,
@@ -249,7 +260,7 @@ class RemoteProvider(ABC):
                 _run_git(repo_dir, "init")
                 # Store the bare URL as origin (no credentials in config).
                 _run_git(repo_dir, "remote", "add", "origin", bare_url, allow_fail=True)
-                _run_git(repo_dir, "checkout", "-B", self.branch)
+                _run_git(repo_dir, "checkout", "-B", branch)
             self._ensure_identity(repo_dir)
 
     def push(
@@ -282,9 +293,10 @@ class RemoteProvider(ABC):
         _run_git(repo_dir, "commit", "-m", message)
         sha = _run_git(repo_dir, "rev-parse", "HEAD").stdout.strip()
 
-        bare_url = self.repo_url  # no credentials in argv
+        bare_url = safe_repo_url(self.repo_url)  # no credentials in argv
+        branch = safe_branch(self.branch)
         with _askpass_env(self._askpass_username, self.token) as auth_env:
-            _run_git(repo_dir, "push", bare_url, f"HEAD:{self.branch}", env=auth_env)
+            _run_git(repo_dir, "push", "--", bare_url, f"HEAD:{branch}", env=auth_env)
         return {"committed": True, "sha": sha, "pushed": True}
 
     def open_change_request(self, title: str, body: str = "") -> dict[str, Any] | None:

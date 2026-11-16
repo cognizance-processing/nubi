@@ -27,6 +27,14 @@ POST /ai/chat
     With NullProvider the response is deterministic (scripted tool sequence
     based on intent extracted from the last user message).
 
+POST /ai/chat/async
+    Background variant of ``POST /ai/chat``. Returns ``{job_id, status}``
+    immediately; the agent turn keeps running detached from the request. If
+    it produces a dashboard spec, THIS endpoint persists it (there's no user
+    left to click "Replace canvas"), then writes an in-app notification
+    (``type: "ai_chat_build"``) linking to the saved board. Failures notify
+    too. See ``app.notify.notifications``.
+
 Response shape (/ai/ask)
 ------------------------
 ::
@@ -82,9 +90,10 @@ from pydantic import BaseModel
 
 from app.ai.grounding import build_catalog, build_prompt, ground
 from app.auth.deps import current_user, verified_identity
-from app.auth.roles import require_writer, require_writer_default
+from app.auth.roles import require_writer
 from app.auth.verify import VerifiedIdentity
 from app.compute.metering import record_usage
+from app.auth.roles import tool_claims as _tool_claims
 from app.errors import AppError
 from app.features import enforce_quota
 from app.repos.provider import Repo, get_repo
@@ -98,13 +107,37 @@ logger = logging.getLogger("nubi.ai")
 # ---------------------------------------------------------------------------
 
 
-async def _resolve_org_id(user: dict[str, Any]) -> str | None:
-    """Best-effort org resolution for billing attribution (never raises)."""
+async def _resolve_org_id(user: dict[str, Any], request: Request | None = None) -> str | None:
+    """Resolve the caller's ORG for this call (never raises — best-effort).
+
+    When *request* is given, honours ``X-Org-Id`` via ``resolve_org_id()``
+    (membership-checked) — the same header-aware resolution every other
+    tenant-scoped route uses. Without a request (a handful of internal/legacy
+    call sites), falls back to the user's default org (``get_user_org``).
+
+    This mirrors the fix in ``routes/query.py::_resolve_caller_org`` for the
+    same systemic bug: header-BLIND org resolution meant every ``/ai/*`` call
+    ran against the caller's default org regardless of which workspace they
+    had switched to in the UI — for a multi-org user, results (and anything
+    persisted, e.g. a background-built dashboard) silently landed in the
+    wrong org. See ``nubi-org-header-query-bug`` project notes.
+    """
     try:
         from app.repos.provider import get_repo  # noqa: PLC0415
-        from app.routes._org import get_user_org  # noqa: PLC0415
+        from app.routes._org import get_user_org, resolve_org_id  # noqa: PLC0415
 
-        return await get_user_org(str(user["id"]), get_repo())
+        repo = get_repo()
+        if request is not None:
+            return await resolve_org_id(str(user["id"]), repo, request)
+        return await get_user_org(str(user["id"]), repo)
+    except AppError as exc:
+        # A REFUSAL (the caller asked for an org they are not a member of, or
+        # a key pinned elsewhere) must stay a refusal — swallowing it would
+        # continue the request with no org at all.
+        if exc.status == 403:
+            raise
+        logger.warning("ai: could not resolve org for user=%s", user.get("id"))
+        return None
     except Exception:  # noqa: BLE001 — attribution is best-effort, never a 500
         logger.warning(
             "ai: could not resolve org for user=%s — "
@@ -114,7 +147,40 @@ async def _resolve_org_id(user: dict[str, Any]) -> str | None:
         return None
 
 
-async def _prepare_ai_call(user: dict[str, Any]) -> tuple[Any, str | None, bool]:
+#: Background agent turns currently running, per user (this worker).
+_ASYNC_JOBS: dict[str, int] = {}
+
+
+def _async_job_limit() -> int:
+    try:
+        return max(1, int(os.environ.get("NUBI_AI_ASYNC_MAX_PER_USER", "2")))
+    except (ValueError, TypeError):
+        return 2
+
+
+def _claim_async_slot(user_id: str) -> None:
+    """Reserve a background-turn slot for *user_id*, or raise 429."""
+    running = _ASYNC_JOBS.get(user_id, 0)
+    if running >= _async_job_limit():
+        raise AppError(
+            "too_many_background_jobs",
+            "You already have background AI tasks running. Wait for one to finish.",
+            429,
+        )
+    _ASYNC_JOBS[user_id] = running + 1
+
+
+def _release_async_slot(user_id: str) -> None:
+    remaining = _ASYNC_JOBS.get(user_id, 0) - 1
+    if remaining > 0:
+        _ASYNC_JOBS[user_id] = remaining
+    else:
+        _ASYNC_JOBS.pop(user_id, None)
+
+
+async def _prepare_ai_call(
+    user: dict[str, Any], request: Request | None = None,
+) -> tuple[Any, str | None, bool]:
     """Resolve the caller's org, enforce the token quota, and pick a provider.
 
     Returns ``(provider, org_id, is_byo)``:
@@ -134,11 +200,21 @@ async def _prepare_ai_call(user: dict[str, Any]) -> tuple[Any, str | None, bool]
     legacy ``ai_calls`` per-call quota is no longer enforced here (kept only
     for back-compat / the monthly-reconciliation UsageSnapshot).
     """
-    org_id = await _resolve_org_id(user)
+    org_id = await _resolve_org_id(user, request)
     await enforce_quota(org_id, "ai_tokens", amount=1.0)
     from app.features import resolve_ai_provider  # noqa: PLC0415
 
     provider, is_byo = await resolve_ai_provider(org_id)
+
+    # Spend ceiling — every AI route passes through here.  Only real providers
+    # can spend, and an org on its own vendor key is not spending the
+    # operator's money.
+    from app.ai.provider import NullProvider  # noqa: PLC0415
+
+    if not isinstance(provider, NullProvider) and not is_byo:
+        from app.ai.cost_ceiling import check_chat_budget  # noqa: PLC0415
+
+        await check_chat_budget(str(org_id or ""), str(user.get("id", "")))
     return provider, org_id, is_byo
 
 
@@ -182,6 +258,12 @@ async def _meter_ai_call(
         units=float(total_tokens),
         tier=endpoint,
     )
+
+    # Feed the daily spend ceiling (operator-key spend only).
+    if usd_cost > 0 and not is_byo:
+        from app.ai.cost_ceiling import record_chat_cost  # noqa: PLC0415
+
+        await record_chat_cost(str(org_id or ""), user_id, usd_cost)
 
     from app.features import meter_ai_usage  # noqa: PLC0415
 
@@ -250,9 +332,10 @@ class DashboardResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@api_router.post("/ai/ask", response_model=AskResponse, tags=["ai"], dependencies=[Depends(require_writer_default)])
+@api_router.post("/ai/ask", response_model=AskResponse, tags=["ai"], dependencies=[Depends(require_writer)])
 async def ask(
     body: AskRequest,
+    request: Request,
     _user: dict[str, Any] = Depends(current_user),
 ) -> AskResponse:
     """Generate a grounded SQL suggestion for *question*.
@@ -291,9 +374,9 @@ async def ask(
         If ``body.model`` is supplied but is not in the resolved provider's
         allowlist (raised by ``provider.complete`` and propagated here).
     """
-    provider, org_id, is_byo = await _prepare_ai_call(_user)
+    provider, org_id, is_byo = await _prepare_ai_call(_user, request)
 
-    catalog = build_catalog()
+    catalog = build_catalog(org_id)
     grounding = ground(body.question, catalog)
     system_prompt, user_prompt = build_prompt(body.question, grounding)
     # Offload the blocking LLM call (+ any multi-round repair) to a thread so
@@ -321,9 +404,10 @@ async def ask(
 # ---------------------------------------------------------------------------
 
 
-@api_router.post("/ai/dashboard", response_model=DashboardResponse, tags=["ai"], dependencies=[Depends(require_writer_default)])
+@api_router.post("/ai/dashboard", response_model=DashboardResponse, tags=["ai"], dependencies=[Depends(require_writer)])
 async def create_dashboard(
     body: DashboardRequest,
+    request: Request,
     _user: dict[str, Any] = Depends(current_user),
 ) -> DashboardResponse:
     """Generate a grounded DashboardSpec + HTML for *question* (EDITOR-2A).
@@ -364,9 +448,9 @@ async def create_dashboard(
     from app.ai.dashboard import generate_dashboard_spec, validate_dashboard_html  # noqa: PLC0415
     from app.dashboards.spec import spec_to_html  # noqa: PLC0415
 
-    provider, org_id, is_byo = await _prepare_ai_call(_user)
+    provider, org_id, is_byo = await _prepare_ai_call(_user, request)
 
-    catalog = build_catalog()
+    catalog = build_catalog(org_id)
     # Offload the blocking generate_dashboard_spec call (LLM + multi-round repair)
     # to a thread so the asyncio event loop is not blocked.
     spec = await asyncio.to_thread(
@@ -399,6 +483,7 @@ async def create_dashboard(
 
 @api_router.get("/ai/providers", tags=["ai"])
 async def ai_providers(
+    request: Request,
     _user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     """Return enabled AI providers + their models, and the caller's BYO status.
@@ -442,7 +527,7 @@ async def ai_providers(
     from app.features import get_ai_byo_status  # noqa: PLC0415
 
     settings = get_settings()
-    org_id = await _resolve_org_id(_user)
+    org_id = await _resolve_org_id(_user, request)
     providers = list_provider_metadata(settings.ai_enabled_providers)
     byo = await get_ai_byo_status(org_id)
     return {"providers": providers, "byo": byo}
@@ -747,6 +832,7 @@ def _metric_matches(md: Any, q: str) -> bool:
 
 @api_router.get("/ai/context", tags=["ai"])
 async def ai_context(
+    request: Request,
     q: str | None = None,
     compact: bool = False,
     _user: dict[str, Any] = Depends(current_user),
@@ -798,7 +884,7 @@ async def ai_context(
     # registered query ids / names / param names+types / output schemas (and the
     # governed metric definitions). Resolve the caller's org and gate both lists
     # the SAME way GET /query/registry and GET /metrics do.
-    caller_org = await _resolve_org_id(_user)
+    caller_org = await _resolve_org_id(_user, request)
     row_ids = await _visible_query_row_ids(_user, caller_org)
 
     registry = get_query_registry()
@@ -811,7 +897,8 @@ async def ai_context(
     if q:
         # Rank + filter via the deterministic grounding scorer so the response
         # only carries the queries most relevant to the agent's intent.
-        catalog = build_catalog()
+        # Rank over exactly the entries this caller may see (gated above).
+        catalog = build_catalog(caller_org, queries=all_queries)
         grounding = ground(q, catalog)
         # related_queries is an ordered (most-relevant-first) list of ids.
         ranked_ids = list(grounding.get("related_queries", []))
@@ -826,7 +913,13 @@ async def ai_context(
     # Additive: a `metrics` list alongside `queries` so an agent discovers the
     # governed semantic-layer definitions it can query via POST /metrics/{id}/query.
     metric_registry = _get_metric_registry()
-    all_metrics = _metrics_from(metric_registry)
+    # Start from this org's own + shared metrics, so the slug filter below can
+    # only ever narrow that set, even when it is unavailable.
+    all_metrics = (
+        list(metric_registry.for_org(caller_org))
+        if hasattr(metric_registry, "for_org")
+        else _metrics_from(metric_registry)
+    )
     # TENANT ISOLATION: keep only this org's query-backed metrics (by slug) plus
     # the in-code seeds (which belong to no tenant). Unscopable (no org / no DB)
     # leaves the list unfiltered — same fallback as GET /metrics.
@@ -898,9 +991,10 @@ class ChatResponse(BaseModel):
     """
 
 
-@api_router.post("/ai/chat", response_model=ChatResponse, tags=["ai"], dependencies=[Depends(require_writer_default)])
+@api_router.post("/ai/chat", response_model=ChatResponse, tags=["ai"], dependencies=[Depends(require_writer)])
 async def ai_chat(
     body: ChatRequest,
+    request: Request,
     _user: dict[str, Any] = Depends(current_user),
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> ChatResponse:
@@ -941,7 +1035,7 @@ async def ai_chat(
     """
     from app.ai.agent import run_agent  # noqa: PLC0415
 
-    provider, org_id, is_byo = await _prepare_ai_call(_user)
+    provider, org_id, is_byo = await _prepare_ai_call(_user, request)
 
     # Build first-party claims from the authenticated user.
     # SECURITY: carry the resolved org so metric tools can tenant-scope a
@@ -949,13 +1043,10 @@ async def ai_chat(
     # Propagate any RLS policies from the verified token so that scoped
     # internal / service-to-service callers do not have their policies
     # silently stripped when the agent executes tool calls.
-    claims: dict[str, Any] = {
-        "kind": "access",
-        "sub": str(_user.get("id", "")),
-        "org": org_id,
-        "policies": dict(identity.policies or {}),
-        "scope": ["read:*", "write:*"],
-    }
+    # The caller's real role and scope (never a fixed, elevated list) — a
+    # viewer's agent can read, a writer's agent can also author.
+    claims: dict[str, Any] = await _tool_claims(identity, org_id, get_repo())
+    claims["sub"] = str(_user.get("id", "")) or claims["sub"]
 
     # Convert Pydantic ChatMessage objects to plain dicts for the agent.
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
@@ -987,9 +1078,10 @@ async def ai_chat(
     )
 
 
-@api_router.post("/ai/chat/stream", tags=["ai"], dependencies=[Depends(require_writer_default)])
+@api_router.post("/ai/chat/stream", tags=["ai"], dependencies=[Depends(require_writer)])
 async def ai_chat_stream(
     body: ChatRequest,
+    request: Request,
     _user: dict[str, Any] = Depends(current_user),
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> StreamingResponse:
@@ -1007,17 +1099,14 @@ async def ai_chat_stream(
 
     from app.ai.agent import run_agent_stream  # noqa: PLC0415
 
-    provider, org_id, is_byo = await _prepare_ai_call(_user)
+    provider, org_id, is_byo = await _prepare_ai_call(_user, request)
 
     # Propagate any RLS policies from the verified token — same reasoning as
     # ai_chat above (defense-in-depth for scoped / service-to-service callers).
-    claims: dict[str, Any] = {
-        "kind": "access",
-        "sub": str(_user.get("id", "")),
-        "org": org_id,
-        "policies": dict(identity.policies or {}),
-        "scope": ["read:*", "write:*"],
-    }
+    # The caller's real role and scope (never a fixed, elevated list) — a
+    # viewer's agent can read, a writer's agent can also author.
+    claims: dict[str, Any] = await _tool_claims(identity, org_id, get_repo())
+    claims["sub"] = str(_user.get("id", "")) or claims["sub"]
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
 
     timeout_s = _ai_turn_timeout()
@@ -1090,6 +1179,228 @@ async def ai_chat_stream(
 
 
 # ---------------------------------------------------------------------------
+# POST /ai/chat/async — background agent turn, notify on completion
+# ---------------------------------------------------------------------------
+
+
+class ChatAsyncResponse(BaseModel):
+    """Response body for POST /ai/chat/async."""
+
+    job_id: str
+    status: str = "accepted"
+
+
+def _persist_dashboard_from_actions(
+    actions: list[dict[str, Any]],
+    prompt: str,
+) -> dict[str, Any] | None:
+    """Find the LAST create_dashboard/edit_dashboard action and return its spec.
+
+    Scans from the end so a create_dashboard followed by one or more
+    edit_dashboard refinements resolves to the final, most up-to-date spec —
+    not the first draft. Returns ``None`` if the agent never produced one
+    (e.g. it only answered a question or ran a query).
+    """
+    for action in reversed(actions):
+        if action.get("tool") in ("create_dashboard", "edit_dashboard"):
+            result = action.get("result") or {}
+            spec = result.get("spec")
+            if isinstance(spec, dict) and spec.get("widgets"):
+                if not spec.get("title"):
+                    spec = {**spec, "title": prompt[:80] or "AI-generated dashboard"}
+                return spec
+    return None
+
+
+@api_router.post(
+    "/ai/actions/{action_id}/confirm",
+    tags=["ai"],
+    dependencies=[Depends(require_writer)],
+)
+async def confirm_ai_action(
+    action_id: str,
+    request: Request,
+    _user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
+) -> dict[str, Any]:
+    """Run a destructive action the assistant proposed — as the confirming person.
+
+    The assistant can only *propose* deleting or replacing a dashboard.  This
+    is the person saying yes: the action runs with their own role and scope,
+    once, and only if it was proposed to them in this organisation.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from app.ai import pending_actions  # noqa: PLC0415
+
+    org_id = await _resolve_org_id(_user, request)
+    claims = await _tool_claims(identity, org_id, get_repo())
+    claims["sub"] = str(_user.get("id", "")) or claims["sub"]
+    result = await asyncio.to_thread(
+        pending_actions.confirm,
+        action_id,
+        user_id=claims["sub"],
+        org_id=str(org_id or ""),
+        claims=claims,
+    )
+    return {"confirmed": True, "result": result}
+
+
+@api_router.post(
+    "/ai/actions/{action_id}/dismiss",
+    tags=["ai"],
+    status_code=204,
+    dependencies=[Depends(require_writer)],
+)
+async def dismiss_ai_action(
+    action_id: str,
+    request: Request,
+    _user: dict[str, Any] = Depends(current_user),
+) -> None:
+    """Drop an action the assistant proposed, without running it."""
+    from app.ai import pending_actions  # noqa: PLC0415
+
+    org_id = await _resolve_org_id(_user, request)
+    pending_actions.dismiss(action_id, user_id=str(_user.get("id", "")), org_id=str(org_id or ""))
+
+
+@api_router.post(
+    "/ai/chat/async",
+    response_model=ChatAsyncResponse,
+    tags=["ai"],
+    dependencies=[Depends(require_writer)],
+)
+async def ai_chat_async(
+    body: ChatRequest,
+    request: Request,
+    _user: dict[str, Any] = Depends(current_user),
+    identity: VerifiedIdentity = Depends(verified_identity),
+    repo: Repo = Depends(get_repo),
+) -> ChatAsyncResponse:
+    """Run the agent loop in the background and notify the caller on completion.
+
+    Same agent loop as ``POST /ai/chat`` (same tools, same claims, same
+    timeout), but the HTTP request returns immediately with a ``job_id`` — the
+    turn keeps running detached from the connection (``asyncio.create_task``,
+    the same fire-and-forget pattern ``resources.py::_schedule_thumbnail_warm``
+    uses). There is no user left to click "Replace canvas" when this finishes,
+    so unlike the synchronous chat/dashboard endpoints, a resulting dashboard
+    spec IS persisted here — the notification links straight to a live board,
+    not a draft sitting in a chat transcript.
+
+    On completion a row is written to the in-app notification feed
+    (``app.notify.notifications``) — the bell the frontend already polls picks
+    it up on its own, no new transport needed. Failures notify too (severity
+    ``error``), so a background turn never fails silently.
+    """
+    from app.ai.agent import run_agent  # noqa: PLC0415
+    from app.dashboards.spec import validate_spec  # noqa: PLC0415
+    from app.notify.notifications import get_notification_store  # noqa: PLC0415
+    from app.routes._org import resolve_project_id_for_create  # noqa: PLC0415
+
+    provider, org_id, is_byo = await _prepare_ai_call(_user, request)
+    project_id = await resolve_project_id_for_create(org_id, request)
+
+    # The caller's real role and scope (never a fixed, elevated list) — a
+    # viewer's agent can read, a writer's agent can also author.
+    claims: dict[str, Any] = await _tool_claims(identity, org_id, get_repo())
+    claims["sub"] = str(_user.get("id", "")) or claims["sub"]
+    messages = [{"role": m.role, "content": m.content} for m in body.messages]
+    prompt = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+    job_id = str(uuid.uuid4())
+    user_id = str(_user.get("id", ""))
+    user = _user  # captured for _meter_ai_call inside the closure
+
+    _claim_async_slot(user_id)
+
+    async def _run() -> None:
+        try:
+            await _run_turn()
+        finally:
+            _release_async_slot(user_id)
+
+    async def _run_turn() -> None:
+        store = get_notification_store()
+        timeout_s = _ai_turn_timeout()
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(run_agent, messages, provider, claims, max_steps=8, model=body.model),
+                timeout=timeout_s,
+            )
+        except Exception as exc:  # noqa: BLE001 — a background turn must never fail silently
+            logger.info("ai_chat_async: job %s failed: %s", job_id, exc)
+            await store.create(
+                org_id,
+                type="ai_chat_build",
+                severity="error",
+                title="AI chat couldn't finish",
+                body=f'"{prompt[:120]}" — {exc}',
+                user_id=user_id,
+                metadata={"job_id": job_id},
+            )
+            return
+
+        try:
+            await _meter_ai_call(user, org_id, provider, endpoint="ai_chat_async", is_byo=is_byo)
+        except Exception:  # noqa: BLE001 — metering must never break notification delivery
+            logger.exception("ai_chat_async: post-turn metering failed org=%s", org_id)
+
+        spec_data = _persist_dashboard_from_actions(result.get("actions") or [], prompt)
+        if spec_data is None:
+            await store.create(
+                org_id,
+                type="ai_chat_build",
+                severity="info",
+                title="AI chat finished",
+                body=(result.get("reply") or "")[:280],
+                user_id=user_id,
+                metadata={"job_id": job_id},
+            )
+            return
+
+        _validated, issues = validate_spec(spec_data)
+        errors = [i for i in issues if "not in the registered" not in i]
+        board_id: str | None = None
+        try:
+            created = await repo.create(
+                resource="boards",
+                org_id=org_id,
+                created_by=user_id,
+                name=spec_data.get("title") or "AI-generated dashboard",
+                config={"spec": spec_data},
+                project_id=project_id,
+            )
+            board_id = str(created["id"])
+        except Exception as exc:  # noqa: BLE001
+            logger.info("ai_chat_async: job %s save failed: %s", job_id, exc)
+            await store.create(
+                org_id,
+                type="ai_chat_build",
+                severity="error",
+                title="Built the dashboard, couldn't save it",
+                body=f'"{prompt[:120]}" — {exc}',
+                user_id=user_id,
+                metadata={"job_id": job_id},
+            )
+            return
+
+        await store.create(
+            org_id,
+            type="ai_chat_build",
+            severity="success" if not errors else "warning",
+            title=f"Dashboard ready: {spec_data.get('title') or 'Untitled'}",
+            body=(result.get("reply") or "")[:280]
+            + (f"  ({len(errors)} issue(s) to review)" if errors else ""),
+            link=f"/d/{board_id}",
+            user_id=user_id,
+            metadata={"job_id": job_id, "board_id": board_id},
+        )
+
+    asyncio.create_task(_run())
+    return ChatAsyncResponse(job_id=job_id, status="accepted")
+
+
+# ---------------------------------------------------------------------------
 # POST /ai/sql — text-to-SQL with catalog grounding (M18-A)
 # ---------------------------------------------------------------------------
 
@@ -1116,9 +1427,10 @@ class SqlResponse(BaseModel):
     registered_id: str | None = None
 
 
-@api_router.post("/ai/sql", response_model=SqlResponse, tags=["ai"], dependencies=[Depends(require_writer_default)])
+@api_router.post("/ai/sql", response_model=SqlResponse, tags=["ai"], dependencies=[Depends(require_writer)])
 async def generate_sql_endpoint(
     body: SqlRequest,
+    request: Request,
     _user: dict[str, Any] = Depends(current_user),
 ) -> SqlResponse:
     """Generate a grounded SQL SELECT from a natural-language question (M18-A).
@@ -1160,9 +1472,9 @@ async def generate_sql_endpoint(
     from app.ai.sql import generate_sql  # noqa: PLC0415
     from app.queries.registry import QueryParam, get_query_registry  # noqa: PLC0415
 
-    provider, org_id, is_byo = await _prepare_ai_call(_user)
+    provider, org_id, is_byo = await _prepare_ai_call(_user, request)
 
-    catalog = build_catalog()
+    catalog = build_catalog(org_id)
     grounding = ground(body.question, catalog)
 
     # Offload the blocking generate_sql call (LLM + sqlglot validation)

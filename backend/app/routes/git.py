@@ -30,11 +30,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
-from app.auth.roles import require_writer_default
+from app.auth.roles import require_writer
 from app.errors import AppError
 from app.git.remotes import make_provider
 from app.git.sync import (
@@ -54,7 +54,7 @@ from app.queries.registry import get_query_registry
 from app.repos import projects as projects_repo
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
-from app.routes._org import get_user_org as _get_user_org
+from app.routes._org import resolve_org_id as _resolve_org_id
 
 # Project git tokens are stored in the connector secret store keyed by the
 # project's own uuid (the project_id doubles as the secret "datastore" id — a
@@ -142,8 +142,9 @@ class RestoreOut(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@router.post("/sync", response_model=SyncOut, dependencies=[Depends(require_writer_default)])
+@router.post("/sync", response_model=SyncOut, dependencies=[Depends(require_writer)])
 async def sync_resources(
+    request: Request,
     body: SyncIn = SyncIn(),
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
@@ -158,14 +159,18 @@ async def sync_resources(
     dict
         ``{sha, files_committed, message}``
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     git_sync = _org_repo(org_id)
 
     items: list[dict[str, str]] = []
 
     # ── Registered queries ─────────────────────────────────────────────────
+    # The registry is process-wide: commit only the built-in queries and the
+    # ones this org owns into this org's repository.
+    from app.queries.registry import visible_to_org  # noqa: PLC0415
+
     registry = get_query_registry()
-    for rq in registry.all():
+    for rq in visible_to_org(registry.all(), org_id):
         # Build a resource-like dict from the RegisteredQuery
         rq_resource: dict[str, Any] = {
             "id": rq.id,
@@ -218,6 +223,7 @@ async def sync_resources(
 
 @router.get("/history", response_model=list[HistoryEntry])
 async def get_history(
+    request: Request,
     path: str | None = Query(default=None, description="Optional file path to filter history."),
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
@@ -236,14 +242,15 @@ async def get_history(
         Ordered list of ``{sha, message, author, ts}`` dicts (most recent
         first).
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     git_sync = _org_repo(org_id)
     return git_sync.history(path=path)
 
 
-@router.post("/restore", response_model=RestoreOut, dependencies=[Depends(require_writer_default)])
+@router.post("/restore", response_model=RestoreOut, dependencies=[Depends(require_writer)])
 async def restore_file(
     body: RestoreIn,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -266,7 +273,7 @@ async def restore_file(
     AppError("not_found", 404)
         If the path or SHA does not exist.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     git_sync = _org_repo(org_id)
 
     try:
@@ -467,9 +474,10 @@ async def _serialize_project(org_id: str, project_id: str, repo: Repo) -> list[d
 # ---------------------------------------------------------------------------
 
 
-@router.post("/connect", response_model=GitBindingOut, dependencies=[Depends(require_writer_default)])
+@router.post("/connect", response_model=GitBindingOut, dependencies=[Depends(require_writer)])
 async def connect_repo(
     body: ConnectIn,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -479,7 +487,7 @@ async def connect_repo(
     the project's ``git`` jsonb stores only a reference (``token_ref``), never
     the token itself.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
 
     if body.provider.lower() not in ("github", "gitlab"):
         raise AppError(
@@ -490,16 +498,18 @@ async def connect_repo(
     if not await projects_repo.project_belongs_to_org(body.project_id, org_id):
         raise AppError("not_found", "Project not found.", 404)
 
-    # Store the token in the secret store (encrypted, org-scoped).
-    await get_secret_store().put(body.project_id, org_id, {"token": body.token})
+    from app.git.safety import safe_branch, safe_repo_url  # noqa: PLC0415
 
     binding = {
         "provider": body.provider.lower(),
-        "repo_url": body.repo_url.strip(),
-        "branch": (body.branch or "main").strip() or "main",
+        "repo_url": safe_repo_url(body.repo_url),
+        "branch": safe_branch((body.branch or "main").strip() or "main"),
         "base_path": body.base_path.strip().strip("/"),
         "token_ref": body.project_id,
     }
+    # Store the token in the secret store (encrypted, org-scoped) only once
+    # the binding itself has been accepted.
+    await get_secret_store().put(body.project_id, org_id, {"token": body.token})
     await projects_repo.update_project(org_id, body.project_id, {"git": binding})
 
     return {**binding, "connected": True}
@@ -507,12 +517,13 @@ async def connect_repo(
 
 @router.get("/status", response_model=StatusOut)
 async def git_status(
+    request: Request,
     project_id: str = Query(...),
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Return the git binding + last-sync info for a project."""
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     binding = await _load_binding(org_id, project_id)
     if binding is None:
         return {"connected": False, "binding": None, "last_sync": None}
@@ -543,9 +554,10 @@ async def git_status(
     }
 
 
-@router.post("/pull", response_model=PullOut, dependencies=[Depends(require_writer_default)])
+@router.post("/pull", response_model=PullOut, dependencies=[Depends(require_writer)])
 async def pull_project(
     body: PullIn,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -557,7 +569,7 @@ async def pull_project(
     (flows previously pushed but were never imported). Connectors are never
     imported (no connector kind exists).
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     provider, binding = await _provider_for_project(org_id, body.project_id)
     repo_dir = _project_repo_dir(org_id, body.project_id)
 
@@ -637,9 +649,10 @@ async def pull_project(
     return {"imported": imported, "kinds": kinds}
 
 
-@router.post("/push", response_model=ProjectPushOut, dependencies=[Depends(require_writer_default)])
+@router.post("/push", response_model=ProjectPushOut, dependencies=[Depends(require_writer)])
 async def push_project(
     body: ProjectPushIn,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -648,7 +661,7 @@ async def push_project(
     Flow: clone/pull → write serialized files → stage/commit → push. Optionally
     opens a PR/MR when ``open_pr`` is set and the branch differs from the default.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     provider, _binding = await _provider_for_project(org_id, body.project_id)
     repo_dir = _project_repo_dir(org_id, body.project_id)
 

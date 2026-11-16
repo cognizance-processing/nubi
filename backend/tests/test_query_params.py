@@ -219,6 +219,63 @@ async def test_named_param_binds_positionally_and_executes(params_client):
     assert table.num_rows == 7
 
 
+@pytest.mark.asyncio
+async def test_request_limit_caps_rows_and_is_part_of_the_cache_key(params_client):
+    """A request limit bounds the result, and never serves a capped result to an uncapped caller."""
+    from app.queries.registry import get_query_registry
+
+    client, user_id = params_client
+    get_query_registry().register(
+        id="test_request_limit",
+        sql="SELECT i FROM generate_series(1, 20) AS t(i)",
+        name="Test — request limit",
+    )
+
+    async def rows(**extra):
+        resp = await client.post(
+            "/api/v1/query",
+            json={"query_id": "test_request_limit", **extra},
+            headers=_auth_headers(user_id),
+        )
+        assert resp.status_code == 200, resp.text
+        return _parse_arrow(resp.content).num_rows
+
+    assert await rows(limit=5) == 5
+    assert await rows() == 20
+    assert await rows(limit=500) == 20
+
+
+@pytest.mark.asyncio
+async def test_request_limit_keeps_a_smaller_limit_in_the_sql(params_client):
+    from app.queries.registry import get_query_registry
+
+    client, user_id = params_client
+    get_query_registry().register(
+        id="test_request_limit_smaller",
+        sql="SELECT i FROM generate_series(1, 20) AS t(i) LIMIT 3",
+        name="Test — smaller limit",
+    )
+    resp = await client.post(
+        "/api/v1/query",
+        json={"query_id": "test_request_limit_smaller", "limit": 10},
+        headers=_auth_headers(user_id),
+    )
+    assert resp.status_code == 200, resp.text
+    assert _parse_arrow(resp.content).num_rows == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [0, -1, 1_000_001])
+async def test_request_limit_out_of_range_is_rejected(params_client, limit):
+    client, user_id = params_client
+    resp = await client.post(
+        "/api/v1/query",
+        json={"sql": "SELECT 1 AS a", "limit": limit},
+        headers=_auth_headers(user_id),
+    )
+    assert resp.status_code == 422, resp.text
+
+
 # ---------------------------------------------------------------------------
 # (2) Missing required param (no default) → 400
 # ---------------------------------------------------------------------------

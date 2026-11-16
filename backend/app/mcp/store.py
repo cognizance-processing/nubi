@@ -42,6 +42,10 @@ _PUBLIC_COLS = (
     "created_by",
     "created_at",
     "updated_at",
+    "last_tested_at",
+    "last_test_ok",
+    "last_test_tool_count",
+    "last_test_error",
 )
 
 _PUBLIC_SELECT = ", ".join(_PUBLIC_COLS)
@@ -84,7 +88,7 @@ def _row_to_public(row: Any) -> dict:
         val = row[col] if hasattr(row, "__getitem__") else getattr(row, col, None)
         if col in ("id", "org_id", "created_by") and val is not None:
             val = str(val)
-        if col in ("created_at", "updated_at") and isinstance(val, datetime):
+        if col in ("created_at", "updated_at", "last_tested_at") and isinstance(val, datetime):
             if val.tzinfo is None:
                 val = val.replace(tzinfo=timezone.utc)
         d[col] = val
@@ -198,6 +202,31 @@ class McpServerStore:
         except Exception as exc:  # noqa: BLE001
             logger.warning("mcp_store.get_enabled_for_org: %s", exc)
             return []
+
+    async def get_with_secret(self, server_id: str, org_id: str) -> dict | None:
+        """Fetch ONE server (any ``enabled`` state) with a decrypted auth_token.
+
+        For internal use by ``POST /mcp/servers/{id}/test`` only — the "Test"
+        button must be able to check a server before the user turns it on,
+        unlike ``get_enabled_for_org`` which the agent's tool loop uses and
+        which correctly excludes disabled servers.
+        """
+        try:
+            from app.db import fetchrow  # noqa: PLC0415
+
+            row = await fetchrow(
+                "SELECT id, org_id, name, url, transport, enabled, "
+                "auth_secret_ciphertext, auth_secret_nonce, auth_secret_key_version "
+                "FROM mcp_servers WHERE id = $1::uuid AND org_id = $2::uuid",
+                server_id,
+                org_id,
+            )
+            if row is None:
+                return None
+            return _row_to_internal(row)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mcp_store.get_with_secret: %s", exc)
+            return None
 
     # ------------------------------------------------------------------
     # Write operations
@@ -327,6 +356,38 @@ class McpServerStore:
             return _row_to_public(row)
         except Exception as exc:  # noqa: BLE001
             logger.warning("mcp_store.update: %s", exc)
+            return None
+
+    async def record_test_result(
+        self, server_id: str, org_id: str, *, ok: bool, tool_count: int | None, error: str | None,
+    ) -> dict | None:
+        """Persist a ``POST /mcp/servers/{id}/test`` result; return the updated public dict.
+
+        Mirrors ``routes/connectors.py``'s ``config.health`` persistence and
+        ``bridges``' status column — same "don't make the user re-test to see
+        what they already know" principle, applied to the third connection
+        surface in Settings.
+        """
+        try:
+            from app.db import fetchrow  # noqa: PLC0415
+
+            row = await fetchrow(
+                "UPDATE mcp_servers SET "
+                "last_tested_at = now(), last_test_ok = $3, "
+                "last_test_tool_count = $4, last_test_error = $5 "
+                "WHERE id = $1::uuid AND org_id = $2::uuid "
+                "RETURNING " + _PUBLIC_SELECT,
+                server_id,
+                org_id,
+                ok,
+                tool_count,
+                error,
+            )
+            if row is None:
+                return None
+            return _row_to_public(row)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mcp_store.record_test_result: %s", exc)
             return None
 
     async def delete(self, server_id: str, org_id: str) -> bool:

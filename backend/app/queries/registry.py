@@ -181,6 +181,10 @@ class RegisteredQuery:
         return list(self.params)
 
 
+class QueryIdConflict(ValueError):
+    """The id is owned by someone else (another org, or it is built in)."""
+
+
 class QueryRegistry:
     """Registry of server-registered queries (the embed-token allowlist).
 
@@ -210,8 +214,15 @@ class QueryRegistry:
         metric: dict | None = None,
         system: bool = False,
         owner_org_id: str | None = None,
+        internal: bool = False,
     ) -> RegisteredQuery:
         """Register a query and return the ``RegisteredQuery`` object.
+
+        ``internal=True`` marks a trusted server-side registration (the
+        persisted-query loaders, materialisation refreshes).  Only those may
+        refresh an owned entry without naming its owner, and they keep the
+        existing owner when they pass none.  Request-driven callers never set
+        it.
 
         Overwrites any existing registration with the same *id* — this is
         intentional so that seed queries can be refreshed at startup — UNLESS
@@ -256,27 +267,30 @@ class QueryRegistry:
             If an existing entry for *id* is owned by a different org than
             the incoming *owner_org_id* (cross-org collision prevention).
         """
-        # Cross-org collision guard: reject overwrites where BOTH the existing
-        # AND the incoming registration carry a non-None owner_org_id that
-        # differ from each other.  This prevents org A from shadowing org B's
-        # registered id in the process-global registry.
-        #
-        # Allowed scenarios:
-        #   existing.owner_org_id is None  → unowned; overwrite freely (seed/reload)
-        #   incoming owner_org_id is None  → unowned caller; allowed (e.g. load_persisted_queries)
-        #   same org_id on both sides      → same org updating its own query
+        # Ownership guard.  The registry is process-wide, so an id belongs to
+        # whoever registered it first:
+        #   * an org-owned entry may only be replaced by the SAME org — a
+        #     different org, or a caller naming no org at all, is refused;
+        #   * a built-in (system) entry is never replaced by a tenant write;
+        #   * an unowned entry (legacy / org-less registration) stays open.
+        # Trusted server-side loaders (``internal=True``) and built-in seeding
+        # are exempt, and an internal refresh inherits the existing owner.
         existing = self._store.get(id)
-        if (
-            existing is not None
-            and existing.owner_org_id is not None
-            and owner_org_id is not None
-            and existing.owner_org_id != owner_org_id
-        ):
-            raise ValueError(
-                f"Query id {id!r} is already registered by org "
-                f"{existing.owner_org_id!r}; org {owner_org_id!r} may not "
-                "overwrite it."
-            )
+        if existing is not None and not internal and not _SEEDING_BUILTIN:
+            if existing.system and not system:
+                raise QueryIdConflict(
+                    f"Query id {id!r} is a built-in query and cannot be replaced."
+                )
+            if (
+                existing.owner_org_id is not None
+                and existing.owner_org_id != owner_org_id
+            ):
+                raise QueryIdConflict(
+                    f"Query id {id!r} is already registered by another "
+                    "organisation and cannot be overwritten."
+                )
+        if internal and owner_org_id is None and existing is not None:
+            owner_org_id = existing.owner_org_id
 
         rq = RegisteredQuery(
             id=id,
@@ -567,6 +581,7 @@ async def load_persisted_queries() -> int:
                 strict_output_schema=bool(cfg.get("strict_output_schema", False)),
                 metric=cfg.get("metric") if isinstance(cfg.get("metric"), dict) else None,
                 owner_org_id=str(_owner_org_id) if _owner_org_id is not None else None,
+                internal=True,
             )
             loaded += 1
         except Exception as exc:  # noqa: BLE001 — skip one bad row, keep going.
@@ -645,6 +660,7 @@ async def ensure_persisted_query(query_id: str, org_id: str | None):
             strict_output_schema=bool(cfg.get("strict_output_schema", False)),
             metric=cfg.get("metric") if isinstance(cfg.get("metric"), dict) else None,
             owner_org_id=str(row["org_id"]) if row["org_id"] is not None else org_id,
+            internal=True,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("ensure_persisted_query(%s): register failed: %s", query_id, exc)
@@ -663,6 +679,24 @@ async def ensure_persisted_query(query_id: str, org_id: str | None):
 def _owned_by(rq: RegisteredQuery, org_id: str | None) -> bool:
     """Strict ownership check: ``True`` iff *rq* is explicitly owned by *org_id*."""
     return rq.owner_org_id is not None and rq.owner_org_id == org_id
+
+
+def visible_to_org(
+    queries: "list[RegisteredQuery] | tuple[RegisteredQuery, ...]", org_id: str | None
+) -> "list[RegisteredQuery]":
+    """Filter a registry listing to what *org_id* is allowed to SEE.
+
+    Built-in ``system`` queries are visible to everyone; anything else is
+    shown only to the organisation that owns it.  A registration with no
+    recorded owner cannot be attributed to any organisation, so it is never
+    LISTED to a tenant (it can still be resolved by a caller that already
+    holds its id — see ``resolve_registered_query``).
+
+    This exists because the process-global registry is shared by every org, so
+    any code path that enumerates ``registry.all()`` and hands the result to a
+    caller is a cross-tenant disclosure unless it filters.
+    """
+    return [rq for rq in queries if rq.system or _owned_by(rq, org_id)]
 
 
 async def resolve_registered_query(

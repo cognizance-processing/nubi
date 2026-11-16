@@ -40,7 +40,10 @@ Lazy import
 ``trino`` is optional, so it is imported **inside** the methods that need it.
 The module imports cleanly without the driver installed; calling ``execute`` /
 ``execute_stream`` without it raises ``AppError("driver_unavailable", 500)`` with
-an install hint.
+an install hint.  The ``trino.dbapi`` and ``trino.auth`` submodules are imported
+explicitly rather than reached as attributes of the parent package, so the
+connector does not depend on ``trino/__init__.py`` re-exporting them (the same
+class of bug as the Postgres ``adbc_driver_postgresql.dbapi`` fix).
 
 Capabilities
 ------------
@@ -69,12 +72,17 @@ SOURCE_TYPE = "trino"
 _PG_PLACEHOLDER_RE = re.compile(r"\$(\d+)")
 
 
-def _import_trino() -> Any:
-    """Import the trino client lazily; return the module or raise ``AppError``."""
-    try:
-        import trino  # noqa: PLC0415
+def _import_trino() -> tuple[Any, Any]:
+    """Import the trino client lazily; return ``(dbapi, auth)`` or raise ``AppError``.
 
-        return trino
+    Submodules are imported explicitly — ``import trino`` alone does not
+    guarantee ``trino.dbapi`` / ``trino.auth`` attributes exist.
+    """
+    try:
+        import trino.auth as trino_auth  # noqa: PLC0415
+        import trino.dbapi as trino_dbapi  # noqa: PLC0415
+
+        return trino_dbapi, trino_auth
     except ImportError as exc:  # pragma: no cover - import guard
         raise AppError(
             "driver_unavailable",
@@ -187,7 +195,7 @@ class TrinoConnector(Connector):
 
     def _connect(self) -> Any:
         """Open a trino DB-API connection assembled from the config keys."""
-        trino = _import_trino()
+        trino_dbapi, trino_auth = _import_trino()
 
         host = self._config.get("host")
         user = self._config.get("user")
@@ -220,10 +228,10 @@ class TrinoConnector(Connector):
         # Optional HTTP basic auth when a password is supplied.
         password = self._config.get("password")
         if password is not None:
-            kwargs["auth"] = trino.auth.BasicAuthentication(user, password)
+            kwargs["auth"] = trino_auth.BasicAuthentication(user, password)
 
         try:
-            return trino.dbapi.connect(**kwargs)
+            return trino_dbapi.connect(**kwargs)
         except AppError:
             raise
         except Exception as exc:

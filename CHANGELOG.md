@@ -14,6 +14,13 @@ Conventions:
 
 ### Added
 
+- **Gauge arc colours.** The chart inspector's gauge settings gain an **Arc
+  gradient** toggle with **Start** / **End** colours (low→high), or a single
+  **Arc color** when off, plus an **Arc ends** control (Auto / Flat / Round).
+  Stored as optional `widget.config` keys (`gaugeArcGradient`,
+  `gaugeArcStart`, `gaugeArcEnd`, `gaugeArcColor`, `gaugeArcCaps`) and
+  honoured by both needle and ring styles in-app, in embeds and in static
+  exports. Unset keys keep the existing look.
 - **LiteLLM multi-provider AI + token-passthrough billing.** `LiteLLMProvider`
   is now the primary completion path for Anthropic/OpenAI/Gemini (`litellm`
   is a real dependency, not optional) — every metered call is priced via
@@ -26,6 +33,20 @@ Conventions:
   encrypted at rest) — BYO calls are never charged from the wallet.
   `GET /ai/providers` exposes enabled providers/models + the caller's BYO
   status. New env vars: `NUBI_AI_ENABLED_PROVIDERS`, `NUBI_TOKEN_MARKUP_PCT`.
+- **Query-driven image widgets.** An `image` widget with `props.source: 'query'`
+  reads its URL from a query cell (`query_id` or a provider binding,
+  `encoding.value` column, `props.row`, default 0). A row past the end of the
+  result shows no image (never another row's), in the app and in exports.
+  Image `src` is allowlisted: only `http(s)` URLs and stored
+  `/api/v1/images/{id}` paths render; anything else (including `data:`,
+  `javascript:` and other relative paths such as `/logo.png`) shows
+  "Invalid image URL", and exports draw a placeholder.
+- **Query-driven text widgets.** A `text` widget with `props.source: 'query'`
+  shows one query cell as plain text (`query_id` or a provider binding,
+  `encoding.value` column, `props.row`, default 0), wrapped in optional
+  `props.prefix` / `props.suffix`. Markdown `content` is only required in
+  static mode. Same row rule as image: a row past the end shows "No value at
+  this row" in the app and empty text in exports, never another row's value.
 
 ### Removed
 
@@ -42,6 +63,31 @@ Conventions:
   internally — now use a relocated, neutrally-named
   `app/queries/sql_table_columns.py` and `app/queries/query_graph.py`, so
   those host features are unaffected.
+
+### Fixed
+
+- **Readable gauge scale labels.** A needle gauge's arc numbers no longer show
+  raw floats such as `16.6666666667` when the tick count doesn't divide the
+  range evenly. They are rounded to suit the tick spacing, or follow a new
+  **Scale value format** setting (`config.yAxis.format`). On a gauge, Percent
+  treats a 0–100 scale as already out of 100.
+- **Gauge style switch.** Switching a dashboard gauge from **Ring** back to
+  **Needle** no longer leaves a full-circle ring with no needle or axis labels
+  until a page refresh. The two styles now redraw from scratch when switched,
+  and the needle spells out its own angles, pointer, ticks and labels. Clicking
+  **Reset to theme** after setting an arc colour also restores the default
+  needle colour right away.
+- **Gauge exports match the app.** The static-export renderer
+  (`scripts/render/echarts-ssr.mjs`) now reads a gauge's scale from
+  `config.yAxis.min/max` (then legacy `props.min/max`, `config.min/max`,
+  0..100), the same order the in-app renderer uses, instead of guessing
+  `value × 1.5`. The default needle also draws the same three theme bands.
+- **Postgres connector Test and queries.** `PostgresConnector` (also used for
+  Redshift, CockroachDB and Cloud SQL) now imports `adbc_driver_postgresql.dbapi`
+  explicitly — the connector Test and every query failed with "module
+  'adbc_driver_postgresql' has no attribute 'dbapi'". `execute_stream` now
+  iterates the `RecordBatchReader` that `fetch_record_batch()` returns instead
+  of treating it as a single batch.
 
 ## [0.6.2] - 2026-07-09
 

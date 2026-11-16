@@ -26,6 +26,7 @@ RESOURCE_TABLE_MAP: dict[str, str] = {
     "boards": "boards",
     "queries": "queries",
     "widgets": "widgets",
+    "dashboard_folders": "dashboard_folders",
 }
 
 # Convenience set for O(1) membership checks.

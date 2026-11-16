@@ -478,7 +478,7 @@ async def test_fire_trigger_event_has_writer_guard():
     could fire flows, consuming unmetered server compute.
     """
     import app.routes.flows as flows_mod
-    from app.auth.roles import require_writer_default
+    from app.auth.roles import require_writer
 
     router = flows_mod.router
     fire_route = None
@@ -491,8 +491,12 @@ async def test_fire_trigger_event_has_writer_guard():
 
     # Extract the dependency callables from the route's dependencies list.
     dep_callables = [d.dependency for d in (fire_route.dependencies or [])]
-    assert require_writer_default in dep_callables, (
-        "require_writer_default dependency missing from /triggers/fire — "
+    # ``require_writer`` (header-aware) rather than the ``_default`` variant:
+    # flows resolves its org with ``resolve_org_id``, so the role must be checked
+    # in that SAME org. Checking it in the caller's default org let a writer in
+    # workspace A fire a flow in workspace B where they are only a viewer.
+    assert require_writer in dep_callables, (
+        "require_writer dependency missing from /triggers/fire — "
         "viewers can fire flows!"
     )
 

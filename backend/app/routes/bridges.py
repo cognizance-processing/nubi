@@ -22,11 +22,11 @@ bridges that belong to their org.
 
 Storage
 -------
-Bridges are stored in an in-module in-memory store (``_BridgeStore``) for the
-current milestone.  When the migration lands and the ``bridges`` table is live,
-this store should be replaced with a thin wrapper over the DB.  The store
-interface (``create``, ``list``, ``get``, ``delete``, ``heartbeat``) is
-deliberately simple so the swap is mechanical.
+Bridges are stored in the real ``bridges`` Postgres table via
+``app.bridges.store`` (``PgBridgeStore`` in production, ``InMemoryBridgeStore``
+in tests — see that module for the provider pattern). ``get_bridge_store()`` /
+``reset_bridge_store()`` are re-exported here for backward compatibility with
+existing imports/tests.
 
 The router self-registers on the shared ``api_router`` at import time (bottom of
 this file), so ``main.py`` only needs::
@@ -37,119 +37,48 @@ this file), so ``main.py`` only needs::
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
-import uuid
-from copy import deepcopy
-from datetime import datetime, timezone
 from typing import Any
+
+logger = logging.getLogger("nubi.bridges")
 
 #: How often the live tunnel re-validates its bridge token so a mid-session
 #: revoke / lapsed rotation grace drops the tunnel promptly (§7).
 _BRIDGE_TOKEN_REVALIDATE_SECONDS = 30.0
 
-from fastapi import APIRouter, Depends, Response, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+#: How often a connected tunnel refreshes ``last_seen_at``.
+#:
+#: ``status`` alone is edge-triggered — written once on connect and once on
+#: disconnect — so a row can read ``online`` with a ``last_seen_at`` from hours
+#: ago, and nothing distinguishes "connected and healthy" from "the disconnect
+#: handler never ran" (SIGKILL, host lost, worker died). Refreshing on an
+#: interval makes ``last_seen_at`` a real liveness signal that callers can age
+#: out. POST /bridges/{id}/heartbeat documents this contract for agents, but it
+#: authenticates with a *user* token, which an agent does not have — so the
+#: server does it here, where the agent is already authenticated by its bridge
+#: token.
+_BRIDGE_LIVENESS_TOUCH_SECONDS = 30.0
+
+from fastapi import APIRouter, Depends, Request, Response, WebSocket
+from pydantic import BaseModel, field_validator
 
 from app.auth.bridge_tokens import get_bridge_token_store
 from app.auth.deps import current_user
-from app.auth.roles import get_org_role, require_writer_default
+from app.auth.roles import get_org_role, require_writer
 from app.bridges.broker import get_broker
+from app.bridges.store import (  # noqa: F401 — re-exported for existing imports
+    BridgeStore,
+    InMemoryBridgeStore,
+    PgBridgeStore,
+    get_bridge_store,
+    reset_bridge_store,
+    set_bridge_store_for_tests,
+)
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
-from app.routes._org import get_user_org as _get_user_org
-
-# ---------------------------------------------------------------------------
-# In-module bridge store (replaces the DB until the migration ships)
-# ---------------------------------------------------------------------------
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-class _BridgeStore:
-    """Dict-backed in-process store for bridge rows.
-
-    Thread-safety: single async-event-loop assumption (same as asyncpg helpers).
-    """
-
-    def __init__(self) -> None:
-        # {bridge_id: bridge_dict}
-        self._rows: dict[str, dict[str, Any]] = {}
-
-    def reset(self) -> None:
-        """Clear all stored bridges.  Called by tests between runs."""
-        self._rows.clear()
-
-    async def create(
-        self,
-        org_id: str,
-        created_by: str,
-        name: str,
-        config: dict[str, Any],
-    ) -> dict[str, Any]:
-        bridge_id = str(uuid.uuid4())
-        now = _now_iso()
-        row: dict[str, Any] = {
-            "id": bridge_id,
-            "org_id": str(org_id),
-            "created_by": str(created_by),
-            "name": name,
-            "status": "offline",
-            "last_seen_at": None,
-            "config": deepcopy(config),
-            "created_at": now,
-            "updated_at": now,
-        }
-        self._rows[bridge_id] = row
-        return deepcopy(row)
-
-    async def list(self, org_id: str) -> list[dict[str, Any]]:
-        rows = [
-            deepcopy(r)
-            for r in self._rows.values()
-            if str(r["org_id"]) == str(org_id)
-        ]
-        rows.sort(key=lambda r: r["created_at"])
-        return rows
-
-    async def get(self, org_id: str, bridge_id: str) -> dict[str, Any] | None:
-        row = self._rows.get(str(bridge_id))
-        if row is None or str(row["org_id"]) != str(org_id):
-            return None
-        return deepcopy(row)
-
-    async def delete(self, org_id: str, bridge_id: str) -> bool:
-        row = self._rows.get(str(bridge_id))
-        if row is None or str(row["org_id"]) != str(org_id):
-            return False
-        del self._rows[str(bridge_id)]
-        return True
-
-    async def heartbeat(self, org_id: str, bridge_id: str) -> dict[str, Any] | None:
-        row = self._rows.get(str(bridge_id))
-        if row is None or str(row["org_id"]) != str(org_id):
-            return None
-        row["status"] = "online"
-        row["last_seen_at"] = _now_iso()
-        row["updated_at"] = _now_iso()
-        return deepcopy(row)
-
-
-# Module-level singleton (reset by tests via reset_bridge_store()).
-_bridge_store = _BridgeStore()
-
-
-def get_bridge_store() -> _BridgeStore:
-    """Return the active bridge store singleton."""
-    return _bridge_store
-
-
-def reset_bridge_store() -> None:
-    """Reset the bridge store — test helper, mirrors connector registry pattern."""
-    _bridge_store.reset()
-
+from app.routes._org import resolve_org_id as _resolve_org_id
 
 # ---------------------------------------------------------------------------
 # Internal helper used by query.py to pre-fetch a bridge row
@@ -158,13 +87,68 @@ def reset_bridge_store() -> None:
 
 async def _get_bridge(org_id: str, bridge_id: str, _repo: Repo | None = None) -> dict[str, Any] | None:
     """Return the bridge row for *bridge_id* scoped to *org_id*, or None."""
-    return await _bridge_store.get(org_id, str(bridge_id))
+    return await get_bridge_store().get(org_id, str(bridge_id))
 
 
 # ---------------------------------------------------------------------------
-# Org resolution helper — shared, pin-aware (app.routes._org). Imported at the
-# top as ``_get_user_org``; the shared helper honours the API-key org pin, which
-# the old local copy did not (cross-tenant data op for API-key callers).
+# Status-change notification — org broadcast, only on a REAL transition
+# ---------------------------------------------------------------------------
+
+
+async def _notify_bridge_status_change(
+    row: dict[str, Any] | None, new_status: str,
+) -> None:
+    """Write an in-app notification when a bridge's status actually changes.
+
+    *row* is the bridge's state as last read (BEFORE the transition) — a
+    no-op if it's missing, has no org_id, or is already at *new_status* (so a
+    heartbeat/reconnect storm doesn't spam the bell). Broadcast (no
+    ``user_id``) since bridge health affects everyone in the org, not just
+    whoever happens to be connected. Best-effort: never raises — a
+    notification failure must not break the connect/disconnect path.
+    """
+    if not row or row.get("status") == new_status:
+        return
+    org_id = row.get("org_id")
+    if not org_id:
+        return
+    try:
+        from app.notify.notifications import get_notification_store  # noqa: PLC0415
+
+        name = row.get("name") or "Bridge"
+        if new_status == "offline":
+            severity, title, body = (
+                "warning",
+                f"{name} went offline",
+                "Connectors routed through this bridge will fail until it reconnects.",
+            )
+        else:
+            severity, title, body = (
+                "success",
+                f"{name} is back online",
+                "Connectors routed through this bridge are reachable again.",
+            )
+        await get_notification_store().create(
+            str(org_id),
+            type="bridge_status",
+            severity=severity,
+            title=title,
+            body=body,
+            link="/settings/bridges",
+            metadata={"bridge_id": row.get("id"), "status": new_status},
+        )
+    except Exception:  # noqa: BLE001 — never break the connect/disconnect path
+        logger.warning("bridges: status-change notification failed for %s", row.get("id"))
+
+
+# ---------------------------------------------------------------------------
+# Org resolution — every route below uses the header-aware ``resolve_org_id``
+# (honours ``X-Org-Id``, membership-checked) so the org a caller sees/manages
+# bridges for is always the workspace they're VIEWING, not their account
+# default. Previously every handler here used the header-BLIND default-org
+# lookup — a bridge (and its connectors) could be invisible in Settings while
+# viewing any non-default org. Same fix shape as routes/ai.py and
+# routes/connectors.py; see nubi-org-header-query-bug project notes.
 # ---------------------------------------------------------------------------
 
 
@@ -193,6 +177,14 @@ class BridgeOut(BaseModel):
     created_at: str
     updated_at: str
 
+    @field_validator("config", mode="before")
+    @classmethod
+    def _no_credentials(cls, value: Any) -> Any:
+        """A bridge row is never a way to read a credential back."""
+        if isinstance(value, dict):
+            return {k: v for k, v in value.items() if k not in ("token", "secret", "password")}
+        return value
+
 
 # ---------------------------------------------------------------------------
 # Router
@@ -204,9 +196,10 @@ router = APIRouter(prefix="/bridges", tags=["bridges"])
 # ── POST /bridges — create ─────────────────────────────────────────────────
 
 
-@router.post("", status_code=201, response_model=BridgeOut, dependencies=[Depends(require_writer_default)])
+@router.post("", status_code=201, response_model=BridgeOut, dependencies=[Depends(require_writer)])
 async def create_bridge(
     body: BridgeIn,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -222,7 +215,7 @@ async def create_bridge(
     BridgeOut
         The newly created bridge row (status='offline', last_seen_at=None).
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     return await get_bridge_store().create(
         org_id=org_id,
         created_by=str(user["id"]),
@@ -236,11 +229,12 @@ async def create_bridge(
 
 @router.get("", response_model=list[BridgeOut])
 async def list_bridges(
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> list[dict[str, Any]]:
-    """List all bridges belonging to the caller's org."""
-    org_id = await _get_user_org(str(user["id"]), repo)
+    """List all bridges belonging to the org the caller is VIEWING (``X-Org-Id``)."""
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     return await get_bridge_store().list(org_id)
 
 
@@ -250,6 +244,7 @@ async def list_bridges(
 @router.get("/{bridge_id}", response_model=BridgeOut)
 async def get_bridge(
     bridge_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -257,7 +252,7 @@ async def get_bridge(
 
     Returns 404 if the bridge doesn't exist or belongs to a different org.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     row = await get_bridge_store().get(org_id, bridge_id)
     if row is None:
         raise AppError("bridge_not_found", f"Bridge {bridge_id!r} not found.", 404)
@@ -267,14 +262,15 @@ async def get_bridge(
 # ── DELETE /bridges/{id} — delete ─────────────────────────────────────────
 
 
-@router.delete("/{bridge_id}", status_code=204, dependencies=[Depends(require_writer_default)])
+@router.delete("/{bridge_id}", status_code=204, dependencies=[Depends(require_writer)])
 async def delete_bridge(
     bridge_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> Response:
     """Delete a bridge (org-scoped); returns 204 on success, 404 if not found."""
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     deleted = await get_bridge_store().delete(org_id, bridge_id)
     if not deleted:
         raise AppError("bridge_not_found", f"Bridge {bridge_id!r} not found.", 404)
@@ -284,9 +280,10 @@ async def delete_bridge(
 # ── POST /bridges/{id}/heartbeat ──────────────────────────────────────────
 
 
-@router.post("/{bridge_id}/heartbeat", response_model=BridgeOut)
+@router.post("/{bridge_id}/heartbeat", response_model=BridgeOut, dependencies=[Depends(require_writer)])
 async def bridge_heartbeat(
     bridge_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -298,10 +295,12 @@ async def bridge_heartbeat(
 
     Returns 404 if the bridge doesn't exist or belongs to a different org.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
+    before = await get_bridge_store().get(org_id, bridge_id)
     row = await get_bridge_store().heartbeat(org_id, bridge_id)
     if row is None:
         raise AppError("bridge_not_found", f"Bridge {bridge_id!r} not found.", 404)
+    await _notify_bridge_status_change(before, "online")
     return row
 
 
@@ -336,16 +335,21 @@ class BridgeTokenIn(BaseModel):
 async def mint_bridge_token(
     bridge_id: str,
     body: BridgeTokenIn,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Mint a new bridge token for *bridge_id* (owner/admin, org-scoped).
 
     The raw ``nubi_br_…`` token is returned EXACTLY ONCE here and never again —
-    only its SHA-256 hash is stored. Hand it to the agent
-    (``nubi bridge start --token …``).
+    only its SHA-256 hash is stored. Hand it to the query-tunnel agent
+    (``python -m app.bridges.agent``, env ``BRIDGE_TOKEN=...`` — see
+    docs/bridges.md). NOT ``nubi bridge start``: that CLI command is a
+    different, file-ingest-only agent that discards this token's binary
+    tunnel frames, so it cannot serve a connector's ``network_mode: "bridge"``
+    queries.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     await _require_owner_or_admin(str(user["id"]), org_id, repo)
     bridge = await get_bridge_store().get(org_id, bridge_id)
     if bridge is None:
@@ -360,11 +364,12 @@ async def mint_bridge_token(
 @router.get("/{bridge_id}/tokens")
 async def list_bridge_tokens(
     bridge_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """List a bridge's tokens (no token material; owner/admin, org-scoped)."""
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     await _require_owner_or_admin(str(user["id"]), org_id, repo)
     bridge = await get_bridge_store().get(org_id, bridge_id)
     if bridge is None:
@@ -377,6 +382,7 @@ async def list_bridge_tokens(
 async def rotate_bridge_token(
     bridge_id: str,
     token_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -385,7 +391,7 @@ async def rotate_bridge_token(
     During the grace window BOTH tokens validate, so a running agent can swap
     its token without a tunnel drop. The new raw token is returned once.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     await _require_owner_or_admin(str(user["id"]), org_id, repo)
     bridge = await get_bridge_store().get(org_id, bridge_id)
     if bridge is None:
@@ -404,6 +410,7 @@ async def rotate_bridge_token(
 async def revoke_bridge_token(
     bridge_id: str,
     token_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> Response:
@@ -414,7 +421,7 @@ async def revoke_bridge_token(
     bridge goes ``offline`` and connectors pinned to it fail fast with
     ``bridge_not_connected`` rather than hanging.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     await _require_owner_or_admin(str(user["id"]), org_id, repo)
     bridge = await get_bridge_store().get(org_id, bridge_id)
     if bridge is None:
@@ -427,10 +434,7 @@ async def revoke_bridge_token(
     # Drop the live tunnel so the now-untrusted agent cannot keep tunnelling.
     await get_broker().drop(bridge_id)
     # Reflect the offline transition on the bridge row.
-    row = _bridge_store._rows.get(bridge_id)
-    if row is not None:
-        row["status"] = "offline"
-        row["updated_at"] = _now_iso()
+    await get_bridge_store().set_status(bridge_id, "offline")
     return Response(status_code=204)
 
 
@@ -451,9 +455,9 @@ async def bridge_connect(
     * ``X-Bridge-Token: <token>`` request header
     * ``?token=<token>`` query parameter
 
-    The token is validated against ``bridge.config["token"]``.  If the bridge
-    row does not exist or the token does not match, the WebSocket is closed with
-    code 4401 before the connection is accepted.
+    The token is validated against the hashed, revocable bridge-token store.
+    If the bridge row does not exist or the token does not validate, the
+    WebSocket is closed before the connection is accepted.
 
     Protocol
     --------
@@ -462,10 +466,11 @@ async def bridge_connect(
     DATA/READY/CLOSE frames using the binary frame protocol defined in
     ``app.bridges.protocol``.
 
-    The endpoint marks the bridge as ``status='online'`` while connected and
-    leaves the status unchanged on disconnect (the heartbeat endpoint handles
-    the offline transition via TTL/monitoring in production; for now the status
-    remains 'online' — a follow-up can add explicit offline-on-disconnect).
+    The endpoint marks the bridge ``status='online'`` while connected and
+    ``'offline'`` the moment the tunnel actually closes (agent disconnect,
+    socket error, or a forced drop from a failed token re-validation) — see
+    the ``finally`` block below. An org-broadcast notification fires on every
+    real online/offline transition (never on a no-op heartbeat repeat).
     """
     # --- Token extraction ---------------------------------------------------
     token_header = websocket.headers.get("x-bridge-token", "")
@@ -480,7 +485,7 @@ async def bridge_connect(
     # The agent only knows its bridge_id and token. The token authenticates the
     # CONTROL CHANNEL ONLY (§7): it lets the agent open the tunnel and claim its
     # bridge's tasks — by itself it reads no secrets and no storage.
-    row: dict[str, Any] | None = _bridge_store._rows.get(bridge_id)
+    row: dict[str, Any] | None = await get_bridge_store().get_by_id(bridge_id)
     if row is None:
         await websocket.close(code=4404)
         return
@@ -488,8 +493,7 @@ async def bridge_connect(
     # Hashed, rotatable bridge token (§7): validate against the bridge_tokens
     # store, which binds the token to (org_id, bridge_id). A revoked token (or
     # one past its rotation grace window) fails here, so the handshake is
-    # rejected before accept(). ADDITIVE: fall back to the legacy plaintext
-    # ``config["token"]`` so existing bridges keep working unchanged.
+    # rejected before accept().
     token_store = get_bridge_token_store()
     authed = False
     binding = await token_store.validate(supplied_token)
@@ -497,17 +501,8 @@ async def bridge_connect(
         token_org_id, token_bridge_id = binding
         if token_bridge_id == bridge_id and token_org_id == str(row.get("org_id")):
             authed = True
-    if not authed:
-        # Legacy plaintext-token fallback (ADDITIVE) — only honoured while the
-        # bridge has NOT yet adopted any hashed v2 token. Once a v2 token is
-        # minted, this downgrade path is CLOSED so a revoked/rotated bridge can
-        # never be kept alive through the un-revocable plaintext config token
-        # (§7: "the legacy plaintext-token fallback isn't a downgrade hole").
-        # Compared with secrets.compare_digest to avoid a timing side channel.
-        if not await token_store.has_any_for_bridge(str(row.get("org_id")), bridge_id):
-            legacy_token: str = str(row.get("config", {}).get("token") or "")
-            if legacy_token and secrets.compare_digest(supplied_token, legacy_token):
-                authed = True
+    # (The old plaintext ``config["token"]`` is no longer accepted: it could
+    # not be revoked or rotated. Mint a bridge token to connect.)
     if not authed:
         await websocket.close(code=4401)
         return
@@ -515,13 +510,12 @@ async def bridge_connect(
     # --- Accept the connection -----------------------------------------------
     await websocket.accept()
 
-    # Mark the bridge online.
-    row["status"] = "online"
-    row["last_seen_at"] = _now_iso()
-    row["updated_at"] = _now_iso()
+    # Mark the bridge online (row still holds the PRE-connect status/org_id).
+    await get_bridge_store().set_status(bridge_id, "online", touch_last_seen=True)
+    await _notify_bridge_status_change(row, "online")
 
     broker = get_broker()
-    await broker.register(bridge_id, websocket)
+    conn = await broker.register(bridge_id, websocket)
 
     # Server-side re-validation: the token is checked on connect, but a token can
     # be revoked (or its rotation grace window can lapse) mid-tunnel. The explicit
@@ -529,13 +523,16 @@ async def bridge_connect(
     # live socket; to make revocation robust across workers / direct-DB revokes we
     # also re-validate the token on an interval here and drop the tunnel ourselves
     # the moment it stops validating (§7: "broker rejects next handshake/heartbeat
-    # and drops the live tunnel"). The legacy plaintext path is intentionally NOT
-    # re-validated (no revocation semantics) — but the moment a v2 token is minted
-    # for the bridge the connect-time check already closed that path.
+    # and drops the live tunnel").
     revalidate_every_s = _BRIDGE_TOKEN_REVALIDATE_SECONDS
     using_v2_token = binding is not None
 
+    # Set once the row has been marked offline by EITHER path below, so the
+    # other one doesn't also write a (harmless but redundant) notification.
+    _already_offline = False
+
     async def _revalidate_loop() -> None:
+        nonlocal _already_offline
         if not using_v2_token:
             return
         while True:
@@ -548,33 +545,61 @@ async def bridge_connect(
             )
             if not ok:
                 await broker.drop(bridge_id)
-                row["status"] = "offline"
-                row["updated_at"] = _now_iso()
+                await get_bridge_store().set_status(bridge_id, "offline")
+                await _notify_bridge_status_change(row, "offline")
+                _already_offline = True
                 try:
                     await websocket.close(code=4401)
                 except Exception:  # noqa: BLE001
                     pass
                 return
 
-    revalidator = asyncio.ensure_future(_revalidate_loop())
-    try:
-        # Keep the connection alive by waiting for messages.
-        # The broker's reader loop runs in the background; here we just wait
-        # for the client to disconnect.
+    async def _liveness_loop() -> None:
+        """Refresh ``last_seen_at`` for as long as the tunnel is up.
+
+        Never touches ``status`` semantics beyond re-asserting ``online``: the
+        connect/disconnect handlers still own the transitions. A failed write is
+        logged and retried on the next tick rather than dropping a healthy
+        tunnel over a transient DB blip.
+        """
         while True:
+            await asyncio.sleep(_BRIDGE_LIVENESS_TOUCH_SECONDS)
             try:
-                await websocket.receive_bytes()
-            except WebSocketDisconnect:
-                break
-            except Exception:
-                break
+                await get_bridge_store().set_status(
+                    bridge_id, "online", touch_last_seen=True
+                )
+            except Exception:  # noqa: BLE001 — liveness must not kill the tunnel
+                logger.warning(
+                    "bridge %s: liveness touch failed", bridge_id, exc_info=True
+                )
+
+    revalidator = asyncio.ensure_future(_revalidate_loop())
+    liveness = asyncio.ensure_future(_liveness_loop())
+    try:
+        # The broker's reader loop (started by register()) owns the only
+        # recv() on this WebSocket — it demultiplexes DATA/READY/ERROR/CLOSE
+        # frames for the tunnel. This handler must NOT also call
+        # receive_bytes() here: two concurrent readers on one WebSocket race
+        # and the connection dies uncleanly (previously: every agent
+        # disconnected immediately after connecting). Wait for the reader loop
+        # to exit instead, which happens on agent disconnect or socket error.
+        await conn.wait_closed()
     finally:
-        revalidator.cancel()
-        try:
-            await revalidator
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
-            pass
+        for _task in (revalidator, liveness):
+            _task.cancel()
+            try:
+                await _task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         await broker.unregister(bridge_id)
+        # Explicit offline-on-disconnect: conn.wait_closed() returning means
+        # the agent disconnected or the socket errored. Previously this left
+        # the row 'online' indefinitely (see docstring above, now fixed) — a
+        # killed agent looked "online" forever until someone else revoked its
+        # token. Skip if the revalidator already handled it above.
+        if not _already_offline:
+            await get_bridge_store().set_status(bridge_id, "offline")
+            await _notify_bridge_status_change(row, "offline")
 
 
 # ---------------------------------------------------------------------------

@@ -174,7 +174,7 @@ async def test_send_push_degrades_without_vapid(monkeypatch):
     monkeypatch.delenv("VAPID_PUBLIC_KEY", raising=False)
     monkeypatch.delenv("VAPID_PRIVATE_KEY", raising=False)
     result = send_push(
-        {"endpoint": "https://push/ep", "p256dh": "p", "auth": "a"},
+        {"endpoint": "https://fcm.googleapis.com/fcm/send/ep", "p256dh": "p", "auth": "a"},
         {"title": "hi"},
     )
     assert result == PUSH_SKIPPED
@@ -353,7 +353,7 @@ async def test_push_routes_subscribe_unsubscribe(feed_client):
     resp = await client.get("/api/v1/push/vapid_key", headers=headers)
     assert resp.status_code == 200
 
-    sub = {"endpoint": "https://push/ep-route", "keys": {"p256dh": "pk", "auth": "ak"}}
+    sub = {"endpoint": "https://fcm.googleapis.com/fcm/send/ep-route", "keys": {"p256dh": "pk", "auth": "ak"}}
     resp = await client.post("/api/v1/push/subscribe", json=sub, headers=headers)
     assert resp.status_code == 200, resp.text
     assert len(await pstore.list_for_users(org_id, [user_id])) == 1
@@ -367,7 +367,7 @@ async def test_push_routes_subscribe_unsubscribe(feed_client):
     # Unsubscribe.
     resp = await client.post(
         "/api/v1/push/unsubscribe",
-        json={"endpoint": "https://push/ep-route"},
+        json={"endpoint": "https://fcm.googleapis.com/fcm/send/ep-route"},
         headers=headers,
     )
     assert resp.status_code == 200 and resp.json()["removed"] is True
@@ -393,7 +393,7 @@ async def test_push_unsubscribe_idor_blocked(feed_client, fake_db):
 
     get_repo().seed_org_member(org_id=org_id, user_id=bob_id)
 
-    endpoint = "https://push/ep-idor"
+    endpoint = "https://fcm.googleapis.com/fcm/send/ep-idor"
     sub = {"endpoint": endpoint, "keys": {"p256dh": "pk", "auth": "ak"}}
     resp = await client.post(
         "/api/v1/push/subscribe", json=sub, headers=_auth(alice_id)

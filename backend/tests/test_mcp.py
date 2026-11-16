@@ -18,6 +18,9 @@ Coverage
 14. Nubi-as-MCP-server — POST /mcp tools/call executes a tool (get_schema).
 15. Nubi-as-MCP-server — unknown method returns JSON-RPC -32601.
 16. Nubi-as-MCP-server — unauthenticated request returns 401.
+17. Nubi-as-MCP-server — a long-lived API key (nubi_ak_...) authenticates
+    POST /mcp end-to-end (regression: verified_identity used to reject
+    API keys outright since they aren't JWTs).
 """
 
 from __future__ import annotations
@@ -230,6 +233,7 @@ async def mcp_client(app, fake_db):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as c:
         c.headers["Authorization"] = f"Bearer {token}"
         c._test_org_id = org_id
+        c._test_user_id = user_id
         yield c
 
     set_repo(None)
@@ -247,13 +251,15 @@ async def test_mcp_registry_list_empty(mcp_client):
 @pytest.mark.asyncio
 async def test_mcp_nubi_server_initialize(mcp_client):
     """POST /api/v1/mcp — initialize method returns server info."""
-    payload = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+               "params": {"protocolVersion": "2024-11-05"}}
     resp = await mcp_client.post("/api/v1/mcp", json=payload)
     assert resp.status_code == 200
     data = resp.json()
     assert data["jsonrpc"] == "2.0"
     assert data["id"] == 1
     result = data["result"]
+    # A supported version is echoed back; anything else gets our latest.
     assert result["protocolVersion"] == "2024-11-05"
     assert result["serverInfo"]["name"] == "nubi"
     assert "tools" in result["capabilities"]
@@ -309,6 +315,40 @@ async def test_mcp_nubi_server_unknown_method(mcp_client):
     data = resp.json()
     assert "error" in data
     assert data["error"]["code"] == -32601
+
+
+@pytest.mark.asyncio
+async def test_mcp_nubi_server_api_key_auth(mcp_client):
+    """POST /api/v1/mcp authenticates with a minted nubi_ak_... API key.
+
+    Regression for the bug where ``verified_identity`` unconditionally tried
+    to parse the bearer token as a JWT header, 401-ing every API-key-bearing
+    request before ``current_user`` even got a chance to resolve it — even
+    though API keys are the documented long-lived credential for exactly
+    this "connect an external MCP client" use case.
+    """
+    from app.auth.api_keys import get_api_key_store
+
+    org_id = mcp_client._test_org_id
+    # mcp_client's Authorization header carries a JWT for the seeded user;
+    # mint an API key for that same user/org and swap the header to it.
+    user_id = mcp_client._test_user_id
+    raw_key, _row = await get_api_key_store().create(user_id, org_id, "claude-desktop")
+
+    mcp_client.headers["Authorization"] = f"Bearer {raw_key}"
+
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    resp = await mcp_client.post("/api/v1/mcp", json=payload)
+    assert resp.status_code == 200, resp.text
+    result = resp.json()["result"]
+    assert result["serverInfo"]["name"] == "nubi"
+
+    # tools/list and tools/call must also work — proves claims (org/scope)
+    # were built correctly, not just that auth didn't 401.
+    list_payload = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+    list_resp = await mcp_client.post("/api/v1/mcp", json=list_payload)
+    assert list_resp.status_code == 200
+    assert len(list_resp.json()["result"]["tools"]) > 0
 
 
 @pytest.mark.asyncio
@@ -368,6 +408,152 @@ async def test_mcp_registry_create_metadata_ip_blocked(mcp_client):
     assert resp.status_code in (400, 422, 500), (
         f"Expected SSRF block (400/422), got {resp.status_code}: {resp.text}"
     )
+
+
+# ---------------------------------------------------------------------------
+# test_connection_async — the real (not swallowed-error) health-check helper
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_test_connection_async_success():
+    """test_connection_async returns (tools, None) on success."""
+    from app.ai.mcp import test_connection_async
+
+    server = _make_mcp_server()
+    expected = [
+        MCPToolDef(
+            server_name="test_server", tool_name="echo", namespaced_name="test_server.echo",
+            description="Echo tool", input_schema={"type": "object"},
+        )
+    ]
+    with patch("app.ai.mcp._list_tools_async", return_value=expected):
+        tools, error = await test_connection_async(server)
+    assert error is None
+    assert len(tools) == 1
+
+
+@pytest.mark.asyncio
+async def test_test_connection_async_ssrf_blocked_returns_error():
+    """test_connection_async surfaces the SSRF rejection as a real error, not []."""
+    from app.ai.mcp import test_connection_async
+
+    server = MCPServer(name="bad", url="http://127.0.0.1/mcp", transport="http")
+    tools, error = await test_connection_async(server)
+    assert tools == []
+    assert error is not None and "127.0.0.1" in error or error is not None
+
+
+@pytest.mark.asyncio
+async def test_test_connection_async_network_failure_returns_error():
+    """test_connection_async surfaces a real connection failure, not a silent []."""
+    from app.ai.mcp import test_connection_async
+
+    server = _make_mcp_server(url="https://noreply-nonexistent-host-12345.example/mcp")
+    tools, error = await test_connection_async(server)
+    assert tools == []
+    assert error is not None
+
+
+# ---------------------------------------------------------------------------
+# POST /mcp/servers/{id}/test — the route: persists + notifies on transition
+#
+# The real McpServerStore has no in-memory test double (Pg-only — see its
+# module docstring) and app.db is globally mocked in this suite (returns
+# None by default), so a real POST /mcp/servers create() can't actually
+# persist here — every existing test in this file either never reaches
+# insert (SSRF-blocked) or only exercises the graceful-degrade-to-[] path.
+# These tests substitute a tiny in-process fake store via get_mcp_store's
+# module binding, which is a legitimate way to test the ROUTE's own logic
+# (transition detection, notification firing) independent of that gap.
+# ---------------------------------------------------------------------------
+
+
+class _FakeMcpStore:
+    """Minimal in-memory double for the 3 methods POST .../test calls."""
+
+    def __init__(self, row: dict[str, Any]):
+        self._row = dict(row)
+
+    async def get_with_secret(self, server_id, org_id):
+        return dict(self._row) if self._row["id"] == server_id else None
+
+    async def get_by_id(self, server_id, org_id):
+        return dict(self._row) if self._row["id"] == server_id else None
+
+    async def record_test_result(self, server_id, org_id, *, ok, tool_count, error):
+        self._row.update(
+            last_test_ok=ok, last_test_tool_count=tool_count, last_test_error=error,
+            last_tested_at="2026-01-01T00:00:00+00:00",
+        )
+        return dict(self._row)
+
+
+@pytest.mark.asyncio
+async def test_mcp_server_test_route_persists_result(mcp_client):
+    """A failed test (SSRF-blocked URL, real check, no mocking needed) is persisted."""
+    fake = _FakeMcpStore({
+        "id": str(uuid.uuid4()), "org_id": mcp_client._test_org_id, "name": "flaky",
+        "url": "http://127.0.0.1/mcp", "transport": "http", "enabled": True,
+        "auth_token": None, "last_test_ok": None,
+    })
+    with patch("app.mcp.store.get_mcp_store", return_value=fake):
+        resp = await mcp_client.post(f"/api/v1/mcp/servers/{fake._row['id']}/test")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["error"]
+    assert fake._row["last_test_ok"] is False
+    assert fake._row["last_tested_at"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_server_test_route_notifies_only_on_real_transition(mcp_client):
+    """First test never notifies (no prior state); a real ok<->fail flip notifies once."""
+    from app.notify.notifications import (
+        InMemoryNotificationStore,
+        set_notification_store_for_tests,
+    )
+
+    store = InMemoryNotificationStore()
+    set_notification_store_for_tests(store)
+    fake = _FakeMcpStore({
+        "id": str(uuid.uuid4()), "org_id": mcp_client._test_org_id, "name": "flappy",
+        "url": "https://example.com/mcp", "transport": "http", "enabled": True,
+        "auth_token": None, "last_test_ok": None,
+    })
+    server_id = fake._row["id"]
+    org_id = mcp_client._test_org_id
+    from app.auth.jwt import decode_access_token
+    token = mcp_client.headers["Authorization"].split(" ", 1)[1]
+    user_id = decode_access_token(token)["sub"]
+
+    try:
+        with patch("app.mcp.store.get_mcp_store", return_value=fake), \
+             patch("app.ai.mcp.test_connection_async", return_value=([], None)):
+            # First call: succeeds. No prior state -> no notification.
+            r1 = await mcp_client.post(f"/api/v1/mcp/servers/{server_id}/test")
+            assert r1.json()["ok"] is True
+        assert (await store.list_for_user(org_id, user_id)) == []
+
+        with patch("app.mcp.store.get_mcp_store", return_value=fake), \
+             patch("app.ai.mcp.test_connection_async", return_value=([], "boom")):
+            # Second call: fails — a REAL transition (True -> False) -> one notification.
+            r2 = await mcp_client.post(f"/api/v1/mcp/servers/{server_id}/test")
+            assert r2.json()["ok"] is False
+
+        items = await store.list_for_user(org_id, user_id)
+        assert len(items) == 1
+        assert items[0]["type"] == "mcp_server_health"
+        assert items[0]["severity"] == "warning"
+
+        with patch("app.mcp.store.get_mcp_store", return_value=fake), \
+             patch("app.ai.mcp.test_connection_async", return_value=([], "boom")):
+            # Third call: still failing — no NEW transition, no second notification.
+            await mcp_client.post(f"/api/v1/mcp/servers/{server_id}/test")
+        assert len(await store.list_for_user(org_id, user_id)) == 1
+    finally:
+        set_notification_store_for_tests(None)
 
 
 # ---------------------------------------------------------------------------

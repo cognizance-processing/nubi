@@ -177,7 +177,7 @@ SQL cells support a `source_dialect` config key. When present, sqlglot transpile
 
 This allows authoring BigQuery SQL that runs against a Snowflake datastore without manual rewriting. Transpile runs before RLS injection (never after) so that predicate stripping cannot occur.
 
-**v1 honest limits**: `datastore_id` connector resolution in durable `_handle_query` requires `org_id` on `TaskContext` (added by the Keystone agent). The `_resolve_flow_connector` helper resolves the connector from the datastore registry and returns the target dialect. Preview runs use demo DuckDB when `datastore_id` is absent.
+**v1 honest limits**: `datastore_id` connector resolution in durable `_handle_query` requires `org_id` on `TaskContext` (added by the connector-resolution work). The `_resolve_flow_connector` helper resolves the connector from the datastore registry and returns the target dialect. Preview runs use demo DuckDB when `datastore_id` is absent.
 
 ---
 

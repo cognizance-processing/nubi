@@ -23,14 +23,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from app.auth.deps import verified_identity
 from app.auth.verify import VerifiedIdentity
 from app.errors import AppError
 from app.health.schema_drift import get_drift_store
 from app.routes import api_router
-from app.routes._org import get_user_org
+from app.routes._org import resolve_org_id
 from app.repos.provider import get_repo
 
 logger = logging.getLogger("nubi.health.drift")
@@ -42,9 +42,9 @@ _router = APIRouter(prefix="/health", tags=["health"])
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _resolve_org(identity: VerifiedIdentity) -> str:
+async def _resolve_org(identity: VerifiedIdentity, request: Request) -> str:
     """Resolve the caller's org_id (mirrors the pattern in routes/health.py)."""
-    return await get_user_org(identity.user_id, get_repo())
+    return await resolve_org_id(identity.user_id, get_repo(), request)
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +54,7 @@ async def _resolve_org(identity: VerifiedIdentity) -> str:
 
 @_router.get("/drift")
 async def list_drift_events(
+    request: Request,
     dataset_key: str | None = Query(None, description="Filter to a single dataset key"),
     limit: int = Query(100, ge=1, le=500),
     identity: VerifiedIdentity = Depends(verified_identity),
@@ -63,7 +64,7 @@ async def list_drift_events(
     Pass ``?dataset_key=raw/orders`` to narrow to one dataset.
     Results are returned newest-first, capped at *limit* (max 500).
     """
-    org_id = await _resolve_org(identity)
+    org_id = await _resolve_org(identity, request)
     store = get_drift_store()
 
     _list = store.list_events(org_id, dataset_key=dataset_key, limit=limit)
@@ -87,6 +88,7 @@ async def list_drift_events(
 @_router.get("/drift/{dataset_key:path}")
 async def get_drift_for_dataset(
     dataset_key: str,
+    request: Request,
     limit: int = Query(100, ge=1, le=500),
     identity: VerifiedIdentity = Depends(verified_identity),
 ) -> dict[str, Any]:
@@ -94,7 +96,7 @@ async def get_drift_for_dataset(
 
     Returns 404 when the dataset has never been observed (no snapshot).
     """
-    org_id = await _resolve_org(identity)
+    org_id = await _resolve_org(identity, request)
     store = get_drift_store()
 
     # Snapshot lookup (sync or async store).

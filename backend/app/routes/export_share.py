@@ -66,22 +66,32 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import hashlib
 import io
+import json
+import logging
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
 
 from app.auth.deps import current_user
+from app.auth.roles import require_writer
 from app.config import get_settings
 from app.dashboards.collect import (
     collect_board_data,
+    resolve_board_spec,
+    resolve_spec_refs,
     run_query_rows,
     spec_from_board,
     widget_query_targets,
 )
+from app.dashboards import thumbnail_store
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
 from app.routes._org import resolve_org_id
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/boards", tags=["export-share"])
 
@@ -92,6 +102,29 @@ _EMBED_TOKEN_MAX_TTL_MIN = 15
 # ---------------------------------------------------------------------------
 # Board / widget helpers
 # ---------------------------------------------------------------------------
+
+
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+_CSV_PLAIN_NUMBER_RE = re.compile(r"\A[+-]?\d+(\.\d+)?\Z")
+
+
+def csv_safe_cell(value: Any) -> Any:
+    """Return *value* in a form a spreadsheet will not evaluate.
+
+    A text cell that starts with ``=``, ``+``, ``-``, ``@`` (or a tab / carriage
+    return, or whitespace followed by one of those) is run as a formula by
+    spreadsheet applications.  Such cells get a leading apostrophe so they are
+    shown as text.  Real numbers — including numeric strings like ``-5`` — and
+    non-text values are left as they are; ``None`` becomes an empty cell.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        return value
+    probe = value.lstrip(" ")
+    if probe.startswith(_CSV_FORMULA_PREFIXES) and not _CSV_PLAIN_NUMBER_RE.match(value.strip()):
+        return "'" + value
+    return value
 
 
 async def _load_board(board_id: str, user_id: str, repo: Repo, request: Request) -> dict[str, Any]:
@@ -135,7 +168,7 @@ async def export_board_json(
 
     # First-party access tokens carry no RLS policies (full-access editor view).
     widgets_out = await collect_board_data(
-        board_id, org_id, claims={"policies": {}}, repo=repo, only_query_id=query_id
+        board_id, org_id, claims=_collect_claims(user), repo=repo, only_query_id=query_id
     )
 
     return {
@@ -171,7 +204,10 @@ async def export_board_csv(
     if board is None:
         raise AppError("board_not_found", f"Board {board_id!r} not found.", 404)
 
-    spec = spec_from_board(board)
+    # resolve_board_spec, not spec_from_board: a ref widget carries no query_id
+    # of its own, so its export target only appears once resolved against the
+    # widgets library (see app.dashboards.collect.resolve_board_spec).
+    spec = await resolve_board_spec(board, org_id, repo)
     targets = widget_query_targets(spec, query_id)
     policies: dict[str, Any] = {}
 
@@ -187,9 +223,9 @@ async def export_board_csv(
         writer.writerow([f"# widget: {t['widget_id']} (query: {t['query_id']})"])
         try:
             columns, rows = await run_query_rows(t["query_id"], org_id, repo, policies)
-            writer.writerow(columns)
+            writer.writerow([csv_safe_cell(c) for c in columns])
             for row in rows:
-                writer.writerow(["" if v is None else v for v in row])
+                writer.writerow([csv_safe_cell(v) for v in row])
         except AppError as exc:
             writer.writerow([f"# error: {exc.code} — {exc.message}"])
         except Exception as exc:  # noqa: BLE001 — best-effort export
@@ -238,25 +274,33 @@ async def export_board_pdf(
     AppError("node_not_found", 503)
         When Node.js is not available for SVG rendering.
     """
-    from app.dashboards.spec import get_export_config, validate_spec  # noqa: PLC0415
-    from app.dashboards.svg_render import render_board_svg  # noqa: PLC0415
+    from app.dashboards.spec import get_export_config  # noqa: PLC0415
+    from app.dashboards.svg_render import render_board_svg, spec_for_render  # noqa: PLC0415
     from app.embedding.render_pdf import render_board_pdf, svg_page_size_px  # noqa: PLC0415
 
     board = await _load_board(board_id, str(user["id"]), repo, request)
-    spec_dict = spec_from_board(board)
-    validated_spec, _ = validate_spec(spec_dict)
+    # Resolved up front (rather than only before collect_board_data, as
+    # before) because spec_dict/validated_spec below must ALSO see widget refs
+    # resolved — a ref widget's real type/chart_type/encoding only exist after
+    # resolving against the widgets library.
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    spec_dict = await resolve_board_spec(board, org_id, repo)
+    # Same leniency as the thumbnail: a filter board's `variables` cannot affect
+    # the exported picture, so they must not be able to blank the export either.
+    validated_spec = spec_for_render(spec_dict, fallback_title=board.get("name"))
     if validated_spec is None:
-        validated_spec, _ = validate_spec({"widgets": []})
+        # Last resort so an explicit export never 500s. (Was
+        # `validate_spec({"widgets": []})`, which returns None — title is
+        # required — and then crashed the renderer. See _blank_spec.)
+        validated_spec = _blank_spec(board, board_id)
 
     export_cfg = get_export_config(validated_spec)
     resolved_page_size = page_size or export_cfg.get("page_size") or "A4"
     export_cfg["page_size"] = resolved_page_size
 
     # Collect widget data (first-party = no RLS, full editor view).
-    from app.routes._org import resolve_org_id as _resolve  # noqa: PLC0415
-    org_id = await _resolve(str(user["id"]), repo, request)
     widget_data = await collect_board_data(
-        board_id, org_id, claims={"policies": {}}, repo=repo
+        board_id, org_id, claims=_collect_claims(user), repo=repo
     )
 
     # Render page SVG via T2 (Node.js echarts-SSR).
@@ -287,11 +331,488 @@ async def export_board_pdf(
 
 
 # ---------------------------------------------------------------------------
+# GET /boards/{id}/thumbnail.svg
+# ---------------------------------------------------------------------------
+
+# Rendered thumbnails are cached in-process, keyed by the board's SPEC hash AND
+# the policy fingerprint of the claims they were rendered under, so an unchanged
+# board is rendered once and an edited one regenerates with no explicit
+# invalidation anywhere. Keep this modest: entries are small (tens of KB of SVG)
+# but a big org has a lot of boards.
+#
+# SECURITY — why the policy fingerprint is in the key:
+# A thumbnail is rendered data. Caching one rendered under one viewer's RLS
+# policies and serving it to another viewer would leak rows THROUGH AN IMAGE,
+# which no amount of query-level RLS would catch. Today that is latent rather
+# than live: this route is first-party only (Depends(current_user)) and
+# first-party access tokens carry no `policies` claim (see
+# tests/test_embed_rls.py::test_first_party_token_no_rls_returns_all_rows), so
+# every render here has an identical, empty fingerprint and shows exactly what
+# the same user sees in the UI. The fingerprint keeps it that way BY
+# CONSTRUCTION: if a policy-bearing caller ever reaches this route, it simply
+# misses the cache instead of being served someone else's pixels.
+# Cross-org is already impossible — _load_board is org-scoped and 404s first.
+# Keyed by "board_id:theme" (cache_key carries the theme too): one slot per
+# board meant the light and dark renders evicted each other, and a warm — which
+# writes light then dark — always left light viewers with a miss.
+_THUMB_CACHE: dict[str, tuple[str, str, str]] = {}   # "board_id:theme" -> (cache_key, policy_fp, svg)
+_THUMB_CACHE_MAX = 512
+
+
+def _thumb_slot(board_id: str, cache_key: str) -> str:
+    """In-process cache slot for a board render: the theme is cache_key's suffix."""
+    return f"{board_id}:{cache_key.rsplit(':', 1)[-1]}"
+
+
+def _remember_thumb(board_id: str, cache_key: str, policy_fp: str, svg: str) -> None:
+    """Put a render in the in-process cache, bounding its size."""
+    if len(_THUMB_CACHE) >= _THUMB_CACHE_MAX:
+        _THUMB_CACHE.clear()  # crude but bounded; entries are cheap to rebuild
+    _THUMB_CACHE[_thumb_slot(board_id, cache_key)] = (cache_key, policy_fp, svg)
+
+# Thumbnail render width in px. The card displays it a few hundred px wide, but
+# the SSR layout is width-driven (font sizes and chart geometry are absolute),
+# so rendering too narrow makes axis labels collide. Render at a readable
+# desktop-ish width and let the card scale the vector down.
+_THUMB_WIDTH_PX = 1000
+
+
+def _thumb_width_px(spec_dict: dict[str, Any]) -> int:
+    """Render width for a thumbnail: the board's own max_width when narrower.
+
+    A board capped at, say, 720px lays its grid out at 720px in the viewer;
+    rendering it 1000px wide would draw a layout nobody sees.
+    """
+    layout = spec_dict.get("layout") if isinstance(spec_dict, dict) else None
+    try:
+        max_width = int((layout or {}).get("max_width") or 0)
+    except (TypeError, ValueError):
+        max_width = 0
+    return min(_THUMB_WIDTH_PX, max_width) if max_width > 0 else _THUMB_WIDTH_PX
+
+# Hard cap on how much of a tall board ends up in the thumbnail.
+#
+# Chosen as an ASPECT, not an arbitrary cap: ~1.4:1 against _THUMB_WIDTH_PX. A
+# card displays the whole render (object-contain — cropping would silently eat
+# the right-hand widgets of a wide board), so the render's aspect decides how
+# much dead letterbox the card carries. Let a 3000px board through and, fitted
+# into a landscape card, it shrinks to an unreadable sliver with huge side bars.
+# Capping near the card's own aspect keeps the board big and the letterbox small,
+# and the top of a board is what identifies it anyway.
+#
+# Matched to the card's own 16:9 frame. The card fits the whole render rather
+# than cropping it (cropping a wide board silently amputates its right-hand
+# widgets), so any mismatch between this aspect and the frame's shows up as dead
+# letterbox around the picture. Rendering AT the frame's aspect means the board
+# fills the card edge to edge.
+_THUMB_ASPECT = 16 / 9
+_THUMB_MAX_HEIGHT_PX = int(_THUMB_WIDTH_PX / _THUMB_ASPECT)   # 562 at 1000px wide
+
+
+def _collect_claims(user: dict[str, Any]) -> dict[str, Any]:
+    """The claims server-side board collection runs under — ONE choke point.
+
+    Today: `{"policies": {}}` — RLS off, the full editor view. That is not an
+    oversight, it is what these first-party routes already show: a first-party
+    access token carries no `policies` claim, so the same user hitting
+    `POST /query` from the UI gets the same unfiltered rows. Per-viewer row
+    slicing exists only for host-signed EMBED tokens, and embed identities cannot
+    reach these routes at all (every one is `Depends(current_user)`).
+
+    It exists as a function so that when that stops being true, there is exactly
+    one place to change — and so the thumbnail cache key is always derived from
+    the same claims the render actually used (see _policy_fingerprint).
+    """
+    return {"policies": {}}
+
+
+def _policy_fingerprint(claims: dict[str, Any], org_id: str | None) -> str:
+    """Stable fingerprint of the organisation and RLS policies a render was
+    performed under.
+
+    Part of the thumbnail cache key so a cached render can never cross an
+    organisation or policy boundary. Within one organisation, empty policies
+    fingerprint to a constant, so first-party renders share one cache entry per
+    board — which is the intent.
+    """
+    policies = (claims or {}).get("policies") or {}
+    raw = json.dumps(
+        {"org": str(org_id) if org_id else None, "policies": policies},
+        sort_keys=True,
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _blank_spec(board: dict[str, Any], board_id: str) -> Any:
+    """A valid empty DashboardSpec, for boards whose spec won't validate.
+
+    NOT ``validate_spec({"widgets": []})`` — the schema requires ``title``, so
+    that call returns ``None`` and any caller using it as a fallback then hands
+    ``None`` to the renderer and raises ``AttributeError: 'NoneType' has no
+    attribute 'layout'``. Build the object directly instead of guessing at a
+    dict the validator will accept.
+    """
+    from app.dashboards.spec import DashboardSpec  # noqa: PLC0415
+
+    return DashboardSpec(title=board.get("name") or f"Dashboard {board_id}", widgets=[])
+
+
+def _spec_hash(spec_dict: dict[str, Any]) -> str:
+    """Stable hash of a board spec — the thumbnail's cache key."""
+    raw = json.dumps(spec_dict, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _clamp_svg_height(svg: str, max_h: int, page_bg: str = "#ffffff") -> str:
+    """Crop a composed page SVG to *max_h* px by rewriting its height/viewBox.
+
+    The composer emits ``width``/``height``/``viewBox`` on the root element and
+    positions widgets absolutely inside it, so shrinking the frame crops from the
+    bottom (widgets below simply fall outside) without touching their geometry.
+    Left alone when the SVG is already short enough or doesn't match the shape
+    we expect — a thumbnail is never worth raising on.
+
+    A cropped board is faded out over its last stretch rather than guillotined.
+    The cut lands wherever the clamp falls — usually straight through the middle
+    of a chart — and a hard edge reads as a broken image; a fade reads as "this
+    board carries on", which is the truth.
+    """
+    m = re.search(r'viewBox="0 0 ([\d.]+) ([\d.]+)"', svg)
+    if not m:
+        return svg
+    w, h = float(m.group(1)), float(m.group(2))
+    if h <= max_h:
+        return svg
+    svg = svg.replace(f'viewBox="0 0 {m.group(1)} {m.group(2)}"', f'viewBox="0 0 {m.group(1)} {max_h}"', 1)
+    svg = re.sub(r'(<svg[^>]*?)height="[\d.]+"', rf'\1height="{max_h}"', svg, count=1)
+
+    # Fade to the page's own colour: fading a dark (or custom-background) board
+    # to a generic white/navy default would paint a mismatched bar across its
+    # bottom edge — *page_bg* is the SAME colour render_board_svg painted the
+    # page with (see svg_render.resolve_page_bg), theme default or a board's
+    # own spec.background.
+    fade_h = min(90.0, max_h * 0.16)
+    page = page_bg
+    fade = (
+        f'<defs><linearGradient id="_nubiFade" x1="0" y1="0" x2="0" y2="1">'
+        f'<stop offset="0%" stop-color="{page}" stop-opacity="0"/>'
+        f'<stop offset="100%" stop-color="{page}" stop-opacity="1"/>'
+        f'</linearGradient></defs>'
+        f'<rect x="0" y="{max_h - fade_h:.1f}" width="{w:.1f}" height="{fade_h:.1f}" '
+        f'fill="url(#_nubiFade)"/>'
+    )
+    idx = svg.rfind("</svg>")
+    return svg[:idx] + fade + svg[idx:] if idx != -1 else svg
+
+
+async def warm_board_thumbnails(
+    board_id: str,
+    org_id: str,
+    spec_dict: dict[str, Any],
+    board_name: str | None,
+    claims: dict[str, Any],
+    repo: Repo,
+) -> int:
+    """Render and store this board's thumbnail for BOTH themes.
+
+    Called after a board is saved or published so the picture is ready before
+    anyone opens the gallery — the render is ~8s, and paying it on first view is
+    exactly what made cards feel broken. Rendering both themes matters because a
+    board has no intrinsic colour: the light render is the wrong picture for a
+    dark-mode viewer, so each theme is its own object.
+
+    Best-effort by construction: every failure path returns rather than raises,
+    because this runs in the background of a save that has already succeeded and
+    must not surface as an error to the user. Returns the number of themes
+    stored.
+    """
+    if not thumbnail_store.is_enabled():
+        return 0
+
+    from app.dashboards.svg_render import (  # noqa: PLC0415
+        render_board_svg,
+        renderer_available,
+        resolve_page_bg,
+        spec_for_render,
+    )
+
+    if not renderer_available():
+        return 0
+
+    # Resolve widget refs before anything else touches spec_dict: the fast
+    # path (no ref widgets) returns it unchanged, so spec_hash below is
+    # byte-identical to before for every board that doesn't use references.
+    # For a board that DOES, hashing the resolved form is correct — a change
+    # to the underlying library widget must invalidate every board's stored
+    # thumbnail that references it, not just the board where it was edited.
+    spec_dict = await resolve_spec_refs(spec_dict, org_id, repo, log_label=board_id)
+
+    validated_spec = spec_for_render(spec_dict, fallback_title=board_name)
+    if validated_spec is None:
+        return 0
+
+    # Warming happens as the saving user, so the stored objects carry that
+    # caller's policy fingerprint — the same key material the read path uses.
+    policy_fp = _policy_fingerprint(claims, org_id)
+    spec_hash = _spec_hash(spec_dict)
+
+    try:
+        widget_data = await collect_board_data(board_id, org_id, claims=claims, repo=repo)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("thumbnail warm skipped for board %s: %s", board_id, exc)
+        return 0
+
+    keep: set[str] = set()
+    stored = 0
+    for theme_key in ("light", "dark"):
+        try:
+            page_svg = await asyncio.to_thread(
+                render_board_svg,
+                validated_spec,
+                widget_data,
+                page_width_px=_thumb_width_px(spec_dict),
+                theme=theme_key,
+            )
+            page_svg = _clamp_svg_height(
+                page_svg, _THUMB_MAX_HEIGHT_PX, page_bg=resolve_page_bg(validated_spec, theme_key),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.info("thumbnail render failed (%s) for board %s: %s", theme_key, board_id, exc)
+            continue
+
+        if await asyncio.to_thread(
+            thumbnail_store.save, board_id, spec_hash, theme_key, policy_fp, page_svg,
+        ):
+            keep.add(thumbnail_store.object_key(board_id, spec_hash, theme_key, policy_fp))
+            stored += 1
+        # Refresh the in-process cache too, so the worker that saved also serves
+        # the new picture without a round-trip.
+        _remember_thumb(board_id, f"{spec_hash}:{theme_key}", policy_fp, page_svg)
+
+    # Drop superseded versions only once the new ones are safely written, so a
+    # failed render never leaves the board with no stored thumbnail at all.
+    if keep:
+        await asyncio.to_thread(thumbnail_store.prune_other_versions, board_id, keep)
+    return stored
+
+
+# Any fixed bigint; pg_try_advisory_lock makes the startup backfill run on one
+# worker at a time instead of every worker rendering every board.
+_BACKFILL_LOCK_ID = 0x6E75_6269_7468  # "nubith"
+
+
+async def backfill_board_thumbnails(repo: Repo) -> int:
+    """Store thumbnails for every board that has none for the current renderer.
+
+    Saves warm their own board, but the stored key includes the renderer's
+    fingerprint (thumbnail_store.object_key), so any renderer change makes EVERY
+    stored picture unreachable at once — and until each board was saved again,
+    the first gallery visit paid a cold render per card. Run in the background
+    at startup, this re-warms them before anyone asks.
+
+    Sequential and best-effort: one board at a time keeps the query and Node
+    load of a full sweep off the request path, and no failure propagates.
+    Returns the number of boards warmed.
+    """
+    if not thumbnail_store.is_enabled():
+        return 0
+    from app.dashboards.svg_render import renderer_available  # noqa: PLC0415
+    from app.db import get_pool  # noqa: PLC0415
+
+    if not renderer_available():
+        return 0
+
+    # The same claims the read path renders under, so the keys checked here are
+    # the keys the gallery will ask for.
+    claims = _collect_claims({})
+    warmed = 0
+
+    async with get_pool().acquire() as conn:
+        if not await conn.fetchval("SELECT pg_try_advisory_lock($1)", _BACKFILL_LOCK_ID):
+            return 0
+        try:
+            org_ids = [r["org_id"] for r in await conn.fetch("SELECT DISTINCT org_id FROM boards")]
+            for org_id in org_ids:
+                org_id = str(org_id)
+                policy_fp = _policy_fingerprint(claims, org_id)
+                for board in await repo.list("boards", org_id):
+                    board_id = str(board.get("id"))
+                    try:
+                        spec_dict = await resolve_board_spec(board, org_id, repo)
+                        spec_hash = _spec_hash(spec_dict)
+                        have = await asyncio.to_thread(thumbnail_store.stored_keys, board_id)
+                        want = {
+                            thumbnail_store.object_key(board_id, spec_hash, t, policy_fp)
+                            for t in ("light", "dark")
+                        }
+                        if want <= have:
+                            continue
+                        if await warm_board_thumbnails(
+                            board_id, org_id, spec_from_board(board), board.get("name"), claims, repo,
+                        ):
+                            warmed += 1
+                    except Exception as exc:  # noqa: BLE001
+                        logger.info("thumbnail backfill skipped board %s: %s", board_id, exc)
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock($1)", _BACKFILL_LOCK_ID)
+
+    if warmed:
+        logger.info("thumbnail backfill warmed %d board(s)", warmed)
+    return warmed
+
+
+@router.get("/{board_id}/thumbnail.svg")
+async def board_thumbnail_svg(
+    board_id: str,
+    request: Request,
+    theme: str | None = None,
+    cached_only: bool = False,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> Response:
+    """Render the board to an SVG thumbnail — the REAL board, with real data.
+
+    This is the same T2 pipeline the PDF export uses (collect widget data →
+    Node/echarts SSR → compose page SVG), just at thumbnail size and without the
+    SVG→PDF step, so it needs no cairo/reportlab backend — only Node.
+
+    Why a real render rather than a drawing of the layout: a dashboard card
+    should be a window into the dashboard. The client-side ``BoardMiniature``
+    (dashboards/specMiniature.js) draws real widget POSITIONS but has no data;
+    this endpoint gives the actual charts. The card shows the miniature instantly
+    and swaps in this render when it arrives.
+
+    Cached by spec hash, so repeat views are free and an edited board
+    self-invalidates. The data is a snapshot as of render time — a thumbnail is
+    an identifying picture, not a live view.
+
+    Returns
+    -------
+    Response
+        ``image/svg+xml``. 503 when Node.js is unavailable, so the caller can
+        keep its placeholder rather than show a broken image.
+    """
+    from app.dashboards.svg_render import (  # noqa: PLC0415
+        render_board_svg,
+        renderer_available,
+        resolve_page_bg,
+        spec_for_render,
+    )
+
+    board = await _load_board(board_id, str(user["id"]), repo, request)
+    # Resolved up front (rather than only right before collect_board_data, as
+    # before) because spec_dict/validated_spec/the cache key below must ALSO
+    # see widget refs resolved — a ref widget's real type/chart_type/encoding
+    # only exist after resolving against the widgets library, and the cache
+    # key must reflect the picture actually rendered (see warm_board_thumbnails
+    # for why hashing the resolved form is correct, not just convenient).
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    spec_dict = await resolve_board_spec(board, org_id, repo)
+
+    claims = _collect_claims(user)
+    # A board has no intrinsic colour — its widgets are styled with CSS theme
+    # tokens so one spec looks right in light AND dark. The render must therefore
+    # pick a theme, which makes theme part of the picture's identity: it belongs
+    # in the cache key, or a dark viewer gets served the light render.
+    theme_key = "dark" if (theme or "").strip().lower() == "dark" else "light"
+    cache_key = _spec_hash(spec_dict) + ":" + theme_key
+    policy_fp = _policy_fingerprint(claims, org_id)
+
+    # Access is authorised BEFORE this lookup (_load_board is org-scoped and
+    # 404s cross-org), and the key carries the policy fingerprint, so a hit can
+    # only ever be this org's board rendered under these exact policies.
+    cached = _THUMB_CACHE.get(_thumb_slot(board_id, cache_key))
+    if cached and cached[0] == cache_key and cached[1] == policy_fp:
+        return Response(
+            content=cached[2],
+            media_type="image/svg+xml",
+            headers={"Cache-Control": "private, max-age=300", "X-Nubi-Thumb-Cache": "hit"},
+        )
+
+    # Then durable storage. The in-process dict above only helps the worker that
+    # rendered; this is what makes a restart — or a second worker, or a card
+    # gallery after a deploy — free instead of an ~8s re-render per board.
+    # Same key material, so it carries the same policy isolation.
+    stored = await asyncio.to_thread(
+        thumbnail_store.load, board_id, _spec_hash(spec_dict), theme_key, policy_fp,
+    )
+    if stored:
+        _remember_thumb(board_id, cache_key, policy_fp, stored)
+        return Response(
+            content=stored,
+            media_type="image/svg+xml",
+            headers={"Cache-Control": "private, max-age=300", "X-Nubi-Thumb-Cache": "stored"},
+        )
+
+    # The gallery asks for stored pictures first, all at once, and queues only
+    # the misses for a real render — so a ready card never waits behind a cold
+    # one. 204 = "nothing stored yet", distinct from 503 "can't render at all".
+    if cached_only:
+        return Response(status_code=204, headers={"X-Nubi-Thumb-Cache": "none"})
+
+    if not renderer_available():
+        # No Node → no render. Fail soft: the card keeps its miniature.
+        raise AppError(
+            "renderer_unavailable",
+            "Server-side rendering is unavailable (Node.js not found).",
+            503,
+        )
+
+    # `spec_for_render`, not `validate_spec`: the strict validator is the wrong
+    # gate for a picture, and using it as one meant EVERY board with a filter
+    # lost its thumbnail (filter boards carry `variables`, and real ones declare
+    # types the schema rejects but the frontend renderer ignores). See
+    # svg_render.spec_for_render.
+    validated_spec = spec_for_render(spec_dict, fallback_title=board.get("name"))
+    if validated_spec is None:
+        # Even the geometry won't parse. Do NOT fall back to a blank spec here
+        # (the PDF route does, to avoid crashing an explicit export): a blank
+        # render is a convincing, WRONG picture — an empty white card. 503 →
+        # the card keeps its spec-derived miniature, truthful about the layout.
+        raise AppError(
+            "spec_unrenderable",
+            "Board spec cannot be parsed for rendering.",
+            503,
+        )
+
+    # Per-widget query errors are reported inline rather than raised, so a board
+    # with one broken query still gets a thumbnail of everything else.
+    widget_data = await collect_board_data(board_id, org_id, claims=claims, repo=repo)
+
+    # Off-thread: render_board_svg shells out to Node via blocking subprocess.run.
+    page_svg = await asyncio.to_thread(
+        render_board_svg,
+        validated_spec,
+        widget_data,
+        page_width_px=_thumb_width_px(spec_dict),
+        theme=theme_key,
+    )
+    page_svg = _clamp_svg_height(
+        page_svg, _THUMB_MAX_HEIGHT_PX, page_bg=resolve_page_bg(validated_spec, theme_key),
+    )
+
+    _remember_thumb(board_id, cache_key, policy_fp, page_svg)
+    # Persist so the next reader — after a restart, or on another worker — gets
+    # it for free. Off-thread: the S3 call is blocking.
+    await asyncio.to_thread(
+        thumbnail_store.save,
+        board_id, _spec_hash(spec_dict), theme_key, policy_fp, page_svg,
+    )
+
+    return Response(
+        content=page_svg,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "private, max-age=300", "X-Nubi-Thumb-Cache": "miss"},
+    )
+
+
+# ---------------------------------------------------------------------------
 # POST /boards/{id}/share
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{board_id}/share")
+@router.post("/{board_id}/share", dependencies=[Depends(require_writer)])
 async def share_board(
     board_id: str,
     request: Request,

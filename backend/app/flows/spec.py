@@ -412,6 +412,14 @@ class FlowSpec(BaseModel):
         default_factory=list,
         description="Ordered list of tasks forming the DAG.",
     )
+    view: str | None = Field(
+        default=None,
+        description=(
+            "The editor view the flow was last saved from ('canvas' | "
+            "'notebook' | 'code').  UI-only; the flow builder reopens in it. "
+            "Modelled so validation stops silently dropping it."
+        ),
+    )
     runtime_config: dict[str, Any] = Field(
         default_factory=dict,
         description=(

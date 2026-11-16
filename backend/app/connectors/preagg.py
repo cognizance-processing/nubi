@@ -41,6 +41,7 @@ RollupRegistry / get_registry()
 from __future__ import annotations
 
 import os
+import re
 from collections import Counter, OrderedDict
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -484,8 +485,12 @@ class RollupRegistry:
         ]
 
     def all_rollups(self) -> list[BuiltRollup]:
-        """Return all built rollups (insertion order)."""
+        """Return all built rollups (insertion order). Operator/maintenance use."""
         return list(self._rollups.values())
+
+    def rollups_for_org(self, org_id: str | None) -> list[BuiltRollup]:
+        """Return the rollups built for exactly *org_id* (insertion order)."""
+        return [r for r in self._rollups.values() if r.org_id == org_id]
 
     def get_rollup(self, rollup_id: str) -> BuiltRollup | None:
         """Return the rollup by id and mark it as recently used."""
@@ -568,8 +573,10 @@ def _rollup_shape_hash(
             org_id or "",
         ]
     )
-    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
-    return f"rollup_{table}_{digest}"
+    # The id doubles as a file name, so it is the digest alone — never text
+    # taken from the request.
+    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:20]
+    return f"rollup_{digest}"
 
 
 def sweep_orphan_rollups(registry: "RollupRegistry | None" = None) -> int:
@@ -589,9 +596,9 @@ def sweep_orphan_rollups(registry: "RollupRegistry | None" = None) -> int:
         for r in registry.all_rollups()
         if r.database and r.database != ":memory:"
     }
-    rollups_dir = os.path.dirname(_rollup_database_path("_"))
+    rollups_dir = _rollups_dir()
     removed = 0
-    for path in glob.glob(os.path.join(rollups_dir, "*.duckdb")):
+    for path in glob.glob(os.path.join(rollups_dir, "**", "*.duckdb"), recursive=True):
         if os.path.abspath(path) in referenced:
             continue
         try:
@@ -643,6 +650,7 @@ def build_rollup_for_metric(
     register_query: bool = True,
     datastore_id: str | None = None,
     org_id: str | None = None,
+    source_connector: Any | None = None,
 ) -> "BuiltRollup":
     """Materialize a rollup that covers a MetricDefinition's base measures.
 
@@ -746,16 +754,74 @@ def build_rollup_for_metric(
         register_query=register_query,
         datastore_id=datastore_id,
         org_id=org_id,
+        source_connector=source_connector,
     )
 
 
-def _rollup_database_path(rollup_id: str) -> str:
-    """On-disk DuckDB target for a rollup: ``seed_data/rollups/<id>.duckdb``."""
+_ROLLUP_TABLE_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){0,2}\Z")
+_ROLLUP_ID_RE = re.compile(r"\A[A-Za-z0-9_\-]{1,128}\Z")
+_SHARED_ROLLUP_DIR = "_shared"
+
+
+def _rollups_dir() -> str:
+    """Root directory for rollup files (``NUBI_ROLLUPS_DIR`` overrides)."""
     import os  # noqa: PLC0415
 
+    override = os.getenv("NUBI_ROLLUPS_DIR", "").strip()
+    if override:
+        return os.path.abspath(override)
     here = os.path.dirname(os.path.abspath(__file__))
     backend = os.path.dirname(os.path.dirname(here))
-    return os.path.join(backend, "seed_data", "rollups", f"{rollup_id}.duckdb")
+    return os.path.join(backend, "seed_data", "rollups")
+
+
+def _require_rollup_table(table: Any) -> str:
+    """A rollup source must be a plain (optionally schema-qualified) table name.
+
+    Anything else — a path, a function call, a quoted expression — is refused:
+    DuckDB resolves a quoted "table" that looks like a file to that file.
+    """
+    if not isinstance(table, str) or not _ROLLUP_TABLE_RE.match(table):
+        from app.errors import AppError  # noqa: PLC0415
+
+        raise AppError(
+            "invalid_rollup_request",
+            "The rollup source must be a table name.",
+            400,
+        )
+    return table
+
+
+def _rollup_database_path(rollup_id: str, org_id: str | None = None) -> str:
+    """On-disk DuckDB target for a rollup: ``<rollups>/<org>/<id>.duckdb``.
+
+    Both segments are validated; the path is never derived from a table name.
+    """
+    import os  # noqa: PLC0415
+
+    from app.errors import AppError  # noqa: PLC0415
+
+    org_segment = str(org_id) if org_id else _SHARED_ROLLUP_DIR
+    if not _ROLLUP_ID_RE.match(str(rollup_id)) or not _ROLLUP_ID_RE.match(org_segment):
+        raise AppError("invalid_rollup_request", "Invalid rollup identifier.", 400)
+    return os.path.join(_rollups_dir(), org_segment, f"{rollup_id}.duckdb")
+
+
+def _require_managed_source(source_database: str) -> str:
+    """A rollup may only be built from a server-managed DuckDB file."""
+    import os  # noqa: PLC0415
+
+    from app.connectors.duckdb_conn import _within, duckdb_database_dirs  # noqa: PLC0415
+    from app.errors import AppError  # noqa: PLC0415
+
+    allowed = [*duckdb_database_dirs(), os.path.realpath(_rollups_dir())]
+    if not isinstance(source_database, str) or not _within(source_database, allowed):
+        raise AppError(
+            "invalid_rollup_request",
+            "The rollup source database is not available.",
+            400,
+        )
+    return source_database
 
 
 def _quote_ident(name: str) -> str:
@@ -880,8 +946,13 @@ def build_rollup(
     register_query: bool = True,
     datastore_id: str | None = None,
     org_id: str | None = None,
+    source_connector: Any | None = None,
 ) -> BuiltRollup:
     """Materialize a rollup table for *candidate* and register it.
+
+    ``source_connector`` (preferred) is the caller's already-resolved datastore
+    connector; the aggregate runs through its ``execute``.  ``source_database``
+    is the legacy file source and must be a server-managed DuckDB file.
 
     Reuses the DuckDB write path established by ``app/flows/materialize.py``:
     aggregate the base fact into a fresh DuckDB file, verify RLS keys survived,
@@ -943,6 +1014,10 @@ def build_rollup(
     rls_keys = list(rls_keys or [])
     registry = registry or get_registry()
 
+    table = _require_rollup_table(table)
+    if source_database is not None:
+        source_database = _require_managed_source(source_database)
+
     # ── Shape-hash DEDUP ──────────────────────────────────────────────────────
     # A rollup_id derived from the materialized shape (table, sorted dims,
     # sorted measures, sorted rls_keys, org) means repeated builds of the SAME
@@ -961,7 +1036,7 @@ def build_rollup(
     rollup_sql = build_rollup_sql(table, dimensions, measures, rls_keys)
 
     # ── Materialize: read base fact → aggregate → write rollup DuckDB file ────
-    database = _rollup_database_path(rollup_id)
+    database = _rollup_database_path(rollup_id, org_id)
     os.makedirs(os.path.dirname(os.path.abspath(database)), exist_ok=True)
 
     max_rows = _rollup_max_rows()
@@ -977,13 +1052,32 @@ def build_rollup(
     # stops at LIMIT so we never scan the full result for an over-cap rollup.
     count_sql = f"SELECT COUNT(*) FROM ({capped_sql}) __rollup_count"
 
-    src = duckdb.connect(
-        database=source_database or ":memory:",
-        read_only=(source_database is not None),
-    )
-    harden_connection(src, disable_external_access=(source_database is not None))
+    if source_connector is not None:
+        from app.connectors.plan import PhysicalPlan  # noqa: PLC0415
+
+        def _run(sql: str) -> Any:
+            out_tbl = source_connector.execute(
+                PhysicalPlan(sql=sql, params=[], cache_key="", rls_claims={})
+            )
+            return out_tbl.read_all() if hasattr(out_tbl, "read_all") else out_tbl
+
+        _close = lambda: None  # noqa: E731 — the caller owns the connector
+    else:
+        src = duckdb.connect(
+            database=source_database or ":memory:",
+            read_only=(source_database is not None),
+        )
+        # Always locked down: the build connection only ever reads the tables
+        # already inside it.
+        harden_connection(src, disable_external_access=True)
+
+        def _run(sql: str) -> Any:
+            out_tbl = src.execute(sql).arrow()
+            return out_tbl.read_all() if hasattr(out_tbl, "read_all") else out_tbl
+
+        _close = src.close
     try:
-        row_count = src.execute(count_sql).fetchone()[0]
+        row_count = _run(count_sql).column(0)[0].as_py()
         if row_count > max_rows:
             raise AppError(
                 "rollup_too_large",
@@ -993,11 +1087,9 @@ def build_rollup(
                 400,
             )
         # Within cap: materialize the (already-bounded) capped result.
-        result = src.execute(capped_sql).arrow()
-        if hasattr(result, "read_all"):
-            result = result.read_all()
+        result = _run(capped_sql)
     finally:
-        src.close()
+        _close()
 
     columns = list(result.schema.names)
     missing = [k for k in rls_keys if k not in columns]
@@ -1045,6 +1137,7 @@ def build_rollup(
                 sql=f"SELECT * FROM {_quote_ident(rollup_table)}",
                 name=f"Rollup — {table}",
                 datastore_id=datastore_id,
+                owner_org_id=str(org_id) if org_id else None,
             )
         except Exception:
             # Best-effort runtime registration; the materialized file is the

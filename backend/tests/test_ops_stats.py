@@ -148,7 +148,7 @@ class TestLatencyRecorder:
 
 class TestOpsStatsEndpoint:
     @pytest.mark.asyncio
-    async def test_stats_shape_with_auth(self, client, fake_db):
+    async def test_stats_shape_with_auth(self, client, fake_db, as_operator):
         uid = str(uuid.uuid4())
         fake_db.users[uid] = _make_user(uid, "ops@example.com")
         resp = await client.get("/api/v1/ops/stats", headers=_auth_headers(uid))
@@ -168,7 +168,7 @@ class TestOpsStatsEndpoint:
         assert isinstance(body["uptime_s"], (int, float))
 
     @pytest.mark.asyncio
-    async def test_stats_reflects_recorded_traffic(self, client, fake_db):
+    async def test_stats_reflects_recorded_traffic(self, client, fake_db, as_operator):
         from app.observability.latency import get_recorder
 
         uid = str(uuid.uuid4())

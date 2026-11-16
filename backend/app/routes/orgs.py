@@ -7,7 +7,7 @@ GET    /orgs/{id}         — fetch a single org the user is a member of (404 ot
 POST   /orgs              — create a new org with the current user as owner.
 PATCH  /orgs/{id}         — rename an org and/or set its avatar_url.
 GET    /orgs/{id}/deletion-impact — describe what would be deleted (can_delete, blockers, deletes).
-DELETE /orgs/{id}         — delete an org (409 if projects exist; requires confirm_name).
+DELETE /orgs/{id}         — delete an org and its projects (requires confirm_name).
 
 Authentication
 --------------
@@ -40,7 +40,7 @@ import secrets
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
@@ -52,7 +52,41 @@ from app.repos.provider import Repo, get_repo
 from app.routes import api_router
 
 # ── Sub-router ────────────────────────────────────────────────────────────────
-router = APIRouter(prefix="/orgs", tags=["orgs"])
+async def _enforce_org_pin(request: Request) -> None:
+    """A credential issued for one org (API key, OAuth token, host-mode embed)
+    may only use these routes for THAT org.
+
+    Runs after authentication for every route on this router. Org-specific
+    routes must name the pinned org; routes with no org in the path (create an
+    org, accept an invite) are not available to a pinned credential at all.
+    The org listing is narrowed in its handler.
+    """
+    from app.routes._org import api_key_org_pin, host_mode_org_pin  # noqa: PLC0415
+
+    pinned = api_key_org_pin.get() or host_mode_org_pin.get()
+    if not pinned:
+        return
+    path_org = request.path_params.get("org_id")
+    if path_org is not None:
+        if str(path_org) != str(pinned):
+            raise AppError(
+                "forbidden", "This credential is scoped to a different organisation.", 403
+            )
+        return
+    if request.method != "GET":
+        raise AppError(
+            "forbidden", "This credential cannot manage organisations.", 403
+        )
+
+
+async def _pinned_user(
+    request: Request, user: dict[str, Any] = Depends(current_user)
+) -> None:
+    # Depends on current_user so the pin is set before it is checked.
+    await _enforce_org_pin(request)
+
+
+router = APIRouter(prefix="/orgs", tags=["orgs"], dependencies=[Depends(_pinned_user)])
 
 
 # ── Pydantic response schemas ─────────────────────────────────────────────────
@@ -63,6 +97,7 @@ class OrgOut(BaseModel):
     id: str
     name: str
     role: str
+    avatar_url: str | None = None
 
 
 class OrgsListResponse(BaseModel):
@@ -77,6 +112,7 @@ class OrgDetailResponse(BaseModel):
     id: str
     name: str
     role: str
+    avatar_url: str | None = None
 
 
 class ImpactBlocker(BaseModel):
@@ -154,7 +190,9 @@ class InviteOut(BaseModel):
     email: str
     role: str
     status: str
-    token: str
+    # The secret link token. Returned ONCE, to the person who creates (or
+    # re-sends) the invite; listings never include it.
+    token: str | None = None
     invited_by: str | None = None
     created_at: str
     expires_at: str
@@ -192,11 +230,11 @@ async def _list_user_orgs(user_id: str) -> list[dict[str, Any]]:
     Returns
     -------
     list[dict]
-        Each entry has ``id``, ``name``, and ``role``.
+        Each entry has ``id``, ``name``, ``role`` and ``avatar_url``.
     """
     rows = await fetch(
         """
-        SELECT o.id, o.name, om.role
+        SELECT o.id, o.name, om.role, o.avatar_url
         FROM org_members om
         JOIN orgs o ON o.id = om.org_id
         WHERE om.user_id = $1::uuid
@@ -204,7 +242,10 @@ async def _list_user_orgs(user_id: str) -> list[dict[str, Any]]:
         """,
         user_id,
     )
-    return [{"id": str(r["id"]), "name": r["name"], "role": r["role"]} for r in rows]
+    return [
+        {"id": str(r["id"]), "name": r["name"], "role": r["role"], "avatar_url": r.get("avatar_url")}
+        for r in rows
+    ]
 
 
 async def _get_user_org_membership(user_id: str, org_id: str) -> dict[str, Any] | None:
@@ -220,11 +261,11 @@ async def _get_user_org_membership(user_id: str, org_id: str) -> dict[str, Any] 
     Returns
     -------
     dict or None
-        ``{id, name, role}`` if the user is a member; ``None`` otherwise.
+        ``{id, name, role, avatar_url}`` if the user is a member; ``None`` otherwise.
     """
     row = await fetchrow(
         """
-        SELECT o.id, o.name, om.role
+        SELECT o.id, o.name, om.role, o.avatar_url
         FROM org_members om
         JOIN orgs o ON o.id = om.org_id
         WHERE om.user_id = $1::uuid
@@ -235,7 +276,12 @@ async def _get_user_org_membership(user_id: str, org_id: str) -> dict[str, Any] 
     )
     if row is None:
         return None
-    return {"id": str(row["id"]), "name": row["name"], "role": row["role"]}
+    return {
+        "id": str(row["id"]),
+        "name": row["name"],
+        "role": row["role"],
+        "avatar_url": row.get("avatar_url"),
+    }
 
 
 async def _get_org_name(org_id: str) -> str | None:
@@ -330,6 +376,12 @@ async def list_orgs(
     """
     user_id = str(user["id"])
     orgs = await _list_user_orgs(user_id)
+    # A credential pinned to one org sees only that org.
+    from app.routes._org import api_key_org_pin, host_mode_org_pin  # noqa: PLC0415
+
+    pinned = api_key_org_pin.get() or host_mode_org_pin.get()
+    if pinned:
+        orgs = [o for o in orgs if str(o["id"]) == str(pinned)]
     return OrgsListResponse(orgs=[OrgOut(**o) for o in orgs])
 
 
@@ -340,9 +392,9 @@ async def get_org_deletion_impact(
 ) -> DeletionImpactResponse:
     """Return a summary of what deleting this org would affect.
 
-    Sets ``can_delete=false`` with a ``projects`` blocker when the org has any
-    projects (an org with projects cannot be deleted — all projects must be
-    removed first).
+    Deleting an org also deletes its projects and their resources, so projects
+    are reported under ``deletes`` (not as a blocker) and ``can_delete`` is
+    true for any org the caller can see.
 
     Parameters
     ----------
@@ -367,21 +419,13 @@ async def get_org_deletion_impact(
     blockers: list[ImpactBlocker] = []
     deletes: list[ImpactDelete] = []
 
-    # Projects are a hard blocker — an org with projects cannot be deleted.
+    # Projects (and everything inside them) are deleted with the org — the DB
+    # cascades from orgs → projects → project resources. Project deletion's
+    # "last project" rule only applies to a standalone project delete.
     project_count = await projects_repo.count_projects(org_id)
     if project_count > 0:
-        blockers.append(
-            ImpactBlocker(
-                type="projects",
-                count=project_count,
-                reason=(
-                    f"This org has {project_count} project(s). "
-                    "Delete all projects before deleting the org."
-                ),
-            )
-        )
+        deletes.append(ImpactDelete(type="projects", count=project_count))
 
-    # Count resources that WOULD be deleted (regardless of blocker).
     for resource_type, table in [
         ("datastores", "datastores"),
         ("boards", "boards"),
@@ -498,7 +542,8 @@ async def patch_org(
     body.name:
         New human-readable name for the org (optional).
     body.avatar_url:
-        New avatar URL for the org (optional).
+        New avatar URL for the org (optional). An explicit ``null`` or empty
+        string clears it; omitting the field leaves it unchanged.
 
     Returns
     -------
@@ -514,7 +559,10 @@ async def patch_org(
     user_id = str(user["id"])
     org = await _require_manage(user_id, org_id)  # owner/admin only (also blocks viewer/member)
 
-    if body.name is None and body.avatar_url is None:
+    # ``avatar_url`` distinguishes "omitted" (leave as-is) from an explicit
+    # ``null``/``""`` (clear it), so test field presence, not the value.
+    avatar_set = "avatar_url" in body.model_fields_set
+    if body.name is None and not avatar_set:
         raise AppError("invalid_request", "At least one of name or avatar_url must be provided.", 400)
 
     updates: list[str] = []
@@ -529,9 +577,11 @@ async def patch_org(
         values.append(name)
         idx += 1
 
-    if body.avatar_url is not None:
+    avatar_url = org.get("avatar_url")
+    if avatar_set:
+        avatar_url = (body.avatar_url or "").strip() or None
         updates.append(f"avatar_url = ${idx}")
-        values.append(body.avatar_url)
+        values.append(avatar_url)
         idx += 1
 
     # NOTE: the `orgs` table has no `updated_at` column (see 0005/0019), so we
@@ -546,7 +596,9 @@ async def patch_org(
 
     # Return the updated org detail; re-resolve name from DB in case it changed.
     updated_name = body.name.strip() if body.name is not None else org["name"]
-    return OrgDetailResponse(id=org_id, name=updated_name, role=org["role"])
+    return OrgDetailResponse(
+        id=org_id, name=updated_name, role=org["role"], avatar_url=avatar_url,
+    )
 
 
 @router.delete("/{org_id}", status_code=204)
@@ -560,12 +612,11 @@ async def delete_org(
     Rules
     -----
     1.  The caller must be a member of the org.
-    2.  The org must have **no projects** — if any projects exist, the endpoint
-        returns 409 with a clear message listing the project count.
-    3.  The caller must supply ``confirm_name`` matching the org's exact name
+    2.  The caller must supply ``confirm_name`` matching the org's exact name
         (case-sensitive). Mismatch → 422.
-    4.  On success, org-scoped data is cascade-deleted by the DB (foreign key
-        ``ON DELETE CASCADE`` on all resource tables).
+    3.  On success the org's projects and all org-scoped data are
+        cascade-deleted by the DB (foreign key ``ON DELETE CASCADE``), matching
+        what GET /orgs/{id}/deletion-impact lists under ``deletes``.
 
     Parameters
     ----------
@@ -582,27 +633,13 @@ async def delete_org(
     ------
     AppError("not_found", 404)
         If the org doesn't exist or the user isn't a member.
-    AppError("org_has_projects", 409)
-        If the org still has projects.
     AppError("confirm_name_mismatch", 422)
         If ``confirm_name`` does not match the org's name exactly.
     """
     user_id = str(user["id"])
     org = await _require_manage(user_id, org_id)  # owner/admin only (also blocks viewer/member)
 
-    # Rule 2: reject if any projects exist.
-    project_count = await projects_repo.count_projects(org_id)
-    if project_count > 0:
-        raise AppError(
-            "org_has_projects",
-            (
-                f"Cannot delete org '{org['name']}': it still has {project_count} project(s). "
-                "Delete all projects first."
-            ),
-            409,
-        )
-
-    # Rule 3: confirm_name must match.
+    # Rule 2: confirm_name must match.
     if body.confirm_name != org["name"]:
         raise AppError(
             "confirm_name_mismatch",
@@ -613,7 +650,9 @@ async def delete_org(
             422,
         )
 
-    # Cascade-delete: the DB cascades to org_members + resource tables via FK.
+    # One statement, so it is atomic: the DB cascades (FK ON DELETE CASCADE) to
+    # org_members, projects and every org/project-scoped resource table — the
+    # same set GET /deletion-impact reports.
     await execute(
         "DELETE FROM orgs WHERE id = $1::uuid",
         org_id,
@@ -704,17 +743,39 @@ async def remove_member(
         "DELETE FROM org_members WHERE org_id = $1::uuid AND user_id = $2::uuid",
         org_id, member_id,
     )
+    await _revoke_member_credentials(member_id, org_id)
+
+
+async def _revoke_member_credentials(user_id: str, org_id: str) -> None:
+    """Revoke the org-scoped credentials of someone who has left the org:
+    their API keys and their connected-app (OAuth) grants. Best-effort per
+    store — the membership row is already gone, which on its own stops both
+    from authenticating."""
+    try:
+        from app.auth.api_keys import get_api_key_store  # noqa: PLC0415
+
+        await get_api_key_store().revoke_all_for_user(user_id, org_id)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from app.auth.oauth import get_oauth_store  # noqa: PLC0415
+
+        store = get_oauth_store()
+        for grant in await store.list_grants(user_id, org_id):
+            await store.revoke_grant(str(grant["id"]), user_id, org_id)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ── Invites ─────────────────────────────────────────────────────────────────--
 
-def _invite_row_to_out(r: dict[str, Any]) -> InviteOut:
+def _invite_row_to_out(r: dict[str, Any], *, with_token: bool = False) -> InviteOut:
     return InviteOut(
         id=str(r["id"]),
         email=str(r["email"]),
         role=r["role"],
         status=r["status"],
-        token=r["token"],
+        token=r["token"] if with_token else None,
         invited_by=str(r["invited_by"]) if r["invited_by"] else None,
         created_at=r["created_at"].isoformat(),
         expires_at=r["expires_at"].isoformat(),
@@ -786,7 +847,7 @@ async def create_invite(
             "RETURNING id, email, role, status, token, invited_by, created_at, expires_at",
             org_id, email, body.role, token, str(user["id"]),
         )
-    return _invite_row_to_out(dict(row))
+    return _invite_row_to_out(dict(row), with_token=True)
 
 
 @router.delete("/{org_id}/invites/{invite_id}", status_code=204)
@@ -831,11 +892,18 @@ async def accept_invite(
     token: str,
     user: dict[str, Any] = Depends(current_user),
 ) -> OrgDetailResponse:
-    """Accept an invite: join the org with the invited role. Idempotent — if the
-    caller is already a member, their role is updated to the invited role."""
+    """Accept an invite: join the org with the invited role.
+
+    Acceptance needs the invite's secret link AND an account whose address is
+    the one that was invited, before the invite expires. Someone who is
+    already a member keeps the role they have — accepting an invite never
+    raises or lowers an existing role.
+    """
+    from datetime import datetime, timezone  # noqa: PLC0415
+
     user_id = str(user["id"])
     row = await fetchrow(
-        "SELECT id, org_id, role, status, expires_at FROM org_invites WHERE token = $1",
+        "SELECT id, org_id, role, status, email, expires_at FROM org_invites WHERE token = $1",
         token,
     )
     if row is None:
@@ -843,18 +911,44 @@ async def accept_invite(
     if row["status"] != "pending":
         raise AppError("invite_unavailable", f"This invite is {row['status']}.", 409)
 
+    expires_at = row["expires_at"]
+    if expires_at is not None:
+        if not isinstance(expires_at, datetime):
+            expires_at = datetime.fromisoformat(str(expires_at))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= datetime.now(tz=timezone.utc):
+            raise AppError("invite_unavailable", "This invite has expired.", 409)
+
+    if str(user.get("email") or "").strip().lower() != str(row["email"] or "").strip().lower():
+        raise AppError(
+            "forbidden", "This invite was sent to a different email address.", 403
+        )
+
     org_id = str(row["org_id"])
-    await execute(
-        "INSERT INTO org_members (org_id, user_id, role) VALUES ($1::uuid, $2::uuid, $3) "
-        "ON CONFLICT (org_id, user_id) DO UPDATE SET role = EXCLUDED.role",
-        org_id, user_id, row["role"],
-    )
+    role = await _member_role(user_id, org_id)
+    if role is None:
+        role = row["role"]
+        await execute(
+            "INSERT INTO org_members (org_id, user_id, role) VALUES ($1::uuid, $2::uuid, $3) "
+            "ON CONFLICT (org_id, user_id) DO NOTHING",
+            org_id, user_id, role,
+        )
     await execute(
         "UPDATE org_invites SET status = 'accepted', accepted_at = now() WHERE id = $1",
         row["id"],
     )
     org_name = await _get_org_name(org_id) or "Organization"
-    return OrgDetailResponse(id=org_id, name=org_name, role=row["role"])
+    return OrgDetailResponse(id=org_id, name=org_name, role=role)
+
+
+async def _member_role(user_id: str, org_id: str) -> str | None:
+    """The caller's current role in *org_id*, or ``None`` if not a member."""
+    row = await fetchrow(
+        "SELECT role FROM org_members WHERE org_id = $1::uuid AND user_id = $2::uuid",
+        org_id, user_id,
+    )
+    return row["role"] if row else None
 
 
 # ── Register on the shared api_router ─────────────────────────────────────────

@@ -780,7 +780,7 @@ async def cache_client(app, fake_db):
 
 
 @pytest.mark.asyncio
-async def test_cache_stats_route_authenticated(cache_client):
+async def test_cache_stats_route_authenticated(cache_client, as_operator):
     client, user_id = cache_client
     resp = await client.get("/api/v1/cache/stats", headers=_auth_headers(user_id))
     assert resp.status_code == 200
@@ -799,7 +799,7 @@ async def test_cache_stats_route_requires_auth(cache_client):
 
 
 @pytest.mark.asyncio
-async def test_cache_invalidate_by_tag(cache_client):
+async def test_cache_invalidate_by_tag(cache_client, as_operator):
     client, user_id = cache_client
     # Seed the in-memory cache directly so the route has something to evict.
     reset_cache_for_tests()
@@ -821,7 +821,7 @@ async def test_cache_invalidate_by_tag(cache_client):
 
 
 @pytest.mark.asyncio
-async def test_cache_invalidate_all(cache_client):
+async def test_cache_invalidate_all(cache_client, as_operator):
     client, user_id = cache_client
     reset_cache_for_tests()
     cache = get_cache()
@@ -839,7 +839,7 @@ async def test_cache_invalidate_all(cache_client):
 
 
 @pytest.mark.asyncio
-async def test_cache_invalidate_requires_tag_or_all(cache_client):
+async def test_cache_invalidate_requires_tag_or_all(cache_client, as_operator):
     client, user_id = cache_client
     resp = await client.post(
         "/api/v1/cache/invalidate",

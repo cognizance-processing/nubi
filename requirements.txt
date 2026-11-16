@@ -1,23 +1,29 @@
 # Pins aligned to the locally-tested environment (the env where the full suite passes).
-fastapi==0.131.0
+fastapi==0.163.0
 uvicorn[standard]==0.40.0
 asyncpg==0.31.0
 pydantic==2.12.4
-pydantic-settings==2.12.0
+pydantic-settings==2.14.2
 email-validator==2.2.0
 argon2-cffi==21.3.0
-PyJWT==2.10.1
+PyJWT==2.15.0
 httpx==0.28.1
-python-multipart==0.0.22
+python-multipart==0.0.31
 PyYAML>=6.0  # portability: YAML-primary export/import envelope (app/portability.py)
 toml>=0.10  # files-as-code flow.toml serialization (app/git/flow_files.py, non-lazy import)
-GitPython>=3.1  # git-sync push/pull (app/git/sync.py, lazily imported); required for tests/test_git_env.py to collect
+GitPython>=3.2.1  # git-sync push/pull (app/git/sync.py, lazily imported); required for tests/test_git_env.py to collect
 
 # Connector / query pipeline (M1)
 jinja2>=3.1  # SQL templating in app/connectors/planner.py (non-lazy import)
 sqlglot>=25.0
+# MCP SDK — used BOTH by app/ai/mcp.py (Nubi calling out to external MCP
+# servers registered per-org) and by mcp/nubi_mcp/server.py (the local
+# stdio server).  Was previously declared only in mcp/requirements.txt,
+# so the backend image shipped without it and every outbound MCP call
+# failed closed.  Both call sites support 1.x and 2.x.
+mcp>=2.2
 pyarrow>=14.0
-duckdb>=1.0
+duckdb==1.5.4
 pandas>=2.0  # DataFrame-native Python flow cells (app/flows/registry.py _handle_python)
 adbc-driver-postgresql>=1.0
 adbc-driver-manager>=1.0
@@ -48,7 +54,7 @@ PyMySQL>=1.1
 # snowflake-connector-python[pandas]>=3.0
 
 # M3: RS256/ES256 support for embed JWT verification
-cryptography>=42.0
+cryptography>=50.0
 
 # M4-REMOTE: optional remote kernel providers (lazy — not required; mocked in tests)
 # Install whichever provider you configure via KERNEL_REMOTE_PROVIDER env var.
@@ -61,7 +67,7 @@ cryptography>=42.0
 # token-passthrough billing in app/ee/billing/token_billing.py. It is a real
 # (non-lazy) dependency; the legacy native provider classes below stay as
 # optional fallbacks and are lazy-imported.
-litellm>=1.0
+litellm>=1.103.1
 # anthropic>=0.25          # optional: only needed if you construct AnthropicProvider directly
 # openai>=1.0              # optional: only needed if you construct OpenAIProvider directly
 # google-generativeai>=0.5 # optional: only needed if you construct GeminiProvider directly
@@ -69,7 +75,7 @@ litellm>=1.0
 # Storage backends (lazy-imported in app/storage/*.py — app runs without them).
 # Install whichever provider(s) you configure via storage URIs.
 # boto3 is also the S3-compatible path (MinIO, Cloudflare R2, etc.) via endpoint_url.
-# boto3>=1.34                     # for S3StorageClient  (s3:// URIs)
+boto3>=1.34                       # S3StorageClient (s3:// URIs) + board thumbnail storage
 # google-cloud-storage>=2.10      # for GCSStorageClient (gs:// URIs)
 # azure-storage-blob>=12.19       # for AzureStorageClient (az:// URIs)
 
@@ -102,3 +108,13 @@ pytest>=8.0
 pytest-asyncio>=1.0
 pytest-timeout>=2.3   # per-test timeout (pytest.ini) — stops a hung test wedging CI
 # httpx is already listed above (needed for both runtime and tests)
+
+# ── Minimum versions for packages pulled in transitively ─────────────────────
+# Floors that keep known advisories out of a fresh install (checked with
+# pip-audit).  They add no new dependency — each is already required by a
+# package above.
+starlette>=1.3.1
+urllib3>=2.8.0
+aiohttp>=3.14.4
+anyio>=4.14.2
+certifi>=2026.10.18

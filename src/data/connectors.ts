@@ -1,0 +1,754 @@
+/**
+ * connectors.js — single source of truth for connector types.
+ *
+ * Every connector the app can create is described here: its label, marketing
+ * description, category, brand color, real brand logo (served from
+ * /public/logos/connectors/*.svg), and a declarative field schema that drives
+ * the create/edit form (see connectorForms.jsx → <DynamicForm>).
+ *
+ * The `id` is the value sent to the API as `type` and stored as
+ * `config.connector_type`; the backend registry resolves it to a connector
+ * factory (backend/app/connectors/registry.py). Keep these ids in sync with
+ * the backend ConnectorType literal in backend/app/routes/connectors.py.
+ *
+ * Field schema
+ * ────────────
+ *   { key, label, type, group?, default?, placeholder?, required?, optional?,
+ *     options?, help?, width?, showIf? }
+ *     group   — 'config' (default) | 'secret'   (secret keys are encrypted)
+ *     type    — text | number | password | url | select | textarea
+ *               | segmented | sa_json | bridge_select
+ *     width   — 'full' (default) | 'half' | 'third'
+ *     showIf  — (config) => boolean   (conditional visibility)
+ *
+ *   'bridge_select' (connectorForms.jsx → <BridgeSelect>) renders a live
+ *   dropdown of the org's Bridge v2 agents (fetched from GET /bridges) plus a
+ *   "connect a local/private database" quick-start that creates a bridge,
+ *   mints its token, and shows the one-line agent install command inline —
+ *   see docs/bridges.md and src/components/app/BridgeQuickConnect.jsx.
+ */
+
+export interface ConnectorFieldOption {
+  value: string
+  label: string
+  desc?: string
+}
+
+export interface ConnectorField {
+  key: string
+  label: string
+  type: 'text' | 'number' | 'password' | 'url' | 'select' | 'textarea' | 'segmented' | 'sa_json' | 'bridge_select'
+  group?: 'config' | 'secret'
+  default?: unknown
+  placeholder?: string
+  required?: boolean
+  optional?: boolean
+  options?: (string | ConnectorFieldOption)[]
+  help?: string
+  width?: 'full' | 'half' | 'third'
+  rows?: number
+  showIf?: (cfg: Record<string, any>) => boolean
+}
+
+export interface ConnectorType {
+  id: string
+  label: string
+  description: string
+  category: string
+  logo: string
+  color: string
+  fields: ConnectorField[]
+  summary: (cfg: Record<string, any>) => string
+  hidden?: boolean
+  system?: boolean
+  apiType?: string
+  apiSeed?: string
+}
+
+/** Official marks live in public/logos/{tools,connectors}; see src/components/brand/registry.ts. */
+const logo = (file: string) => `/logos/${file}`
+
+// ── SQL dialect map (display-only frontend mirror) ──────────────────────────
+//
+// Mirrors backend/app/connectors/dialects.py CONNECTOR_DIALECT verbatim for
+// every real backend connector type, so the UI can show a "dialect" badge
+// next to each connector without a network round-trip. KEEP THESE TWO FILES
+// IN SYNC — if you add/change a connector's dialect in dialects.py, mirror it
+// here too. This map is presentation-only: it never affects what `type`
+// string is submitted to the API (that stays whatever the catalog `id` /
+// `apiType` below already resolves to).
+export const DEFAULT_DIALECT = 'postgres' // mirrors dialects.py DEFAULT_DIALECT
+
+export const CONNECTOR_DIALECT: Record<string, string | null> = {
+  // ── verbatim mirror of backend/app/connectors/dialects.py ──────────────
+  postgres: 'postgres',
+  redshift: 'postgres',
+  cockroachdb: 'postgres',
+  cloudsql: 'postgres',
+  duckdb: 'duckdb',
+  snowflake: 'snowflake',
+  bigquery: 'bigquery',
+  mysql: 'mysql',
+  mariadb: 'mysql',
+  sqlserver: 'tsql',
+  azuresql: 'tsql',
+  azuresynapse: 'tsql',
+  oracle: 'oracle',
+  clickhouse: 'clickhouse',
+  trino: 'trino',
+  presto: 'presto',
+  athena: 'trino',
+  databricks: 'databricks',
+  http_json: 'postgres',
+  jdbc: 'postgres',
+
+  // ── frontend-only catalog extensions (not backend ConnectorType literals)
+  //    — all resolve to the duckdb backend factory, so they share its dialect.
+  duckdb_storage: 'duckdb',
+  gcs: 'duckdb',
+  demo: 'duckdb',
+  duckdb_demo: 'duckdb',
+
+  // File-only ingestion sources aren't queryable — no SQL dialect applies.
+  sftp: null,
+  ftp: null,
+}
+
+/** SQL dialect for a connector-type id, for display (badges, etc). */
+export function dialectFor(typeId: string): string | null {
+  return typeId in CONNECTOR_DIALECT ? CONNECTOR_DIALECT[typeId] : DEFAULT_DIALECT
+}
+
+// ── Field helpers ─────────────────────────────────────────────────────────
+
+const NETWORK_FIELD: ConnectorField = {
+  key: 'network_mode',
+  label: 'Network mode',
+  type: 'select',
+  optional: true,
+  width: 'full',
+  options: [
+    { value: '', label: '— direct —' },
+    { value: 'direct', label: 'direct' },
+    { value: 'bridge', label: 'bridge (VPC tunnel)' },
+  ],
+  help: 'Use "bridge" if Nubi reaches your database through a private-network agent.',
+}
+
+const BRIDGE_ID_FIELD: ConnectorField = {
+  key: 'bridge_id',
+  label: 'Bridge',
+  type: 'bridge_select',
+  width: 'full',
+  showIf: (cfg) => cfg.network_mode === 'bridge',
+  help: 'Which bridge agent routes this connection — including one running on your own machine.',
+}
+
+const SSL_FIELD: ConnectorField = {
+  key: 'sslmode',
+  label: 'SSL mode',
+  type: 'select',
+  default: 'prefer',
+  width: 'full',
+  options: ['disable', 'allow', 'prefer', 'require', 'verify-ca', 'verify-full'],
+}
+
+/** Standard host/port/database/user/password fields shared by SQL databases. */
+function sqlFields({
+  port,
+  userDefault = '',
+  dbKey = 'database',
+  dbLabel = 'Database',
+  dbPlaceholder = 'mydb',
+  ssl = false,
+  network = true,
+}: {
+  port: number
+  userDefault?: string
+  dbKey?: string
+  dbLabel?: string
+  dbPlaceholder?: string
+  ssl?: boolean
+  network?: boolean
+}): ConnectorField[] {
+  const fields: ConnectorField[] = [
+    { key: 'host', label: 'Host', type: 'text', placeholder: 'localhost', required: true, width: 'half' },
+    { key: 'port', label: 'Port', type: 'number', default: port, width: 'half' },
+    { key: dbKey, label: dbLabel, type: 'text', placeholder: dbPlaceholder, required: true, width: 'half' },
+    { key: 'user', label: 'User', type: 'text', default: userDefault, width: 'half' },
+    { key: 'password', label: 'Password', type: 'password', group: 'secret', width: 'full' },
+  ]
+  if (ssl) fields.push(SSL_FIELD)
+  if (network) fields.push(NETWORK_FIELD, BRIDGE_ID_FIELD)
+  return fields
+}
+
+/** Generic "host:port · database · user" summary for the connector card. */
+function hostSummary(cfg: Record<string, any> = {}): string {
+  const parts = []
+  if (cfg.host) parts.push(cfg.host + (cfg.port ? `:${cfg.port}` : ''))
+  if (cfg.database) parts.push(cfg.database)
+  if (cfg.service_name) parts.push(cfg.service_name)
+  if (cfg.user) parts.push(cfg.user)
+  return parts.join(' · ')
+}
+
+// ── Categories (display order) ────────────────────────────────────────────
+
+export const CONNECTOR_CATEGORIES: { id: string; label: string }[] = [
+  { id: 'relational', label: 'Relational databases' },
+  { id: 'cloud', label: 'Cloud-managed SQL' },
+  { id: 'warehouse', label: 'Cloud warehouses' },
+  { id: 'engine', label: 'Query engines' },
+  { id: 'lake', label: 'Files & object storage' },
+  { id: 'api', label: 'APIs & custom' },
+]
+
+// ── Catalog ───────────────────────────────────────────────────────────────
+
+export const CONNECTOR_TYPES: ConnectorType[] = [
+  // ── Relational ──────────────────────────────────────────────────────────
+  {
+    id: 'postgres',
+    label: 'PostgreSQL',
+    description: 'The classic open-source relational database.',
+    category: 'relational',
+    logo: logo('tools/postgresql.svg'),
+    color: '#336791',
+    fields: sqlFields({ port: 5432, userDefault: 'postgres', ssl: true }),
+    summary: hostSummary,
+  },
+  {
+    id: 'mysql',
+    label: 'MySQL',
+    description: 'The world’s most popular open-source database.',
+    category: 'relational',
+    logo: logo('tools/mysql.svg'),
+    color: '#00758F',
+    fields: sqlFields({ port: 3306, userDefault: 'root' }),
+    summary: hostSummary,
+  },
+  {
+    id: 'mariadb',
+    label: 'MariaDB',
+    description: 'Community-developed, MySQL-compatible fork.',
+    category: 'relational',
+    logo: logo('connectors/mariadb.svg'),
+    color: '#003545',
+    fields: sqlFields({ port: 3306, userDefault: 'root' }),
+    summary: hostSummary,
+  },
+  {
+    id: 'sqlserver',
+    label: 'Microsoft SQL Server',
+    description: 'Microsoft’s enterprise T-SQL database.',
+    category: 'relational',
+    logo: logo('connectors/microsoftsqlserver.svg'),
+    color: '#CC2927',
+    fields: [
+      ...sqlFields({ port: 1433 }),
+      {
+        key: 'encrypt',
+        label: 'Encrypt connection',
+        type: 'select',
+        optional: true,
+        default: 'true',
+        width: 'full',
+        options: ['true', 'false'],
+      },
+    ],
+    summary: hostSummary,
+  },
+  {
+    id: 'oracle',
+    label: 'Oracle Database',
+    description: 'Oracle’s flagship enterprise database.',
+    category: 'relational',
+    logo: logo('connectors/oracle.svg'),
+    color: '#F80000',
+    fields: [
+      { key: 'host', label: 'Host', type: 'text', placeholder: 'localhost', required: true, width: 'half' },
+      { key: 'port', label: 'Port', type: 'number', default: 1521, width: 'half' },
+      { key: 'service_name', label: 'Service name / SID', type: 'text', placeholder: 'ORCLPDB1', required: true, width: 'half' },
+      { key: 'user', label: 'User', type: 'text', width: 'half' },
+      { key: 'password', label: 'Password', type: 'password', group: 'secret', width: 'full' },
+      NETWORK_FIELD,
+      BRIDGE_ID_FIELD,
+    ],
+    summary: hostSummary,
+  },
+  {
+    id: 'cockroachdb',
+    label: 'CockroachDB',
+    description: 'Distributed SQL, Postgres wire-compatible.',
+    category: 'relational',
+    logo: logo('connectors/cockroachlabs.svg'),
+    color: '#6933FF',
+    fields: sqlFields({ port: 26257, userDefault: 'root', ssl: true }),
+    summary: hostSummary,
+  },
+
+  // ── Cloud-managed SQL ─────────────────────────────────────────────────────
+  {
+    id: 'cloudsql',
+    label: 'Google Cloud SQL',
+    description: 'Managed Postgres on Google Cloud (Postgres wire).',
+    category: 'cloud',
+    logo: logo('connectors/googlecloud.svg'),
+    color: '#4285F4',
+    fields: sqlFields({ port: 5432, userDefault: 'postgres', ssl: true }),
+    summary: hostSummary,
+  },
+  {
+    id: 'azuresql',
+    label: 'Azure SQL Database',
+    description: 'Microsoft’s managed SQL Server in Azure.',
+    category: 'cloud',
+    logo: logo('connectors/azuresqldatabase.svg'),
+    color: '#0078D4',
+    fields: [
+      { key: 'host', label: 'Server', type: 'text', placeholder: 'myserver.database.windows.net', required: true, width: 'full' },
+      { key: 'port', label: 'Port', type: 'number', default: 1433, width: 'half' },
+      { key: 'database', label: 'Database', type: 'text', placeholder: 'mydb', required: true, width: 'half' },
+      { key: 'user', label: 'User', type: 'text', width: 'half' },
+      { key: 'password', label: 'Password', type: 'password', group: 'secret', width: 'half' },
+    ],
+    summary: hostSummary,
+  },
+
+  // ── Cloud warehouses ──────────────────────────────────────────────────────
+  {
+    id: 'bigquery',
+    label: 'Google BigQuery',
+    description: 'Google’s serverless cloud data warehouse.',
+    category: 'warehouse',
+    logo: logo('tools/googlebigquery.svg'),
+    color: '#4285F4',
+    fields: [
+      { key: 'project_id', label: 'GCP Project ID', type: 'text', placeholder: 'my-gcp-project', required: true, width: 'full' },
+      {
+        key: 'service_account_json',
+        label: 'Service account JSON',
+        type: 'sa_json',
+        group: 'secret',
+        width: 'full',
+        help: 'Upload or paste a service-account key. Leave blank to use Application Default Credentials.',
+      },
+    ],
+    summary: (cfg) => (cfg.project_id ? `Project: ${cfg.project_id}` : ''),
+  },
+  {
+    id: 'snowflake',
+    label: 'Snowflake',
+    description: 'Cloud-native data warehouse with elastic compute.',
+    category: 'warehouse',
+    logo: logo('tools/snowflake.svg'),
+    color: '#29B5E8',
+    fields: [
+      { key: 'account', label: 'Account', type: 'text', placeholder: 'xy12345.us-east-1', required: true, width: 'half' },
+      { key: 'user', label: 'User', type: 'text', required: true, width: 'half' },
+      { key: 'password', label: 'Password', type: 'password', group: 'secret', width: 'full' },
+      { key: 'warehouse', label: 'Warehouse', type: 'text', optional: true, width: 'half' },
+      { key: 'database', label: 'Database', type: 'text', optional: true, width: 'half' },
+      { key: 'schema', label: 'Schema', type: 'text', optional: true, width: 'half' },
+      { key: 'role', label: 'Role', type: 'text', optional: true, width: 'half' },
+    ],
+    summary: (cfg) => [cfg.account, cfg.warehouse, cfg.database].filter(Boolean).join(' · '),
+  },
+  {
+    id: 'redshift',
+    label: 'Amazon Redshift',
+    description: 'AWS petabyte-scale warehouse (Postgres wire).',
+    category: 'warehouse',
+    logo: logo('connectors/amazonredshift.svg'),
+    color: '#8C4FFF',
+    fields: sqlFields({ port: 5439, userDefault: 'awsuser', ssl: true }),
+    summary: hostSummary,
+  },
+  {
+    id: 'databricks',
+    label: 'Databricks',
+    description: 'Databricks SQL warehouse.',
+    category: 'warehouse',
+    logo: logo('tools/databricks.svg'),
+    color: '#FF3621',
+    fields: [
+      { key: 'server_hostname', label: 'Server hostname', type: 'text', placeholder: 'dbc-xxxx.cloud.databricks.com', required: true, width: 'full' },
+      { key: 'http_path', label: 'HTTP path', type: 'text', placeholder: '/sql/1.0/warehouses/abc123', required: true, width: 'full' },
+      { key: 'access_token', label: 'Access token', type: 'password', group: 'secret', required: true, width: 'full' },
+      { key: 'catalog', label: 'Catalog', type: 'text', optional: true, width: 'half' },
+      { key: 'schema', label: 'Schema', type: 'text', optional: true, width: 'half' },
+    ],
+    summary: (cfg) => cfg.server_hostname || '',
+  },
+  {
+    id: 'clickhouse',
+    label: 'ClickHouse',
+    description: 'Column-oriented OLAP database for real-time analytics.',
+    category: 'warehouse',
+    logo: logo('tools/clickhouse.svg'),
+    color: '#FFCC01',
+    fields: [
+      { key: 'host', label: 'Host', type: 'text', placeholder: 'localhost', required: true, width: 'half' },
+      { key: 'port', label: 'Port', type: 'number', default: 8443, width: 'half' },
+      { key: 'database', label: 'Database', type: 'text', default: 'default', width: 'half' },
+      { key: 'user', label: 'User', type: 'text', default: 'default', width: 'half' },
+      { key: 'password', label: 'Password', type: 'password', group: 'secret', width: 'full' },
+      { key: 'secure', label: 'TLS (secure)', type: 'select', default: 'true', width: 'full', options: ['true', 'false'] },
+    ],
+    summary: hostSummary,
+  },
+  {
+    id: 'azuresynapse',
+    label: 'Azure Synapse',
+    description: 'Microsoft’s analytics warehouse (T-SQL).',
+    category: 'warehouse',
+    logo: logo('connectors/azuresynapse.svg'),
+    color: '#0078D4',
+    fields: [
+      { key: 'host', label: 'Server', type: 'text', placeholder: 'myworkspace.sql.azuresynapse.net', required: true, width: 'full' },
+      { key: 'port', label: 'Port', type: 'number', default: 1433, width: 'half' },
+      { key: 'database', label: 'Database (pool)', type: 'text', required: true, width: 'half' },
+      { key: 'user', label: 'User', type: 'text', width: 'half' },
+      { key: 'password', label: 'Password', type: 'password', group: 'secret', width: 'half' },
+    ],
+    summary: hostSummary,
+  },
+
+  // ── Query engines ─────────────────────────────────────────────────────────
+  {
+    id: 'athena',
+    label: 'Amazon Athena',
+    description: 'Serverless SQL over data in Amazon S3.',
+    category: 'engine',
+    logo: logo('connectors/amazonathena.svg'),
+    color: '#5A30B5',
+    fields: [
+      { key: 'region', label: 'AWS region', type: 'text', placeholder: 'us-east-1', required: true, width: 'half' },
+      { key: 'database', label: 'Database (schema)', type: 'text', default: 'default', width: 'half' },
+      { key: 's3_staging_dir', label: 'S3 staging dir', type: 'text', placeholder: 's3://my-bucket/athena-results/', required: true, width: 'full' },
+      { key: 'workgroup', label: 'Workgroup', type: 'text', optional: true, width: 'half' },
+      { key: 'catalog_name', label: 'Catalog', type: 'text', optional: true, default: 'AwsDataCatalog', width: 'half' },
+      { key: 'aws_access_key_id', label: 'AWS access key ID', type: 'text', optional: true, width: 'full' },
+      {
+        key: 'aws_secret_access_key',
+        label: 'AWS secret access key',
+        type: 'password',
+        group: 'secret',
+        optional: true,
+        width: 'full',
+        help: 'Leave both key fields blank to use the host’s IAM role / default credential chain.',
+      },
+    ],
+    summary: (cfg) => [cfg.region, cfg.database].filter(Boolean).join(' · '),
+  },
+  {
+    id: 'trino',
+    label: 'Trino',
+    description: 'Distributed SQL query engine for federated data.',
+    category: 'engine',
+    logo: logo('connectors/trino.svg'),
+    color: '#DD00A1',
+    fields: [
+      { key: 'host', label: 'Coordinator host', type: 'text', placeholder: 'trino.example.com', required: true, width: 'half' },
+      { key: 'port', label: 'Port', type: 'number', default: 443, width: 'half' },
+      { key: 'catalog', label: 'Catalog', type: 'text', placeholder: 'hive', required: true, width: 'half' },
+      { key: 'schema', label: 'Schema', type: 'text', placeholder: 'default', width: 'half' },
+      { key: 'user', label: 'User', type: 'text', required: true, width: 'half' },
+      { key: 'http_scheme', label: 'Scheme', type: 'select', default: 'https', width: 'half', options: ['https', 'http'] },
+      { key: 'password', label: 'Password', type: 'password', group: 'secret', optional: true, width: 'full' },
+    ],
+    summary: (cfg) => [cfg.host, cfg.catalog].filter(Boolean).join(' / '),
+  },
+  {
+    id: 'presto',
+    label: 'Presto',
+    description: 'Open-source distributed SQL query engine.',
+    category: 'engine',
+    logo: logo('connectors/presto.svg'),
+    color: '#5890FF',
+    fields: [
+      { key: 'host', label: 'Coordinator host', type: 'text', placeholder: 'presto.example.com', required: true, width: 'half' },
+      { key: 'port', label: 'Port', type: 'number', default: 8080, width: 'half' },
+      { key: 'catalog', label: 'Catalog', type: 'text', placeholder: 'hive', required: true, width: 'half' },
+      { key: 'schema', label: 'Schema', type: 'text', placeholder: 'default', width: 'half' },
+      { key: 'user', label: 'User', type: 'text', required: true, width: 'half' },
+      { key: 'http_scheme', label: 'Scheme', type: 'select', default: 'http', width: 'half', options: ['https', 'http'] },
+      { key: 'password', label: 'Password', type: 'password', group: 'secret', optional: true, width: 'full' },
+    ],
+    summary: (cfg) => [cfg.host, cfg.catalog].filter(Boolean).join(' / '),
+  },
+
+  // ── Files & data lake ──────────────────────────────────────────────────────
+  // The only user-facing DuckDB/file connector is OBJECT STORAGE. Nubi runs on
+  // stateless Cloud-Run containers, so a user-supplied LOCAL file path or an
+  // IN-MEMORY DuckDB is meaningless as a data source — those exist only for
+  // internal use (flows executor, demo data, fixtures). Here we accept
+  // s3:// / gs:// / https:// URLs pointing at Parquet / DuckDB files. This entry
+  // submits ``duckdb_storage`` (the httpfs-backed backend factory) directly.
+  {
+    id: 'duckdb_storage',
+    label: 'Object storage (Parquet / DuckDB)',
+    description: 'Query Parquet or DuckDB files in S3, GCS, or MinIO.',
+    category: 'lake',
+    logo: logo('connectors/amazons3.svg'),
+    color: '#569A31',
+    fields: [
+      {
+        key: 'database',
+        label: 'File URL',
+        type: 'text',
+        placeholder: 's3://my-bucket/warehouse.duckdb  or  https://host/data.parquet',
+        required: true,
+        width: 'full',
+        help: 'An s3:// , gs:// , or https:// URL to a Parquet or DuckDB file.',
+      },
+      { key: 'endpoint', label: 'Endpoint', type: 'text', optional: true, placeholder: 's3.amazonaws.com (or MinIO host)', width: 'half' },
+      { key: 'region', label: 'Region', type: 'text', optional: true, default: 'us-east-1', width: 'half' },
+      { key: 'aws_access_key_id', label: 'Access key ID', type: 'text', optional: true, width: 'full' },
+      { key: 'aws_secret_access_key', label: 'Secret access key', type: 'password', group: 'secret', optional: true, width: 'full' },
+    ],
+    summary: (cfg) => cfg.database || '',
+  },
+  // ── Google Cloud Storage (GCS) — gs:// Parquet/DuckDB via httpfs ─────────
+  // Uses the same `duckdb_storage` backend factory (it supports gs:// URLs).
+  // Auth: HMAC key/secret or Workload Identity / ADC (toggle).
+  {
+    id: 'gcs',
+    label: 'Google Cloud Storage (GCS)',
+    description: 'Query Parquet or DuckDB files in Google Cloud Storage (gs://).',
+    category: 'lake',
+    // Backend maps `gcs` to the `duckdb_storage` factory; apiType carries that.
+    apiType: 'duckdb_storage',
+    logo: logo('connectors/googlecloudstorage.svg'),
+    color: '#4285F4',
+    fields: [
+      {
+        key: 'database',
+        label: 'GCS file URL',
+        type: 'text',
+        placeholder: 'gs://my-bucket/warehouse.parquet',
+        required: true,
+        width: 'full',
+        help: 'gs:// URL to a Parquet or DuckDB file.',
+      },
+      {
+        key: 'auth_mode',
+        label: 'Authentication',
+        type: 'segmented',
+        default: 'hmac',
+        width: 'full',
+        options: [
+          { value: 'hmac', label: 'HMAC key/secret', desc: 'Provide a GCS HMAC access key and secret' },
+          { value: 'adc', label: 'Workload Identity / ADC', desc: 'Use Application Default Credentials (GKE, Cloud Run, gcloud auth)' },
+        ],
+      },
+      {
+        key: 'aws_access_key_id',
+        label: 'HMAC access key ID',
+        type: 'text',
+        optional: true,
+        width: 'full',
+        showIf: (cfg) => (cfg.auth_mode ?? 'hmac') === 'hmac',
+      },
+      {
+        key: 'aws_secret_access_key',
+        label: 'HMAC secret',
+        type: 'password',
+        group: 'secret',
+        optional: true,
+        width: 'full',
+        showIf: (cfg) => (cfg.auth_mode ?? 'hmac') === 'hmac',
+        help: 'GCS HMAC secret (interoperable with S3 API). Encrypted at rest.',
+      },
+      {
+        key: 'endpoint',
+        label: 'Endpoint override',
+        type: 'text',
+        optional: true,
+        default: 'storage.googleapis.com',
+        width: 'full',
+        help: 'Leave as default unless using a GCS-compatible emulator.',
+        showIf: (cfg) => (cfg.auth_mode ?? 'hmac') === 'hmac',
+      },
+    ],
+    summary: (cfg) => cfg.database || '',
+  },
+
+  // ── File-only ingestion sources (design §2 — FileConnectorMixin) ───────────
+  // sftp/ftp are NOT queryable: they only expose a file interface, consumed by
+  // the `file_ingest` flow task (or a Python ingest cell). They land in the
+  // catalog so the "Add connector" picker can create them; the backend
+  // ConnectorType literal lists both (backend/app/routes/connectors.py).
+  {
+    id: 'sftp',
+    label: 'SFTP',
+    description: 'Pull files over SSH (SFTP). Ingest into a queryable target.',
+    category: 'lake',
+    logo: logo('connectors/sftp.svg'),
+    color: '#3B6E8F',
+    fields: [
+      { key: 'host', label: 'Host', type: 'text', placeholder: 'sftp.example.com', required: true, width: 'half' },
+      { key: 'port', label: 'Port', type: 'number', default: 22, width: 'half' },
+      { key: 'user', label: 'User', type: 'text', optional: true, width: 'half' },
+      { key: 'root', label: 'Base path', type: 'text', optional: true, placeholder: '/uploads', width: 'half', help: 'Files are resolved relative to this directory.' },
+      { key: 'password', label: 'Password', type: 'password', group: 'secret', optional: true, width: 'full', help: 'Supply a password OR a private key below.' },
+      { key: 'private_key', label: 'Private key (PEM)', type: 'textarea', group: 'secret', optional: true, rows: 5, width: 'full', placeholder: '-----BEGIN OPENSSH PRIVATE KEY-----\n...' },
+      { key: 'private_key_password', label: 'Key passphrase', type: 'password', group: 'secret', optional: true, width: 'full' },
+      { key: 'host_key', label: 'Pinned host key', type: 'text', optional: true, width: 'full', placeholder: 'ssh-ed25519 AAAA...', help: 'Optional. Leave blank to trust-on-first-use; set to pin a known host key.' },
+    ],
+    summary: (cfg) => [cfg.host && cfg.host + (cfg.port ? `:${cfg.port}` : ''), cfg.user].filter(Boolean).join(' · '),
+  },
+  {
+    id: 'ftp',
+    label: 'FTP / FTPS',
+    description: 'Pull files over FTP (FTPS by default). Ingest into a queryable target.',
+    category: 'lake',
+    logo: logo('connectors/ftp.svg'),
+    color: '#6B7280',
+    fields: [
+      { key: 'host', label: 'Host', type: 'text', placeholder: 'ftp.example.com', required: true, width: 'half' },
+      { key: 'port', label: 'Port', type: 'number', default: 21, width: 'half' },
+      { key: 'user', label: 'User', type: 'text', optional: true, width: 'half', help: 'Leave blank for anonymous access.' },
+      { key: 'root', label: 'Base path', type: 'text', optional: true, placeholder: '/uploads', width: 'half' },
+      { key: 'password', label: 'Password', type: 'password', group: 'secret', optional: true, width: 'full' },
+      {
+        key: 'tls', label: 'Encryption', type: 'select', default: 'true', width: 'half',
+        options: [{ value: 'true', label: 'FTPS (TLS)' }, { value: 'false', label: 'Plain FTP (insecure)' }],
+        help: 'Plain FTP sends credentials and data unencrypted — use FTPS unless the server cannot.',
+      },
+      { key: 'passive', label: 'Passive mode', type: 'select', default: 'true', width: 'half', options: [{ value: 'true', label: 'Passive' }, { value: 'false', label: 'Active' }] },
+    ],
+    summary: (cfg) => [cfg.host && cfg.host + (cfg.port ? `:${cfg.port}` : ''), cfg.user || 'anonymous'].filter(Boolean).join(' · '),
+  },
+  // Legacy local/in-memory ``duckdb`` connector. No longer offered in the picker
+  // (``hidden: true``) because a local path / in-memory DB is meaningless on
+  // stateless Cloud-Run containers — but the type stays in the catalog so any
+  // already-saved ``duckdb`` connector still renders with a label, logo, and
+  // summary and remains queryable. Backend keeps the ``duckdb`` factory for
+  // internal use (flows, demo data, fixtures).
+  {
+    id: 'duckdb',
+    label: 'DuckDB (file)',
+    description: 'Local DuckDB / file database.',
+    category: 'lake',
+    hidden: true,
+    logo: logo('tools/duckdb.svg'),
+    color: '#FFF000',
+    fields: [
+      { key: 'database', label: 'Database (file path)', type: 'text', placeholder: '/data/analytics.duckdb', required: true, width: 'full' },
+    ],
+    summary: (cfg) => {
+      if (cfg.in_memory === true || cfg.in_memory === 'true') return 'in-memory'
+      return cfg.database || cfg.path || 'file'
+    },
+  },
+  {
+    // Built-in demo dataset — a VIRTUAL/system connector the backend injects
+    // into every org's list (see backend/app/routes/connectors.py). It has no
+    // configurable fields: it is removable (DELETE hides it per-org) and
+    // re-addable (the picker POSTs {type:'demo'}). Marked system so the UI
+    // hides the edit affordance and renders a read-only card.
+    id: 'demo',
+    label: 'Demo data',
+    description: 'Built-in sample dataset — query it instantly, no setup.',
+    category: 'lake',
+    system: true,
+    logo: logo('connectors/demo.svg'),
+    color: '#17b3a3',
+    fields: [],
+    summary: () => 'Built-in sample dataset',
+  },
+  {
+    // Demo-seeded DuckDB connector — a real, user-owned duckdb connector that
+    // starts with a read-only copy of the demo parquet data.  The user owns it
+    // fully: they can rename, delete, or query it independently of the shared
+    // virtual "Demo data" connector.  Submits {type:"duckdb", seed:"demo"} to
+    // the backend (POST /connectors body).
+    id: 'duckdb_demo',
+    label: 'Demo data (your copy)',
+    description: 'Start with a personal, editable copy of the sample datasets — retail, SaaS, web, and finance — to query and explore as your own.',
+    category: 'lake',
+    // seed is passed through to the API body — not a real connector_type.
+    apiType: 'duckdb',
+    apiSeed: 'demo',
+    logo: logo('connectors/demo.svg'),
+    color: '#17b3a3',
+    // No config fields: the backend provisions the parquet automatically.
+    fields: [],
+    summary: () => 'Retail, SaaS, web & finance sample datasets',
+  },
+
+  // ── APIs & custom ─────────────────────────────────────────────────────────
+  {
+    id: 'http_json',
+    label: 'HTTP / JSON API',
+    description: 'Any REST API that returns JSON.',
+    category: 'api',
+    logo: logo('connectors/http-json.svg'),
+    color: '#0f9e90',
+    fields: [
+      { key: 'base_url', label: 'Base URL', type: 'url', placeholder: 'https://api.example.com/v1', required: true, width: 'full' },
+      { key: 'token', label: 'Bearer token', type: 'password', group: 'secret', optional: true, width: 'full' },
+      {
+        key: 'headers',
+        label: 'Extra headers (JSON)',
+        type: 'textarea',
+        optional: true,
+        width: 'full',
+        placeholder: '{\n  "X-Api-Key": "..."\n}',
+        help: 'Non-secret headers only. Put auth tokens in the Bearer token field above.',
+      },
+    ],
+    summary: (cfg) => cfg.base_url || '',
+  },
+  {
+    id: 'jdbc',
+    label: 'JDBC (custom driver)',
+    description: 'Connect any JDBC-compatible source with a driver JAR.',
+    category: 'api',
+    logo: logo('connectors/jdbc.svg'),
+    color: '#2456a6',
+    fields: [
+      { key: 'jdbc_url', label: 'JDBC URL', type: 'text', placeholder: 'jdbc:mysql://host:3306/db', required: true, width: 'full' },
+      { key: 'driver_class', label: 'Driver class', type: 'text', placeholder: 'com.mysql.cj.jdbc.Driver', required: true, width: 'full' },
+      { key: 'jar_path', label: 'Driver JAR path', type: 'text', placeholder: '/opt/drivers/mysql.jar', required: true, width: 'full' },
+      { key: 'user', label: 'User', type: 'text', optional: true, width: 'half' },
+      { key: 'password', label: 'Password', type: 'password', group: 'secret', optional: true, width: 'half' },
+    ],
+    summary: (cfg) => cfg.jdbc_url || '',
+  },
+]
+
+// ── Lookups ───────────────────────────────────────────────────────────────
+
+export function getTypeInfo(typeId: string): ConnectorType {
+  return CONNECTOR_TYPES.find((t) => t.id === typeId) ?? CONNECTOR_TYPES[0]
+}
+
+/**
+ * Connectors grouped by category for the "Add connector" picker.
+ *
+ * ``hidden`` types (e.g. the legacy ``duckdb_storage``, now folded into the
+ * unified DuckDB connector) are excluded from the picker but remain in the
+ * catalog so saved connectors of that type still render. ``system`` types
+ * (e.g. the demo connector) ARE shown so users can re-add them after removal.
+ */
+export function getConnectorsByCategory() {
+  return CONNECTOR_CATEGORIES.map((cat) => ({
+    ...cat,
+    connectors: CONNECTOR_TYPES.filter((c) => c.category === cat.id && !c.hidden),
+  })).filter((cat) => cat.connectors.length > 0)
+}
+
+/** Seed an initial config object from a type's field defaults (config group). */
+export function defaultsFor(typeId: string): Record<string, unknown> {
+  const info = getTypeInfo(typeId)
+  const out: Record<string, unknown> = {}
+  for (const f of info.fields ?? []) {
+    if (f.default !== undefined && (f.group ?? 'config') === 'config') {
+      out[f.key] = f.default
+    }
+  }
+  return out
+}

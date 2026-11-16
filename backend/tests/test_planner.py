@@ -322,3 +322,167 @@ class TestPhysicalPlanHelpers:
         assert d["sql"] == p.sql
         assert d["params"] == p.params
         assert d["cache_key"] == p.cache_key
+
+
+# ---------------------------------------------------------------------------
+# Parse-error humanisation (INVALID_SQL messages are user-facing)
+# ---------------------------------------------------------------------------
+#
+# sqlglot's own str(ParseError) is terminal output: it wraps the offending token
+# in ANSI escapes and names the internal AST class that failed to build. Those
+# messages are rendered verbatim in the query editor, so the planner rewrites
+# them. These tests pin the properties the UI depends on.
+
+
+class TestInvalidSqlMessage:
+    # A migrated query whose date-range filter variable rendered to the empty
+    # string — the single most common broken-SQL shape in a converted estate.
+    DANGLING_BETWEEN = "SELECT * FROM t\nWHERE d BETWEEN \nAND x IS NOT NULL\n"
+
+    def _message(self, sql: str, dialect: str = "mysql") -> str:
+        with pytest.raises(AppError) as excinfo:
+            plan(sql, dialect=dialect)
+        assert excinfo.value.code == "INVALID_SQL"
+        assert excinfo.value.status == 400
+        return excinfo.value.message
+
+    def test_message_has_no_ansi_escapes(self) -> None:
+        """ANSI colour/underline codes must never reach the browser."""
+        assert "\x1b" not in self._message(self.DANGLING_BETWEEN)
+
+    def test_message_has_no_python_class_repr(self) -> None:
+        """sqlglot's internal AST class names mean nothing to a user."""
+        msg = self._message(self.DANGLING_BETWEEN)
+        assert "<class" not in msg
+        assert "sqlglot" not in msg
+
+    def test_message_explains_the_missing_operand(self) -> None:
+        """The known grammar slots get a plain-English cause.
+
+        Which bound sqlglot reports as missing depends on how it resynchronises
+        after the hole, so assert the shared phrasing rather than a side.
+        """
+        msg = self._message(self.DANGLING_BETWEEN)
+        assert "BETWEEN range has no" in msg
+        assert "bound" in msg
+
+    def test_message_carries_a_position(self) -> None:
+        msg = self._message(self.DANGLING_BETWEEN)
+        assert "line" in msg and "column" in msg
+
+    def test_dangling_equality_is_explained(self) -> None:
+        """The other common migration artefact: `WHERE col = ` with no value."""
+        msg = self._message("SELECT * FROM t\nWHERE country_id =  \nGROUP BY id\n")
+        assert "'=' comparison" in msg
+
+    def test_unmapped_grammar_slot_still_reads_sensibly(self) -> None:
+        """An AST node with no hand-written phrase falls back, not to internals."""
+        msg = self._message("SELECT * FROM t WHERE )")
+        assert "<class" not in msg
+        assert "incomplete" in msg.lower()
+
+    def test_valid_sql_does_not_raise(self) -> None:
+        plan("SELECT a FROM t WHERE d BETWEEN 1 AND 2", dialect="mysql")
+
+
+# ---------------------------------------------------------------------------
+# Dashboard filters (`filters=`) — scope-aware, unlike RLS/predicates above
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardFilters:
+    """plan(..., filters=[...]) — the runtime half of the filter pipeline.
+
+    Unlike RLS (always the outermost scope via a plain tree.where()), a
+    dashboard filter is injected into EVERY scope that exposes its column —
+    see apply_dashboard_filters's docstring for why an aggregate-only KPI
+    query needs that.
+    """
+
+    HEADLINE_KPI_SQL = (
+        "SELECT (SELECT ROUND(SUM(amount), 2) FROM fin_invoices) AS total_billed, "
+        "(SELECT ROUND(SUM(amount), 2) FROM fin_payments) AS total_collected"
+    )
+    CATALOG = {
+        "fin_invoices": ["amount", "month", "status"],
+        "fin_payments": ["amount", "month"],
+    }
+
+    def test_filters_into_every_matching_scope(self) -> None:
+        """One filter, applied to a query with two independent aggregate
+        subqueries over different tables sharing a column name, lands in
+        BOTH — not just the first found."""
+        p = plan(
+            self.HEADLINE_KPI_SQL,
+            dialect="duckdb",
+            filters=[{"column": "month", "value": "2024-06"}],
+            filter_table_columns=self.CATALOG,
+        )
+        assert p.sql.count("month = '2024-06'") == 2
+        assert p.unresolved_filters == []
+
+    def test_column_not_exposed_anywhere_is_unresolved_not_silent(self) -> None:
+        p = plan(
+            self.HEADLINE_KPI_SQL,
+            dialect="duckdb",
+            filters=[{"column": "nope", "value": "x"}],
+            filter_table_columns=self.CATALOG,
+        )
+        assert "nope" not in p.sql
+        assert p.unresolved_filters == ["nope"]
+
+    def test_none_value_is_a_no_op(self) -> None:
+        p = plan(
+            self.HEADLINE_KPI_SQL,
+            dialect="duckdb",
+            filters=[{"column": "month", "value": None}],
+            filter_table_columns=self.CATALOG,
+        )
+        assert "month" not in p.sql
+
+    def test_empty_list_value_is_a_no_op(self) -> None:
+        """A multiselect filter with nothing picked must not touch the query —
+        this is what distinguishes it from an 'in' filter matching nothing."""
+        p = plan(
+            self.HEADLINE_KPI_SQL,
+            dialect="duckdb",
+            filters=[{"column": "month", "value": []}],
+            filter_table_columns=self.CATALOG,
+        )
+        assert "month" not in p.sql
+
+    def test_list_value_becomes_in_predicate(self) -> None:
+        p = plan(
+            self.HEADLINE_KPI_SQL,
+            dialect="duckdb",
+            filters=[{"column": "month", "value": ["2024-06", "2024-07"]}],
+            filter_table_columns=self.CATALOG,
+        )
+        assert "month IN ('2024-06', '2024-07')" in p.sql
+
+    def test_not_in_value_becomes_not_in_predicate(self) -> None:
+        """Exclude-mode multiselect ({mode:'exclude', values:[...]} on the
+        frontend) must produce a real NOT IN, not an approximated IN — the
+        opposite predicate would silently show the wrong rows."""
+        p = plan(
+            self.HEADLINE_KPI_SQL,
+            dialect="duckdb",
+            filters=[{"column": "month", "value": {"not_in": ["2024-06"]}}],
+            filter_table_columns=self.CATALOG,
+        )
+        assert "NOT month IN ('2024-06')" in p.sql
+
+    def test_without_catalog_only_referenced_columns_match(self) -> None:
+        """No filter_table_columns => schema match is skipped entirely; a
+        column the query's own SQL never mentions cannot be found."""
+        p = plan(
+            self.HEADLINE_KPI_SQL,
+            dialect="duckdb",
+            filters=[{"column": "month", "value": "2024-06"}],
+        )
+        assert p.unresolved_filters == ["month"]
+
+    def test_no_filters_argument_is_unchanged_from_before(self) -> None:
+        p = plan(self.HEADLINE_KPI_SQL, dialect="duckdb")
+        assert p.unresolved_filters == []
+        assert "WHERE" not in p.sql

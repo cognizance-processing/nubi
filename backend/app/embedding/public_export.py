@@ -231,6 +231,24 @@ _UNSAFE_NOTICE = (
 )
 
 
+def _json_for_script(value: Any) -> str:
+    """Serialise *value* for embedding inside a ``<script>`` element.
+
+    JSON alone is not enough there: ``</script>`` or ``<!--`` inside a string
+    would end or confuse the script block.  ``<``, ``>`` and ``&`` (and the
+    JS line separators) are emitted as unicode escapes, which JSON and
+    JavaScript both read back as the same characters.
+    """
+    return (
+        json.dumps(value, default=str)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
 def _render_html(
     *,
     board_title: str,
@@ -248,9 +266,9 @@ def _render_html(
     comment / ``<meta>`` tag so the warning survives view-source.
     """
     safe_title = html.escape(board_title or "Dashboard")
-    spec_json = json.dumps(spec or {"widgets": []}, default=str)
+    spec_json = _json_for_script(spec or {"widgets": []})
     manifest = snapshot_descriptor.get("artifact", {}).get("tables", [])
-    manifest_json = json.dumps(manifest, default=str)
+    manifest_json = _json_for_script(manifest)
     fingerprint = html.escape(str(snapshot_descriptor.get("policy_fingerprint") or "none"))
 
     return f"""<!doctype html>
@@ -290,7 +308,7 @@ def _render_html(
   </main>
   <script type="module">
     // UNSAFE PUBLIC EXPORT — frozen data, no auth. See the banner above.
-    const SNAPSHOT_URL = {json.dumps(snapshot_public_url)};
+    const SNAPSHOT_URL = {_json_for_script(snapshot_public_url)};
     const SPEC = {spec_json};
     const MANIFEST = {manifest_json};
 

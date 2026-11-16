@@ -16,9 +16,26 @@ extract_table_columns(sql, dialect="postgres") -> dict
         "column": str}``.  Attribution rules:
         - If a column is prefixed by a table alias (``u.id``), the alias is
           resolved to the real table name.
-        - If a column is unqualified AND exactly one real table is referenced
-          in the query, the column is attributed to that table.
-        - Otherwise ``table`` is ``None`` (ambiguous / subquery / CTE).
+        - If a column is unqualified AND exactly one source is joined in ITS
+          OWN scope, the column is attributed to that source (scope-correct:
+          a column inside a 3-way-joined subquery is never attributed to an
+          unrelated single table two scopes up).
+        - If a column is qualified by a DERIVED-TABLE alias (a subquery or
+          CTE, not a real table) — e.g. ``b.billed`` where ``b`` is
+          ``(SELECT month, SUM(amount) AS billed FROM fin_invoices GROUP BY
+          month) b`` — the reference is traced back through the derived
+          table's own projection to whatever it ultimately reads from,
+          recursively (capped depth), the same way a person would trace it by
+          eye. ``b.billed`` resolves through to nothing further (it is a
+          computed ``SUM``, not a passthrough column) and stays unattributed;
+          ``b.month`` resolves through to ``fin_invoices.month``. Without
+          this, a column read only through a derived-table join never gets
+          attributed to its real table at all — which starves any estate-wide
+          catalog built from this function of exactly the columns a query is
+          plainly using, for every query that computes a subtotal before
+          joining it (a very common shape).
+        - Otherwise ``table`` is ``None`` (ambiguous join, or the column
+          traces back to a computed expression rather than a physical column).
         - Columns that appear only inside function calls are included when
           they are plain ``Column`` nodes (e.g. ``SUM(amount)`` → amount).
           Non-column expressions (literals, ``*``) are skipped.
@@ -38,11 +55,19 @@ extract_table_columns(sql, dialect="postgres") -> dict
 
 Notes
 -----
-- Uses sqlglot's ``qualify`` optimizer pass to expand aliases before walking
-  the AST.  If ``qualify`` itself raises (common for DuckDB/generate_series
-  idioms) the function falls back to manual alias resolution.
+- Column attribution walks sqlglot's ``Scope`` tree (``traverse_scope``) so
+  each column is resolved using its OWN scope's sources — an unqualified
+  column or an alias that points at a derived table is chased back to a real
+  table without being confused by an unrelated table two scopes up. This
+  needs no schema information and no pre-qualification pass.
 - CTE names are excluded from the ``tables`` list (they are not real tables).
 - Subquery aliases are excluded from the ``tables`` list.
+- Jinja templating (``{% if %}`` / ``{{ }}``) is neutralised before parsing —
+  sqlglot cannot parse it, and on this codebase's converted boards most
+  registered queries carry at least one ``{% if param %}`` filter block.
+  Without this, a query drops out of the catalog entirely the moment it
+  gains its first filter — exactly backwards, since that is when its columns
+  matter most to every OTHER query's "what can I filter on?" picker.
 
 This is a generic SQL-introspection utility used by the AI grounding catalog
 (``app.ai.grounding``), notebook cell auto-dependency inference
@@ -59,55 +84,23 @@ from typing import Any
 import sqlglot
 import sqlglot.expressions as exp
 from sqlglot.optimizer import qualify
+from sqlglot.optimizer.scope import Scope, traverse_scope
+
+from app.queries.parameterize import neutralize_jinja
+from app.queries.scope_resolve import exposed_projection
 
 logger = logging.getLogger(__name__)
+
+#: Cap on how many derived-table hops a single column reference is chased
+#: through (mirrors app.queries.parameterize._base_table_for) — real queries
+#: nest two or three deep; anything past this is treated as unresolvable
+#: rather than risking runaway recursion on a pathological query.
+_MAX_CHASE_DEPTH = 5
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-def _build_alias_map(tree: exp.Expression) -> dict[str, str]:
-    """Return a mapping from alias → real table name for FROM / JOIN sources.
-
-    Only tables (not subqueries or CTEs) are included.
-
-    Parameters
-    ----------
-    tree:
-        The parsed sqlglot expression tree (typically a ``Select``).
-
-    Returns
-    -------
-    dict[str, str]
-        ``{"alias": "real_table_name", ...}``.  When a table has no alias the
-        table name maps to itself (``{"users": "users"}``).
-    """
-    alias_map: dict[str, str] = {}
-
-    for table_node in tree.find_all(exp.Table):
-        # Skip tables that are inside subqueries that are themselves aliased
-        # (i.e. the subquery is the table, not a real table reference).
-        # A real table has a non-empty name.
-        real_name = table_node.name
-        if not real_name:
-            continue
-
-        alias_node = table_node.args.get("alias")
-        if alias_node:
-            alias_name = (
-                alias_node.name
-                if hasattr(alias_node, "name")
-                else str(alias_node)
-            )
-            if alias_name:
-                alias_map[alias_name.lower()] = real_name.lower()
-
-        # Always map real name → real name so unaliased columns resolve too.
-        alias_map[real_name.lower()] = real_name.lower()
-
-    return alias_map
 
 
 def _collect_real_tables(tree: exp.Expression, cte_names: set[str]) -> list[str]:
@@ -139,76 +132,102 @@ def _collect_real_tables(tree: exp.Expression, cte_names: set[str]) -> list[str]
 
 def _collect_cte_names(tree: exp.Expression) -> set[str]:
     """Return the set of CTE alias names defined in the query (lower-case)."""
+    # Found via find_all rather than tree.args.get("with") — the with-clause's
+    # arg key has changed across sqlglot versions (with_ vs with); walking for
+    # exp.CTE nodes directly needs no dependency on that key's exact spelling.
     names: set[str] = set()
-    with_clause = tree.args.get("with")
-    if with_clause is None:
-        return names
-    for cte in with_clause.find_all(exp.CTE):
+    for cte in tree.find_all(exp.CTE):
         alias = cte.alias
         if alias:
             names.add(alias.lower())
     return names
 
 
-def _collect_column_refs(
-    tree: exp.Expression,
-    alias_map: dict[str, str],
-    real_tables: list[str],
-    cte_names: set[str],
-) -> list[dict[str, str | None]]:
-    """Walk the AST and collect all column references.
+def _resolve_column_origin(
+    scope: Scope, col_node: exp.Column, depth: int = 0
+) -> str | None:
+    """Chase *col_node* back to the real table it ultimately reads from.
+
+    Mirrors ``app.queries.parameterize._base_table_for``'s recursive descent:
+    look up the column's qualifier (or the sole source, if unqualified and
+    unambiguous) in *scope*'s own sources. A real table ends the chase. A
+    derived table (subquery or CTE — anything that isn't an ``exp.Table``)
+    means the column is itself a reference into ANOTHER scope: find the
+    matching projection there and recurse one level deeper with that scope
+    and that projection's underlying expression.
+
+    Returns ``None`` when the chase can't complete: the source is ambiguous
+    (unqualified column, more than one join source), the referenced
+    projection doesn't exist, or it resolves to a computed expression
+    (``SUM(amount) AS billed`` is not a passthrough of a physical column).
+    """
+    if depth > _MAX_CHASE_DEPTH or scope is None:
+        return None
+    col_name = col_node.name
+    if not col_name or col_name == "*":
+        return None
+
+    sources = getattr(scope, "sources", {}) or {}
+    qualifier = col_node.table
+    source = None
+    if qualifier:
+        source = sources.get(qualifier)
+    elif len(sources) == 1:
+        source = next(iter(sources.values()))
+    if source is None:
+        return None
+
+    if isinstance(source, exp.Table):
+        return (source.name or "").lower() or None
+
+    # A Scope (subquery or CTE) — the column is read from whatever THAT
+    # scope's own matching projection ultimately is.
+    inner_select = getattr(source, "expression", None)
+    if not isinstance(inner_select, exp.Select):
+        return None
+    inner_proj = exposed_projection(inner_select, col_name)
+    if inner_proj is None:
+        return None
+    inner_node = inner_proj.this if isinstance(inner_proj, exp.Alias) else inner_proj
+    if not isinstance(inner_node, exp.Column):
+        # Computed expression — the chase ends here, unresolved.
+        return None
+    return _resolve_column_origin(source, inner_node, depth + 1)
+
+
+def _collect_column_refs(tree: exp.Expression) -> list[dict[str, str | None]]:
+    """Walk every scope's own columns and resolve each to its real table.
 
     Parameters
     ----------
     tree:
         Parsed expression tree.
-    alias_map:
-        Alias → real table name mapping.
-    real_tables:
-        List of real table names (used for single-table attribution).
-    cte_names:
-        Set of CTE alias names (columns attributed to CTEs get table=None).
 
     Returns
     -------
     list[dict]
         De-duplicated list of ``{"table": str|None, "column": str}`` dicts,
-        sorted by (table, column).
+        sorted by (table, column). Resolution is scope-aware throughout —
+        see :func:`_resolve_column_origin` — so an unqualified column is
+        attributed only when its OWN scope has exactly one source, and an
+        alias pointing at a derived table is chased back to a physical
+        column rather than left keyed by the alias.
     """
     seen: set[tuple[str | None, str]] = set()
     results: list[dict[str, str | None]] = []
 
-    for col_node in tree.find_all(exp.Column):
-        col_name = col_node.name
-        if not col_name or col_name == "*":
-            continue
+    for scope in traverse_scope(tree):
+        for col_node in scope.columns:
+            col_name = col_node.name
+            if not col_name or col_name == "*":
+                continue
 
-        # Determine table attribution.
-        table_part: str | None = None
-        table_node = col_node.args.get("table")
-        if table_node is not None:
-            qualifier = (
-                table_node.name
-                if hasattr(table_node, "name")
-                else str(table_node)
-            ).lower()
-            if qualifier in cte_names:
-                # Column comes from a CTE — treat as unresolved.
-                table_part = None
-            else:
-                # Resolve alias → real table name.
-                table_part = alias_map.get(qualifier, qualifier)
-        else:
-            # Unqualified column — attribute to the sole real table if unique.
-            if len(real_tables) == 1:
-                table_part = real_tables[0]
-            else:
-                table_part = None
+            table_part = _resolve_column_origin(scope, col_node)
 
-        key = (table_part, col_name.lower())
-        if key not in seen:
-            seen.add(key)
-            results.append({"table": table_part, "column": col_name.lower()})
+            key = (table_part, col_name.lower())
+            if key not in seen:
+                seen.add(key)
+                results.append({"table": table_part, "column": col_name.lower()})
 
     # Sort deterministically: (table or "", column)
     results.sort(key=lambda d: (d["table"] or "", d["column"] or ""))
@@ -285,9 +304,9 @@ def extract_table_columns(sql: str, dialect: str = "postgres") -> dict[str, Any]
     """
     empty: dict[str, Any] = {"tables": [], "columns": [], "outputs": []}
 
-    # ── 1. Parse ────────────────────────────────────────────────────────────
+    # ── 1. Parse (Jinja neutralised first — see module docstring) ───────────
     try:
-        tree = sqlglot.parse_one(sql, dialect=dialect)
+        tree = sqlglot.parse_one(neutralize_jinja(sql), dialect=dialect)
     except Exception as exc:
         logger.debug("SQL table/column extraction parse failure: %s", exc)
         return {**empty, "error": f"parse_error: {exc}"}
@@ -318,14 +337,11 @@ def extract_table_columns(sql: str, dialect: str = "postgres") -> dict[str, Any]
     # ── 3. Collect CTEs (to exclude from real-table list) ───────────────────
     cte_names = _collect_cte_names(qualified_tree)
 
-    # ── 4. Build alias map ───────────────────────────────────────────────────
-    alias_map = _build_alias_map(qualified_tree)
-
-    # ── 5. Collect real tables ───────────────────────────────────────────────
+    # ── 4. Collect real tables ───────────────────────────────────────────────
     real_tables = _collect_real_tables(qualified_tree, cte_names)
 
-    # ── 6. Collect column references ────────────────────────────────────────
-    columns = _collect_column_refs(qualified_tree, alias_map, real_tables, cte_names)
+    # ── 5. Collect column references (scope-aware — see _collect_column_refs) ─
+    columns = _collect_column_refs(qualified_tree)
 
     # ── 7. Collect output names ──────────────────────────────────────────────
     outputs = _collect_outputs(qualified_tree)

@@ -1,0 +1,250 @@
+/**
+ * ExportShareMenu.jsx — topbar dropdown for exporting and sharing a dashboard.
+ *
+ * Props
+ * -----
+ * board {string|null}  The board id (needed for server-side data export + share).
+ * spec  {object}       The current DashboardSpec (used for filenames / fallback).
+ *
+ * Export
+ *   - PNG / PDF: client-side capture of the rendered dashboard DOM. Both go
+ *     through lib/domCapture, which snapshots charts at export resolution and
+ *     leaves interactive chrome out of the shot; PDF adds pagination on top.
+ *   - CSV: per-widget data from GET /boards/:id/export.json, built client-side.
+ * Share
+ *   - POST /boards/:id/share → embed url + snippet + the RLS/auth model.
+ *   - Surfaces that embedding uses a short-lived HOST-signed JWT whose claims
+ *     carry RLS policies; row filtering happens server-side in the connector
+ *     (the browser is untrusted). Nubi does not mint the token — the host signs it.
+ */
+
+import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { Download, Share2, Image, FileText, Table, Link2, ShieldCheck, X, Copy, Check } from 'lucide-react'
+import Tooltip from './ui/Tooltip.jsx'
+import { fixedPanelStyle, placeDropdown, useAnchorTracking } from './ui/useFixedAnchor.js'
+import { get, post } from '../lib/api.js'
+import { widgetToCsv, elementToPNG, elementToPDF } from '../lib/exports.js'
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+function slugify(s) {
+  return (s || 'dashboard').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'dashboard'
+}
+
+/** Find the rendered dashboard DOM node to capture. */
+function dashboardNode(): HTMLElement {
+  return (
+    document.querySelector('[data-dashboard-root]') ||
+    document.querySelector('.spec-renderer') ||
+    document.querySelector('[data-testid="editor-canvas"]') ||
+    document.body
+  ) as HTMLElement
+}
+
+function widgetsToCsv(widgets) {
+  const parts = []
+  for (const w of widgets) {
+    parts.push(`# widget: ${w.widget_id ?? w.query_id ?? ''}`)
+    parts.push(widgetToCsv(w))
+    parts.push('')
+  }
+  return parts.join('\n')
+}
+
+function download(filename, content, mime) {
+  const blob = content instanceof Blob ? content : new Blob([content], { type: mime })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+// ---------------------------------------------------------------------------
+// component
+// ---------------------------------------------------------------------------
+
+export default function ExportShareMenu({ board, spec }) {
+  const [open, setOpen] = useState(false)
+  const [tab, setTab] = useState('export')
+  const [busy, setBusy] = useState(null)
+  const [error, setError] = useState(null)
+  const [share, setShare] = useState(null)
+  const [copied, setCopied] = useState(null)
+  const [pos, setPos] = useState(null)
+  const ref = useRef(null)
+  const panelRef = useRef(null)
+
+  const name = slugify(spec?.title)
+
+  // The panel is portaled with position: fixed — the editor toolbar that hosts
+  // this menu is `overflow-x-auto`, which would clip an absolute panel.
+  useAnchorTracking(open, () => {
+    if (!ref.current || !panelRef.current) return
+    setPos(placeDropdown(ref.current.getBoundingClientRect(), panelRef.current, { align: 'right', maxHeight: 640 }))
+  })
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e) => {
+      if (ref.current?.contains(e.target) || panelRef.current?.contains(e.target)) return
+      setOpen(false)
+    }
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey) }
+  }, [open])
+
+  async function exportPng() {
+    setBusy('png'); setError(null)
+    try {
+      await elementToPNG(dashboardNode(), `${name}.png`)
+    } catch (e) { setError(e.message || 'PNG export failed.') } finally { setBusy(null) }
+  }
+
+  async function exportPdf() {
+    setBusy('pdf'); setError(null)
+    try {
+      await elementToPDF(dashboardNode(), `${name}.pdf`, { title: spec?.title || 'Dashboard' })
+    } catch (e) { setError(e.message || 'PDF export failed.') } finally { setBusy(null) }
+  }
+
+  async function exportCsv() {
+    if (!board) { setError('Save the dashboard first to export data.'); return }
+    setBusy('csv'); setError(null)
+    try {
+      const data = await get(`/boards/${board}/export.json`)
+      const widgets = Array.isArray(data) ? data : (data?.widgets ?? [])
+      download(`${name}.csv`, widgetsToCsv(widgets), 'text/csv')
+    } catch (e) { setError(e.message || 'CSV export failed.') } finally { setBusy(null) }
+  }
+
+  async function loadShare() {
+    if (!board) { setError('Save the dashboard first to share it.'); return }
+    setBusy('share'); setError(null)
+    try {
+      setShare(await post(`/boards/${board}/share`))
+    } catch {
+      // Documented local fallback when the backend/board is unavailable.
+      const origin = window.location.origin
+      setShare({
+        _local: true,
+        embed_url: `${origin}/embed/${board ?? '<board-id>'}`,
+        snippet: `<nubi-dashboard dashboard-id="${board ?? '<board-id>'}" get-token="yourGetToken"></nubi-dashboard>`,
+        rls: 'Embedding uses a short-lived host-signed JWT whose claims carry RLS policies; row filtering happens server-side in the connector.',
+        mint: { token: null, max_ttl_minutes: 15 },
+      })
+    } finally { setBusy(null) }
+  }
+
+  function copy(key, text) {
+    navigator.clipboard?.writeText(text).then(() => { setCopied(key); setTimeout(() => setCopied(null), 1500) })
+  }
+
+  const itemCls = 'w-full flex items-center gap-2.5 px-3 h-9 text-[13px] text-fg rounded-[var(--radius-control)] hover:bg-frame-hover disabled:opacity-50 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring'
+
+  return (
+    <div className="relative" ref={ref}>
+      <Tooltip content="Export & share" side="bottom">
+        <button
+          onClick={() => { setOpen(o => !o); if (!share && board) loadShare() }}
+          aria-label="Export & share dashboard"
+          aria-expanded={open}
+          aria-haspopup="dialog"
+          data-testid="export-share-btn"
+          className={`flex items-center justify-center w-8 h-8 rounded-[var(--radius-control)] border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 ${
+            open ? 'bg-surface-2 border-ink text-fg' : 'bg-surface text-fg border-border hover:border-ink'
+          }`}
+        >
+          <Share2 size={15} />
+        </button>
+      </Tooltip>
+
+      {open && createPortal(
+        <div
+          ref={panelRef}
+          data-testid="export-share-panel"
+          style={fixedPanelStyle(pos)}
+          className="w-80 max-w-[calc(100vw-2rem)] bg-surface border border-border rounded-[var(--radius-sheet)] shadow-pop overflow-hidden"
+        >
+          <div className="flex border-b border-border">
+            {['export', 'share'].map(t => (
+              <button key={t} onClick={() => setTab(t)} aria-pressed={tab === t}
+                className={`flex-1 h-10 text-xs font-medium capitalize focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring flex items-center justify-center gap-1.5 ${
+                  tab === t ? 'text-fg border-b-2 border-ink' : 'text-muted hover:text-fg hover:bg-frame-hover'
+                }`}>
+                {t === 'export' ? <Download size={13} /> : <Link2 size={13} />} {t}
+              </button>
+            ))}
+          </div>
+
+          {error && <div role="alert" className="mx-3 mt-3 py-2 px-3 text-xs text-fg border-l-2 border-danger bg-danger-bg">{error}</div>}
+
+          {tab === 'export' ? (
+            <div className="p-2 space-y-0.5">
+              <button onClick={exportPng} disabled={busy === 'png'} className={itemCls}>
+                <Image size={15} className="text-muted" /> {busy === 'png' ? 'Rendering…' : 'Export as PNG'}
+              </button>
+              <button onClick={exportPdf} disabled={busy === 'pdf'} className={itemCls}>
+                <FileText size={15} className="text-muted" /> {busy === 'pdf' ? 'Rendering…' : 'Export as PDF'}
+              </button>
+              <button onClick={exportCsv} disabled={busy === 'csv'} className={itemCls}>
+                <Table size={15} className="text-muted" /> {busy === 'csv' ? 'Fetching…' : 'Export data as CSV'}
+              </button>
+              <p className="px-3 pt-1.5 text-[11px] text-muted">PNG/PDF capture the live dashboard; CSV pulls each widget's data from the server.</p>
+            </div>
+          ) : (
+            <div className="p-3 space-y-3 max-h-96 overflow-y-auto">
+              {busy === 'share' && <p className="text-xs text-muted animate-pulse">Preparing embed…</p>}
+              {share && (
+                <>
+                  <div className="space-y-1">
+                    <label className="font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-subtle">Embed link</label>
+                    <div className="flex items-center gap-1.5">
+                      <input readOnly value={share.embed_url ?? ''} className="flex-1 text-xs font-mono bg-surface-2 border border-border rounded-[var(--radius-control)] px-2 py-1.5 text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Embed link" />
+                      <button onClick={() => copy('url', share.embed_url ?? '')} className="p-1.5 rounded-[var(--radius-control)] border border-border hover:border-ink text-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" title="Copy" aria-label="Copy embed link">
+                        {copied === 'url' ? <Check size={13} /> : <Copy size={13} />}
+                      </button>
+                    </div>
+                  </div>
+                  {share.snippet && (
+                    <div className="space-y-1">
+                      <label className="font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-subtle">Embed snippet</label>
+                      <div className="relative">
+                        <pre className="text-[11px] font-mono bg-surface-2 border border-border rounded-[var(--radius-control)] p-2 overflow-x-auto text-fg whitespace-pre-wrap">{share.snippet}</pre>
+                        <button onClick={() => copy('snip', share.snippet)} className="absolute top-1.5 right-1.5 p-1 rounded-[2px] border border-border bg-surface hover:border-ink hover:text-fg text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Copy embed snippet" title="Copy">
+                          {copied === 'snip' ? <Check size={12} /> : <Copy size={12} />}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  <div className="border-l-2 border-ink bg-surface-2 p-2.5 space-y-1.5">
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-fg">
+                      <ShieldCheck size={14} className="text-success" /> Row-level security
+                    </div>
+                    <p className="text-[11px] text-muted leading-relaxed">
+                      Embedding uses a <strong>short-lived, host-signed JWT</strong> whose claims carry RLS policies.
+                      Row filtering happens <strong>server-side in the connector</strong> — the browser is untrusted, so a
+                      tenant can never see rows their token doesn't permit. Nubi does not mint the token; your app signs it
+                      (RS256/ES256, verified via JWKS), max {share.mint?.max_ttl_minutes ?? 15} min.
+                    </p>
+                    {share._local && <p className="text-[11px] text-warning-fg">Showing the documented snippet (offline/unsaved).</p>}
+                  </div>
+                </>
+              )}
+              {!busy && !share && <p className="text-xs text-muted">Save the dashboard to generate an embed link.</p>}
+            </div>
+          )}
+        </div>,
+        document.body,
+      )}
+    </div>
+  )
+}

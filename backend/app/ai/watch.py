@@ -28,6 +28,7 @@ identically. The shared step is factored into :func:`_run_metric`.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -208,7 +209,12 @@ async def _run_metric(
         repo,
     )
     try:
-        arrow_table = connector.execute(physical_plan)
+        # Off the event loop: connector.execute() blocks (PyMySQL, connectorx,
+        # psycopg2, …), and in network_mode='bridge' this same loop has to run
+        # the tunnel serving THIS connection — blocking here starves that
+        # plumbing and the query can never complete. Same reason as the /query
+        # route (see routes/query.py's M22-B note).
+        arrow_table = await asyncio.to_thread(connector.execute, physical_plan)
     finally:
         try:
             net_cleanup()

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 from typing import Literal
 
 from app.assets.config import (
@@ -29,7 +28,9 @@ logger = logging.getLogger(__name__)
 _MAX_AVATAR_BYTES = 2 * 1024 * 1024
 
 # Allowed MIME type prefixes for avatars.
-_ALLOWED_CONTENT_TYPES = ("image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml")
+# Raster formats only: an SVG is a document that can carry script, and an
+# avatar is served from our own origin.
+_ALLOWED_CONTENT_TYPES = ("image/jpeg", "image/png", "image/gif", "image/webp")
 
 # Extension map from MIME type.
 _MIME_TO_EXT: dict[str, str] = {
@@ -37,7 +38,6 @@ _MIME_TO_EXT: dict[str, str] = {
     "image/png": ".png",
     "image/gif": ".gif",
     "image/webp": ".webp",
-    "image/svg+xml": ".svg",
 }
 
 
@@ -174,11 +174,10 @@ async def _store_local(data: bytes, key: str) -> str:
     """
     import asyncio  # noqa: PLC0415
 
-    from app.storage.local import LocalStorageClient  # noqa: PLC0415
+    from app.storage.assets import asset_storage  # noqa: PLC0415
 
-    default_root = os.path.join(os.path.dirname(__file__), "..", "..", "storage_data")
-    root = os.path.abspath(os.getenv("LOCAL_STORAGE_ROOT", default_root))
-    client = LocalStorageClient(root=root)
+    # Local disk, or object storage when NUBI_ASSET_STORAGE_URI is set.
+    client = asset_storage()
 
     def _write() -> str:
         client.upload_bytes(data, key)

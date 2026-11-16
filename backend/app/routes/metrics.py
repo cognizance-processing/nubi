@@ -50,6 +50,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.auth.deps import verified_identity
+from app.auth.roles import require_writer
 from app.auth.scopes import has_scope, SCOPE_AUTHOR_METRIC
 from app.auth.verify import VerifiedIdentity
 from app.connectors import plan as planner_plan
@@ -151,6 +152,20 @@ async def _caller_org(identity: VerifiedIdentity, request: Request) -> str | Non
         return None
 
 
+async def _require_metric_on_token_boards(
+    identity: VerifiedIdentity, metric_id: str, metric: MetricDefinition
+) -> None:
+    """A board-bound embed token may only read metrics its boards display."""
+    from app.routes.query import require_ref_in_token_boards  # noqa: PLC0415
+
+    await require_ref_in_token_boards(
+        identity,
+        [metric_id, getattr(metric, "id", None), getattr(metric, "slug", None)],
+        get_repo(),
+        ("metric_id",),
+    )
+
+
 async def _resolve_metric(
     metric_id: str, org_id: str | None = None
 ) -> MetricDefinition:
@@ -175,8 +190,10 @@ async def _resolve_metric(
     (same 404 either way — no cross-org existence leak).
     """
     registry = get_metric_registry()
-    metric = registry.get(metric_id)
-    if metric is not None and org_id is not None:
+    metric = registry.get(metric_id, org_id)
+    # A registration under the org's own key is that org's metric; only a hit
+    # on a SHARED (org-less) entry still needs proving.
+    if metric is not None and org_id is not None and registry.owned(metric_id, org_id) is None:
         from app.metrics.registry import metric_belongs_to_org  # noqa: PLC0415
 
         if not await metric_belongs_to_org(metric_id, org_id):
@@ -425,12 +442,15 @@ async def _persist_metric(
     try:
         from app.db import execute, fetchrow
         from app.routes._org import (
-            get_user_org,
+            resolve_org_id,
             resolve_project_id_for_create,
         )
 
         repo = get_repo()
-        org_id = await get_user_org(identity.user_id, repo)
+        # resolve_org_id, not get_user_org: `request` is right here (the
+        # next line uses it) and get_user_org would pin the user's FIRST
+        # org, persisting this record into the wrong tenant.
+        org_id = await resolve_org_id(identity.user_id, repo, request)
         project_id = await resolve_project_id_for_create(org_id, request)
 
         # UPSERT by (org_id, config.metric.slug): update an existing backing
@@ -509,53 +529,38 @@ async def list_metrics(
     _require_read_scope(identity)
 
     registry = get_metric_registry()
-    metrics = registry.all()
+    metrics = registry.for_org(await _caller_org(identity, request))
 
     # ── Org scoping (best-effort) ────────────────────────────────────────────
     # Metrics are query-backed: the visible set is the slugs exposed by this
     # org's queries-with-`config.metric`. In-code seeds (e.g. demo_revenue) have
     # no backing query row and are always visible. When scoping is unavailable
     # (no DB) the registry list is returned unfiltered.
-    slugs: set[str] | None = None
     try:
-        from app.db import fetch
+        from app.metrics.registry import metrics_visible_to_org  # noqa: PLC0415
         from app.routes._org import resolve_org_id, resolve_project_filter
 
         repo = get_repo()
         if identity.kind == "embed":
             org_id = identity.org
+            project_id = None
         else:
             org_id = await resolve_org_id(identity.user_id, repo, request)
-        if org_id:
-            project_id = (
-                None
-                if identity.kind == "embed"
-                else await resolve_project_filter(org_id, request)
-            )
-            if project_id:
-                rows = await fetch(
-                    "SELECT config->'metric'->>'slug' AS slug FROM queries "
-                    "WHERE org_id = $1::uuid AND project_id = $2::uuid "
-                    "AND config ? 'metric'",
-                    org_id,
-                    project_id,
-                )
-            else:
-                rows = await fetch(
-                    "SELECT config->'metric'->>'slug' AS slug FROM queries "
-                    "WHERE org_id = $1::uuid AND config ? 'metric'",
-                    org_id,
-                )
-            slugs = {str(r["slug"]) for r in rows if r.get("slug")}
+            project_id = await resolve_project_filter(org_id, request) if org_id else None
+        metrics = await metrics_visible_to_org(list(metrics), org_id, project_id)
     except Exception:  # noqa: BLE001 — scoping unavailable → unfiltered list.
-        slugs = None
+        pass
 
-    if slugs is not None:
-        # Keep org-owned query-backed metrics + the in-code seeds (which belong
-        # to no tenant, e.g. demo_revenue).
-        from app.metrics.registry import SEED_METRIC_IDS  # noqa: PLC0415
+    # A board-bound embed token lists only the metrics its boards display.
+    from app.routes.query import token_board_refs  # noqa: PLC0415
 
-        metrics = [m for m in metrics if m.id in slugs or m.id in SEED_METRIC_IDS]
+    on_boards = await token_board_refs(identity, get_repo(), ("metric_id",))
+    if on_boards is not None:
+        metrics = [
+            m
+            for m in metrics
+            if {str(getattr(m, "id", "")), str(getattr(m, "slug", ""))} & on_boards
+        ]
 
     return {"metrics": [_metric_summary(m) for m in metrics]}
 
@@ -590,6 +595,7 @@ async def get_metric(
     _require_read_scope(identity)
     org_id = await _caller_org(identity, request)
     metric = await _resolve_metric(metric_id, org_id)
+    await _require_metric_on_token_boards(identity, metric_id, metric)
     return metric.to_dict()
 
 
@@ -598,7 +604,7 @@ async def get_metric(
 # ---------------------------------------------------------------------------
 
 
-@api_router.post("/metrics", status_code=201)
+@api_router.post("/metrics", status_code=201, dependencies=[Depends(require_writer)])
 async def create_metric(
     body: MetricIn,
     request: Request,
@@ -628,11 +634,11 @@ async def create_metric(
     if canonical_id != metric.id:
         metric = MetricDefinition.from_dict({**metric.to_dict(), "id": canonical_id})
 
-    get_metric_registry().register(metric)
+    _capture_org = await _caller_org(identity, request)
+    get_metric_registry().register(metric, _capture_org)
 
     # Snapshot version 1 for this new metric (store the *resolved* org so the
     # org-scoped version reads match — identity.org is None for first-party).
-    _capture_org = await _caller_org(identity, request)
     await _capture_metric_version(canonical_id, identity, _capture_org, metric.to_dict())
 
     return metric.to_dict()
@@ -643,7 +649,7 @@ async def create_metric(
 # ---------------------------------------------------------------------------
 
 
-@api_router.put("/metrics/{metric_id}")
+@api_router.put("/metrics/{metric_id}", dependencies=[Depends(require_writer)])
 async def update_metric(
     metric_id: str,
     body: MetricIn,
@@ -660,8 +666,12 @@ async def update_metric(
     # _persist_metric's get_user_org → INSERT/UPDATE on this org's rows).
     if not str(data.get("name") or "").strip():
         org_id = await _caller_org(identity, request)
-        existing = get_metric_registry().get(metric_id)
-        if existing is not None and org_id is not None:
+        existing = get_metric_registry().get(metric_id, org_id)
+        if (
+            existing is not None
+            and org_id is not None
+            and get_metric_registry().owned(metric_id, org_id) is None
+        ):
             from app.metrics.registry import metric_belongs_to_org  # noqa: PLC0415
 
             if not await metric_belongs_to_org(metric_id, org_id):
@@ -677,10 +687,10 @@ async def update_metric(
         raise AppError(exc.code, exc.message, 400) from exc
 
     await _persist_metric(metric, identity, request)
-    get_metric_registry().register(metric)
+    _capture_org = await _caller_org(identity, request)
+    get_metric_registry().register(metric, _capture_org)
 
     # Snapshot the updated spec as a new version (resolved org — see create_metric).
-    _capture_org = await _caller_org(identity, request)
     await _capture_metric_version(metric_id, identity, _capture_org, metric.to_dict())
 
     return metric.to_dict()
@@ -691,7 +701,7 @@ async def update_metric(
 # ---------------------------------------------------------------------------
 
 
-@api_router.delete("/metrics/{metric_id}")
+@api_router.delete("/metrics/{metric_id}", dependencies=[Depends(require_writer)])
 async def delete_metric(
     metric_id: str,
     request: Request,
@@ -715,7 +725,7 @@ async def delete_metric(
     org_id = await _caller_org(identity, request)
     await _resolve_metric(metric_id, org_id)
 
-    get_metric_registry().unregister(metric_id)
+    get_metric_registry().unregister(metric_id, org_id)
     try:
         from app.db import execute  # noqa: PLC0415
 
@@ -1062,13 +1072,17 @@ async def query_metric(
     _require_read_scope(identity)
     org_id = await _caller_org(identity, request)
     metric = await _resolve_metric(metric_id, org_id)
+    await _require_metric_on_token_boards(identity, metric_id, metric)
 
     payload = dict(body or {})
     payload["metric_id"] = metric_id
     mq = MetricQuery.from_dict(payload)
 
+    # Pass the request so the datastore resolves in the org the metric was
+    # resolved in (X-Org-Id); without it this falls back to the caller's
+    # DEFAULT org and every metric in a non-default org 404s its datastore.
     repo = get_repo()
-    org_id, org_lookup_error = await _resolve_caller_org(identity, repo)
+    org_id, org_lookup_error = await _resolve_caller_org(identity, repo, request)
 
     return await execute_metric_query(
         metric=metric,
@@ -1266,7 +1280,7 @@ async def get_metric_version(
 # ---------------------------------------------------------------------------
 
 
-@api_router.post("/metrics/{metric_id}/revert/{version_num}", status_code=200)
+@api_router.post("/metrics/{metric_id}/revert/{version_num}", status_code=200, dependencies=[Depends(require_writer)])
 async def revert_metric_to_version(
     metric_id: str,
     version_num: int,
@@ -1326,7 +1340,7 @@ async def revert_metric_to_version(
 
     # Re-persist + re-register (mirrors update_metric).
     await _persist_metric(metric, identity, request)
-    get_metric_registry().register(metric)
+    get_metric_registry().register(metric, await _caller_org(identity, request))
 
     # Record the revert as a new version entry so it appears in the audit trail
     # (org_id resolved above at the top of this handler).

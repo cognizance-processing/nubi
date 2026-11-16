@@ -153,6 +153,12 @@ def _rows_to_arrow(columns: list[str], rows: list[tuple[Any, ...]]) -> "pa.Table
     return pa.table(col_data)
 
 
+# DSNs this process has already opened successfully at least once. Guards the
+# first-contact pre-flight in ``MySQLConnector._preflight`` — see its docstring
+# for why connectorx alone is not enough.
+_PREFLIGHT_OK: set[str] = set()
+
+
 class MySQLConnector(Connector):
     """Connector backed by MySQL (and, via subclass/alias, MariaDB).
 
@@ -207,6 +213,10 @@ class MySQLConnector(Connector):
 
         parsed = urlparse(self._dsn)
         database = parsed.path.lstrip("/") or None
+        # Explicit timeouts. Without them a half-open socket — a host that
+        # accepts and never replies, a tunnel that died mid-handshake — parks
+        # the calling thread indefinitely, and the caller has no way to tell
+        # "slow" from "never". An error the user can read beats a spinner.
         return pymysql.connect(
             host=parsed.hostname or "localhost",
             port=parsed.port or 3306,
@@ -214,6 +224,15 @@ class MySQLConnector(Connector):
             password=unquote(parsed.password) if parsed.password else "",
             database=database,
             charset="utf8mb4",
+            connect_timeout=10,
+            read_timeout=60,
+            write_timeout=60,
+            # Query sessions never write, and a runaway SELECT is cancelled by
+            # the server (max_execution_time is in milliseconds).
+            init_command=(
+                "SET SESSION TRANSACTION READ ONLY, "
+                "SESSION max_execution_time = 60000"
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -236,8 +255,46 @@ class MySQLConnector(Connector):
             return self._execute_connectorx(plan)
         return self._execute_pymysql(plan)
 
+    def _preflight(self) -> None:
+        """Fail fast on an unreachable server or bad credentials.
+
+        connectorx's connection pool retries a *fatal* authentication error for
+        thirty seconds before giving up, and then reports "timed out waiting for
+        connection" with the real cause buried inside. PyMySQL returns
+        ``Access denied`` in about six milliseconds. So the first time this
+        process talks to a given DSN we open one cheap PyMySQL connection: a
+        credential or reachability problem surfaces immediately and truthfully,
+        and everything after that goes straight down the fast Arrow path.
+
+        Cached per DSN per process, so this costs one extra connect on first
+        contact, not one per query. A rotated password therefore still costs a
+        single slow failure before the cache entry is dropped — worth it to keep
+        the steady state free.
+
+        Never raises anything other than the driver's own error: if the
+        pre-flight fails for an unexpected reason (PyMySQL missing, say) we fall
+        through to connectorx rather than blocking a query that would work.
+        """
+        if self._dsn in _PREFLIGHT_OK:
+            return
+        try:
+            conn = self._connect_pymysql()
+        except AppError:
+            raise
+        except Exception as exc:
+            name = type(exc).__name__
+            # An operational error IS the answer we wanted — surface it now.
+            if name in ("OperationalError", "InternalError", "DatabaseError"):
+                _PREFLIGHT_OK.discard(self._dsn)
+                raise AppError("query_error", f"MySQL query failed: {exc}", status=500) from exc
+            return  # driver unavailable or something unexpected — let connectorx try
+        else:
+            conn.close()
+            _PREFLIGHT_OK.add(self._dsn)
+
     def _execute_connectorx(self, plan: PhysicalPlan) -> "pa.Table":
         """Run a no-params plan through connectorx (zero-copy Arrow)."""
+        self._preflight()
         cx = _import_connectorx()
         # SQL has no $N placeholders here (plan.params is empty), but a literal
         # statement may still be run verbatim.

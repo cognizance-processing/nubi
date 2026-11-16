@@ -58,10 +58,10 @@ Edit the fields and click **Save changes**. Members and viewers see a read-only 
 
 The **Danger zone** is visible only to owners and admins.
 
-Nubi blocks deletion while the org still has projects. The Delete button is disabled and you'll see: "This organisation has N projects. Delete all projects first." Once the org is empty:
+Deleting an organization also deletes all of its projects and everything in them.
 
 1. Click **Delete organisation**.
-2. A confirmation dialog shows the full impact. Type the org's **exact name** to confirm.
+2. A confirmation dialog shows the full impact (projects, connectors, boards, queries and so on). Type the org's **exact name** to confirm.
 3. Confirm. Nubi deletes the org and switches you to one of your remaining organizations.
 
 This cannot be undone.

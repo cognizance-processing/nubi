@@ -86,12 +86,20 @@ class Settings(BaseSettings):
 
     # ── Application URLs ─────────────────────────────────────────────────────
     FRONTEND_URL: str
+    # Public origin of THIS API (e.g. "https://api.example.com"), as remote
+    # clients reach it. It is the OAuth issuer and the MCP resource identifier
+    # that claude.ai / ChatGPT connect to, so it must be stable and match what
+    # users paste. Unset → derived from the request (fine for single-box
+    # setups; set it whenever a proxy rewrites the host or scheme).
+    PUBLIC_API_URL: str = ""
 
     # ── Superuser / seed admin ───────────────────────────────────────────────
     # The bootstrap admin account created by the DB reset/seed flow. Set these
     # in the root env file. Optional defaults so existing env still validates.
     SUPERUSER_EMAIL: str = "admin@nubi.dev"
-    SUPERUSER_PASSWORD: str = "nubi-admin-2026"
+    # No default: a known password on a privileged account is a standing
+    # credential. The seed script refuses to run without one.
+    SUPERUSER_PASSWORD: str = ""
     SUPERUSER_NAME: str = "Nubi Admin"
 
     # Comma-separated string in env (e.g. "http://a.com,http://b.com").
@@ -374,3 +382,24 @@ def get_settings() -> Settings:
     ``get_settings.cache_clear()`` in tests to reset.
     """
     return Settings()  # type: ignore[call-arg]
+
+
+def assert_production_secrets(settings: "Settings") -> None:
+    """Refuse to start a production deployment with a signing secret that is a
+    documented placeholder, a value from the public test suite, or obviously
+    not random.  Called once when the application is created.
+    """
+    if str(getattr(settings, "ENV", "")).lower() != "production":
+        return
+    secret = settings.JWT_SECRET
+    lowered = secret.lower()
+    markers = (
+        "replace-me", "replace_me", "changeme", "change-me", "change_me",
+        "your-secret", "your_secret", "example", "placeholder", "test-jwt-secret",
+        "secret-key", "dev-secret", "insecure",
+    )
+    if any(m in lowered for m in markers) or len(set(secret)) < 8:
+        raise RuntimeError(
+            "JWT_SECRET is a placeholder or not random. Generate one with: "
+            "python -c \"import secrets; print(secrets.token_hex(32))\""
+        )

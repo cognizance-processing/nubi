@@ -1,0 +1,32 @@
+[
+ {
+  "slug": "africa",
+  "label": "Africa",
+  "features": 51
+ },
+ {
+  "slug": "asia",
+  "label": "Asia",
+  "features": 47
+ },
+ {
+  "slug": "europe",
+  "label": "Europe",
+  "features": 39
+ },
+ {
+  "slug": "north-america",
+  "label": "North America",
+  "features": 18
+ },
+ {
+  "slug": "oceania",
+  "label": "Oceania",
+  "features": 7
+ },
+ {
+  "slug": "south-america",
+  "label": "South America",
+  "features": 13
+ }
+]

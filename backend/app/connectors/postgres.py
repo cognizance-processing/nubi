@@ -19,8 +19,11 @@ Design notes
   and closes it after use.  Connection pooling is deferred to M2/M9.
 - ``plan.params`` are passed as a list; ADBC maps them to ``$1``/``$2``
   positional placeholders as used by the Nubi planner's Postgres dialect.
-- ``execute_stream()`` reads one batch at a time via ``fetch_record_batch()``;
-  the batch size is controlled by the ADBC driver (default 1 024 rows).
+- ``execute_stream()`` iterates the ``RecordBatchReader`` returned by
+  ``fetch_record_batch()``; the batch size is controlled by the ADBC driver.
+- The DB-API layer lives in the ``adbc_driver_postgresql.dbapi`` submodule,
+  which must be imported explicitly — the package does not expose ``.dbapi``
+  as an attribute until then.
 """
 
 from __future__ import annotations
@@ -62,6 +65,30 @@ def _import_adbc() -> tuple[Any, Any]:
             ),
             status=500,
         ) from exc
+
+
+def _statement_timeout_ms() -> int:
+    """Per-statement time limit for query sessions (``NUBI_SQL_STATEMENT_TIMEOUT_S``, default 120s)."""
+    import os  # noqa: PLC0415
+
+    try:
+        seconds = float(os.environ.get("NUBI_SQL_STATEMENT_TIMEOUT_S", "120"))
+    except ValueError:
+        seconds = 120.0
+    return int(max(1.0, seconds) * 1000)
+
+
+def _guard_session(cur: Any) -> None:
+    """Make the session that is about to run a query read-only and time-limited.
+
+    Defence in depth behind the planner's read-only check: even SQL that got
+    past it cannot write, and a runaway statement is cancelled by the server.
+    The statements are plain ``SET``s, so they work through connection poolers
+    that refuse startup options.
+    """
+    cur.execute(f"SET statement_timeout = {_statement_timeout_ms()}")
+    cur.execute("SET TRANSACTION READ ONLY")
+    cur.execute("SET default_transaction_read_only = on")
 
 
 class PostgresConnector(Connector):
@@ -150,10 +177,11 @@ class PostgresConnector(Connector):
         _import_adbc()  # surface driver-unavailable early
 
         try:
-            import adbc_driver_postgresql
+            import adbc_driver_postgresql.dbapi as pg_dbapi
 
-            with adbc_driver_postgresql.dbapi.connect(self._dsn) as db_conn:
+            with pg_dbapi.connect(self._dsn) as db_conn:
                 with db_conn.cursor() as cur:
+                    _guard_session(cur)
                     cur.execute(plan.sql, plan.params if plan.params else None)
                     return cur.fetch_arrow_table()
         except AppError:
@@ -169,8 +197,9 @@ class PostgresConnector(Connector):
         """Execute *plan* and yield result data as a stream of RecordBatches.
 
         Opens a fresh ADBC connection, runs the SQL, and yields one
-        ``RecordBatch`` at a time via ``fetch_record_batch()``.  The
-        connection is closed after all batches have been consumed.
+        ``RecordBatch`` at a time from the reader ``fetch_record_batch()``
+        returns.  The connection is closed after all batches have been
+        consumed.
 
         Parameters
         ----------
@@ -191,16 +220,20 @@ class PostgresConnector(Connector):
         _import_adbc()  # surface driver-unavailable early
 
         try:
-            import adbc_driver_postgresql
+            import adbc_driver_postgresql.dbapi as pg_dbapi
 
-            with adbc_driver_postgresql.dbapi.connect(self._dsn) as db_conn:
+            with pg_dbapi.connect(self._dsn) as db_conn:
                 with db_conn.cursor() as cur:
+                    _guard_session(cur)
                     cur.execute(plan.sql, plan.params if plan.params else None)
-                    while True:
-                        batch = cur.fetch_record_batch()
-                        if batch is None or batch.num_rows == 0:
-                            break
-                        yield batch
+                    # fetch_record_batch() returns a RecordBatchReader (the
+                    # whole result), not a single batch.
+                    reader = cur.fetch_record_batch()
+                    if reader is None:
+                        return
+                    for batch in reader:
+                        if batch.num_rows:
+                            yield batch
         except AppError:
             raise
         except Exception as exc:

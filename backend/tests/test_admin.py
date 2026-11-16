@@ -149,6 +149,10 @@ async def admin_client(app, fake_db):
             return org_row if str(args[0]) == org_id else None
         if "FROM ORGS O" in q and "AS TOTAL" in q:
             return {"total": 1}
+        if "FROM ORG_MEMBERS OM" in q and "OM.ROLE" in q:
+            key = f"{args[0]}:{args[1]}"
+            row = fake_db.org_members.get(key)
+            return {"role": row["role"]} if row else None
         return None
 
     async def _fake_geo_lookup(ip: str | None) -> dict[str, Any] | None:
@@ -165,6 +169,7 @@ async def admin_client(app, fake_db):
     with (
         patch("app.routes.admin.fetch", side_effect=_admin_fetch),
         patch("app.routes.admin.fetchrow", side_effect=_admin_fetchrow),
+        patch("app.routes.admin.execute", side_effect=fake_db.fake_execute),
         patch("app.routes.admin.geo_module.lookup", side_effect=_fake_geo_lookup),
     ):
         transport = ASGITransport(app=app)
@@ -312,6 +317,68 @@ class TestAdminShapes:
         assert body["total_events"] == 5
         # The uncached IP returned by the fake was lazily passed to geo.lookup.
         assert ctx["geo_lookups"] == ["203.0.113.99"]
+
+
+# ---------------------------------------------------------------------------
+# 2b. POST /admin/orgs/{id}/enter — cross-tenant access grant
+# ---------------------------------------------------------------------------
+
+
+class TestAdminEnterOrg:
+    @pytest.mark.asyncio
+    async def test_403_for_normal_user(self, admin_client):
+        client, ctx = admin_client
+        resp = await client.post(
+            f"/api/v1/admin/orgs/{ctx['org_id']}/enter",
+            headers=_auth_headers(ctx["normal_id"]),
+        )
+        assert resp.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_404_unknown_org(self, admin_client):
+        client, ctx = admin_client
+        resp = await client.post(
+            f"/api/v1/admin/orgs/{uuid.uuid4()}/enter",
+            headers=_auth_headers(ctx["admin_id"]),
+        )
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_grants_membership_when_not_a_member(self, admin_client, fake_db):
+        client, ctx = admin_client
+        key = f"{ctx['org_id']}:{ctx['admin_id']}"
+        assert key not in fake_db.org_members
+
+        resp = await client.post(
+            f"/api/v1/admin/orgs/{ctx['org_id']}/enter",
+            headers=_auth_headers(ctx["admin_id"]),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body == {"org_id": ctx["org_id"], "role": "member", "granted_membership": True}
+
+        # A real membership row now exists — this is what makes the org show
+        # up in the superadmin's own GET /orgs afterward.
+        assert key in fake_db.org_members
+        assert fake_db.org_members[key]["role"] == "member"
+
+    @pytest.mark.asyncio
+    async def test_idempotent_when_already_a_member(self, admin_client, fake_db):
+        """Calling it twice — or being an existing member already — never
+        downgrades (or upgrades) the existing role."""
+        client, ctx = admin_client
+        key = f"{ctx['org_id']}:{ctx['admin_id']}"
+        fake_db.org_members[key] = {"org_id": ctx["org_id"], "user_id": ctx["admin_id"], "role": "owner"}
+
+        resp = await client.post(
+            f"/api/v1/admin/orgs/{ctx['org_id']}/enter",
+            headers=_auth_headers(ctx["admin_id"]),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body == {"org_id": ctx["org_id"], "role": "owner", "granted_membership": False}
+        # Unchanged, not silently reset to 'member'.
+        assert fake_db.org_members[key]["role"] == "owner"
 
 
 # ---------------------------------------------------------------------------

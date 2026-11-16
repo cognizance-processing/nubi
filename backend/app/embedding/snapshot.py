@@ -101,7 +101,7 @@ from typing import Any
 
 import logging
 
-from app.dashboards.collect import collect_board_data, spec_from_board
+from app.dashboards.collect import collect_board_data, resolve_board_spec, spec_from_board
 from app.errors import AppError
 from app.repos.provider import Repo
 
@@ -522,7 +522,7 @@ async def create_snapshot(
         "datastore": datastore,
         "schedule": schedule,
         "policy_fingerprint": fingerprint,
-        "spec": spec_from_board(board),
+        "spec": await resolve_board_spec(board, org_id, repo),
         "artifact": {
             "uri": artifact_uri,
             "format": "duckdb",
@@ -593,7 +593,7 @@ async def refresh_snapshot(
     descriptor = dict(existing)
     descriptor["refreshed_at"] = refreshed_at
     descriptor["policy_fingerprint"] = fingerprint
-    descriptor["spec"] = spec_from_board(board)
+    descriptor["spec"] = await resolve_board_spec(board, org_id, repo)
     descriptor["artifact"] = {
         "uri": artifact_uri,
         "format": "duckdb",

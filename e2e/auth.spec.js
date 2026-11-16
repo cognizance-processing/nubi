@@ -52,9 +52,9 @@ test('register a fresh random user → lands on an authed route', async ({ page 
 
   await page.goto('/register')
 
-  await page.locator('#name').fill('E2E Tester')
-  await page.locator('#orgName').fill('E2E Org')
-  await page.locator('#projectName').fill('E2E Project')
+  await page.getByLabel('Full name', { exact: true }).fill('E2E Tester')
+  await page.getByLabel('Organization', { exact: true }).fill('E2E Org')
+  await page.getByLabel('First project', { exact: true }).fill('E2E Project')
   await page.locator('input[type="email"]').fill(email)
   await page.locator('input[type="password"]').fill(password)
   await page.locator('button[type="submit"]').click()
@@ -70,8 +70,8 @@ test('register a fresh random user → lands on an authed route', async ({ page 
 // Register page is reachable from the login page
 // ---------------------------------------------------------------------------
 
-test('login page has a "Create one" link that goes to /register', async ({ page }) => {
+test('login page links to /register', async ({ page }) => {
   await page.goto('/login')
-  await page.getByRole('link', { name: /create one/i }).click()
+  await page.getByRole('link', { name: /start free/i }).click()
   await expect(page).toHaveURL(/\/register/)
 })

@@ -39,13 +39,23 @@ Public API
 
 from __future__ import annotations
 
+import base64
+import copy
+import functools
+import hashlib
 import json
 import os
+import re
 import subprocess
 import threading
 from typing import Any
 
-from app.dashboards.spec import DashboardSpec, get_surface_layout
+from app.dashboards.spec import (
+    DashboardSpec,
+    effective_placement,
+    get_surface_layout,
+    validate_spec,
+)
 from app.errors import AppError
 
 # ---------------------------------------------------------------------------
@@ -56,6 +66,25 @@ _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 _REPO_ROOT = os.path.dirname(_BACKEND_ROOT)
 _ECHARTS_SSR_SCRIPT = os.path.join(_REPO_ROOT, "scripts", "render", "echarts-ssr.mjs")
 _SVG_COMPOSER_SCRIPT = os.path.join(_REPO_ROOT, "scripts", "render", "svg-composer.mjs")
+
+
+@functools.lru_cache(maxsize=1)
+def renderer_fingerprint() -> str:
+    """Short hash of the renderer's own source (this module + both Node scripts).
+
+    A stored render is only valid for the renderer that produced it: a palette,
+    layout or chart fix changes the picture without changing the board spec.
+    Folding this into the stored thumbnail key means any renderer change makes
+    old renders unreachable instead of serving them indefinitely.
+    """
+    h = hashlib.sha256()
+    for path in (os.path.abspath(__file__), _ECHARTS_SSR_SCRIPT, _SVG_COMPOSER_SCRIPT):
+        try:
+            with open(path, "rb") as fh:
+                h.update(fh.read())
+        except OSError:
+            h.update(path.encode("utf-8"))
+    return h.hexdigest()[:12]
 
 # Default page geometry (mirrors svg-composer.mjs defaults).
 _DEFAULT_PAGE_WIDTH_PX = 1200
@@ -172,6 +201,46 @@ def renderer_available() -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _json_default(o: Any) -> Any:
+    """Coerce driver-native values into something JSON (and ECharts) can take.
+
+    Widget rows arrive straight off the database driver, so they carry real
+    Python objects — ``datetime.date`` for a day axis, ``Decimal`` for a numeric
+    column, occasionally ``UUID``/``bytes``. Plain ``json.dumps`` raises
+    ``TypeError: Object of type date is not JSON serializable`` on the first of
+    those, which surfaced as a **500 on any board with a date axis** (and took
+    the PDF export down the same way). It went unnoticed because boards whose SQL
+    already ``CAST(... AS CHAR)``s its date axis hand over plain strings.
+
+    Decimal → float, not str: it is a MEASURE, and a stringified number would be
+    plotted by ECharts as a category. Dates → ISO strings, which is what a
+    category axis wants anyway.
+    """
+    import datetime as _dt  # noqa: PLC0415
+    import decimal as _dec  # noqa: PLC0415
+    import uuid as _uuid  # noqa: PLC0415
+
+    if isinstance(o, _dec.Decimal):
+        # float() can lose precision on absurd scales, but a chart pixel cannot
+        # express it anyway — and NaN/Inf would break json.dumps, so guard.
+        try:
+            f = float(o)
+        except (ValueError, OverflowError):
+            return str(o)
+        return f if f == f and f not in (float("inf"), float("-inf")) else str(o)
+    if isinstance(o, (_dt.datetime, _dt.date, _dt.time)):
+        return o.isoformat()
+    if isinstance(o, _dt.timedelta):
+        return o.total_seconds()
+    if isinstance(o, _uuid.UUID):
+        return str(o)
+    if isinstance(o, (bytes, bytearray, memoryview)):
+        return bytes(o).decode("utf-8", "replace")
+    if isinstance(o, set):
+        return list(o)
+    return str(o)
+
+
 def _run_node_script(
     script_path: str,
     payload: dict[str, Any],
@@ -202,7 +271,7 @@ def _run_node_script(
     node_bin = _require_node()
     _require_script(script_path)
 
-    input_bytes = json.dumps(payload).encode("utf-8")
+    input_bytes = json.dumps(payload, default=_json_default).encode("utf-8")
     try:
         with _NODE_SEMAPHORE:
             result = subprocess.run(
@@ -267,6 +336,166 @@ def _run_node_script(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_stepper_step(
+    widget: Any,
+    data_by_widget: dict[str, dict[str, Any]],
+) -> tuple[Any, dict[str, Any] | None]:
+    """For a ``stepper``, return its first step's widget + that child's data.
+
+    A stepper is a container: it holds several widgets and shows one at a time,
+    so it has no content of its own to draw. The first step is what a viewer
+    sees when the board loads, which makes it the honest thing to put in a
+    static picture.
+
+    The child keeps its own id (that is how its data was collected) but has no
+    position — it occupies the parent's tile — so the caller renders it at the
+    stepper's rect. Anything else, or a malformed/empty stepper, passes through
+    untouched.
+    """
+    if getattr(widget, "type", None) != "stepper":
+        return widget, data_by_widget.get(widget.id)
+
+    props = getattr(widget, "props", None) or {}
+    steps = props.get("steps") if isinstance(props, dict) else None
+    if not isinstance(steps, list) or not steps:
+        return widget, data_by_widget.get(widget.id)
+
+    first = steps[0]
+    child = first.get("widget") if isinstance(first, dict) else None
+    if not isinstance(child, dict):
+        return widget, data_by_widget.get(widget.id)
+
+    # The child's data was collected under the CHILD's id, but everything
+    # downstream — the layout map and the composer's svg-by-id merge — is keyed
+    # by the PARENT's id, since the parent is the widget with a position. So
+    # look the data up by the child's id, then render it under the parent's.
+    child_data = data_by_widget.get(str(child.get("id") or ""))
+
+    # Children are plain dicts inside props (the Widget model treats props as an
+    # opaque pass-through), so validate to the same model the renderer expects.
+    try:
+        from app.dashboards.spec import Widget  # noqa: PLC0415
+
+        child_spec = dict(child)
+        child_spec["id"] = widget.id
+        # Widget requires a position; the caller overrides the rect anyway.
+        child_spec.setdefault("pos", {"x": 1, "y": 1, "w": 1, "h": 1})
+        child_widget = Widget.model_validate(child_spec)
+    except Exception:  # noqa: BLE001 - an unparseable child just isn't drawn
+        return widget, data_by_widget.get(widget.id)
+
+    return child_widget, child_data
+
+
+# Matches the exact shape `POST /images` and friends hand back (see
+# app/routes/images.py) — a bare `uuid4().hex`, never a path with `..` etc.
+_LOCAL_IMAGE_URL_RE = re.compile(r"^/api/v1/images/([0-9a-fA-F]{32})$")
+
+
+def _resolve_image_data_uri(url: str) -> str | None:
+    """Inline a ``/api/v1/images/{id}`` URL as a data: URI for export rendering.
+
+    Thumbnails and PDFs are standalone SVGs with no browser origin. An
+    ``<image href="/api/v1/images/...">`` would not resolve when the SVG is
+    viewed outside the app (Node SSR never fetches relative URLs either), so
+    stored branding bytes are read here and embedded.
+
+    Image widgets may show other URLs at runtime (static paste, query cells with
+    ``https://…``), but only paths matching ``_LOCAL_IMAGE_URL_RE`` are
+    inlined. Other URLs return ``None``; the caller leaves a non-data URI and
+    the SSR composer shows the usual placeholder. Server-side fetch of arbitrary
+    export URLs would need the same SSRF guard as
+    ``fetch_image_from_url`` — out of scope for this helper.
+    """
+    m = _LOCAL_IMAGE_URL_RE.match((url or "").strip())
+    if not m:
+        return None
+    try:
+        from app.dashboards.images import load_image  # noqa: PLC0415
+
+        data, content_type = load_image(m.group(1))
+    except Exception:  # noqa: BLE001 - a missing/broken image just isn't drawn
+        return None
+    return f"data:{content_type};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _query_cell(
+    props: dict[str, Any],
+    encoding: dict[str, Any],
+    columns: list[str],
+    rows: list[list[Any]],
+) -> str:
+    """The ``encoding.value`` cell at ``props.row`` as a trimmed string.
+
+    Row rule shared by query-mode ``image`` and ``text`` widgets (ImageWidget.tsx,
+    textQuery.ts): default 0, negative → 0, and a row past the end yields
+    ``""`` — never another row's value. Returns ``""`` when nothing resolves.
+    """
+    col = encoding.get("value")
+    if not isinstance(col, str) or not col or col not in columns or not rows:
+        return ""
+    raw_row = props.get("row")
+    if isinstance(raw_row, bool):
+        row = 0
+    elif isinstance(raw_row, int):
+        row = raw_row
+    elif isinstance(raw_row, float) and raw_row.is_integer():
+        row = int(raw_row)
+    else:
+        row = 0
+    row = max(row, 0)
+    if row >= len(rows):
+        return ""
+    record = rows[row]
+    idx = columns.index(col)
+    if not isinstance(record, (list, tuple)) or idx >= len(record):
+        return ""
+    value = record[idx]
+    return "" if value is None else str(value).strip()
+
+
+def _image_effective_url(
+    props: dict[str, Any],
+    encoding: dict[str, Any],
+    columns: list[str],
+    rows: list[list[Any]],
+) -> str:
+    """The URL an ``image`` widget actually shows.
+
+    ``props.source == 'query'`` reads the query cell (see :func:`_query_cell`);
+    anything else is the static ``props.url``. Returns ``""`` when nothing
+    resolves.
+    """
+    if props.get("source") != "query":
+        return str(props.get("url") or "")
+    return _query_cell(props, encoding, columns, rows)
+
+
+def _text_effective_content(
+    widget_spec: Any,
+    props: dict[str, Any],
+    columns: list[str],
+    rows: list[list[Any]],
+) -> str | None:
+    """The text a ``text`` widget actually shows.
+
+    Static: the markdown ``content``. Query (``props.source == 'query'``):
+    ``prefix + cell + suffix`` as plain text, or ``""`` when the cell is empty
+    or the row is out of range (same rule as TextWidget.tsx).
+    """
+    if props.get("source") != "query":
+        return widget_spec.content
+    cell = _query_cell(props, dict(widget_spec.encoding or {}), columns, rows)
+    if not cell:
+        return ""
+    prefix = props.get("prefix")
+    suffix = props.get("suffix")
+    return (
+        f"{prefix if isinstance(prefix, str) else ''}{cell}"
+        f"{suffix if isinstance(suffix, str) else ''}"
+    )
+
+
 def _widget_to_payload(
     widget_spec: Any,
     widget_data: dict[str, Any] | None,
@@ -297,13 +526,33 @@ def _widget_to_payload(
         columns = list(widget_data.get("columns") or [])
         rows = list(widget_data.get("rows") or [])
 
+    props = dict(widget_spec.props or {})
+    if widget_spec.type == "image":
+        # Only the app's own image store is inlined. Anything else (external
+        # URL, data:, javascript:, junk from a query cell) becomes "" so the
+        # SSR composer draws its placeholder — never a caller-supplied data:.
+        url = _image_effective_url(
+            props, dict(widget_spec.encoding or {}), columns, rows
+        )
+        props["url"] = _resolve_image_data_uri(url) or ""
+
     return {
         "id": widget_spec.id,
         "type": widget_spec.type,
         "chart_type": widget_spec.chart_type,
         "encoding": dict(widget_spec.encoding or {}),
-        "props": dict(widget_spec.props or {}),
-        "content": widget_spec.content,
+        "props": props,
+        "config": dict(widget_spec.config or {}),
+        # The widget's own look — background, text colour, radius. Omitting this
+        # was why every server render came out light: a board styled with dark
+        # tiles rendered on the SSR default white, so the picture was accurate
+        # about the DATA and wrong about the DESIGN.
+        "style": dict(widget_spec.style or {}),
+        "content": (
+            _text_effective_content(widget_spec, props, columns, rows)
+            if widget_spec.type == "text"
+            else widget_spec.content
+        ),
         "columns": columns,
         "rows": rows,
         "width": width,
@@ -318,6 +567,7 @@ def _widget_to_payload(
 
 def render_widgets_svg(
     widget_payloads: list[dict[str, Any]],
+    theme: str = "light",
     *,
     timeout: float = 60.0,
 ) -> list[dict[str, Any]]:
@@ -338,10 +588,43 @@ def render_widgets_svg(
     """
     result = _run_node_script(
         _ECHARTS_SSR_SCRIPT,
-        {"widgets": widget_payloads},
+        {"widgets": widget_payloads, "theme": theme},
         timeout=timeout,
     )
     return list(result.get("widgets") or [])
+
+
+_PAGE_BG = {"light": "#ffffff", "dark": "#141518"}   # mirrors --surface in src/index.css
+
+
+def resolve_page_bg(spec: DashboardSpec, theme: str) -> str:
+    """The page background a render should paint — the board's own custom
+    background when it set one, else the generic theme default.
+
+    Mirrors ``backgroundToCss`` (src/dashboards/widgetHtml.js) enough to cover
+    what boards actually use: ``solid``/``transparent`` render exactly, a
+    ``gradient`` is approximated by its ``from`` colour (a plain SVG ``fill``
+    attribute can't reference a CSS gradient without a ``<linearGradient>``
+    def the composer doesn't have), and ``image``/``css``/unset fall back to
+    the theme default rather than guess at something unsafe to inline.
+    Deliberately does NOT port the near-white/near-gray theme-adapt swap
+    (``adaptBackgroundColor``) — a board's explicitly chosen colour is used
+    as authored.
+    """
+    bg = spec.background
+    default = _PAGE_BG.get(theme, _PAGE_BG["light"])
+    if not isinstance(bg, dict):
+        return default
+    bg_type = bg.get("type")
+    if bg_type == "transparent":
+        return default
+    if bg_type == "solid":
+        color = bg.get("color")
+        return color if isinstance(color, str) and color else default
+    if bg_type == "gradient":
+        color = bg.get("from")
+        return color if isinstance(color, str) and color else default
+    return default
 
 
 def compose_page_svg(
@@ -353,6 +636,7 @@ def compose_page_svg(
     row_height_px: int = _DEFAULT_ROW_HEIGHT_PX,
     margin_px: int = _DEFAULT_MARGIN_PX,
     gap_px: int = _DEFAULT_GAP_PX,
+    page_bg: str = "#ffffff",
     timeout: float = 30.0,
 ) -> dict[str, Any]:
     """Call the SVG-composer subprocess to assemble a full page SVG.
@@ -383,6 +667,7 @@ def compose_page_svg(
         "row_height_px": row_height_px,
         "margin_px": margin_px,
         "gap_px": gap_px,
+        "page_bg": page_bg,
         "widgets": surface_widgets,
     }
     return _run_node_script(_SVG_COMPOSER_SCRIPT, payload, timeout=timeout)
@@ -393,13 +678,97 @@ def compose_page_svg(
 # ---------------------------------------------------------------------------
 
 
+# Top-level spec keys that describe BEHAVIOUR, not the picture. A renderer draws
+# geometry; these have no pixels.
+_NON_VISUAL_SPEC_KEYS = ("variables",)
+
+
+def spec_for_render(spec_dict: dict[str, Any], *, fallback_title: str | None = None):
+    """Parse *spec_dict* into a DashboardSpec good enough to DRAW, or None.
+
+    The strict validator (``validate_spec``) is the wrong gate for a picture, and
+    using it as one had a visible cost: **every board with a filter lost its
+    thumbnail**. Filter boards carry ``spec.variables``, and real boards declare
+    e.g. ``variables[].type: "string"`` (or a filter ``subtype: "list"``) — values
+    the Pydantic schema rejects but the FRONTEND renderer happily ignores. Those
+    boards work perfectly in the app; they simply could not be validated, so they
+    could not be drawn.
+
+    Neither field has anything to do with the output: ``variables`` are filter
+    state, and a filter widget renders as a placeholder chip regardless of its
+    subtype. So when the whole spec won't validate, retry without the parts that
+    cannot affect pixels, and draw what's left.
+
+    This is deliberately a RENDERING concession, not a loosening of the product's
+    contract — a genuinely malformed spec still fails ``validate_spec`` and
+    ``POST /dashboards/validate``. The schema now accepts the specific forms
+    above (``"string"`` normalises to ``"text"``, ``"list"`` is a real subtype),
+    so this retry is the safety net for whatever drift comes next.
+
+    Returns ``None`` when even the geometry won't parse — callers should then
+    show a placeholder rather than a blank, which would be a convincing lie.
+    """
+    validated, _ = validate_spec(spec_dict)
+    if validated is not None:
+        return validated
+
+    if not isinstance(spec_dict, dict):
+        return None
+
+    probe = copy.deepcopy(spec_dict)
+    for key in _NON_VISUAL_SPEC_KEYS:
+        probe.pop(key, None)
+    for w in probe.get("widgets") or []:
+        # A filter draws as a chip; its subtype only decides how it BEHAVES.
+        if isinstance(w, dict) and w.get("type") == "filter":
+            w.pop("subtype", None)
+    if fallback_title and not probe.get("title"):
+        probe["title"] = fallback_title
+
+    validated, _ = validate_spec(probe)
+    return validated
+
+
+def widgets_for_tab(spec: DashboardSpec, tab_id: str | None = None) -> list[Any]:
+    """The widgets that belong on one tab — the SHARED partition contract.
+
+    Mirrors the frontend renderer exactly (SpecRenderer's tab partition, and
+    ``widgetsForTab`` in the editor):
+
+      - no tabs declared        → every widget (today's behaviour)
+      - widget.tab_id == tab    → in
+      - widget.tab_id is None   → belongs to the FIRST tab
+
+    Why this exists: ``render_board_svg`` used to iterate ``spec.widgets``
+    wholesale, so a tabbed board rendered EVERY tab stacked on top of itself.
+    Tabs reuse the same grid coordinates, so on a real 5-tab board
+    that meant 31 widgets fighting for the 9 widgets' worth of space a viewer
+    actually sees — five different widgets all at grid cell (1,1). It looked
+    like a layout engine bug; it was a missing partition. This affected the PDF
+    export too, not just thumbnails.
+    """
+    tabs = list(getattr(spec, "tabs", None) or [])
+    if not tabs:
+        return list(spec.widgets)
+    first_tab_id = getattr(tabs[0], "id", None)
+    effective = tab_id or first_tab_id
+    out = []
+    for w in spec.widgets:
+        wt = getattr(w, "tab_id", None)
+        if wt == effective or (wt is None and effective == first_tab_id):
+            out.append(w)
+    return out
+
+
 def render_board_svg(
     spec: DashboardSpec,
     widget_data: list[dict[str, Any]],
     *,
     surface: str = "grid",
+    tab_id: str | None = None,
+    theme: str = "light",
     page_width_px: int = _DEFAULT_PAGE_WIDTH_PX,
-    row_height_px: int = _DEFAULT_ROW_HEIGHT_PX,
+    row_height_px: int | None = None,
     margin_px: int = _DEFAULT_MARGIN_PX,
     gap_px: int = _DEFAULT_GAP_PX,
     ssr_timeout: float = 60.0,
@@ -454,8 +823,36 @@ def render_board_svg(
     """
     cols = int((spec.layout or {}).get("cols", 12))
 
+    # Honour the board's OWN row height. This used to always use the module
+    # default (120), so a board declaring the usual row_height=60 rendered at
+    # double height — every widget correctly placed relative to the others, but
+    # the whole board twice as tall as it looks in the app. An explicit caller
+    # argument still wins.
+    if row_height_px is None:
+        _layout_cfg = spec.layout or {}
+        _spec_rh = _layout_cfg.get("row_height")
+        _rh = int(_spec_rh) if _spec_rh else _DEFAULT_ROW_HEIGHT_PX
+
+        # Rows stack at (row_height + marginY), not at row_height — that is how
+        # react-grid-layout lays out the real board, so it is what the picture
+        # has to match. Taking row_height literally rendered a board declaring
+        # `row_height: 1, margin: [10, 10]` (an 11px pitch) as a 124px-tall
+        # sliver at 1000px wide: every widget correctly placed, but squeezed to
+        # ~8% of its true height and illegible.
+        _margin = _layout_cfg.get("margin")
+        _margin_y = (
+            int(_margin[1])
+            if isinstance(_margin, (list, tuple)) and len(_margin) > 1
+            else 0
+        )
+        row_height_px = _rh + _margin_y
+
     # 1. Resolve grid layout (backward-compatible accessor).
     layout = get_surface_layout(spec, surface)
+
+    # Partition to ONE tab — tabs share grid coordinates, so rendering them all
+    # stacks them (see widgets_for_tab).
+    tab_widgets = widgets_for_tab(spec, tab_id)
 
     # Index widget data by widget_id for quick lookup.
     data_by_widget: dict[str, dict[str, Any]] = {
@@ -470,7 +867,16 @@ def render_board_svg(
     payloads: list[dict[str, Any]] = []
     widget_layout_map: dict[str, dict[str, Any]] = {}
 
-    for widget in spec.widgets:
+    for widget in tab_widgets:
+        # A drawer/header widget can still carry a legacy `pos` (un-migrated
+        # boards keep the position a widget had before it was flagged
+        # `drawer=True`), so `layout.get(widget.id)` alone is not a reliable
+        # "is this on the grid?" check — it was letting filter chips the live
+        # app only ever shows inside the Filters drawer render inline on the
+        # grid instead (SpecRenderer.tsx's effectivePlacement does this same
+        # check before mounting a widget in the canvas).
+        if effective_placement(widget) != "grid":
+            continue
         # Only grid-placed widgets have a position in the surface layout.
         entry = layout.get(widget.id)
         if entry is None:
@@ -479,10 +885,15 @@ def render_board_svg(
         w_px = max(1, int(round(entry.w * col_w_px - gap_px)))
         h_px = max(1, int(entry.h * row_height_px - gap_px))
 
+        # A stepper shows one child at a time in its tile, so a static render
+        # draws the step a viewer sees on arrival — the first. Rendering the
+        # container itself would only ever produce an "unknown widget" chip.
+        render_spec, render_data = _resolve_stepper_step(widget, data_by_widget)
+
         payloads.append(
             _widget_to_payload(
-                widget,
-                data_by_widget.get(widget.id),
+                render_spec,
+                render_data,
                 width=w_px,
                 height=h_px,
             )
@@ -504,7 +915,7 @@ def render_board_svg(
         )
 
     # 3. Render per-widget SVGs via Node SSR.
-    rendered = render_widgets_svg(payloads, timeout=ssr_timeout)
+    rendered = render_widgets_svg(payloads, theme=theme, timeout=ssr_timeout)
 
     # 4. Merge layout + SVG for the composer.
     svg_by_id: dict[str, dict[str, Any]] = {r["id"]: r for r in rendered if "id" in r}
@@ -530,6 +941,7 @@ def render_board_svg(
         row_height_px=row_height_px,
         margin_px=margin_px,
         gap_px=gap_px,
+        page_bg=resolve_page_bg(spec, theme),
         timeout=compose_timeout,
     )
     return composed["svg"]
@@ -568,17 +980,21 @@ async def render_board_svg_from_data(
     str
         Composed page SVG string.
     """
-    from app.dashboards.collect import collect_board_data  # noqa: PLC0415
+    from app.dashboards.collect import collect_board_data, resolve_board_spec  # noqa: PLC0415
 
     board = await repo.get("boards", org_id, board_id)
     if board is None:
         raise AppError("board_not_found", f"Board {board_id!r} not found.", 404)
 
     # Parse spec (best-effort — fall back to empty spec on parse failure).
+    # resolve_board_spec, not a bare config.spec read: a widget with `ref` has
+    # no `type`/`chart_type`/`encoding` of its own — those only exist once
+    # resolved against the widgets library, and _widget_to_payload below reads
+    # them straight off the parsed Widget (an unresolved ref would render with
+    # type=None instead of a picture).
     from app.dashboards.spec import DashboardSpec, validate_spec  # noqa: PLC0415
 
-    config = board.get("config") or {}
-    spec_dict = config.get("spec") or {}
+    spec_dict = await resolve_board_spec(board, org_id, repo)
     parsed_spec, _ = validate_spec(spec_dict)
     if parsed_spec is None:
         # Unparseable spec — render a blank page.

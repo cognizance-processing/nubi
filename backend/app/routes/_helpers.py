@@ -132,18 +132,19 @@ async def resolved_ctx_default(
 ) -> tuple[str, str]:
     """FastAPI dependency: resolve ``(user_id, org_id)`` via ``get_user_org``.
 
-    Implements the default-org resolution: always uses the user's default
-    (first) org regardless of any ``X-Org-Id`` header.  This matches the
-    behaviour of the ``get_user_org`` / ``_get_user_org`` pattern used by
-    connectors, bridges, flows, mcp, jwt_issuers, etc.
+    Always uses the user's default (first) org, ignoring any ``X-Org-Id``.
 
-    IMPORTANT / SECURITY
-    --------------------
-    Use this dependency ONLY on handlers that currently call
-    ``get_user_org(str(user["id"]), repo)`` / ``_get_user_org(...)`` directly.
-    Do NOT use it to replace ``resolve_org_id`` call sites — those honour
-    ``X-Org-Id`` by design and switching them here would silently drop the
-    membership check, allowing cross-org access via header.
+    DEPRECATED — do not use on new routes, and it currently has no callers.
+    It was written to codify the ``get_user_org`` pattern that connectors,
+    bridges, flows, mcp, jwt_issuers and the rest once shared; that pattern
+    turned out to be a bug, not a convention. A user working in a non-default
+    workspace got the default workspace's data, and where the route paired it
+    with a ``*_default`` role guard the role was checked in the wrong org
+    entirely. Those routes now use ``resolved_ctx_scoped`` / ``resolve_org_id``.
+
+    Reach for this only if a route genuinely means "the caller's own default
+    org" regardless of where they are working — session bootstrap, onboarding —
+    and say why in the handler.
 
     Returns
     -------

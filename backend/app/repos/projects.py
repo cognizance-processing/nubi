@@ -15,6 +15,7 @@ that case (e.g. ``get_default_project`` returns ``None`` rather than raising).
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime
 from typing import Any
@@ -74,6 +75,14 @@ def _row_to_dict(record: Any) -> dict[str, Any]:
             row[key] = value.isoformat()
         elif isinstance(value, uuid.UUID):
             row[key] = str(value)
+    # asyncpg hands jsonb back as a JSON *string* (no codec is registered), so
+    # without this every read returned ``git`` as text — and the git routes,
+    # which require a dict, treated a connected project as not connected.
+    if isinstance(row.get("git"), str):
+        try:
+            row["git"] = json.loads(row["git"])
+        except ValueError:
+            pass
     return row
 
 

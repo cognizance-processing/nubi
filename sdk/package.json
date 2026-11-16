@@ -16,7 +16,7 @@
   ],
   "scripts": {
     "build": "vite build",
-    "test": "node --test src/index.test.mjs",
+    "test": "node --import tsx --test src/index.test.ts",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -30,6 +30,8 @@
     "apache-arrow": "^21.1.0"
   },
   "devDependencies": {
+    "tsx": "^4.23.12",
+    "typescript": "^6.0.3",
     "vite": "^7.3.1"
   }
 }

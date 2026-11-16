@@ -128,6 +128,7 @@ class InMemoryIssuersStore:
         org_id: str,
         *,
         name: str | None = None,
+        issuer: str | None = None,
         jwks_url: Any = _UNSET,
         static_jwks_json: Any = _UNSET,
         algorithms: list[str] | None = None,
@@ -148,6 +149,18 @@ class InMemoryIssuersStore:
         row = deepcopy(row)
         if name is not None:
             row["name"] = name
+        if issuer is not None and issuer != row["issuer"]:
+            # Mirror the (org_id, issuer) unique index.
+            if any(
+                r["org_id"] == str(org_id) and r["issuer"] == issuer
+                for rid, r in self._rows.items() if rid != str(issuer_id)
+            ):
+                from app.errors import AppError  # noqa: PLC0415
+
+                raise AppError(
+                    "issuer_exists", f"Issuer {issuer!r} is already configured for this org.", 409,
+                )
+            row["issuer"] = issuer
         if jwks_url is not _UNSET:
             row["jwks_url"] = jwks_url
         if static_jwks_json is not _UNSET:
@@ -205,6 +218,14 @@ class InMemoryIssuersStore:
             ):
                 return deepcopy(row)
         return None
+
+    async def list_enabled_by_iss(self, iss: str) -> list[JwtIssuerRow]:
+        """Every enabled row for *iss*, across orgs (to detect ambiguity)."""
+        return [
+            deepcopy(row)
+            for row in self._rows.values()
+            if row["issuer"] == iss and row["enabled"]
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +316,7 @@ class PgIssuersStore:
         org_id: str,
         *,
         name: str | None = None,
+        issuer: str | None = None,
         jwks_url: Any = _UNSET,
         static_jwks_json: Any = _UNSET,
         algorithms: list[str] | None = None,
@@ -316,6 +338,10 @@ class PgIssuersStore:
         if name is not None:
             sets.append(f"name = ${idx}")
             params.append(name)
+            idx += 1
+        if issuer is not None:
+            sets.append(f"issuer = ${idx}")
+            params.append(issuer)
             idx += 1
         if jwks_url is not _UNSET:
             sets.append(f"jwks_url = ${idx}")
@@ -356,7 +382,19 @@ class PgIssuersStore:
                 algorithms, audience, enabled, created_by, created_at, updated_at,
                 host_mode, org_claim
         """
-        row = await db_fetchrow(sql, *params)
+        try:
+            row = await db_fetchrow(sql, *params)
+        except Exception as exc:  # noqa: BLE001
+            _msg = str(exc).lower()
+            if issuer is not None and ("unique" in _msg or "duplicate" in _msg):
+                from app.errors import AppError  # noqa: PLC0415
+
+                raise AppError(
+                    "issuer_exists",
+                    f"Issuer {issuer!r} is already configured for this org.",
+                    409,
+                ) from exc
+            raise
         if row is None:
             return None
         return _pg_row_to_dict(row)
@@ -436,6 +474,23 @@ class PgIssuersStore:
         if row is None:
             return None
         return _pg_row_to_dict(row)
+
+    async def list_enabled_by_iss(self, iss: str) -> list[JwtIssuerRow]:
+        """Every enabled row for *iss*, across orgs (to detect ambiguity)."""
+        from app.db import fetch as db_fetch  # noqa: PLC0415
+
+        rows = await db_fetch(
+            """
+            SELECT id, org_id, name, issuer, jwks_url, static_jwks_json,
+                   algorithms, audience, enabled, created_by, created_at, updated_at,
+                   host_mode, org_claim
+            FROM jwt_issuers
+            WHERE issuer = $1 AND enabled = TRUE
+            LIMIT 2
+            """,
+            iss,
+        )
+        return [_pg_row_to_dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------

@@ -306,6 +306,12 @@ async def upsert_envelope(
         return dict(created), "created"
 
     # ── Repo-backed kinds (dashboard / query / connector) ──────────────────
+    if handler.resource == "datastores":
+        # An imported connector config is caller-supplied: same rules as the
+        # connector create/update routes.
+        from app.connectors.duckdb_conn import guard_datastore_config  # noqa: PLC0415
+
+        guard_datastore_config(fields.get("config"), org_id)
     if existing_id:
         existing = await repo.get(handler.resource, org_id, str(existing_id))
         # Connectors share ``datastores`` with internal bookkeeping rows; only

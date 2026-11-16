@@ -46,7 +46,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
-from app.auth.deps import current_user
+from app.auth.deps import current_user  # noqa: F401
+from app.auth.superadmin import require_superadmin
 from app.connectors.cache import (
     ContentAddressedCache,
     RedisCacheBackend,
@@ -95,7 +96,7 @@ def _rate_limits() -> dict[str, Any]:
 
 @router.get("/stats")
 async def ops_stats(
-    _user: dict[str, Any] = Depends(current_user),
+    _user: dict[str, Any] = Depends(require_superadmin),
 ) -> dict[str, Any]:
     """Return this worker's latency percentiles, cache stats, and rate limits."""
     cache = get_cache()

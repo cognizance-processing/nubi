@@ -257,14 +257,22 @@ def _bootstrap(registry: ConnectorRegistry) -> None:
     registry.register("ftp", lambda config: FTPConnector(config))
 
 
-def _pg_dsn_from_config(config: dict[str, Any]) -> str:
+def postgres_dsn(
+    config: dict[str, Any],
+    *,
+    default_port: int = 5432,
+    default_database: str = "postgres",
+    default_user: str = "postgres",
+) -> str:
     """Assemble a ``postgresql://`` DSN from a datastore config dict.
 
-    Shared by every Postgres wire-compatible engine (postgres, redshift,
-    cockroachdb, cloudsql).  Accepts either a pre-built ``dsn`` key (used
-    verbatim) or the individual host/port/database/user/password parts;
-    credentials are URL-encoded.  An optional ``sslmode`` is appended as a query
-    parameter.
+    The one builder for every Postgres wire-compatible engine (postgres,
+    redshift, cockroachdb, cloudsql) and every code path that opens one.
+    Accepts either a pre-built ``dsn`` key (used verbatim — it is checked by
+    the connector target guard) or the individual parts.  Each part is
+    validated or URL-encoded, so a value can only ever be what its field
+    says it is: the host is a host, the port a number, and the database name
+    cannot add connection parameters.
     """
     dsn = config.get("dsn")
     if dsn:
@@ -272,20 +280,31 @@ def _pg_dsn_from_config(config: dict[str, Any]) -> str:
 
     from urllib.parse import quote
 
-    host = config.get("host", "localhost")
-    port = config.get("port", 5432)
-    database = config.get("database") or config.get("dbname") or "postgres"
-    user = config.get("user") or config.get("username") or "postgres"
+    from app.connectors.ssrf import connection_host
+    from app.errors import AppError
+
+    host = connection_host(config.get("host"))
+    try:
+        port = int(config.get("port") or default_port)
+    except (TypeError, ValueError):
+        port = 0
+    if not 0 < port < 65536:
+        raise AppError("invalid_connector_config", "The port must be a number.", 400)
+    database = config.get("database") or config.get("dbname") or default_database
+    user = config.get("user") or config.get("username") or default_user
     password = config.get("password", "")
     sslmode = config.get("sslmode")
 
     userinfo = quote(str(user), safe="")
     if password:
         userinfo += ":" + quote(str(password), safe="")
-    dsn = f"postgresql://{userinfo}@{host}:{port}/{database}"
+    dsn = f"postgresql://{userinfo}@{host}:{port}/{quote(str(database), safe='')}"
     if sslmode:
-        dsn += f"?sslmode={sslmode}"
+        dsn += f"?sslmode={quote(str(sslmode), safe='')}"
     return dsn
+
+
+_pg_dsn_from_config = postgres_dsn
 
 
 def _mysql_dsn_from_config(config: dict[str, Any]) -> str:

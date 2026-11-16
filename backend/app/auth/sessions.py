@@ -230,6 +230,19 @@ async def revoke_family(family_id: str) -> None:
     )
 
 
+async def revoke_all_for_user(user_id: str) -> None:
+    """Revoke every live session of *user_id* (all devices, all families)."""
+    await execute(
+        """
+        UPDATE sessions
+        SET revoked_at = now()
+        WHERE user_id = $1::uuid
+          AND revoked_at IS NULL
+        """,
+        user_id,
+    )
+
+
 async def revoke_by_token(raw_token: str) -> None:
     """Revoke the session identified by *raw_token* and its entire family.
 

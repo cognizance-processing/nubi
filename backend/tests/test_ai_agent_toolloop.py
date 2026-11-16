@@ -130,14 +130,10 @@ class TestRealProviderToolLoop:
         assert "demo_revenue" in second_prompt
         assert "tool (list_metrics)" in second_prompt
 
-    def test_loop_tolerates_fenced_and_prose_wrapped_tool_call(self):
-        """A ```json fenced tool call surrounded by prose still parses + runs."""
-        fenced = (
-            "Sure, let me look that up.\n\n"
-            "```json\n"
-            + json.dumps({"tool": "list_metrics", "arguments": {}})
-            + "\n```\n"
-        )
+    def test_loop_accepts_a_fenced_tool_call_but_not_one_buried_in_prose(self):
+        """A reply that is exactly one (optionally fenced) tool call runs; a
+        tool call embedded in prose is a plain-text answer, never executed."""
+        fenced = "```json\n" + json.dumps({"tool": "list_metrics", "arguments": {}}) + "\n```"
         provider = FakeProvider([fenced, "Done."])
         result = run_agent(
             [{"role": "user", "content": "metrics please"}],
@@ -147,6 +143,17 @@ class TestRealProviderToolLoop:
         )
         assert [a["tool"] for a in result["actions"]] == ["list_metrics"]
         assert result["reply"] == "Done."
+
+        wrapped = "Sure, let me look that up.\n\n" + fenced + "\n"
+        provider = FakeProvider([wrapped, "unused"])
+        result = run_agent(
+            [{"role": "user", "content": "metrics please"}],
+            provider,
+            _empty_claims(),
+            max_steps=4,
+        )
+        assert result["actions"] == []
+        assert result["reply"].startswith("Sure, let me look that up.")
 
     def test_loop_hits_max_steps_and_terminates_gracefully(self):
         """A provider that always asks for a tool must stop at max_steps."""

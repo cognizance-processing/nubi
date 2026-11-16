@@ -42,6 +42,7 @@ generic ``/{resource}`` catch-all.
 
 from __future__ import annotations
 
+import uuid as _uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -49,6 +50,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
+from app.auth.scopes import caller_claims
 from app.auth.roles import require_writer
 from app.environments.store import get_env_store
 from app.errors import AppError
@@ -183,6 +185,27 @@ async def _require_env(env_id: str, org_id: str, env_store: Any) -> dict[str, An
     if not await projects_repo.project_belongs_to_org(env["project_id"], org_id):
         raise AppError("not_found", "Environment not found.", 404)
     return env
+
+
+def _is_promotable_query_id(value: str) -> bool:
+    """True when *value* could name a row in the ``queries`` table.
+
+    Widget ``query_id``s are not all persisted queries: the built-in demo/seed
+    queries live only in the runtime registry under plain-string ids like
+    ``demo_all`` (which is the DEFAULT query_id for every widget the editor
+    creates). ``Repo.get`` reads ``WHERE id = $1::uuid``, so handing it one of
+    those raises a Postgres invalid-uuid error rather than returning None —
+    which used to 500 the whole promote AFTER its pointers had already been
+    written, i.e. the publish silently half-succeeded and reported failure.
+
+    Non-uuid ids are skipped as dependencies: there is no row to version, and a
+    built-in query is available in every environment anyway.
+    """
+    try:
+        _uuid.UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return True
 
 
 def _collect_query_ids(node: Any) -> set[str]:
@@ -460,6 +483,7 @@ async def restore_version(
     version: int,
     request: Request,
     user: dict[str, Any] = Depends(current_user),
+    claims: dict[str, Any] = Depends(caller_claims),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Write a version's config back into the resource's draft definition."""
@@ -481,6 +505,15 @@ async def restore_version(
         )
     if updated is None:
         raise AppError("not_found", f"{kind.capitalize()} not found.", 404)
+    # A restore rewrites the board's draft just like a save does, so its card
+    # thumbnail is re-rendered the same way. (Promote needs no warm: it moves
+    # env pointers, and the card renders the draft row, which it leaves alone.)
+    if kind == "board":
+        # Lazy: importing resources at module load registers its catch-all
+        # /{resource}/{id} routes ahead of this router's /environments/{id}.
+        from app.routes.resources import _schedule_thumbnail_warm  # noqa: PLC0415
+
+        _schedule_thumbnail_warm(updated, org_id, claims, repo)
     return updated
 
 
@@ -586,6 +619,8 @@ async def promote(
     # ── Board: promote referenced queries too ────────────────────────────────
     if body.kind == "board" and body.include_dependencies:
         for query_id in sorted(_collect_query_ids((pinned or {}).get("config") or {})):
+            if not _is_promotable_query_id(query_id):
+                continue
             query_row = await repo.get("queries", org_id, query_id)
             if query_row is None:
                 continue

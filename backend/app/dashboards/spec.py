@@ -85,6 +85,17 @@ implemented in a LATER wave:
 
   SpecRenderer: groups widgets by ``widget.source.provider``, fetches each
                 provider once, then fans results to the bound widgets.
+
+Widget library references (reference-based widget reuse)
+----------------------------------------------------------
+A widget may be a REFERENCE (``Widget.ref`` set) instead of fully inline —
+see the ``Widget`` docstring and ``validate_spec`` steps 13-15 for the model
+and static-validation rules. Resolving a reference against the actual
+``widgets`` library rows (deep-merging ``overrides``, forcing board-local
+fields, degrading missing refs to a broken placeholder) is implemented in
+``app/dashboards/widget_refs.py`` (``resolve_widget_refs``) — kept out of this
+module because that resolver needs the caller's org-scoped library rows,
+which this file has no DB access to fetch.
 """
 
 from __future__ import annotations
@@ -92,7 +103,7 @@ from __future__ import annotations
 import html
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -108,10 +119,27 @@ class WidgetPos(BaseModel):
       w / h   — span in columns / rows.
     """
 
+    # Keep keys this model does not declare. Server-side paths (AI/MCP board
+    # edits, portability) persist ``model_dump()``, and the default
+    # ``extra="ignore"`` silently dropped editor fields the model had not caught
+    # up with yet (stylePreset, tab_bar, Tab.icon, Variable.url_bind, ...).
+    model_config = ConfigDict(extra="allow")
+
     x: int = Field(ge=1, description="Column start (1-based).")
     y: int = Field(ge=1, description="Row start (1-based).")
     w: int = Field(ge=1, description="Column span.")
     h: int = Field(ge=1, description="Row span.")
+
+    @field_validator("x", "y", mode="before")
+    @classmethod
+    def _clamp_legacy_zero_based_start(cls, v: Any) -> Any:
+        # Some imported boards carry 0-based starts (x/y = 0). The frontend's
+        # posToGridItem clamps with ``max(0, v - 1)``, so 0 draws exactly where
+        # 1 does — normalise to the same position instead of rejecting a board
+        # that renders fine.
+        if isinstance(v, int) and not isinstance(v, bool) and v < 1:
+            return 1
+        return v
 
 
 # ---------------------------------------------------------------------------
@@ -455,11 +483,26 @@ class Variable(BaseModel):
         Optional default value for the variable.
     """
 
+    # Keep keys this model does not declare. Server-side paths (AI/MCP board
+    # edits, portability) persist ``model_dump()``, and the default
+    # ``extra="ignore"`` silently dropped editor fields the model had not caught
+    # up with yet (stylePreset, tab_bar, Tab.icon, Variable.url_bind, ...).
+    model_config = ConfigDict(extra="allow")
+
     name: str = Field(min_length=1, description="Unique variable name.")
     type: Literal["text", "number", "date", "daterange", "select", "multiselect"] = (
         Field(description="Variable value type.")
     )
     default: Any = Field(default=None, description="Default value for the variable.")
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _legacy_string_type(cls, v: Any) -> Any:
+        # Imported boards declare ``type: "string"``. No renderer reads a
+        # variable's type (it only seeds the store from ``default``) and the
+        # editor shows an unknown type as ``text``, so treat it as that alias.
+        return "text" if v == "string" else v
+
     mode: Literal["scan", "slice"] | None = Field(
         default=None,
         description=(
@@ -492,6 +535,12 @@ class Tab(BaseModel):
         user-supplied colors/CSS flow through the sanitized ``tabStyleToCss``
         path on the frontend — never interpolated raw.
     """
+
+    # Keep keys this model does not declare. Server-side paths (AI/MCP board
+    # edits, portability) persist ``model_dump()``, and the default
+    # ``extra="ignore"`` silently dropped editor fields the model had not caught
+    # up with yet (stylePreset, tab_bar, Tab.icon, Variable.url_bind, ...).
+    model_config = ConfigDict(extra="allow")
 
     id: str = Field(min_length=1, description="Stable, unique tab id within the spec.")
     label: str = Field(min_length=1, description="Human-readable tab label.")
@@ -547,6 +596,44 @@ class MetricBinding(BaseModel):
     )
 
 
+_TOOLTIP_HTML_SINKS = (
+    "extraCssText", "className", "renderMode", "appendTo", "appendToBody",
+    "enterable", "alwaysShowContent",
+)
+
+
+def _scrub_chart_config(node: Any, _depth: int = 0) -> Any:
+    """Return *node* without the chart options that render as HTML/CSS (recursive)."""
+    if _depth > 12:
+        return node
+    if isinstance(node, list):
+        return [_scrub_chart_config(item, _depth + 1) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if key in ("link", "sublink") and isinstance(value, str):
+            if not value.strip().lower().startswith(("http://", "https://")):
+                continue
+        if key == "tooltip" and isinstance(value, dict):
+            tip = {
+                k: v
+                for k, v in value.items()
+                if k not in _TOOLTIP_HTML_SINKS
+                and not (k == "formatter" and isinstance(v, str))
+                and not (k == "position" and isinstance(v, str)
+                         and v not in ("inside", "top", "left", "right", "bottom"))
+            }
+            if isinstance(tip.get("textStyle"), dict):
+                tip["textStyle"] = {
+                    k: v for k, v in tip["textStyle"].items() if k not in ("rich", "formatter")
+                }
+            out[key] = _scrub_chart_config(tip, _depth + 1)
+            continue
+        out[key] = _scrub_chart_config(value, _depth + 1)
+    return out
+
+
 class Widget(BaseModel):
     """A single dashboard widget.
 
@@ -562,7 +649,9 @@ class Widget(BaseModel):
         a tab declared in ``spec.tabs`` (hard error otherwise).
     type:
         Widget kind — ``'kpi'``, ``'table'``, ``'chart'``, ``'filter'``,
-        or ``'text'``.
+        or ``'text'``.  ``None`` is only valid for a **reference** widget
+        (``ref`` set) — a plain inline widget must set ``type``
+        (``validate_spec`` step 13 enforces this).
     query_id:
         Registered query id that backs this widget (must exist in the
         registry).  Required for ``kpi``, ``table``, ``chart`` — UNLESS the
@@ -577,11 +666,17 @@ class Widget(BaseModel):
     chart_type:
         Chart variant — required when ``type == 'chart'``.  One of
         ``'line'``, ``'bar'``, ``'hbar'``, ``'scatter'``, ``'area'``,
-        ``'pie'``, ``'donut'``, ``'heatmap'``, ``'gauge'`` — the full set the
-        frontend chart renderer (``src/viz/chartOption.js``) supports.
+        ``'pie'``, ``'donut'``, ``'heatmap'``, ``'gauge'``, ``'combo'`` — the
+        full set the frontend chart renderer (``src/viz/chartOption.js``)
+        supports.
     encoding:
         Column encoding map.  For charts: ``x``, ``y`` (required), optionally
-        ``color``.  For KPI: ``value`` (alias for the value column).
+        ``color``.  For KPI: ``value`` (alias for the value column).  For
+        ``chart_type == 'combo'``: ``bars`` / ``lines`` are each a LIST of
+        column names (one series per entry) instead of a single string —
+        ``x``/``y`` are still required by validation, so combo widgets should
+        set ``y`` to one of the ``bars`` columns as well (harmless, unused by
+        the combo renderer, satisfies the generic chart-widget check).
     props:
         Arbitrary extra widget props (e.g. ``label``, ``limit``, ``format``).
     pos:
@@ -605,7 +700,9 @@ class Widget(BaseModel):
         not re-derive it. ``drawer`` / ``drawer_group`` keep working unchanged.
     subtype:
         Filter widget sub-type — ``'select'``, ``'multiselect'``,
-        ``'daterange'``, or ``'text'``.  Required when ``type == 'filter'``.
+        ``'daterange'``, ``'text'``, or ``'list'`` (an always-visible list
+        slicer, single-valued like ``'select'``).  Required when
+        ``type == 'filter'``.
     options_query_id:
         Registered query id that provides option values for a ``filter``
         widget of sub-type ``'select'`` or ``'multiselect'``.  Optional.
@@ -614,19 +711,67 @@ class Widget(BaseModel):
         ``type == 'filter'``.
     content:
         Markdown content for a ``text`` widget.  Required when
-        ``type == 'text'``.
+        ``type == 'text'``, unless ``props.source == 'query'`` (the text is
+        then read from the ``encoding.value`` cell at ``props.row``).
     params:
         Named parameter bindings for this widget.  Each value is either a
         ``{ref: '<varName>'}`` reference or a literal scalar.  Ref names must
         resolve to declared ``variables`` on the spec.
+    ref:
+        Id of a row in the org-scoped ``widgets`` library table (see
+        ``backend/app/routes/resources.py``).  When set, this widget is a
+        **reference** instance rather than a fully-inline widget: its
+        effective config is ``deep_merge(library_row.config, overrides)``
+        with the BOARD-LOCAL fields (``id``, ``pos``, ``tab_id``,
+        ``placement``, ``order``, ``drawer``, ``drawer_group``) always taken
+        from THIS spec entry, never from the library row. See
+        ``app.dashboards.widget_refs.resolve_widget_refs`` for the resolver.
+        ``ref`` and any non-board-local inline field (``type``, ``query_id``,
+        ``metric``, ``chart_type``, ``encoding``, ``props``, ``style``, ``config``,
+        ``subtype``, ``options_query_id``, ``target_var``, ``content``,
+        ``params``, ``filters``, ``source``) are mutually exclusive — setting both is a
+        hard validation error (``validate_spec`` step 14). A ``ref`` that
+        does not resolve to a live library row is a soft WARNING (mirrors the
+        ``query_id`` forward-ref rule) — the resolver degrades to a visible
+        broken placeholder rather than crashing.
+    overrides:
+        Sparse instance-level overrides merged onto the library row's config
+        when ``ref`` is set (ignored — and a soft WARNING — when ``ref`` is
+        ``None``).  Only keys present in ``overrides`` win; dict-valued keys
+        (e.g. ``encoding``, ``props``, ``style``, ``params``) are merged
+        key-by-key (recursively), and list values REPLACE the library value
+        wholesale rather than concatenating.
     """
 
+    # Keep keys this model does not declare. Server-side paths (AI/MCP board
+    # edits, portability) persist ``model_dump()``, and the default
+    # ``extra="ignore"`` silently dropped editor fields the model had not caught
+    # up with yet (stylePreset, tab_bar, Tab.icon, Variable.url_bind, ...).
+    model_config = ConfigDict(extra="allow")
+
     id: str = Field(min_length=1)
-    type: Literal[
-        "kpi", "table", "chart", "filter", "text",
-        # Extended widget types (rendered by the frontend SpecRenderer):
-        "metric", "pivot", "section", "html",
-    ]
+    type: (
+        Literal[
+            "kpi", "table", "chart", "filter", "text",
+            # Extended widget types (rendered by the frontend SpecRenderer):
+            "metric", "pivot", "section", "html", "image",
+            # Presentational / navigation widgets carried over from the legacy
+            # estate: a standalone rule, a live "reporting period" caption, and
+            # a drill-path trail over dashboard variables.
+            "divider", "datedisplay", "breadcrumb",
+            # Container: shows one child widget at a time in a single tile, with a
+            # step bar. Children are full widget specs under props.steps[].widget
+            # and carry no pos of their own.
+            "stepper",
+        ]
+        | None
+    ) = Field(
+        default=None,
+        description=(
+            "Widget kind. Required for an inline widget; None is only valid "
+            "for a reference widget (ref set) — see validate_spec step 13."
+        ),
+    )
     tab_id: str | None = Field(
         default=None,
         description=(
@@ -636,6 +781,16 @@ class Widget(BaseModel):
         ),
     )
     query_id: str = Field(default="", description="Backing query id (empty for text widgets).")
+
+    @field_validator("query_id", mode="before")
+    @classmethod
+    def _query_id_none_to_empty(cls, v: Any) -> Any:
+        # The filter-authoring UI writes an explicit `query_id: null` on a
+        # filter widget (it binds via `options_query_id` instead) rather than
+        # omitting the key — plain-`str` rejects that at parse time, which
+        # took down `spec_for_render` (and therefore the server-rendered
+        # thumbnail/PDF pipeline) for every board with a wired-up filter.
+        return "" if v is None else v
     metric: MetricBinding | None = Field(
         default=None,
         description=(
@@ -643,12 +798,84 @@ class Widget(BaseModel):
             "query_id for rendering (the embed renderer reads the metric-* attrs)."
         ),
     )
+    # Kept in step with SUPPORTED_TYPES in embed/widgets/chart-options.js (the
+    # renderer is the source of truth). This list had drifted behind the
+    # renderer, so specs using a real-but-unlisted type failed the optional
+    # /dashboards/validate oracle even though they rendered fine.
+    # 'hbar' is legacy-only: the renderer has no such case and falls through to
+    # scatter — use 'bar' + config.orientation='horizontal'.
     chart_type: (
-        Literal["line", "bar", "hbar", "scatter", "area", "pie", "donut", "heatmap", "gauge"]
+        Literal[
+            "line", "bar", "hbar", "scatter", "area", "pie", "donut", "heatmap",
+            "gauge", "combo", "bubble", "sankey", "funnel", "waterfall", "radar",
+            "treemap", "boxplot", "candlestick", "fan", "map",
+            "polar", "radialbar",
+        ]
         | None
     ) = None
-    encoding: dict[str, str] = Field(default_factory=dict)
+    # Most encodings map a channel to a single column name (str). chart_type
+    # 'combo' is the one exception: its 'bars'/'lines' channels each take a
+    # LIST of column names (one series per column) — see buildCombo in
+    # embed/widgets/chart-options.js.
+    encoding: dict[str, str | list[str]] = Field(default_factory=dict)
+
+    @field_validator("encoding", mode="before")
+    @classmethod
+    def _drop_null_channels(cls, v: Any) -> Any:
+        # Imported boards write unmapped channels as ``"x": null``. The chart
+        # builder treats a null channel exactly like an absent one (it falls
+        # back to the result's leading columns), so drop it rather than reject
+        # the board. A missing required channel is still reported by step 3.
+        if isinstance(v, dict):
+            return {k: val for k, val in v.items() if val is not None}
+        return v
     props: dict[str, Any] = Field(default_factory=dict)
+    config: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Chart-specific rendering options (palette, legend, stack, "
+            "gaugeStyle, min/max, …). An opaque pass-through, exactly like "
+            "`props`/`style`: the frontend chart builder "
+            "(embed/widgets/chart-options.js) owns the vocabulary. "
+            "Added because the model was silently DROPPING this field the same "
+            "way it once dropped `style`: the frontend has written "
+            "widget.config for custom palettes/legends for a long time, so "
+            "every server-side render (thumbnail, PDF) fell back to the "
+            "generic default palette and a flat single colour regardless of "
+            "what the author configured."
+        ),
+    )
+
+    @field_validator("config", mode="before")
+    @classmethod
+    def _drop_rendered_html(cls, v: Any) -> Any:
+        """Remove options a chart library would render as HTML or CSS.
+
+        ``config`` is otherwise an opaque pass-through owned by the frontend
+        chart builder, but a spec is data that travels (imports, API writes,
+        generated boards) and a tooltip is rendered as markup in the viewer's
+        page.  The same rule is applied again in the browser
+        (``scrubRenderedHtml`` in embed/widgets/chart-options.ts); this keeps
+        such values out of stored specs and server-side renders too.
+        """
+        return _scrub_chart_config(v)
+    style: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Per-widget presentation (background, color, border, boxShadow, "
+            "backdropFilter, …). An opaque pass-through, exactly like `props`: "
+            "the frontend owns the vocabulary and sanitises it (styleToCss + the "
+            "style whitelist), so this model must not try to type it. "
+            "Values are commonly CSS theme TOKENS (`var(--surface)`) rather than "
+            "fixed colours, because a board is authored once to look right in "
+            "both light and dark — anything rendering a board outside the browser "
+            "has to resolve them itself (see svg_render THEME_TOKENS). "
+            "Added because the model was silently DROPPING this field: the "
+            "frontend has written widget.style for a long time, so every "
+            "server-side render (thumbnail, PDF) came out unstyled — accurate "
+            "about the data, wrong about the design."
+        ),
+    )
     pos: WidgetPos | None = Field(
         default=None,
         description=(
@@ -685,7 +912,7 @@ class Widget(BaseModel):
     )
     order: int = Field(default=0, description="Sort order within a drawer.")
     # filter-specific fields
-    subtype: Literal["select", "multiselect", "daterange", "text"] | None = Field(
+    subtype: Literal["select", "multiselect", "daterange", "text", "list"] | None = Field(
         default=None,
         description="Filter sub-type (required for filter widgets).",
     )
@@ -700,13 +927,36 @@ class Widget(BaseModel):
     # text-specific fields
     content: str | None = Field(
         default=None,
-        description="Markdown content for text widgets.",
+        description=(
+            "Markdown content for text widgets. Not required when "
+            "props.source='query' (text then comes from a query cell)."
+        ),
     )
     # variable binding
     params: dict[str, Any] = Field(
         default_factory=dict,
         description=(
             "Named param bindings: {paramName: {ref:'<varName>'} | <literal>}."
+        ),
+    )
+    # ── Column-based filter binding (no {{param}} declaration required) ───────
+    # `params` only works when this widget's query already declares a matching
+    # {{param}} — connecting a filter to a query that doesn't (the common case
+    # on a converted board: 0/1097 queries had params) used to be a dead end
+    # short of rewriting the query's SQL (see app.queries.parameterize). This
+    # binds a filter variable straight to a COLUMN instead: the backend planner
+    # (app.connectors.planner.apply_dashboard_filters) resolves *column* against
+    # every scope of the query at RUNTIME via an estate-wide catalog, including
+    # scopes the query's own SQL never mentions the column in (an aggregate-only
+    # KPI subquery, for instance) — no SQL mutation, no author action beyond
+    # picking the column.
+    filters: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Column-based filter bindings: {varName: 'columnName'}. When "
+            "varName's value changes, this widget's query is filtered on "
+            "columnName via runtime AST injection (POST /query's `filters`), "
+            "independent of whether the query declares a matching {{param}}."
         ),
     )
     # ── DataProvider binding (BET-3, alternative to query_id / metric) ────────
@@ -719,6 +969,117 @@ class Widget(BaseModel):
             "DataProvider binding (BET-3). When set, this widget's data comes "
             "from the referenced provider result instead of query_id / metric. "
             "A widget may set at most one of: non-empty query_id, metric, source."
+        ),
+    )
+    # ── Library reference (widget reuse with instance-level overrides) ────────
+    # A widget may be EITHER inline (as today) OR a reference: ref + overrides
+    # replace every other inline field. See app.dashboards.widget_refs for the
+    # resolver and validate_spec steps 13-15 for the validation rules.
+    ref: str | None = Field(
+        default=None,
+        description=(
+            "Id of a `widgets` library row (backend/app/routes/resources.py). "
+            "When set, this widget's effective config is resolved from the "
+            "library row + overrides — see app.dashboards.widget_refs. "
+            "Mutually exclusive with the inline widget fields (validate_spec "
+            "step 14)."
+        ),
+    )
+    overrides: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Sparse instance-level overrides merged onto the library row's "
+            "config when ref is set (deep_merge: only keys present here win, "
+            "nested dicts merge key-by-key, lists replace wholesale). Ignored "
+            "— and a soft warning — when ref is None."
+        ),
+    )
+
+    # ── Presentation/behaviour fields the EDITOR writes and the RENDERER reads ──
+    #
+    # Everything below was already being authored by the editor UI and consumed
+    # by the widget components, but was never declared here — so every path that
+    # round-trips a spec through this model (``validate_spec`` →
+    # ``model_dump()``: the MCP save/update/edit tools, and the server-side
+    # thumbnail/PDF renderers) silently DISCARDED them. A board edited through
+    # MCP came back with its click-to-filter and its conditional formatting
+    # gone, reported as ``valid: true`` with no issues.
+    #
+    # This is the fourth time this exact thing has happened on this model —
+    # ``style``, ``Widget.config`` and ``DashboardSpec.background`` each had to
+    # be added back for the same reason. The rule the omissions keep breaking:
+    # if the frontend reads ``widget.<x>``, ``<x>`` belongs here, even when the
+    # backend itself never looks at it. These are opaque pass-throughs; the
+    # frontend owns each vocabulary and sanitises it, so they stay loosely
+    # typed rather than modelled here.
+    columnFormats: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Per-column value formatting for table/pivot widgets — "
+            "{column: {type, decimals, currency, bar, ...}}. Consumed by "
+            "formatValue() in src/dashboards/widgets/conditionalFormat.js."
+        ),
+    )
+    columnLabels: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Per-column header text for table/pivot widgets — {column: 'Label'}. "
+            "Absent columns fall back to a humanised form of the column name "
+            "(see src/dashboards/columnLabels.js), so a board reads as a report "
+            "rather than a query result even with no authoring. An explicit "
+            "empty string blanks a header deliberately."
+        ),
+    )
+    formattingRules: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Conditional cell/row styling for table widgets — a list of "
+            "{column, op, value, value2?, style, scope} rules evaluated by "
+            "evalRules(). This is what paints a failing metric red."
+        ),
+    )
+    onClick: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Click behaviour for a data widget — {setVar, valueField, setVars, "
+            "navigateTab, stepNext, trigger}. Publishes the clicked row/point "
+            "as board variables (the cross-filter bus), so one widget can drive "
+            "the rest of the board with no extra query."
+        ),
+    )
+    drilldown: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Legacy click-to-filter shape — {target_var, value_field}. Still "
+            "read by TableWidget alongside the newer `onClick`."
+        ),
+    )
+    signalRules: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Threshold colouring for KPI widgets (also accepted at "
+            "props.signalRules). Same rule vocabulary as formattingRules."
+        ),
+    )
+    hidden: list[str] | None = Field(
+        default=None,
+        description=(
+            "Breakpoint tokens ('lg' | 'md' | 'sm') at which this widget is not "
+            "rendered — see src/dashboards/responsiveLayout.js."
+        ),
+    )
+    title: str | None = Field(
+        default=None,
+        description=(
+            "Widget title. Section widgets fall back to it when props.title is "
+            "absent, and the editor uses it to label the widget in its lists."
+        ),
+    )
+    html: str | None = Field(
+        default=None,
+        description=(
+            "Custom HTML template for an `html` widget, sanitised on render "
+            "(src/dashboards/widgets/HtmlWidget.jsx)."
         ),
     )
 
@@ -781,6 +1142,12 @@ class DashboardSpec(BaseModel):
       widget dict when ``None`` via ``exclude_none`` serialization).
     """
 
+    # Keep keys this model does not declare. Server-side paths (AI/MCP board
+    # edits, portability) persist ``model_dump()``, and the default
+    # ``extra="ignore"`` silently dropped editor fields the model had not caught
+    # up with yet (stylePreset, tab_bar, Tab.icon, Variable.url_bind, ...).
+    model_config = ConfigDict(extra="allow")
+
     version: int = Field(default=1, ge=1)
     title: str = Field(min_length=1)
     layout: dict[str, Any] = Field(
@@ -826,6 +1193,22 @@ class DashboardSpec(BaseModel):
             "a named data source that widgets can bind to via 'widget.source'. "
             "See DataProvider for the full contract and the later-wave notes on "
             f"the resolver + route. Maximum {_SPEC_MAX_DATA_PROVIDERS} entries."
+        ),
+    )
+    background: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Custom page/canvas background — {type: 'solid'|'gradient'|'image'|"
+            "'transparent'|'css'|'none', color?, from?, to?, angle?, imageUrl?, "
+            "css?}. An opaque pass-through like `widget.style`: the frontend "
+            "owns the vocabulary (src/dashboards/widgetHtml.js backgroundToCss) "
+            "and applies it to both SpecRenderer's inner box and the Live-mode "
+            "page chrome. Added because the model was silently DROPPING this "
+            "field the same way it once dropped `style` and `Widget.config`: "
+            "every server-side render (thumbnail, PDF) ignored a board's own "
+            "chosen background and always painted the generic theme default, "
+            "so a board authored on a dark custom canvas got a plain white "
+            "thumbnail with no visible relation to how viewers actually see it."
         ),
     )
 
@@ -1014,6 +1397,28 @@ def get_export_config(spec: "DashboardSpec") -> dict:
 # ---------------------------------------------------------------------------
 
 
+# The encoding channels each chart type actually needs. Mirrors
+# CHART_REQUIRED_ENCODING in src/dashboards/validateSpec.js and the per-type
+# builders in embed/widgets/chart-options.js — keep the three in lockstep.
+#
+# This was a flat "every chart needs x and y", which held while the renderer was
+# cartesian-only. It stopped holding as the type list grew: a sankey encodes
+# source/target/value, a map name/value, a gauge a single value column — so
+# those types, all authorable from the editor, produced specs that failed their
+# own validation. A type absent here falls back to x + y.
+_CHART_REQUIRED_ENCODING: dict[str, tuple[str, ...]] = {
+    "sankey": ("source", "target", "value"),
+    "heatmap": ("x", "color", "value"),
+    "gauge": ("y",),
+    "candlestick": ("x", "open", "close", "low", "high"),
+    "map": ("name", "value"),
+    # A combo's series live in the `bars` / `lines` column-name arrays; `y` is
+    # meaningless for it (buildCombo never reads one).
+    "combo": ("x",),
+}
+_DEFAULT_CHART_ENCODING: tuple[str, ...] = ("x", "y")
+
+
 def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
     """Parse and validate a raw dict as a DashboardSpec.
 
@@ -1024,7 +1429,9 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
     3. Chart widgets must have ``chart_type`` and ``encoding`` with at least
        ``x`` and ``y`` keys.
     4. Filter widgets must have ``subtype`` and ``target_var``.
-    5. Text widgets must have ``content``.
+    5. Text widgets must have ``content`` (static) or, with
+       ``props.source='query'``, a ``query_id``/provider ``source`` binding
+       plus ``encoding.value``.
     6. Widget ``params`` that use ``{ref: '<varName>'}`` must reference a
        declared variable name — undeclared refs are a hard error.
     6b. Tabs (Track T): duplicate ``tab.id`` values and a ``widget.tab_id``
@@ -1047,6 +1454,23 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
     12. Provider / result existence check (BET-3 hard error): ``widget.source``
         must reference a declared ``spec.data[*].id`` and a valid result name
         within that provider.
+    13. Reference widgets (hard error): a widget must set either ``type``
+        (inline) or ``ref`` (library reference) — a widget with neither is
+        ambiguous.
+    14. Reference / inline mutual exclusivity (hard error): a widget with
+        ``ref`` set must not also set any non-board-local inline field
+        (``type``, ``query_id``, ``metric``, ``chart_type``, ``encoding``,
+        ``props``, ``style``, ``subtype``, ``options_query_id``,
+        ``target_var``, ``content``, ``params``, ``source``).
+    15. Dangling ``overrides`` (soft warning): a widget with a non-empty
+        ``overrides`` but no ``ref`` has nothing to override — the field is
+        silently ignored by the resolver, so this is flagged.
+
+    NOTE: whether a ``ref`` actually resolves to a live ``widgets`` library
+    row is NOT checked here — this parser has no org/DB context. That check
+    (soft WARNING on a miss, mirroring the ``query_id`` forward-ref rule) is
+    performed by the resolver, ``app.dashboards.widget_refs.resolve_widget_refs``,
+    which is given the caller's actual library rows.
 
     Parameters
     ----------
@@ -1100,14 +1524,15 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
                     f"Widget {widget.id!r} (chart): 'chart_type' is required "
                     "for chart widgets."
                 )
-            if "x" not in widget.encoding:
-                issues.append(
-                    f"Widget {widget.id!r} (chart): encoding must include 'x' column."
-                )
-            if "y" not in widget.encoding:
-                issues.append(
-                    f"Widget {widget.id!r} (chart): encoding must include 'y' column."
-                )
+            required = _CHART_REQUIRED_ENCODING.get(
+                widget.chart_type or "", _DEFAULT_CHART_ENCODING
+            )
+            for channel in required:
+                if channel not in widget.encoding:
+                    issues.append(
+                        f"Widget {widget.id!r} ({widget.chart_type or 'chart'}): "
+                        f"encoding must include {channel!r} column."
+                    )
 
     # ── Step 4: Filter widget requirements ───────────────────────────────
     for widget in spec.widgets:
@@ -1115,7 +1540,7 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
             if widget.subtype is None:
                 issues.append(
                     f"Widget {widget.id!r} (filter): 'subtype' is required "
-                    "for filter widgets ('select'|'multiselect'|'daterange'|'text')."
+                    "for filter widgets ('select'|'multiselect'|'daterange'|'text'|'list')."
                 )
             if not widget.target_var:
                 issues.append(
@@ -1126,10 +1551,51 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
     # ── Step 5: Text widget requirements ─────────────────────────────────
     for widget in spec.widgets:
         if widget.type == "text":
-            if not widget.content:
+            # Same shape as Step 5b: props.source is where the TEXT comes from;
+            # widget.source is the provider binding (one way to supply rows).
+            if (widget.props or {}).get("source") == "query":
+                if not widget.query_id and widget.source is None:
+                    issues.append(
+                        f"Widget {widget.id!r} (text): query-mode text widgets "
+                        "(props.source='query') need a 'query_id' or a provider "
+                        "'source' binding to read the text from."
+                    )
+                if not (widget.encoding or {}).get("value"):
+                    issues.append(
+                        f"Widget {widget.id!r} (text): query-mode text widgets "
+                        "(props.source='query') need encoding.value — the column "
+                        "holding the text."
+                    )
+            elif not widget.content:
                 issues.append(
                     f"Widget {widget.id!r} (text): 'content' is required "
                     "for text widgets."
+                )
+
+    # ── Step 5b: Image widget requirements ───────────────────────────────
+    for widget in spec.widgets:
+        if widget.type == "image":
+            # props.source is where the IMAGE URL comes from ('static' |
+            # 'query'), unrelated to widget.source (the BET-3 provider binding,
+            # which here is one of the two ways to supply query-mode rows).
+            if (widget.props or {}).get("source") == "query":
+                if not widget.query_id and widget.source is None:
+                    issues.append(
+                        f"Widget {widget.id!r} (image): query-mode image widgets "
+                        "(props.source='query') need a 'query_id' or a provider "
+                        "'source' binding to read the image URL from."
+                    )
+                if not (widget.encoding or {}).get("value"):
+                    issues.append(
+                        f"Widget {widget.id!r} (image): query-mode image widgets "
+                        "(props.source='query') need encoding.value — the column "
+                        "holding the image URL."
+                    )
+            elif not widget.props.get("url"):
+                issues.append(
+                    f"Widget {widget.id!r} (image): props.url is required "
+                    "for image widgets — upload via POST /images (or the "
+                    "upload_image AI/MCP tool) and use the returned url."
                 )
 
     # ── Step 6: Widget params ref validation (hard error) ─────────────────
@@ -1143,6 +1609,16 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
                         f"ref {ref_var!r} is not declared in spec 'variables'. "
                         f"Declared variables: {sorted(declared_var_names) or '[]'}."
                     )
+
+    # ── Step 6c: Widget filters ref validation (hard error, mirrors step 6) ─
+    for widget in spec.widgets:
+        for var_name in widget.filters:
+            if var_name not in declared_var_names:
+                issues.append(
+                    f"Widget {widget.id!r} filters: variable {var_name!r} is not "
+                    f"declared in spec 'variables'. "
+                    f"Declared variables: {sorted(declared_var_names) or '[]'}."
+                )
 
     # ── Step 6b: Tab validation (hard errors — mirror variable-ref rules) ─
     # Duplicate tab ids are a hard error; a widget.tab_id that does not match a
@@ -1221,7 +1697,7 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
             if widget.metric is None:
                 continue
             mid = widget.metric.metric_id
-            if mid and metric_registry.get(mid) is None:
+            if mid and not metric_registry.exists(mid):
                 issues.append(
                     f"[warn] Widget {widget.id!r}: metric_id {mid!r} is not in the "
                     "registered metric registry (may be a forward reference)."
@@ -1285,6 +1761,76 @@ def validate_spec(data: Any) -> tuple[DashboardSpec | None, list[str]]:
                 f"Widget {widget.id!r}: source.result {rname!r} is not declared "
                 f"in provider {pid!r}. Declared results: "
                 f"{sorted(provider_map[pid]) or '[]'}."
+            )
+
+    # ── Step 13: a widget must be inline (type) or a reference (ref) ─────────
+    # `type` is optional at the Pydantic level ONLY so that a bare
+    # {id, ref, overrides, pos, tab_id} reference widget parses. A widget with
+    # neither is ambiguous — hard error (same severity as a missing chart
+    # encoding).
+    for widget in spec.widgets:
+        if widget.type is None and widget.ref is None:
+            issues.append(
+                f"Widget {widget.id!r}: must set either 'type' (inline widget) "
+                "or 'ref' (library reference widget)."
+            )
+
+    # ── Step 14: ref / inline mutual exclusivity (hard error) ────────────────
+    # A widget may be EITHER inline OR a reference, never both. Board-local
+    # fields (id, pos, tab_id, placement, order, drawer, drawer_group) are
+    # exempt — they describe WHERE the widget sits, which a reference widget
+    # still needs. Every other inline field must be left at its default.
+    for widget in spec.widgets:
+        if widget.ref is None:
+            continue
+        conflicts: list[str] = []
+        if widget.type is not None:
+            conflicts.append("type")
+        if widget.query_id:
+            conflicts.append("query_id")
+        if widget.metric is not None:
+            conflicts.append("metric")
+        if widget.chart_type is not None:
+            conflicts.append("chart_type")
+        if widget.encoding:
+            conflicts.append("encoding")
+        if widget.props:
+            conflicts.append("props")
+        if widget.style:
+            conflicts.append("style")
+        if widget.config:
+            conflicts.append("config")
+        if widget.subtype is not None:
+            conflicts.append("subtype")
+        if widget.options_query_id:
+            conflicts.append("options_query_id")
+        if widget.target_var:
+            conflicts.append("target_var")
+        if widget.content:
+            conflicts.append("content")
+        if widget.params:
+            conflicts.append("params")
+        if widget.filters:
+            conflicts.append("filters")
+        if widget.source is not None:
+            conflicts.append("source")
+        if conflicts:
+            issues.append(
+                f"Widget {widget.id!r}: 'ref' is set, so inline field(s) "
+                f"{conflicts!r} must not be — a widget is either inline or a "
+                "reference, never both. Put instance-level changes in "
+                "'overrides' instead."
+            )
+
+    # ── Step 15: dangling overrides (soft warning) ────────────────────────────
+    # overrides is only meaningful alongside ref; without ref the resolver never
+    # looks at it, so it is silently dead weight — flag it (not a hard error,
+    # mirrors the soft forward-ref style).
+    for widget in spec.widgets:
+        if widget.ref is None and widget.overrides:
+            issues.append(
+                f"[warn] Widget {widget.id!r}: 'overrides' is set but 'ref' is "
+                "not — overrides has no effect without a library reference."
             )
 
     return spec, issues
@@ -1373,6 +1919,17 @@ def _kpi_tag(widget: Widget) -> str:
         parts.append(f' label="{_esc(label)}"')
     if fmt:
         parts.append(f' format="{_esc(fmt)}"')
+    # Presentation the SPA card already honours; without these an embedded or
+    # exported KPI drops the unit and the precision the author chose.
+    decimals = widget.props.get("decimals")
+    if isinstance(decimals, int) and decimals >= 0:
+        parts.append(f' decimals="{_esc(decimals)}"')
+    prefix = widget.props.get("prefix")
+    if prefix:
+        parts.append(f' prefix="{_esc(prefix)}"')
+    suffix = widget.props.get("suffix")
+    if suffix:
+        parts.append(f' suffix="{_esc(suffix)}"')
     parts.append("></nubi-kpi>")
     return "".join(parts)
 
@@ -1409,7 +1966,7 @@ def _chart_tag(widget: Widget) -> str:
     """
     chart_type = widget.chart_type or "scatter"
     # Normalize to the subset supported by nubi-chart.js (scatter|line|bar).
-    # Richer types degrade gracefully: area→line; pie/donut/heatmap/gauge→bar;
+    # Richer types degrade gracefully: area→line; pie/donut/heatmap/gauge/combo→bar;
     # hbar→bar (orientation is lost in the embed renderer).
     _type_map = {
         "area": "line",
@@ -1418,6 +1975,7 @@ def _chart_tag(widget: Widget) -> str:
         "hbar": "bar",
         "heatmap": "bar",
         "gauge": "bar",
+        "combo": "bar",
     }
     embed_type = _type_map.get(chart_type, chart_type)
 
@@ -1484,7 +2042,13 @@ def _text_tag(widget: Widget) -> str:
     The markdown ``content`` is placed as the text content of the element,
     HTML-escaped so it is safe for innerHTML.  The frontend custom element is
     responsible for rendering the markdown.
+
+    Query-mode text (``props.source == 'query'``) has no static text to
+    compile — any ``content`` left over from static mode is stale — so the
+    element is emitted empty.
     """
+    if (widget.props or {}).get("source") == "query":
+        return "<nubi-text></nubi-text>"
     content = html.escape(widget.content or "", quote=False)
     return f"<nubi-text>{content}</nubi-text>"
 

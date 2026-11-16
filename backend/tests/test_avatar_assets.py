@@ -512,14 +512,15 @@ async def assets_client(assets_app):
 async def test_local_serve_route_returns_bytes(assets_client, tmp_path) -> None:
     """GET /assets/avatars/{key} → 200 with image bytes when asset exists.
 
-    The route is /assets/avatars/{key:path} so ``key`` captured from the path
-    does NOT include the ``avatars/`` prefix.  Storage key == path key.
+    The route is /assets/avatars/{key:path}; the captured ``key`` omits the
+    ``avatars/`` prefix, but the ingest service stores under ``avatars/...``,
+    so the storage key is ``avatars/<key>``.
     """
     os.environ["ASSET_SERVE_MODE"] = "local"
     os.environ["LOCAL_STORAGE_ROOT"] = str(tmp_path)
 
-    # Write a fake image; key relative to storage root = user/u123/deadbeef.jpg
-    target = tmp_path / "user" / "u123"
+    # Write a fake image; key relative to storage root = avatars/user/u123/deadbeef.jpg
+    target = tmp_path / "avatars" / "user" / "u123"
     target.mkdir(parents=True, exist_ok=True)
     (target / "deadbeef.jpg").write_bytes(b"FAKE_JPEG_DATA")
 
@@ -529,6 +530,30 @@ async def test_local_serve_route_returns_bytes(assets_client, tmp_path) -> None:
 
     os.environ.pop("LOCAL_STORAGE_ROOT", None)
     os.environ.pop("ASSET_SERVE_MODE", None)
+
+
+@pytest.mark.asyncio
+async def test_stored_avatar_url_is_servable(assets_client, tmp_path) -> None:
+    """The URL the ingest service returns must be fetchable from the serve route.
+
+    Regression: the service stored under ``avatars/<kind>/...`` while the route
+    looked up ``<kind>/...``, so every re-hosted avatar 404'd and the avatar
+    appeared to vanish after a reload.
+    """
+    os.environ["ASSET_SERVE_MODE"] = "local"
+    os.environ["LOCAL_STORAGE_ROOT"] = str(tmp_path)
+    try:
+        from app.assets import service as svc
+
+        key = svc._derive_key("https://example.com/me.png", "user", "u123", ".png")
+        served_url = await svc._store_local(b"PNG_BYTES", key)
+
+        resp = await assets_client.get(served_url)
+        assert resp.status_code == 200, (served_url, resp.text)
+        assert resp.content == b"PNG_BYTES"
+    finally:
+        os.environ.pop("LOCAL_STORAGE_ROOT", None)
+        os.environ.pop("ASSET_SERVE_MODE", None)
 
 
 @pytest.mark.asyncio
@@ -614,3 +639,35 @@ async def test_patch_me_local_avatar_url_stored_as_is(assets_client) -> None:
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["user"]["avatar_url"] == local_path
+
+
+@pytest.mark.asyncio
+async def test_patch_me_null_avatar_url_clears_it(assets_client) -> None:
+    """``avatar_url: null`` clears the avatar; omitting the field keeps it."""
+    reg = await assets_client.post(
+        "/api/v1/auth/register",
+        json={"email": "clearav@example.com", "password": "password123"},
+    )
+    headers = {"Authorization": f"Bearer {reg.json()['access_token']}"}
+    local_path = "/api/v1/images/abc123"
+
+    resp = await assets_client.patch(
+        "/api/v1/auth/me", json={"avatar_url": local_path}, headers=headers,
+    )
+    assert resp.json()["user"]["avatar_url"] == local_path
+
+    # Omitted → unchanged.
+    resp = await assets_client.patch(
+        "/api/v1/auth/me", json={"name": "Someone"}, headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["user"]["avatar_url"] == local_path
+
+    # Explicit null → cleared, and GET /auth/me agrees.
+    resp = await assets_client.patch(
+        "/api/v1/auth/me", json={"avatar_url": None}, headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["user"]["avatar_url"] is None
+    me = await assets_client.get("/api/v1/auth/me", headers=headers)
+    assert me.json()["user"]["avatar_url"] is None

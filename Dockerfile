@@ -2,9 +2,9 @@
 # Nubi combined image — FastAPI backend + embedded SPA in ONE image.
 # Build context: repo root (docker build -f Dockerfile .)
 #
-# This is the image deployed to Fly.io by the operator's deploy config (for
-# Nubi Cloud that's the private nubi-cloud repo: deploy/fly.toml). The same
-# image runs as two Fly processes:
+# Example platform config: deploy/fly/ (Fly.io). Nubi Cloud deploys this same
+# image from a private ops repo (see DEPLOY.md). The image runs as two
+# processes:
 #   app    — uvicorn serving the API *and* the built SPA (STATIC_DIR=/app/dist,
 #            see the static-SPA block in backend/main.py)
 #   worker — `python worker.py` (flows scheduler loop + worker pool)
@@ -73,8 +73,11 @@ FROM python:3.13-slim AS runtime
 WORKDIR /app
 
 # libpq is required at runtime by asyncpg / adbc-driver-postgresql.
+# nodejs runs the server-side board renderer (scripts/render/*.mjs: dashboard
+# thumbnails and PDF export); without it every render 503s and cards fall back
+# to their wireframe.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libpq5 \
+    && apt-get install -y --no-install-recommends libpq5 nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Python packages from the build stage.
@@ -92,7 +95,8 @@ COPY backend/seed.py /app/backend/seed.py
 COPY backend/seed_data_duckdb.py /app/backend/seed_data_duckdb.py
 COPY backend/seed_data/ /app/backend/seed_data/
 
-# Migrations (run on Fly via `release_command`, see fly.toml).
+# Migrations: run `python /app/database/migrate.py` before each rollout (e.g.
+# a Fly release_command, see deploy/fly/fly.toml, or a Cloud Run job).
 COPY database/ /app/database/
 
 # Built SPA — backend/main.py serves it when STATIC_DIR points here.
@@ -101,6 +105,14 @@ ENV STATIC_DIR=/app/dist
 
 # Embed bundles — backend/main.py mounts them at /embed/* when present.
 COPY --from=frontend /build/dist-embed /app/dist-embed
+
+# Server-side board renderer: the Node scripts plus the only packages they load
+# (echarts and its deps, resolved from /app/node_modules) and the map shapes.
+COPY scripts/render/ /app/scripts/render/
+COPY --from=frontend /build/node_modules/echarts /app/node_modules/echarts
+COPY --from=frontend /build/node_modules/zrender /app/node_modules/zrender
+COPY --from=frontend /build/node_modules/tslib /app/node_modules/tslib
+COPY src/lib/maps/ /app/src/lib/maps/
 ENV EMBED_STATIC_DIR=/app/dist-embed
 
 # Non-root user for security. --create-home gives appuser a writable HOME so
@@ -109,13 +121,16 @@ ENV EMBED_STATIC_DIR=/app/dist-embed
 RUN useradd --create-home --home-dir /home/appuser --shell /bin/false appuser
 ENV HOME=/home/appuser
 # demo_bundle regenerates parquet/duckdb seed artefacts under seed_data/.
-RUN chown -R appuser /app/backend/seed_data
+# storage_data/ is the default local root for avatars and uploaded images
+# (LOCAL_STORAGE_ROOT); without a volume it does not survive a redeploy.
+RUN mkdir -p /app/backend/storage_data \
+    && chown -R appuser /app/backend/seed_data /app/backend/storage_data
 USER appuser
 
-# Both process commands (fly.toml [processes]) run from this directory.
+# Both process commands (app + worker, see deploy/fly/fly.toml) run from here.
 WORKDIR /app/backend
 
 EXPOSE 8000
-# Default command = the web process; fly.toml overrides per process.
-# Migrations are NOT run here — Fly's release_command handles them.
+# Default command = the web process; the platform overrides it for the worker.
+# Migrations are NOT run here — the deploy's release step handles them.
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

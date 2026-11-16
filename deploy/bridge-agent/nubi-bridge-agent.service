@@ -1,0 +1,74 @@
+# systemd unit for the Nubi bridge agent (non-container deployments).
+#
+# Install:
+#   sudo cp nubi-bridge-agent.service /etc/systemd/system/
+#   sudo install -m 0600 -o root -g root bridge-agent.env /etc/nubi/bridge-agent.env
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nubi-bridge-agent
+#
+# Check:  systemctl status nubi-bridge-agent
+# Logs:   journalctl -u nubi-bridge-agent -f
+#
+# Prefer the container image where Docker/Podman is available — it carries its
+# own Python and needs no host-level dependency management. This unit exists for
+# hosts where installing a container runtime is not an option.
+
+[Unit]
+Description=Nubi bridge agent (outbound reverse tunnel to the Nubi control plane)
+Documentation=https://github.com/nubi/nubi/blob/main/docs/bridges.md
+# Only ordering hints — the agent retries on its own, so it does not *require*
+# the network to be up at start.
+After=network-online.target
+Wants=network-online.target
+# Never stop retrying after repeated fast failures (systemd's default
+# start-limit would give up). A bridge that stays down needs an operator, not
+# silence. Must live in [Unit] — systemd ignores it under [Service].
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+
+# The token lives in a root-owned 0600 file, never on the command line: anything
+# in ExecStart is world-readable via `ps`.
+EnvironmentFile=/etc/nubi/bridge-agent.env
+ExecStart=/opt/nubi/venv/bin/python -m app.bridges.agent
+WorkingDirectory=/opt/nubi
+
+# Unprivileged: the agent opens one outbound connection and dials TCP targets.
+# It needs no privileged port and no write access anywhere.
+User=nubi
+Group=nubi
+
+# Always come back. The agent already reconnects across NETWORK failures on its
+# own; this covers PROCESS death — OOM kill, an unhandled exception, a reboot.
+# That gap is what makes an agent look "randomly offline".
+Restart=always
+RestartSec=5s
+
+# --- Hardening -------------------------------------------------------------
+# This process runs inside the customer's network and can reach internal hosts,
+# so it should be able to do as little else as possible.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# Outbound WebSocket + TCP to internal hosts; nothing else.
+RestrictAddressFamilies=AF_INET AF_INET6
+# No writable paths at all — the agent keeps no state on disk.
+ReadWritePaths=
+
+# Logs to the journal; PYTHONUNBUFFERED keeps them prompt.
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -47,6 +47,36 @@ host_mode_org_pin: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "host_mode_org_pin", default=None
 )
 
+# A standard (non-host-mode) embed token verified by an organisation's own
+# issuer can only ever act in that organisation.  Membership is still
+# required; this narrows which membership counts.
+embed_issuer_org: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "embed_issuer_org", default=None
+)
+
+
+async def _embed_issuer_org_or_none(
+    user_id: str, repo: "Repo", requested: str = ""
+) -> str | None:
+    """Return the issuer's org for an embed token bound to one, else ``None``.
+
+    Raises 403 when the request names a different org or the token's subject
+    is not a member of the issuer's org — the subject is whatever the issuer
+    signed, so it must never select another organisation.
+    """
+    bound = embed_issuer_org.get()
+    if not bound:
+        return None
+    refused = AppError(
+        "forbidden", "This embed token is scoped to a different organisation.", 403
+    )
+    if requested and requested != bound:
+        raise refused
+    if not await _user_is_member(user_id, bound, repo):
+        raise refused
+    return bound
+
+
 
 # ── Org resolution helpers ────────────────────────────────────────────────────
 
@@ -84,6 +114,10 @@ async def get_user_org(user_id: str, repo: Repo) -> str:
     host_pinned = host_mode_org_pin.get()
     if host_pinned:
         return host_pinned
+
+    bound = await _embed_issuer_org_or_none(user_id, repo)
+    if bound:
+        return bound
 
     # InMemoryRepo exposes get_org_for_user(); use it when available.
     if hasattr(repo, "get_org_for_user"):
@@ -132,6 +166,23 @@ async def _user_is_member(user_id: str, org_id: str, repo: Repo) -> bool:
 
 
 async def resolve_org_id(user_id: str, repo: Repo, request: Request) -> str:
+    """Resolve the effective org_id for the current request (membership-checked).
+
+    Also records what was resolved on ``request.state`` (``resolved_org_id`` /
+    ``resolved_user_id``) so cross-cutting code that runs after the handler —
+    the audit middleware — can attribute the request without trusting a header.
+    See :func:`_resolve_org_id` for the resolution rules.
+    """
+    org_id = await _resolve_org_id(user_id, repo, request)
+    try:
+        request.state.resolved_org_id = str(org_id)
+        request.state.resolved_user_id = str(user_id)
+    except Exception:  # noqa: BLE001 — attribution only; never affects the request
+        pass
+    return org_id
+
+
+async def _resolve_org_id(user_id: str, repo: Repo, request: Request) -> str:
     """Resolve the effective org_id for the current request.
 
     The caller may pass ``X-Org-Id`` to switch to a different org.  We verify
@@ -189,6 +240,10 @@ async def resolve_org_id(user_id: str, repo: Repo, request: Request) -> str:
         return host_pinned
 
     requested_org_id = request.headers.get("x-org-id", "").strip()
+
+    bound = await _embed_issuer_org_or_none(user_id, repo, requested_org_id)
+    if bound:
+        return bound
 
     if not requested_org_id:
         # No header — use the default org.

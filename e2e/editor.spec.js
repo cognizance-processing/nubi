@@ -7,7 +7,9 @@
  *   3. Add a chart widget via the palette.
  *   4. Add a filter widget via the palette.
  *   5. Edit the dashboard title.
- *   6. Save → backend creates the board and the URL becomes /editor/:id.
+ *   6. Save → backend creates the board and the URL becomes /d/:id/edit
+ *      (the unified live/edit surface — /editor/:id is a legacy route that
+ *      just redirects here, see App.tsx's LegacyEditorRedirect).
  *   7. Reload the page → title and widgets persist.
  *
  * Stable selectors:
@@ -46,7 +48,7 @@ test.describe('Dashboard Editor', () => {
 
   // ---------------------------------------------------------------------------
 
-  test('add KPI + chart + filter, set title, save → URL becomes /editor/:id', async ({ page }) => {
+  test('add KPI + chart + filter, set title, save → URL becomes /d/:id/edit', async ({ page }) => {
     await page.goto('/editor')
 
     // Wait for editor to be ready
@@ -79,9 +81,9 @@ test.describe('Dashboard Editor', () => {
     await saveBtn.click()
 
     // Button shows "Saving…" briefly then "Save" (id now set)
-    // Wait for URL to become /editor/<uuid>
-    await page.waitForURL(/\/editor\/.+/, { timeout: 20_000 })
-    const boardId = page.url().split('/editor/')[1]
+    // Wait for URL to become /d/<uuid>/edit
+    await page.waitForURL(/\/d\/.+\/edit/, { timeout: 20_000 })
+    const boardId = page.url().split('/d/')[1].split('/edit')[0]
     expect(boardId).toBeTruthy()
 
     // ── 6. Reload and verify persistence ──
@@ -114,21 +116,17 @@ test.describe('Dashboard Editor', () => {
 
   // ---------------------------------------------------------------------------
 
-  test('Ask AI panel opens and accepts a prompt', async ({ page }) => {
+  test('editor chat opens and accepts a prompt', async ({ page }) => {
     await page.goto('/editor')
     await expect(page.getByTestId('editor-title')).toBeVisible({ timeout: 20_000 })
 
-    // Click the Ask AI button in the header
-    await page.getByRole('button', { name: /ask ai/i }).first().click()
-
-    // The AI textarea / panel should appear
-    const textarea = page.locator('textarea').filter({ hasText: '' }).first()
+    // AI authoring lives in the editor's own Chat panel
+    await page.getByTestId('panel-toggle-chat').filter({ visible: true }).first().click()
+    const textarea = page.locator('textarea[aria-label="Chat input"]').first()
     await expect(textarea).toBeVisible({ timeout: 10_000 })
 
-    // Type a prompt
     await textarea.fill('Show me daily active users')
-    // The Generate button should become enabled
-    await expect(page.getByRole('button', { name: /generate/i })).not.toBeDisabled()
+    await expect(textarea).toHaveValue('Show me daily active users')
   })
 })
 

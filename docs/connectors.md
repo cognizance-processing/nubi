@@ -1,5 +1,7 @@
 # Connectors
 
+![A connector links a data source to the SDK and the query engine](illustration:ConnectorSdk)
+
 A **connector** links Nubi to one of your data sources — a Postgres database, a BigQuery project, a Snowflake warehouse, a Parquet file in S3, or any of 20+ supported types. Once added, you can browse its tables, run queries against it, build dashboards, and reference it in flows. Nubi queries your source on demand and caches results; it does not copy your data.
 
 Connectors live on the **Connectors** page (`/connectors` in the app sidebar). Credentials you enter are encrypted at rest with AES-256-GCM and are never shown again after you save them.

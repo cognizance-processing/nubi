@@ -1,5 +1,7 @@
 # Building dashboards
 
+![A dashboard is a grid of widgets reading from registered queries](illustration:DashboardCanvas)
+
 A Nubi dashboard is a grid of **widgets** — KPIs, charts, tables, filters, and more — that read from your registered queries and re-query when filters change. You build dashboards in the visual **Dashboard Editor**: add widgets to a grid, bind each to a query, map columns to encodings, wire up cross-filtering, and save. The same dashboard can also be authored by the AI assistant or edited as raw YAML/JSON in the **Code panel**.
 
 Under the hood every dashboard is a single JSON document — a `DashboardSpec`. The editor, the AI chat panel, the Code panel, and the embed pipeline all share it as the source of truth, so anything you build by clicking can be exported as code, and anything the AI writes can be edited by hand.
@@ -149,7 +151,7 @@ Every widget also has an **Appearance** section (card background, border, radius
 - **Row limit** — default 50 (1–10,000).
 - **Visible columns** — toggle columns on/off. With none selected, all columns show.
 - **Column formats** — per-column `number` / `currency` / `percent` / `date` formatting, with decimals, a currency code, or a date style (`short` / `medium` / `long` / `full`).
-- **Conditional formatting** — color cells or whole rows by a rule. Each rule is an operator (`eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `between`, `contains`), a value (a second value for `between`), a **scope** (cell vs row), a background and text color, and an optional **bold** toggle.
+- **Conditional rules** — color cells or whole rows by a rule. Each rule is an operator (`eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `between`, `contains`), a value (a second value for `between`), a **scope** (cell vs row), a background and text color, and an optional **bold** toggle.
 
 > *Use case:* a top-50 orders table with negative margins highlighted red at the row level.
 
@@ -190,7 +192,12 @@ A filter widget writes to a **dashboard variable**; data widgets bound to that v
 **What it's for:** headings, explanations, context, links.
 **When to use it:** to annotate a board — a title block, a "what this measures" note, a link to the source doc.
 
-**Config:** write **Markdown content** directly in the Configure panel. Supports standard Markdown: headings, bold, italic, lists, links, inline code. (For interpolating live data into free-form HTML, use a widget's [Custom HTML](#widget-appearance--custom-html) instead.)
+**Config:** pick a **Text source**:
+
+- **Static** (default) — write **Markdown content** directly in the Configure panel. Supports standard Markdown: headings, bold, italic, lists, links, inline code.
+- **Query** — show one value from a query as plain text (no Markdown). Pick a **query**, the **Text column**, and a **Row index** (default `0`), plus an optional **Prefix** / **Suffix** (e.g. `Client: ` or `%`). The text follows filters, variables and refreshes. A widget bound to a board data provider reads that provider's rows instead of running a query. If the row doesn't exist the widget shows "No value at this row"; it never falls back to another row or to the static content. Switching back to **Static** clears the query binding.
+
+(For interpolating live data into free-form HTML, use a widget's [Custom HTML](#widget-appearance--custom-html) instead.)
 
 ### Section
 
@@ -202,6 +209,8 @@ A filter widget writes to a **dashboard variable**; data widgets bound to that v
 ---
 
 ## Chart types in depth
+
+![Charts render with WebGL above a row threshold so large scatter plots stay interactive](illustration:WebGLPerf)
 
 The chart widget renders 17 types via Apache ECharts, all reading from Arrow columns streamed from the query engine. Pick the type from the icon grid in **Configure → Chart type**; the encoding fields below it change to match.
 
@@ -239,6 +248,11 @@ Open the **Display** section in Configure:
 - **Custom palette** — a comma-separated list of hex colors overrides the theme series colors.
 - **Title** and **Height (px)**.
 - **Max (gauge range)** — the top of a gauge's scale.
+- **Arc gradient** (gauge) — fill the arc from a **Start** colour (low end) to an **End** colour (high end); with the toggle off, pick one **Arc color** instead. Setting either replaces the needle's three theme bands with a neutral track plus a filled arc up to the value. **Reset to theme** clears both. The gradient follows the arc and is tied to the scale: each point is coloured by where it sits between min and max, a straight blend from Start to End (the same blend as the preview bar). A low value shows only the Start colour, and only a full gauge reaches End. In the app, with the gradient on and **Animation** on, the fill sweeps up from the minimum when the chart first draws or switches between Needle and Ring, and from the current value to each new value (instant with Animation off or reduced motion). Embedded dashboards and static exports show the final value with no sweep.
+- **Arc ends** (gauge) — **Flat** or **Round** sets the shape of the arc's ends on any gauge, with or without arc colours. **Round** rounds both the fill and the whole track, so the outer rim is rounded at the minimum and the maximum. The joins between a Needle's theme bands are drawn by ECharts and may also pick up a slight curve. With a gradient, the grey track past the value is rounded at the maximum too. **Flat** squares everything. **Auto** keeps the defaults: a gradient has flat ends, a **Ring** (stock or solid **Arc color**) has round ends, and a **Needle** (stock or solid **Arc color**) has square ends, as before. To round a solid-colour Needle without changing anything else, pick **Round**. **Reset to theme** returns this to Auto.
+- **Axis text size / Y axis ticks** (gauge) — on a **Needle** gauge, these size the scale numbers around the arc and set how many major ticks it has; on a **Ring** gauge, **Axis text size** sizes the centre readout and **Y axis ticks** has no effect.
+- **Scale value format** (gauge) — formats the numbers around a **Needle** gauge's arc (Number, Currency, Percent, SI). Left on auto, they are rounded to suit the tick spacing, so 6 ticks on 0–100 read `0, 17, 33 …` rather than long decimals. **Percent** on a scale that goes past 1 treats values as already out of 100 (`50` → `50%`). The centre value is not affected.
+- **Tooltip** (gauge) — hovering the dial shows the series name and value, using **Tooltip value format** if one is set; turn **Tooltip** off to hide it.
 
 ### Axes and reference lines (cartesian types)
 

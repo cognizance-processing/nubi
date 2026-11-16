@@ -24,6 +24,20 @@ rows so there is no network access.
 
 from __future__ import annotations
 
+
+def _no_org_header_request():
+    """A minimal Request carrying no ``X-Org-Id``.
+
+    ``get_frozen_view`` is header-aware now, so calling it directly needs a
+    request object. With no header, ``resolve_org_id`` falls back to the
+    caller's default org — the behaviour these tests were written against.
+    """
+    from starlette.requests import Request
+
+    return Request({"type": "http", "method": "GET", "path": "/", "headers": [],
+                    "query_string": b""})
+
+
 import os
 import threading
 from unittest.mock import MagicMock, patch
@@ -376,6 +390,7 @@ async def test_get_frozen_view_meters_embed_session(repo: InMemoryRepo, tmp_path
         try:
             result = await get_frozen_view(
                 dashboard_id=board_id,
+                request=_no_org_header_request(),
                 snapshot_id=snapshot_id,
                 identity=embed_identity,
                 repo=repo,
@@ -456,10 +471,11 @@ async def test_get_frozen_view_no_meter_for_first_party(repo: InMemoryRepo, tmp_
     sys.modules["app.compute.metering"] = fake_metering
 
     # For first-party path, get_user_org is called — short-circuit it.
-    with patch("app.routes.resources.get_user_org", AsyncMock(return_value=_ORG)):
+    with patch("app.routes._org.resolve_org_id", AsyncMock(return_value=_ORG)):
         try:
             result = await get_frozen_view(
                 dashboard_id=board_id,
+                request=_no_org_header_request(),
                 snapshot_id=descriptor["id"],
                 identity=access_identity,
                 repo=repo,
@@ -541,6 +557,7 @@ async def test_frozen_response_redacts_storage_uri(repo: InMemoryRepo, tmp_path)
     try:
         result = await get_frozen_view(
             dashboard_id=board_id,
+            request=_no_org_header_request(),
             snapshot_id=snapshot_id,
             identity=embed_identity,
             repo=repo,

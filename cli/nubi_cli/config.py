@@ -45,10 +45,16 @@ def save_token(token: str) -> None:
 
     Creates the directory if it does not exist.
     """
-    _CREDENTIALS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # The file holds a bearer credential: owner-only directory and file, set
+    # at creation (not after the fact) and re-applied on every write.
+    _CREDENTIALS_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(_CREDENTIALS_PATH.parent, 0o700)
     creds = _read_credentials()
     creds["access_token"] = token
-    _CREDENTIALS_PATH.write_text(json.dumps(creds, indent=2))
+    fd = os.open(_CREDENTIALS_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(creds, indent=2))
+    os.chmod(_CREDENTIALS_PATH, 0o600)
 
 
 def clear_token() -> bool:

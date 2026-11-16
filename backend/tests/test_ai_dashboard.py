@@ -40,7 +40,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.ai.dashboard import generate_dashboard_html, validate_dashboard_html
-from app.ai.grounding import build_catalog
+from app.ai.grounding import ALL_ORGS, build_catalog
 from app.ai.provider import NullProvider
 from app.auth.jwt import mint_access_token
 from app.queries.registry import get_query_registry
@@ -109,7 +109,7 @@ class TestGenerateDashboardHtmlNullProvider:
     """generate_dashboard_html with NullProvider returns correct structure."""
 
     def _gen(self, question: str = "show me demo data") -> str:
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         return generate_dashboard_html(question, catalog, NullProvider())
 
     def test_returns_string(self):
@@ -177,7 +177,7 @@ class TestGenerateDashboardHtmlNullProvider:
         on nubi-kpi appears in the known column set.  We don't assert x= / y= here
         because the dashboard may fall back to 'x'/'y' when only a few columns exist.
         """
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         # Get all known columns from catalog.
         all_known_cols: set[str] = set()
         for cols in catalog["tables"].values():
@@ -196,14 +196,14 @@ class TestGenerateDashboardHtmlNullProvider:
 
     def test_deterministic_output(self):
         """Calling twice with the same question returns identical HTML."""
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         r1 = generate_dashboard_html("list demo rows", catalog, NullProvider())
         r2 = generate_dashboard_html("list demo rows", catalog, NullProvider())
         assert r1 == r2
 
     def test_question_sanitised_in_output(self):
         """Angle brackets in question should be escaped (not raw HTML injection)."""
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         result = generate_dashboard_html("<script>bad</script> question", catalog, NullProvider())
         # The raw <script> tag from the question should NOT appear unescaped.
         assert "<script>bad</script>" not in result
@@ -229,7 +229,7 @@ class TestValidateDashboardHtml:
 
     def test_clean_null_provider_html_is_valid(self):
         """NullProvider-generated HTML should pass validation."""
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         html = generate_dashboard_html("show me demo data", catalog, NullProvider())
         ok, issues = validate_dashboard_html(html)
         assert ok is True, f"Expected valid HTML, got issues: {issues}"

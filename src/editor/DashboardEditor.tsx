@@ -1,0 +1,5400 @@
+/**
+ * DashboardEditor.jsx — Drag-and-drop DashboardSpec editor (Wave EDITOR-3B).
+ *
+ * GRID ENGINE: dnd-kit + native CSS Grid via the headless <GridCanvas> (see
+ * src/dashboards/grid/). This replaces the old react-grid-layout <GridLayout> +
+ * createScaledStrategy. GridCanvas owns all drag/resize math and zoom scaling; the
+ * editor only supplies the layout + commit callbacks and owns history.
+ *
+ * What's new vs EDITOR-3A
+ * ------------------------
+ * 1. CSS-Grid engine (GridCanvas) — desktop/tablet free-drag + 8-handle resize
+ *    (mode="grid"), mobile drag-to-reorder stack (mode="reorder") with a height
+ *    stepper instead of tiny corner handles.
+ * 2. Zoom controls + Reset moved into the app top bar; below md the whole toolbar
+ *    cluster collapses behind a hamburger that opens a slide-out sidebar.
+ * 3. Configure-dashboard panel expanded: per-device columns, row height, gap, and
+ *    an Advanced group (compaction + dense, padding, breakpoint thresholds, max
+ *    content width).
+ *
+ * PRESERVED — THE COMMIT CONTRACT (DO NOT TOUCH):
+ *   - GridCanvas.onLayoutCommit(finalLayout) → commitLayout(finalLayout), which
+ *     routes via deviceRef/activeBreakpoint through applyLayoutCommit
+ *     (lg → widget.pos, md/sm → spec.responsive[bp]), with the no-op JSON-equality
+ *     skip so mount/device-switch re-renders don't pollute history or bake
+ *     fallback layouts into overrides.
+ *   - onInteractionStart/End → handleInteractionStart/End (isDraggingRef +
+ *     frozenLayoutsRef freeze while dragging).
+ *   - The arrow-key nudge handler + ConfigPanel numeric x/y/w/h fields still call
+ *     commitLayout([item]) directly (not via GridCanvas) — unchanged.
+ */
+
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+  memo,
+} from 'react'
+import { createPortal } from 'react-dom'
+import { useUi } from '../contexts/UiContext.jsx'
+import {
+  PanelRightClose, PanelRightOpen, Plus, Trash2, X, GripVertical,
+  Database, SlidersHorizontal, Palette, Code2, TrendingUp, Settings2,
+  BarChart3, LineChart, AreaChart, ScatterChart, PieChart, Gauge, Grid3x3,
+  BarChartHorizontal, Table2, Hash, Filter as FilterIcon, Type, Heading,
+  Monitor, Tablet, Smartphone, ChevronDown, Settings, LayoutGrid, MessageSquare,
+  ZoomIn, ZoomOut, Maximize2, Menu, ChevronUp, Sigma, FileCode2, LayoutDashboard,
+  Undo2, Redo2, Eye, Pencil, Save, Loader2, CheckCircle2, BookmarkPlus, Library,
+  Link2, Copy, Unlink, Users, Layers, Download, Image as ImageIcon, FileText, Search,
+  Minus, CalendarRange, ChevronsRight, AlertTriangle,
+} from 'lucide-react'
+import {
+  saveWidgetToLibrary, deleteLibraryWidget, updateLibraryWidget, fromLibraryRow,
+  resolveWidgetRef, isRefWidget, applyWidgetEdit,
+  flattenOverridePaths, removeOverridePath, humanizeOverridePath,
+} from '../lib/widgetLibrary.js'
+import Button from '../components/ui/Button.jsx'
+import Spinner from '../components/ui/Spinner.jsx'
+import Tooltip from '../components/ui/Tooltip.jsx'
+import { fixedPanelStyle, placeDropdown, useAnchorTracking } from '../components/ui/useFixedAnchor.js'
+import Modal from '../components/ui/Modal.jsx'
+import Tag from '../components/ui/Tag.jsx'
+import EmptyState from '../components/ui/EmptyState.jsx'
+import { EmptyBoards } from '../components/illustrations/index.js'
+import { toast } from '../components/ui/Toast.jsx'
+import '../dashboards/widgets/chrome.css'
+
+// Device viewport presets for the editor's responsive preview/edit switcher.
+const DEVICES = [
+  { id: 'desktop', label: 'Desktop', Icon: Monitor, width: null },
+  { id: 'tablet', label: 'Tablet', Icon: Tablet, width: 834 },
+  { id: 'mobile', label: 'Mobile', Icon: Smartphone, width: 390 },
+]
+const DEVICE_WIDTHS = { desktop: null, tablet: 834, mobile: 390 }
+// Canvas zoom bounds + the design-width floor for the desktop frame (so the full
+// desktop grid stays visible/editable — zoomed out — on small screens).
+const MIN_ZOOM = 0.25
+const MAX_ZOOM = 2
+const DESKTOP_MIN_WIDTH = 1024
+// Common device widths offered as quick chips when editing tablet/mobile.
+const WIDTH_PRESETS = [390, 412, 768, 834, 1024]
+
+// Icon maps shared across the palette, chart-type grid, and config header.
+const WIDGET_ICONS = {
+  kpi: Hash, metric: TrendingUp, chart: BarChart3, table: Table2,
+  pivot: Grid3x3, filter: FilterIcon, text: Type, section: Heading,
+  image: ImageIcon, stepper: Layers, divider: Minus,
+  datedisplay: CalendarRange, breadcrumb: ChevronsRight,
+}
+const CHART_ICONS = {
+  line: LineChart, bar: BarChart3, hbar: BarChartHorizontal, scatter: ScatterChart,
+  area: AreaChart, pie: PieChart, donut: PieChart, heatmap: Grid3x3, gauge: Gauge,
+}
+import { GridCanvas } from '../dashboards/grid/index.js'
+import { get, post, put, listRegisteredQueries, uploadImage, uploadImageFromUrl, resolveImageUrl } from '../lib/api.js'
+import { elementToPDF, elementToPNG, widgetToCsv } from '../lib/exports.js'
+import ChartWidget from '../dashboards/widgets/ChartWidget.jsx'
+import KpiWidget from '../dashboards/widgets/KpiWidget.jsx'
+import TableWidget from '../dashboards/widgets/TableWidget.jsx'
+import FilterWidget from '../dashboards/widgets/FilterWidget.jsx'
+import TextWidget from '../dashboards/widgets/TextWidget.jsx'
+import HtmlWidget from '../dashboards/widgets/HtmlWidget.jsx'
+import MetricWidget from '../dashboards/widgets/MetricWidget.jsx'
+import MetricPicker from '../components/app/MetricPicker.jsx'
+import PivotWidget from '../dashboards/widgets/PivotWidget.jsx'
+import SectionWidget from '../dashboards/widgets/SectionWidget.jsx'
+import ImageWidget from '../dashboards/widgets/ImageWidget.jsx'
+import { safeImageSrc } from '../dashboards/safeImageSrc.js'
+import StepperWidget from '../dashboards/widgets/StepperWidget.jsx'
+import DividerWidget from '../dashboards/widgets/DividerWidget.jsx'
+import DateDisplayWidget from '../dashboards/widgets/DateDisplayWidget.jsx'
+import BreadcrumbWidget from '../dashboards/widgets/BreadcrumbWidget.jsx'
+import ExportShareMenu from '../components/ExportShareMenu.jsx'
+import DashboardCodeView from './DashboardCodeView.jsx'
+import { VariableProvider } from '../dashboards/VariableStore.jsx'
+import SpecRenderer, { buildVariableDefaults } from '../dashboards/SpecRenderer.jsx'
+import { backgroundToCss, styleToCss } from '../dashboards/widgetHtml.js'
+import { useTheme } from '../contexts/ThemeContext.jsx'
+import { ThemeModeProvider, colorModeClass } from '../dashboards/ColorModeScope.jsx'
+import { PAGE_BG_HEX, backgroundHex, boardColorMode, modeForHex } from '../lib/boardTheme.js'
+import { WIDGET_STYLE_PRESETS, DASHBOARD_STYLE_PRESETS } from '../dashboards/stylePresets.js'
+import TabBar from '../dashboards/TabBar.jsx'
+import {
+  DEVICE_TO_BREAKPOINT,
+  buildResponsiveLayouts,
+  applyLayoutCommit,
+  clearBreakpointOverrides,
+  hasOverrides,
+  effectivePos,
+  isHiddenAt,
+} from '../dashboards/responsiveLayout.js'
+import ChatPanel from './ChatPanel.jsx'
+import { LiveEditProvider } from './liveEdit.jsx'
+import WidgetHtmlEditor from './shared/WidgetHtmlEditor.jsx'
+import WidgetFocusShell from './shared/WidgetFocusShell.jsx'
+import { previewPropsEqual } from './previewPropsEqual.js'
+import {
+  createHistory,
+  push as historyPush,
+  undo as historyUndo,
+  redo as historyRedo,
+  canUndo,
+  canRedo,
+} from './history.js'
+// ── Shared inspector panels ──────────────────────────────────────────────────
+import {
+  inputCls, selectCls, FieldLabel, SectionLabel, Section, ToggleRow, ChipRow, ColumnSelect,
+  ColorField, ColorSwatch,
+  useColumnIntrospection, useMetricsList, useWidgetLibrary, useWidgetUsage, invalidateWidgetUsage,
+  QueryPicker, BackgroundEditor, ParamBindingSection,
+  QueryStatusLink,
+  ChartConfig, KpiConfig, IconPicker,
+  TableConfig, ColumnFormatsEditor, ConditionalRulesEditor,
+  FilterConfig, TextConfig, PlacementControl, effectivePlacement,
+  titleText, withTitleText, parseNumberInput,
+  useQueryParamsIndex,
+  DEMO_QUERY_IDS, CHART_TYPES, SERIES_TYPES, FILTER_SUBTYPES, VARIABLE_TYPES,
+  FORMAT_OPS, COLUMN_FORMAT_TYPES, BACKGROUND_TYPES, PIVOT_AGGS,
+} from './shared/index.js'
+import { autoBindParams, planVariableRename, renameVariableReads, readerCounts } from '../dashboards/paramWiring.js'
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+// NOTE: DEMO_QUERY_IDS, CHART_TYPES, SERIES_TYPES, FILTER_SUBTYPES, VARIABLE_TYPES,
+// FORMAT_OPS, COLUMN_FORMAT_TYPES, BACKGROUND_TYPES, PIVOT_AGGS are now imported
+// from ./shared/constants.js (via ./shared/index.js above).
+// A filter's subtype decides what kind of value its variable holds, so a
+// variable declared on the filter's behalf starts with the right type instead
+// of defaulting to text and mis-typing every date range.
+const VARIABLE_TYPE_FOR_FILTER = {
+  select: 'select', multiselect: 'multiselect', list: 'select',
+  daterange: 'daterange', text: 'text',
+}
+
+// react-grid-layout compaction modes exposed in the Dashboard panel.
+const COMPACTION_MODES = [
+  { id: 'free',       label: 'Free place', hint: 'Keep widgets exactly where placed' },
+  { id: 'vertical',   label: 'Vertical',   hint: 'Pack upward' },
+  { id: 'horizontal', label: 'Horizontal', hint: 'Pack leftward' },
+  { id: 'none',       label: 'None',       hint: 'No compaction (collisions allowed)' },
+]
+
+const DEFAULT_SPEC = {
+  version: 1,
+  title: 'New Dashboard',
+  layout: { cols: 12, row_height: 60 },
+  variables: [],
+  widgets: [],
+}
+
+// Minimum sizes per type (in grid cells)
+const WIDGET_MIN_SIZES = {
+  kpi:     { minW: 2, minH: 2 },
+  metric:  { minW: 2, minH: 2 },
+  table:   { minW: 3, minH: 3 },
+  pivot:   { minW: 3, minH: 3 },
+  chart:   { minW: 3, minH: 3 },
+  filter:  { minW: 2, minH: 2 },
+  text:    { minW: 2, minH: 2 },
+  section: { minW: 2, minH: 1 },
+}
+
+const COLUMN_OPTIONS = [6, 8, 12, 16, 24]
+// Mobile/tablet column presets — mobile is no longer hard-locked to a single
+// column (the historical default of 1 stays available + is the fallback).
+const COLUMN_OPTIONS_SM = [1, 2, 3, 4, 6]
+const COLUMN_OPTIONS_MD = [4, 6, 8, 12]
+const ROW_HEIGHT_OPTIONS = [40, 60, 80, 100]
+const GAP_OPTIONS = [0, 8, 12, 16, 24]
+
+// Default breakpoint width thresholds (mirror GridCanvas DEFAULT_BREAKPOINTS /
+// SpecRenderer's breakpoints). Authors can override per-spec in the Advanced group.
+const DEFAULT_BREAKPOINTS_PX = { lg: 1200, md: 768, sm: 480 }
+
+// ---------------------------------------------------------------------------
+// Helpers: spec <-> RGL layout conversions
+// ---------------------------------------------------------------------------
+
+// NOTE: spec ↔ RGL conversion now lives in ../dashboards/responsiveLayout.js
+// (shared with SpecRenderer) so per-breakpoint overrides are handled in one place.
+
+let _idCounter = 0
+function genId(type) {
+  _idCounter += 1
+  return `${type}_${_idCounter}`
+}
+
+// ---------------------------------------------------------------------------
+// Tab helpers (Track T — T5 editor)
+// ---------------------------------------------------------------------------
+
+// Tab-bar style tokens exposed in the inspector. ALL user-supplied colors / CSS
+// flow through the sanitized styleToCss/parseCssString path (never raw-injected).
+const TAB_VARIANTS = ['underline', 'pills', 'segmented', 'folder']
+const TAB_ALIGNS = ['start', 'center', 'end', 'stretch']
+const TAB_SIZES = ['sm', 'md', 'lg']
+
+// effectivePlacement is now imported from ./shared/index.js
+
+/** Filter widgets eligible for the above-grid filter bar (placement → 'header'),
+ *  scoped to a tab like widgetsForTab, then ordered by widget.order ascending. */
+function headerWidgetsForTab(spec, activeTabId) {
+  const scoped = widgetsForTab(spec, activeTabId).filter(w => effectivePlacement(w) === 'header')
+  return [...scoped].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+}
+
+/** Generate a stable, collision-free tab id within the current tab list. */
+function genTabId(existing = []) {
+  const used = new Set(existing.map(t => t.id))
+  let n = existing.length + 1
+  let id = `t${n}`
+  while (used.has(id)) { n += 1; id = `t${n}` }
+  return id
+}
+
+/** The effective active tab id given the spec + a requested id (falls back to first). */
+function resolveActiveTab(spec, requested) {
+  const tabs = Array.isArray(spec.tabs) ? spec.tabs : []
+  if (tabs.length === 0) return null
+  if (requested && tabs.some(t => t.id === requested)) return requested
+  return tabs[0].id
+}
+
+/**
+ * Filter widgets down to a single tab for the canvas (mirrors SpecRenderer):
+ *   - no tabs → every widget (today's behavior)
+ *   - widget.tab_id === activeTabId → in
+ *   - widget.tab_id null/absent → belongs to the FIRST tab
+ */
+function widgetsForTab(spec, activeTabId) {
+  const tabs = Array.isArray(spec.tabs) ? spec.tabs : []
+  if (tabs.length === 0) return spec.widgets
+  const firstTabId = tabs[0]?.id ?? null
+  return spec.widgets.filter(w => {
+    const t = w.tab_id ?? null
+    if (t === activeTabId) return true
+    return t == null && activeTabId === firstTabId
+  })
+}
+
+// ---------------------------------------------------------------------------
+// useElementWidth — local ResizeObserver width hook
+// ---------------------------------------------------------------------------
+
+// Replaces RGL's useContainerWidth (which lived in react-grid-layout). Tracks the
+// measured pixel width of a ref'd element; GridCanvas itself does NOT need this for
+// placement (columns are 1fr) — we use it only to compute the desktop design width
+// and the auto-fit zoom.
+function useElementWidth(initialWidth = 900) {
+  const [width, setWidth] = useState(initialWidth)
+  const observerRef = useRef(null)
+  // A CALLBACK ref, not a plain useRef + `useEffect(..., [])`: the plain-ref
+  // version only ever tried to attach the ResizeObserver once, right after
+  // the component's FIRST render — if the ref'd element didn't exist yet at
+  // that instant (e.g. the editor was still showing its `loading` spinner,
+  // so the canvas div hadn't mounted), the effect's `if (!el) return` bailed
+  // permanently and NOTHING ever retried, leaving `width` stuck at
+  // `initialWidth` forever regardless of how the container actually
+  // resized. A callback ref fires exactly when the DOM node appears
+  // (whichever render that happens on) and again on unmount, so the
+  // observer always ends up attached to the real, current element.
+  const containerRef = useCallback((el) => {
+    if (observerRef.current) {
+      observerRef.current.disconnect()
+      observerRef.current = null
+    }
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(entries => {
+      const w = entries[0]?.contentRect?.width
+      if (w && w > 0) setWidth(w)
+    })
+    ro.observe(el)
+    observerRef.current = ro
+    // Seed immediately so the first paint isn't stuck on the initial value.
+    const w0 = el.getBoundingClientRect().width
+    if (w0 > 0) setWidth(w0)
+  }, [])
+  return { width, containerRef }
+}
+
+// ---------------------------------------------------------------------------
+// findFreeSpot
+// ---------------------------------------------------------------------------
+
+function findFreeSpot(widgets, newW, newH, cols = 12) {
+  const MAX_SCAN_ROWS = 200
+  const occupied = {}
+  for (const w of widgets) {
+    const rx = Math.max(0, (w.pos?.x ?? 1) - 1)
+    const ry = Math.max(0, (w.pos?.y ?? 1) - 1)
+    const rw = w.pos?.w ?? 4
+    const rh = w.pos?.h ?? 4
+    for (let row = ry; row < ry + rh; row++) {
+      for (let col = rx; col < rx + rw; col++) {
+        if (!occupied[row]) occupied[row] = {}
+        occupied[row][col] = true
+      }
+    }
+  }
+
+  const fits = (rx, ry, rw, rh) => {
+    if (rx + rw > cols) return false
+    for (let row = ry; row < ry + rh; row++) {
+      for (let col = rx; col < rx + rw; col++) {
+        if (occupied[row]?.[col]) return false
+      }
+    }
+    return true
+  }
+
+  for (let row = 0; row < MAX_SCAN_ROWS; row++) {
+    for (let col = 0; col <= cols - newW; col++) {
+      if (fits(col, row, newW, newH)) return { x: col + 1, y: row + 1 }
+    }
+  }
+
+  const maxBottom = widgets.reduce((m, w) => {
+    const bottom = (w.pos?.y ?? 1) - 1 + (w.pos?.h ?? 4)
+    return Math.max(m, bottom)
+  }, 0)
+  return { x: 1, y: maxBottom + 1 }
+}
+
+// ---------------------------------------------------------------------------
+// Default widget factories
+// ---------------------------------------------------------------------------
+
+const WIDGET_SIZES = {
+  kpi:     { w: 3, h: 3 },
+  metric:  { w: 3, h: 3 },
+  table:   { w: 6, h: 5 },
+  pivot:   { w: 6, h: 5 },
+  chart:   { w: 6, h: 6 },
+  filter:  { w: 3, h: 2 },
+  text:    { w: 6, h: 3 },
+  section: { w: 12, h: 1 },
+  image:   { w: 4, h: 4 },
+  stepper: { w: 6, h: 6 },
+  divider: { w: 12, h: 1 },
+  datedisplay: { w: 3, h: 2 },
+  breadcrumb:  { w: 12, h: 1 },
+}
+
+function makeKpiWidget(pos) {
+  return {
+    id: genId('kpi'), type: 'kpi', query_id: 'demo_all',
+    chart_type: null, encoding: { value: '' }, props: { label: 'KPI', format: 'number' },
+    pos: { ...WIDGET_SIZES.kpi, ...pos },
+  }
+}
+function makeTableWidget(pos) {
+  return {
+    id: genId('table'), type: 'table', query_id: 'demo_all',
+    chart_type: null, encoding: {}, props: { limit: 50, columns: '' },
+    pos: { ...WIDGET_SIZES.table, ...pos },
+  }
+}
+function makeChartWidget(pos) {
+  return {
+    id: genId('chart'), type: 'chart', query_id: 'demo_all',
+    chart_type: 'bar', encoding: { x: '', y: '', color: '' }, props: {}, params: {},
+    pos: { ...WIDGET_SIZES.chart, ...pos },
+  }
+}
+function makeFilterWidget(pos) {
+  return {
+    id: genId('filter'), type: 'filter', subtype: 'select', target_var: '',
+    options_query_id: '', query_id: null, props: { label: 'Filter' },
+    pos: { ...WIDGET_SIZES.filter, ...pos },
+  }
+}
+function makeTextWidget(pos) {
+  return {
+    id: genId('text'), type: 'text',
+    content: '## Heading\n\nAdd your markdown content here.',
+    query_id: null, pos: { ...WIDGET_SIZES.text, ...pos },
+  }
+}
+function makeMetricWidget(pos) {
+  return {
+    id: genId('metric'), type: 'metric', query_id: 'demo_all',
+    chart_type: null, encoding: { value: '', compare: '', spark: '' },
+    props: { label: 'Metric', format: 'number', deltaFormat: 'percent' }, params: {},
+    pos: { ...WIDGET_SIZES.metric, ...pos },
+  }
+}
+function makePivotWidget(pos) {
+  return {
+    id: genId('pivot'), type: 'pivot', query_id: 'demo_all',
+    chart_type: null, encoding: { rows: '', cols: '', value: '' },
+    props: { agg: 'sum' }, params: {},
+    pos: { ...WIDGET_SIZES.pivot, ...pos },
+  }
+}
+function makeSectionWidget(pos) {
+  return {
+    id: genId('section'), type: 'section', query_id: null,
+    props: { title: 'Section', subtitle: '', align: 'left', divider: true },
+    pos: { ...WIDGET_SIZES.section, ...pos },
+  }
+}
+function makeImageWidget(pos) {
+  return {
+    id: genId('image'), type: 'image', query_id: null,
+    encoding: {},
+    props: { source: 'static', url: '', alt: '', fit: 'contain', align: 'center' },
+    pos: { ...WIDGET_SIZES.image, ...pos },
+  }
+}
+function makeDividerWidget(pos) {
+  return {
+    id: genId('divider'), type: 'divider', query_id: null,
+    props: { orientation: 'horizontal', thickness: 1, lineStyle: 'solid', inset: 0 },
+    pos: { ...WIDGET_SIZES.divider, ...pos },
+  }
+}
+function makeDateDisplayWidget(pos) {
+  return {
+    id: genId('datedisplay'), type: 'datedisplay', query_id: null,
+    encoding: { value: '' },
+    props: { label: 'Period', source: 'variable', variable: '', format: 'medium', align: 'left' },
+    pos: { ...WIDGET_SIZES.datedisplay, ...pos },
+  }
+}
+function makeBreadcrumbWidget(pos) {
+  return {
+    id: genId('breadcrumb'), type: 'breadcrumb', query_id: null,
+    props: { variables: [], labels: {}, homeLabel: 'All', maxSteps: 10, separator: 'arrow', chipVariant: 'filled' },
+    pos: { ...WIDGET_SIZES.breadcrumb, ...pos },
+  }
+}
+function makeStepperWidget(pos) {
+  return {
+    id: genId('stepper'), type: 'stepper', query_id: null,
+    props: {
+      title: 'Drill-down',
+      orientation: 'horizontal',
+      variant: 'labels',
+      steps: [
+        { id: 'step-1', label: 'Step 1', widget: makeKpiWidget({ x: 0, y: 0 }) },
+        { id: 'step-2', label: 'Step 2', widget: makeKpiWidget({ x: 0, y: 0 }) },
+      ],
+    },
+    pos: { ...WIDGET_SIZES.stepper, ...pos },
+  }
+}
+
+function makeWidget(type: string, pos: Record<string, any>): Record<string, any> {
+  if (type === 'kpi') return makeKpiWidget(pos)
+  if (type === 'metric') return makeMetricWidget(pos)
+  if (type === 'table') return makeTableWidget(pos)
+  if (type === 'pivot') return makePivotWidget(pos)
+  if (type === 'filter') return makeFilterWidget(pos)
+  if (type === 'text') return makeTextWidget(pos)
+  if (type === 'section') return makeSectionWidget(pos)
+  if (type === 'image') return makeImageWidget(pos)
+  if (type === 'stepper') return makeStepperWidget(pos)
+  if (type === 'divider') return makeDividerWidget(pos)
+  if (type === 'datedisplay') return makeDateDisplayWidget(pos)
+  if (type === 'breadcrumb') return makeBreadcrumbWidget(pos)
+  return makeChartWidget(pos)
+}
+
+// ---------------------------------------------------------------------------
+// Shared input classes
+// ---------------------------------------------------------------------------
+// NOTE: inputCls, selectCls, FieldLabel are now imported from ./shared/index.js
+
+// ---------------------------------------------------------------------------
+// QueryPicker
+// ---------------------------------------------------------------------------
+// NOTE: QueryPicker is now imported from ./shared/index.js
+
+// ---------------------------------------------------------------------------
+// useMetricsList — now imported from ./shared/index.js
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// MetricBindingSection — bind a data widget to a GOVERNED metric (alternative
+// to query_id). Sets/clears `widget.metric` = { metric_id, dimensions,
+// time_grain, filters }. query_id stays intact; metric binding is additive and
+// takes precedence in the runtime (runMetricQuery) when present.
+// ---------------------------------------------------------------------------
+
+function MetricBindingSection({ widget, onChange }) {
+  const metrics = useMetricsList()
+  const binding = widget.metric ?? null
+
+  const setBinding = (next) => {
+    if (next && next.metric_id) {
+      onChange({ ...widget, metric: next })
+    } else {
+      // Clearing the metric → drop the binding so query_id takes over again.
+      const { metric, ...rest } = widget // eslint-disable-line @typescript-eslint/no-unused-vars
+      onChange(rest)
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <MetricPicker metrics={metrics} value={binding} onChange={setBinding} />
+      {binding?.metric_id && (
+        <p className="text-[10px] text-muted/70 leading-snug">
+          Bound to a governed metric — this takes precedence over the query above.
+        </p>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// useColumnIntrospection — now imported from ./shared/index.js
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// ColumnSelect — now imported from ./shared/index.js
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// ChartConfig / KpiConfig / TableConfig / FilterConfig / TextConfig
+// ---------------------------------------------------------------------------
+// NOTE: SectionLabel, Section, ToggleRow are now imported from ./shared/index.js
+// NOTE: ChartConfig, KpiConfig, TableConfig, FilterConfig, TextConfig are now imported from ./shared/index.js
+
+// NOTE: ChartConfig, KpiConfig, TableConfig, ColumnFormatsEditor, ConditionalRulesEditor,
+// FilterConfig, TextConfig, PlacementControl, applyPlacement, effectivePlacement are all
+// imported from ./shared/index.js
+
+function PivotConfig({ widget, onChange }) {
+  const { columns, introspecting } = useColumnIntrospection(widget.query_id)
+  const enc = widget.encoding ?? {}
+  const props = widget.props ?? {}
+  const setEncoding = (key, val) => onChange({ ...widget, encoding: { ...enc, [key]: val } })
+  const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
+  return (
+    <div className="space-y-3">
+      <Section title="Pivot dimensions" icon={Grid3x3}>
+        {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
+        <ColumnSelect label="Rows (dimension)" value={enc.rows} onChange={v => setEncoding('rows', v)} columns={columns} />
+        <ColumnSelect label="Columns (dimension)" value={enc.cols} onChange={v => setEncoding('cols', v)} columns={columns} />
+        <ColumnSelect label="Value (measure)" value={enc.value} onChange={v => setEncoding('value', v)} columns={columns} optional />
+        <div>
+          <FieldLabel>Aggregation</FieldLabel>
+          <select className={selectCls} value={props.agg ?? 'sum'} onChange={e => setProps('agg', e.target.value)}>
+            {PIVOT_AGGS.map(a => <option key={a} value={a}>{a}</option>)}
+          </select>
+          <p className="text-[10px] text-muted/70 mt-1">With no value column, cells show the row count.</p>
+        </div>
+      </Section>
+    </div>
+  )
+}
+
+function SectionConfig({ widget, onChange }) {
+  const props = widget.props ?? {}
+  const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
+  const align = props.align ?? 'left'
+  return (
+    <div className="space-y-3">
+      <div>
+        <FieldLabel>Title</FieldLabel>
+        <input type="text" className={inputCls} value={props.title ?? ''} placeholder="Section title" onChange={e => setProps('title', e.target.value)} />
+      </div>
+      <div>
+        <FieldLabel>Subtitle</FieldLabel>
+        <input type="text" className={inputCls} value={props.subtitle ?? ''} placeholder="Optional subtitle" onChange={e => setProps('subtitle', e.target.value)} />
+      </div>
+      <div>
+        <FieldLabel>Icon</FieldLabel>
+        <IconPicker value={props.icon} onChange={v => setProps('icon', v)} />
+      </div>
+      <div>
+        <FieldLabel>Alignment</FieldLabel>
+        <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+          {['left', 'center', 'right'].map(a => (
+            <button key={a} onClick={() => setProps('align', a)}
+              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${align === a ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{a}</button>
+          ))}
+        </div>
+      </div>
+      <ToggleRow label="Show divider line" checked={props.divider !== false} onChange={v => setProps('divider', v)} />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ImageConfig — upload a file, or fetch by URL, for an `image` widget
+// ---------------------------------------------------------------------------
+
+function ImageConfig({ widget, onChange }) {
+  const props = widget.props ?? {}
+  const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
+  const [urlInput, setUrlInput] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const fileInputRef = useRef(null)
+  const source = props.source === 'query' ? 'query' : 'static'
+  const { columns, introspecting } = useColumnIntrospection(source === 'query' ? widget.query_id : null)
+  const previewSrc = props.url ? safeImageSrc(resolveImageUrl(props.url)) : null
+
+  const handleFile = async (file) => {
+    if (!file) return
+    setBusy(true)
+    setError('')
+    try {
+      const result = await uploadImage(file)
+      setProps('url', result.url)
+    } catch (err) {
+      setError(err?.message ?? 'Upload failed.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleFetchUrl = async () => {
+    const url = urlInput.trim()
+    if (!url) return
+    setBusy(true)
+    setError('')
+    try {
+      const result = await uploadImageFromUrl(url)
+      setProps('url', result.url)
+      setUrlInput('')
+    } catch (err) {
+      setError(err?.message ?? 'Could not fetch that URL.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const setImageSource = (next) => {
+    if (next === 'query') {
+      onChange({ ...widget, props: { ...props, source: 'query', row: props.row ?? 0 } })
+      return
+    }
+    // Static reads props.url only — drop the query binding too, or exports
+    // (widget_query_targets) would keep running the query for this widget.
+    const { row: _row, ...staticProps } = props
+    onChange({ ...widget, query_id: null, source: null, encoding: {}, props: { ...staticProps, source: 'static' } })
+  }
+  // A widget carries at most one data binding (spec.py Step 11), so a
+  // provider-bound (`widget.source`) image must drop it before taking a query.
+  const providerBound = source === 'query' && !widget.query_id && !!widget.source
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <FieldLabel>Image source</FieldLabel>
+        <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+          {[['static', 'Static'], ['query', 'Query']].map(([s, label]) => (
+            <button key={s} onClick={() => setImageSource(s)}
+              className={`flex-1 text-[11px] font-medium transition-colors ${source === s ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{label}</button>
+          ))}
+        </div>
+        <p className="text-[10px] text-muted/70 mt-1">
+          {source === 'static'
+            ? 'One fixed image — upload a file or fetch one by URL.'
+            : 'The image URL is read from a query cell, so it follows filters and refreshes.'}
+        </p>
+      </div>
+      {source === 'query' && (
+        <>
+          {providerBound ? (
+            <>
+              <p className="text-[10px] text-muted/70">
+                Rows come from data provider <code>{widget.source.provider}</code>
+                {widget.source.result ? <> (result <code>{widget.source.result}</code>)</> : null}.
+              </p>
+              <Button variant="secondary" size="sm" className="w-full"
+                onClick={() => onChange({ ...widget, source: null, query_id: null, encoding: {} })}>
+                Use a query instead
+              </Button>
+              <div>
+                <FieldLabel>URL column</FieldLabel>
+                <input type="text" className={inputCls} placeholder="Column name"
+                  value={widget.encoding?.value ?? ''}
+                  onChange={e => onChange({ ...widget, encoding: { ...(widget.encoding ?? {}), value: e.target.value } })} />
+              </div>
+            </>
+          ) : (
+            <>
+              <QueryPicker
+                value={widget.query_id ?? ''}
+                onChange={id => {
+                  if (id === (widget.query_id ?? '')) return
+                  // Columns differ per query — clear the URL column so it's re-picked.
+                  // Drop provider binding so Step 11 (at-most-one) cannot fire.
+                  onChange({ ...widget, query_id: id, source: null, encoding: {} })
+                }}
+              />
+              {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
+              <ColumnSelect
+                label="URL column"
+                value={widget.encoding?.value ?? ''}
+                onChange={v => onChange({ ...widget, encoding: { ...(widget.encoding ?? {}), value: v } })}
+                columns={columns}
+              />
+            </>
+          )}
+          <div>
+            <FieldLabel>Row index</FieldLabel>
+            <input type="number" min={0} className={inputCls}
+              value={props.row ?? 0}
+              onChange={e => setProps('row', Math.max(0, parseInt(e.target.value, 10) || 0))} />
+          </div>
+        </>
+      )}
+      {source === 'static' && (<>
+      <div>
+        <FieldLabel>Image</FieldLabel>
+        {props.url && previewSrc ? (
+          <div className="rounded-lg border border-border bg-surface-2 p-2 flex items-center justify-center h-28 mb-2">
+            <img src={previewSrc} alt="" className={`max-h-full max-w-full ${props.fit === 'cover' ? 'object-cover' : 'object-contain'}`} />
+          </div>
+        ) : props.url ? (
+          <div className="rounded-lg border border-dashed border-border bg-surface-2 flex items-center justify-center h-28 mb-2 text-xs text-muted">
+            Invalid image URL
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-border bg-surface-2 flex items-center justify-center h-28 mb-2 text-xs text-muted">
+            No image yet
+          </div>
+        )}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          className="hidden"
+          onChange={e => handleFile(e.target.files?.[0])}
+        />
+        <Button variant="secondary" size="sm" className="w-full" disabled={busy}
+          onClick={() => fileInputRef.current?.click()}>
+          {busy ? 'Uploading…' : 'Upload from computer'}
+        </Button>
+      </div>
+      <div>
+        <FieldLabel>Or paste an image URL</FieldLabel>
+        <div className="flex gap-2">
+          <input type="text" className={inputCls} placeholder="https://…" value={urlInput}
+            onChange={e => setUrlInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleFetchUrl() }} />
+          <Button variant="secondary" size="sm" disabled={busy || !urlInput.trim()} onClick={handleFetchUrl}>
+            Fetch
+          </Button>
+        </div>
+      </div>
+      {error && <p className="text-xs text-danger">{error}</p>}
+      </>)}
+      <div>
+        <FieldLabel>Alt text</FieldLabel>
+        <input type="text" className={inputCls} value={props.alt ?? ''} placeholder="Description for accessibility"
+          onChange={e => setProps('alt', e.target.value)} />
+      </div>
+      <div>
+        <FieldLabel>Fit</FieldLabel>
+        <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+          {['contain', 'cover'].map(f => (
+            <button key={f} onClick={() => setProps('fit', f)}
+              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.fit ?? 'contain') === f ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{f}</button>
+          ))}
+        </div>
+      </div>
+      <div>
+        <FieldLabel>Alignment</FieldLabel>
+        <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+          {['left', 'center', 'right'].map(a => (
+            <button key={a} onClick={() => setProps('align', a)}
+              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.align ?? 'center') === a ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{a}</button>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// StepperConfig — manage the steps of an in-tile drill-down widget
+// ---------------------------------------------------------------------------
+
+// Child types a step can hold, and how to build a fresh default of each.
+// Reuses the same factories the palette uses so a step's child is a normal,
+// independently-typed widget spec — StepperWidget just renders it in place.
+// ---------------------------------------------------------------------------
+// DividerConfig — a standalone rule (`divider` widget)
+// ---------------------------------------------------------------------------
+
+function DividerConfig({ widget, onChange }) {
+  const props = widget.props ?? {}
+  const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
+  const orientation = props.orientation === 'vertical' ? 'vertical' : 'horizontal'
+  return (
+    <div className="space-y-3">
+      <div>
+        <FieldLabel>Orientation</FieldLabel>
+        <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+          {['horizontal', 'vertical'].map(o => (
+            <button key={o} onClick={() => setProps('orientation', o)}
+              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${orientation === o ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{o}</button>
+          ))}
+        </div>
+        <p className="text-[10px] text-muted/70 mt-1">
+          The rule fills its tile, so resize the widget to set its length.
+        </p>
+      </div>
+      <div>
+        <FieldLabel>Line style</FieldLabel>
+        <select className={selectCls} value={props.lineStyle ?? 'solid'} onChange={e => setProps('lineStyle', e.target.value)}>
+          <option value="solid">Solid</option>
+          <option value="dashed">Dashed</option>
+          <option value="dotted">Dotted</option>
+        </select>
+      </div>
+      <div className="flex gap-1.5">
+        <div className="flex-1">
+          <FieldLabel>Thickness (px)</FieldLabel>
+          <input type="number" min={1} max={24} className={inputCls}
+            value={props.thickness ?? 1}
+            onChange={e => setProps('thickness', Math.max(1, parseInt(e.target.value, 10) || 1))} />
+        </div>
+        <div className="flex-1">
+          <FieldLabel>End inset (px)</FieldLabel>
+          <input type="number" min={0} max={200} className={inputCls}
+            value={props.inset ?? 0}
+            onChange={e => setProps('inset', Math.max(0, parseInt(e.target.value, 10) || 0))} />
+        </div>
+      </div>
+      <div>
+        <FieldLabel>Colour</FieldLabel>
+        <ColorField value={props.color} onChange={v => setProps('color', v || undefined)} placeholder="var(--border)" />
+      </div>
+      <div>
+        <FieldLabel>Opacity</FieldLabel>
+        <input type="range" min={0} max={1} step={0.05} className="w-full"
+          value={props.opacity ?? 1}
+          onChange={e => setProps('opacity', parseFloat(e.target.value))} />
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// DateDisplayConfig — a live "reporting period" caption (`datedisplay` widget)
+// ---------------------------------------------------------------------------
+
+const DATE_DISPLAY_FORMATS = [
+  { value: 'medium', label: 'Medium — 1 Jan 2025' },
+  { value: 'long', label: 'Long — 1 January 2025' },
+  { value: 'short', label: 'Short — 1/1/25' },
+  { value: 'month', label: 'Month — January 2025' },
+  { value: 'iso', label: 'ISO — 2025-01-01' },
+  { value: 'raw', label: 'Raw — leave the value untouched' },
+]
+
+function DateDisplayConfig({ widget, onChange, spec }) {
+  const props = widget.props ?? {}
+  const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
+  const source = props.source ?? 'variable'
+  const specVariables = Array.isArray(spec?.variables) ? spec.variables : []
+  const { columns, introspecting } = useColumnIntrospection(source === 'query' ? widget.query_id : null)
+
+  return (
+    <div className="space-y-3">
+      <Section title="Source" icon={Database}>
+        <div>
+          <FieldLabel>Where the date comes from</FieldLabel>
+          <select className={selectCls} value={source} onChange={e => setProps('source', e.target.value)}>
+            <option value="variable">A dashboard variable (tracks a filter)</option>
+            <option value="query">A query column</option>
+            <option value="static">Fixed text</option>
+            <option value="now">Today</option>
+          </select>
+        </div>
+
+        {source === 'variable' && (
+          <div>
+            <FieldLabel>Variable</FieldLabel>
+            <select className={selectCls} value={props.variable ?? ''} onChange={e => setProps('variable', e.target.value)}>
+              <option value="">— pick a variable —</option>
+              {specVariables.map(v => <option key={v.name} value={v.name}>{v.name}</option>)}
+            </select>
+            {specVariables.length === 0 && (
+              <p className="text-[10px] text-muted/70 mt-1">
+                This board has no variables yet — add a filter widget first.
+              </p>
+            )}
+          </div>
+        )}
+
+        {source === 'query' && (
+          <>
+            <QueryPicker
+              value={widget.query_id ?? ''}
+              onChange={id => onChange({ ...widget, query_id: id })}
+            />
+            {introspecting && <p className="text-xs text-muted animate-pulse">Introspecting columns…</p>}
+            <ColumnSelect
+              label="Date column"
+              value={widget.encoding?.value ?? ''}
+              onChange={v => onChange({ ...widget, encoding: { ...(widget.encoding ?? {}), value: v } })}
+              columns={columns}
+            />
+            <div>
+              <FieldLabel>Row index</FieldLabel>
+              <input type="number" min={0} className={inputCls}
+                value={props.row ?? 0}
+                onChange={e => setProps('row', Math.max(0, parseInt(e.target.value, 10) || 0))} />
+            </div>
+          </>
+        )}
+
+        {source === 'static' && (
+          <div>
+            <FieldLabel>Text</FieldLabel>
+            <input type="text" className={inputCls} value={props.text ?? ''}
+              placeholder="e.g. FY25 to date"
+              onChange={e => setProps('text', e.target.value)} />
+          </div>
+        )}
+      </Section>
+
+      <Section title="Display" defaultOpen={false} icon={SlidersHorizontal}>
+        <div>
+          <FieldLabel>Label</FieldLabel>
+          <input type="text" className={inputCls} value={props.label ?? ''}
+            placeholder="e.g. Period 1" onChange={e => setProps('label', e.target.value)} />
+        </div>
+        <div>
+          <FieldLabel>Date format</FieldLabel>
+          <select className={selectCls} value={props.format ?? 'medium'} onChange={e => setProps('format', e.target.value)}>
+            {DATE_DISPLAY_FORMATS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+          </select>
+        </div>
+        <div className="flex gap-1.5">
+          <div className="flex-1">
+            <FieldLabel>Prefix</FieldLabel>
+            <input type="text" className={inputCls} value={props.prefix ?? ''} onChange={e => setProps('prefix', e.target.value)} />
+          </div>
+          <div className="flex-1">
+            <FieldLabel>Suffix</FieldLabel>
+            <input type="text" className={inputCls} value={props.suffix ?? ''} onChange={e => setProps('suffix', e.target.value)} />
+          </div>
+        </div>
+        <div>
+          <FieldLabel>Range separator</FieldLabel>
+          <input type="text" className={inputCls} value={props.separator ?? '–'}
+            onChange={e => setProps('separator', e.target.value)} />
+        </div>
+        <div>
+          <FieldLabel>Alignment</FieldLabel>
+          <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+            {['left', 'center', 'right'].map(a => (
+              <button key={a} onClick={() => setProps('align', a)}
+                className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.align ?? 'left') === a ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{a}</button>
+            ))}
+          </div>
+        </div>
+      </Section>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// BreadcrumbConfig — a drill path over dashboard variables (`breadcrumb`)
+// ---------------------------------------------------------------------------
+
+function BreadcrumbConfig({ widget, onChange, spec }) {
+  const props = widget.props ?? {}
+  const setProps = (key, val) => onChange({ ...widget, props: { ...props, [key]: val } })
+  const tracked = Array.isArray(props.variables) ? props.variables : []
+  const labels = props.labels ?? {}
+  const specVariables = Array.isArray(spec?.variables) ? spec.variables : []
+  const available = specVariables.filter(v => !tracked.includes(v.name))
+
+  const setTracked = (next) => setProps('variables', next)
+  const move = (i, dir) => {
+    const j = i + dir
+    if (j < 0 || j >= tracked.length) return
+    const next = tracked.slice()
+    ;[next[i], next[j]] = [next[j], next[i]]
+    setTracked(next)
+  }
+
+  return (
+    <div className="space-y-3">
+      <Section title="Drill path" icon={Database}>
+        <p className="text-[10px] text-muted/70">
+          List the filter variables in drill order — outermost first. A crumb is
+          added each time one of them takes a new value.
+        </p>
+        {tracked.length === 0 && (
+          <p className="text-xs text-muted/70 text-center rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2">
+            No variables tracked yet.
+          </p>
+        )}
+        {tracked.map((name, i) => (
+          <div key={name} className="rounded-lg border border-border p-2 space-y-1.5 bg-surface">
+            <div className="flex items-center gap-1">
+              <div className="flex flex-col">
+                <button type="button" onClick={() => move(i, -1)} disabled={i === 0}
+                  className="h-3 leading-none text-muted/60 hover:text-fg disabled:opacity-30" title="Move up">▲</button>
+                <button type="button" onClick={() => move(i, 1)} disabled={i === tracked.length - 1}
+                  className="h-3 leading-none text-muted/60 hover:text-fg disabled:opacity-30" title="Move down">▼</button>
+              </div>
+              <span className="flex-1 text-xs font-medium text-fg truncate">{name}</span>
+              <button
+                onClick={() => setTracked(tracked.filter(n => n !== name))}
+                className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-danger hover:bg-[var(--danger-bg)] transition-colors"
+                title="Stop tracking"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+            <input
+              type="text"
+              className={inputCls}
+              placeholder={`Crumb label (default "${name}")`}
+              value={labels[name] ?? ''}
+              onChange={e => {
+                const next = { ...labels }
+                if (e.target.value) next[name] = e.target.value
+                else delete next[name]
+                setProps('labels', next)
+              }}
+            />
+          </div>
+        ))}
+        {available.length > 0 && (
+          <select className={selectCls} value="" onChange={e => { if (e.target.value) setTracked([...tracked, e.target.value]) }}>
+            <option value="">+ Track a variable…</option>
+            {available.map(v => <option key={v.name} value={v.name}>{v.name}</option>)}
+          </select>
+        )}
+        {specVariables.length === 0 && (
+          <p className="text-[10px] text-muted/70">
+            This board has no variables yet — add a filter widget first.
+          </p>
+        )}
+      </Section>
+
+      <Section title="Display" defaultOpen={false} icon={SlidersHorizontal}>
+        <div>
+          <FieldLabel>Home label</FieldLabel>
+          <input type="text" className={inputCls} value={props.homeLabel ?? 'All'}
+            onChange={e => setProps('homeLabel', e.target.value)} />
+        </div>
+        <div>
+          <FieldLabel>Separator</FieldLabel>
+          <select className={selectCls} value={props.separator ?? 'arrow'} onChange={e => setProps('separator', e.target.value)}>
+            <option value="arrow">Arrow ›</option>
+            <option value="slash">Slash /</option>
+            <option value="dot">Dot •</option>
+          </select>
+        </div>
+        <div>
+          <FieldLabel>Max steps</FieldLabel>
+          <input type="number" min={1} max={30} className={inputCls}
+            value={props.maxSteps ?? 10}
+            onChange={e => setProps('maxSteps', Math.max(1, parseInt(e.target.value, 10) || 10))} />
+        </div>
+        <div>
+          <FieldLabel>Chip style</FieldLabel>
+          <select className={selectCls} value={props.chipVariant ?? 'filled'} onChange={e => setProps('chipVariant', e.target.value)}>
+            <option value="filled">Filled</option>
+            <option value="outlined">Outlined</option>
+          </select>
+        </div>
+        <div>
+          <FieldLabel>Chip colour</FieldLabel>
+          <ColorField value={props.chipColor} onChange={v => setProps('chipColor', v || undefined)} placeholder="var(--primary)" />
+        </div>
+      </Section>
+    </div>
+  )
+}
+
+const STEP_CHILD_MAKERS = {
+  kpi:    makeKpiWidget,
+  metric: makeMetricWidget,
+  chart:  makeChartWidget,
+  table:  makeTableWidget,
+  text:   makeTextWidget,
+}
+const STEP_CHILD_LABELS = { kpi: 'KPI', metric: 'Metric', chart: 'Chart', table: 'Table', text: 'Text' }
+
+function StepperConfig({ widget, onChange }) {
+  const props = widget.props ?? {}
+  const steps = Array.isArray(props.steps) ? props.steps : []
+  const setProps = (patch) => onChange({ ...widget, props: { ...props, ...patch } })
+  const setSteps = (next) => setProps({ steps: next })
+
+  const updateStep = (i, patch) => {
+    setSteps(steps.map((s, idx) => idx === i ? { ...s, ...patch } : s))
+  }
+  const setStepChildType = (i, type) => {
+    const make = STEP_CHILD_MAKERS[type] ?? makeKpiWidget
+    updateStep(i, { widget: make({ x: 0, y: 0 }) })
+  }
+  const setStepChildField = (i, field, value) => {
+    const step = steps[i]
+    updateStep(i, { widget: { ...step.widget, [field]: value } })
+  }
+  const addStep = () => {
+    const n = steps.length + 1
+    setSteps([...steps, { id: `step-${Date.now()}`, label: `Step ${n}`, widget: makeKpiWidget({ x: 0, y: 0 }) }])
+  }
+  const removeStep = (i) => setSteps(steps.filter((_, idx) => idx !== i))
+  const moveStep = (i, dir) => {
+    const j = i + dir
+    if (j < 0 || j >= steps.length) return
+    const next = [...steps]
+    ;[next[i], next[j]] = [next[j], next[i]]
+    setSteps(next)
+  }
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <FieldLabel>Title</FieldLabel>
+        <input type="text" className={inputCls} value={props.title ?? ''} placeholder="Drill-down"
+          onChange={e => setProps({ title: e.target.value })} />
+      </div>
+      <div>
+        <FieldLabel>Title size</FieldLabel>
+        <input type="number" min={10} max={48} className={inputCls} value={props.titleSize ?? ''} placeholder="24"
+          onChange={e => setProps({ titleSize: e.target.value === '' ? undefined : Number(e.target.value) })} />
+      </div>
+      <div>
+        <FieldLabel>Show</FieldLabel>
+        <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+          {[['one', 'One at a time'], ['all', 'All together']].map(([v, lbl]) => (
+            <button key={v} onClick={() => setProps({ display: v === 'one' ? undefined : v })}
+              className={`flex-1 text-[11px] font-medium transition-colors ${(props.display ?? 'one') === v ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{lbl}</button>
+          ))}
+        </div>
+        <p className="text-[10px] text-muted/70 mt-1">
+          “One at a time” is a drill-down with a step bar; “All together” groups
+          the same widgets side by side in one tile.
+        </p>
+      </div>
+      <div>
+        <FieldLabel>Orientation</FieldLabel>
+        <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+          {['horizontal', 'vertical'].map(o => (
+            <button key={o} onClick={() => setProps({ orientation: o })}
+              className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.orientation ?? 'horizontal') === o ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{o}</button>
+          ))}
+        </div>
+      </div>
+      {(props.display ?? 'one') === 'one' && (
+        <div>
+          <FieldLabel>Step indicator</FieldLabel>
+          <div className="flex h-8 rounded-lg border border-border overflow-hidden">
+            {['labels', 'dots', 'numbered'].map(v => (
+              <button key={v} onClick={() => setProps({ variant: v })}
+                className={`flex-1 text-[11px] font-medium capitalize transition-colors ${(props.variant ?? 'labels') === v ? 'bg-[var(--ink)] text-[var(--ink-fg)]' : 'bg-surface text-muted hover:text-fg'}`}>{v}</button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="pt-1 border-t border-border/60">
+        <div className="flex items-center justify-between mb-2 mt-2">
+          <FieldLabel className="!mb-0">Steps ({steps.length})</FieldLabel>
+          <button onClick={addStep}
+            className="flex items-center gap-1 text-[11px] font-medium text-accent hover:text-fg transition-colors">
+            <Plus size={12} /> Add step
+          </button>
+        </div>
+
+        {steps.length === 0 && (
+          <p className="text-[11px] text-muted/70 leading-relaxed">No steps yet — add one to get started.</p>
+        )}
+
+        <div className="space-y-2">
+          {steps.map((step, i) => {
+            const child = step.widget ?? {}
+            const childType = STEP_CHILD_MAKERS[child.type] ? child.type : 'kpi'
+            const isDataChild = childType !== 'text'
+            return (
+              <div key={step.id ?? i} className="rounded-lg border border-border bg-surface-2/30 p-2.5 space-y-2">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-mono text-muted/70 w-4 shrink-0">{i + 1}</span>
+                  <input type="text" className={inputCls + ' flex-1'} value={step.label ?? ''}
+                    placeholder={`Step ${i + 1}`} onChange={e => updateStep(i, { label: e.target.value })} />
+                  <button onClick={() => moveStep(i, -1)} disabled={i === 0}
+                    className="p-1 rounded text-muted hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed" title="Move up">
+                    <ChevronUp size={13} />
+                  </button>
+                  <button onClick={() => moveStep(i, 1)} disabled={i === steps.length - 1}
+                    className="p-1 rounded text-muted hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed" title="Move down">
+                    <ChevronDown size={13} />
+                  </button>
+                  <button onClick={() => removeStep(i)} className="p-1 rounded text-muted hover:text-danger" title="Remove step">
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <select className={selectCls + ' flex-1'} value={childType}
+                    onChange={e => setStepChildType(i, e.target.value)}>
+                    {Object.keys(STEP_CHILD_MAKERS).map(t => <option key={t} value={t}>{STEP_CHILD_LABELS[t]}</option>)}
+                  </select>
+                </div>
+                {isDataChild && (
+                  <QueryPicker value={child.query_id ?? ''} onChange={id => setStepChildField(i, 'query_id', id)} />
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// DrilldownSection — chart click sets a target variable (cross-widget filter)
+// ---------------------------------------------------------------------------
+
+function DrilldownSection({ widget, onChange }) {
+  const dd = widget.drilldown ?? {}
+  const enabled = !!dd.target_var
+  const enc = widget.encoding ?? {}
+  // Candidate value fields = the chart's encoding columns (x is the usual one).
+  const fieldOptions = [enc.x, enc.color, enc.value, typeof enc.y === 'string' ? enc.y : null].filter(Boolean)
+  const setDD = (patch) => {
+    const next = { ...dd, ...patch }
+    onChange({ ...widget, drilldown: next.target_var ? next : undefined })
+  }
+  return (
+    <Section title="Drilldown / cross-filter" defaultOpen={false}
+      right={enabled ? <span className="text-[10px] text-accent font-medium">on</span> : null}>
+      <p className="text-[10px] text-muted/70 leading-relaxed">
+        Make this chart a filter source. Clicking a data point sets a dashboard
+        variable; other widgets bound to it (via Parameters) re-query.
+      </p>
+      <ToggleRow label="Enable click-to-filter" checked={enabled}
+        onChange={v => setDD({ target_var: v ? (dd.target_var || '') : '' })} />
+      {enabled && (
+        <>
+          <div>
+            <FieldLabel>Target variable</FieldLabel>
+            <input type="text" placeholder="e.g. region" className={inputCls}
+              value={dd.target_var ?? ''} onChange={e => setDD({ target_var: e.target.value })} />
+          </div>
+          <div>
+            <FieldLabel>Value field (optional)</FieldLabel>
+            <select className={selectCls} value={dd.value_field ?? ''} onChange={e => setDD({ value_field: e.target.value || undefined })}>
+              <option value="">— clicked category (x) —</option>
+              {fieldOptions.map(f => <option key={f} value={f}>{f}</option>)}
+            </select>
+            <p className="text-[10px] text-muted/70 mt-1">Defaults to the clicked point's category value.</p>
+          </div>
+        </>
+      )}
+    </Section>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// WidgetLayoutSection — per-breakpoint position/size + visibility + constraints
+// ---------------------------------------------------------------------------
+
+const BP_LABEL = { lg: 'Desktop', md: 'Tablet', sm: 'Mobile' }
+const ALL_BREAKPOINTS = ['lg', 'md', 'sm']
+
+function WidgetLayoutSection({ widget, onChange, spec, activeBreakpoint = 'lg', onLayoutCommit }) {
+  const pos = widget.pos ?? {}
+  const setPos = (patch) => {
+    const next = { ...pos, ...patch }
+    Object.keys(next).forEach(k => { if (next[k] === '' || next[k] == null) delete next[k] })
+    onChange({ ...widget, pos: next })
+  }
+  const numField = (key, label, placeholder) => (
+    <div>
+      <FieldLabel>{label}</FieldLabel>
+      <input type="number" min={1} className={inputCls} placeholder={placeholder}
+        value={pos[key] ?? ''} onChange={e => setPos({ [key]: parseNumberInput(e.target.value, { integer: true, min: 1 }) })} />
+    </div>
+  )
+
+  // Position & size for the ACTIVE breakpoint — edits route through the same
+  // single-breakpoint commit path as drag/resize (lg → widget.pos,
+  // tablet/mobile → spec.responsive[bp]).
+  const eff = effectivePos(widget, spec, activeBreakpoint) ?? {}
+  const base = { x: eff.x ?? 1, y: eff.y ?? 1, w: eff.w ?? 4, h: eff.h ?? 4 }
+  const setLayoutField = (key, raw) => {
+    const v = Math.max(1, parseInt(raw, 10) || 1)
+    const next = { ...base, [key]: v }
+    onLayoutCommit?.({ i: widget.id, x: next.x - 1, y: next.y - 1, w: next.w, h: next.h })
+  }
+  const layoutField = (key, label) => (
+    <div>
+      <FieldLabel>{label}</FieldLabel>
+      <input type="number" min={1} className={inputCls}
+        value={base[key]} onChange={e => setLayoutField(key, e.target.value)} />
+    </div>
+  )
+
+  // Per-breakpoint visibility (widget.hidden = ['lg'|'md'|'sm', …]).
+  const hidden = Array.isArray(widget.hidden) ? widget.hidden : []
+  const toggleHidden = (bp, on) => {
+    const next = on ? [...hidden.filter(b => b !== bp), bp] : hidden.filter(b => b !== bp)
+    onChange({ ...widget, hidden: next.length ? next : undefined })
+  }
+
+  return (
+    <Section title="Layout & size" defaultOpen={false}>
+      <FieldLabel>Position &amp; size · {BP_LABEL[activeBreakpoint]}</FieldLabel>
+      <div className="grid grid-cols-4 gap-2">
+        {layoutField('x', 'X')}
+        {layoutField('y', 'Y')}
+        {layoutField('w', 'W')}
+        {layoutField('h', 'H')}
+      </div>
+      {activeBreakpoint !== 'lg' && (
+        <p className="text-[10px] text-muted/60 -mt-1">Edits apply to {BP_LABEL[activeBreakpoint]} only.</p>
+      )}
+
+      <div className="pt-1">
+        <FieldLabel>Visibility</FieldLabel>
+        {ALL_BREAKPOINTS.map(bp => (
+          <ToggleRow key={bp} label={`Hide on ${BP_LABEL[bp]}`}
+            checked={hidden.includes(bp)} onChange={v => toggleHidden(bp, v)} />
+        ))}
+      </div>
+
+      <div className="pt-1">
+        <ToggleRow label="Static (pin in place)" hint="Cannot be dragged or resized"
+          checked={!!pos.static} onChange={v => setPos({ static: v || undefined })} />
+        <div className="grid grid-cols-2 gap-2">
+          {numField('minW', 'Min width', 'cells')}
+          {numField('minH', 'Min height', 'cells')}
+          {numField('maxW', 'Max width', 'cells')}
+          {numField('maxH', 'Max height', 'cells')}
+        </div>
+      </div>
+    </Section>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ParamBindingSection — now imported from ./shared/index.js
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// VariablesEditor
+// ---------------------------------------------------------------------------
+
+function VariablesEditor({ variables, onChange }) {
+  const vars = variables ?? []
+  const addVar = () => onChange([...vars, { name: `var${vars.length + 1}`, type: 'text', default: '' }])
+  const removeVar = idx => onChange(vars.filter((_, i) => i !== idx))
+  const setVar = (idx, key, val) => onChange(vars.map((v, i) => i === idx ? { ...v, [key]: val } : v))
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <SectionLabel>Dashboard variables</SectionLabel>
+        <button onClick={addVar}
+          className="text-[11px] font-medium px-2 h-6 rounded-lg border border-dashed border-border hover:border-fg text-muted hover:text-fg transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50">
+          + Add
+        </button>
+      </div>
+      {vars.length === 0 && <p className="text-xs text-muted/70 rounded-lg border border-dashed border-border bg-surface-2/30 px-3 py-2 text-center">No variables defined.</p>}
+      {vars.map((v, idx) => (
+        <div key={idx} className="rounded-lg border border-border p-2 space-y-1.5 bg-surface-2">
+          <div className="flex items-center gap-1.5">
+            <input type="text" className={`${inputCls} flex-1 font-mono text-xs`} placeholder="name"
+              value={v.name} onChange={e => setVar(idx, 'name', e.target.value)} />
+            <button onClick={() => removeVar(idx)}
+              className="text-xs px-1.5 py-0.5 rounded border border-transparent hover:border-border text-muted hover:text-fg transition-colors" title="Remove variable">✕</button>
+          </div>
+          <div className="flex gap-1.5">
+            <select className={`${selectCls} flex-1`} value={v.type ?? 'text'} onChange={e => setVar(idx, 'type', e.target.value)}>
+              {VARIABLE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <input type="text" className={`${inputCls} flex-1`} placeholder="default"
+              value={v.default ?? ''} onChange={e => setVar(idx, 'default', e.target.value)} />
+          </div>
+          <ToggleRow label="Bind to URL" checked={!!v.url_bind} onChange={val => setVar(idx, 'url_bind', val || undefined)} />
+        </div>
+      ))}
+      <p className="text-[10px] text-muted/70 leading-relaxed">
+        URL-bound variables are seeded from <span className="font-mono text-muted">/d/:id?var=value</span> (URL wins
+        over the default) and filter changes update the URL so the view is shareable &amp; refresh-safe.
+      </p>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ConfigPanel
+// ---------------------------------------------------------------------------
+
+// BackgroundEditor is now imported from ./shared/index.js
+
+// ---------------------------------------------------------------------------
+// StylePresetChips — shared preset-picker chip row for widget/dashboard style
+// (same visual language as ChipRow, but each option carries its own label
+// distinct from its key, plus a description tooltip).
+// ---------------------------------------------------------------------------
+
+function StylePresetChips({ presets, activeKey, onSelect }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {presets.map(preset => (
+        <button
+          key={preset.key}
+          type="button"
+          title={preset.description}
+          onClick={() => onSelect(preset)}
+          className={[
+            'px-3 py-1.5 text-xs font-medium rounded-lg border transition-all duration-150',
+            'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+            activeKey === preset.key
+              ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]'
+              : 'bg-surface text-muted border-border hover:border-fg hover:text-fg hover:bg-surface-2',
+          ].join(' ')}
+        >
+          {preset.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// WidgetAppearanceSection — widget.style + widget.html (full HTML flexibility)
+// ---------------------------------------------------------------------------
+
+// Whitespace-insensitive compare so a preset chip still lights up when a spec
+// carries an older/hand-edited variant of the same values (e.g. boxShadow with
+// different comma spacing). `color`/`padding` are additive and ignored here.
+// A `solid` descriptor and the bare color string it renders to are the same
+// background, so a preset stays lit whichever shape the widget stored.
+const normStyleVal = (v) => {
+  if (v && typeof v === 'object' && v.type === 'solid') v = v.color
+  return typeof v === 'string' ? v.replace(/\s+/g, '') : v
+}
+const PRESET_MATCH_KEYS = ['background', 'border', 'borderRadius', 'boxShadow', 'backdropFilter', 'WebkitBackdropFilter']
+function matchWidgetPresetKey(style) {
+  if (!style || typeof style !== 'object') return 'default'
+  for (const p of WIDGET_STYLE_PRESETS) {
+    if (!p.style) continue
+    if (PRESET_MATCH_KEYS.every(k => normStyleVal(style[k]) === normStyleVal(p.style[k]))) return p.key
+  }
+  return 'default'
+}
+
+/**
+ * A widget background is stored in either of two shapes, and both render: a
+ * descriptor object (what BackgroundEditor writes) or a plain CSS color string
+ * (what every WIDGET_STYLE_PRESET writes, and what the API and MCP tools
+ * accept). styleToCss() handles both; the editor only ever understood the
+ * object, so a preset-styled or API-authored card showed "none" and its real
+ * background was invisible — and unreachable — in the UI.
+ *
+ * Coercing the string to a `solid` descriptor is render-identical: both paths
+ * end at `background: adaptBackgroundColor(color)`. Nothing about the painted
+ * card changes; it just becomes editable.
+ */
+function widgetBgDescriptor(bg) {
+  if (bg && typeof bg === 'object') return bg.type ? bg : undefined
+  if (typeof bg === 'string' && bg.trim()) return { type: 'solid', color: bg.trim() }
+  return undefined
+}
+
+function WidgetAppearanceSection({ widget, onChange }) {
+  const style = widget.style ?? {}
+  const setStyle = (patch) => {
+    const next = { ...style, ...patch }
+    Object.keys(next).forEach(k => { if (next[k] === '' || next[k] == null) delete next[k] })
+    onChange({ ...widget, style: Object.keys(next).length ? next : undefined })
+  }
+  const setBg = (bgVal) => {
+    const hasBg = bgVal && bgVal.type
+    setStyle({ background: hasBg ? bgVal : '' })
+  }
+  // Backdrop blur writes both the standard and -webkit properties together so
+  // the frosted effect works in every engine; clearing removes both.
+  const setBlur = (val) => setStyle({ backdropFilter: val, WebkitBackdropFilter: val })
+  const activePresetKey = matchWidgetPresetKey(style)
+  const applyPreset = (preset) => {
+    if (!preset.style) {
+      setStyle({ background: '', backdropFilter: '', WebkitBackdropFilter: '', border: '', borderRadius: '', boxShadow: '' })
+    } else {
+      setStyle(preset.style)
+    }
+  }
+  return (
+    <div className="space-y-3">
+      <Section title="Appearance" defaultOpen={false} icon={Palette}>
+        <div className="space-y-1">
+          <SectionLabel>Style</SectionLabel>
+          <StylePresetChips presets={WIDGET_STYLE_PRESETS} activeKey={activePresetKey} onSelect={applyPreset} />
+          <p className="text-[10px] text-muted/70">
+            A preset sets a starting point — the controls below still fine-tune it.
+          </p>
+        </div>
+        <div className="space-y-1">
+          <SectionLabel>Card background</SectionLabel>
+          <BackgroundEditor value={widgetBgDescriptor(style.background)} onChange={setBg} />
+        </div>
+        <div className="space-y-2">
+          <SectionLabel>Text colors</SectionLabel>
+          <p className="text-[10px] text-muted/70">
+            Every piece of text on a card belongs to one of three roles, and each
+            is set here. Leave a role blank to inherit: Heading falls back to
+            Body, Secondary to a softened Body, and Body to the board theme.
+          </p>
+          <div>
+            <FieldLabel>Heading</FieldLabel>
+            <ColorField
+              value={typeof style.titleColor === 'string' ? style.titleColor : undefined}
+              onChange={v => setStyle({ titleColor: v })}
+              placeholder="follows Body"
+              fallback="#000000"
+            />
+            <p className="text-[10px] text-muted/70 mt-1">
+              Chart title, section title, table header, filter label.
+            </p>
+          </div>
+          <div>
+            <FieldLabel>Body</FieldLabel>
+            <ColorField
+              value={typeof style.color === 'string' ? style.color : undefined}
+              onChange={v => setStyle({ color: v })}
+              placeholder="inherit (theme default)"
+              fallback="#000000"
+            />
+            <p className="text-[10px] text-muted/70 mt-1">
+              KPI number, table cells, text-widget body.
+            </p>
+          </div>
+          <div>
+            <FieldLabel>Secondary</FieldLabel>
+            <ColorField
+              value={typeof style.mutedColor === 'string' ? style.mutedColor : undefined}
+              onChange={v => setStyle({ mutedColor: v })}
+              placeholder="softened Body"
+              fallback="#000000"
+            />
+            <p className="text-[10px] text-muted/70 mt-1">
+              KPI caption, subtitles, chart axis and legend labels.
+            </p>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <FieldLabel>Border</FieldLabel>
+            <input type="text" className={inputCls} placeholder="1px solid #333" value={typeof style.border === 'string' ? style.border : ''} onChange={e => setStyle({ border: e.target.value })} />
+          </div>
+          <div>
+            <FieldLabel>Radius</FieldLabel>
+            <input type="text" className={inputCls} placeholder="12px" value={style.borderRadius ?? ''} onChange={e => setStyle({ borderRadius: e.target.value })} />
+          </div>
+        </div>
+        <div>
+          <FieldLabel>Box shadow</FieldLabel>
+          <input type="text" className={inputCls} placeholder="0 8px 24px rgba(0,0,0,0.2)"
+            value={style.boxShadow ?? ''} onChange={e => setStyle({ boxShadow: e.target.value })} />
+          <p className="text-[10px] text-muted/70 mt-1">Any CSS shadow — e.g. a colored glow <code>0 8px 24px #7c3aed55</code>.</p>
+        </div>
+        <div>
+          <FieldLabel>Backdrop blur</FieldLabel>
+          <input type="text" className={inputCls} placeholder="blur(14px) saturate(140%)"
+            value={style.backdropFilter ?? ''} onChange={e => setBlur(e.target.value)} />
+          <p className="text-[10px] text-muted/70 mt-1">Frosts whatever is behind the card — pair a translucent background with <code>blur(…)</code> for a glass look.</p>
+        </div>
+        <div>
+          <FieldLabel>Padding</FieldLabel>
+          <input type="text" className={inputCls} placeholder="8px 12px" value={style.padding ?? ''} onChange={e => setStyle({ padding: e.target.value })} />
+        </div>
+      </Section>
+
+      <Section title="Custom HTML" defaultOpen={false}
+        right={widget.html ? <span className="text-[10px] text-accent font-medium">active</span> : null}>
+        <p className="text-[10px] text-muted/70 leading-relaxed">
+          Replaces the default widget body with your own sanitized HTML — inline styles welcome. Tokens pull live query data.
+        </p>
+        <WidgetHtmlEditor widget={widget} onChange={onChange} />
+      </Section>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// DashboardPanel — dashboard-level settings: background, grid, variables
+// ---------------------------------------------------------------------------
+
+// ChipRow is now imported from ./shared/index.js
+
+function DashboardPanel({ spec, onSpecChange }) {
+  const layout = spec.layout ?? {}
+  // Per-device column counts. Desktop = `cols` (canonical, default 12); tablet =
+  // `cols_md` (falls back to desktop); mobile = `cols_sm` (falls back to the
+  // historical single column). Mobile is no longer hard-locked to 1.
+  const cols = layout.cols ?? 12
+  const colsMd = layout.cols_md ?? cols
+  const colsSm = layout.cols_sm ?? 1
+  const rowHeight = layout.row_height ?? 60
+  // Single scalar gap (CSS Grid `gap`, both axes) — GridCanvas takes one number.
+  // Falls back to the legacy margin_x so old specs keep their gutters.
+  const gap = layout.gap ?? layout.margin_x ?? 12
+  const dense = !!layout.dense
+  const bp = { ...DEFAULT_BREAKPOINTS_PX, ...(layout.breakpoints ?? {}) }
+
+  const setLayout = (patch) => onSpecChange({ ...spec, layout: { ...spec.layout, ...patch } })
+  const setBreakpoint = (key, raw) => {
+    const v = parseInt(raw, 10)
+    setLayout({ breakpoints: { ...bp, [key]: Number.isFinite(v) ? v : DEFAULT_BREAKPOINTS_PX[key] } })
+  }
+  const activeStylePreset = spec.stylePreset ?? 'default'
+  const applyDashboardPreset = (preset) => {
+    onSpecChange({
+      ...spec,
+      stylePreset: preset.key === 'default' ? undefined : preset.key,
+      background: preset.background ?? undefined,
+    })
+  }
+
+  return (
+    <div className="p-4 space-y-3 overflow-y-auto h-full">
+      <h3 className="text-sm font-semibold text-fg">Dashboard</h3>
+
+      {/* Description — rendered under the dashboard title in the viewer */}
+      <div className="space-y-1">
+        <SectionLabel>Description</SectionLabel>
+        <textarea
+          className="w-full text-xs rounded-lg border border-border bg-surface px-2.5 py-2 text-fg placeholder:text-muted/60 focus:outline-none focus:ring-2 focus:ring-ring/50 resize-y min-h-[52px]"
+          placeholder="Optional subtitle shown under the dashboard title…"
+          value={spec.description ?? ''}
+          onChange={e => onSpecChange({ ...spec, description: e.target.value || undefined })}
+        />
+      </div>
+
+      <Section title="Style" icon={Palette}>
+        <div className="space-y-1">
+          <StylePresetChips presets={DASHBOARD_STYLE_PRESETS} activeKey={activeStylePreset} onSelect={applyDashboardPreset} />
+          <p className="text-[10px] text-muted/70">
+            &ldquo;Glass&rdquo; gives every widget with no style of its own a frosted-glass card over a soft backdrop — pick it once, the whole dashboard updates.
+          </p>
+        </div>
+      </Section>
+
+      <Section title="Background" icon={Palette}>
+        <BackgroundEditor value={spec.background} onChange={bg => onSpecChange({ ...spec, background: bg && bg.type ? bg : undefined })} />
+      </Section>
+
+      <Section title="Grid" icon={Grid3x3}>
+        {/* Columns per device — independent counts (mobile no longer locked to 1). */}
+        <div className="space-y-1">
+          <SectionLabel>Columns · Desktop</SectionLabel>
+          <ChipRow options={COLUMN_OPTIONS} value={cols} onChange={c => setLayout({ cols: c })} />
+        </div>
+        <div className="space-y-1">
+          <SectionLabel>Columns · Tablet</SectionLabel>
+          <ChipRow options={COLUMN_OPTIONS_MD} value={colsMd} onChange={c => setLayout({ cols_md: c })} />
+        </div>
+        <div className="space-y-1">
+          <SectionLabel>Columns · Mobile</SectionLabel>
+          <ChipRow options={COLUMN_OPTIONS_SM} value={colsSm} onChange={c => setLayout({ cols_sm: c })} />
+        </div>
+        <div className="space-y-1">
+          <SectionLabel>Row height</SectionLabel>
+          <ChipRow options={ROW_HEIGHT_OPTIONS} value={rowHeight} onChange={rh => setLayout({ row_height: rh })} />
+        </div>
+        <div className="space-y-1">
+          <SectionLabel>Gap (px)</SectionLabel>
+          <ChipRow options={GAP_OPTIONS} value={gap} onChange={g => setLayout({ gap: g })} />
+        </div>
+      </Section>
+
+      <Section title="Advanced" defaultOpen={false} icon={SlidersHorizontal}>
+        {/* Compaction + dense packing */}
+        <div className="space-y-1">
+          <SectionLabel>Compaction mode</SectionLabel>
+          <div className="grid grid-cols-2 gap-1.5">
+            {COMPACTION_MODES.map(m => {
+              const active = (layout.compaction ?? 'free') === m.id
+              return (
+                <button key={m.id} onClick={() => setLayout({ compaction: m.id })} title={m.hint}
+                  className={`px-2 py-1.5 text-xs font-medium rounded-lg border text-left transition-all ${active ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]' : 'bg-surface text-fg border-border hover:border-fg hover:text-fg'}`}>
+                  {m.label}
+                </button>
+              )
+            })}
+          </div>
+          <p className="text-[10px] text-muted/70">{COMPACTION_MODES.find(m => m.id === (layout.compaction ?? 'free'))?.hint}</p>
+          <ToggleRow label="Dense packing" hint="Back-fill gaps when packing (vertical / horizontal only)"
+            checked={dense} onChange={v => setLayout({ dense: v || undefined })} />
+        </div>
+
+        {/* Container padding */}
+        <div className="space-y-1">
+          <SectionLabel>Container padding</SectionLabel>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <FieldLabel>Padding X (px)</FieldLabel>
+              <input type="number" min={0} className={inputCls} value={layout.padding_x ?? 0}
+                onChange={e => setLayout({ padding_x: parseInt(e.target.value, 10) || 0 })} />
+            </div>
+            <div>
+              <FieldLabel>Padding Y (px)</FieldLabel>
+              <input type="number" min={0} className={inputCls} value={layout.padding_y ?? 0}
+                onChange={e => setLayout({ padding_y: parseInt(e.target.value, 10) || 0 })} />
+            </div>
+          </div>
+        </div>
+
+        {/* Breakpoint width thresholds (px) — used by the viewer to pick a layout. */}
+        <div className="space-y-1">
+          <SectionLabel>Breakpoint widths (px)</SectionLabel>
+          <div className="grid grid-cols-3 gap-2">
+            <div>
+              <FieldLabel>Desktop ≥</FieldLabel>
+              <input type="number" min={0} className={inputCls} value={bp.lg} onChange={e => setBreakpoint('lg', e.target.value)} />
+            </div>
+            <div>
+              <FieldLabel>Tablet ≥</FieldLabel>
+              <input type="number" min={0} className={inputCls} value={bp.md} onChange={e => setBreakpoint('md', e.target.value)} />
+            </div>
+            <div>
+              <FieldLabel>Mobile ≥</FieldLabel>
+              <input type="number" min={0} className={inputCls} value={bp.sm} onChange={e => setBreakpoint('sm', e.target.value)} />
+            </div>
+          </div>
+        </div>
+
+        {/* Max content width — caps the rendered dashboard's width in the viewer. */}
+        <div>
+          <FieldLabel>Max content width (px)</FieldLabel>
+          <input type="number" min={0} className={inputCls} placeholder="unbounded"
+            value={layout.max_width ?? ''}
+            onChange={e => setLayout({ max_width: parseNumberInput(e.target.value, { integer: true, min: 1 }) })} />
+        </div>
+      </Section>
+
+      <Section title="Variables" defaultOpen={false} icon={SlidersHorizontal}>
+        <VariablesEditor variables={spec?.variables} onChange={vars => onSpecChange?.({ ...spec, variables: vars })} />
+      </Section>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ConfigPanel — per-widget configuration
+// ---------------------------------------------------------------------------
+
+/**
+ * ConfigPanel — the per-widget config sections.
+ *
+ * variant 'panel' (default) is the right-sidebar inspector. variant 'focus' is
+ * the same sections inside focus mode's right rail, which drops the chrome the
+ * shell already provides: the header (shell header), the remove button (shell
+ * header) and the query picker (shell data rail).
+ */
+function ConfigPanel({
+  widget, onChange, onRemove = undefined, extraQueryIds, spec, activeBreakpoint = 'lg',
+  onLayoutCommit, onMoveToTab, onLibrarySaved, variant = 'panel',
+  // Reference-based reuse (ref widgets only — all optional/no-op for inline widgets).
+  libraryById, onDetachRequest, onEditScopeRequest, onResetOverride,
+  sharedEditRefId, onSaveSharedDefinition, onCancelSharedEdit, savingShared,
+  // Filter wiring: reach other widgets on the board, and declare variables.
+  onPatchWidget, onCreateVariable, onRenameVariable = undefined, resolveWidget,
+}) {
+  const focus = variant === 'focus'
+  // Declared params for every registered query — shared, cached, so binding a
+  // query can wire it up without a round trip per selection.
+  const { paramsById } = useQueryParamsIndex()
+  // What the last query pick connected on its own, so the panel can say so
+  // rather than changing the widget silently. Keyed by widget id: selecting a
+  // different widget must not inherit the previous one's note.
+  const [autoBound, setAutoBound] = useState(null)
+  // Config sections are grouped into tabs (Data/Widget/Style/Layout) so a
+  // widget with a lot of surface area — a chart has ~11 sections — doesn't
+  // force one long scroll. `prevWidgetId` is the "reset state when a prop
+  // changes" pattern: switching the selected widget snaps back to the
+  // default tab instead of possibly landing on one that's now hidden.
+  const [activeTab, setActiveTab] = useState('widget')
+  const [prevWidgetId, setPrevWidgetId] = useState(widget?.id)
+
+  if (!widget) {
+    return (
+      <div className="flex h-full flex-col px-5 pt-6" data-testid="config-empty">
+        <p className="nbc-label m-0">Nothing selected</p>
+        <p className="mt-2 mb-0 text-[13px] leading-snug text-muted">
+          Click a widget on the canvas to configure it. Press <kbd className="nubi-kbd">⏎</kbd> to open it in focus mode.
+        </p>
+        <p className="mt-4 mb-0 border-t border-border pt-3 text-[12px] leading-snug text-muted">
+          Background, grid and variables live in the <span className="font-semibold text-fg">Dashboard</span> panel.
+        </p>
+      </div>
+    )
+  }
+
+  const isRef = isRefWidget(widget)
+  // A broken reference resolves to a `text` placeholder with `props.broken_ref`
+  // set (see `resolveWidgetRef`) — detect it so we skip rendering the normal
+  // per-type config sections against a fabricated placeholder shape.
+  const isBrokenRef = isRef && widget.props?.broken_ref === true
+  const isDataWidget = !isBrokenRef && ['kpi', 'metric', 'table', 'pivot', 'chart'].includes(widget.type)
+  const setQueryId = qid => {
+    const next = { ...widget, query_id: qid }
+    // One-time convenience: pre-fill an empty chart title from the query's
+    // display name. Once the user has their own title, leave it alone.
+    if (widget.type === 'chart' && !titleText(widget.config?.title)) {
+      const match = extraQueryIds.find(q => q.id === qid)
+      if (match?.name) {
+        next.config = { ...(widget.config ?? {}), title: withTitleText(widget.config?.title, match.name) }
+      }
+    }
+    // Connect the query's params to the board's filters by name. Only exact,
+    // unambiguous matches are taken and nothing already bound is touched, so
+    // this can add wiring but never change wiring someone chose. What it did is
+    // reported under the picker — the widget must not change in silence.
+    const { params, added } = autoBindParams(
+      widget.params,
+      paramsById.get(qid),
+      (spec?.variables ?? []).map(v => v.name),
+    )
+    if (added.length > 0) next.params = params
+    setAutoBound(added.length > 0 ? { widgetId: widget.id, added } : null)
+    onChange(next)
+  }
+
+  const tabDefs = [
+    { id: 'data',   label: 'Data',   icon: Database,                       show: !isBrokenRef && isDataWidget },
+    { id: 'widget', label: 'Widget', icon: WIDGET_ICONS[widget.type] ?? Settings2, show: !isBrokenRef },
+    { id: 'style',  label: 'Style',  icon: Palette,                        show: !isBrokenRef },
+    // Layout & size still applies to a broken ref (it still occupies grid
+    // space and can be moved/resized/removed), so this tab always shows.
+    { id: 'layout', label: 'Layout', icon: LayoutGrid,                     show: true },
+  ].filter(t => t.show)
+
+  if (widget.id !== prevWidgetId) {
+    setPrevWidgetId(widget.id)
+    setActiveTab(isBrokenRef ? 'layout' : 'widget')
+  }
+  const effectiveTab = tabDefs.some(t => t.id === activeTab) ? activeTab : tabDefs[0]?.id
+
+  // Pinned above the scrollable body: widget identity + the tab strip. A
+  // chart widget's Widget tab alone has ~5 sections — without this, switching
+  // tabs mid-scroll means scrolling back to the top first.
+  const hasPinned = !focus || tabDefs.length > 1
+
+  return (
+    <div className="flex flex-col h-full min-h-0">
+      {hasPinned && (
+        <div className="shrink-0">
+          {/* Widget header */}
+          {!focus && (
+            <div className="flex items-center justify-between gap-2 px-3 pt-3 pb-2">
+              <div className="flex min-w-0 items-center gap-2">
+                {(() => { const I = WIDGET_ICONS[widget.type]; return I ? <I size={16} strokeWidth={1.5} className="shrink-0 text-muted" /> : null })()}
+                <h3 className="m-0 truncate text-sm font-semibold capitalize text-fg">{widget.type}</h3>
+                <span className="nbc-meta truncate" title={widget.id}>{widget.id}</span>
+              </div>
+              <button
+                onClick={onRemove}
+                title="Remove widget"
+                aria-label="Remove widget"
+                className="nbc-tool hover:!text-danger"
+              >
+                <Trash2 size={14} strokeWidth={1.5} /> Remove
+              </button>
+            </div>
+          )}
+
+          {tabDefs.length > 1 && (
+            <div className="nbc-tabs" role="tablist" aria-label="Widget settings" data-testid="config-tabs">
+              {tabDefs.map(t => (
+                <button
+                  key={t.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={effectiveTab === t.id}
+                  onClick={() => setActiveTab(t.id)}
+                  data-testid={`config-tab-${t.id}`}
+                  className="nbc-tab"
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-4">
+      {isRef && (
+        <RefWidgetBanner
+          widget={widget}
+          libraryRow={libraryById?.get(widget.ref)}
+          isBroken={isBrokenRef}
+          isSharedEditing={sharedEditRefId === widget.ref}
+          savingShared={savingShared}
+          onDetach={() => onDetachRequest?.(widget)}
+          onEditScope={() => onEditScopeRequest?.(widget)}
+          onResetOverride={(path) => onResetOverride?.(widget.id, path)}
+          onSaveShared={() => onSaveSharedDefinition?.(widget.id)}
+          onCancelSharedEdit={onCancelSharedEdit}
+        />
+      )}
+
+      {Array.isArray(spec?.tabs) && spec.tabs.length > 0 && onMoveToTab && (
+        <div>
+          <FieldLabel className="flex items-center gap-1.5"><LayoutGrid size={12} /> Move to tab</FieldLabel>
+          <select
+            className={selectCls}
+            data-testid="widget-move-to-tab"
+            value={widget.tab_id ?? spec.tabs[0].id}
+            onChange={e => onMoveToTab(widget.id, e.target.value)}
+          >
+            {spec.tabs.map(t => <option key={t.id} value={t.id}>{t.label || t.id}</option>)}
+          </select>
+        </div>
+      )}
+
+      {isBrokenRef && (
+        <p className="text-xs text-muted/70 leading-relaxed rounded-lg border border-dashed border-border bg-surface-2/30 p-3">
+          Nothing to configure for a broken reference — detach it (to keep this
+          instance) or remove it, or re-add the widget from the library once
+          the entry exists again.
+        </p>
+      )}
+
+      {effectiveTab === 'data' && (
+        <div className="space-y-4">
+          {!focus && (
+            <div className="space-y-1.5">
+              <FieldLabel className="flex items-center gap-1.5"><Database size={12} /> Query</FieldLabel>
+              <QueryPicker value={widget.query_id} onChange={setQueryId} extraIds={extraQueryIds} />
+              {/* Live status + jump into the query editor — without this the only
+                  relationship between a widget and its data was a typed id. */}
+              <QueryStatusLink queryId={widget.query_id} />
+              {autoBound?.widgetId === widget.id && (
+                <p className="text-[10px] text-accent flex items-start gap-1 leading-relaxed"
+                  data-testid="param-autobind-note">
+                  <Link2 size={11} className="mt-px flex-none" />
+                  <span>
+                    Connected to the{' '}
+                    {autoBound.added.map((a, i) => (
+                      <span key={a.param}>
+                        {i > 0 && (i === autoBound.added.length - 1 ? ' and ' : ', ')}
+                        <span className="font-mono">{a.variable}</span>
+                      </span>
+                    ))}{' '}
+                    filter{autoBound.added.length > 1 ? 's' : ''}. Change this under Parameters.
+                  </span>
+                </p>
+              )}
+            </div>
+          )}
+
+          <Section title="Metric binding" defaultOpen={Boolean(widget.metric?.metric_id)} icon={Sigma}>
+            <MetricBindingSection widget={widget} onChange={onChange} />
+          </Section>
+
+          <Section title="Parameters" defaultOpen={false} icon={SlidersHorizontal}>
+            <ParamBindingSection widget={widget} onChange={onChange} specVariables={spec?.variables}
+              onCreateVariable={onCreateVariable} />
+          </Section>
+        </div>
+      )}
+
+      {effectiveTab === 'widget' && (
+        <div className="space-y-4">
+          {widget.type === 'chart' && <ChartConfig widget={widget} onChange={onChange} />}
+          {(widget.type === 'kpi' || widget.type === 'metric') && <KpiConfig widget={widget} onChange={onChange} />}
+          {widget.type === 'table' && <TableConfig widget={widget} onChange={onChange} />}
+          {widget.type === 'pivot' && <PivotConfig widget={widget} onChange={onChange} />}
+          {widget.type === 'filter' && (
+            <FilterConfig
+              widget={widget} onChange={onChange} spec={spec}
+              onPatchWidget={onPatchWidget}
+              onCreateVariable={name => onCreateVariable?.(name, VARIABLE_TYPE_FOR_FILTER[widget.subtype ?? 'select'] ?? 'text')}
+              onRenameVariable={(from, to) => onRenameVariable?.(from, to, widget.id, VARIABLE_TYPE_FOR_FILTER[widget.subtype ?? 'select'] ?? 'text')}
+              resolveWidget={resolveWidget}
+            />
+          )}
+          {widget.type === 'text' && <TextConfig widget={widget} onChange={onChange} />}
+          {widget.type === 'section' && <SectionConfig widget={widget} onChange={onChange} />}
+          {widget.type === 'image' && <ImageConfig widget={widget} onChange={onChange} />}
+          {widget.type === 'stepper' && <StepperConfig widget={widget} onChange={onChange} />}
+          {widget.type === 'divider' && <DividerConfig widget={widget} onChange={onChange} />}
+          {widget.type === 'datedisplay' && <DateDisplayConfig widget={widget} onChange={onChange} spec={spec} />}
+          {widget.type === 'breadcrumb' && <BreadcrumbConfig widget={widget} onChange={onChange} spec={spec} />}
+
+          {widget.type === 'chart' && <DrilldownSection widget={widget} onChange={onChange} />}
+        </div>
+      )}
+
+      {effectiveTab === 'style' && (
+        <div className="space-y-4">
+          <WidgetAppearanceSection widget={widget} onChange={onChange} />
+        </div>
+      )}
+
+      {effectiveTab === 'layout' && (
+        <div className="space-y-4">
+          <WidgetLayoutSection widget={widget} onChange={onChange} spec={spec}
+            activeBreakpoint={activeBreakpoint} onLayoutCommit={onLayoutCommit} />
+
+          {!isRef && (
+            <Section title="Save to library" defaultOpen={false} icon={BookmarkPlus}>
+              <SaveToLibrarySection widget={widget} onSaved={onLibrarySaved} />
+            </Section>
+          )}
+        </div>
+      )}
+
+      </div>
+    </div>
+  )
+}
+
+/**
+ * RefWidgetBanner — shown at the top of ConfigPanel whenever the selected
+ * widget is a REFERENCE (`widget.ref` set). Makes override state visible
+ * BEFORE editing (per-field "overridden here" + reset-to-library-value),
+ * surfaces "used by N boards", and hosts the three-tier actions: Detach,
+ * and the "used by N boards" edit-scope prompt (Edit for all / Duplicate &
+ * edit just this one). A dangling ref (library row deleted/missing) renders
+ * a distinct broken-reference notice instead of the normal banner body.
+ */
+function RefWidgetBanner({
+  widget, libraryRow, isBroken, isSharedEditing, savingShared,
+  onDetach, onEditScope, onResetOverride, onSaveShared, onCancelSharedEdit,
+}) {
+  const overriddenFields = flattenOverridePaths(widget.overrides)
+  const libraryName = libraryRow?.name
+
+  if (isSharedEditing) {
+    return (
+      <div className="rounded-xl border border-accent bg-[var(--accent-soft)] p-3 space-y-2" data-testid="ref-widget-shared-editing">
+        <div className="flex items-center gap-1.5 text-xs font-semibold text-accent">
+          <Users size={13} /> Editing shared definition
+        </div>
+        <p className="text-[11px] text-muted/80 leading-relaxed">
+          Changes you make below will be saved to “{libraryName ?? 'this library entry'}”
+          for every board that uses it, once you save.
+        </p>
+        <div className="flex gap-2 pt-1">
+          <button
+            type="button"
+            onClick={onSaveShared}
+            disabled={savingShared}
+            data-testid="ref-widget-save-shared"
+            className="flex-1 h-8 inline-flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg bg-[var(--ink)] text-[var(--ink-fg)] hover:opacity-90 transition-opacity disabled:opacity-50 disabled:pointer-events-none focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            {savingShared ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+            {savingShared ? 'Saving…' : 'Save shared changes'}
+          </button>
+          <button
+            type="button"
+            onClick={onCancelSharedEdit}
+            data-testid="ref-widget-cancel-shared"
+            className="h-8 px-3 text-xs font-medium rounded-lg border border-border text-muted hover:text-fg hover:bg-surface-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-xl border border-border bg-surface-2/40 p-3 space-y-2" data-testid="ref-widget-banner">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 min-w-0 text-xs font-semibold text-fg">
+          <Link2 size={13} className={isBroken ? 'text-danger shrink-0' : 'text-accent shrink-0'} />
+          <span className="truncate">
+            {isBroken ? 'Broken reference' : `Linked to “${libraryName ?? widget.ref}”`}
+          </span>
+        </div>
+        {!isBroken && <LibraryUsageBadge libraryId={widget.ref} />}
+      </div>
+
+      {isBroken ? (
+        <p className="text-[11px] text-danger leading-relaxed" data-testid="ref-widget-broken-notice">
+          The library entry this widget points to (id {widget.ref}) no longer
+          exists. This widget renders a broken placeholder everywhere it's
+          used — detach it to keep this instance, or remove it.
+        </p>
+      ) : (
+        <p className="text-[11px] text-muted/70 leading-relaxed">
+          Editing fields below stays local to this board. To change every
+          board using this widget, edit its shared definition instead.
+        </p>
+      )}
+
+      {overriddenFields.length > 0 && (
+        <div className="space-y-1 pt-1.5 border-t border-border/60">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted/60 pt-1">Overridden here</p>
+          {overriddenFields.map(({ path }) => (
+            <div key={path} className="flex items-center justify-between gap-2 text-[11px]">
+              <span className="text-fg/80 truncate">{humanizeOverridePath(path)}</span>
+              <button
+                type="button"
+                onClick={() => onResetOverride(path)}
+                data-testid={`ref-widget-reset-${path}`}
+                className="shrink-0 text-[10px] font-medium text-muted/70 hover:text-fg underline-offset-2 hover:underline transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 rounded"
+              >
+                Reset to library value
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex gap-2 pt-1">
+        {!isBroken && (
+          <button
+            type="button"
+            onClick={onEditScope}
+            data-testid="ref-widget-edit-scope"
+            className="flex-1 h-8 inline-flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg border border-border text-fg hover:border-fg hover:text-fg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            <Users size={12} /> Edit shared definition…
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onDetach}
+          data-testid="ref-widget-detach"
+          className="flex-1 h-8 inline-flex items-center justify-center gap-1.5 text-xs font-medium rounded-lg border border-border text-fg hover:border-fg hover:text-fg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+        >
+          <Unlink size={12} /> Detach
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * SaveToLibrarySection — "save this widget for reuse on other boards".
+ *
+ * Lives in ConfigPanel, so it shows up in both the sidebar inspector and the
+ * focus-mode config rail without being written twice. Defaults the entry name
+ * to whatever the widget already calls itself.
+ */
+function SaveToLibrarySection({ widget, onSaved }) {
+  // `config.title` may be an ECharts title OBJECT on imported boards, and a
+  // legacy `props.label` is not guaranteed to be a string either — titleText
+  // coerces both to text so the input below always holds a string.
+  const suggested = titleText(widget.config?.title) || titleText(widget.props?.label)
+    || titleText(widget.title) || `${widget.type} widget`
+  const [name, setName] = useState(suggested)
+  const [saving, setSaving] = useState(false)
+
+  // Re-suggest only when the user switches to a DIFFERENT widget — keyed on
+  // widget.id, not `suggested`, so retyping the name isn't clobbered when the
+  // title happens to change underneath.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { setName(suggested) }, [widget.id])
+
+  const save = async () => {
+    const trimmed = name.trim()
+    if (!trimmed || saving) return
+    setSaving(true)
+    try {
+      await saveWidgetToLibrary(trimmed, widget)
+      toast.success(`Saved “${trimmed}” to the library`)
+      onSaved?.()
+    } catch (err) {
+      toast.error(`Could not save to library: ${err.message}`)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <p className="text-[11px] text-muted/70 leading-relaxed">
+        Save this widget so you can drop copies of it onto other boards. Copies
+        are independent — editing the library entry later won’t change them.
+      </p>
+      <input
+        type="text"
+        className={inputCls}
+        value={name}
+        onChange={e => setName(e.target.value)}
+        placeholder="Library entry name"
+        data-testid="library-save-name"
+      />
+      <button
+        type="button"
+        onClick={save}
+        disabled={saving || !name.trim()}
+        data-testid="library-save-btn"
+        className={[
+          'w-full flex items-center justify-center gap-1.5 h-8 rounded-lg border border-border',
+          'bg-surface text-xs font-medium text-fg hover:border-fg hover:text-fg',
+          'transition-colors disabled:opacity-50 disabled:pointer-events-none',
+        ].join(' ')}
+      >
+        {saving ? <Loader2 size={12} className="animate-spin" /> : <BookmarkPlus size={12} />}
+        {saving ? 'Saving…' : 'Save to library'}
+      </button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// AddPanel — widget palette (lives in the right sidebar's "Add" mode)
+// ---------------------------------------------------------------------------
+
+// Widget palette items — shared by AddPanel (sidebar) and the mobile bar.
+const PALETTE_ITEMS = [
+  { type: 'kpi',     label: 'KPI',     icon: Hash,        desc: 'Single big number' },
+  { type: 'metric',  label: 'Metric',  icon: TrendingUp,  desc: 'Stat tile: value + delta + spark' },
+  { type: 'table',   label: 'Table',   icon: Table2,      desc: 'Data grid' },
+  { type: 'pivot',   label: 'Pivot',   icon: Grid3x3,     desc: 'Rows × cols × measure matrix' },
+  { type: 'chart',   label: 'Chart',   icon: BarChart3,   desc: 'Bar / line / scatter…' },
+  { type: 'filter',  label: 'Filter',  icon: FilterIcon,  desc: 'Select / date / text filter' },
+  { type: 'text',    label: 'Text',    icon: Type,        desc: 'Markdown content block' },
+  { type: 'section', label: 'Section', icon: Heading,     desc: 'Section header / divider' },
+  { type: 'image',   label: 'Image',   icon: ImageIcon,   desc: 'Logo, header art, or branding image' },
+  { type: 'stepper', label: 'Stepper', icon: Layers,      desc: 'In-tile drill-down, one step at a time' },
+  { type: 'divider', label: 'Divider', icon: Minus,       desc: 'A rule that separates regions of a board' },
+  { type: 'datedisplay', label: 'Date display', icon: CalendarRange, desc: 'Live caption for the reporting period' },
+  { type: 'breadcrumb',  label: 'Breadcrumb',   icon: ChevronsRight, desc: 'Drill path across filter variables' },
+]
+
+/**
+ * AddPanel — the widget palette, styled to live inside the right sidebar.
+ * Clicking an item appends the widget via addWidget(type) and (because
+ * addWidget selects the new widget) the parent switches to the config tab.
+ */
+function AddPanel({ onAdd, onAddReference, onAddDetachedCopy, library, libraryLoading, onDeleteLibraryEntry }) {
+  const [q, setQ] = useState('')
+  const needle = q.trim().toLowerCase()
+  const filteredPalette = needle
+    ? PALETTE_ITEMS.filter(item => `${item.label} ${item.desc}`.toLowerCase().includes(needle))
+    : PALETTE_ITEMS
+  const filteredLibrary = needle
+    ? library.filter(row => (row.name ?? '').toLowerCase().includes(needle))
+    : library
+  const noMatches = needle.length > 0 && filteredPalette.length === 0 && filteredLibrary.length === 0
+
+  return (
+    <div className="flex flex-col h-full min-h-0">
+      {/* Pinned so the search box stays reachable while the list below
+          scrolls — otherwise a long palette/library list pushes it out of
+          view and there's no way to search without scrolling back up. */}
+      <div className="shrink-0 border-b border-border p-3">
+        <div className="relative">
+          <Search size={16} strokeWidth={1.5} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-subtle" aria-hidden="true" />
+          <input
+            type="search"
+            value={q}
+            onChange={e => setQ(e.target.value)}
+            placeholder="Search widgets…"
+            aria-label="Search widgets"
+            data-testid="add-panel-search"
+            className={`${inputCls} !pl-9`}
+          />
+        </div>
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {noMatches && (
+          <p role="status" className="m-0 px-4 py-6 text-[13px] leading-snug text-muted">
+            No widgets match &ldquo;{q}&rdquo;.
+          </p>
+        )}
+
+        {filteredPalette.length > 0 && (
+          <div>
+            {filteredPalette.map(item => {
+              const Icon = item.icon
+              return (
+                <button
+                  key={item.type}
+                  onClick={() => onAdd(item.type)}
+                  data-testid={`palette-add-${item.type}`}
+                  className="nbc-item group"
+                >
+                  <span className="nbc-glyph"><Icon size={16} strokeWidth={1.5} /></span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[13px] font-semibold leading-tight">{item.label}</span>
+                    <span className="mt-0.5 block truncate text-[12px] text-muted">{item.desc}</span>
+                  </span>
+                  <Plus size={16} strokeWidth={1.5} className="shrink-0 text-subtle group-hover:text-fg" aria-hidden="true" />
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        {/* ── From library ──
+            Reusable widgets saved from any board in this org/project. Adding
+            one creates a REFERENCE by default — fix the shared entry once and
+            every board using it updates. "Add a detached copy" is the explicit
+            opt-in for a fully independent inline copy. */}
+        {(!needle || filteredLibrary.length > 0) && (
+          <div>
+            <div className="border-t-2 border-[var(--ink)] px-3 pb-2 pt-3"><SectionLabel>From library</SectionLabel></div>
+
+            {libraryLoading && <p className="m-0 px-3 pb-3 text-[12px] text-muted">Loading…</p>}
+
+            {!libraryLoading && filteredLibrary.length === 0 && (
+              <p className="m-0 px-3 pb-4 text-[12px] leading-snug text-muted">
+                No saved widgets yet. Configure a widget, then use{' '}
+                <span className="font-medium text-fg">Save to library</span> in its
+                settings to reuse it here.
+              </p>
+            )}
+
+            {filteredLibrary.map(row => (
+              <div key={row.id} className="group border-b border-border px-3 py-2 hover:bg-surface-2">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => onAddReference(row)}
+                    data-testid={`library-add-${row.id}`}
+                    title={`Add a reference to “${row.name}” — edits stay local, "Edit for all" updates every board`}
+                    className="flex min-w-0 flex-1 items-center gap-3 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <span className="nbc-glyph">
+                      {(() => { const I = WIDGET_ICONS[row.config?.type] ?? Library; return <I size={16} strokeWidth={1.5} /> })()}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] font-semibold leading-tight text-fg">{row.name}</span>
+                      <span className="mt-0.5 block truncate text-[12px] text-muted">{row.config?.type ?? 'widget'}</span>
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => onDeleteLibraryEntry(row)}
+                    title={`Remove “${row.name}” from the library`}
+                    aria-label={`Remove ${row.name} from the library`}
+                    data-testid={`library-delete-${row.id}`}
+                    className="nbc-tool !h-7 !min-w-7 !px-0 hover:!text-danger"
+                  >
+                    <Trash2 size={14} strokeWidth={1.5} />
+                  </button>
+                </div>
+                <div className="mt-1 flex items-center justify-between gap-2 pl-11">
+                  <LibraryUsageBadge libraryId={row.id} />
+                  <button
+                    onClick={() => onAddDetachedCopy(row)}
+                    data-testid={`library-add-copy-${row.id}`}
+                    title={`Add a detached copy of “${row.name}” — independent, won't update with the library entry`}
+                    className="-mr-1 inline-flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-[12px] font-medium text-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <Copy size={12} strokeWidth={1.5} /> Detached copy
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * LibraryUsageBadge — "used by N" for a library entry, shown on the palette
+ * row (and reused in the ConfigPanel banner for the currently-selected `ref`
+ * widget). Degrades to nothing while loading or when the usage endpoint is
+ * unavailable — never shows a wrong or misleading count.
+ */
+function LibraryUsageBadge({ libraryId, className = '' }) {
+  const usage = useWidgetUsage(libraryId)
+  if (usage == null) return null // undefined (loading) or null (unknown) — say nothing
+  const { count } = usage
+  return (
+    <span
+      data-testid={`library-usage-${libraryId}`}
+      title={count === 0 ? 'Not used on any other board yet' : `Referenced by ${count} widget instance${count === 1 ? '' : 's'} across boards`}
+      className={`nbc-meta inline-flex items-center gap-1 ${className}`}
+    >
+      <Users size={12} strokeWidth={1.5} />
+      {count === 0 ? 'Not used elsewhere' : `Used by ${count}`}
+    </span>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Live widget preview — memoised so it won't re-mount during drag/resize
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalise a raw spec widget into the shape expected by each widget component.
+ * (Mirrors SpecRenderer's normalizeWidget.)
+ */
+function normalizeWidget(raw: Record<string, any>): Record<string, any> {
+  const existing = raw.props ?? {}
+  const merged = {
+    subtype:     raw.subtype     ?? existing.subtype,
+    target_var:  raw.target_var  ?? existing.target_var,
+    content:     raw.content     ?? existing.content,
+    label:       raw.label       ?? existing.label,
+    placeholder: raw.placeholder ?? existing.placeholder,
+    ...existing,
+  }
+  return { ...raw, props: merged }
+}
+
+const NO_VARIABLES: Record<string, any> = {}
+
+/**
+ * WidgetPreview — renders the REAL widget component for a given spec widget.
+ * Memoised with previewPropsEqual: any widget change re-renders it except a move
+ * or resize, which only changes `pos`.
+ */
+const WidgetPreview = memo(function WidgetPreview({ widget, variableDefaults = NO_VARIABLES }: { widget: Record<string, any>; variableDefaults?: Record<string, any> }) {
+  const w = useMemo(() => normalizeWidget(widget), [widget])
+
+  // Wrap in VariableProvider so hooks inside widgets don't throw. The editor has
+  // no filter state, but it seeds the board's defaults: a query with a required
+  // parameter fails without them, as it would on the live board.
+  try {
+    return (
+      <VariableProvider initialValues={variableDefaults}>
+        <div className="h-full w-full overflow-hidden">
+          {w.html ? <HtmlWidget widget={w} /> : (
+            <>
+              {w.type === 'chart'   && <ChartWidget   widget={w} />}
+              {w.type === 'kpi'     && <KpiWidget     widget={w} />}
+              {w.type === 'metric'  && <MetricWidget  widget={w} />}
+              {w.type === 'table'   && <TableWidget   widget={w} />}
+              {w.type === 'pivot'   && <PivotWidget   widget={w} />}
+              {w.type === 'filter'  && <FilterWidget  widget={w} options={[]} />}
+              {w.type === 'text'    && <TextWidget    widget={w} />}
+              {w.type === 'section' && <SectionWidget widget={w} />}
+              {w.type === 'image'   && <ImageWidget   widget={w} />}
+              {w.type === 'divider' && <DividerWidget widget={w} />}
+              {w.type === 'datedisplay' && <DateDisplayWidget widget={w} />}
+              {w.type === 'breadcrumb'  && <BreadcrumbWidget  widget={w} editMode />}
+              {w.type === 'stepper' && (
+                <StepperWidget
+                  widget={w}
+                  renderChild={(child) => <WidgetPreview widget={child} variableDefaults={variableDefaults} />}
+                />
+              )}
+              {!['chart','kpi','metric','table','pivot','filter','text','section','image','stepper','divider','datedisplay','breadcrumb'].includes(w.type) && (
+                <div className="h-full w-full bg-surface flex items-center justify-center text-xs text-muted">
+                  Unrecognised widget type: <span className="font-mono ml-1">{w.type}</span>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </VariableProvider>
+    )
+  } catch {
+    return <WidgetCardFallback widget={widget} />
+  }
+}, previewPropsEqual)
+
+/** Fallback card shown while loading or on error. */
+function WidgetCardFallback({ widget }) {
+  return (
+    <div className="h-full w-full bg-surface overflow-hidden flex flex-col">
+      <div className="px-3 py-1.5 flex items-center gap-2 border-b border-border/50">
+        <span className="nbc-label">{widget.type}</span>
+        {widget.query_id && <span className="nbc-meta truncate">{widget.query_id}</span>}
+      </div>
+      <div className="px-3 py-2 text-xs text-muted flex-1 overflow-hidden">
+        {widget.type === 'chart' && <p className="truncate">{widget.chart_type ?? 'chart'} — <span className="font-mono">{widget.encoding?.x ?? '?'}</span> vs <span className="font-mono">{widget.encoding?.y ?? '?'}</span></p>}
+        {widget.type === 'kpi' && <p className="truncate">{widget.props?.label ?? 'KPI'} · <span className="font-mono">{widget.encoding?.value || '(no column)'}</span></p>}
+        {widget.type === 'table' && <p>Table · limit <span className="font-mono">{widget.props?.limit ?? 50}</span></p>}
+        {widget.type === 'filter' && <p className="truncate">{widget.subtype ?? 'select'} → <span className="font-mono">{widget.target_var || '(no var)'}</span></p>}
+        {widget.type === 'text' && (widget.props?.source === 'query'
+          ? <p className="truncate">Query text · <span className="font-mono">{widget.encoding?.value || '(no column)'}</span></p>
+          : <p className="line-clamp-3 italic text-muted/70">{(widget.content ?? '').split('\n')[0] || 'Empty text block'}</p>)}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// WidgetExportButton — per-widget export. PNG / PDF capture the rendered tile
+// through lib/domCapture (same engine as the whole-dashboard export, so charts
+// come out crisp and the hover toolbar stays out of the shot); CSV pulls this
+// widget's rows from the same GET /boards/:id/export.json the whole-dashboard
+// ExportShareMenu uses, filtered to one entry.
+// ---------------------------------------------------------------------------
+
+function widgetExportName(widget) {
+  const raw = widget.props?.label || widget.props?.title || widget.type || 'widget'
+  return String(raw).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'widget'
+}
+
+function _downloadBlob(filename, blob) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.style.display = 'none'
+  document.body.appendChild(a)
+  a.click()
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove() }, 100)
+}
+
+function WidgetExportButton({ widget, boardId }) {
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(null)
+  const [error, setError] = useState(null)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
+  }, [open])
+
+  function node() {
+    return document.querySelector(`[data-widget-export-root="${widget.id}"]`) as HTMLElement | null
+  }
+
+  async function exportPng() {
+    setBusy('png'); setError(null)
+    try {
+      const el = node()
+      if (!el) throw new Error('Nothing to capture yet.')
+      await elementToPNG(el, `${widgetExportName(widget)}.png`)
+    } catch (e) { setError(e.message || 'PNG export failed.') } finally { setBusy(null) }
+  }
+
+  async function exportPdf() {
+    setBusy('pdf'); setError(null)
+    try {
+      const el = node()
+      if (!el) throw new Error('Nothing to capture yet.')
+      await elementToPDF(el, `${widgetExportName(widget)}.pdf`, {
+        title: widget.props?.label || widget.props?.title || widget.type,
+      })
+    } catch (e) { setError(e.message || 'PDF export failed.') } finally { setBusy(null) }
+  }
+
+  async function exportCsv() {
+    if (!boardId) { setError('Save the dashboard first to export data.'); return }
+    setBusy('csv'); setError(null)
+    try {
+      const qs = widget.query_id ? `?query_id=${encodeURIComponent(widget.query_id)}` : ''
+      const data = await get(`/boards/${boardId}/export.json${qs}`)
+      const widgets = Array.isArray(data) ? data : (data?.widgets ?? [])
+      const entry = widgets.find(w => w.widget_id === widget.id) ?? widgets.find(w => w.query_id === widget.query_id) ?? widgets[0]
+      if (!entry) throw new Error('No data for this widget yet.')
+      _downloadBlob(`${widgetExportName(widget)}.csv`, new Blob([widgetToCsv(entry)], { type: 'text/csv;charset=utf-8;' }))
+    } catch (e) { setError(e.message || 'CSV export failed.') } finally { setBusy(null) }
+  }
+
+  const itemCls = 'nubi-dropdown-item w-full disabled:opacity-50'
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        title="Export this widget"
+        aria-label="Export this widget"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        onMouseDown={e => { e.stopPropagation(); e.preventDefault() }}
+        onClick={e => { e.stopPropagation(); setOpen(o => !o) }}
+        className="nbc-tool"
+        data-testid={`widget-export-${widget.id}`}
+      >
+        <Download size={16} strokeWidth={1.5} />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          onClick={e => e.stopPropagation()}
+          onMouseDown={e => e.stopPropagation()}
+          className="nubi-dropdown absolute right-0 top-full mt-1 z-30 w-40"
+        >
+          <button role="menuitem" onClick={exportPng} disabled={busy === 'png'} className={itemCls}>
+            <ImageIcon size={16} strokeWidth={1.5} /> {busy === 'png' ? 'Rendering…' : 'PNG'}
+          </button>
+          <button role="menuitem" onClick={exportPdf} disabled={busy === 'pdf'} className={itemCls}>
+            <FileText size={16} strokeWidth={1.5} /> {busy === 'pdf' ? 'Rendering…' : 'PDF'}
+          </button>
+          <button role="menuitem" onClick={exportCsv} disabled={busy === 'csv'} className={itemCls}>
+            <Table2 size={16} strokeWidth={1.5} /> {busy === 'csv' ? 'Fetching…' : 'CSV data'}
+          </button>
+          {error && <p className="m-0 px-3 py-1.5 text-[12px] leading-snug text-danger-fg">{error}</p>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// WidgetTileActions — the header's right-hand actions: focus, export,
+// duplicate, delete. They sit in the tile header and appear on hover, on
+// selection, and whenever focus is inside the tile (so a keyboard user who
+// tabs into a tile finds them). On touch they are always visible.
+// ---------------------------------------------------------------------------
+
+function WidgetTileActions({ widget, boardId, onDuplicate, onDelete, onFocus, reorder = false, onHeightStep }) {
+  // Pointer-down must not start a drag or a selection click on the tile.
+  const guard = e => { e.stopPropagation(); e.preventDefault() }
+  return (
+    <div data-widget-toolbar="true" className="nbc-tile-actions">
+      {/* Mobile (reorder) height stepper — replaces the tiny corner resize handles
+          that are too fiddly on touch. Steps widget height by ±1 grid row. */}
+      {reorder && (
+        <>
+          <button
+            title="Shorter" aria-label="Make shorter"
+            onMouseDown={guard}
+            onClick={e => { e.stopPropagation(); onHeightStep?.(widget.id, -1) }}
+            className="nbc-tool"
+            data-testid={`widget-shorter-${widget.id}`}
+          ><ChevronDown size={16} strokeWidth={1.5} /></button>
+          <button
+            title="Taller" aria-label="Make taller"
+            onMouseDown={guard}
+            onClick={e => { e.stopPropagation(); onHeightStep?.(widget.id, 1) }}
+            className="nbc-tool"
+            data-testid={`widget-taller-${widget.id}`}
+          ><ChevronUp size={16} strokeWidth={1.5} /></button>
+        </>
+      )}
+      {/* Expand into focus mode — the roomy single-widget editing surface. */}
+      {onFocus && !reorder && (
+        <Tooltip content="Focus mode" kbd="⏎" side="bottom">
+          <button
+            aria-label="Edit in focus mode"
+            onMouseDown={guard}
+            onClick={e => { e.stopPropagation(); onFocus(widget.id) }}
+            className="nbc-tool"
+            data-testid={`widget-focus-${widget.id}`}
+          >
+            <Maximize2 size={16} strokeWidth={1.5} />
+          </button>
+        </Tooltip>
+      )}
+      {!reorder && <WidgetExportButton widget={widget} boardId={boardId} />}
+      <Tooltip content="Duplicate" kbd={['⌘', 'D']} side="bottom">
+        <button
+          aria-label="Duplicate widget"
+          onMouseDown={guard}
+          onClick={e => { e.stopPropagation(); onDuplicate(widget.id) }}
+          className="nbc-tool"
+          data-testid={`widget-duplicate-${widget.id}`}
+        >
+          <Copy size={16} strokeWidth={1.5} />
+        </button>
+      </Tooltip>
+      <Tooltip content="Delete" kbd="⌫" side="bottom">
+        <button
+          aria-label="Delete widget"
+          onMouseDown={guard}
+          onClick={e => { e.stopPropagation(); onDelete(widget.id) }}
+          className="nbc-tool hover:!text-danger"
+          data-testid={`widget-delete-${widget.id}`}
+        >
+          <Trash2 size={16} strokeWidth={1.5} />
+        </button>
+      </Tooltip>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// EditorFilterBar — the above-grid filter bar, rendered in the editor canvas so
+// header-placed filters (placement: 'header') are VISIBLE + selectable. Mirrors
+// the renderer's `nubi-filter-bar` flex-wrap strip. Each chip is selectable
+// (opens its inspector) and removable; clicking the empty bar background passes
+// through to the canvas's deselect handler.
+// ---------------------------------------------------------------------------
+
+function EditorFilterBar({ widgets, selectedId, onSelect, onRemove }) {
+  if (!widgets || widgets.length === 0) return null
+  return (
+    <div
+      className="nubi-filter-bar flex flex-wrap items-end gap-3 px-1 pb-4 mb-4 border-b border-border"
+      data-testid="editor-filter-bar"
+    >
+      {widgets.map(w => {
+        const isSelected = selectedId === w.id
+        return (
+          <div
+            key={w.id}
+            data-testid={`filter-bar-item-${w.id}`}
+            onClick={(e) => { e.stopPropagation(); onSelect(w.id) }}
+            className={`nbc-tile group !h-auto min-w-[10rem] max-w-xs cursor-pointer overflow-visible px-2.5 py-1.5 ${isSelected ? 'is-selected' : ''}`}
+            title="Click to configure · in the filter bar"
+          >
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onRemove(w.id) }}
+              data-testid={`filter-bar-remove-${w.id}`}
+              title="Remove filter"
+              aria-label="Remove filter"
+              className="nbc-tool nbc-tool-bordered absolute -right-2 -top-2 z-10 !h-5 !min-w-5 !px-0 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:!text-danger"
+            >
+              <X size={12} strokeWidth={1.5} />
+            </button>
+            <p className="m-0 flex items-center gap-1 truncate text-[12px] font-medium text-muted">
+              <FilterIcon size={12} strokeWidth={1.5} className="shrink-0" />
+              {w.props?.label || w.subtype || (w.type === 'text' ? 'Text' : 'Filter')}
+            </p>
+            <p className="nbc-meta mt-0.5 truncate !text-fg">
+              {w.type === 'filter'
+                ? `${w.subtype ?? 'select'} → ${w.target_var || '(no var)'}`
+                : ((w.content ?? '').split('\n')[0] || 'text')}
+            </p>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// EditableTabStrip — edit-mode tab bar: add / inline-rename / drag-reorder / delete
+// ---------------------------------------------------------------------------
+
+/**
+ * The editor's tab strip. Distinct from the read-only TabBar.jsx used in the
+ * viewer/preview: here each tab is an editable, draggable, deletable chip plus an
+ * "Add tab" button. Reorder uses native HTML5 drag-and-drop (no extra deps).
+ *
+ * All mutations route through callbacks the parent wires to setSpec/history so
+ * undo/redo + dirty tracking + save keep working.
+ */
+function EditableTabStrip({
+  tabs, activeTabId, onActivate, onAdd, onRename, onReorder, onDeleteRequest,
+}) {
+  const [editingId, setEditingId] = useState(null)
+  const [draftLabel, setDraftLabel] = useState('')
+  const dragIndexRef = useRef(null)
+  const [overIndex, setOverIndex] = useState(null)
+
+  const startRename = (tab) => { setEditingId(tab.id); setDraftLabel(tab.label ?? '') }
+  const commitRename = () => {
+    if (editingId != null) {
+      const label = draftLabel.trim()
+      if (label) onRename(editingId, label)
+    }
+    setEditingId(null)
+  }
+
+  const onDrop = (toIndex) => {
+    const from = dragIndexRef.current
+    dragIndexRef.current = null
+    setOverIndex(null)
+    if (from == null || from === toIndex) return
+    onReorder(from, toIndex)
+  }
+
+  return (
+    <div
+      className="flex items-stretch gap-0 border-b border-border bg-surface px-2 h-10 shrink-0 overflow-x-auto"
+      role="tablist"
+      aria-label="Dashboard tabs"
+      data-testid="editor-tab-strip"
+    >
+      {tabs.map((tab, index) => {
+        const isActive = tab.id === activeTabId
+        const isEditing = editingId === tab.id
+        const isOver = overIndex === index
+        return (
+          <div
+            key={tab.id}
+            draggable={!isEditing}
+            onDragStart={(e) => { dragIndexRef.current = index; e.dataTransfer.effectAllowed = 'move' }}
+            onDragOver={(e) => { e.preventDefault(); setOverIndex(index) }}
+            onDragLeave={() => setOverIndex(o => (o === index ? null : o))}
+            onDrop={(e) => { e.preventDefault(); onDrop(index) }}
+            onDragEnd={() => { dragIndexRef.current = null; setOverIndex(null) }}
+            data-testid={`editor-tab-${tab.id}`}
+            className={[
+              'group relative flex shrink-0 items-center gap-1 px-1.5 text-[13px] transition-colors duration-100',
+              isActive ? 'font-semibold text-fg' : 'font-medium text-muted hover:text-fg',
+              isOver ? 'bg-surface-2' : '',
+            ].join(' ')}
+          >
+            {isActive && <span className="absolute inset-x-0 -bottom-px h-0.5 bg-[var(--ink)]" aria-hidden="true" />}
+            <GripVertical size={14} strokeWidth={1.5} className="shrink-0 cursor-grab text-subtle active:cursor-grabbing" aria-hidden="true" />
+            {isEditing ? (
+              <input
+                autoFocus
+                value={draftLabel}
+                onChange={e => setDraftLabel(e.target.value)}
+                onBlur={commitRename}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { e.preventDefault(); commitRename() }
+                  if (e.key === 'Escape') { e.preventDefault(); setEditingId(null) }
+                }}
+                aria-label="Tab name"
+                className="nubi-input nubi-input-xs !h-6 !w-28 !px-1.5"
+                data-testid={`editor-tab-input-${tab.id}`}
+              />
+            ) : (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                onClick={() => onActivate(tab.id)}
+                onDoubleClick={() => startRename(tab)}
+                className="h-full whitespace-nowrap px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                title="Click to switch · double-click to rename"
+              >
+                {tab.label || 'Tab'}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onDeleteRequest(tab)}
+              title="Delete tab"
+              aria-label={`Delete tab ${tab.label}`}
+              data-testid={`editor-tab-delete-${tab.id}`}
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-subtle opacity-0 transition-opacity hover:text-danger focus:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+            >
+              <X size={12} strokeWidth={1.5} />
+            </button>
+          </div>
+        )
+      })}
+      <button
+        type="button"
+        onClick={onAdd}
+        title="Add tab"
+        aria-label="Add tab"
+        data-testid="editor-tab-add"
+        className="nbc-tool my-1 ml-1 shrink-0"
+      >
+        <Plus size={14} strokeWidth={1.5} /> Tab
+      </button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// DeleteTabDialog — prompt: move this tab's widgets elsewhere or delete them
+// ---------------------------------------------------------------------------
+
+function DeleteTabDialog({ tab, tabs, widgetCount, onMove, onDeleteWidgets, onCancel }) {
+  const others = tabs.filter(t => t.id !== tab.id)
+  const [target, setTarget] = useState(others[0]?.id ?? '')
+  return (
+    <Modal
+      open
+      onClose={onCancel}
+      size="sm"
+      title={`Delete “${tab.label}”?`}
+      description={`This tab has ${widgetCount} widget${widgetCount === 1 ? '' : 's'}. Choose what to do with ${widgetCount === 1 ? 'it' : 'them'}.`}
+    >
+      <Modal.Body data-testid="delete-tab-dialog" className="space-y-4">
+        {others.length > 0 && (
+          <div className="space-y-1.5">
+            <FieldLabel>Move widgets to</FieldLabel>
+            <select className={selectCls} value={target} onChange={e => setTarget(e.target.value)} data-testid="delete-tab-move-target">
+              {others.map(t => <option key={t.id} value={t.id}>{t.label || t.id}</option>)}
+            </select>
+          </div>
+        )}
+      </Modal.Body>
+      <Modal.Footer className="flex-wrap">
+        <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
+        <Button variant="danger" size="sm" onClick={onDeleteWidgets} data-testid="delete-tab-delete-widgets-btn">
+          Delete tab &amp; its widgets
+        </Button>
+        {others.length > 0 && (
+          <Button size="sm" onClick={() => onMove(target)} data-testid="delete-tab-move-btn">
+            Move widgets &amp; delete tab
+          </Button>
+        )}
+      </Modal.Footer>
+    </Modal>
+  )
+}
+
+/**
+ * NamePromptDialog — generic "name this thing, then confirm" modal. Used by
+ * both Detach (name the new independent copy so its origin — `meta.detachedFrom`
+ * — stays traceable) and "Duplicate & edit just this one" (name the forked
+ * library entry). Detach is deliberately NOT the path of least resistance —
+ * it requires this explicit naming step rather than a single click, mirroring
+ * why the legacy estate ended up with ~zero widget reuse (copy-on-edit was
+ * frictionless; linking should be the easy path instead).
+ */
+function NamePromptDialog({ title, description, defaultName, confirmLabel, testidPrefix, onConfirm, onCancel }) {
+  const [name, setName] = useState(defaultName || '')
+  const trimmed = name.trim()
+  return (
+    <Modal open onClose={onCancel} size="sm" title={title} description={description}>
+      <Modal.Body data-testid={`${testidPrefix}-dialog`}>
+        <FieldLabel>Name</FieldLabel>
+        <input
+          type="text"
+          className={inputCls}
+          value={name}
+          onChange={e => setName(e.target.value)}
+          autoFocus
+          data-testid={`${testidPrefix}-name`}
+          onKeyDown={e => { if (e.key === 'Enter' && trimmed) onConfirm(trimmed) }}
+        />
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
+        <Button size="sm" onClick={() => trimmed && onConfirm(trimmed)} disabled={!trimmed} data-testid={`${testidPrefix}-confirm`}>
+          {confirmLabel}
+        </Button>
+      </Modal.Footer>
+    </Modal>
+  )
+}
+
+/**
+ * EditScopeDialog — "This widget is used by N boards." Fires when a user
+ * asks to edit a referenced widget's SHARED definition (as opposed to the
+ * default, silent, instance-local override every normal field edit already
+ * gets). Exact three-button contract: Edit for all / Duplicate & edit just
+ * this one / Cancel.
+ */
+function EditScopeDialog({ count, onEditForAll, onDuplicate, onCancel }) {
+  const n = count ?? 0
+  return (
+    <Modal
+      open
+      onClose={onCancel}
+      size="sm"
+      title={`This widget is used by ${n} board${n === 1 ? '' : 's'}.`}
+      description="Choose how your change should apply."
+    >
+      <Modal.Body data-testid="edit-scope-dialog" className="space-y-2">
+        <Button className="w-full" onClick={onEditForAll} data-testid="edit-scope-all">Edit for all</Button>
+        <Button className="w-full" variant="secondary" onClick={onDuplicate} data-testid="edit-scope-duplicate">
+          Duplicate &amp; edit just this one
+        </Button>
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
+      </Modal.Footer>
+    </Modal>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// TabsPanel — inspector: tab-bar tokens + per-tab style/background overrides
+// ---------------------------------------------------------------------------
+
+function TabsPanel({ spec, onSpecChange, activeTabId, onActivate, onAddTab }) {
+  const tabs = Array.isArray(spec.tabs) ? spec.tabs : []
+  const tabBar = spec.tab_bar ?? {}
+  const setTabBar = (patch) => {
+    const next = { ...tabBar, ...patch }
+    Object.keys(next).forEach(k => { if (next[k] === '' || next[k] == null) delete next[k] })
+    onSpecChange({ ...spec, tab_bar: next })
+  }
+  const activeTab = tabs.find(t => t.id === activeTabId) ?? null
+  const setTab = (id, patch) =>
+    onSpecChange({ ...spec, tabs: tabs.map(t => t.id === id ? { ...t, ...patch } : t) })
+  const setTabStyle = (id, patch) => {
+    const t = tabs.find(x => x.id === id)
+    const style = { ...(t?.style ?? {}), ...patch }
+    Object.keys(style).forEach(k => { if (style[k] === '' || style[k] == null) delete style[k] })
+    setTab(id, { style: Object.keys(style).length ? style : {} })
+  }
+
+  if (tabs.length === 0) {
+    return (
+      <div className="p-4 space-y-3 overflow-y-auto h-full">
+        <h3 className="text-sm font-semibold text-fg">Tabs</h3>
+        <p className="text-xs text-muted/80 leading-relaxed rounded-lg border border-dashed border-border bg-surface-2/30 p-3">
+          This dashboard has no tabs — it renders as a single canvas. Add a tab to
+          split it into multiple tabbed pages. Existing widgets stay on the first
+          tab; variables stay shared across all tabs.
+        </p>
+        <button
+          onClick={onAddTab}
+          data-testid="tabs-panel-add-first"
+          className="w-full flex items-center justify-center gap-2 h-9 text-sm font-medium rounded-lg border border-dashed border-border text-muted hover:text-fg hover:border-fg transition-colors">
+          <Plus size={14} /> Add first tab
+        </button>
+      </div>
+    )
+  }
+
+  // Live preview reuses the read-only viewer TabBar so the variant/colors match.
+  const previewTabs = tabs.length >= 2 ? tabs : [...tabs, { id: '__preview__', label: 'Preview' }]
+
+  return (
+    <div className="p-4 space-y-3 overflow-y-auto h-full">
+      <h3 className="text-sm font-semibold text-fg">Tabs</h3>
+
+      <Section title="Tab bar" icon={LayoutGrid}>
+        <div className="rounded-lg border border-border bg-surface px-2 py-1.5">
+          <TabBar tabs={previewTabs} activeTabId={activeTabId} onChange={() => {}} tabBar={tabBar} />
+        </div>
+        <div>
+          <FieldLabel>Variant</FieldLabel>
+          <div className="grid grid-cols-3 gap-1.5">
+            {TAB_VARIANTS.map(v => {
+              const active = (tabBar.variant ?? 'underline') === v
+              return (
+                <button key={v} onClick={() => setTabBar({ variant: v })}
+                  className={`h-7 text-[11px] font-medium rounded-lg border capitalize transition-all ${active ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]' : 'bg-surface text-muted border-border hover:border-fg hover:text-fg'}`}>
+                  {v}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <FieldLabel>Align</FieldLabel>
+            <select className={selectCls} value={tabBar.align ?? 'start'} onChange={e => setTabBar({ align: e.target.value })}>
+              {TAB_ALIGNS.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+          </div>
+          <div>
+            <FieldLabel>Size</FieldLabel>
+            <select className={selectCls} value={tabBar.size ?? 'md'} onChange={e => setTabBar({ size: e.target.value })}>
+              {TAB_SIZES.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+        </div>
+        <ColorField
+          value={tabBar.accent}
+          onChange={v => setTabBar({ accent: v })}
+          placeholder="Accent color (active tab)"
+        />
+        <div>
+          <FieldLabel>Custom CSS (sanitized)</FieldLabel>
+          <textarea rows={2} className={`${inputCls} h-auto py-1.5 font-mono text-xs resize-y`}
+            placeholder="border-radius: 10px; gap: 6px;"
+            value={tabBar.custom_css ?? ''} onChange={e => setTabBar({ custom_css: e.target.value || undefined })} />
+        </div>
+      </Section>
+
+      <Section title="Tabs" icon={Heading} defaultOpen>
+        <div className="flex flex-wrap gap-1.5">
+          {tabs.map(t => (
+            <button key={t.id} onClick={() => onActivate(t.id)}
+              className={`px-2.5 h-7 text-xs font-medium rounded-lg border transition-all ${t.id === activeTabId ? 'bg-[var(--ink)] text-[var(--ink-fg)] border-[var(--ink)]' : 'bg-surface text-muted border-border hover:border-fg hover:text-fg'}`}>
+              {t.label || t.id}
+            </button>
+          ))}
+        </div>
+        <p className="text-[10px] text-muted/70">Select a tab to edit its label, style &amp; background. Reorder/rename/delete from the strip above the canvas.</p>
+      </Section>
+
+      {activeTab && (
+        <Section title={`Tab · ${activeTab.label || activeTab.id}`} icon={Settings2} defaultOpen>
+          <div>
+            <FieldLabel>Label</FieldLabel>
+            <input type="text" className={inputCls} value={activeTab.label ?? ''}
+              onChange={e => setTab(activeTab.id, { label: e.target.value })} />
+          </div>
+          <div>
+            <FieldLabel>Icon (optional)</FieldLabel>
+            <input type="text" className={inputCls} placeholder="lucide name, e.g. BarChart3"
+              value={activeTab.icon ?? ''} onChange={e => setTab(activeTab.id, { icon: e.target.value || undefined })} />
+          </div>
+          <div className="space-y-1">
+            <SectionLabel>Active-tab accent override</SectionLabel>
+            <ColorField
+              value={activeTab.style?.accent}
+              onChange={v => setTabStyle(activeTab.id, { accent: v })}
+              placeholder="inherit from tab bar"
+            />
+          </div>
+          <div>
+            <FieldLabel>Tab custom CSS (sanitized)</FieldLabel>
+            <textarea rows={2} className={`${inputCls} h-auto py-1.5 font-mono text-xs resize-y`}
+              placeholder="font-weight: 600;"
+              value={activeTab.style?.custom_css ?? ''} onChange={e => setTabStyle(activeTab.id, { custom_css: e.target.value || undefined })} />
+          </div>
+          <div className="space-y-1">
+            <SectionLabel>Canvas background (this tab)</SectionLabel>
+            <BackgroundEditor value={activeTab.background} onChange={bg => setTab(activeTab.id, { background: bg && bg.type ? bg : undefined })} />
+          </div>
+        </Section>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Toolbar helpers — small presentational primitives shared by the top-bar
+// clusters below. Kept generic (no editor-state closures) so they can sit
+// outside the main component.
+// ---------------------------------------------------------------------------
+
+// Vertical divider between toolbar clusters.
+function ToolbarDivider() {
+  return <div className="nbc-sep hidden md:block" aria-hidden="true" />
+}
+
+/**
+ * ToolbarPopover — a labelled trigger button that reveals an arbitrary panel
+ * of content below it. Used to group related, lower-frequency controls (e.g.
+ * device + zoom) behind one bar slot instead of spreading them out inline.
+ *
+ * The panel is portaled with position: fixed (useFixedAnchor) because the
+ * toolbar row is `overflow-x-auto`, which would clip an absolute panel.
+ */
+function ToolbarPopover({ icon: Icon, label, title, tooltip, testId, active, children }) {
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState(null)
+  const ref = useRef(null)
+  const panelRef = useRef(null)
+
+  useAnchorTracking(open, () => {
+    if (!ref.current || !panelRef.current) return
+    setPos(placeDropdown(ref.current.getBoundingClientRect(), panelRef.current, { align: 'right' }))
+  })
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e) => {
+      if (ref.current?.contains(e.target) || panelRef.current?.contains(e.target)) return
+      setOpen(false)
+    }
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey) }
+  }, [open])
+
+  return (
+    <div className="relative shrink-0" ref={ref}>
+      <Tooltip content={tooltip ?? title} side="bottom">
+        <button
+          onClick={() => setOpen(o => !o)}
+          aria-label={title}
+          aria-expanded={open}
+          data-testid={testId}
+          className={['nbc-tool nbc-tool-bordered', open || active ? 'is-active' : ''].join(' ')}
+        >
+          <Icon size={16} strokeWidth={1.5} />
+          <span className="hidden lg:inline">{label}</span>
+          <ChevronDown size={14} strokeWidth={1.5} className={open ? 'rotate-180' : ''} />
+        </button>
+      </Tooltip>
+
+      {open && createPortal(
+        <div
+          ref={panelRef}
+          className="nubi-dropdown w-max p-3"
+          style={fixedPanelStyle(pos)}
+          onClick={(e) => e.stopPropagation()}
+          data-testid={testId ? `${testId}-panel` : undefined}
+        >
+          {children}
+        </div>,
+        document.body,
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// DashboardEditor — main export
+// ---------------------------------------------------------------------------
+
+export default function DashboardEditor({ boardId = null, onSaved, onSpecChange, onSetSpec, onDirtyChange, onSetSave }: {
+  boardId?: string | null
+  onSaved?: (board: Record<string, any>) => void
+  onSpecChange?: (spec: Record<string, any>) => void
+  onSetSpec?: (commitSpec: (spec: Record<string, any>) => void) => void
+  onDirtyChange?: (dirty: boolean) => void
+  onSetSave?: (save: () => Promise<Record<string, any>>) => void
+}) {
+  // ── History state ─────────────────────────────────────────────────────────
+  const [hist, setHist] = useState(() => createHistory(DEFAULT_SPEC))
+  const spec = hist.present
+  const previewVariableDefaults = useMemo(
+    () => buildVariableDefaults(spec?.variables),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(spec?.variables)],
+  )
+
+  // Theme-adaptation ctx (see SpecRenderer.jsx / lib/themeColor.js) — the
+  // canvas/preview must match what viewers actually see.
+  const { theme: appTheme } = useTheme()
+
+  const isDraggingRef = useRef(false)
+  const frozenLayoutsRef = useRef(null)
+
+  // The loaded board's full `config`, kept so a save can merge `spec` back into
+  // it rather than replacing it. PUT /boards/:id overwrites `config` wholesale
+  // (resources.py update_resource), so sending a bare `{ spec }` silently drops
+  // every sibling key — `folderId` most visibly, which DashboardsPage writes
+  // alongside the spec. Empty on a new board; populated on load.
+  const boardConfigRef = useRef({})
+
+  // ── Dirty tracking ────────────────────────────────────────────────────────
+  // We track the spec at last save time to compute dirtyness.
+  const savedSpecRef = useRef(null) // null = never saved
+  // savedSpecRef is a ref, so moving it (a save, a load) does not re-render by
+  // itself. Without this tick the memo below kept its last value after a save
+  // and "Unsaved changes" stayed lit until the next edit.
+  const [savedTick, setSavedTick] = useState(0)
+  const dirty = useMemo(() => {
+    if (savedSpecRef.current === null && spec.widgets.length === 0) return false
+    return JSON.stringify(spec) !== JSON.stringify(savedSpecRef.current)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spec, savedTick])
+
+  // Publish dirtyness to the host page (DashboardViewPage) so its header can
+  // warn that Live isn't showing the author's unsaved work. Read-only signal —
+  // the editor stays the owner of the draft.
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+  }, [dirty, onDirtyChange])
+
+  // beforeunload guard
+  useEffect(() => {
+    const handler = (e) => {
+      if (!dirty) return
+      e.preventDefault()
+      e.returnValue = 'You have unsaved changes. Leave?'
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [dirty])
+
+  // EditorPage's FILTERS button dispatches `nubi:open-filters` (OPEN_FILTERS_EVENT).
+  // It cannot reach the editor's state directly, so we listen on window and open
+  // the filters-drawer authoring panel here. Matches the seam documented in
+  // EditorPage.jsx.
+  useEffect(() => {
+    const open = () => { setFiltersOpen(true); setPreview(false) }
+    window.addEventListener('nubi:open-filters', open)
+    return () => window.removeEventListener('nubi:open-filters', open)
+  }, [])
+
+  // Tracks a control that is mid-gesture — dragging in the colour spectrum, or
+  // typing into a colour field — so the stream of values it emits for ONE user
+  // decision collapses into one undo step.
+  //
+  // A ref, not state: it must not re-render the editor, and every commit during
+  // the gesture has to observe it synchronously.
+  //
+  // `committed` is what makes this safe regardless of when a control opens its
+  // gesture relative to its first value: the FIRST commit inside a gesture is
+  // always a real push (there must be an entry holding the pre-edit state to
+  // step back to), and only the ones after it replace it.
+  const liveEditRef = useRef({ active: false, committed: false })
+  const setLiveEdit = useCallback((live) => {
+    liveEditRef.current = { active: live, committed: false }
+  }, [])
+
+  const commitSpec = useCallback((newSpec) => {
+    const gesture = liveEditRef.current
+    const coalesce = gesture.active && gesture.committed
+    if (gesture.active) gesture.committed = true
+    setHist(h => historyPush(
+      h,
+      typeof newSpec === 'function' ? newSpec(h.present) : newSpec,
+      { coalesce },
+    ))
+  }, [])
+
+  const setSpec = commitSpec
+
+  // Expose commitSpec to callers (e.g. EditorShell) that need to write through
+  // DashboardEditor's history without owning spec state.
+  useEffect(() => {
+    onSetSpec?.(commitSpec)
+  }, [onSetSpec, commitSpec])
+
+
+  const [selectedId, setSelectedId] = useState(null)
+  // focusId — the widget open in full-screen focus mode (null = canvas view).
+  // Focus mode edits the same spec widget through updateWidget, so there is
+  // nothing to commit on close; it is purely a roomier editing surface.
+  const [focusId, setFocusId] = useState(null)
+  const [preview, setPreview] = useState(false)
+  // Reusable library widgets for the Add palette's "From library" section.
+  const { rows: library, loading: libraryLoading, reload: reloadLibrary } = useWidgetLibrary()
+  // Library rows keyed by id, for resolving `ref` spec widgets. Passing this
+  // (rather than a fresh lookup per widget) keeps resolution O(1) per widget.
+  const libraryById = useMemo(() => new Map(library.map(row => [row.id, row])), [library])
+  // Resolve one spec widget (inline widgets pass through unchanged) against the
+  // currently-loaded library. Used everywhere the editor DISPLAYS or EDITS a
+  // widget — the underlying spec.widgets entries stay unresolved (ref +
+  // sparse overrides) so history/save persist the reference, not a snapshot.
+  const resolveEntry = useCallback((w) => {
+    if (!w || !isRefWidget(w)) return w
+    return resolveWidgetRef(w, libraryById.get(w.ref)).widget
+  }, [libraryById])
+  // Widget id whose SHARED library definition is being edited (see the
+  // "This widget is used by N boards" dialog). Non-null only while the ref
+  // widget's ConfigPanel banner is in "editing shared definition" mode.
+  const [sharedEditRefId, setSharedEditRefId] = useState(null)
+  const [savingShared, setSavingShared] = useState(false)
+  // Confirmation dialogs (widget id + context) for Detach and the edit-scope
+  // ("used by N boards") prompt. null = closed.
+  const [detachTarget, setDetachTarget] = useState(null)
+  const [editScopeTarget, setEditScopeTarget] = useState(null)
+  const [forkTarget, setForkTarget] = useState(null)
+  // Usage count backing the open EditScopeDialog's "used by N boards" headline.
+  // useWidgetUsage tolerates a null/undefined id (returns undefined) so this is
+  // safe to call unconditionally even when no dialog is open.
+  const editScopeUsage = useWidgetUsage(editScopeTarget?.ref)
+  const requestDetach = useCallback((w) => {
+    setDetachTarget({ id: w.id, ref: w.ref, name: libraryById.get(w.ref)?.name ?? '' })
+  }, [libraryById])
+  const requestEditScope = useCallback((w) => {
+    setEditScopeTarget({ id: w.id, ref: w.ref, name: libraryById.get(w.ref)?.name ?? '' })
+  }, [libraryById])
+  // VS Code-style full-pane "Code" view (third mode alongside edit + preview).
+  // When on, the canvas is replaced by DashboardCodeView (dashboard.json editor).
+  const [codeView, setCodeView] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [_saveError, setSaveError] = useState(null)
+  const [loading, setLoading] = useState(!!boardId)
+  const [loadError, setLoadError] = useState(null)
+  const [savedBoardId, setSavedBoardId] = useState(boardId)
+
+  // Notify callers (the board page's draft bar) whenever the spec changes so
+  // they can observe the working draft without owning it. Held back while the
+  // saved draft is still loading: before that the spec is the blank default,
+  // and a diff against it would read as "every widget removed".
+  useEffect(() => {
+    if (loading) return
+    onSpecChange?.(spec)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spec, loading])
+  // rightPanel ∈ {'add','config','chat','board'} — drives the single RHS panel.
+  // Defaults to 'config' (shows the "Nothing selected" placeholder): 'add' now
+  // lives permanently in the left widget-library rail on desktop, and 'add' as
+  // the RHS default used to make the "Add widget" toolbar toggle look collapsed
+  // on first load.
+  const [rightPanel, setRightPanel] = useState('config')
+  // Start collapsed on tablet (md) so the panel doesn't immediately overlay the
+  // canvas; on lg+ the panel is always in-flow so we default to open.
+  const [rightCollapsed, setRightCollapsed] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth < 1024
+  )
+  // Mobile/tablet sheet state: which sheet is open (null = closed)
+  // 'palette' | 'config' | 'chat' | 'board' | null
+  const [mobileSheet, setMobileSheet] = useState(null)
+  // Below md the toolbar cluster (device switcher, zoom controls, panel toggles)
+  // collapses behind a hamburger that opens this slide-out menu.
+  const [mobileMenu, setMobileMenu] = useState(false)
+
+  // ── Tabs (Track T — T5 editor) ────────────────────────────────────────────
+  // Which tab the canvas is showing. null when the spec has no tabs (today's
+  // single-canvas behavior). When the spec HAS tabs we resolve to the first one
+  // if the requested id is gone (e.g. after a delete or an undo).
+  const [activeTabIdRaw, setActiveTabIdRaw] = useState(null)
+  const activeTabId = resolveActiveTab(spec, activeTabIdRaw)
+  // Pending delete-tab confirmation (null = no dialog). Holds the tab object.
+  const [deletingTab, setDeletingTab] = useState(null)
+  // Filters-drawer authoring panel (opened by EditorPage's nubi:open-filters event).
+  const [filtersOpen, setFiltersOpen] = useState(false)
+
+  // Registered queries (author:sql queries the user has saved/registered),
+  // for QueryPicker to list alongside DEMO_QUERY_IDS. Loaded once on mount.
+  const [queryIds, setQueryIds] = useState([])
+  useEffect(() => {
+    let cancelled = false
+    listRegisteredQueries().then(list => {
+      if (!cancelled) setQueryIds(list.map(q => ({ id: q.id, name: q.name })))
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  const { width: canvasWidth, containerRef: canvasRef } = useElementWidth(900)
+  // The scrollable canvas viewport (pan surface + pinch-zoom target).
+  const mainRef = useRef(null)
+  const { topbarSlot, setPageOwnsChat } = useUi()
+  const [device, setDevice] = useState('desktop')
+  // Mirror `device` into a ref so RGL's stable callbacks (commitLayout etc.)
+  // always route commits to the CURRENTLY active breakpoint without re-creating.
+  const deviceRef = useRef(device)
+  // Sync DURING render (not via an effect): when the keyed grid remounts on a
+  // device switch and fires its mount onLayoutChange / a drag stop, commits must
+  // route to the CURRENT breakpoint. Child effects run before parent effects, so
+  // an effect-based mirror would lag one commit and write a tablet/mobile layout
+  // into the canonical desktop pos (the "bundle to the left" corruption).
+  deviceRef.current = device
+  // Editor-local preview width per device (not persisted to the spec) + canvas
+  // zoom (`'fit'` auto-scales to the available width; a number is an explicit
+  // zoom set by the buttons or a pinch gesture).
+  const [deviceWidths, setDeviceWidths] = useState({ tablet: DEVICE_WIDTHS.tablet, mobile: DEVICE_WIDTHS.mobile })
+  const [zoomMode, setZoomMode] = useState<'fit' | number>('fit')
+  // Mirror into a ref so the (passive-free) pinch handler can read/update it
+  // without re-binding the listener every render.
+  const zoomModeRef = useRef(zoomMode)
+  useEffect(() => { zoomModeRef.current = zoomMode }, [zoomMode])
+  // NOTE: the drag-time column-guide + ghost overlay is now owned by GridCanvas
+  // (its .grid-dragging class + --grid-col-w var), so the editor no longer needs a
+  // boolean `isDragging` state — only the ref (frozenLayoutsRef freeze) matters.
+
+  // Claim exclusive chat ownership while the editor is mounted so the global
+  // chat button + panel are suppressed (editor has its own Chat tab in the RHS).
+  useEffect(() => {
+    setPageOwnsChat(true)
+    return () => setPageOwnsChat(false)
+  }, [setPageOwnsChat])
+
+  // Active RGL breakpoint follows the device frame width (desktop→lg, …).
+  const activeBreakpoint = DEVICE_TO_BREAKPOINT[device]
+
+  // ── Device frame + zoom/pan canvas ─────────────────────────────────────────
+  // The grid always renders at its true DESIGN width for the active breakpoint
+  // (so the displayed breakpoint is chosen by the device, never by pixel width —
+  // this is what fixes the "everything bundles to the left" bug). The whole frame
+  // is then CSS-scaled by `effectiveZoom` to fit / zoom the available canvas, and
+  // the scrollable <main> acts as the pan viewport.
+  //   desktop → max(canvasWidth, floor) so it stays editable (zoomed out) on a phone
+  //   tablet/mobile → the editor-local custom width
+  const designWidth = device === 'desktop'
+    ? Math.max(canvasWidth || DESKTOP_MIN_WIDTH, DESKTOP_MIN_WIDTH)
+    : (deviceWidths[device] ?? DEVICE_WIDTHS[device])
+  const fitZoom = canvasWidth > 0 && designWidth > canvasWidth ? canvasWidth / designWidth : 1
+  const effectiveZoom = zoomMode === 'fit'
+    ? fitZoom
+    : Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoomMode))
+  // Mirror the live zoom so the (once-bound) pinch handler can read it.
+  const effectiveZoomRef = useRef(effectiveZoom)
+  useEffect(() => { effectiveZoomRef.current = effectiveZoom }, [effectiveZoom])
+
+  // Reset to "fit" when switching devices so each size starts framed.
+  useEffect(() => { setZoomMode('fit') }, [device])
+
+  // Pinch-to-zoom (two fingers) + ctrl/⌘-wheel zoom on the canvas viewport.
+  // Bound once with { passive:false } so we can preventDefault the browser's
+  // own page-zoom/scroll. One-finger drags fall through to native scroll (pan).
+  useEffect(() => {
+    const el = mainRef.current
+    if (!el) return
+    const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
+    const pinch = { startDist: null, startZoom: 1 }
+    const clampZoom = (z) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z))
+    const onTouchStart = (e) => {
+      if (e.touches.length === 2) {
+        pinch.startDist = dist(e.touches)
+        pinch.startZoom = effectiveZoomRef.current
+      }
+    }
+    const onTouchMove = (e) => {
+      if (e.touches.length !== 2 || pinch.startDist == null) return
+      e.preventDefault()
+      setZoomMode(clampZoom(pinch.startZoom * (dist(e.touches) / pinch.startDist)))
+    }
+    const onTouchEnd = (e) => { if (e.touches.length < 2) pinch.startDist = null }
+    const onWheel = (e) => {
+      if (!e.ctrlKey && !e.metaKey) return   // ctrl/⌘+wheel (incl. trackpad pinch) only
+      e.preventDefault()
+      setZoomMode(clampZoom(effectiveZoomRef.current * (e.deltaY < 0 ? 1.05 : 0.95)))
+    }
+    el.addEventListener('touchstart', onTouchStart, { passive: false })
+    el.addEventListener('touchmove', onTouchMove, { passive: false })
+    el.addEventListener('touchend', onTouchEnd, { passive: false })
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      el.removeEventListener('touchstart', onTouchStart)
+      el.removeEventListener('touchmove', onTouchMove)
+      el.removeEventListener('touchend', onTouchEnd)
+      el.removeEventListener('wheel', onWheel)
+    }
+  }, [preview])
+
+  // Reserve vertical space for the (scaled) frame so the canvas scrolls/pans.
+  // Use the active breakpoint's effective layout (override or fallback) and skip
+  // widgets hidden at this breakpoint so the reserved height is accurate.
+  const _rowH = spec.layout?.row_height ?? 60
+  // Reserve height for the ACTIVE tab's GRID widgets only (the canvas grid shows
+  // just those — header/drawer widgets render outside the GridCanvas).
+  const _maxBottom = widgetsForTab(spec, activeTabId).reduce((m, w) => {
+    if (effectivePlacement(w) !== 'grid') return m
+    if (isHiddenAt(w, activeBreakpoint)) return m
+    const p = effectivePos(w, spec, activeBreakpoint) ?? {}
+    const y = (p.y ?? 1) - 1
+    const h = p.h ?? 4
+    return Math.max(m, y + h)
+  }, 0)
+  const deviceDashHeight = _maxBottom * (_rowH + 12) + 48
+
+  // ── Keyboard shortcuts ────────────────────────────────────────────────────
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      const tag = e.target?.tagName?.toLowerCase()
+      if (
+        tag === 'input' || tag === 'textarea' ||
+        e.target?.isContentEditable ||
+        e.target?.closest?.('.monaco-editor')
+      ) return
+
+      // Focus mode is its own surface and handles its own keys (Escape closes).
+      // Canvas shortcuts — delete, nudge, duplicate — must not fire behind it.
+      if (focusId) return
+
+      const isMac = navigator.platform?.toUpperCase().includes('MAC') || navigator.userAgent?.includes('Mac')
+      const ctrl = isMac ? e.metaKey : e.ctrlKey
+
+      // ── Ctrl-shortcuts ────────────────────────────────────────────────────
+      if (ctrl) {
+        if (e.key === 'z' && !e.shiftKey) {
+          e.preventDefault()
+          setHist(h => canUndo(h) ? historyUndo(h) : h)
+          return
+        }
+        if ((e.key === 'z' && e.shiftKey) || (!isMac && e.key === 'y')) {
+          e.preventDefault()
+          setHist(h => canRedo(h) ? historyRedo(h) : h)
+          return
+        }
+        if (e.key === 'd' || e.key === 'D') {
+          e.preventDefault()
+          if (selectedId) {
+            setHist(h => {
+              const prev = h.present
+              const source = prev.widgets.find(w => w.id === selectedId)
+              if (!source) return h
+              const cols = prev.layout?.cols ?? 12
+              const size = source.pos ?? WIDGET_SIZES[source.type] ?? WIDGET_SIZES.chart
+              const pos = findFreeSpot(prev.widgets, size.w, size.h, cols)
+              const clone = { ...source, id: genId(source.type), pos: { ...size, ...pos } }
+              const newSpec = { ...prev, widgets: [...prev.widgets, clone] }
+              setTimeout(() => setSelectedId(clone.id), 0)
+              return historyPush(h, newSpec)
+            })
+          }
+          return
+        }
+        return
+      }
+
+      // ── Non-ctrl shortcuts (need a selected widget for most) ──────────────
+
+      // Enter opens the selected widget in focus mode (Escape there returns).
+      if (e.key === 'Enter' && selectedId) {
+        e.preventDefault()
+        setFocusId(selectedId)
+        return
+      }
+
+      if (e.key === 'Escape') {
+        setSelectedId(null)
+        return
+      }
+
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) {
+        e.preventDefault()
+        setHist(h => {
+          const newSpec = { ...h.present, widgets: h.present.widgets.filter(w => w.id !== selectedId) }
+          return historyPush(h, newSpec)
+        })
+        setSelectedId(null)
+        return
+      }
+
+      // Arrow keys — nudge (1 cell) or resize (shift + 1 cell). Edits apply to
+      // the ACTIVE breakpoint only: desktop writes widget.pos, tablet/mobile
+      // write the matching spec.responsive override for the selected widget.
+      if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key) && selectedId) {
+        e.preventDefault()
+        const dx = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0
+        const dy = e.key === 'ArrowUp'   ? -1 : e.key === 'ArrowDown'  ? 1 : 0
+        const bp = DEVICE_TO_BREAKPOINT[deviceRef.current]
+
+        setHist(h => {
+          const prev = h.present
+          const isSm = bp === 'sm'
+          const cols = isSm ? 1 : (prev.layout?.cols ?? 12)
+          const w = prev.widgets.find(x => x.id === selectedId)
+          if (!w) return h
+          // Start from the effective pos at this breakpoint (override if any,
+          // else the canonical desktop pos), then nudge.
+          const base = bp === 'lg'
+            ? (w.pos ?? { x: 1, y: 1, w: 4, h: 4 })
+            : { ...(w.pos ?? { x: 1, y: 1, w: 4, h: 4 }), ...(prev.responsive?.[bp]?.[selectedId] ?? {}) }
+          const pos = { ...base }
+          const mins = WIDGET_MIN_SIZES[w.type] ?? { minW: 2, minH: 2 }
+          if (e.shiftKey) {
+            pos.w = Math.max(isSm ? 1 : mins.minW, Math.min(cols - pos.x + 1, pos.w + dx))
+            pos.h = Math.max(mins.minH, pos.h + dy)
+          } else {
+            pos.x = Math.max(1, Math.min(cols - pos.w + 1, pos.x + dx))
+            pos.y = Math.max(1, pos.y + dy)
+          }
+          // Route via the same single-breakpoint commit used by drag/resize.
+          const item = { i: selectedId, x: pos.x - 1, y: pos.y - 1, w: pos.w, h: pos.h }
+          return historyPush(h, applyLayoutCommit(prev, bp, [item]))
+        })
+        return
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [selectedId, focusId])
+
+  const handleUndo = useCallback(() => setHist(h => canUndo(h) ? historyUndo(h) : h), [])
+  const handleRedo = useCallback(() => setHist(h => canRedo(h) ? historyRedo(h) : h), [])
+
+  // ── Load existing board ───────────────────────────────────────────────────
+  useEffect(() => {
+    if (!boardId) { setLoading(false); return }
+    let cancelled = false
+    setLoading(true)
+    get(`/boards/${boardId}`)
+      .then(board => {
+        if (cancelled) return
+        boardConfigRef.current = board?.config ?? {}
+        const loadedSpec = board?.config?.spec
+        if (loadedSpec) {
+          setHist(createHistory(loadedSpec))
+          savedSpecRef.current = loadedSpec
+          setSavedTick(t => t + 1)
+        } else {
+          setLoadError('This board has no spec yet. Starting with a blank canvas.')
+        }
+        setSavedBoardId(board.id ?? boardId)
+        setLoading(false)
+      })
+      .catch(err => {
+        if (!cancelled) { setLoadError(`Failed to load board: ${err.message}`); setLoading(false) }
+      })
+    return () => { cancelled = true }
+  }, [boardId])
+
+  // ── Derived state ─────────────────────────────────────────────────────────
+  // The RAW (possibly-ref) spec entries — needed by mutation handlers (detach,
+  // edit-scope, "used by") which must know whether a widget IS a reference.
+  const selectedWidgetRaw = spec.widgets.find(w => w.id === selectedId) ?? null
+  const focusedWidgetRaw = focusId ? (spec.widgets.find(w => w.id === focusId) ?? null) : null
+  // The RESOLVED (effective) widgets — what the inspector displays/edits and
+  // what the live preview renders. Inline widgets resolve to themselves.
+  const selectedWidget = useMemo(() => resolveEntry(selectedWidgetRaw), [selectedWidgetRaw, resolveEntry])
+  const focusedWidget = useMemo(() => resolveEntry(focusedWidgetRaw), [focusedWidgetRaw, resolveEntry])
+
+  // Tabs (T5). When spec.tabs is empty this is the full widget list (today's
+  // behavior); otherwise the canvas only shows the active tab's widgets — exactly
+  // like SpecRenderer. Layout building, height reservation and GridCanvas all use
+  // this scoped list, while mutations still operate on the full spec by widget id.
+  const hasTabs = Array.isArray(spec.tabs) && spec.tabs.length > 0
+  // All of the active tab's widgets (any placement) — used for emptiness checks.
+  const tabWidgets = useMemo(
+    () => widgetsForTab(spec, activeTabId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [spec.widgets, spec.tabs, activeTabId],
+  )
+  // ONLY grid-placed widgets get grid cells — header (filter bar) and drawer
+  // widgets are excluded from the GridCanvas layout (mirrors SpecRenderer).
+  const gridTabWidgets = useMemo(
+    () => tabWidgets.filter(w => effectivePlacement(w) === 'grid'),
+    [tabWidgets],
+  )
+  // Header-placed (above-grid filter bar) widgets for the active tab, ordered.
+  const headerTabWidgets = useMemo(
+    () => headerWidgetsForTab(spec, activeTabId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [spec.widgets, spec.tabs, activeTabId],
+  )
+  // A spec whose widget list is scoped to the active tab's GRID widgets only — fed
+  // to the layout builder so off-tab and non-grid widgets never participate in
+  // this tab's grid geometry.
+  const tabSpec = useMemo(
+    () => ({ ...spec, widgets: gridTabWidgets }),
+    [spec, gridTabWidgets],
+  )
+  // Per-tab background falls back to the dashboard background (mirrors SpecRenderer).
+  const activeTab = hasTabs ? (spec.tabs.find(t => t.id === activeTabId) ?? null) : null
+  const canvasBackground = (activeTab?.background && activeTab.background.type)
+    ? activeTab.background
+    : spec.background
+
+  // The canvas renders in the board's own mode, exactly as viewers will see it
+  // (lib/boardTheme.ts): a board designed dark stays dark while you edit it
+  // in a light app, and the reverse.
+  const canvasMode = boardColorMode({ colorMode: spec.colorMode, background: canvasBackground })
+  const canvasTheme = canvasMode ?? appTheme
+  const canvasBgHex = backgroundHex(canvasBackground) ?? PAGE_BG_HEX[canvasTheme]
+  const adaptCtx = spec.themeAdapt === 'off' ? undefined : { theme: canvasTheme, bgHex: canvasBgHex }
+
+  // Per-device column counts (independent now — mobile is no longer locked to 1).
+  //   lg = cols (canonical), md = cols_md (fallback cols), sm = cols_sm (fallback 1).
+  const lgCols = spec.layout?.cols ?? 12
+  const mdCols = spec.layout?.cols_md ?? lgCols
+  const smCols = spec.layout?.cols_sm ?? 1
+
+  // Per-breakpoint layouts: lg from canonical widget.pos; md/sm apply
+  // spec.responsive overrides with a fallback to the lg-derived layout. Each
+  // item keeps its per-type min sizes + authored static/min/max constraints.
+  // The 0-based {i,x,y,w,h,...} items are EXACTLY the shape GridCanvas's `layout`
+  // prop expects (identical to what RGL consumed) — the commit contract is unchanged.
+  // Built from tabSpec so each tab gets its own grid (off-tab widgets excluded).
+  const gridLayouts = useMemo(() => {
+    if (isDraggingRef.current && frozenLayoutsRef.current) return frozenLayoutsRef.current
+    const layouts = buildResponsiveLayouts(tabSpec, lgCols, (w) => ({
+      minDefaults: WIDGET_MIN_SIZES[w.type] ?? { minW: 2, minH: 2 },
+    }), { lg: lgCols, md: mdCols, sm: smCols })
+    frozenLayoutsRef.current = layouts
+    return layouts
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gridTabWidgets, JSON.stringify(spec.responsive), lgCols, mdCols, smCols])
+
+  // Grid flexibility options (spec.layout.*). The editor defaults to free-place
+  // so drag-to-place keeps working; authors can opt into packing via the Advanced
+  // group. GridCanvas applies compaction to the COMMITTED layout before
+  // onLayoutCommit fires ('free'/'none' are identity → byte-identical commits).
+  const editorCompaction = spec.layout?.compaction ?? 'free'
+  const editorDense = !!spec.layout?.dense
+  // GridCanvas takes a single scalar gap for both axes — map from the new `gap`
+  // field, falling back to the legacy margin_x (they were equal in practice).
+  const editorGap = spec.layout?.gap ?? spec.layout?.margin_x ?? 12
+  const editorPadding = { x: spec.layout?.padding_x ?? 0, y: spec.layout?.padding_y ?? 0 }
+  // Column count for the ACTIVE breakpoint — drives the grid geometry.
+  const editorGridCols = activeBreakpoint === 'sm' ? smCols
+    : activeBreakpoint === 'md' ? mdCols : lgCols
+  // Mobile (sm) edits as a touch-friendly drag-to-reorder stack; desktop/tablet
+  // use full 2-D grid editing.
+  const gridMode = activeBreakpoint === 'sm' ? 'reorder' : 'grid'
+
+  // ── Mutations ─────────────────────────────────────────────────────────────
+
+  const addWidget = useCallback((type) => {
+    const prev = spec
+    const cols = prev.layout?.cols ?? 12
+    // New widgets are placed within (and tagged for) the ACTIVE tab, so the
+    // free-spot scan only considers that tab's occupancy. With no tabs this is
+    // the full widget list and tab_id stays absent (today's behavior).
+    const tab = resolveActiveTab(prev, activeTabIdRaw)
+    const peers = tab ? widgetsForTab(prev, tab) : prev.widgets
+    const size = WIDGET_SIZES[type] ?? WIDGET_SIZES.chart
+    const pos = findFreeSpot(peers, size.w, size.h, cols)
+    const widget = makeWidget(type, pos)
+    if (tab) widget.tab_id = tab
+    // Build the widget from the current spec rather than inside the history
+    // updater, so its id is known here and selection is a plain state write.
+    // Deferring selection into the updater (a setTimeout from inside it) meant
+    // a freshly added widget sometimes landed on the canvas with the inspector
+    // still showing "Nothing selected" — you had to go and click it.
+    setSpec({ ...prev, widgets: [...prev.widgets, widget] })
+    setSelectedId(widget.id)
+    setPreview(false)
+  }, [spec, activeTabIdRaw, setSpec])
+
+  const removeWidget = useCallback((id) => {
+    setHist(h => historyPush(h, { ...h.present, widgets: h.present.widgets.filter(w => w.id !== id) }))
+    setSelectedId(prev => prev === id ? null : prev)
+    // Removing the widget you're focused on drops you back to the canvas.
+    setFocusId(prev => prev === id ? null : prev)
+  }, [])
+
+  /**
+   * Add a REFERENCE to a library widget — the default "From library" action.
+   * The board spec entry is just `{ id, ref, overrides: {}, pos, tab_id }`;
+   * `resolveWidgetRef` fills in the rest at render/edit time from the library
+   * row. Editing this instance writes to `overrides` (never the library row),
+   * and every board with a `ref` to this row picks up a shared-definition
+   * edit — see the inspector's "used by N" banner.
+   */
+  const addLibraryReference = useCallback((row) => {
+    const type = row?.config?.type
+    if (!type) { toast.error('That library entry is missing a widget type.'); return }
+
+    setHist(h => {
+      const prev = h.present
+      const cols = prev.layout?.cols ?? 12
+      const tab = resolveActiveTab(prev, activeTabIdRaw)
+      const peers = tab ? widgetsForTab(prev, tab) : prev.widgets
+      const size = row.config?.size ?? WIDGET_SIZES[type] ?? WIDGET_SIZES.chart
+      const pos = findFreeSpot(peers, size.w, size.h, cols)
+      const widget: Record<string, any> = { id: genId(type), ref: row.id, overrides: {}, pos: { ...size, ...pos } }
+      if (tab) widget.tab_id = tab
+      setTimeout(() => setSelectedId(widget.id), 0)
+      return historyPush(h, { ...prev, widgets: [...prev.widgets, widget] })
+    })
+    invalidateWidgetUsage(row.id)
+    setPreview(false)
+    toast.success(`Added a reference to “${row.name}” — edits here stay local to this board.`)
+  }, [activeTabIdRaw])
+
+  /**
+   * Add a DETACHED copy of a library widget to the active tab. "Detached"
+   * means the copy carries no reference back to the library row: later edits to
+   * the entry never mutate boards already using it, and the board spec stays
+   * self-contained for embedding. This is the explicit opt-in for the cases a
+   * linked reference is actively wrong for — `addLibraryReference` above is
+   * the default because copy-on-add is exactly how the legacy estate ended up
+   * with ~zero widget reuse across 21k widgets.
+   */
+  const addDetachedLibraryCopy = useCallback((row) => {
+    const { widget: body, size: savedSize } = fromLibraryRow(row)
+    if (!body?.type) { toast.error('That library entry is missing a widget type.'); return }
+
+    setHist(h => {
+      const prev = h.present
+      const cols = prev.layout?.cols ?? 12
+      const tab = resolveActiveTab(prev, activeTabIdRaw)
+      const peers = tab ? widgetsForTab(prev, tab) : prev.widgets
+      const size = savedSize ?? WIDGET_SIZES[body.type] ?? WIDGET_SIZES.chart
+      const pos = findFreeSpot(peers, size.w, size.h, cols)
+      const widget = { ...body, id: genId(body.type), pos: { ...size, ...pos } }
+      if (tab) widget.tab_id = tab
+      setTimeout(() => setSelectedId(widget.id), 0)
+      return historyPush(h, { ...prev, widgets: [...prev.widgets, widget] })
+    })
+    setPreview(false)
+    toast.success(`Added a detached copy of “${row.name}” — independent from the library entry.`)
+  }, [activeTabIdRaw])
+
+  /**
+   * Delete a library entry. Boards holding a DETACHED copy are unaffected, as
+   * always. Boards with a `ref` to this row are NOT silently changed — they
+   * will render a visible broken-reference placeholder next resolve (see
+   * `resolveWidgetRef`) rather than lose the widget outright or crash.
+   */
+  const removeLibraryEntry = useCallback(async (row) => {
+    try {
+      await deleteLibraryWidget(row.id)
+      invalidateWidgetUsage(row.id)
+      await reloadLibrary()
+      toast.success(`Removed “${row.name}” from the library`)
+    } catch (err) {
+      toast.error(`Could not remove entry: ${err.message}`)
+    }
+  }, [reloadLibrary])
+
+  /**
+   * Detach a `ref` widget: inline its current resolved shape and drop `ref`.
+   * Records its origin (`meta.detachedFrom` / `detachedAt`) so drift from the
+   * library entry stays traceable later. Explicit action only — see the
+   * inspector's "Detach" button + DetachWidgetDialog naming prompt.
+   */
+  const detachWidget = useCallback((id, name) => {
+    const raw = spec.widgets.find(w => w.id === id)
+    if (!raw || !isRefWidget(raw)) return
+    const refId = raw.ref
+    const effective = resolveEntry(raw)
+    setHist(h => {
+      const prev = h.present
+      const current = prev.widgets.find(w => w.id === id)
+      if (!current || !isRefWidget(current)) return h
+      const detached = { ...effective }
+      delete detached.ref
+      delete detached.overrides
+      detached.id = current.id
+      detached.pos = current.pos
+      detached.tab_id = current.tab_id
+      detached.meta = { ...(detached.meta ?? {}), detachedFrom: name, detachedAt: new Date().toISOString() }
+      return historyPush(h, { ...prev, widgets: prev.widgets.map(w => (w.id === id ? detached : w)) })
+    })
+    invalidateWidgetUsage(refId)
+    setDetachTarget(null)
+    toast.success(`Detached “${name}” — this instance is now independent.`)
+  }, [spec.widgets, resolveEntry])
+
+  /**
+   * "Edit for all" — promote this instance's CURRENT effective config (library
+   * base + its own overrides) to be the library row's new shared config. Every
+   * board with a `ref` to this row picks the change up next resolve; a board
+   * that had its OWN different overrides keeps them (they still apply on top
+   * of the new base). This instance's overrides are cleared afterward since
+   * they're now redundant with the (updated) base.
+   */
+  const saveSharedDefinition = useCallback(async (id) => {
+    const raw = spec.widgets.find(w => w.id === id)
+    if (!raw || !isRefWidget(raw)) return
+    const refId = raw.ref
+    const effective = resolveEntry(raw)
+    setSavingShared(true)
+    try {
+      await updateLibraryWidget(refId, effective)
+      setSpec(prev => ({
+        ...prev,
+        widgets: prev.widgets.map(w => (w.id === id ? { ...w, overrides: {} } : w)),
+      }))
+      invalidateWidgetUsage(refId)
+      await reloadLibrary()
+      toast.success('Updated the shared widget — every board using it will pick this up.')
+      setSharedEditRefId(null)
+    } catch (err) {
+      toast.error(`Could not update the shared widget: ${err.message}`)
+    } finally {
+      setSavingShared(false)
+    }
+  }, [spec.widgets, resolveEntry, reloadLibrary, setSpec])
+
+  /**
+   * "Duplicate & edit just this one" — fork the library row: save this
+   * instance's current effective config as a NEW library entry, then repoint
+   * just this instance's `ref` to it (clearing overrides, now redundant).
+   * Unlike Detach, the instance stays reference-based — just against a
+   * library entry of its own instead of the shared one.
+   */
+  const forkSharedDefinition = useCallback(async (id, name) => {
+    const raw = spec.widgets.find(w => w.id === id)
+    if (!raw || !isRefWidget(raw)) return
+    const oldRefId = raw.ref
+    const effective = resolveEntry(raw)
+    try {
+      const newRow = await saveWidgetToLibrary(name, effective)
+      setSpec(prev => ({
+        ...prev,
+        widgets: prev.widgets.map(w => (w.id === id ? { ...w, ref: newRow.id, overrides: {} } : w)),
+      }))
+      invalidateWidgetUsage(oldRefId)
+      invalidateWidgetUsage(newRow.id)
+      await reloadLibrary()
+      setForkTarget(null)
+      toast.success(`Duplicated into “${name}” — only this instance uses it now.`)
+    } catch (err) {
+      toast.error(`Could not duplicate the shared widget: ${err.message}`)
+    }
+  }, [spec.widgets, resolveEntry, reloadLibrary, setSpec])
+
+  /**
+   * Open a widget in focus mode. Focus follows selection so that closing the
+   * overlay leaves you on the same widget's inspector, not on whatever was
+   * selected before.
+   */
+  const openFocus = useCallback((id) => {
+    setSelectedId(id)
+    setRightPanel(p => (p === 'chat' ? p : 'config'))
+    setFocusId(id)
+  }, [])
+
+  const duplicateWidget = useCallback((id) => {
+    setHist(h => {
+      const prev = h.present
+      const source = prev.widgets.find(w => w.id === id)
+      if (!source) return h
+      const cols = prev.layout?.cols ?? 12
+      const size = source.pos ?? WIDGET_SIZES[source.type] ?? WIDGET_SIZES.chart
+      // Scan only the source widget's tab so the clone lands beside its sibling
+      // (the spread keeps source.tab_id, so it stays on the same tab).
+      const peers = Array.isArray(prev.tabs) && prev.tabs.length
+        ? widgetsForTab(prev, resolveActiveTab(prev, source.tab_id ?? null))
+        : prev.widgets
+      const pos = findFreeSpot(peers, size.w, size.h, cols)
+      const clone = { ...source, id: genId(source.type), pos: { ...size, ...pos } }
+      const newSpec = { ...prev, widgets: [...prev.widgets, clone] }
+      setTimeout(() => setSelectedId(clone.id), 0)
+      return historyPush(h, newSpec)
+    })
+  }, [])
+
+  /**
+   * Apply an inspector edit. `updated` is the FULL resolved (effective) widget
+   * an onChange handler produced (a copy of what ConfigPanel/WidgetFocusShell
+   * was given, with one field changed) — for an inline widget that's already
+   * the correct next spec entry (today's behavior, unchanged). For a `ref`
+   * widget it is folded into `overrides` via `applyWidgetEdit`, so the edit
+   * stays instance-local and the library row is never touched by a normal
+   * field edit — only the explicit "Edit for all" / "Duplicate & edit" actions
+   * (saveSharedDefinition / forkSharedDefinition) reach the library row.
+   */
+  const updateWidget = useCallback((updated) => {
+    setSpec(prev => ({
+      ...prev,
+      widgets: prev.widgets.map(w => {
+        if (w.id !== updated.id) return w
+        return isRefWidget(w) ? applyWidgetEdit(w, updated, libraryById.get(w.ref)) : updated
+      }),
+    }))
+  }, [libraryById])
+
+  /**
+   * Patch ANY widget on the board by id, not just the selected one — what the
+   * filter panel needs to tick a chart on or off. The updater is handed the
+   * RESOLVED widget and its result goes back through the same reference-aware
+   * path as `updateWidget`, so editing a library-backed instance still writes a
+   * sparse override rather than flattening it into a copy.
+   */
+  const patchWidgetById = useCallback((id, updater) => {
+    setSpec(prev => ({
+      ...prev,
+      widgets: prev.widgets.map(w => {
+        if (w.id !== id) return w
+        const def = isRefWidget(w) ? libraryById.get(w.ref) : null
+        const resolved = isRefWidget(w) ? resolveWidgetRef(w, def).widget : w
+        const updated = updater(resolved)
+        return isRefWidget(w) ? applyWidgetEdit(w, updated, def) : updated
+      }),
+    }))
+  }, [libraryById, setSpec])
+
+  /**
+   * Declare a board variable if it isn't declared already — called when a
+   * filter is named, so `spec.variables` keeps up with the filters that write
+   * to it instead of the author having to mirror every name by hand. Existing
+   * variables (and their defaults) are never touched.
+   */
+  const createVariable = useCallback((name, type = 'text') => {
+    const varName = String(name ?? '').trim()
+    if (!varName) return
+    setSpec(prev => {
+      const vars = prev.variables ?? []
+      if (vars.some(v => v?.name === varName)) return prev   // === prev: no history entry
+      return { ...prev, variables: [...vars, { name: varName, type, default: null }] }
+    })
+  }, [setSpec])
+
+  // How many widgets each filter actually reaches. A filter that reaches none
+  // looks fine on the canvas and does nothing for viewers, so the canvas and
+  // the filters drawer flag it.
+  const filterReaderCounts = useMemo(() => {
+    const names = (spec.widgets ?? [])
+      .map(w => resolveEntry(w))
+      .filter(w => w?.type === 'filter' && w.target_var)
+      .map(w => w.target_var)
+    return readerCounts(spec.widgets ?? [], names, resolveEntry)
+  }, [spec.widgets, resolveEntry])
+
+  /**
+   * A filter's variable was renamed `from` → `to`: re-point every widget that
+   * READS `from` (param bindings, direct column bindings, date captions) so the
+   * filter keeps controlling what it controlled, and carry the declaration
+   * (type, default) over. One spec update, so it is one undo step.
+   *
+   * Skipped when another widget also WRITES `from` — the variable is shared,
+   * and moving its readers would silently cut that other producer off. The
+   * caller (FilterConfig) says so instead.
+   */
+  const renameVariable = useCallback((from, to, selfId, type = 'text') => {
+    const oldName = String(from ?? '').trim()
+    const newName = String(to ?? '').trim()
+    if (!newName) return
+    setSpec(prev => {
+      const plan = planVariableRename(prev.widgets, oldName, newName, selfId, resolveEntry)
+      const vars = prev.variables ?? []
+      const oldDecl = vars.find(v => v?.name === oldName)
+      const hasNew = vars.some(v => v?.name === newName)
+      if (!oldName || oldName === newName || plan.sharedWith.length > 0) {
+        return hasNew ? prev : { ...prev, variables: [...vars, { name: newName, type, default: null }] }
+      }
+      const widgets = plan.moves === 0 ? prev.widgets : prev.widgets.map(w => {
+        if (w.id === selfId) return w
+        const def = isRefWidget(w) ? libraryById.get(w.ref) : null
+        const resolved = isRefWidget(w) ? resolveWidgetRef(w, def).widget : w
+        const updated = renameVariableReads(resolved, oldName, newName)
+        if (updated === resolved) return w
+        return isRefWidget(w) ? applyWidgetEdit(w, updated, def) : updated
+      })
+      // Nothing else writes the old name now, so its declaration moves with it.
+      const variables = hasNew
+        ? vars.filter(v => v?.name !== oldName)
+        : oldDecl
+          ? vars.map(v => (v?.name === oldName ? { ...v, name: newName } : v))
+          : [...vars, { name: newName, type, default: null }]
+      return { ...prev, widgets, variables }
+    })
+  }, [libraryById, resolveEntry, setSpec])
+
+  /**
+   * "Reset to library value" for one overridden leaf field (per-field, from
+   * RefWidgetBanner's flattened override list) — removes just that leaf from
+   * `overrides`, pruning now-empty parent objects, so the field inherits the
+   * library's value again on next resolve. A no-op for inline widgets.
+   */
+  const resetOverrideField = useCallback((id, path) => {
+    setSpec(prev => ({
+      ...prev,
+      widgets: prev.widgets.map(w => (
+        w.id === id && isRefWidget(w) ? { ...w, overrides: removeOverridePath(w.overrides, path) } : w
+      )),
+    }))
+  }, [setSpec])
+
+  // ── Tab mutations (T5) ─────────────────────────────────────────────────────
+  // All route through setHist so undo/redo + dirty tracking work.
+
+  // Add a tab. The FIRST tab created adopts all existing (untagged) widgets — they
+  // already implicitly belong to the first tab, so no widget mutation is needed.
+  const addTab = useCallback(() => {
+    setHist(h => {
+      const prev = h.present
+      const tabs = Array.isArray(prev.tabs) ? prev.tabs : []
+      const id = genTabId(tabs)
+      const next = { ...prev, tabs: [...tabs, { id, label: `Tab ${tabs.length + 1}` }] }
+      setTimeout(() => setActiveTabIdRaw(id), 0)
+      return historyPush(h, next)
+    })
+    setPreview(false)
+  }, [])
+
+  const renameTab = useCallback((id, label) => {
+    setSpec(prev => ({
+      ...prev,
+      tabs: (prev.tabs ?? []).map(t => t.id === id ? { ...t, label } : t),
+    }))
+  }, [setSpec])
+
+  const reorderTabs = useCallback((from, to) => {
+    setSpec(prev => {
+      const tabs = [...(prev.tabs ?? [])]
+      if (from < 0 || from >= tabs.length || to < 0 || to >= tabs.length) return prev
+      const [moved] = tabs.splice(from, 1)
+      tabs.splice(to, 0, moved)
+      return { ...prev, tabs }
+    })
+  }, [setSpec])
+
+  // Delete a tab. `mode` is 'move' (relocate its widgets to targetTabId) or
+  // 'delete' (remove the tab AND its widgets). Untagged widgets count as the
+  // first tab, so deleting the first tab must re-tag them onto the survivor.
+  const deleteTab = useCallback((tabId, mode, targetTabId = null) => {
+    setHist(h => {
+      const prev = h.present
+      const tabs = Array.isArray(prev.tabs) ? prev.tabs : []
+      const remaining = tabs.filter(t => t.id !== tabId)
+      const firstTabId = tabs[0]?.id ?? null
+      // Widgets belonging to the deleted tab: explicit match, plus untagged ones
+      // when deleting the first tab.
+      const belongs = (w) => {
+        const t = w.tab_id ?? null
+        return t === tabId || (t == null && tabId === firstTabId)
+      }
+      let widgets
+      if (mode === 'move' && targetTabId) {
+        widgets = prev.widgets.map(w => belongs(w) ? { ...w, tab_id: targetTabId } : w)
+      } else {
+        widgets = prev.widgets.filter(w => !belongs(w))
+      }
+      // If the new first tab changed (deleted the old first), normalise any
+      // widgets still tagged with the now-first tab's id so null === first holds.
+      const next = { ...prev, tabs: remaining.length ? remaining : undefined, widgets }
+      if (!remaining.length) {
+        // Last tab removed → tab_id becomes meaningless; strip it so widgets render.
+        next.widgets = widgets.map(w => (w.tab_id ? { ...w, tab_id: undefined } : w))
+      }
+      setTimeout(() => setActiveTabIdRaw(remaining[0]?.id ?? null), 0)
+      return historyPush(h, next)
+    })
+  }, [])
+
+  // "Move to tab →" widget action (context menu / inspector). null clears tab_id
+  // back to the implicit first tab.
+  const moveWidgetToTab = useCallback((widgetId, targetTabId) => {
+    setSpec(prev => ({
+      ...prev,
+      widgets: prev.widgets.map(w => w.id === widgetId
+        ? { ...w, tab_id: targetTabId ?? undefined }
+        : w),
+    }))
+  }, [setSpec])
+
+  // Confirm-delete flow: tabs with widgets prompt (move vs delete), empty tabs
+  // delete immediately.
+  const requestDeleteTab = useCallback((tab) => {
+    const count = widgetsForTab(spec, tab.id).length
+    if (count === 0) { deleteTab(tab.id, 'delete'); return }
+    setDeletingTab(tab)
+  }, [spec, deleteTab])
+
+  // Commit a drag/resize/arrow-nudge into the ACTIVE breakpoint only.
+  //   desktop (lg) → writes widget.pos (canonical)
+  //   tablet (md) / mobile (sm) → writes spec.responsive[bp][id] for moved
+  //   widgets, leaving the other breakpoints + untouched widgets alone.
+  const commitLayout = useCallback((finalLayout) => {
+    const bp = DEVICE_TO_BREAKPOINT[deviceRef.current]
+    setHist(h => {
+      const newSpec = applyLayoutCommit(h.present, bp, finalLayout)
+      frozenLayoutsRef.current = null
+      // Skip no-op commits (e.g. a gesture that ended exactly where it started, or
+      // a stray commit with the unchanged fallback layout) so we don't (a) pollute
+      // the undo history or (b) bake the inherited layout into an override and make
+      // a never-edited breakpoint look "customised".
+      if (JSON.stringify(newSpec) === JSON.stringify(h.present)) return h
+      return historyPush(h, newSpec)
+    })
+  }, [])
+
+  // NOTE: GridCanvas only fires onLayoutCommit at the END of a real drag/resize (or
+  // a reorder), never on mount or on the keyed remount that happens when switching
+  // device — so there is no spurious "full layout" commit to guard against the way
+  // RGL's onLayoutChange required. The no-op JSON skip above is still a cheap
+  // belt-and-braces. All other edits (arrow-key nudges, Configure numeric fields)
+  // commit via commitLayout([item]) directly.
+
+  // GridCanvas signals the START / END of a drag-or-resize gesture via
+  // onInteractionStart / onInteractionEnd (the latter fires on commit AND cancel).
+  // We mirror the old RGL drag/resize start/stop bookkeeping: freeze the layouts
+  // during the gesture (frozenLayoutsRef, read in the gridLayouts memo) and drive
+  // the column-guide overlay. The actual geometry commit arrives separately via
+  // onLayoutCommit → commitLayout, so the freeze is cleared inside commitLayout.
+  const handleInteractionStart = useCallback(() => { isDraggingRef.current = true }, [])
+  const handleInteractionEnd = useCallback(() => {
+    isDraggingRef.current = false
+    // A cancelled gesture fires onInteractionEnd WITHOUT a commit; drop the freeze
+    // so the next render reflects the unchanged spec.
+    frozenLayoutsRef.current = null
+  }, [])
+
+  // Mobile (reorder) height stepper: bump a widget's height by ±1 grid row at the
+  // ACTIVE breakpoint, routed through the same single-breakpoint commit path.
+  const handleHeightStep = useCallback((id, delta) => {
+    const bp = DEVICE_TO_BREAKPOINT[deviceRef.current]
+    setHist(h => {
+      const prev = h.present
+      const w = prev.widgets.find(x => x.id === id)
+      if (!w) return h
+      const base = bp === 'lg'
+        ? (w.pos ?? { x: 1, y: 1, w: 4, h: 4 })
+        : { ...(w.pos ?? { x: 1, y: 1, w: 4, h: 4 }), ...(prev.responsive?.[bp]?.[id] ?? {}) }
+      const mins = WIDGET_MIN_SIZES[w.type] ?? { minW: 2, minH: 2 }
+      const nextH = Math.max(mins.minH, (base.h ?? 4) + delta)
+      const item = { i: id, x: (base.x ?? 1) - 1, y: (base.y ?? 1) - 1, w: base.w ?? 4, h: nextH }
+      const newSpec = applyLayoutCommit(prev, bp, [item])
+      if (JSON.stringify(newSpec) === JSON.stringify(prev)) return h
+      return historyPush(h, newSpec)
+    })
+  }, [])
+
+  const handleSave = async () => {
+    setSaving(true)
+    setSaveError(null)
+    try {
+      let board
+      const config = { ...boardConfigRef.current, spec }
+      if (savedBoardId) {
+        board = await put(`/boards/${savedBoardId}`, { name: spec.title, config })
+      } else {
+        board = await post('/boards', { name: spec.title, config })
+        setSavedBoardId(board.id)
+      }
+      boardConfigRef.current = board?.config ?? config
+      savedSpecRef.current = spec  // mark clean
+      setSavedTick(t => t + 1)
+      toast.success('Dashboard saved')
+      onSaved?.(board)
+      return board
+    } catch (err) {
+      const msg = err.message ?? 'Save failed.'
+      setSaveError(msg)
+      toast.error(msg)
+      // Rethrow so callers that chain off a save (e.g. the host page's
+      // "Push to live", which must save the draft first) can abort instead of
+      // publishing the previously-saved spec as if it were the new work.
+      throw err
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Expose the save action to the host page (DashboardViewPage's "Push to live",
+  // which must flush the draft before publishing it). Mirrors the onSetSpec seam
+  // above. Routed through a ref so the handed-out function is stable across
+  // renders but always invokes the current handleSave (which closes over the
+  // live spec) — handing out handleSave directly would publish a stale closure.
+  const handleSaveRef = useRef(null)
+  handleSaveRef.current = handleSave
+  const invokeSave = useCallback(() => handleSaveRef.current?.(), [])
+  useEffect(() => {
+    onSetSave?.(invokeSave)
+  }, [onSetSave, invokeSave])
+
+  // Save affordance shown while the Configure or Dashboard (layout) panel is
+  // open, so committing a widget's setup or the grid/layout settings has an
+  // obvious, in-context action rather than relying on the user to notice the
+  // top-bar button. Same handleSave — dashboards persist as one spec, there's
+  // no separate per-widget or per-panel save endpoint.
+  const renderSaveFooter = () => (
+    <div className="shrink-0 border-t border-border px-3 py-2.5 flex items-center justify-between gap-2">
+      <span className="flex items-center gap-2 text-[12px] text-muted">
+        <span className={`nubi-dot ${dirty ? 'nubi-dot-warning' : 'nubi-dot-success'}`} aria-hidden="true" />
+        {dirty ? 'Unsaved changes' : 'All changes saved'}
+      </span>
+      <Button
+        onClick={() => { handleSave().catch(() => {}) }}
+        loading={saving}
+        variant="secondary"
+        size="xs"
+        data-testid="config-panel-save-btn"
+      >
+        {!saving && <Save size={14} strokeWidth={1.5} aria-hidden="true" />}
+        {saving ? 'Saving…' : (savedBoardId ? 'Save' : 'Create')}
+      </Button>
+    </div>
+  )
+
+  const handleAIApply = useCallback((aiSpec, mode) => {
+    if (!aiSpec) return
+    if (mode === 'replace') {
+      setSpec({
+        ...DEFAULT_SPEC,
+        ...aiSpec,
+        layout: { cols: 12, row_height: 60, ...(aiSpec.layout ?? {}) },
+        widgets: aiSpec.widgets ?? [],
+      })
+      setSelectedId(null)
+      setPreview(false)
+      return
+    }
+    // mode === 'merge'
+    setSpec(prev => {
+      const existingMaxY = prev.widgets.reduce((max, w) => Math.max(max, (w.pos?.y ?? 1) + (w.pos?.h ?? 4)), 1)
+      const existingIds = new Set(prev.widgets.map(w => w.id))
+      const incomingWidgets = (aiSpec.widgets ?? []).map(w => {
+        let newId = w.id
+        if (existingIds.has(newId)) { _idCounter += 1; newId = `${w.type ?? 'w'}_ai_${_idCounter}` }
+        existingIds.add(newId)
+        const minOrigY = (aiSpec.widgets ?? []).reduce((mn, iw) => Math.min(mn, iw.pos?.y ?? 1), w.pos?.y ?? 1)
+        const offsetY = existingMaxY - minOrigY
+        return { ...w, id: newId, pos: { ...(w.pos ?? { x: 1, y: 1, w: 4, h: 4 }), y: (w.pos?.y ?? 1) + offsetY } }
+      })
+      return { ...prev, widgets: [...prev.widgets, ...incomingWidgets] }
+    })
+    setPreview(false)
+  }, [])
+
+  // ── Right-panel body (shared by desktop sidebar + mobile sheet) ───────────
+  const RIGHT_PANEL_TITLES = { add: 'Add widget', config: 'Configure', chat: 'Chat', board: 'Dashboard', tabs: 'Tabs' }
+  const renderRightPanelBody = () => {
+    if (rightPanel === 'add') return (
+      <AddPanel
+        onAdd={addWidget}
+        onAddReference={addLibraryReference}
+        onAddDetachedCopy={addDetachedLibraryCopy}
+        library={library}
+        libraryLoading={libraryLoading}
+        onDeleteLibraryEntry={removeLibraryEntry}
+      />
+    )
+    if (rightPanel === 'board') return <DashboardPanel spec={spec} onSpecChange={setSpec} />
+    if (rightPanel === 'tabs') return <TabsPanel spec={spec} onSpecChange={setSpec} activeTabId={activeTabId} onActivate={setActiveTabIdRaw} onAddTab={addTab} />
+    if (rightPanel === 'chat') return <ChatPanel boardId={savedBoardId} spec={spec} onApplySpec={handleAIApply} />
+    return (
+      <ConfigPanel
+        widget={selectedWidget}
+        onChange={updateWidget}
+        onRemove={() => selectedWidget && removeWidget(selectedWidget.id)}
+        extraQueryIds={queryIds}
+        spec={spec}
+        activeBreakpoint={activeBreakpoint}
+        onLayoutCommit={(item) => commitLayout([item])}
+        onMoveToTab={moveWidgetToTab}
+        onLibrarySaved={reloadLibrary}
+        libraryById={libraryById}
+        onDetachRequest={requestDetach}
+        onEditScopeRequest={requestEditScope}
+        onResetOverride={resetOverrideField}
+        sharedEditRefId={sharedEditRefId}
+        onSaveSharedDefinition={saveSharedDefinition}
+        onCancelSharedEdit={() => setSharedEditRefId(null)}
+        savingShared={savingShared}
+        onPatchWidget={patchWidgetById}
+        onCreateVariable={createVariable}
+        onRenameVariable={renameVariable}
+        resolveWidget={resolveEntry}
+      />
+    )
+  }
+
+  // ── Loading state ─────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center flex-1 min-h-0 gap-3 bg-bg">
+        <Spinner size="lg" label="Loading board" />
+        <p className="text-sm text-muted">Loading board…</p>
+      </div>
+    )
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
+  // Static shell: the whole editor is a fixed h-screen flex column that never
+  // scrolls. Only the center <main> canvas (and scrollable regions *inside*
+  // the fixed-width sidebar) scroll. Topbar + sidebar stay put on resize.
+  // The editor's toolbar is portaled INTO the single app top bar (AppTopbar's
+  // slot) so there is one bar, not a stacked second one. It closes over live
+  // editor state, so it updates normally.
+  // Reset the canvas view: snap zoom back to automatic "fit" AND drop any custom
+  // per-device width overrides (back to the DEVICE_WIDTHS defaults).
+  const resetView = () => {
+    setZoomMode('fit')
+    setDeviceWidths({ tablet: DEVICE_WIDTHS.tablet, mobile: DEVICE_WIDTHS.mobile })
+  }
+
+  // Zoom controls (out / fit / in) + Reset — moved out of the floating canvas bar
+  // into the app top bar. Also rendered in the mobile slide-out menu via the same
+  // function. Pinch / ctrl+wheel zoom still works via the canvas effect.
+  const zoomControls = () => (
+    <div className="flex items-center gap-1" data-testid="zoom-control">
+      <button
+        onClick={() => setZoomMode(z => Math.max(MIN_ZOOM, (z === 'fit' ? fitZoom : z) - 0.1))}
+        title="Zoom out" aria-label="Zoom out"
+        className="nbc-tool nbc-tool-bordered !px-0"
+      >
+        <ZoomOut size={16} strokeWidth={1.5} />
+      </button>
+      <button
+        onClick={() => setZoomMode('fit')}
+        title="Fit to screen"
+        aria-pressed={zoomMode === 'fit'}
+        className="nbc-tool nbc-tool-bordered nbc-meta !text-fg"
+      >
+        {zoomMode === 'fit' ? `Fit · ${Math.round(effectiveZoom * 100)}%` : `${Math.round(effectiveZoom * 100)}%`}
+      </button>
+      <button
+        onClick={() => setZoomMode(z => Math.min(MAX_ZOOM, (z === 'fit' ? fitZoom : z) + 0.1))}
+        title="Zoom in" aria-label="Zoom in"
+        className="nbc-tool nbc-tool-bordered !px-0"
+      >
+        <ZoomIn size={16} strokeWidth={1.5} />
+      </button>
+      <button
+        onClick={resetView}
+        title="Reset view (fit zoom + default widths)" aria-label="Reset view"
+        data-testid="reset-view"
+        className="nbc-tool nbc-tool-bordered !px-0"
+      >
+        <Maximize2 size={16} strokeWidth={1.5} />
+      </button>
+    </div>
+  )
+
+  // Device viewport switcher — shared by the top bar and the mobile slide-out.
+  // `compact` (slide-out) keeps a native title instead of a Tooltip.
+  const deviceSwitcher = (compact = false) => (
+    <div className="nbc-seg" role="group" aria-label="Preview size" data-testid="device-switcher">
+      {DEVICES.map(d => {
+        const button = (
+          <button key={d.id} onClick={() => setDevice(d.id)} title={compact ? d.label : undefined} aria-label={d.label} aria-pressed={device === d.id}>
+            <d.Icon size={16} strokeWidth={1.5} />
+          </button>
+        )
+        return compact ? button : <Tooltip key={d.id} content={d.label} side="bottom">{button}</Tooltip>
+      })}
+    </div>
+  )
+
+  // Panel toggle icon buttons — Add / Configure / Layout / Chat. Shared by the top
+  // bar (md+) and the mobile slide-out. `compact` stacks them as full-width rows.
+  const PANEL_SEGMENTS = [
+    // 'add' is redundant on lg+ (the permanent left widget-library rail covers
+    // it there) but still the only way to add widgets on md/mobile, which have
+    // no room for a second permanent rail — so the toggle stays, just hidden
+    // at lg+ via hideOnLg.
+    { id: 'add',    Icon: Plus,         mobileSheet: 'palette', label: 'Add widget', tip: 'Add widget', title: 'Add widget',                ariaLabel: 'Add widget panel', hideOnLg: true },
+    { id: 'config', Icon: Settings2,    mobileSheet: 'config',  label: 'Configure',  tip: 'Configure widget', title: 'Configure selected widget', ariaLabel: 'Configure panel' },
+    { id: 'board',  Icon: LayoutGrid,   mobileSheet: 'board',   label: 'Dashboard',  tip: 'Dashboard settings', title: 'Dashboard background, grid & variables', ariaLabel: 'Dashboard panel' },
+    { id: 'tabs',   Icon: Heading,      mobileSheet: 'tabs',    label: 'Tabs',       tip: 'Tab settings', title: 'Tab bar & per-tab style',   ariaLabel: 'Tabs panel' },
+    { id: 'chat',   Icon: MessageSquare,mobileSheet: 'chat',    label: 'Chat',       tip: 'AI chat', title: 'AI Chat',                   ariaLabel: 'Chat panel' },
+    // Not a docked side panel like the others — opens the full-screen filters
+    // authoring slide-over (filtersOpen state, below). This is the ONLY entry
+    // point for it: the old route-level FILTERS button that used to dispatch
+    // `nubi:open-filters` was removed as dead chrome, and nothing else in the
+    // editor calls setFiltersOpen(true) — without this button a drawer-placed
+    // filter (common on boards with many filters, kept off the canvas on
+    // purpose) has no way to be selected and configured at all.
+    { id: 'filters', Icon: FilterIcon,  mobileSheet: null,      label: 'Filters',    tip: 'Manage filters', title: 'Manage dashboard filters',  ariaLabel: 'Filters panel' },
+  ]
+  const panelToggles = (compact = false) => (
+    <div className={compact ? 'flex flex-col gap-1' : 'flex items-center gap-0.5'} data-testid="editor-panel-toggles">
+      {PANEL_SEGMENTS.map(seg => {
+        const isFilters = seg.id === 'filters'
+        const isActiveDesktop = isFilters ? filtersOpen : (rightPanel === seg.id && !rightCollapsed)
+        const isActiveMobile = isFilters ? filtersOpen : mobileSheet === seg.mobileSheet
+        const pressed = isActiveDesktop || isActiveMobile
+        const button = (
+          <button
+            key={seg.id}
+            data-testid={`panel-toggle-${seg.id}`}
+            title={compact ? seg.title : undefined}
+            aria-label={seg.ariaLabel}
+            aria-pressed={pressed}
+            onClick={() => {
+              // Filters is a full-screen slide-over, not a docked side panel —
+              // it doesn't participate in the rightPanel/mobileSheet toggle at all.
+              if (isFilters) {
+                setFiltersOpen(true)
+                setPreview(false)
+                if (compact) setMobileMenu(false)
+                return
+              }
+              // Desktop/tablet: toggle RHS sidebar
+              if (window.innerWidth >= 768) {
+                if (rightPanel === seg.id && !rightCollapsed) {
+                  setRightCollapsed(true)
+                } else {
+                  setRightPanel(seg.id)
+                  setRightCollapsed(false)
+                }
+              }
+              // Mobile: toggle bottom sheet + close the slide-out menu
+              setMobileSheet(s => s === seg.mobileSheet ? null : seg.mobileSheet)
+              if (compact) setMobileMenu(false)
+            }}
+            className={[
+              'nbc-tool',
+              compact ? 'w-full !justify-start !h-9 gap-2 !px-3' : '!px-0',
+            ].join(' ')}
+          >
+            <seg.Icon size={16} strokeWidth={1.5} />
+            {compact && <span className="text-sm font-medium">{seg.label}</span>}
+          </button>
+        )
+        return compact
+          ? button
+          : <Tooltip key={seg.id} content={seg.tip} side="bottom" className={seg.hideOnLg ? 'lg:hidden' : undefined}>{button}</Tooltip>
+      })}
+    </div>
+  )
+
+  const editorToolbar = (
+    <div className="flex items-center gap-1.5 w-full min-w-0 overflow-x-auto">
+      <input
+        type="text"
+        data-testid="editor-title"
+        aria-label="Dashboard title"
+        className="min-w-[80px] max-w-[180px] sm:max-w-[260px] flex-shrink h-8 text-sm font-semibold border border-transparent rounded-sm px-2 bg-transparent text-fg placeholder:text-subtle hover:border-frame-line focus:outline-none focus:border-ring focus:bg-surface transition-colors duration-100"
+        value={spec.title}
+        onChange={e => setSpec(prev => ({ ...prev, title: e.target.value }))}
+        placeholder="Dashboard title…"
+      />
+
+      {loadError && (
+        <Tag variant="warning" dot caps={false} className="hidden lg:inline-flex shrink-0">{loadError}</Tag>
+      )}
+
+      <div className="flex items-center gap-1 ml-auto shrink-0">
+        {!preview && (
+          <div className="flex items-center gap-0.5">
+            <Tooltip content="Undo" kbd={['⌘', 'Z']} side="bottom">
+              <button
+                onClick={handleUndo}
+                disabled={!canUndo(hist)}
+                aria-label="Undo"
+                className="nbc-tool !px-0"
+              >
+                <Undo2 size={16} strokeWidth={1.5} />
+              </button>
+            </Tooltip>
+            <Tooltip content="Redo" kbd={['⇧', '⌘', 'Z']} side="bottom">
+              <button
+                onClick={handleRedo}
+                disabled={!canRedo(hist)}
+                aria-label="Redo"
+                className="nbc-tool !px-0"
+              >
+                <Redo2 size={16} strokeWidth={1.5} />
+              </button>
+            </Tooltip>
+          </div>
+        )}
+
+        {!preview && <ToolbarDivider />}
+
+        {/* Toolbar cluster (device switcher · zoom · panel toggles).
+            md+ : shown inline in the top bar.
+            <md : collapsed behind the hamburger → mobile slide-out menu. */}
+        <div className="hidden md:flex items-center gap-1.5">
+          {/* Device viewport switcher — shown in edit + preview so preview frames per-device. */}
+          {deviceSwitcher()}
+          {/* Canvas zoom controls + Reset (edit mode only) — grouped behind one
+              popover trigger instead of 4 inline buttons, so the bar reads as
+              "Zoom" rather than a wall of icons. */}
+          {!preview && (
+            <ToolbarPopover
+              icon={ZoomIn}
+              label="Zoom"
+              title="Canvas zoom & reset"
+              tooltip="Canvas zoom"
+              testId="editor-zoom-menu"
+              active={zoomMode !== 'fit'}
+            >
+              {zoomControls()}
+            </ToolbarPopover>
+          )}
+          {/* Panel toggles — Add / Configure / Layout / Tabs / Chat. */}
+          {!preview && (
+            <>
+              <ToolbarDivider />
+              <div className="flex items-center gap-0.5">{panelToggles()}</div>
+            </>
+          )}
+        </div>
+
+        {/* Hamburger (<md): opens the slide-out with the whole toolbar cluster. */}
+        <Tooltip content="Editor menu" side="bottom" className="md:hidden">
+          <button
+            onClick={() => setMobileMenu(true)}
+            aria-label="Open editor menu"
+            data-testid="editor-hamburger"
+            className="nbc-tool nbc-tool-bordered md:!hidden !px-0"
+          >
+            <Menu size={16} strokeWidth={1.5} />
+          </button>
+        </Tooltip>
+
+        <ToolbarDivider />
+
+        {/* View switcher — Canvas / Code */}
+        <div className="nbc-seg max-sm:!hidden" role="group" aria-label="Editor view" data-testid="dashboard-view-switcher">
+          {[
+            { id: 'canvas', Icon: LayoutDashboard, title: 'Canvas / grid view', tip: 'Canvas' },
+            { id: 'code', Icon: FileCode2, title: 'Code view (dashboard.json)', tip: 'Code' },
+          ].map(v => {
+            const active = v.id === 'code' ? codeView : (!codeView && !preview)
+            return (
+              <Tooltip key={v.id} content={v.tip} side="bottom">
+                <button
+                  onClick={() => { setCodeView(v.id === 'code'); if (v.id === 'code') setPreview(false) }}
+                  aria-label={v.title}
+                  aria-pressed={active}
+                >
+                  <v.Icon size={16} strokeWidth={1.5} />
+                </button>
+              </Tooltip>
+            )
+          })}
+        </div>
+
+        {!codeView && (
+          <Tooltip content={preview ? 'Back to editing' : 'Preview dashboard'} side="bottom">
+            <button
+              onClick={() => setPreview(p => !p)}
+              aria-label={preview ? 'Back to editing' : 'Preview dashboard'}
+              aria-pressed={preview}
+              className="nbc-tool nbc-tool-bordered !px-0"
+            >
+              {preview ? <Pencil size={16} strokeWidth={1.5} /> : <Eye size={16} strokeWidth={1.5} />}
+            </button>
+          </Tooltip>
+        )}
+
+        <div className="hidden sm:block">
+          <ExportShareMenu board={savedBoardId} spec={spec} />
+        </div>
+
+        <ToolbarDivider />
+
+        {/* Save writes the draft; the ink primary on this surface is "Push to
+            live" in the draft bar, so Save is a secondary button. A dot says
+            there is something to save. */}
+        <Tooltip content={savedBoardId ? 'Save draft' : 'Create dashboard'} kbd={['⌘', 'S']} side="bottom">
+          <Button
+            onClick={() => { handleSave().catch(() => {}) }}
+            loading={saving}
+            variant="secondary"
+            size="sm"
+            data-testid="editor-save-btn"
+            className="whitespace-nowrap"
+          >
+            {!saving && <Save size={16} strokeWidth={1.5} aria-hidden="true" />}
+            {saving ? 'Saving…' : (savedBoardId ? 'Save' : 'Create')}
+            {dirty && !saving && (
+              <span className="nubi-dot nubi-dot-warning" role="img" aria-label="Unsaved changes" />
+            )}
+          </Button>
+        </Tooltip>
+      </div>
+    </div>
+  )
+
+  // Render the mobile/tablet sheet body based on mobileSheet state
+  const renderSheetBody = () => {
+    if (mobileSheet === 'palette') return (
+      <AddPanel
+        onAdd={(t) => { addWidget(t); setMobileSheet(null) }}
+        onAddReference={(row) => { addLibraryReference(row); setMobileSheet(null) }}
+        onAddDetachedCopy={(row) => { addDetachedLibraryCopy(row); setMobileSheet(null) }}
+        library={library}
+        libraryLoading={libraryLoading}
+        onDeleteLibraryEntry={removeLibraryEntry}
+      />
+    )
+    if (mobileSheet === 'board') return <DashboardPanel spec={spec} onSpecChange={setSpec} />
+    if (mobileSheet === 'tabs') return <TabsPanel spec={spec} onSpecChange={setSpec} activeTabId={activeTabId} onActivate={setActiveTabIdRaw} onAddTab={addTab} />
+    if (mobileSheet === 'chat') return <ChatPanel boardId={savedBoardId} spec={spec} onApplySpec={handleAIApply} />
+    if (mobileSheet === 'config') return (
+      <ConfigPanel
+        widget={selectedWidget}
+        onChange={updateWidget}
+        onRemove={() => { if (selectedWidget) { removeWidget(selectedWidget.id); setMobileSheet(null) } }}
+        extraQueryIds={queryIds}
+        spec={spec}
+        activeBreakpoint={activeBreakpoint}
+        onLayoutCommit={(item) => commitLayout([item])}
+        onMoveToTab={moveWidgetToTab}
+        onLibrarySaved={reloadLibrary}
+        libraryById={libraryById}
+        onDetachRequest={requestDetach}
+        onEditScopeRequest={requestEditScope}
+        onResetOverride={resetOverrideField}
+        sharedEditRefId={sharedEditRefId}
+        onSaveSharedDefinition={saveSharedDefinition}
+        onCancelSharedEdit={() => setSharedEditRefId(null)}
+        savingShared={savingShared}
+        onPatchWidget={patchWidgetById}
+        onCreateVariable={createVariable}
+        onRenameVariable={renameVariable}
+        resolveWidget={resolveEntry}
+      />
+    )
+    return null
+  }
+
+  const SHEET_TITLES = {
+    palette: 'Add widget',
+    config: selectedWidget ? `Configure · ${selectedWidget.type}` : 'Configure',
+    chat: 'Chat',
+    board: 'Dashboard',
+    tabs: 'Tabs',
+  }
+
+  return (
+    // A control emitting a stream of values for ONE user decision (dragging in
+    // the colour spectrum) opens a gesture here, so those commits collapse into
+    // a single undo step instead of dozens.
+    <LiveEditProvider onChange={setLiveEdit}>
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden bg-bg">
+
+      {/* Editor toolbar lives in the single app top bar (portaled into AppTopbar). */}
+      {topbarSlot && createPortal(editorToolbar, topbarSlot)}
+
+      {/* ── Code view — full-pane VS Code-style dashboard.json editor ── */}
+      {codeView ? (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <DashboardCodeView spec={spec} onSpecChange={setSpec} board={savedBoardId} />
+        </div>
+      ) : preview ? (
+        <main ref={mainRef} className="flex-1 overflow-auto p-3 sm:p-6 bg-bg" style={{ touchAction: 'pan-x pan-y' }}>
+          <div ref={canvasRef} className="w-full">
+            <div
+              className="mx-auto transition-[width,height]"
+              style={{
+                width: designWidth * effectiveZoom,
+                height: effectiveZoom !== 1 ? deviceDashHeight * effectiveZoom : undefined,
+              }}
+            >
+              <div
+                className={device === 'desktop' ? '' : 'rounded-xl border border-frame-line bg-bg overflow-hidden'}
+                style={{
+                  width: designWidth,
+                  transform: effectiveZoom !== 1 ? `scale(${effectiveZoom})` : undefined,
+                  transformOrigin: 'top left',
+                }}
+              >
+                <SpecRenderer spec={spec} forceBreakpoint={activeBreakpoint} />
+              </div>
+            </div>
+          </div>
+        </main>
+      ) : (
+        /* ── Edit mode ── */
+        <div className="flex flex-col flex-1 min-h-0 overflow-hidden relative">
+
+          {/* ── Tab strip (T5): only shown once the dashboard has tabs ── */}
+          {hasTabs && (
+            <EditableTabStrip
+              tabs={spec.tabs}
+              activeTabId={activeTabId}
+              onActivate={setActiveTabIdRaw}
+              onAdd={addTab}
+              onRename={renameTab}
+              onReorder={reorderTabs}
+              onDeleteRequest={requestDeleteTab}
+            />
+          )}
+
+          <div className="flex flex-1 min-h-0 overflow-hidden relative">
+
+          {/* ── Left widget-library rail ──
+              Desktop only (lg+): the widget palette + "From library" list live
+              here permanently instead of behind the "Add widget" toggle, so
+              picking a widget type never costs a trip through the RHS panel
+              switcher. md/mobile have no room for a second permanent rail —
+              they keep using the "Add widget" toggle (slide-over / bottom
+              sheet), which is why that toggle stays visible below lg
+              (PANEL_SEGMENTS' hideOnLg). */}
+          <aside aria-label="Widget library" className="hidden lg:flex lg:w-60 lg:shrink-0 border-r border-border bg-surface flex-col overflow-hidden">
+            <div className="nbc-panel-head">
+              <span className="nbc-label">Widget library</span>
+            </div>
+            {/* No overflow-y-auto here — AddPanel pins its own search box and
+                scrolls its own body, so this wrapper just needs to be bounded
+                (min-h-0), not a second competing scroll container. */}
+            <div className="flex-1 min-h-0 flex flex-col">
+              <AddPanel
+                onAdd={addWidget}
+                onAddReference={addLibraryReference}
+                onAddDetachedCopy={addDetachedLibraryCopy}
+                library={library}
+                libraryLoading={libraryLoading}
+                onDeleteLibraryEntry={removeLibraryEntry}
+              />
+            </div>
+          </aside>
+
+          {/* ── Tablet slide-over backdrop (md only, not on lg+) ── */}
+          {!rightCollapsed && (
+            <div
+              className="hidden md:block lg:hidden fixed inset-0 z-20 nubi-backdrop"
+              onClick={() => setRightCollapsed(true)}
+              aria-hidden="true"
+            />
+          )}
+
+          {/* Center: grid canvas — the ONLY scrolling region in edit mode. Doubles
+              as the zoom/pan viewport (pinch to zoom, one-finger drag to pan). */}
+          <ThemeModeProvider mode={canvasMode}>
+          <main
+            ref={mainRef}
+            className={['flex-1 min-w-0 overflow-auto p-3 sm:p-4 bg-bg', colorModeClass(canvasMode)].filter(Boolean).join(' ')}
+            data-testid="editor-canvas"
+            style={{
+              ...backgroundToCss(canvasBackground, adaptCtx),
+              touchAction: 'pan-x pan-y',
+              // Reserve the vertical scrollbar's width up front (rather than
+              // only once content grows past the viewport) so the fit-zoom
+              // width measurement below is stable — without this, a board
+              // that's initially short enough to skip the scrollbar gets
+              // measured as ~15-17px wider than it ends up being once a
+              // widget is added and the scrollbar appears, and the canvas
+              // then genuinely needs to horizontally scroll to show the last
+              // column of widgets.
+              scrollbarGutter: 'stable',
+            }}
+            onClick={(e) => {
+              // Click on empty canvas → deselect
+              if (e.target === e.currentTarget) setSelectedId(null)
+            }}
+          >
+            {/* Canvas top bar: viewport width + custom-layout indicators
+                (device switcher now lives in the app top bar) */}
+            <div className="flex items-center gap-2 mb-3 flex-wrap empty:hidden">
+              {/* Custom screen width (tablet/mobile only) */}
+              {device !== 'desktop' && (
+                <div className="flex items-center gap-1" data-testid="device-width-control">
+                  {WIDTH_PRESETS.map(w => (
+                    <button key={w} onClick={() => setDeviceWidths(s => ({ ...s, [device]: w }))}
+                      title={`${w}px wide`}
+                      aria-pressed={deviceWidths[device] === w}
+                      className="nbc-chip !h-6 !px-1.5 !text-[11px]">{w}</button>
+                  ))}
+                  <input
+                    type="number" min={200} max={2000}
+                    aria-label="Custom width in pixels"
+                    value={deviceWidths[device]}
+                    onChange={e => { const v = parseInt(e.target.value, 10); if (v) setDeviceWidths(s => ({ ...s, [device]: v })) }}
+                    className="nubi-input nubi-input-xs !h-6 !w-16 !px-1.5 font-mono tabular-nums"
+                  />
+                  <span className="nbc-meta">px</span>
+                </div>
+              )}
+
+              {/* Is this size its own layout, or the desktop one scaled down? */}
+              {device !== 'desktop' && (() => {
+                const custom = hasOverrides(spec, activeBreakpoint)
+                return (
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <Tag
+                      variant={custom ? 'accent' : 'neutral'}
+                      dot
+                      title={custom
+                        ? 'This size has a custom layout — edits here only affect this breakpoint.'
+                        : 'This size inherits the desktop layout. Move/resize a widget to start a custom layout.'}
+                    >
+                      {custom ? 'Custom layout' : 'Inherits desktop'}
+                    </Tag>
+                    {custom && (
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        onClick={() => setSpec(prev => clearBreakpointOverrides(prev, activeBreakpoint))}
+                        title="Reset this size to the desktop layout"
+                      >
+                        Reset to desktop
+                      </Button>
+                    )}
+                  </div>
+                )
+              })()}
+
+              {/* Mobile panel toggles are now in the topbar (panel-toggle-* buttons) */}
+            </div>
+
+            {tabWidgets.length === 0 ? (
+              <div className="mx-auto flex min-h-[50vh] max-w-xl flex-col items-center justify-center px-4 py-12" data-testid="editor-empty-canvas">
+                <EmptyState
+                  art={<EmptyBoards />}
+                  title={hasTabs ? 'This tab is empty' : 'Your dashboard is empty'}
+                  description={
+                    <>
+                      <span className="md:hidden">Tap <strong className="font-semibold text-fg">Add</strong> in the menu, or </span>
+                      <span className="hidden md:inline">Pick a widget from the library, or </span>
+                      ask <strong className="font-semibold text-fg">Chat</strong> to build one for you.
+                    </>
+                  }
+                  action={
+                    <div className="flex flex-wrap justify-center gap-2">
+                      {PALETTE_ITEMS.filter(p => ['kpi','table','chart','text'].includes(p.type)).map((p, i) => {
+                        const Icon = p.icon
+                        return (
+                          <Button
+                            key={p.type}
+                            size="sm"
+                            variant={i === 0 ? 'primary' : 'secondary'}
+                            onClick={() => addWidget(p.type)}
+                          >
+                            <Icon size={16} strokeWidth={1.5} aria-hidden="true" />
+                            {p.label}
+                          </Button>
+                        )
+                      })}
+                    </div>
+                  }
+                />
+              </div>
+            ) : (
+              <div
+                ref={canvasRef}
+                className="w-full"
+                onClick={(e) => {
+                  // Click directly on the grid container background → deselect
+                  if (e.target === e.currentTarget) setSelectedId(null)
+                }}
+              >
+                {/* Outer: reserves the scaled frame's footprint so the viewport
+                    scrolls/pans. Inner: the true-design-width frame, CSS-scaled. */}
+                <div
+                  className="mx-auto transition-[width,height]"
+                  style={{
+                    width: designWidth * effectiveZoom,
+                    height: effectiveZoom !== 1 ? deviceDashHeight * effectiveZoom : undefined,
+                  }}
+                >
+                <div
+                  className={device === 'desktop' ? '' : 'rounded-xl border border-frame-line bg-bg overflow-hidden'}
+                  style={{
+                    width: designWidth,
+                    transform: effectiveZoom !== 1 ? `scale(${effectiveZoom})` : undefined,
+                    transformOrigin: 'top left',
+                  }}
+                >
+                {/* Above-grid filter bar (placement: 'header'). Rendered between the
+                    tab strip and the GridCanvas so header filters are visible +
+                    editable in-place. Mirrors the renderer's `nubi-filter-bar`.
+                    Padded to match the grid's container padding so it lines up. */}
+                {headerTabWidgets.length > 0 && (
+                  <div style={{ paddingLeft: editorPadding.x, paddingRight: editorPadding.x, paddingTop: editorPadding.y }}>
+                    <EditorFilterBar
+                      widgets={headerTabWidgets}
+                      selectedId={selectedId}
+                      onSelect={(id) => { setSelectedId(id); setRightCollapsed(false); setRightPanel(p => p === 'chat' ? p : 'config'); setMobileSheet('config') }}
+                      onRemove={removeWidget}
+                    />
+                  </div>
+                )}
+                {/* CSS-Grid engine (dnd-kit). GridCanvas owns drag/resize math + zoom
+                    scaling and the column-guide / ghost overlays. We feed it the SAME
+                    0-based layout array RGL consumed and the SAME commit callback, so
+                    the commit contract is byte-for-byte preserved. Desktop/tablet =
+                    free 2-D editing; mobile = drag-to-reorder stack. Keyed by
+                    activeBreakpoint so a device switch remounts with fresh geometry. */}
+                <GridCanvas
+                  key={`${activeBreakpoint}:${activeTabId ?? '_'}`}
+                  layout={gridLayouts[activeBreakpoint]}
+                  cols={editorGridCols}
+                  rowHeight={spec.layout?.row_height ?? 60}
+                  gap={editorGap}
+                  padding={editorPadding}
+                  width={designWidth}
+                  zoom={effectiveZoom}
+                  draggable
+                  resizable={gridMode === 'grid'}
+                  mode={gridMode}
+                  compaction={editorCompaction}
+                  dense={editorDense}
+                  selectedId={selectedId}
+                  dragHandle=".drag-handle"
+                  onInteractionStart={handleInteractionStart}
+                  onInteractionEnd={handleInteractionEnd}
+                  onLayoutCommit={commitLayout}
+                  renderItem={(item) => {
+                    const raw = spec.widgets.find(w => w.id === item.i)
+                    if (!raw) return null
+                    // Resolved so a `ref` widget's live preview, drag-handle label
+                    // and icon reflect the library config + overrides, not a bare
+                    // {id, ref, overrides, pos} entry with no type/props of its own.
+                    const widget = resolveEntry(raw)
+                    const isSelected = selectedId === widget.id
+                    const reorder = gridMode === 'reorder'
+                    const WidgetIcon = WIDGET_ICONS[widget.type]
+                    const cardStyle = styleToCss(widget.style, widget.style?.themeAdapt === false ? undefined : adaptCtx)
+                    // A card with its own opaque background renders in the mode
+                    // that background calls for, as it does for viewers.
+                    const cardBgHex = cardStyle ? backgroundHex(cardStyle.backgroundColor ?? cardStyle.background, canvasBgHex) : null
+                    const cardMode = modeForHex(cardBgHex)
+                    const cardScope = cardMode && cardMode !== canvasTheme ? cardMode : null
+                    return (
+                      <ThemeModeProvider mode={cardScope}>
+                      {/* Note: NO overflow-hidden on the frame — menus opened from the
+                          header actions are absolutely positioned and must not be
+                          clipped. Inner areas handle their own overflow. */}
+                      <div
+                        data-testid={`widget-${widget.id}`}
+                        data-widget-export-root={widget.id}
+                        onClick={(e) => { e.stopPropagation(); setSelectedId(widget.id); setRightCollapsed(false); setRightPanel(p => p === 'chat' ? p : 'config'); setMobileSheet('config') }}
+                        style={cardStyle}
+                        className={[
+                          'nbc-tile',
+                          colorModeClass(cardScope),
+                          isSelected ? 'is-selected' : '',
+                        ].filter(Boolean).join(' ')}
+                      >
+                        {/* 32px header: grip, type glyph, title, mono type. The
+                            handle is everything left of the actions, so pressing an
+                            action never starts a drag. */}
+                        <div className="nbc-tile-head">
+                          <div
+                            className="drag-handle flex h-full min-w-0 flex-1 cursor-grab items-center gap-2 active:cursor-grabbing"
+                            title={reorder ? 'Drag to reorder' : 'Drag to move'}
+                          >
+                            <GripVertical size={14} strokeWidth={1.5} className="shrink-0 text-subtle" aria-hidden="true" />
+                            {WidgetIcon && <WidgetIcon size={16} strokeWidth={1.5} className="shrink-0" aria-hidden="true" />}
+                            {isRefWidget(raw) && (
+                              <span
+                                className="inline-flex shrink-0"
+                                title="Referenced from the widget library"
+                                aria-label="Referenced from the widget library"
+                                data-testid={`widget-ref-badge-${raw.id}`}
+                              >
+                                <Link2 size={16} strokeWidth={1.5} />
+                              </span>
+                            )}
+                            <span className="nbc-tile-title capitalize">
+                              {widget.props?.label || widget.type}
+                            </span>
+                            {widget.type === 'filter' && (filterReaderCounts.get(widget.target_var) ?? 0) === 0 && (
+                              <span
+                                className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-warning"
+                                title="This filter is not connected to any widget, so picking a value changes nothing. Select it to connect widgets."
+                                data-testid={`filter-unconnected-badge-${raw.id}`}
+                              >
+                                <AlertTriangle size={14} strokeWidth={1.5} aria-hidden="true" />
+                                {item.w >= 4 ? 'Not connected' : <span className="sr-only">Not connected</span>}
+                              </span>
+                            )}
+                            {widget.props?.label && item.w >= 4 && (
+                              <span className="nbc-meta shrink-0">{widget.type}</span>
+                            )}
+                          </div>
+                          <WidgetTileActions
+                            widget={widget}
+                            boardId={savedBoardId}
+                            onDuplicate={duplicateWidget}
+                            onDelete={removeWidget}
+                            onFocus={openFocus}
+                            reorder={reorder}
+                            onHeightStep={handleHeightStep}
+                          />
+                        </div>
+
+                        {/* Live widget preview — scrolls/clips independently */}
+                        <div className="flex-1 min-h-0 overflow-hidden">
+                          <WidgetPreview widget={widget} variableDefaults={previewVariableDefaults} />
+                        </div>
+                      </div>
+                      </ThemeModeProvider>
+                    )
+                  }}
+                />
+                </div>
+                </div>
+              </div>
+            )}
+          </main>
+          </ThemeModeProvider>
+
+          {/* ── Right sidebar ──
+              Desktop (lg+): always-visible 320px panel.
+              Tablet (md–lg): slide-over drawer (fixed, z-30), toggled by the top-bar buttons.
+              Mobile (<md): hidden — uses the bottom sheet instead. */}
+          {!rightCollapsed && (
+            <aside
+              className={[
+                'border-l border-border bg-surface flex flex-col overflow-hidden',
+                'hidden md:flex',
+                'lg:static lg:w-80 lg:shrink-0',
+                'md:fixed md:inset-y-0 md:right-0 md:z-30 md:w-80 md:shadow-pop',
+                'lg:shadow-none',
+              ].join(' ')}
+              aria-label={RIGHT_PANEL_TITLES[rightPanel] ?? 'Configure'}
+              data-testid="editor-right-panel"
+            >
+              {/* Panel header */}
+              <div className="nbc-panel-head">
+                <span className="nbc-label">
+                  {RIGHT_PANEL_TITLES[rightPanel] ?? 'Configure'}
+                </span>
+                <Tooltip content="Collapse panel" side="left">
+                  <button
+                    onClick={() => setRightCollapsed(true)}
+                    aria-label="Collapse side panel"
+                    className="nbc-tool !px-0"
+                  >
+                    <PanelRightClose size={16} strokeWidth={1.5} />
+                  </button>
+                </Tooltip>
+              </div>
+              {/* Body scrolls WITHIN the fixed-width sidebar. No overflow-y-auto
+                  on this wrapper — each panel (ConfigPanel/AddPanel/etc.)
+                  pins its own header/tabs and scrolls its own body; a second
+                  overflow-auto here would compete with that and win, dragging
+                  the pinned part along with the scroll instead of the panel's
+                  own inner region. */}
+              <div className="flex-1 min-h-0 flex flex-col">
+                {renderRightPanelBody()}
+              </div>
+              {((rightPanel === 'config' && selectedWidget) || rightPanel === 'board') && renderSaveFooter()}
+            </aside>
+          )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Focus mode ──
+          Full-screen single-widget authoring surface: data rail + big live
+          preview + the same config sections the sidebar uses. Edits go through
+          updateWidget, so the board spec (and undo history) stay authoritative. */}
+      {focusedWidget && (
+        <WidgetFocusShell
+          widget={focusedWidget}
+          onChange={updateWidget}
+          onClose={() => setFocusId(null)}
+          onRemove={() => removeWidget(focusedWidget.id)}
+          extraQueryIds={queryIds}
+          icon={WIDGET_ICONS[focusedWidget.type]}
+          rowHeight={spec.layout?.row_height ?? 60}
+          frameStyle={styleToCss(focusedWidget.style, focusedWidget.style?.themeAdapt === false ? undefined : adaptCtx)}
+          preview={<WidgetPreview widget={focusedWidget} variableDefaults={previewVariableDefaults} />}
+          config={
+            <ConfigPanel
+              variant="focus"
+              widget={focusedWidget}
+              onChange={updateWidget}
+              extraQueryIds={queryIds}
+              spec={spec}
+              activeBreakpoint={activeBreakpoint}
+              onLayoutCommit={(item) => commitLayout([item])}
+              onMoveToTab={moveWidgetToTab}
+              onLibrarySaved={reloadLibrary}
+              libraryById={libraryById}
+              onDetachRequest={requestDetach}
+              onEditScopeRequest={requestEditScope}
+              onResetOverride={resetOverrideField}
+              sharedEditRefId={sharedEditRefId}
+              onSaveSharedDefinition={saveSharedDefinition}
+              onCancelSharedEdit={() => setSharedEditRefId(null)}
+              savingShared={savingShared}
+              onPatchWidget={patchWidgetById}
+              onCreateVariable={createVariable}
+              onRenameVariable={renameVariable}
+              resolveWidget={resolveEntry}
+            />
+          }
+        />
+      )}
+
+      {/* ── Mobile slide-out menu (<md) ──
+          Holds the toolbar cluster that the top bar hides below md: device
+          switcher, zoom controls (+ Reset), and the panel toggles. Slides in from
+          the right; tap the backdrop or × to dismiss. */}
+      {mobileMenu && (
+        <div className="md:hidden fixed inset-0 z-50 flex justify-end" data-testid="editor-mobile-menu" role="dialog" aria-modal="true" aria-label="Editor options">
+          <div
+            className="nubi-backdrop absolute inset-0"
+            onClick={() => setMobileMenu(false)}
+            aria-hidden="true"
+          />
+          <div className="relative flex h-full w-72 max-w-[85vw] flex-col border-l border-border bg-surface shadow-pop nubi-animate-slide-up">
+            <div className="nbc-panel-head !h-12 !px-4">
+              <span className="text-sm font-semibold text-fg">Editor options</span>
+              <button
+                onClick={() => setMobileMenu(false)}
+                aria-label="Close menu"
+                className="nbc-tool !px-0"
+              >
+                <X size={16} strokeWidth={1.5} />
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-5">
+              <div className="space-y-2">
+                <SectionLabel>Device</SectionLabel>
+                {deviceSwitcher(true)}
+              </div>
+              {!preview && (
+                <div className="space-y-2">
+                  <SectionLabel>Zoom</SectionLabel>
+                  {zoomControls()}
+                </div>
+              )}
+              {!preview && (
+                <div className="space-y-2">
+                  <SectionLabel>Panels</SectionLabel>
+                  {panelToggles(true)}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Mobile bottom sheet (<md) ──
+          Slides up from the bottom when mobileSheet is set. A fixed overlay with
+          a drag handle and scrollable body. Tap the backdrop or × to dismiss. */}
+      {!preview && mobileSheet && (
+        <div className="md:hidden fixed inset-0 z-40 flex flex-col justify-end" style={{ pointerEvents: 'auto' }} role="dialog" aria-modal="true" aria-label={SHEET_TITLES[mobileSheet] ?? 'Panel'}>
+          {/* Backdrop */}
+          <div
+            className="nubi-backdrop absolute inset-0"
+            onClick={() => setMobileSheet(null)}
+            aria-hidden="true"
+          />
+          {/* Sheet */}
+          <div className="relative flex max-h-[80vh] flex-col border-t-2 border-[var(--ink)] bg-surface shadow-pop nubi-animate-slide-up">
+            {/* Sheet header */}
+            <div className="flex items-center justify-between px-4 h-12 border-b border-border shrink-0">
+              <span className="text-sm font-semibold text-fg">
+                {SHEET_TITLES[mobileSheet] ?? 'Panel'}
+              </span>
+              <button
+                onClick={() => setMobileSheet(null)}
+                aria-label="Close sheet"
+                className="nbc-tool !px-0"
+              >
+                <X size={16} strokeWidth={1.5} />
+              </button>
+            </div>
+            {/* Sheet body — each panel pins its own header/tabs and scrolls
+                its own content, so no overflow-y-auto here (see the desktop
+                sidebar's identical note above). */}
+            <div className="flex-1 min-h-0 flex flex-col">
+              {renderSheetBody()}
+            </div>
+            {((mobileSheet === 'config' && selectedWidget) || mobileSheet === 'board') && renderSaveFooter()}
+          </div>
+        </div>
+      )}
+
+      {/* ── Delete-tab confirmation (T5) ──
+          A tab with widgets prompts: relocate them to another tab, or delete the
+          tab AND its widgets. Routed through deleteTab → setHist (undoable). */}
+      {deletingTab && (
+        <DeleteTabDialog
+          tab={deletingTab}
+          tabs={spec.tabs ?? []}
+          widgetCount={widgetsForTab(spec, deletingTab.id).length}
+          onMove={(targetId) => { deleteTab(deletingTab.id, 'move', targetId); setDeletingTab(null) }}
+          onDeleteWidgets={() => { deleteTab(deletingTab.id, 'delete'); setDeletingTab(null) }}
+          onCancel={() => setDeletingTab(null)}
+        />
+      )}
+
+      {/* ── Reference-based reuse dialogs ──
+          Detach (name + confirm), the "used by N boards" edit-scope prompt
+          (Edit for all / Duplicate & edit just this one / Cancel), and the
+          fork-naming prompt for "Duplicate & edit". All routed through
+          setHist/setSpec so undo + the board Save button stay authoritative;
+          only saveSharedDefinition/forkSharedDefinition write to the library
+          resource directly (that's the point — a normal field edit never
+          does). */}
+      {detachTarget && (
+        <NamePromptDialog
+          title="Detach this widget?"
+          description={`It becomes an independent copy on this board only — future edits to “${detachTarget.name || 'the library entry'}” will no longer reach it. Name the detached copy so its origin stays traceable.`}
+          defaultName={detachTarget.name}
+          confirmLabel="Detach"
+          testidPrefix="detach-widget"
+          onConfirm={(name) => detachWidget(detachTarget.id, name)}
+          onCancel={() => setDetachTarget(null)}
+        />
+      )}
+
+      {editScopeTarget && (
+        <EditScopeDialog
+          count={editScopeUsage?.count ?? 0}
+          onEditForAll={() => { setSharedEditRefId(editScopeTarget.ref); setEditScopeTarget(null) }}
+          onDuplicate={() => { setForkTarget(editScopeTarget); setEditScopeTarget(null) }}
+          onCancel={() => setEditScopeTarget(null)}
+        />
+      )}
+
+      {forkTarget && (
+        <NamePromptDialog
+          title="Duplicate & edit just this one"
+          description="Creates a new library entry from this widget's current values and points only this instance at it. Every other board keeps using the original shared definition, untouched."
+          defaultName={forkTarget.name ? `${forkTarget.name} (copy)` : ''}
+          confirmLabel="Duplicate"
+          testidPrefix="fork-widget"
+          onConfirm={(name) => forkSharedDefinition(forkTarget.id, name)}
+          onCancel={() => setForkTarget(null)}
+        />
+      )}
+
+      {/* ── Filters drawer (authoring) ──
+          Opened by EditorPage's FILTERS button via the nubi:open-filters event
+          (OPEN_FILTERS_EVENT seam). Lists the dashboard's filter widgets — the
+          ones a viewer would see in the global Filters drawer — and lets the
+          author add a filter or jump straight to one's settings. The drawer is
+          global across tabs (filter variables are dashboard-wide). */}
+      {filtersOpen && (
+        <div className="fixed inset-0 z-50 flex justify-end" data-testid="editor-filters-drawer" role="dialog" aria-modal="true" aria-label="Filters">
+          <div className="nubi-backdrop absolute inset-0" onClick={() => setFiltersOpen(false)} aria-hidden="true" />
+          <div className="relative flex h-full w-80 max-w-[90vw] flex-col border-l border-border bg-surface shadow-pop">
+            <div className="nbc-panel-head !h-12 !px-4">
+              <span className="flex items-center gap-2 text-sm font-semibold text-fg">
+                <FilterIcon size={16} strokeWidth={1.5} className="text-muted" /> Filters
+              </span>
+              <button onClick={() => setFiltersOpen(false)} aria-label="Close filters" className="nbc-tool !px-0">
+                <X size={16} strokeWidth={1.5} />
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
+              <p className="m-0 text-[13px] leading-snug text-muted">
+                Filter widgets drive dashboard variables. They are shared across all
+                tabs. Add one here, then configure its target variable and options.
+              </p>
+              <Button
+                variant="secondary"
+                size="sm"
+                className="w-full"
+                onClick={() => { addWidget('filter'); setFiltersOpen(false); setRightPanel('config'); setRightCollapsed(false) }}
+                data-testid="filters-drawer-add"
+              >
+                <Plus size={16} strokeWidth={1.5} aria-hidden="true" /> Add filter
+              </Button>
+              <div className="border-t-2 border-[var(--ink)]">
+                {spec.widgets.filter(w => w.type === 'filter').length === 0 ? (
+                  <p className="m-0 border-b border-border px-1 py-4 text-[13px] text-muted">
+                    No filters yet.
+                  </p>
+                ) : (
+                  spec.widgets.filter(w => w.type === 'filter').map(w => (
+                    <button
+                      key={w.id}
+                      onClick={() => { setSelectedId(w.id); setRightPanel('config'); setRightCollapsed(false); setFiltersOpen(false) }}
+                      data-testid={`filters-drawer-item-${w.id}`}
+                      className="nbc-item"
+                    >
+                      <span className="nbc-glyph"><FilterIcon size={16} strokeWidth={1.5} /></span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px] font-semibold">{w.props?.label || w.subtype || 'Filter'}</span>
+                        <span className="nbc-meta block truncate">
+                          {w.target_var || '(no variable)'}
+                          {(() => {
+                            const n = w.target_var ? (filterReaderCounts.get(w.target_var) ?? 0) : 0
+                            return n > 0
+                              ? ` · ${n} widget${n === 1 ? '' : 's'}`
+                              : <span className="text-warning" data-testid={`filters-drawer-unconnected-${w.id}`}> · not connected</span>
+                          })()}
+                        </span>
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+    </LiveEditProvider>
+  )
+}

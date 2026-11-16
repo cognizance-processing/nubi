@@ -207,6 +207,7 @@ def test_execute_register_query_persists_to_registry():
             "register_query",
             {"name": "Monthly Revenue", "sql": "SELECT * FROM demo WHERE value > {{min}}",
              "params": [{"name": "min", "type": "number", "default": 0}]},
+            context=tools.ToolContext(user_id="u1", org_id="org-1", role="member"),
         )
         assert extra == {}
         assert output["id"] == "monthly_revenue"

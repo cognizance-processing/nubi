@@ -138,8 +138,33 @@ def _score(candidate: str, question_tokens: list[str]) -> float:
 # ---------------------------------------------------------------------------
 
 
-def build_catalog() -> dict[str, Any]:
+class _AllOrgs:
+    """Sentinel: the estate-wide catalog (operator tooling and tests only)."""
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return "ALL_ORGS"
+
+
+#: Pass to :func:`build_catalog` for the unfiltered, estate-wide catalog.
+#: Never use it on a path that answers a tenant.
+ALL_ORGS: Any = _AllOrgs()
+
+
+def build_catalog(org_id: Any, *, queries: Any = None) -> dict[str, Any]:
     """Build an in-memory catalog from the query registry and query graph.
+
+    *org_id* is REQUIRED: the registry is process-wide and shared by every
+    organisation, so a caller must say whose catalog it wants.
+
+    * an org id → the built-in queries plus the queries that org owns;
+    * ``None`` (caller has no organisation) → built-in queries only;
+    * :data:`ALL_ORGS` → everything (operator tooling / tests).
+
+    Registrations with no recorded owner are attributable to nobody, so they
+    are left out of every tenant catalog.
+
+    *queries* lets a caller that has ALREADY applied its own (stricter or
+    richer) visibility rule build the catalog over exactly that list.
 
     The catalog is a plain dict that can be cached and passed to ``ground()``.
     It is computed synchronously and is safe to recompute on each request
@@ -194,7 +219,14 @@ def build_catalog() -> dict[str, Any]:
     from app.queries.registry import get_query_registry  # noqa: PLC0415
 
     registry = get_query_registry()
-    all_queries = registry.all()
+    if queries is not None:
+        all_queries = list(queries)
+    else:
+        all_queries = list(registry.all())
+    if queries is None and org_id is not ALL_ORGS:
+        from app.queries.registry import visible_to_org  # noqa: PLC0415
+
+        all_queries = visible_to_org(all_queries, str(org_id) if org_id else None)
     graph = build_query_graph(all_queries)
 
     # ── Build tables → columns mapping ─────────────────────────────────────
@@ -369,24 +401,43 @@ def ground(question: str, catalog: dict[str, Any]) -> dict[str, Any]:
     ]
 
     # ── Related query IDs ────────────────────────────────────────────────────
+    # A query counts as related two ways: (1) it touches a table that scored
+    # above zero (the usual case), or (2) its OWN name/outputs/declared
+    # output_schema score above zero even when none of its tables did. (2)
+    # matters because a query's tables can legitimately score zero for a
+    # reason that has nothing to do with relevance: sql_table_columns.py
+    # could not parse its SQL at all (e.g. Jinja templating from a dashboard
+    # filter), so build_catalog() has NOTHING recorded for its tables. The
+    # query's own name and output columns are still real, author-supplied
+    # signal — a query literally named "Orders by region" with an output
+    # column called "region" should surface for "orders by region" whether or
+    # not its underlying table's columns made it into the catalog.
     relevant_table_set = set(relevant_tables)
     related_query_ids: list[str] = []
     related_query_details: list[dict[str, Any]] = []
     for qd in catalog_queries:
-        if relevant_table_set.intersection(qd.get("tables", [])):
-            related_query_ids.append(qd["id"])
-            # Surface the richer descriptor (params + output schema) cheaply —
-            # these may be absent on hand-built catalogs, so default safely.
-            related_query_details.append(
-                {
-                    "id": qd["id"],
-                    "name": qd.get("name", qd["id"]),
-                    "params": qd.get("params", []),
-                    "output_schema": qd.get("output_schema", []),
-                }
-            )
         if len(related_query_ids) >= MAX_QUERIES:
             break
+        matches_table = bool(relevant_table_set.intersection(qd.get("tables", [])))
+        if not matches_table:
+            own_score = _score(qd.get("name", ""), question_tokens)
+            for out_name in qd.get("outputs", []):
+                own_score = max(own_score, _score(out_name, question_tokens))
+            for col in qd.get("output_schema", []):
+                own_score = max(own_score, _score(col.get("name", ""), question_tokens))
+            if own_score <= 0:
+                continue
+        related_query_ids.append(qd["id"])
+        # Surface the richer descriptor (params + output schema) cheaply —
+        # these may be absent on hand-built catalogs, so default safely.
+        related_query_details.append(
+            {
+                "id": qd["id"],
+                "name": qd.get("name", qd["id"]),
+                "params": qd.get("params", []),
+                "output_schema": qd.get("output_schema", []),
+            }
+        )
 
     # ── Snippets: one short string per relevant table ───────────────────────
     snippets: list[str] = []

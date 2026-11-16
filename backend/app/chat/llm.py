@@ -275,6 +275,7 @@ def _stream_real(
     *,
     system: str | None = None,
     mcp_servers: list[Any] | None = None,
+    tool_context: Any = None,
 ) -> Iterator[dict[str, Any]]:
     """Run the manual tool-use loop via LiteLLM, yielding live events.
 
@@ -443,7 +444,7 @@ def _stream_real(
                 output, extra = {"content": result_str}, {}
             else:
                 try:
-                    output, extra = execute_tool(tool_name, tool_input)
+                    output, extra = execute_tool(tool_name, tool_input, context=tool_context)
                 except Exception as exc:  # noqa: BLE001
                     output, extra = {"error": str(exc)}, {}
 
@@ -474,6 +475,7 @@ def _stream_real(
 def _stream_offline(
     history: list[dict[str, Any]],
     turn: _Turn,
+    tool_context: Any = None,
 ) -> Iterator[dict[str, Any]]:
     """Deterministic offline path emitting the same event shapes (no network).
 
@@ -503,7 +505,7 @@ def _stream_offline(
         args = {"instruction": last_user or "an overview dashboard"}
         yield {"type": "tool_use", "id": tool_id, "name": "propose_dashboard_spec", "input": args}
         try:
-            output, extra = execute_tool("propose_dashboard_spec", args)
+            output, extra = execute_tool("propose_dashboard_spec", args, context=tool_context)
         except Exception as exc:  # noqa: BLE001
             output, extra = {"error": str(exc)}, {}
         if extra.get("spec"):
@@ -547,8 +549,12 @@ def stream_chat(
     *,
     system: str | None = None,
     mcp_servers: list[Any] | None = None,
+    tool_context: Any = None,
 ) -> Iterator[tuple[dict[str, Any], _Turn]]:
     """Stream the assistant's turn for *history*, yielding ``(event, turn)``.
+
+    *tool_context* (:class:`app.chat.tools.ToolContext`) identifies the
+    authenticated caller; every built-in tool call runs on its behalf.
 
     *history* is the OpenAI-format message list (roles ``user`` / ``assistant``
     with string or block content).  The *model* id is mapped to a LiteLLM
@@ -587,11 +593,12 @@ def stream_chat(
         if credential:
             litellm_model = _resolve_model_string(model)
             for ev in _stream_real(
-                litellm_model, history, turn, system=system, mcp_servers=mcp_servers
+                litellm_model, history, turn, system=system, mcp_servers=mcp_servers,
+                tool_context=tool_context,
             ):
                 yield ev, turn
         else:
-            for ev in _stream_offline(history, turn):
+            for ev in _stream_offline(history, turn, tool_context):
                 yield ev, turn
     except Exception as exc:  # noqa: BLE001
         yield {"type": "error", "message": str(exc)}, turn

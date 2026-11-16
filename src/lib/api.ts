@@ -1,0 +1,1250 @@
+/**
+ * API client for Nubi backend.
+ *
+ * Base URL:
+ *   - In dev the Vite proxy rewrites /api/* to the backend so we use a
+ *     relative base URL.  This keeps auth cookies same-origin so SameSite=Lax
+ *     cookies are sent on every request (including POST /auth/refresh).
+ *   - In production (where the frontend is served from the same origin as the
+ *     backend, or VITE_BACKEND_URL is set to a different origin) we use the
+ *     full absolute URL.
+ *
+ * Active org:
+ *   OrgContext calls ``setActiveOrgId(id)`` (exported below) each time the
+ *   active org changes.  The api client reads this value and attaches it as an
+ *   ``X-Org-Id`` header on every authenticated request.  The backend validates
+ *   membership before honouring the header.  This avoids any circular-import
+ *   dependency between api.js and OrgContext.
+ *
+ * Access token is held in memory only (never localStorage/sessionStorage).
+ * Refresh token is an HttpOnly cookie managed by the browser automatically.
+ *
+ * On any 401 the client will attempt one silent refresh via POST /auth/refresh,
+ * update the in-memory token, and replay the original request.
+ * If the refresh also fails the token is cleared and the error is re-thrown
+ * so the caller (AuthContext) can redirect to /login.
+ */
+
+// In development Vite proxies /api/* to the backend via vite.config.js, so
+// we use a relative base URL.  This ensures auth cookies are same-origin
+// (localhost:5173) and SameSite=Lax cookies are sent on every fetch call.
+//
+// In production builds we use the absolute VITE_BACKEND_URL when it is set
+// to a *different* origin (e.g. api.example.com), otherwise assume the
+// frontend is served from the same origin as the backend.
+const _backendUrl = import.meta.env.VITE_BACKEND_URL ?? ''
+const BASE = (import.meta.env.DEV || !_backendUrl) ? '/api/v1' : _backendUrl + '/api/v1'
+
+// ---------------------------------------------------------------------------
+// In-memory token store
+// ---------------------------------------------------------------------------
+
+/** @type {string | null} */
+let _accessToken = null
+
+/** @returns {string | null} */
+export function getAccessToken() {
+  return _accessToken
+}
+
+/** @param {string | null} token */
+export function setAccessToken(token) {
+  _accessToken = token
+}
+
+// ---------------------------------------------------------------------------
+// Active org store (registered by OrgContext; read by the fetch wrapper)
+// ---------------------------------------------------------------------------
+
+/**
+ * The active org id to include as X-Org-Id on authenticated requests.
+ * Set to null (or the sentinel 'personal') to omit the header.
+ * @type {string | null}
+ */
+let _activeOrgId = null
+
+/**
+ * Called by OrgContext whenever the active org changes.
+ * @param {string | null} orgId
+ */
+export function setActiveOrgId(orgId) {
+  _activeOrgId = orgId && orgId !== 'personal' ? orgId : null
+}
+
+// ---------------------------------------------------------------------------
+// Active project store (registered by ProjectContext; read by the fetch wrapper)
+// ---------------------------------------------------------------------------
+
+/**
+ * The active project id to include as X-Project-Id on authenticated requests.
+ * Set to null to omit the header (the backend then defaults to the org's
+ * default project).
+ * @type {string | null}
+ */
+let _activeProjectId = null
+
+/**
+ * Called by ProjectContext whenever the active project changes.
+ * @param {string | null} projectId
+ */
+export function setActiveProjectId(projectId) {
+  _activeProjectId = projectId || null
+}
+
+/**
+ * Tenant-scoping headers for callers that build their own fetch requests
+ * instead of going through the wrapper below — currently the Arrow query
+ * runners in wasmRuntime.js and metricRuntime.js.
+ *
+ * Those runners assembled headers by hand and sent only Authorization, so
+ * every data query executed against the user's DEFAULT org no matter which
+ * workspace was on screen. For anyone whose default org was not the one they
+ * were viewing that meant the wrong (or no) datastore — queries fell back to
+ * the demo connector and failed — while the org's own dashboards looked
+ * simply broken.
+ *
+ * @returns {Record<string, string>} headers to merge into a manual request
+ */
+export function tenantHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {}
+  if (_activeOrgId) headers['X-Org-Id'] = _activeOrgId
+  if (_activeProjectId) headers['X-Project-Id'] = _activeProjectId
+  return headers
+}
+
+// ---------------------------------------------------------------------------
+// Core fetch wrapper
+// ---------------------------------------------------------------------------
+
+/**
+ * Internal fetch helper.
+ * @param path   — path relative to BASE, must start with "/"
+ * @param _isRetry — true when replaying after a token refresh
+ */
+async function request(path: string, options: RequestInit = {}, _isRetry = false): Promise<any> {
+  const headers = new Headers(options.headers ?? {})
+
+  if (!headers.has('Content-Type') && options.body !== undefined) {
+    headers.set('Content-Type', 'application/json')
+  }
+
+  if (_accessToken) {
+    headers.set('Authorization', `Bearer ${_accessToken}`)
+  }
+
+  // Attach the active org so the backend scopes resources to that org.
+  // The backend validates membership before honouring the header.
+  if (_activeOrgId) {
+    headers.set('X-Org-Id', _activeOrgId)
+  }
+
+  // Attach the active project so the backend scopes resources to that project.
+  // When absent the backend defaults to the org's default project.
+  if (_activeProjectId) {
+    headers.set('X-Project-Id', _activeProjectId)
+  }
+
+  const response = await fetch(`${BASE}${path}`, {
+    ...options,
+    headers,
+    credentials: 'include', // send & receive the HttpOnly refresh cookie
+  })
+
+  // -- Silent refresh on 401 -----------------------------------------------
+  // A 401 from the login call means the credentials were rejected, not that a
+  // session lapsed, so it falls through and surfaces the server's own message.
+  if (response.status === 401 && !_isRetry && path !== '/auth/login') {
+    let refreshed = false
+    try {
+      const data = await _doRefresh()
+      setAccessToken(data.access_token)
+      refreshed = true
+    } catch {
+      setAccessToken(null)
+      // surface a consistent error
+      const err: Error & { status?: number; payload?: any } = new Error('Session expired. Please log in again.')
+      err.status = 401
+      throw err
+    }
+
+    if (refreshed) {
+      // replay the original request with the new token
+      return request(path, options, true)
+    }
+  }
+
+  // -- Parse and surface errors --------------------------------------------
+  if (!response.ok) {
+    let errPayload
+    try {
+      errPayload = await response.json()
+    } catch {
+      errPayload = null
+    }
+    const message =
+      errPayload?.error?.message ??
+      errPayload?.detail ??
+      `Request failed: ${response.status} ${response.statusText}`
+    const err: Error & { status?: number; payload?: any } = new Error(message)
+    err.status = response.status
+    err.payload = errPayload
+    throw err
+  }
+
+  // 204 No Content
+  if (response.status === 204) return null
+
+  return response.json()
+}
+
+// ---------------------------------------------------------------------------
+// HTTP verb helpers
+// ---------------------------------------------------------------------------
+
+/** GET /path */
+export function get(path: string) {
+  return request(path, { method: 'GET' })
+}
+
+/**
+ * GET /path returning a Blob (e.g. a PDF download).
+ *
+ * Attaches the in-memory access token + active-org header just like `request`,
+ * but reads the body as a Blob instead of JSON. Does NOT auto-retry on 401
+ * (downloads are user-initiated; a stale session surfaces as an error the
+ * caller can show). Throws on non-2xx.
+ *
+ * @param {string} path
+ * @returns {Promise<Blob>}
+ */
+export async function getBlob(path: string): Promise<Blob> {
+  const headers = new Headers()
+  if (_accessToken) headers.set('Authorization', `Bearer ${_accessToken}`)
+  if (_activeOrgId) headers.set('X-Org-Id', _activeOrgId)
+  if (_activeProjectId) headers.set('X-Project-Id', _activeProjectId)
+
+  const response = await fetch(`${BASE}${path}`, { method: 'GET', headers, credentials: 'include' })
+  if (!response.ok) {
+    const err: Error & { status?: number; payload?: any } = new Error(`Download failed: ${response.status} ${response.statusText}`)
+    err.status = response.status
+    throw err
+  }
+  return response.blob()
+}
+
+/** POST /path with JSON body */
+export function post(path: string, body?: any) {
+  return request(path, { method: 'POST', body: body !== undefined ? JSON.stringify(body) : undefined })
+}
+
+/** PUT /path with JSON body */
+export function put(path: string, body?: any) {
+  return request(path, { method: 'PUT', body: body !== undefined ? JSON.stringify(body) : undefined })
+}
+
+/** PATCH /path with JSON body */
+export function patch(path: string, body?: any) {
+  return request(path, { method: 'PATCH', body: body !== undefined ? JSON.stringify(body) : undefined })
+}
+
+/** DELETE /path (named 'del' to avoid reserved-word clash) */
+export function del(path: string) {
+  return request(path, { method: 'DELETE' })
+}
+
+// ---------------------------------------------------------------------------
+// Image upload (dashboard "image" widgets / branding)
+// ---------------------------------------------------------------------------
+
+/**
+ * Upload an image file (multipart) for use in a dashboard's `image` widget.
+ *
+ * Bypasses `request()` — a FormData body must NOT get the JSON Content-Type
+ * `request()` defaults to whenever `options.body !== undefined`; the browser
+ * needs to set its own `multipart/form-data; boundary=...` header instead.
+ *
+ * @param {File} file
+ * @returns {Promise<{id: string, url: string, content_type: string, size: number}>}
+ */
+export async function uploadImage(file) {
+  const headers = new Headers()
+  if (_accessToken) headers.set('Authorization', `Bearer ${_accessToken}`)
+  if (_activeOrgId) headers.set('X-Org-Id', _activeOrgId)
+  if (_activeProjectId) headers.set('X-Project-Id', _activeProjectId)
+
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await fetch(`${BASE}/images`, {
+    method: 'POST',
+    headers,
+    credentials: 'include',
+    body: formData,
+  })
+  if (!response.ok) {
+    let errPayload
+    try { errPayload = await response.json() } catch { errPayload = null }
+    const message = errPayload?.error?.message ?? `Upload failed: ${response.status} ${response.statusText}`
+    const err: Error & { status?: number } = new Error(message)
+    err.status = response.status
+    throw err
+  }
+  return response.json()
+}
+
+/**
+ * Fetch a remote image by URL server-side (SSRF-guarded) and store it, for a
+ * dashboard's `image` widget. Same response shape as `uploadImage`.
+ * @param {string} url
+ */
+export function uploadImageFromUrl(url) {
+  return post('/images/from-url', { url })
+}
+
+/**
+ * Resolve a stored image's backend-relative `url` (e.g. "/api/v1/images/{id}",
+ * as returned by `uploadImage`/`uploadImageFromUrl`/the `upload_image` AI tool)
+ * to an absolute `<img src>` for the CURRENT deployment. Needed because `BASE`
+ * already carries `/api/v1` — naively concatenating would double that prefix
+ * once `VITE_BACKEND_URL` points at a different origin than the frontend.
+ * @param {string} relativeUrl
+ * @returns {string}
+ */
+export function resolveImageUrl(relativeUrl) {
+  if (!relativeUrl) return ''
+  if (/^https?:\/\//i.test(relativeUrl)) return relativeUrl
+  const withoutApiPrefix = relativeUrl.replace(/^\/api\/v1/, '')
+  return `${BASE}${withoutApiPrefix}`
+}
+
+/**
+ * POST a JSON body and consume a Server-Sent Events (text/event-stream)
+ * response, invoking `onEvent` with each parsed JSON event as it arrives.
+ *
+ * Reuses the same Bearer token + X-Org-Id headers and the silent 401-refresh
+ * retry as `request()`. Resolves when the stream closes; rejects on transport
+ * or HTTP errors. Pass an AbortSignal to cancel.
+ *
+ */
+export async function postStream(
+  path: string,
+  body: any,
+  { onEvent, signal }: { onEvent?: (ev: any) => void; signal?: AbortSignal } = {},
+  _isRetry = false,
+): Promise<void> {
+  const headers = new Headers({
+    'Content-Type': 'application/json',
+    Accept: 'text/event-stream',
+  })
+  if (_accessToken) headers.set('Authorization', `Bearer ${_accessToken}`)
+  if (_activeOrgId) headers.set('X-Org-Id', _activeOrgId)
+  if (_activeProjectId) headers.set('X-Project-Id', _activeProjectId)
+
+  const response = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+    credentials: 'include',
+    signal,
+  })
+
+  // Silent refresh on 401, then replay once.
+  if (response.status === 401 && !_isRetry) {
+    try {
+      const data = await _doRefresh()
+      setAccessToken(data.access_token)
+    } catch {
+      setAccessToken(null)
+      const err: Error & { status?: number; payload?: any } = new Error('Session expired. Please log in again.')
+      err.status = 401
+      throw err
+    }
+    return postStream(path, body, { onEvent, signal }, true)
+  }
+
+  if (!response.ok || !response.body) {
+    let payload
+    try { payload = await response.json() } catch { payload = null }
+    const err: Error & { status?: number; payload?: any } = new Error(
+      payload?.error?.message ?? payload?.detail ??
+      `Request failed: ${response.status} ${response.statusText}`,
+    )
+    err.status = response.status
+    throw err
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+   
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    // SSE events are separated by a blank line.
+    let sep
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const rawEvent = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      // Concatenate all `data:` lines within this event.
+      const dataLines = rawEvent
+        .split('\n')
+        .filter(l => l.startsWith('data:'))
+        .map(l => l.slice(5).trimStart())
+      if (dataLines.length === 0) continue
+      const json = dataLines.join('\n')
+      if (!json) continue
+      try { onEvent?.(JSON.parse(json)) } catch { /* ignore malformed event */ }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Internal refresh (called only by the 401 interceptor — not exported)
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /auth/refresh — uses the HttpOnly cookie; returns { access_token }.
+ * Throws on failure. Called internally; consumers use the auth helpers below.
+ *
+ * Single-flight: concurrent callers share ONE in-flight refresh. Every
+ * refresh ROTATES the HttpOnly cookie, and presenting the pre-rotation
+ * cookie again trips the backend's family-reuse detection, which revokes
+ * the entire session family — so parallel refreshes (e.g. several
+ * components 401ing together at app boot) don't just waste requests, they
+ * log the user out.
+ */
+let _refreshInFlight = null
+function _doRefresh() {
+  if (!_refreshInFlight) {
+    // bypass the interceptor loop: pass _isRetry = true
+    _refreshInFlight = request('/auth/refresh', { method: 'POST' }, true).finally(() => {
+      _refreshInFlight = null
+    })
+  }
+  return _refreshInFlight
+}
+
+// ---------------------------------------------------------------------------
+// Auth API helpers (consumed by C1 — AuthContext)
+// ---------------------------------------------------------------------------
+
+/**
+ * Register a new account.
+ * @param {{ email: string, password: string, name: string, org_name?: string, project_name?: string, demo_project?: boolean }} body
+ * @returns {Promise<{ user: User, access_token: string }>}
+ *   Side-effect: backend sets the HttpOnly refresh cookie.
+ */
+export function register(body) {
+  return post('/auth/register', body)
+}
+
+/**
+ * Log in with email + password.
+ * @param {{ email: string, password: string }} body
+ * @returns {Promise<{ user: User, access_token: string }>}
+ *   Side-effect: backend sets the HttpOnly refresh cookie.
+ */
+export function login(body) {
+  return post('/auth/login', body)
+}
+
+/**
+ * Silently exchange the HttpOnly refresh cookie for a new access token.
+ * Also rotates the refresh cookie. Shares the 401 interceptor's
+ * single-flight so a boot-time refresh and interceptor refreshes can never
+ * race each other (see _doRefresh).
+ * @returns {Promise<{ access_token: string }>}
+ */
+export function refresh() {
+  return _doRefresh()
+}
+
+/**
+ * Log out — revokes the full session family and clears the refresh cookie.
+ * @returns {Promise<null>}
+ */
+export function logout() {
+  return post('/auth/logout')
+}
+
+/**
+ * Fetch the currently authenticated user.
+ * Requires a valid in-memory access token (attaches Authorization header).
+ * @returns {Promise<{ user: User }>}
+ */
+export function me() {
+  return get('/auth/me')
+}
+
+/**
+ * Build the URL to start Google OAuth (redirect-based, PKCE on the backend).
+ * Navigate to this URL; no fetch needed.
+ * @returns {string}
+ */
+export function googleStartUrl() {
+  return `${BASE}/auth/google/start`
+}
+
+let _authConfigCache = null
+
+/**
+ * Fetch public (unauthenticated) auth capabilities — currently whether Google
+ * OAuth is configured on the backend. The sign-in pages use this to decide
+ * whether to render the "Continue with Google" button. Cached for the session;
+ * fails soft to ``{ google_oauth: false }`` so a hiccup never blocks sign-in.
+ * @returns {Promise<{ google_oauth: boolean }>}
+ */
+export async function fetchAuthConfig() {
+  if (_authConfigCache) return _authConfigCache
+  try {
+    const res = await fetch(`${BASE}/auth/config`, { credentials: 'same-origin' })
+    if (!res.ok) throw new Error(`auth/config ${res.status}`)
+    _authConfigCache = await res.json()
+  } catch {
+    _authConfigCache = { google_oauth: false }
+  }
+  return _authConfigCache
+}
+
+// ---------------------------------------------------------------------------
+// Query registry (M13-B)
+// ---------------------------------------------------------------------------
+
+/**
+ * List all registered queries and their declared params.
+ *
+ * GET /api/v1/query/registry
+ *
+ * Returns an array of RegisteredQuery objects:
+ *   { id, name, sql, params: [{ name, type, default?, required?, options_query_id? }] }
+ *
+ * Returns [] on any failure (backend unavailable, unauthenticated, etc.)
+ * so callers can degrade gracefully.
+ *
+ * @returns {Promise<Array<{
+ *   id: string,
+ *   name: string,
+ *   sql: string,
+ *   params: Array<{ name: string, type: string, default?: any, required?: boolean, options_query_id?: string }>
+ * }>>}
+ */
+export async function listRegisteredQueries() {
+  try {
+    const data = await get('/query/registry')
+    if (Array.isArray(data)) return data
+    if (Array.isArray(data?.queries)) return data.queries
+    return []
+  } catch (cause) {
+    console.warn('[api] listRegisteredQueries failed; returning []:', cause.message)
+    return []
+  }
+}
+
+/**
+ * Report which registered queries can actually be planned, in batches.
+ *
+ * POST /api/v1/query/registry/validate
+ *
+ * A query whose stored SQL no longer parses (common after a migration, where a
+ * legacy filter variable rendered to the empty string and left `BETWEEN  AND`)
+ * otherwise looks fine in the library and only fails once you open it and press
+ * Run. This lets the list flag those up front.
+ *
+ * The backend caps each call at 250 ids and shares the rate-limit bucket with
+ * POST /query, so ids are chunked and sent SEQUENTIALLY — a whole library is a
+ * handful of calls, not one per row. Results are reported per chunk via
+ * `onChunk` so badges can appear progressively instead of after the last call.
+ *
+ * Never throws: a failed chunk is skipped, so validation degrading only means
+ * fewer badges, never a broken list.
+ *
+ */
+export async function validateRegisteredQueries(
+  ids: string[],
+  opts: {
+    onChunk?: (partial: Record<string, { valid: boolean; error?: string }>) => void
+    chunkSize?: number
+    signal?: AbortSignal
+  } = {},
+): Promise<Record<string, { valid: boolean; error?: string }>> {
+  const { onChunk, chunkSize = 250, signal } = opts
+  const all: Record<string, { valid: boolean; error?: string }> = {}
+  const list = (ids ?? []).filter(Boolean)
+  for (let i = 0; i < list.length; i += chunkSize) {
+    if (signal?.aborted) break
+    const chunk = list.slice(i, i + chunkSize)
+    try {
+      const data = await post('/query/registry/validate', { ids: chunk })
+      const results = data?.results ?? {}
+      Object.assign(all, results)
+      onChunk?.(results)
+    } catch (cause) {
+      console.warn('[api] validateRegisteredQueries chunk failed:', cause.message)
+    }
+  }
+  return all
+}
+
+// ---------------------------------------------------------------------------
+// Query registration
+// ---------------------------------------------------------------------------
+
+/**
+ * Register (or update) a query in the runtime QueryRegistry.
+ *
+ * POST /api/v1/query/registry
+ *
+ * @param {{ name: string, sql: string, params?: Array, id?: string }} body
+ * @returns {Promise<{ id: string, name: string, sql: string, params: Array }>}
+ */
+export function registerQuery(body) {
+  return post('/query/registry', body)
+}
+
+/**
+ * Render a query's final SQL — WITHOUT executing it.
+ *
+ * POST /api/v1/query/render
+ *
+ * Resolves the SAME plan as POST /query (auth/scope/allowlist gates,
+ * named-param binding, RLS predicate injection) but never touches a
+ * connector, the cache, or usage metering. Lets the editor show exactly
+ * what will run: bound values stay placeholders (`$1`) in the SQL text,
+ * never interpolated — and RLS predicates are visible in the preview too.
+ *
+ * @param {{ query_id?: string, sql?: string, named_params?: object, datastore_id?: string }} body
+ * @returns {Promise<{ sql: string, params: Array }>}
+ */
+export function renderQueryTemplate(body) {
+  return post('/query/render', body)
+}
+
+/**
+ * Columns of a registered query a dashboard filter could be attached to.
+ *
+ * GET /api/v1/queries/{id}/filterable-columns
+ *
+ * Includes columns that live only inside subqueries — a query that rolls up
+ * `region` before its output still has it available deeper down, which is
+ * exactly where a filter has to go to mean anything. Each entry carries
+ * `in_output` so the UI can say which ones the widget actually displays.
+ *
+ * @param {string} queryId
+ * @returns {Promise<Array<{name: string, expr: string, in_output: boolean}>>}
+ */
+export async function listFilterableColumns(queryId) {
+  try {
+    const res = await get(`/queries/${encodeURIComponent(queryId)}/filterable-columns`)
+    return Array.isArray(res?.columns) ? res.columns : []
+  } catch (cause) {
+    console.warn('[api] listFilterableColumns failed; returning []:', cause.message)
+    return []
+  }
+}
+
+/**
+ * Make a query filterable: inject a guarded filter on `column` bound to a new
+ * `param`, so a dashboard filter variable of that name can drive it.
+ *
+ * POST /api/v1/queries/{id}/parameterize
+ *
+ * The server injects at the innermost scope exposing the column (so it
+ * filters before any roll-up) and VERIFIES the rewrite by re-running the
+ * query with the filter unset — it must return exactly the original result,
+ * or the change is refused rather than saved. Pass `apply: false` to preview.
+ *
+ * For dropdown subtypes it ALSO derives the query listing the filter's choices
+ * from the same column (`with_options`, on by default) and returns it as
+ * `options_query`, reusing an identical existing one rather than piling up
+ * duplicates. Without it a filter comes back correctly wired to its data but
+ * with an empty dropdown.
+ *
+ * @param {string} queryId
+ * @param {{param: string, column: string, subtype?: string, apply?: boolean, with_options?: boolean}} body
+ * @returns {Promise<{ok: boolean, verified: boolean, applied: boolean, sql?: string, column_expr?: string, reason?: string, warnings?: string[], options_query?: {id?: string, name?: string, sql: string, source?: string, created?: boolean} | null}>}
+ */
+export function parameterizeQuery(queryId, body) {
+  return post(`/queries/${encodeURIComponent(queryId)}/parameterize`, body)
+}
+
+/**
+ * Fetch a single registered query by id — the deep-link path into the editor.
+ *
+ * GET /api/v1/query/registry/{queryId}
+ *
+ * Works for ids that the LIST endpoint deliberately omits (slug ids such as a
+ * migrated board's `q_xxxxxxxx`, which exist for the embed allowlist rather
+ * than first-party browsing), so "Open in query editor" works from any widget.
+ *
+ * @param {string} queryId
+ * @returns {Promise<{id, name, sql, params, datastore_id} | null>} null if not found
+ */
+export async function getRegisteredQuery(queryId) {
+  try {
+    return await get(`/query/registry/${encodeURIComponent(queryId)}`)
+  } catch (cause) {
+    console.warn('[api] getRegisteredQuery failed:', cause.message)
+    return null
+  }
+}
+
+/**
+ * List every widget (across boards in the active project) that references
+ * a registered query, via either `query_id` or (for filter widgets)
+ * `options_query_id`.
+ *
+ * GET /api/v1/query/registry/{queryId}/widgets
+ *
+ * Returns [] on any failure so callers can degrade gracefully.
+ *
+ * @param {string} queryId
+ * @returns {Promise<Array<{ board_id: string, board_name: string, widget_id: string, widget_type: string }>>}
+ */
+export async function listQueryWidgetUsages(queryId) {
+  try {
+    const data = await get(`/query/registry/${encodeURIComponent(queryId)}/widgets`)
+    return Array.isArray(data?.widgets) ? data.widgets : []
+  } catch (cause) {
+    console.warn('[api] listQueryWidgetUsages failed; returning []:', cause.message)
+    return []
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Datastores (connectors) — used by the Queries connector picker
+// ---------------------------------------------------------------------------
+
+/**
+ * List the org's datastores (connectors).
+ *
+ * GET /api/v1/datastores
+ *
+ * Returns an array of datastore rows: { id, name, config, ... } with no secret
+ * material.  Returns [] on any failure (backend unavailable, unauthenticated,
+ * etc.) so the connector picker degrades gracefully.
+ *
+ * @returns {Promise<Array<{ id: string, name: string, config?: object }>>}
+ */
+export async function listDatastores() {
+  try {
+    const data = await get('/datastores')
+    if (Array.isArray(data)) return data
+    if (Array.isArray(data?.datastores)) return data.datastores
+    if (Array.isArray(data?.items)) return data.items
+    return []
+  } catch (cause) {
+    console.warn('[api] listDatastores failed; returning []:', cause.message)
+    return []
+  }
+}
+
+/**
+ * List the active project's connectors (the project-scoped, working endpoint).
+ *
+ * GET /api/v1/connectors
+ *
+ * Unlike GET /datastores (which does not exist and always yields []), this is
+ * the real, project-scoped endpoint. The backend injects the built-in virtual
+ * "Demo data" connector (id ``__demo__``) ONLY in the org's demo/default
+ * project — other projects start empty. Each row carries
+ * ``config.connector_type`` (postgres | bigquery | mysql | duckdb | demo | …)
+ * with no secret material.
+ *
+ * Returns [] on any failure so the connector picker degrades gracefully.
+ *
+ * @returns {Promise<Array<{ id: string, name: string, config?: { connector_type?: string } }>>}
+ */
+export async function listConnectors() {
+  try {
+    const data = await get('/connectors')
+    if (Array.isArray(data)) return data
+    if (Array.isArray(data?.connectors)) return data.connectors
+    if (Array.isArray(data?.items)) return data.items
+    return []
+  } catch (cause) {
+    console.warn('[api] listConnectors failed; returning []:', cause.message)
+    return []
+  }
+}
+
+/**
+ * List a datastore's tables (with cheap row counts) for the data browser.
+ *
+ * GET /api/v1/datastores/{id}/tables
+ *
+ * @param {string} datastoreId
+ * @returns {Promise<Array<{ name: string, schema: string|null, rows: number|null }>>}
+ */
+export async function listDatastoreTables(datastoreId) {
+  const data = await get(`/datastores/${datastoreId}/tables`)
+  return Array.isArray(data?.tables) ? data.tables : []
+}
+
+/**
+ * Preview the first N rows of a table (columns + rows) as plain JSON.
+ *
+ * GET /api/v1/datastores/{id}/tables/{table}/preview?limit=50
+ *
+ * @param {string} datastoreId
+ * @param {string} table
+ * @param {number} [limit=50] capped server-side at 200
+ * @returns {Promise<{
+ *   table: string,
+ *   columns: Array<{ name: string, type: string }>,
+ *   rows: Array<Array<any>>,
+ *   row_count: number,
+ *   limit: number,
+ *   truncated: boolean
+ * }>}
+ */
+export function previewDatastoreTable(datastoreId, table, limit = 50) {
+  return get(
+    `/datastores/${datastoreId}/tables/${encodeURIComponent(table)}/preview?limit=${limit}`,
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Data browser — table metadata + read/write (Supabase-style editor)
+//
+// These hit the project-scoped /data endpoints (the same surface the
+// DataExplorerPage uses). They carry the write contract: column meta includes
+// `writable`, `primary_key` and per-column `editable`; the rows endpoint
+// supports PATCH/POST/DELETE. The `datastoreId` is optional — null/undefined
+// targets the built-in demo datastore (`/data/...`).
+// ---------------------------------------------------------------------------
+
+/** Build the `/data[/{id}]/tables/{table}` base path. */
+function dataTablePath(datastoreId, table) {
+  const root = datastoreId ? `/data/${datastoreId}` : '/data'
+  return `${root}/tables/${encodeURIComponent(table)}`
+}
+
+/**
+ * Build the `?schema=` suffix used to disambiguate a table name.
+ *
+ * A connector can expose the same table name in several schemas (MySQL bridge
+ * connectors routinely do). Without this the server falls back to the
+ * connection's default schema, which is the wrong table — or none at all.
+ */
+function schemaParam(schema) {
+  return schema ? `&schema=${encodeURIComponent(schema)}` : ''
+}
+
+/**
+ * List a connector's tables for the data browser / pickers.
+ *
+ * GET /api/v1/data[/{id}]/tables   (null id → the built-in demo dataset)
+ *
+ * @param {string|null} datastoreId
+ * @returns {Promise<Array<{name: string, schema?: string|null}>>}
+ */
+export async function listDataTables(datastoreId) {
+  const path = datastoreId ? `/data/${datastoreId}/tables` : '/data/tables'
+  const data = await get(path)
+  const rows = Array.isArray(data?.tables) ? data.tables : (Array.isArray(data) ? data : [])
+  return rows.map(t => (typeof t === 'string' ? { name: t, schema: null } : t)).filter(t => t?.name)
+}
+
+/**
+ * Build — and optionally save — the query listing a dropdown filter's choices.
+ *
+ * POST /api/v1/queries/options-query
+ *
+ * The query picker can only PICK, so a filter on a column nobody had already
+ * built a lookup for was a dead end inside the editor. This generates
+ * `SELECT DISTINCT col AS value, col AS label FROM t` natively for the target
+ * connector's dialect, RUNS it, and returns the values it produced. Pass
+ * `apply: false` to see those values without saving anything; an identical
+ * existing query is reused rather than duplicated.
+ *
+ * @param {{table: string, column: string, schema?: string|null, datastore_id?: string|null,
+ *          name?: string, limit?: number, apply?: boolean}} body
+ * @returns {Promise<{ok: boolean, verified: boolean, created: boolean, sql?: string,
+ *          source?: string, sample?: Array<*>, count?: number, warnings?: string[],
+ *          id?: string, name?: string, reason?: string}>}
+ */
+export function createOptionsQuery(body) {
+  return post('/queries/options-query', body)
+}
+
+/**
+ * Fetch a table's column metadata (with the write contract).
+ *
+ * GET /api/v1/data[/{id}]/tables/{table}/columns
+ *
+ * Returns the raw payload; callers normalize via editableGridUtils. Shape:
+ *   { writable: bool, primary_key: [col,...],
+ *     columns: [{ name, type, nullable, editable }] }
+ *
+ * @param {string|null} datastoreId
+ * @param {string} table
+ * @param {{schema?: string|null}} [opts]
+ * @returns {Promise<object>}
+ */
+export function fetchDataColumns(datastoreId, table, { schema = null } = {}) {
+  const qs = schema ? `?schema=${encodeURIComponent(schema)}` : ''
+  return get(`${dataTablePath(datastoreId, table)}/columns${qs}`)
+}
+
+/**
+ * Fetch table rows as plain JSON (not Arrow) for the editable grid.
+ *
+ * GET /api/v1/data[/{id}]/tables/{table}/rows?limit=&offset=
+ *
+ * The backend may return either:
+ *   - an array of row objects, or
+ *   - { rows: [...], row_count?, total?, columns? }, or
+ *   - { columns:[{name}], rows:[[...]] }  (positional)
+ * This helper normalizes all three to `{ rows: [obj], total: number|null }`.
+ *
+ * @param {string|null} datastoreId
+ * @param {string} table
+ * @param {{limit?: number, offset?: number, schema?: string|null}} [opts]
+ * @returns {Promise<{ rows: Array<Record<string,*>>, total: number|null }>}
+ */
+export async function fetchDataRows(
+  datastoreId,
+  table,
+  { limit = 100, offset = 0, schema = null } = {},
+) {
+  const qs = `?limit=${limit}&offset=${offset}&format=json${schemaParam(schema)}`
+  const data = await get(`${dataTablePath(datastoreId, table)}/rows${qs}`)
+
+  // Array of objects.
+  if (Array.isArray(data)) return { rows: data, total: null }
+
+  const total = data?.row_count ?? data?.total ?? data?.count ?? null
+  const raw = data?.rows ?? []
+
+  // Positional rows + a columns array → zip into objects.
+  if (raw.length && Array.isArray(raw[0]) && Array.isArray(data?.columns)) {
+    const names = data.columns.map((c) => (typeof c === 'string' ? c : c.name))
+    const rows = raw.map((arr) => {
+      const o = {}
+      names.forEach((n, i) => { o[n] = arr[i] })
+      return o
+    })
+    return { rows, total }
+  }
+
+  return { rows: raw, total }
+}
+
+/**
+ * Update a single row by primary key.
+ *
+ * PATCH /api/v1/data[/{id}]/tables/{table}/rows
+ * body { pk: {col:val}, set: {col:val} } → updated row object
+ *
+ * @param {string|null} datastoreId
+ * @param {string} table
+ * @param {Record<string,*>} pk   primary-key column→value map
+ * @param {Record<string,*>} set  changed column→value map
+ * @returns {Promise<Record<string,*>>}
+ */
+export function updateDataRow(datastoreId, table, pk, set) {
+  return patch(`${dataTablePath(datastoreId, table)}/rows`, { pk, set })
+}
+
+/**
+ * Insert a new row.
+ *
+ * POST /api/v1/data[/{id}]/tables/{table}/rows
+ * body { values: {col:val} } → new row object
+ *
+ * @param {string|null} datastoreId
+ * @param {string} table
+ * @param {Record<string,*>} values
+ * @returns {Promise<Record<string,*>>}
+ */
+export function insertDataRow(datastoreId, table, values) {
+  return post(`${dataTablePath(datastoreId, table)}/rows`, { values })
+}
+
+/**
+ * Delete a row by primary key.
+ *
+ * DELETE /api/v1/data[/{id}]/tables/{table}/rows  body { pk: {col:val} }
+ *
+ * `del()` cannot carry a body, so this uses the raw request wrapper via patch's
+ * sibling — we issue a DELETE with a JSON body directly.
+ *
+ * @param {string|null} datastoreId
+ * @param {string} table
+ * @param {Record<string,*>} pk
+ * @returns {Promise<{deleted:number}>}
+ */
+export function deleteDataRow(datastoreId, table, pk) {
+  return request(`${dataTablePath(datastoreId, table)}/rows`, {
+    method: 'DELETE',
+    body: JSON.stringify({ pk }),
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Orgs + onboarding
+// ---------------------------------------------------------------------------
+
+/**
+ * Create an organization for the current user (they become its owner).
+ *
+ * POST /api/v1/orgs { name }
+ *
+ * @param {string} name
+ * @returns {Promise<{ id: string, name: string, role: string }>}
+ */
+export function createOrg(name) {
+  return post('/orgs', { name })
+}
+
+/**
+ * List pending (non-expired) org invites addressed to the current user's email.
+ *
+ * GET /api/v1/auth/me/invites
+ *
+ * Returns [] on any failure so onboarding degrades gracefully.
+ *
+ * `token` is null unless the account's address was verified by its sign-in
+ * provider; such invites can only be accepted from the invite link itself.
+ *
+ * @returns {Promise<Array<{ id: string, org_id: string, org_name: string, role: string, token: string | null, created_at: string, expires_at: string }>>}
+ */
+export async function getMyInvites() {
+  try {
+    const data = await get('/auth/me/invites')
+    return Array.isArray(data?.invites) ? data.invites : []
+  } catch (cause) {
+    console.warn('[api] getMyInvites failed; returning []:', cause.message)
+    return []
+  }
+}
+
+/**
+ * (Re-)seed the removable demo bundle (sample dashboards, queries and a
+ * datastore) INTO the active project — there is no separate "Demo" project.
+ * Scoped to the active project via the X-Project-Id header. Idempotent.
+ *
+ * POST /api/v1/projects/sample/restore
+ *
+ * @returns {Promise<{ project_id: string|null, seed: Object }>}
+ */
+export function restoreSample() {
+  return post('/projects/sample/restore')
+}
+
+/**
+ * Bulk-remove every sample-tagged resource from the active project.
+ *
+ * POST /api/v1/projects/sample/remove
+ *
+ * @returns {Promise<{ removed: Object, project_id: string|null }>}
+ */
+export function removeSample() {
+  return post('/projects/sample/remove')
+}
+
+// ---------------------------------------------------------------------------
+// Projects (scoped within the active org via X-Org-Id)
+// ---------------------------------------------------------------------------
+
+/**
+ * List the active org's projects.
+ *
+ * GET /api/v1/projects
+ *
+ * Returns an array of project rows: { id, name, slug, org_id, ... }.
+ * Returns [] on any failure (backend unavailable, unauthenticated, etc.) so
+ * ProjectContext can degrade gracefully.
+ *
+ * @returns {Promise<Array<{ id: string, name: string, slug?: string, org_id?: string }>>}
+ */
+export async function listProjects() {
+  try {
+    const data = await get('/projects')
+    if (Array.isArray(data)) return data
+    if (Array.isArray(data?.projects)) return data.projects
+    if (Array.isArray(data?.items)) return data.items
+    return []
+  } catch (cause) {
+    console.warn('[api] listProjects failed; returning []:', cause.message)
+    return []
+  }
+}
+
+/**
+ * Create a project in the active org.
+ *
+ * POST /api/v1/projects { name }
+ *
+ * @param {string} name
+ * @returns {Promise<{ id: string, name: string, slug?: string, org_id?: string }>}
+ */
+export function createProject(name) {
+  return post('/projects', { name })
+}
+
+/**
+ * Update a project.
+ *
+ * PUT /api/v1/projects/{id}
+ *
+ * @param {string} id
+ * @param {{ name?: string }} body
+ * @returns {Promise<{ id: string, name: string, slug?: string, org_id?: string }>}
+ */
+export function updateProject(id, body) {
+  return put(`/projects/${id}`, body)
+}
+
+/**
+ * Delete a project.
+ *
+ * DELETE /api/v1/projects/{id}
+ *
+ * @param {string} id
+ * @returns {Promise<null>}
+ */
+export function deleteProject(id) {
+  return del(`/projects/${id}`)
+}
+
+// ---------------------------------------------------------------------------
+// Query editor tooling (backend: app/routes/query_tools.py)
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate SQL with sqlglot in a given dialect.
+ *
+ * POST /api/v1/query/validate
+ *
+ * @param {string} sql
+ * @param {string} [dialect] one of bigquery|duckdb|postgres|mysql
+ * @returns {Promise<{ ok: boolean, errors: Array<{ message: string, line: number, col: number }> }>}
+ *   Returns ``{ ok: true, errors: [] }`` on any transport failure so the editor
+ *   degrades gracefully (no spurious squiggles when the backend is down).
+ */
+export async function validateSql(sql, dialect) {
+  try {
+    return await post('/query/validate', { sql, dialect })
+  } catch (cause) {
+    console.warn('[api] validateSql failed; treating as ok:', cause.message)
+    return { ok: true, errors: [] }
+  }
+}
+
+/**
+ * Best-effort LLM autocomplete for the text before the cursor.
+ *
+ * POST /api/v1/query/complete
+ *
+ * @param {{ sql: string, cursor?: number, schema?: string }} body
+ * @returns {Promise<{ suggestion: string }>}
+ *   Returns ``{ suggestion: '' }`` on any failure so the caller falls back to
+ *   local completion.
+ */
+export async function completeSql(body) {
+  try {
+    const data = await post('/query/complete', body)
+    return { suggestion: data?.suggestion ?? '' }
+  } catch (cause) {
+    console.warn('[api] completeSql failed; no suggestion:', cause.message)
+    return { suggestion: '' }
+  }
+}
+
+/**
+ * Fetch the schema catalog used to seed schema-aware autocomplete.
+ *
+ * GET /api/v1/query/schema
+ *
+ * @returns {Promise<{ tables: Record<string, string[]> }>}
+ *   Returns ``{ tables: {} }`` on any failure.
+ */
+export async function fetchSchema() {
+  try {
+    const data = await get('/query/schema')
+    return { tables: data?.tables ?? {} }
+  } catch (cause) {
+    console.warn('[api] fetchSchema failed; returning empty schema:', cause.message)
+    return { tables: {} }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DataProvider fetch (BET-3) — POST /boards/{id}/providers/{pid}/data
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch a board DataProvider result and return the raw ArrayBuffer.
+ *
+ * The response is a multi-table Arrow IPC stream in the custom framing produced
+ * by the backend's ``tables_to_multi_ipc_stream``:
+ *
+ *   4 bytes big-endian: count N
+ *   N frames, each:
+ *     4 bytes big-endian: name_len
+ *     name bytes (UTF-8)
+ *     4 bytes big-endian: ipc_len
+ *     ipc bytes (Arrow IPC stream)
+ *
+ * Returns the raw ArrayBuffer; callers use decodeMultiTableIPC to parse it.
+ * Throws on network failure or non-2xx response.
+ *
+ * @param {string} boardId
+ * @param {string} providerId
+ * @param {Record<string, unknown>} [params]
+ * @returns {Promise<ArrayBuffer>}
+ */
+export async function fetchProviderData(boardId, providerId, params = {}) {
+  const path = `/boards/${boardId}/providers/${providerId}/data`
+  const headers = new Headers({ 'Content-Type': 'application/json' })
+  if (_accessToken) headers.set('Authorization', `Bearer ${_accessToken}`)
+  if (_activeOrgId) headers.set('X-Org-Id', _activeOrgId)
+  if (_activeProjectId) headers.set('X-Project-Id', _activeProjectId)
+
+  const response = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers,
+    credentials: 'include',
+    body: JSON.stringify({ params }),
+  })
+
+  if (response.status === 401) {
+    // Silent refresh + retry (mirrors the `request` helper's 401 path)
+    try {
+      const data = await _doRefresh()
+      setAccessToken(data.access_token)
+    } catch {
+      setAccessToken(null)
+      const err: Error & { status?: number; payload?: any } = new Error('Session expired. Please log in again.')
+      err.status = 401
+      throw err
+    }
+    return fetchProviderData(boardId, providerId, params)
+  }
+
+  if (!response.ok) {
+    let errPayload
+    try { errPayload = await response.json() } catch { errPayload = null }
+    const message =
+      errPayload?.error?.message ??
+      errPayload?.detail ??
+      `Provider fetch failed: ${response.status} ${response.statusText}`
+    const err: Error & { status?: number; payload?: any } = new Error(message)
+    err.status = response.status
+    throw err
+  }
+
+  return response.arrayBuffer()
+}
+
+// ---------------------------------------------------------------------------
+// JSDoc type stub (no TypeScript; gives IDE hints to C1)
+// ---------------------------------------------------------------------------
+
+/**
+ * @typedef {{ id: string, email: string, name: string | null, avatar_url: string | null, email_verified: boolean, created_at: string }} User
+ */

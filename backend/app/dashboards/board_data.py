@@ -1141,25 +1141,18 @@ async def _resolve_org_connector(
             return _get_demo_connector(), False
 
         if ctype == "duckdb":
-            db_path = cfg.get("database") or cfg.get("path")
-            if db_path and db_path != ":memory:":
-                import duckdb  # noqa: PLC0415
+            from app.connectors.duckdb_conn import connect_duckdb_datastore  # noqa: PLC0415
 
-                from app.connectors.duckdb_conn import harden_connection as _harden  # noqa: PLC0415
+            return factory(connect_duckdb_datastore(cfg, org_id)), True
+        from app.connectors.network import effective_network  # noqa: PLC0415
+        from app.connectors.ssrf import guard_connector_target  # noqa: PLC0415
 
-                conn = duckdb.connect(database=db_path, read_only=True)
-                _harden(conn, disable_external_access=True)
-                return factory(conn), True
-            return factory(), True
+        if effective_network({**real_ds, "config": cfg})[0] == "direct":
+            guard_connector_target(cfg)
         if ctype == "postgres":
-            dsn = cfg.get("dsn")
-            if dsn is None:
-                host = cfg.get("host", "localhost")
-                port = cfg.get("port", 5432)
-                dbname = cfg.get("dbname") or cfg.get("database") or "postgres"
-                user = cfg.get("user") or cfg.get("username") or "postgres"
-                password = cfg.get("password", "")
-                dsn = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
+            from app.connectors.registry import postgres_dsn  # noqa: PLC0415
+
+            dsn = postgres_dsn(cfg)
             return factory(dsn), True
 
         return factory(cfg), True

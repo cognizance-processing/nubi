@@ -31,16 +31,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
+from app.auth.roles import require_writer
+from app.auth.superadmin import caller_is_superadmin, require_superadmin
 from app.connectors.cache import (
     ContentAddressedCache,
     RedisCacheBackend,
     get_cache,
 )
 from app.errors import AppError
+from app.repos.provider import Repo, get_repo
+from app.routes._org import resolve_org_id
 
 router = APIRouter(prefix="/cache", tags=["cache"])
 
@@ -81,24 +85,56 @@ class InvalidateResponse(BaseModel):
 
 @router.get("/stats")
 async def cache_stats(
-    _user: dict[str, Any] = Depends(current_user),
+    _admin: dict[str, Any] = Depends(require_superadmin),
 ) -> dict[str, Any]:
-    """Return the active cache's statistics plus its backend name."""
+    """Return the active cache's statistics plus its backend name.
+
+    The cache is shared by every organisation, so its counters are an
+    operator-only view.
+    """
     cache = get_cache()
     stats = cache.stats()
     return {**stats, "backend": _backend_name(cache)}
 
 
+async def _require_own_tag(tag: str, org_id: str, repo: Repo) -> None:
+    """A member may only invalidate cache entries tagged for their own org:
+    the org tag itself, or a board that belongs to the org."""
+    kind, _, ident = tag.partition(":")
+    if kind == "org" and ident == str(org_id):
+        return
+    if kind == "board" and ident and await repo.get("boards", org_id, ident) is not None:
+        return
+    raise AppError(
+        "forbidden", "That cache tag does not belong to this organisation.", 403
+    )
+
+
 @router.post("/invalidate", response_model=InvalidateResponse)
 async def cache_invalidate(
     body: InvalidateRequest,
-    _user: dict[str, Any] = Depends(current_user),
+    request: Request,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+    is_operator: bool = Depends(caller_is_superadmin),
 ) -> InvalidateResponse:
-    """Invalidate the whole cache (``all=true``) or every entry under *tag*."""
+    """Invalidate cache entries.
+
+    ``all=true`` clears every organisation's entries and is operator-only.
+    A *tag* is limited to the caller's own organisation unless the caller is
+    an operator.
+    """
     cache = get_cache()
     if body.all:
+        if not is_operator:
+            raise AppError("forbidden", "Superadmin access required.", 403)
         count = cache.invalidate_all()
     elif body.tag:
+        if not is_operator:
+            # A tenant needs write access in the org and may only touch its tags.
+            await require_writer(request, user, repo)
+            org_id = await resolve_org_id(str(user["id"]), repo, request)
+            await _require_own_tag(body.tag, org_id, repo)
         count = cache.invalidate(body.tag)
     else:
         raise AppError(

@@ -460,6 +460,41 @@ class TestGetConnector:
         assert "real-connector" in names
         assert "plain-datastore" not in names
 
+    @pytest.mark.asyncio
+    async def test_list_honours_x_org_id_for_a_switched_org(self, connectors_client):
+        """GET /connectors must list the VIEWED org's connectors, not the default.
+
+        Regression: the route resolved the caller's default org via
+        _get_user_org and ignored X-Org-Id, so switching workspace showed only
+        the demo connector — every real connector in the switched-into org was
+        invisible and queries there ran against the wrong (demo) datastore and
+        failed.
+        """
+        client, alice_id, default_org_id, repo = connectors_client
+
+        # Alice also belongs to a second org that owns a real connector.
+        second_org_id = str(uuid.uuid4())
+        repo.seed_org_member(org_id=second_org_id, user_id=alice_id)
+        await repo.create(
+            resource="datastores",
+            org_id=second_org_id,
+            created_by=alice_id,
+            name="second-org-mysql",
+            config={"connector_type": "mysql", "host": "127.0.0.1", "port": 3306},
+        )
+
+        # Viewing the second org, its connector must be listed...
+        switched = await client.get(
+            "/api/v1/connectors",
+            headers={**_auth_headers(alice_id), "X-Org-Id": second_org_id},
+        )
+        assert switched.status_code == 200, switched.text
+        assert "second-org-mysql" in [c["name"] for c in switched.json()]
+
+        # ...and NOT while viewing the default org.
+        default = await client.get("/api/v1/connectors", headers=_auth_headers(alice_id))
+        assert "second-org-mysql" not in [c["name"] for c in default.json()]
+
 
 # ---------------------------------------------------------------------------
 # Tests: update (rotate secret + update config)
@@ -527,6 +562,38 @@ class TestUpdateConnector:
         assert body["name"] == "updated-name"
         assert body["config"]["host"] == "new-host.local"
         _assert_no_secret_in_response(body)
+
+    @pytest.mark.asyncio
+    async def test_update_null_clears_config_field_and_persists(self, connectors_client):
+        """PUT config {key: null} clears that key (as re-read via GET); omitted keys stay.
+
+        Regression: ``to_safe_dict`` dropped Nones before the merge, so an edit that
+        emptied an optional field (schema, bridge_id, ...) came back on reload.
+        """
+        client, alice_id, org_id, repo = connectors_client
+        h = _auth_headers(alice_id)
+        row_id = (await client.post(
+            "/api/v1/connectors",
+            json={
+                "name": "clearable",
+                "type": "postgres",
+                "config": {"host": "h", "port": 5432, "database": "d", "user": "u", "schema": "analytics"},
+                "secret": {"password": "pw"},
+            },
+            headers=h,
+        )).json()["id"]
+
+        resp = await client.put(
+            f"/api/v1/connectors/{row_id}",
+            json={"config": {"schema": None, "user": None, "connector_type": None}},
+            headers=h,
+        )
+        assert resp.status_code == 200, resp.text
+
+        cfg = (await client.get(f"/api/v1/connectors/{row_id}", headers=h)).json()["config"]
+        assert "schema" not in cfg and "user" not in cfg
+        assert cfg["host"] == "h" and cfg["database"] == "d"  # omitted keys untouched
+        assert cfg["connector_type"] == "postgres"  # server-owned keys can't be cleared
 
     @pytest.mark.asyncio
     async def test_update_response_has_no_secret(self, connectors_client):
@@ -981,8 +1048,11 @@ class TestConnectorTest:
         )
         row_id = create_resp.json()["id"]
 
+        # ``probe=false`` stops after the structural layers. This test is about
+        # config + secret resolution; host "h" does not exist, and the
+        # connection probe has its own tests below.
         test_resp = await client.post(
-            f"/api/v1/connectors/{row_id}/test",
+            f"/api/v1/connectors/{row_id}/test?probe=false",
             headers=_auth_headers(alice_id),
         )
         assert test_resp.status_code == 200, test_resp.text
@@ -990,9 +1060,54 @@ class TestConnectorTest:
         assert body["ok"] is True
         assert body["layers"]["config"] is True
         assert body["layers"]["secret"] is True
+        assert "connection" not in body["layers"]
         assert body["connector_id"] == row_id
-        # No network was opened — this is a structural check only
         _assert_no_secret_in_response(body)
+
+    @pytest.mark.asyncio
+    async def test_probe_reports_the_engines_own_failure(self, connectors_client):
+        """A connector pointed at nothing fails the connection layer, loudly.
+
+        The whole point of the probe is that config+secret passing is not the
+        question the user is asking. The message must be the engine's, not a
+        generic "test failed", so the user can act on it.
+        """
+        client, alice_id, org_id, repo = connectors_client
+
+        row_id = (await client.post(
+            "/api/v1/connectors",
+            json={
+                "name": "unreachable",
+                "type": "postgres",
+                # Port 1 is reserved and nothing listens on it.
+                "config": {"host": "127.0.0.1", "port": 1, "database": "d", "user": "u"},
+                "secret": {"password": "pw"},
+            },
+            headers=_auth_headers(alice_id),
+        )).json()["id"]
+
+        body = (await client.post(
+            f"/api/v1/connectors/{row_id}/test",
+            headers=_auth_headers(alice_id),
+        )).json()
+        assert body["ok"] is False
+        assert body["layers"]["config"] is True
+        assert body["layers"]["secret"] is True
+        assert body["layers"]["connection"] is False
+        assert body["checked"]
+        assert body["checked"] != "config+secret resolved"
+        assert isinstance(body["elapsed_ms"], int)
+        _assert_no_secret_in_response(body)
+
+    @pytest.mark.asyncio
+    async def test_demo_connector_reports_a_connection_layer(self, connectors_client):
+        """The in-process demo dataset is connected by virtue of existing."""
+        client, alice_id, org_id, repo = connectors_client
+        body = (await client.post(
+            "/api/v1/connectors/__demo__/test", headers=_auth_headers(alice_id),
+        )).json()
+        assert body["ok"] is True
+        assert body["layers"]["connection"] is True
 
     @pytest.mark.asyncio
     async def test_config_missing_returns_not_ok(self, connectors_client):
@@ -1062,6 +1177,195 @@ class TestConnectorTest:
             headers=_auth_headers(alice_id),
         )
         _assert_no_secret_in_response(test_resp.json())
+
+
+# ---------------------------------------------------------------------------
+# Tests: live connection status — the whole point being GET /connectors
+# shows something true about each connector without a separate trip to
+# Settings -> Bridges, and without re-clicking Test every time.
+# ---------------------------------------------------------------------------
+
+
+class TestEffectiveNetworkFields:
+    """Top-level network_mode/bridge_id report what the runtime uses (config),
+    not the legacy columns the API never writes."""
+
+    @pytest.mark.asyncio
+    async def test_get_and_list_report_config_values_over_stale_columns(self, connectors_client):
+        client, alice_id, org_id, repo = connectors_client
+        bridge_id = str(uuid.uuid4())
+        create_resp = await client.post(
+            "/api/v1/connectors",
+            json={
+                "name": "via-bridge",
+                "type": "postgres",
+                "config": {"host": "10.0.0.5", "port": 5432, "database": "d", "user": "u",
+                           "network_mode": "bridge", "bridge_id": bridge_id},
+                "secret": {"password": "pw"},
+            },
+            headers=_auth_headers(alice_id),
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        row_id = create_resp.json()["id"]
+        assert create_resp.json()["network_mode"] == "bridge"
+        assert create_resp.json()["bridge_id"] == bridge_id
+
+        # Simulate the Postgres row: column defaults that were never synced.
+        repo._store["datastores"][row_id].update({"network_mode": "direct", "bridge_id": None})
+
+        got = (await client.get(f"/api/v1/connectors/{row_id}", headers=_auth_headers(alice_id))).json()
+        listed = next(
+            r for r in (await client.get("/api/v1/connectors", headers=_auth_headers(alice_id))).json()
+            if r["id"] == row_id
+        )
+        for body in (got, listed):
+            assert body["network_mode"] == "bridge"
+            assert body["bridge_id"] == bridge_id
+        assert listed["status"]["kind"] == "bridge"
+
+        # Switching back to direct in config is reflected too.
+        upd = await client.put(
+            f"/api/v1/connectors/{row_id}",
+            json={"config": {"network_mode": "direct", "bridge_id": None}},
+            headers=_auth_headers(alice_id),
+        )
+        assert upd.status_code == 200, upd.text
+        got = (await client.get(f"/api/v1/connectors/{row_id}", headers=_auth_headers(alice_id))).json()
+        assert got["network_mode"] == "direct"
+        assert got["bridge_id"] is None
+
+
+def test_effective_network_prefers_config_and_falls_back_to_columns():
+    from app.connectors.network import effective_network
+
+    assert effective_network({"network_mode": "direct", "bridge_id": "old",
+                              "config": {"network_mode": "Bridge", "bridge_id": "new"}}) == ("bridge", "new")
+    assert effective_network({"network_mode": "bridge", "bridge_id": "col", "config": {}}) == ("bridge", "col")
+    assert effective_network({"config": None}) == ("direct", None)
+
+
+class TestConnectorStatus:
+
+    @pytest.mark.asyncio
+    async def test_direct_connector_status_unknown_before_first_test(self, connectors_client):
+        client, alice_id, org_id, repo = connectors_client
+
+        create_resp = await client.post(
+            "/api/v1/connectors",
+            json={
+                "name": "never-tested",
+                "type": "postgres",
+                "config": {"host": "h", "port": 5432, "database": "d", "user": "u"},
+                "secret": {"password": "pw"},
+            },
+            headers=_auth_headers(alice_id),
+        )
+        row_id = create_resp.json()["id"]
+
+        list_resp = await client.get("/api/v1/connectors", headers=_auth_headers(alice_id))
+        row = next(r for r in list_resp.json() if r["id"] == row_id)
+        assert row["status"]["kind"] == "direct"
+        assert row["status"]["state"] == "unknown"
+
+    @pytest.mark.asyncio
+    async def test_direct_connector_status_reflects_last_test_and_notifies_on_transition(
+        self, connectors_client,
+    ):
+        from app.notify.notifications import (
+            InMemoryNotificationStore,
+            set_notification_store_for_tests,
+        )
+
+        client, alice_id, org_id, repo = connectors_client
+        store = InMemoryNotificationStore()
+        set_notification_store_for_tests(store)
+        try:
+            create_resp = await client.post(
+                "/api/v1/connectors",
+                json={
+                    "name": "flaky-db",
+                    "type": "postgres",
+                    "config": {"host": "h", "port": 5432, "database": "d", "user": "u"},
+                    "secret": {"password": "pw"},
+                },
+                headers=_auth_headers(alice_id),
+            )
+            row_id = create_resp.json()["id"]
+
+            # First test ever: ok -> persisted, but no transition to notify about.
+            r1 = await client.post(f"/api/v1/connectors/{row_id}/test?probe=false",
+                                   headers=_auth_headers(alice_id))
+            assert r1.json()["ok"] is True
+            assert (await store.list_for_user(org_id, alice_id)) == []
+
+            list_resp = await client.get("/api/v1/connectors", headers=_auth_headers(alice_id))
+            row = next(r for r in list_resp.json() if r["id"] == row_id)
+            assert row["status"]["kind"] == "direct"
+            assert row["status"]["state"] == "online"
+            assert row["status"]["checked_at"]
+
+            # Simulate the secret going missing -> second test fails -> REAL
+            # transition (ok -> not ok) -> exactly one notification.
+            _secret_store.reset()
+            r2 = await client.post(f"/api/v1/connectors/{row_id}/test?probe=false",
+                                   headers=_auth_headers(alice_id))
+            assert r2.json()["ok"] is False
+
+            items = await store.list_for_user(org_id, alice_id)
+            assert len(items) == 1
+            assert items[0]["type"] == "connector_health"
+            assert items[0]["severity"] == "warning"
+
+            list_resp2 = await client.get("/api/v1/connectors", headers=_auth_headers(alice_id))
+            row2 = next(r for r in list_resp2.json() if r["id"] == row_id)
+            assert row2["status"]["state"] == "offline"
+        finally:
+            set_notification_store_for_tests(None)
+
+    @pytest.mark.asyncio
+    async def test_bridge_connector_status_derives_from_bridge_table(self, connectors_client):
+        from app.bridges.store import (
+            InMemoryBridgeStore,
+            set_bridge_store_for_tests,
+        )
+
+        client, alice_id, org_id, repo = connectors_client
+        bridge_store = InMemoryBridgeStore()
+        set_bridge_store_for_tests(bridge_store)
+        try:
+            bridge = await bridge_store.create(org_id, alice_id, "my-vpc-bridge", {})
+            bridge_id = bridge["id"]
+
+            create_resp = await client.post(
+                "/api/v1/connectors",
+                json={
+                    "name": "bridged-mysql",
+                    "type": "mysql",
+                    "config": {
+                        "host": "h", "port": 3306, "database": "d", "user": "u",
+                        "network_mode": "bridge", "bridge_id": bridge_id,
+                    },
+                    "secret": {"password": "pw"},
+                },
+                headers=_auth_headers(alice_id),
+            )
+            row_id = create_resp.json()["id"]
+
+            # Bridge starts offline -> connector reflects that, no test needed.
+            list_resp = await client.get("/api/v1/connectors", headers=_auth_headers(alice_id))
+            row = next(r for r in list_resp.json() if r["id"] == row_id)
+            assert row["status"]["kind"] == "bridge"
+            assert row["status"]["state"] == "offline"
+
+            # Bridge comes online -> connector reflects that live, no /test call.
+            await bridge_store.set_status(bridge_id, "online", touch_last_seen=True)
+            list_resp2 = await client.get("/api/v1/connectors", headers=_auth_headers(alice_id))
+            row2 = next(r for r in list_resp2.json() if r["id"] == row_id)
+            assert row2["status"]["kind"] == "bridge"
+            assert row2["status"]["state"] == "online"
+            assert row2["status"]["checked_at"]
+        finally:
+            set_bridge_store_for_tests(None)
 
 
 # ---------------------------------------------------------------------------

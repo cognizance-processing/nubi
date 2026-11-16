@@ -36,6 +36,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import re
+
 import jwt
 from jwt.exceptions import PyJWTError
 
@@ -205,10 +207,32 @@ def _select_key_from_jwks(
         raise AppError("invalid_token", "Token is invalid or has expired.", 401)
 
 
-def _resolve_jwks(issuer_cfg: Any) -> dict[str, Any]:
+def _static_jwks(issuer_cfg: Any) -> dict[str, Any] | None:
+    """The issuer's key set when it is configured statically, else ``None``."""
+    return _resolve_jwks(issuer_cfg, _static_only=True)
+
+
+async def _resolve_jwks_async(issuer_cfg: Any) -> dict[str, Any]:
+    """:func:`_resolve_jwks` for the async path: a network fetch runs off the
+    event loop."""
+    static = _static_jwks(issuer_cfg)
+    if static is not None:
+        return static
+    from app.auth.jwks_cache import get_jwks_async  # noqa: PLC0415
+
+    return await get_jwks_async(issuer_cfg.jwks_uri)
+
+
+def _resolve_jwks(
+    issuer_cfg: Any, *, allow_fetch: bool = True, _static_only: bool = False
+) -> Any:
     """Return the JWKS for *issuer_cfg*, using static data when available.
 
     Priority: ``static_jwks`` > ``static_public_key`` > ``jwks_uri`` (network).
+
+    ``allow_fetch=False`` is for callers running ON the event loop (the
+    synchronous verifier used by middleware): they use an already-cached key
+    set and never start a network request.
     """
     if issuer_cfg.static_jwks is not None:
         _sjwks = issuer_cfg.static_jwks
@@ -226,9 +250,18 @@ def _resolve_jwks(issuer_cfg: Any) -> dict[str, Any]:
     if issuer_cfg.static_public_key is not None:
         return _build_jwks_from_static_key(issuer_cfg.static_public_key)
 
-    # Live network fetch (TTL-cached).
-    from app.auth.jwks_cache import get_jwks
+    if _static_only:
+        return None
 
+    from app.auth.jwks_cache import get_cached, get_jwks  # noqa: PLC0415
+
+    if not allow_fetch:
+        cached = get_cached(issuer_cfg.jwks_uri)
+        if cached is None:
+            raise AppError("invalid_token", "Token is invalid or has expired.", 401)
+        return cached
+
+    # Live network fetch (TTL-cached).
     return get_jwks(issuer_cfg.jwks_uri)
 
 
@@ -283,8 +316,12 @@ def _finish_embed_verification(
     aud: str,
     expected_origin: str | None,
     org_override: str | None = None,
+    allowed_origins: list[str] | None = None,
 ) -> VerifiedIdentity:
     """Run the final PyJWT decode + origin check + build VerifiedIdentity.
+
+    ``allowed_origins`` is the issuer's own origin allow-list; when it is
+    non-empty the request must come from one of those origins.
 
     This is split out so both the sync and async paths share the same
     signature-verification + claims-building logic.
@@ -310,7 +347,7 @@ def _finish_embed_verification(
             audience=aud,
             issuer=iss,
             options={
-                "require": ["exp", "aud", "iss", "sub"],
+                "require": ["exp", "iat", "aud", "iss", "sub"],
                 "verify_exp": True,
                 "verify_aud": True,
                 "verify_iss": True,
@@ -318,6 +355,23 @@ def _finish_embed_verification(
         )
     except PyJWTError:
         raise AppError("invalid_token", "Token is invalid or has expired.", 401)
+
+    # Lifetime cap: an embed token is a bearer credential handed to a browser,
+    # so it must be short-lived however the host minted it.
+    try:
+        lifetime = float(claims["exp"]) - float(claims["iat"])
+    except (TypeError, ValueError):
+        raise AppError("invalid_token", "Token is invalid or has expired.", 401)
+    if lifetime <= 0 or lifetime > _embed_max_ttl_seconds():
+        raise AppError("invalid_token", "Token is invalid or has expired.", 401)
+
+    # Issuer-level origin allow-list (independent of the per-token claim).
+    if allowed_origins and (expected_origin is None or expected_origin not in allowed_origins):
+        raise AppError(
+            "origin_mismatch",
+            "Request origin is not allowed for this issuer.",
+            403,
+        )
 
     # Origin enforcement.
     embed_origin: str | None = claims.get("embed_origin")
@@ -368,25 +422,104 @@ def _verify_embed_token(
     """
     from app.auth.issuers import get_issuer_registry  # noqa: PLC0415
 
-    iss, _unverified = _peek_embed_token(token, alg)
+    iss, unverified = _peek_embed_token(token, alg)
+    org_from_token = unverified.get("org")
+    org_hint = org_from_token if isinstance(org_from_token, str) and org_from_token else None
 
-    registry = get_issuer_registry()
-    issuer_cfg = registry.get(iss)
+    issuer_cfg = _registry_issuer_for(iss, org_hint)
     if issuer_cfg is None:
         raise AppError("invalid_token", "Token is invalid or has expired.", 401)
 
-    jwks = _resolve_jwks(issuer_cfg)
+    # On the event loop: cached keys only (the async path fetches and caches).
+    jwks = _resolve_jwks(issuer_cfg, allow_fetch=False)
     kid: str | None = header.get("kid") or None
     public_key = _select_key_from_jwks(jwks, kid, alg)
 
     return _finish_embed_verification(
-        token, alg, iss, public_key, issuer_cfg.aud, expected_origin
+        token, alg, iss, public_key, issuer_cfg.aud, expected_origin,
+        org_override=issuer_cfg.org_id,
+        allowed_origins=list(issuer_cfg.allowed_origins or []),
     )
+
+
+def _registry_issuer_for(iss: str, org: str | None) -> Any:
+    """The in-process issuer configuration allowed to authenticate (*iss*, *org*).
+
+    The organisation a token acts for is the configuration's owner; the
+    token's own ``org`` claim only selects among configurations sharing an
+    ``iss`` (see :meth:`IssuerRegistry.resolve`). An ambiguous ``iss`` with no
+    org named is a verification failure.
+    """
+    from app.auth.issuers import AmbiguousIssuer, get_issuer_registry  # noqa: PLC0415
+
+    try:
+        return get_issuer_registry().resolve(iss, org)
+    except AmbiguousIssuer:
+        raise AppError("invalid_token", "Token is invalid or has expired.", 401)
 
 
 # ---------------------------------------------------------------------------
 # Embed-path verification — async (registry + DB-backed fallback)
 # ---------------------------------------------------------------------------
+
+def _embed_max_ttl_seconds() -> float:
+    """Longest accepted embed-token lifetime (``EMBED_TOKEN_MAX_TTL_SECONDS``, default 15 min)."""
+    import os  # noqa: PLC0415
+
+    try:
+        value = float(os.environ.get("EMBED_TOKEN_MAX_TTL_SECONDS", "900"))
+    except ValueError:
+        value = 900.0
+    return value if value > 0 else 900.0
+
+
+#: The only routes a board-bound embed token may call.  Each of them checks the
+#: board (or what the board references) itself; everything else is refused, so
+#: a new route is closed to these tokens until it is listed here.
+_BOARD_BOUND_ROUTES: tuple[tuple[str, "re.Pattern[str]"], ...] = tuple(
+    (method, re.compile(r"^(?:/api/v1)?" + pattern + r"/?$"))
+    for method, pattern in (
+        ("GET", r"/embed/config/[^/]+"),
+        ("GET", r"/embed/frozen/[^/]+"),
+        ("POST", r"/query"),
+        ("GET", r"/metrics"),
+        ("GET", r"/metrics/[^/]+"),
+        ("POST", r"/metrics/[^/]+/query"),
+        ("POST", r"/boards/[^/]+/providers/[^/]+/data"),
+    )
+)
+
+
+def board_bound_route_allowed(method: str, path: str) -> bool:
+    """True when a board-bound embed token may call *method* *path*."""
+    if ".." in path or "%" in path or "\\" in path:
+        return False
+    return any(
+        m == method.upper() and rx.match(path) for m, rx in _BOARD_BOUND_ROUTES
+    )
+
+
+def embed_board_scope(identity: "VerifiedIdentity") -> set[str] | None:
+    """The boards an embed token is limited to, or ``None`` when unrestricted.
+
+    A host may bind a token to one board (``board`` / ``dashboard``) or several
+    (``boards``).  A malformed restriction raises ``ValueError`` — callers
+    treat that as "refuse", never as "unrestricted".
+    """
+    claims = identity.raw_claims or {}
+    present = [k for k in ("board", "dashboard", "boards") if claims.get(k) is not None]
+    if not present:
+        return None
+    allowed: set[str] = set()
+    for key in present:
+        value = claims[key]
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("malformed board restriction")
+            allowed.add(item.strip())
+    return allowed
+
 
 def _looks_like_uuid(value: str) -> bool:
     """True when *value* parses as a UUID (Nubi's internal org id shape)."""
@@ -443,8 +576,6 @@ async def _verify_embed_token_async(
 
     Unknown or disabled ``iss`` → 401.
     """
-    from app.auth.issuers import get_issuer_registry  # noqa: PLC0415
-
     iss, unverified_payload = _peek_embed_token(token, alg)
     kid: str | None = header.get("kid") or None
 
@@ -454,43 +585,54 @@ async def _verify_embed_token_async(
     # lookup and ``identity.org`` (via org_override), so a host never has to
     # capture Nubi's generated id. A UUID / unknown key passes through unchanged.
     org_from_token: str | None = unverified_payload.get("org")
+    if org_from_token is not None and not isinstance(org_from_token, str):
+        raise AppError("invalid_token", "Token is invalid or has expired.", 401)
     resolved_org: str | None = (
         await _resolve_embed_org(org_from_token) if org_from_token else None
     )
 
+    # The organisation a token acts for is ALWAYS the owner of the issuer
+    # configuration whose key verified it. ``resolved_org`` only selects among
+    # configurations that share an ``iss``; it can never widen trust to an
+    # organisation that did not configure the signing key.
+
     # 1. In-process registry (fast path, always tried first).
-    registry = get_issuer_registry()
-    issuer_cfg = registry.get(iss)
+    issuer_cfg = _registry_issuer_for(iss, resolved_org)
 
     if issuer_cfg is not None:
-        jwks = _resolve_jwks(issuer_cfg)
+        jwks = await _resolve_jwks_async(issuer_cfg)
         public_key = _select_key_from_jwks(jwks, kid, alg)
         return _finish_embed_verification(
             token, alg, iss, public_key, issuer_cfg.aud, expected_origin,
-            org_override=resolved_org,
+            # Operator-registered issuers (no owner) keep the token's own org.
+            org_override=issuer_cfg.org_id or resolved_org,
+            allowed_origins=list(issuer_cfg.allowed_origins or []),
         )
 
-    # 2. DB fallback — requires the token to carry an ``org`` claim so we can
-    #    scope the lookup to the correct org's configured issuers.
-    if not org_from_token:
-        raise AppError("invalid_token", "Token is invalid or has expired.", 401)
-
+    # 2. DB fallback — scoped to the org the token names, or, when it names
+    #    none, to the single org that configured this ``iss``.
     try:
         from app.security.issuers_store import get_issuers_store  # noqa: PLC0415
 
-        db_row = await get_issuers_store().get_enabled_by_iss(resolved_org, iss)
+        store = get_issuers_store()
+        if resolved_org:
+            db_row = await store.get_enabled_by_iss(resolved_org, iss)
+        else:
+            rows = await store.list_enabled_by_iss(iss)
+            db_row = rows[0] if len(rows) == 1 else None
     except Exception:  # noqa: BLE001
         db_row = None
 
-    if db_row is None:
+    if db_row is None or not db_row.get("org_id"):
         raise AppError("invalid_token", "Token is invalid or has expired.", 401)
 
-    from app.security.jwks import resolve_signing_key  # noqa: PLC0415
+    from app.security.jwks import resolve_signing_key_async  # noqa: PLC0415
 
-    public_key = resolve_signing_key(db_row, kid, alg)
+    public_key = await resolve_signing_key_async(db_row, kid, alg)
     return _finish_embed_verification(
         token, alg, iss, public_key, db_row.get("audience", ""), expected_origin,
-        org_override=resolved_org,
+        org_override=str(db_row["org_id"]),
+        allowed_origins=list(db_row.get("allowed_origins") or []),
     )
 
 

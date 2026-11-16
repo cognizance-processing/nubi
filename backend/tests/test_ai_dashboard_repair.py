@@ -27,7 +27,7 @@ from app.ai.dashboard import (
     MAX_DASHBOARD_REPAIR_ROUNDS,
     generate_dashboard_spec,
 )
-from app.ai.grounding import build_catalog
+from app.ai.grounding import ALL_ORGS, build_catalog
 from app.ai.provider import LLMProvider, NullProvider
 from app.errors import AppError
 
@@ -115,7 +115,7 @@ class FakeProvider(LLMProvider):
 
 def test_repairs_invalid_then_valid():
     """Invalid on round 1, valid on round 2 -> repaired, valid, rounds >= 1."""
-    catalog = build_catalog()
+    catalog = build_catalog(ALL_ORGS)
     provider = FakeProvider([_invalid_spec_json(), _valid_spec_json()])
 
     spec = generate_dashboard_spec("show me demo data", catalog, provider)
@@ -134,7 +134,7 @@ def test_repairs_invalid_then_valid():
 
 def test_invalid_every_round_fails_loud_not_silent_template():
     """Invalid on EVERY round -> AppError, NOT a silent NullProvider template."""
-    catalog = build_catalog()
+    catalog = build_catalog(ALL_ORGS)
     provider = FakeProvider([_invalid_spec_json()])  # always invalid
 
     with pytest.raises(AppError) as excinfo:
@@ -150,7 +150,7 @@ def test_invalid_every_round_fails_loud_not_silent_template():
 
 def test_loud_failure_is_not_the_null_template():
     """The failure path must NOT quietly return the deterministic template."""
-    catalog = build_catalog()
+    catalog = build_catalog(ALL_ORGS)
     provider = FakeProvider([_invalid_spec_json()])
 
     # NullProvider on the same question yields a valid template — proving a
@@ -166,7 +166,7 @@ def test_loud_failure_is_not_the_null_template():
 
 def test_valid_first_shot_has_zero_repair_rounds():
     """A clean first generation needs no repair rounds."""
-    catalog = build_catalog()
+    catalog = build_catalog(ALL_ORGS)
     provider = FakeProvider([_valid_spec_json()])
 
     spec = generate_dashboard_spec("show me demo data", catalog, provider)
@@ -178,7 +178,7 @@ def test_valid_first_shot_has_zero_repair_rounds():
 
 def test_malformed_non_json_then_valid_is_repaired():
     """Non-JSON garbage on round 1 is treated as a hard error and repaired."""
-    catalog = build_catalog()
+    catalog = build_catalog(ALL_ORGS)
     provider = FakeProvider(["this is not json at all", _valid_spec_json()])
 
     spec = generate_dashboard_spec("show me demo data", catalog, provider)

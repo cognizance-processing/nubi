@@ -33,11 +33,12 @@ import json
 import os
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 
 from app.auth.deps import current_user
+from app.auth.roles import require_writer
 from app.chat.mcp_client import McpServerSpec
 from app.errors import AppError
 
@@ -57,12 +58,12 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 # ---------------------------------------------------------------------------
 
 
-async def _resolve_org_id(user: dict[str, Any]) -> str:
+async def _resolve_org_id(user: dict[str, Any], request: Request) -> str:
     """Resolve the caller's org_id (reuses the resources router's helper)."""
     from app.repos.provider import get_repo  # noqa: PLC0415
-    from app.routes.resources import get_user_org  # noqa: PLC0415
+    from app.routes._org import resolve_org_id  # noqa: PLC0415
 
-    return await get_user_org(str(user["id"]), get_repo())
+    return await resolve_org_id(str(user["id"]), get_repo(), request)
 
 
 async def _meter_chat_stream_usage(
@@ -145,9 +146,10 @@ async def chat_models(_user: dict[str, Any] = Depends(current_user)) -> list[dic
     return list_models()
 
 
-@router.post("/stream")
+@router.post("/stream", dependencies=[Depends(require_writer)])
 async def chat_stream(
     body: ChatStreamRequest,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
 ) -> StreamingResponse:
     """Stream an assistant turn as Server-Sent Events.
@@ -167,7 +169,7 @@ async def chat_stream(
     from app.chat.llm import stream_chat  # noqa: PLC0415
     from app.chat.models import resolve_model  # noqa: PLC0415
 
-    org_id = await _resolve_org_id(user)
+    org_id = await _resolve_org_id(user, request)
     user_id = str(user["id"])
     model = resolve_model(body.model)
     message = (body.message or "").strip()
@@ -203,7 +205,7 @@ async def chat_stream(
     chat_id = body.chat_id
     board_id = body.board_id
     if chat_id:
-        chat = await store.get_chat(org_id, chat_id)
+        chat = await store.get_chat(org_id, chat_id, user_id)
         if chat is None:
             raise AppError("chat_not_found", f"No chat with id {chat_id!r}.", 404)
         board_id = chat.get("board_id") or board_id
@@ -222,11 +224,24 @@ async def chat_stream(
     host_system = body.system
     host_mcp_servers = body.resolved_mcp_servers()
 
+    # Tools act as THIS caller: their org owns anything a tool creates, and
+    # tools that change state need more than read-only membership.
+    from app.auth.roles import get_org_role  # noqa: PLC0415
+    from app.chat.tools import ToolContext  # noqa: PLC0415
+    from app.repos.provider import get_repo as _get_repo  # noqa: PLC0415
+
+    tool_context = ToolContext(
+        user_id=user_id,
+        org_id=org_id,
+        role=await get_org_role(user_id, org_id, _get_repo()),
+    )
+
     def _sync_events():
         last_turn = None
         errored = False
         for event, turn in stream_chat(
-            history, model, system=host_system, mcp_servers=host_mcp_servers
+            history, model, system=host_system, mcp_servers=host_mcp_servers,
+            tool_context=tool_context,
         ):
             last_turn = turn
             if event.get("type") == "error":
@@ -321,26 +336,28 @@ async def chat_stream(
 
 @router.get("/conversations")
 async def chat_conversations(
+    request: Request,
     board_id: str | None = None,
     user: dict[str, Any] = Depends(current_user),
 ) -> list[dict[str, Any]]:
-    """List conversations for the caller's org — ``[{id, title, updated_at}]``."""
+    """List the caller's own conversations in the org — ``[{id, title, updated_at}]``."""
     from app.chat import store  # noqa: PLC0415
 
-    org_id = await _resolve_org_id(user)
-    return await store.list_conversations(org_id, board_id)
+    org_id = await _resolve_org_id(user, request)
+    return await store.list_conversations(org_id, board_id, str(user["id"]))
 
 
 @router.get("/conversations/{chat_id}")
 async def chat_conversation(
     chat_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     """Fetch one conversation — ``{id, title, messages: [{role, content, created_at}]}``."""
     from app.chat import store  # noqa: PLC0415
 
-    org_id = await _resolve_org_id(user)
-    convo = await store.get_conversation(org_id, chat_id)
+    org_id = await _resolve_org_id(user, request)
+    convo = await store.get_conversation(org_id, chat_id, str(user["id"]))
     if convo is None:
         raise AppError("chat_not_found", f"No chat with id {chat_id!r}.", 404)
     return convo

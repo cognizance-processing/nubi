@@ -71,8 +71,13 @@ async def _main() -> None:
     )
 
     # Import after logging is configured so any import-time errors are visible.
+    from app.db import close_db, init_db  # noqa: PLC0415
     from app.flows.runtime import flow_tick, run_worker_pool  # noqa: PLC0415
     from app.flows.store import get_flow_store  # noqa: PLC0415
+
+    # The API process opens the pool in its lifespan; this process has none, so
+    # without this every store call raised "Database pool is not initialised".
+    await init_db()
 
     async def _scheduler_loop() -> None:
         """Tick the flow scheduler at a fixed interval."""
@@ -118,6 +123,7 @@ async def _main() -> None:
             if not task.done():
                 task.cancel()
         await asyncio.gather(scheduler_task, worker_task, return_exceptions=True)
+        await close_db()
         logger.info("Nubi flow worker stopped.")
 
 

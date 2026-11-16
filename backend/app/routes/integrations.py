@@ -39,12 +39,14 @@ from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
 
 from app.auth.deps import current_user
+from app.auth.roles import require_writer
 from app.errors import AppError
 from app.notify.integrations import (
     VALID_KINDS,
     get_integration_store,
     merged_channel_config,
     public_row,
+    secret_keys_for,
     split_secret,
 )
 from app.repos.provider import Repo, get_repo
@@ -137,7 +139,7 @@ async def list_integrations(
     return {"integrations": items}
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_writer)])
 async def create_integration(
     body: CreateIntegrationIn,
     request: Request,
@@ -178,7 +180,7 @@ async def get_integration(
     return await _scrubbed(store, row, org_id)
 
 
-@router.put("/{integration_id}")
+@router.put("/{integration_id}", dependencies=[Depends(require_writer)])
 async def update_integration(
     integration_id: str,
     body: UpdateIntegrationIn,
@@ -199,6 +201,12 @@ async def update_integration(
     secret_update: dict[str, Any] | None = None
     if body.config is not None:
         config_update, secret_update = split_secret(kind, body.config)
+        # An explicit null on a NON-secret field clears it (the store drops
+        # null keys on merge); a null secret still means "keep the current one".
+        secret_keys = secret_keys_for(kind)
+        config_update.update(
+            {k: None for k, v in body.config.items() if v is None and k not in secret_keys}
+        )
 
     row = await store.update(
         integration_id,
@@ -213,7 +221,7 @@ async def update_integration(
     return await _scrubbed(store, row, org_id)
 
 
-@router.delete("/{integration_id}", status_code=204)
+@router.delete("/{integration_id}", status_code=204, dependencies=[Depends(require_writer)])
 async def delete_integration(
     integration_id: str,
     request: Request,
@@ -229,7 +237,7 @@ async def delete_integration(
     return Response(status_code=204)
 
 
-@router.post("/{integration_id}/test")
+@router.post("/{integration_id}/test", dependencies=[Depends(require_writer)])
 async def test_integration(
     integration_id: str,
     body: TestIntegrationIn,

@@ -51,7 +51,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.ai.dashboard import generate_dashboard_spec
-from app.ai.grounding import build_catalog
+from app.ai.grounding import ALL_ORGS, build_catalog
 from app.ai.provider import NullProvider
 from app.auth.jwt import mint_access_token
 from app.repos.memory import InMemoryRepo
@@ -243,6 +243,142 @@ class TestValidateSpec:
         assert spec is None
         assert len(issues) > 0
 
+    # ── image widgets: props.source 'static' (default) vs 'query' ──────────
+
+    @staticmethod
+    def _with_image(**widget: Any) -> dict[str, Any]:
+        data = _good_spec_dict()
+        data["widgets"].append({
+            "id": "img1",
+            "type": "image",
+            "pos": {"x": 1, "y": 6, "w": 3, "h": 2},
+            **widget,
+        })
+        return data
+
+    @staticmethod
+    def _image_issues(issues: list[str]) -> list[str]:
+        return [i for i in issues if "'img1' (image)" in i]
+
+    def test_static_image_without_url_fails(self):
+        _, issues = validate_spec(self._with_image(props={"alt": "logo"}))
+        assert any("props.url is required" in i for i in self._image_issues(issues))
+
+    def test_static_image_with_url_passes(self):
+        _, issues = validate_spec(self._with_image(props={"url": "/api/v1/images/" + "a" * 32}))
+        assert self._image_issues(issues) == []
+
+    def test_query_image_without_url_passes(self):
+        _, issues = validate_spec(self._with_image(
+            query_id="demo_all", encoding={"value": "id"},
+            props={"source": "query", "row": 0},
+        ))
+        assert self._image_issues(issues) == []
+
+    def test_query_image_with_provider_source_passes(self):
+        _, issues = validate_spec(self._with_image(
+            source={"provider": "p1", "result": "r1"}, encoding={"value": "id"},
+            props={"source": "query"},
+        ))
+        assert self._image_issues(issues) == []
+
+    def test_query_image_with_query_id_and_provider_source_fails(self):
+        _, issues = validate_spec(self._with_image(
+            query_id="demo_all", source={"provider": "p1", "result": "r1"},
+            encoding={"value": "id"}, props={"source": "query"},
+        ))
+        assert any("at most one data binding" in i and "'img1'" in i for i in issues), issues
+
+    def test_static_image_after_toggle_has_no_query_binding(self):
+        # Shape ImageConfig writes on switching to Static: no query_id/encoding.
+        data = self._with_image(
+            query_id=None, encoding={}, props={"source": "static", "url": "/api/v1/images/" + "a" * 32},
+        )
+        _, issues = validate_spec(data)
+        assert self._image_issues(issues) == []
+        from app.dashboards.collect import widget_query_targets
+        assert not any(t["widget_id"] == "img1" for t in widget_query_targets(data, None))
+
+    def test_query_image_missing_query_id_and_source_fails(self):
+        _, issues = validate_spec(self._with_image(
+            encoding={"value": "id"}, props={"source": "query"},
+        ))
+        img = self._image_issues(issues)
+        assert any("query_id" in i for i in img), img
+        assert not any("props.url" in i for i in img), img
+
+    def test_query_image_missing_column_fails(self):
+        _, issues = validate_spec(self._with_image(
+            query_id="demo_all", encoding={}, props={"source": "query"},
+        ))
+        assert any("encoding.value" in i for i in self._image_issues(issues))
+
+    # ── text widgets: props.source 'static' (default) vs 'query' ───────────
+
+    @staticmethod
+    def _with_text(**widget: Any) -> dict[str, Any]:
+        data = _good_spec_dict()
+        data["widgets"].append({
+            "id": "txt1",
+            "type": "text",
+            "pos": {"x": 1, "y": 6, "w": 3, "h": 2},
+            **widget,
+        })
+        return data
+
+    @staticmethod
+    def _text_issues(issues: list[str]) -> list[str]:
+        return [i for i in issues if "'txt1' (text)" in i]
+
+    def test_static_text_without_content_fails(self):
+        _, issues = validate_spec(self._with_text(props={"source": "static"}))
+        assert any("'content' is required" in i for i in self._text_issues(issues))
+
+    def test_query_text_without_content_passes(self):
+        _, issues = validate_spec(self._with_text(
+            query_id="demo_all", encoding={"value": "id"},
+            props={"source": "query", "row": 0, "prefix": "ID ", "suffix": "!"},
+        ))
+        assert self._text_issues(issues) == []
+
+    def test_query_text_with_provider_source_passes(self):
+        _, issues = validate_spec(self._with_text(
+            source={"provider": "p1", "result": "r1"}, encoding={"value": "id"},
+            props={"source": "query"},
+        ))
+        assert self._text_issues(issues) == []
+
+    def test_query_text_missing_query_id_and_source_fails(self):
+        _, issues = validate_spec(self._with_text(
+            encoding={"value": "id"}, props={"source": "query"},
+        ))
+        txt = self._text_issues(issues)
+        assert any("query_id" in i for i in txt), txt
+        assert not any("'content'" in i for i in txt), txt
+
+    def test_query_text_missing_column_fails(self):
+        _, issues = validate_spec(self._with_text(
+            query_id="demo_all", encoding={}, props={"source": "query"},
+        ))
+        assert any("encoding.value" in i for i in self._text_issues(issues))
+
+    def test_static_text_after_toggle_has_no_query_binding(self):
+        # Shape TextConfig writes on switching to Static: no query_id/encoding.
+        data = self._with_text(
+            content="Hi", query_id=None, encoding={}, props={"source": "static"},
+        )
+        _, issues = validate_spec(data)
+        assert self._text_issues(issues) == []
+        from app.dashboards.collect import widget_query_targets
+        assert not any(t["widget_id"] == "txt1" for t in widget_query_targets(data, None))
+
+    def test_query_text_is_a_query_target(self):
+        data = self._with_text(
+            query_id="demo_all", encoding={"value": "id"}, props={"source": "query"},
+        )
+        from app.dashboards.collect import widget_query_targets
+        assert any(t["widget_id"] == "txt1" for t in widget_query_targets(data, None))
+
 
 # ---------------------------------------------------------------------------
 # 2. spec_to_html
@@ -386,7 +522,7 @@ class TestGenerateDashboardSpecNullProvider:
     """generate_dashboard_spec with NullProvider returns a real spec."""
 
     def _gen(self, question: str = "show me demo data") -> DashboardSpec:
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         return generate_dashboard_spec(question, catalog, NullProvider())
 
     def test_returns_dashboard_spec(self):
@@ -450,7 +586,7 @@ class TestGenerateDashboardSpecNullProvider:
 
     def test_deterministic_output(self):
         """Calling twice with the same question yields identical specs."""
-        catalog = build_catalog()
+        catalog = build_catalog(ALL_ORGS)
         s1 = generate_dashboard_spec("list demo rows", catalog, NullProvider())
         s2 = generate_dashboard_spec("list demo rows", catalog, NullProvider())
         assert s1.model_dump() == s2.model_dump()
@@ -747,7 +883,7 @@ class TestM14FilterWidget:
         )
 
     def test_filter_subtypes_accepted(self):
-        for subtype in ("select", "multiselect", "daterange", "text"):
+        for subtype in ("select", "multiselect", "daterange", "text", "list"):
             data = _make_variable_spec()
             data["widgets"][0]["subtype"] = subtype
             spec, issues = validate_spec(data)
@@ -908,6 +1044,57 @@ class TestM14WidgetParams:
         )
 
 
+class TestWidgetFilters:
+    """Column-based filter bindings (widget.filters) — the no-{{param}}-needed
+    alternative to widget.params, added alongside it (step 6c mirrors step 6)."""
+
+    def test_filters_ref_to_declared_var_passes(self):
+        data = _make_variable_spec()
+        data["widgets"][2]["filters"] = {"region": "region_code"}
+        spec, issues = validate_spec(data)
+        hard_issues = [
+            i for i in issues
+            if "not in the registered" not in i and "forward reference" not in i
+        ]
+        assert spec is not None
+        assert hard_issues == [], f"Unexpected hard issues: {hard_issues}"
+        widget = next(w for w in spec.widgets if w.id == spec.widgets[2].id)
+        assert widget.filters == {"region": "region_code"}
+
+    def test_filters_ref_to_undeclared_var_fails(self):
+        data = _make_variable_spec()
+        data["widgets"][2]["filters"] = {"country": "country_code"}
+        spec, issues = validate_spec(data)
+        assert any("country" in i and "not declared" in i for i in issues), (
+            f"Expected undeclared var issue, got: {issues}"
+        )
+
+    def test_empty_filters_is_valid(self):
+        data = _make_variable_spec()
+        data["widgets"][2]["filters"] = {}
+        spec, issues = validate_spec(data)
+        hard_issues = [
+            i for i in issues
+            if "not in the registered" not in i and "forward reference" not in i
+        ]
+        assert spec is not None
+        assert hard_issues == []
+
+    def test_filters_conflicts_with_ref_widget(self):
+        """A reference widget (ref set) may not also carry inline filters —
+        mirrors the existing params/ref mutual-exclusivity rule (step 14)."""
+        data = _make_variable_spec()
+        data["widgets"][2] = {
+            "id": data["widgets"][2]["id"],
+            "ref": "some-library-row-id",
+            "filters": {"region": "region_code"},
+        }
+        spec, issues = validate_spec(data)
+        assert any("filters" in i and "ref" in i for i in issues), (
+            f"Expected a ref/filters conflict issue, got: {issues}"
+        )
+
+
 class TestM14SpecToHtmlNewWidgets:
     """M14-A: spec_to_html emits <nubi-filter> and <nubi-text> elements."""
 
@@ -955,6 +1142,22 @@ class TestM14SpecToHtmlNewWidgets:
         assert "Hello" in output, (
             f"Expected text content in nubi-text:\n{output[:600]}"
         )
+
+    def test_query_text_drops_stale_static_content(self):
+        # TextConfig keeps top-level `content` when toggling to Query; the
+        # compiled element must not show that stale markdown.
+        data = _make_variable_spec()
+        data["widgets"][1].update({
+            "content": "Hello stale",
+            "query_id": "demo_all",
+            "encoding": {"value": "id"},
+            "props": {"source": "query"},
+        })
+        spec, _ = validate_spec(data)
+        assert spec is not None
+        output = spec_to_html(spec)
+        assert "<nubi-text></nubi-text>" in output, output[:600]
+        assert "Hello stale" not in output
 
     def test_text_content_is_escaped(self):
         data = _make_variable_spec()
@@ -1894,3 +2097,307 @@ class TestSpecInputCaps:
         spec, issues = validate_spec(_good_spec_dict())
         assert spec is not None
         assert spec.data == []
+
+
+# ---------------------------------------------------------------------------
+# Legacy-parity widget + chart types
+# ---------------------------------------------------------------------------
+
+
+class TestLegacyParityTypes:
+    """The widget/chart vocabulary carried over from the legacy BI estate.
+
+    Every entry here is authorable from the editor palette or the chart-type
+    picker, so a spec containing one must survive validation — the frontend
+    validator, this one, and the renderer have to agree on the vocabulary or a
+    board fails its own Code-panel check.
+    """
+
+    @staticmethod
+    def _spec_with(widgets: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "title": "Parity",
+            "layout": {"cols": 12, "row_height": 60},
+            "variables": [{"name": "region", "type": "select"}],
+            "widgets": widgets,
+        }
+
+    def test_presentational_widget_types_accepted(self):
+        widgets = [
+            {"id": "d1", "type": "divider", "pos": {"x": 1, "y": 1, "w": 12, "h": 1}},
+            {
+                "id": "d2",
+                "type": "datedisplay",
+                "props": {"source": "variable", "variable": "region"},
+                "pos": {"x": 1, "y": 2, "w": 3, "h": 2},
+            },
+            {
+                "id": "d3",
+                "type": "breadcrumb",
+                "props": {"variables": ["region"]},
+                "pos": {"x": 1, "y": 4, "w": 12, "h": 1},
+            },
+        ]
+        spec, issues = validate_spec(self._spec_with(widgets))
+        assert spec is not None, issues
+        assert issues == [], issues
+
+    def test_polar_and_radial_bar_chart_types_accepted(self):
+        widgets = [
+            {
+                "id": f"c{i}",
+                "type": "chart",
+                "query_id": "demo_all",
+                "chart_type": ct,
+                "encoding": {"x": "cat", "y": "val"},
+                "pos": {"x": 1, "y": i + 1, "w": 6, "h": 4},
+            }
+            for i, ct in enumerate(["polar", "radialbar"])
+        ]
+        spec, issues = validate_spec(self._spec_with(widgets))
+        assert spec is not None, issues
+        assert issues == [], issues
+
+    def test_non_cartesian_charts_validated_against_their_own_channels(self):
+        """A sankey has no x/y — the flat rule used to reject one outright."""
+        cases = [
+            ("sankey", {"source": "s", "target": "t", "value": "v"}),
+            ("map", {"name": "country", "value": "v"}),
+            ("gauge", {"y": "v"}),
+            ("heatmap", {"x": "x", "color": "y", "value": "v"}),
+            ("candlestick", {"x": "d", "open": "o", "close": "c", "low": "l", "high": "h"}),
+            ("combo", {"x": "x", "bars": ["a"], "lines": ["b"]}),
+        ]
+        widgets = [
+            {
+                "id": f"c{i}",
+                "type": "chart",
+                "query_id": "demo_all",
+                "chart_type": ct,
+                "encoding": enc,
+                "pos": {"x": 1, "y": i + 1, "w": 6, "h": 4},
+            }
+            for i, (ct, enc) in enumerate(cases)
+        ]
+        spec, issues = validate_spec(self._spec_with(widgets))
+        assert spec is not None, issues
+        assert issues == [], issues
+
+    def test_missing_channel_still_reported_and_named(self):
+        widgets = [
+            {
+                "id": "c",
+                "type": "chart",
+                "query_id": "demo_all",
+                "chart_type": "sankey",
+                "encoding": {"source": "s"},
+                "pos": {"x": 1, "y": 1, "w": 6, "h": 4},
+            }
+        ]
+        _, issues = validate_spec(self._spec_with(widgets))
+        joined = "\n".join(issues)
+        assert "'target'" in joined, joined
+        assert "'value'" in joined, joined
+        assert "'x'" not in joined, "a sankey must not be asked for an x column"
+
+    def test_kpi_presentation_props_reach_the_embed_tag(self):
+        """prefix/suffix/decimals are honoured in-app; the embed must match."""
+        widgets = [
+            {
+                "id": "k",
+                "type": "kpi",
+                "query_id": "demo_all",
+                "encoding": {"value": "n"},
+                "props": {"label": "OSA", "format": "percent100", "suffix": "%", "decimals": 0},
+                "pos": {"x": 1, "y": 1, "w": 3, "h": 2},
+            }
+        ]
+        spec, issues = validate_spec(self._spec_with(widgets))
+        assert spec is not None, issues
+        html = spec_to_html(spec)
+        assert 'suffix="%"' in html
+        assert 'decimals="0"' in html
+
+
+class TestPassThroughWidgetFields:
+    """Fields the editor writes and the renderer reads must survive the model.
+
+    Regression guard for a bug that has now hit this model four times: a field
+    the frontend authors but the backend never inspects gets left off ``Widget``,
+    and then every path that round-trips a spec through ``validate_spec`` ->
+    ``model_dump()`` silently discards it. The MCP ``edit_dashboard`` /
+    ``update_dashboard`` tools do exactly that round-trip, so a board edited
+    through MCP came back with its click-to-filter and conditional formatting
+    gone — reported as ``valid: True`` with no issues.
+    """
+
+    PASS_THROUGH = {
+        "columnFormats": {"net_sales": {"type": "number", "decimals": 0, "bar": True}},
+        "columnLabels": {"net_sales": "Net sales (R)", "store": ""},
+        "formattingRules": [
+            {"column": "csat", "op": "lt", "value": 4.15,
+             "style": {"color": "#b42318"}, "scope": "cell"},
+        ],
+        "onClick": {"setVar": "store", "valueField": "store", "trigger": "click"},
+        "drilldown": {"target_var": "store", "value_field": "store"},
+        "signalRules": [{"column": "value", "op": "gt", "value": 10,
+                         "style": {"color": "#1d5f5a"}}],
+        "hidden": ["sm"],
+        "title": "Store leaderboard",
+        "html": "<b>{{ value }}</b>",
+    }
+
+    def _spec(self, **widget_extra):
+        return {
+            "version": 1,
+            "title": "Round-trip",
+            "layout": {"cols": 12, "row_height": 60},
+            "widgets": [{
+                "id": "w1", "type": "table", "query_id": "demo_all",
+                "pos": {"x": 1, "y": 1, "w": 6, "h": 4},
+                "encoding": {}, "props": {"limit": 10},
+                **widget_extra,
+            }],
+        }
+
+    def test_every_pass_through_field_survives_a_model_round_trip(self):
+        from app.dashboards.spec import validate_spec
+
+        result, issues = validate_spec(self._spec(**self.PASS_THROUGH))
+        assert result is not None, issues
+        widget = result.model_dump()["widgets"][0]
+        for key, expected in self.PASS_THROUGH.items():
+            assert widget.get(key) == expected, (
+                f"{key} was dropped by the Widget model — a spec saved through "
+                f"MCP or rendered server-side would silently lose it"
+            )
+
+    def test_absent_pass_through_fields_stay_absent_not_invented(self):
+        """A widget that never had them round-trips to None, not to a default."""
+        from app.dashboards.spec import validate_spec
+
+        result, _issues = validate_spec(self._spec())
+        widget = result.model_dump()["widgets"][0]
+        for key in self.PASS_THROUGH:
+            assert widget.get(key) is None
+
+
+# ---------------------------------------------------------------------------
+# Legacy forms the frontend renders but the schema used to reject
+# ---------------------------------------------------------------------------
+
+
+class TestLegacyFormsAccepted:
+    """Values found on imported boards that the app renders fine.
+
+    Each must parse (so AI/MCP edits on such a board are not refused) and be
+    normalised to the form the renderer already treats it as.
+    """
+
+    @staticmethod
+    def _spec(**overrides: Any) -> dict[str, Any]:
+        spec: dict[str, Any] = {
+            "title": "Legacy forms",
+            "variables": [{"name": "region", "type": "select", "default": None}],
+            "widgets": [
+                {
+                    "id": "f1", "type": "filter", "subtype": "select",
+                    "target_var": "region", "pos": {"x": 1, "y": 1, "w": 4, "h": 1},
+                },
+                {
+                    "id": "c1", "type": "chart", "chart_type": "bar",
+                    "query_id": "demo_all", "encoding": {"x": "a", "y": "b"},
+                    "pos": {"x": 1, "y": 2, "w": 6, "h": 4},
+                },
+            ],
+        }
+        spec.update(overrides)
+        return spec
+
+    def test_string_variable_type_normalises_to_text(self):
+        data = self._spec(variables=[{"name": "region", "type": "string", "default": []}])
+        spec, issues = validate_spec(data)
+        assert spec is not None, issues
+        assert spec.variables[0].type == "text"
+        assert spec.variables[0].default == []
+
+    def test_unknown_variable_type_still_rejected(self):
+        data = self._spec(variables=[{"name": "region", "type": "blob"}])
+        spec, _ = validate_spec(data)
+        assert spec is None
+
+    def test_list_filter_subtype_accepted(self):
+        data = self._spec()
+        data["widgets"][0]["subtype"] = "list"
+        spec, issues = validate_spec(data)
+        assert spec is not None, issues
+        assert spec.widgets[0].subtype == "list"
+        assert not [i for i in issues if "subtype" in i]
+
+    def test_null_encoding_channels_are_dropped(self):
+        data = self._spec()
+        data["widgets"][1]["encoding"] = {"x": "a", "y": None, "color": None}
+        spec, issues = validate_spec(data)
+        assert spec is not None, issues
+        assert spec.widgets[1].encoding == {"x": "a"}
+        # A dropped required channel is reported like an absent one.
+        assert any("encoding must include 'y'" in i for i in issues)
+
+    def test_all_null_encoding_parses(self):
+        data = self._spec()
+        data["widgets"][1]["encoding"] = {"x": None, "y": None}
+        spec, issues = validate_spec(data)
+        assert spec is not None, issues
+        assert spec.widgets[1].encoding == {}
+
+    @pytest.mark.parametrize("axis", ["x", "y"])
+    def test_zero_based_pos_start_clamps_to_one(self, axis):
+        data = self._spec()
+        data["widgets"][1]["pos"][axis] = 0
+        spec, issues = validate_spec(data)
+        assert spec is not None, issues
+        assert getattr(spec.widgets[1].pos, axis) == 1
+
+    def test_zero_span_still_rejected(self):
+        data = self._spec()
+        data["widgets"][1]["pos"]["w"] = 0
+        spec, _ = validate_spec(data)
+        assert spec is None
+
+    def test_normalised_spec_round_trips(self):
+        data = self._spec(variables=[{"name": "region", "type": "string", "default": []}])
+        data["widgets"][0]["subtype"] = "list"
+        data["widgets"][1]["encoding"] = {"x": None, "y": "b"}
+        data["widgets"][1]["pos"] = {"x": 0, "y": 0, "w": 6, "h": 4}
+        first, issues = validate_spec(data)
+        assert first is not None, issues
+        again, _ = validate_spec(first.model_dump())
+        assert again is not None
+        assert again.model_dump() == first.model_dump()
+
+    def test_update_dashboard_tool_accepts_legacy_board(self):
+        from app.ai.tools import execute_tool
+
+        repo = InMemoryRepo()
+        set_repo(repo)
+        try:
+            org_id, user_id = str(uuid.uuid4()), str(uuid.uuid4())
+            claims = {"kind": "access", "sub": user_id, "org": org_id, "role": "owner",
+                      "policies": {}, "scope": ["author:sql"]}
+            created = execute_tool(
+                "save_dashboard", {"spec": self._spec(), "name": "Board"}, claims
+            )
+            legacy = self._spec(variables=[{"name": "region", "type": "string"}])
+            legacy["widgets"][0]["subtype"] = "list"
+            legacy["widgets"][1]["encoding"] = {"x": None, "y": None}
+            legacy["widgets"][1]["pos"]["x"] = 0
+            res = execute_tool(
+                "update_dashboard", {"board_id": created["id"], "spec": legacy}, claims
+            )
+            assert res["saved"] is True, res
+            back = execute_tool("get_dashboard", {"board_id": created["id"]}, claims)
+            assert back["spec"]["variables"][0]["type"] == "text"
+            assert back["spec"]["widgets"][0]["subtype"] == "list"
+        finally:
+            set_repo(None)

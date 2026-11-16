@@ -46,6 +46,12 @@ os.environ["GOOGLE_REDIRECT_URI"] = "http://localhost:8000/api/v1/auth/google/ca
 os.environ["FRONTEND_URL"] = "http://localhost:3000"
 os.environ["COOKIE_SECURE"] = "false"
 os.environ["ENV"] = "test"
+# On-disk DuckDB fixtures live in the test tmp dir; rollup files must not land
+# in the repo's seed_data directory.
+import tempfile as _tempfile  # noqa: E402
+
+os.environ.setdefault("NUBI_DUCKDB_DATA_DIRS", _tempfile.gettempdir())
+os.environ.setdefault("NUBI_ROLLUPS_DIR", _tempfile.mkdtemp(prefix="nubi-rollups-"))
 os.environ.pop("CORS_ORIGINS", None)
 
 # The rate limiter is a real, IP-keyed middleware (see app/middleware/ratelimit.py).
@@ -497,6 +503,15 @@ def _reset_state():
         except Exception:
             pass
 
+        # ── Bridge store (M22-A) ───────────────────────────────────────────────
+        # Fresh in-memory store so bridges never leak across tests and the
+        # default Pg store (which the fake DB can't serve) is never hit.
+        try:
+            from app.bridges.store import InMemoryBridgeStore, set_bridge_store_for_tests
+            set_bridge_store_for_tests(InMemoryBridgeStore())
+        except Exception:
+            pass
+
         # ── Datasets catalog ──────────────────────────────────────────────────
         try:
             from app.datasets import set_catalog
@@ -696,3 +711,19 @@ async def pg_db(pg_pool):
                 )
 
     yield pg_pool
+
+
+@pytest.fixture
+def as_operator(app):
+    """Run the test's requests as a platform operator (superadmin).
+
+    For endpoints that expose or change process-wide state and are therefore
+    operator-only.
+    """
+    from app.auth.superadmin import caller_is_superadmin, require_superadmin
+
+    app.dependency_overrides[require_superadmin] = lambda: {"id": "operator", "is_superadmin": True}
+    app.dependency_overrides[caller_is_superadmin] = lambda: True
+    yield
+    app.dependency_overrides.pop(require_superadmin, None)
+    app.dependency_overrides.pop(caller_is_superadmin, None)

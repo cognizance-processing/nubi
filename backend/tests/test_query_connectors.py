@@ -216,8 +216,8 @@ async def test_http_json_datastore_returns_mocked_rows(conn_client):
 
     # Monkeypatch the request boundary. The connector now resolves the host once
     # and pins the connection to the validated IP (DNS-rebinding defence), then
-    # issues the request via httpx.request — so we mock the resolver to a public
-    # IP and patch httpx.request (httpx is lazily imported inside execute(); patch
+    # issues the request via httpx.Client.send — so we mock the resolver to a public
+    # IP and patch httpx.Client.send (httpx is lazily imported inside execute(); patch
     # at the httpx module level so the lazy import picks up the patched version).
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
@@ -227,7 +227,7 @@ async def test_http_json_datastore_returns_mocked_rows(conn_client):
         return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 0))]
 
     with patch.object(socket, "getaddrinfo", _fake_getaddrinfo), patch(
-        "httpx.request", return_value=mock_response
+        "httpx.Client.send", return_value=mock_response
     ):
         resp = await client.post(
             "/api/v1/query",
@@ -430,4 +430,40 @@ async def test_demo_connector_sentinel_id_uses_demo_path(conn_client):
     )
     assert resp.status_code == 200, resp.text
     table = _parse_arrow(resp.content)
+    assert table.num_rows == 5
+
+
+# ---------------------------------------------------------------------------
+# (7) Demo connector is hardened against host-file disclosure (regression)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_demo_connector_rejects_local_file_read(conn_client):
+    """The demo connector must not let tenant SQL read files off the host.
+
+    Regression test for a CRITICAL finding: ``_build_demo_connector`` built its
+    in-memory DuckDB connection without calling ``harden_connection``, so any
+    authenticated user (the demo connector is the default for every Queries
+    workspace) could run e.g. ``SELECT * FROM read_csv_auto('/etc/passwd')``
+    and read arbitrary files off the backend host.
+    """
+    client, user_id, org_id, repo = conn_client
+
+    resp = await client.post(
+        "/api/v1/query",
+        json={"sql": "SELECT * FROM read_csv_auto('/etc/passwd')"},
+        headers=_auth_headers(user_id),
+    )
+    assert resp.status_code != 200, resp.text
+    assert "root:" not in resp.text
+
+    # The demo tables themselves must still work post-hardening.
+    resp2 = await client.post(
+        "/api/v1/query",
+        json={"sql": "SELECT * FROM demo"},
+        headers=_auth_headers(user_id),
+    )
+    assert resp2.status_code == 200, resp2.text
+    table = _parse_arrow(resp2.content)
     assert table.num_rows == 5

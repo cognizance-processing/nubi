@@ -57,6 +57,7 @@ PAYSTACK_SECRET_KEY
 
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -268,10 +269,21 @@ import app.routes.drift  # noqa: F401, E402
 # /{resource} catch-all in resources.py.
 import app.routes.mcp  # noqa: F401, E402
 
+# OAuth authorization server for remote MCP clients (claude.ai, ChatGPT).
+# Same reason for the early import: /oauth must beat the /{resource} catch-all.
+from app.routes.oauth import wellknown_router as _oauth_wellknown_router  # noqa: E402
+
 # Import unified audit-log route (GET /audit, GET /audit/{type}/{id}) BEFORE
 # resources so the /audit prefix routes register ahead of the generic
 # /{resource} catch-all in resources.py.  Auth-gated: owner/admin only.
 import app.routes.audit  # noqa: F401, E402
+
+# Import dashboard-image serving route (GET /images/{image_id}) BEFORE
+# resources so it registers ahead of the generic GET /{resource}/{id}
+# catch-all in resources.py (same reason as mcp/audit above — "images" is
+# not a registered resource, so an import-order mistake here would shadow
+# every image request with a 404 "Unknown resource: 'images'").
+import app.routes.images  # noqa: F401, E402
 
 # Import resources route so it registers itself on api_router at import time.
 import app.routes.resources  # noqa: F401, E402
@@ -300,6 +312,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     On shutdown: stop all background tasks, then drain and close the pool.
     """
+    # A production deployment never starts on a placeholder signing secret.
+    from app.config import assert_production_secrets  # noqa: PLC0415
+
+    assert_production_secrets(get_settings())
+
     from app.flows.runtime import start_flow_worker, stop_flow_worker
     from app.health.listener import register_health_listener
     from app.jobs.runtime import start_scheduler, stop_scheduler
@@ -406,9 +423,31 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 "EE startup tasks failed (non-fatal): %s", _ee_exc
             )
 
+    # Re-warm stored board thumbnails in the background. A renderer change
+    # invalidates every stored picture at once (its fingerprint is in the key),
+    # so without this the first gallery visit after a deploy pays a cold render
+    # per card. Delayed so it doesn't compete with startup traffic.
+    # NUBI_THUMBNAIL_BACKFILL=false turns it off.
+    _thumb_backfill: asyncio.Task | None = None
+    if os.getenv("NUBI_THUMBNAIL_BACKFILL", "true").lower() not in ("0", "false", "no"):
+        async def _backfill_thumbnails() -> None:
+            from app.repos.provider import get_repo  # noqa: PLC0415
+            from app.routes.export_share import backfill_board_thumbnails  # noqa: PLC0415
+
+            await asyncio.sleep(10)
+            try:
+                await backfill_board_thumbnails(get_repo())
+            except Exception as exc:  # noqa: BLE001
+                import logging  # noqa: PLC0415
+                logging.getLogger(__name__).info("thumbnail backfill failed (non-fatal): %s", exc)
+
+        _thumb_backfill = asyncio.create_task(_backfill_thumbnails())
+
     try:
         yield
     finally:
+        if _thumb_backfill is not None:
+            _thumb_backfill.cancel()
         await stop_flow_worker()
         await stop_scheduler()
         await close_db()
@@ -550,6 +589,8 @@ def create_app() -> FastAPI:
         openapi_tags=NUBI_OPENAPI_TAGS,
         docs_url="/docs" if settings.ENV != "production" else None,
         redoc_url="/redoc" if settings.ENV != "production" else None,
+        # The schema lists every route and model; it is a development aid.
+        openapi_url="/openapi.json" if settings.ENV != "production" else None,
         lifespan=lifespan,
     )
 
@@ -598,6 +639,18 @@ def create_app() -> FastAPI:
     # write.  Fail-open: a failed audit write NEVER breaks the response.
     register_audit_middleware(application)
 
+    # ── Browser security headers (CSP, HSTS, nosniff, Referrer-Policy) ───────
+    # The app shell's inline bootstrap script is admitted by hash, computed
+    # from the built index.html (absent in tests/dev → no inline hashes).
+    from app.middleware.security_headers import register_security_headers  # noqa: PLC0415
+
+    _static_dir = os.getenv("STATIC_DIR") or str(Path(__file__).resolve().parents[1] / "dist")
+    register_security_headers(
+        application,
+        index_html=os.path.join(_static_dir, "index.html"),
+        env=settings.ENV,
+    )
+
     # ── Error handlers ────────────────────────────────────────────────────────
     register_handlers(application)
 
@@ -605,6 +658,8 @@ def create_app() -> FastAPI:
     # Mount the shared api_router; Wave B auth routes are attached to it
     # before or after this call — order doesn't matter for inclusion.
     application.include_router(api_router, prefix="/api/v1")
+    # RFC 8414 / RFC 9728 discovery documents live at the origin root.
+    application.include_router(_oauth_wellknown_router)
 
     # ── EE loader ─────────────────────────────────────────────────────────────
     # Load the EE sub-package (licensing, billing, SSO, …) AFTER all core

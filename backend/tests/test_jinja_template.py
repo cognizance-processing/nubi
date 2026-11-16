@@ -297,6 +297,24 @@ class TestIncluaseFilter:
         assert "bob" not in sql
         assert params == ["alice", "bob"]
 
+    def test_bare_string_is_one_value_not_characters(self):
+        # A widget click emits the single value clicked, not a list. Without
+        # the scalar guard, list("Botswana") explodes into 8 char params.
+        sql, params = _render(
+            "SELECT * FROM t WHERE name IN {{ country | inclause }}",
+            {"country": "Botswana"},
+        )
+        assert "($1)" in sql
+        assert params == ["Botswana"]
+
+    def test_bare_int_is_one_value(self):
+        sql, params = _render(
+            "SELECT * FROM t WHERE id IN {{ cid | inclause }}",
+            {"cid": 7},
+        )
+        assert "($1)" in sql
+        assert params == [7]
+
     def test_mixed_types_bound(self):
         sql, params = _render(
             "SELECT * FROM t WHERE x IN {{ vals | inclause }}",
@@ -363,21 +381,19 @@ class TestSqlsafeFilter:
         assert "$1" in sql
         assert params == [99]  # only val is bound
 
-    def test_sqlsafe_documented_as_dangerous(self):
-        """Confirm that a malicious string passed through sqlsafe appears raw in SQL.
+    def test_sqlsafe_refuses_anything_but_an_identifier(self):
+        """sqlsafe splices its value in unbound, so it only accepts identifiers.
 
-        This is expected and documented behaviour — callers must ONLY pass
-        trusted server-controlled values through sqlsafe.
+        A string that could change the statement is refused rather than
+        emitted raw.
         """
-        # We deliberately put a 'dangerous' string through sqlsafe to show it's raw.
-        dangerous = "'; DROP TABLE users; --"
-        sql, params = _render(
-            "SELECT {{ col | sqlsafe }} FROM t",
-            {"col": dangerous},
-        )
-        # The dangerous string IS in the SQL — this is why sqlsafe is for
-        # trusted content only.
-        assert dangerous in sql
+        with pytest.raises(Exception):
+            _render(
+                "SELECT {{ col | sqlsafe }} FROM t",
+                {"col": "'; DROP TABLE users; --"},
+            )
+        sql, params = _render("SELECT {{ col | sqlsafe }} FROM t", {"col": "users.email"})
+        assert sql == "SELECT users.email FROM t"
         assert params == []
 
 
@@ -672,6 +688,37 @@ class TestFiltersOnBoundValues:
 def test_empty_inclause_raises_value_error():
     with pytest.raises(ValueError, match="empty"):
         _render("SELECT * FROM t WHERE id IN {{ ids | inclause }}", {"ids": []})
+
+
+# ===========================================================================
+# (20b) Dedup proxy stays falsy/comparable for guards on repeated names
+# ===========================================================================
+
+
+def test_repeated_name_guard_sees_underlying_value():
+    """A name bound in MORE than one bare slot is wrapped in the dedup proxy;
+    {% if name %} must still test the underlying value, not the proxy object —
+    an empty value has to take the else-branch in every guard."""
+    tpl = (
+        "SELECT 1 FROM t WHERE "
+        "({% if c %}a = {{ c }}{% else %}TRUE{% endif %}) "
+        "AND ({% if c %}b = {{ c }}{% else %}TRUE{% endif %})"
+    )
+    sql, params = _render(tpl, {"c": ""})
+    assert "TRUE" in sql and "$1" not in sql
+    assert params == []
+
+    sql, params = _render(tpl, {"c": "7"})
+    # both slots reuse ONE binding
+    assert sql.count("$1") == 2
+    assert params == ["7"]
+
+
+def test_repeated_name_equality_compares_value():
+    tpl = "SELECT {{ c }}, {{ c }}{% if c == 'x' %}, 1{% endif %}"
+    sql, params = _render(tpl, {"c": "x"})
+    assert sql.endswith(", 1")
+    assert params == ["x"]
 
 
 # ===========================================================================

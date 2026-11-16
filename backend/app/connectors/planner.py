@@ -81,6 +81,88 @@ _NAMED_PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")
 
 
 # ---------------------------------------------------------------------------
+# Parse-error humanisation
+# ---------------------------------------------------------------------------
+#
+# sqlglot's ``str(ParseError)`` is written for a terminal, not for a UI: it
+# embeds ANSI underline escapes around the offending token and names the
+# internal AST class that failed to build, e.g.
+#
+#     Required keyword: 'high' missing for <class 'sqlglot.expressions.core.
+#     Between'>. Line 114, Col: 6.\n  … cl.date BETWEEN \n \x1b[4munion\x1b[0m…
+#
+# Rendered in the browser that reads as garbage. ``ParseError.errors`` carries
+# the same failure as structured data (description / line / col / highlight),
+# so we rebuild the message from that instead.
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+# sqlglot says "Required keyword: '<slot>' missing for <class '…<Node>'>" when a
+# grammar slot was left empty. Map the (node, slot) pairs we can phrase better
+# than the raw internals; anything unmapped falls back to a generic sentence
+# built from the node name, so new sqlglot nodes still read sensibly.
+_MISSING_KEYWORD_PHRASES: dict[tuple[str, str], str] = {
+    ("Between", "low"): "the BETWEEN range has no lower bound",
+    ("Between", "high"): "the BETWEEN range has no upper bound",
+    ("EQ", "this"): "the '=' comparison has nothing on its left-hand side",
+    ("EQ", "expression"): "the '=' comparison has nothing on its right-hand side",
+    ("NEQ", "this"): "the '<>' comparison has nothing on its left-hand side",
+    ("NEQ", "expression"): "the '<>' comparison has nothing on its right-hand side",
+    ("In", "this"): "the IN test has nothing on its left-hand side",
+}
+
+_REQUIRED_KEYWORD_RE = re.compile(
+    r"Required keyword:\s*'(?P<slot>[^']+)'\s*missing for\s*<class\s*'[^']*\.(?P<node>\w+)'>"
+)
+
+
+def _humanise_parse_error(exc: Exception) -> str:
+    """Turn a sqlglot parse failure into a message that is safe to show a user.
+
+    Strips the ANSI escapes, replaces sqlglot's internal AST-class wording with
+    a plain description of what is missing, and anchors the failure with the
+    1-based line/column plus the token sqlglot choked on.
+
+    Falls back progressively: structured errors → first line of ``str(exc)`` →
+    a generic sentence.  It never raises, because it runs on an error path.
+    """
+    try:
+        structured = getattr(exc, "errors", None) or []
+        detail = next((e for e in structured if isinstance(e, dict)), None)
+
+        if detail is None:
+            first = _ANSI_RE.sub("", str(exc)).strip().splitlines()
+            return first[0] if first else "The SQL could not be parsed."
+
+        description = _ANSI_RE.sub("", str(detail.get("description") or "")).strip()
+        # sqlglot quotes the description in some versions ("…") — unwrap it.
+        description = description.strip('"').strip()
+
+        cause = description or "the statement is not valid SQL"
+        m = _REQUIRED_KEYWORD_RE.search(description)
+        if m:
+            node, slot = m.group("node"), m.group("slot")
+            cause = _MISSING_KEYWORD_PHRASES.get(
+                (node, slot),
+                f"the {node.upper()} expression is incomplete ('{slot}' is missing)",
+            )
+
+        where = ""
+        line, col = detail.get("line"), detail.get("col")
+        if isinstance(line, int) and isinstance(col, int):
+            where = f" at line {line}, column {col}"
+
+        near = ""
+        highlight = _ANSI_RE.sub("", str(detail.get("highlight") or "")).strip().strip("'\"")
+        if highlight:
+            near = f' (found "{highlight}")'
+
+        return f"The SQL could not be parsed{where}: {cause}{near}."
+    except Exception:  # noqa: BLE001 — humanising must never mask the real error
+        return "The SQL could not be parsed."
+
+
+# ---------------------------------------------------------------------------
 # RLS policy cardinality cap (fail-closed)
 # ---------------------------------------------------------------------------
 
@@ -376,8 +458,306 @@ def resolve_named_params(
 
 
 # ---------------------------------------------------------------------------
+# Dashboard filter injection (M-filters) — scope-aware, unlike RLS above
+# ---------------------------------------------------------------------------
+#
+# ``_make_rls_predicates`` (above) always lands on the OUTERMOST select via a
+# plain ``tree.where(...)``. That is correct for RLS on an ordinary
+# single-scope query, but it breaks on an aggregate-only query with no
+# top-level FROM at all — e.g. a headline-metrics widget built entirely from
+# scalar subqueries (``SELECT (SELECT SUM(amount) FROM t) AS total, ...``)
+# has nothing at the top level to attach a predicate to; the engine raises
+# "column not found because the FROM clause is missing".
+#
+# A dashboard filter has the same shape problem, so it needs the same fix
+# `app.queries.parameterize` already applies at author-time: find the scope
+# that actually exposes the column and inject there. The difference here is
+# there can be SEVERAL independent scopes exposing the same column with no
+# data relationship between them (four sibling KPI subqueries each reading a
+# different table that happens to have a ``month`` column) — a dashboard
+# filter means "filter all of them", so this injects into every scope
+# ``find_all_filter_targets`` finds, not just the first.
+
+
+def _filter_lhs(column_expr: str, dialect: str) -> exp.Expression:
+    """Parse *column_expr* (``"amount"`` or a qualified ``"b.month"``) as a
+    predicate's left-hand side.
+
+    Unlike the RLS builders' plain ``exp.Column(Identifier(column))``, a
+    dashboard filter's column may be qualified with a join alias (needed when
+    the target scope joins more than one source) — parsing it as a real
+    expression handles both forms uniformly.
+    """
+    parsed = sqlglot.parse_one(f"SELECT {column_expr}", dialect=dialect)
+    return parsed.expressions[0]
+
+
+def _make_filter_predicates(lhs: exp.Expression, value: Any) -> list[exp.Expression]:
+    """Same scalar/list/range-dict dispatch as :func:`_make_rls_predicates`,
+    parameterised on an already-parsed *lhs* expression instead of a bare
+    column-name string (see :func:`_filter_lhs`), plus an ``{"in": [...]}`` /
+    ``{"not_in": [...]}`` dict shape RLS has no need for: a dashboard
+    multiselect filter can be in "exclude" mode (VariableStore.tsx's
+    ``{mode: 'exclude', values: [...]}``), which is a real, distinct
+    predicate (NOT IN) rather than an approximation — silently treating an
+    exclude-mode filter as an include list would show the wrong rows.
+    """
+    if isinstance(value, list):
+        if not value:
+            return [exp.EQ(this=exp.Literal.number(1), expression=exp.Literal.number(0))]
+        return [exp.In(this=lhs.copy(), expressions=[_make_literal(v) for v in value])]
+    if isinstance(value, dict):
+        if "in" in value or "not_in" in value:
+            preds: list[exp.Expression] = []
+            in_values = value.get("in")
+            if in_values is not None:
+                if not in_values:
+                    preds.append(exp.EQ(this=exp.Literal.number(1), expression=exp.Literal.number(0)))
+                else:
+                    preds.append(
+                        exp.In(this=lhs.copy(), expressions=[_make_literal(v) for v in in_values])
+                    )
+            not_in_values = value.get("not_in")
+            if not_in_values:
+                # Empty not_in excludes nothing — no predicate needed at all
+                # (unlike an empty `in`, which must fail closed to 1=0).
+                preds.append(
+                    exp.Not(
+                        this=exp.In(
+                            this=lhs.copy(),
+                            expressions=[_make_literal(v) for v in not_in_values],
+                        )
+                    )
+                )
+            return preds
+        ops = {"eq": exp.EQ, "gte": exp.GTE, "gt": exp.GT, "lte": exp.LTE, "lt": exp.LT}
+        preds = []
+        for key, val in value.items():
+            node_cls = ops.get(key)
+            if node_cls is not None:
+                preds.append(node_cls(this=lhs.copy(), expression=_make_literal(val)))
+        return preds
+    return [exp.EQ(this=lhs.copy(), expression=_make_literal(value))]
+
+
+def apply_dashboard_filters(
+    tree: exp.Expression,
+    filters: list[dict[str, Any]],
+    dialect: str,
+    table_columns: dict[str, list[str]] | None = None,
+) -> tuple[exp.Expression, list[str], list[str]]:
+    """Inject dashboard filter values into every scope exposing each column.
+
+    Parameters
+    ----------
+    tree:
+        The parsed query, mutated in place (each matched scope's own WHERE
+        is extended via ``copy=False``).
+    filters:
+        ``[{"column": str, "value": Any}, ...]``. *value* follows the same
+        convention as an RLS policy value: scalar -> equality, list -> IN
+        (empty list -> impossible predicate, fail-closed), dict -> inequality
+        band (``gte``/``gt``/``lte``/``lt``/``eq`` keys). A filter whose
+        value is ``None`` or ``[]`` is skipped entirely — that is "nothing
+        picked", which must mean "do not touch this query", not "match
+        nothing".
+    table_columns:
+        Estate-wide ``{table: [col, ...]}`` catalog (see
+        ``app.ai.grounding.build_catalog``) used to find scopes where the
+        column exists on a base table but is never itself referenced by this
+        query. Without it, only columns the query's own SQL already mentions
+        are matched (projection or existing predicate/group-by reference).
+
+    Returns
+    -------
+    (tree, predicate_strings, unresolved_columns)
+        *predicate_strings* are the injected predicates, for the same
+        observability use as ``PhysicalPlan.predicates``. *unresolved_columns*
+        lists filters whose column no scope could expose — the caller should
+        surface this (a widget silently ignoring a filter it claims to honour
+        is the exact failure mode this whole mechanism exists to avoid), not
+        swallow it.
+    """
+    from app.queries.scope_resolve import find_all_filter_targets  # noqa: PLC0415
+
+    predicate_strings: list[str] = []
+    unresolved: list[str] = []
+    for f in filters:
+        column = f.get("column")
+        value = f.get("value")
+        if not column:
+            continue
+        if value is None or value == []:
+            continue
+        targets = find_all_filter_targets(tree, column, dialect=dialect, table_columns=table_columns)
+        if not targets:
+            unresolved.append(column)
+            continue
+        for target in targets:
+            lhs = _filter_lhs(target.column_expr, dialect)
+            for pred_node in _make_filter_predicates(lhs, value):
+                target.select.where(pred_node, copy=False)
+                predicate_strings.append(pred_node.sql(dialect=dialect))
+
+    return tree, predicate_strings, unresolved
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Read-only enforcement
+# ---------------------------------------------------------------------------
+#
+# "The top-level statement is a SELECT" is not the same as "this only reads".
+# A SELECT can carry a data-modifying CTE, write its result somewhere (INTO),
+# take row locks, or call a function that reads files, opens network
+# connections or stalls a worker.  The whole tree is checked, not just its root.
+
+_WRITE_NODE_NAMES = (
+    "Insert", "Update", "Delete", "Merge", "Create", "Drop", "Alter", "AlterTable",
+    "TruncateTable", "Command", "Copy", "Set", "Use", "Pragma", "Attach", "Detach",
+    "Transaction", "Commit", "Rollback", "Grant", "Into", "Lock", "LoadData", "Export",
+)
+_WRITE_NODES: tuple[type, ...] = tuple(
+    getattr(exp, name) for name in _WRITE_NODE_NAMES if hasattr(exp, name)
+)
+
+_DENIED_FUNCTIONS = frozenset(
+    {
+        # files and directories
+        "pg_stat_file", "load_file", "glob", "sniff_csv", "parquet_scan", "st_read",
+        "iceberg_scan", "delta_scan", "sqlite_scan", "file", "getenv", "openrowset",
+        "opendatasource", "openquery", "bulk",
+        # other databases / the network
+        "postgres_scan", "mysql_scan", "postgres_query", "mysql_query", "url", "remote",
+        "remotesecure", "s3", "hdfs", "jdbc", "odbc", "executable", "http_get", "http_post",
+        # stalling or controlling the server
+        "sleep", "benchmark", "get_lock", "set_config", "pg_terminate_backend",
+        "pg_cancel_backend", "pg_reload_conf", "pg_rotate_logfile", "pg_advisory_lock",
+        "pg_advisory_xact_lock", "waitfor",
+        # running SQL from a string
+        "query_to_xml", "query_to_xml_and_xmlschema", "database_to_xml", "table_to_xml",
+        "cursor_to_xml", "query", "query_table",
+    }
+)
+_DENIED_FUNCTION_PREFIXES = (
+    "read_", "pg_read_", "pg_ls_", "pg_file_", "lo_", "dblink", "pg_sleep", "xp_", "sys_e",
+    "utl_", "dbms_",
+)
+_PATHLIKE_TABLE = re.compile(r"[/\\]|://|\.(csv|tsv|txt|json|ndjson|parquet|pq|xlsx|db|duckdb|sqlite)$", re.I)
+
+
+def _function_name(node: exp.Expression) -> str:
+    if isinstance(node, exp.Anonymous):
+        return str(node.this or "").lower()
+    try:
+        return node.sql_name().lower()
+    except Exception:  # noqa: BLE001
+        return type(node).__name__.lower()
+
+
+def assert_read_only(tree: exp.Expression) -> None:
+    """Raise ``AppError("UNSUPPORTED_QUERY", 400)`` unless *tree* only reads.
+
+    Rejects data-modifying or DDL nodes anywhere in the tree (including inside
+    CTEs), ``SELECT ... INTO``, row-locking clauses, functions that reach the
+    filesystem, the network or other databases or that stall the server, and
+    "tables" that are really file paths.
+    """
+
+    def _refuse(what: str) -> AppError:
+        return AppError(
+            "UNSUPPORTED_QUERY",
+            f"Only read-only SELECT statements are supported ({what} is not allowed).",
+            status=400,
+        )
+
+    for node in tree.walk():
+        if isinstance(node, _WRITE_NODES):
+            raise _refuse(type(node).__name__.upper())
+        if isinstance(node, exp.Select) and (node.args.get("locks") or node.args.get("into")):
+            raise _refuse("INTO / FOR UPDATE")
+        if isinstance(node, exp.Func):
+            name = _function_name(node)
+            if name in _DENIED_FUNCTIONS or name.startswith(_DENIED_FUNCTION_PREFIXES):
+                raise _refuse(f"function {name}()")
+        if isinstance(node, exp.Table):
+            this = node.this
+            if isinstance(this, (exp.Identifier, exp.Literal)) and _PATHLIKE_TABLE.search(
+                str(this.this or "")
+            ):
+                raise _refuse("reading a file as a table")
+
+
+# ---------------------------------------------------------------------------
+# Row-level security injection
+# ---------------------------------------------------------------------------
+
+
+def inject_row_policies(
+    tree: exp.Expression, policies: dict[str, Any], dialect: str
+) -> list[str]:
+    """Add every policy predicate to EVERY query block that reads a base table.
+
+    Filtering only the outermost SELECT is not enough: a derived table, a CTE,
+    a UNION arm or a scalar subquery can read the protected table in a block
+    of its own and hand the rows upward under a different shape (dropping or
+    faking the policy column).  So each block that selects from a physical
+    table gets the predicates itself; blocks that only read other blocks need
+    none, because what they read is already filtered.
+
+    A base table may not be given a column-renaming alias (``t AS x(a, b)``)
+    while policies apply — that would rename the policy column out from under
+    its predicate.
+
+    Mutates *tree* in place and returns the rendered predicates (for logging).
+    """
+    if not policies:
+        return []
+
+    from sqlglot.optimizer.scope import traverse_scope  # noqa: PLC0415
+
+    predicates: list[exp.Expression] = []
+    for col_name, col_value in sorted(policies.items()):
+        predicates.extend(_make_rls_predicates(col_name, col_value))
+    rendered = [p.sql(dialect=dialect) for p in predicates]
+
+    try:
+        scopes = traverse_scope(tree)
+    except Exception as exc:  # noqa: BLE001 — cannot reason about it → refuse
+        raise AppError(
+            "UNSUPPORTED_QUERY",
+            "This query shape is not supported for callers with row-level policies.",
+            status=400,
+        ) from exc
+
+    blocks: list[exp.Select] = []
+    for scope in scopes:
+        block = scope.expression
+        if not isinstance(block, exp.Select):
+            continue
+        reads_base_table = False
+        for _name, (_node, source) in scope.selected_sources.items():
+            if isinstance(source, exp.Table) and isinstance(source.this, exp.Identifier):
+                reads_base_table = True
+                alias = source.args.get("alias")
+                if alias is not None and alias.args.get("columns"):
+                    raise AppError(
+                        "UNSUPPORTED_QUERY",
+                        "Renaming a table's columns in its alias is not supported "
+                        "for callers with row-level policies.",
+                        status=400,
+                    )
+        if reads_base_table and not any(block is b for b in blocks):
+            blocks.append(block)
+
+    for block in blocks:
+        for predicate in predicates:
+            block.where(predicate.copy(), copy=False)
+    return rendered
 
 
 def plan(
@@ -388,6 +768,8 @@ def plan(
     params: list[Any] | None = None,
     limit: int | None = None,
     predicates: list[Any] | None = None,
+    filters: list[dict[str, Any]] | None = None,
+    filter_table_columns: dict[str, list[str]] | None = None,
 ) -> PhysicalPlan:
     """Compile a logical SQL query and optional claims into a ``PhysicalPlan``.
 
@@ -417,6 +799,20 @@ def plan(
         Each element may be a ``(col, op, value)`` tuple, a single-key ``{col:
         value}`` dict, or a raw SQL string (trusted; not user-supplied).
         ``None`` means no extra predicates are pushed (M1-compatible path).
+    filters:
+        Optional dashboard filters, injected AFTER RLS: ``[{"column": str,
+        "value": Any}, ...]``. Unlike *predicates* and RLS (always the
+        outermost scope), each filter is injected into EVERY scope that
+        exposes its column — see ``apply_dashboard_filters`` for why an
+        aggregate-only query needs that. A filter whose value is ``None`` or
+        ``[]`` is skipped ("nothing picked" must mean "don't touch this
+        query"). Columns no scope can expose are reported on the returned
+        plan's ``unresolved_filters``, never silently dropped.
+    filter_table_columns:
+        Estate-wide ``{table: [col, ...]}`` catalog (see
+        ``app.ai.grounding.build_catalog``) letting *filters* match a column
+        that exists on a base table but isn't itself referenced anywhere in
+        *sql*. Ignored when *filters* is not supplied.
 
     Returns
     -------
@@ -439,7 +835,7 @@ def plan(
     try:
         tree = parse_sql_cached(sql, dialect=dialect)
     except sqlglot.errors.SqlglotError as exc:
-        raise AppError("INVALID_SQL", f"Failed to parse SQL: {exc}", status=400) from exc
+        raise AppError("INVALID_SQL", _humanise_parse_error(exc), status=400) from exc
 
     # ── 2. Reject non-SELECT (but allow Union by wrapping it) ───────────────
     # The metric compiler emits UNION ALL for top_n.other queries.  A bare
@@ -459,6 +855,9 @@ def plan(
             status=400,
         )
 
+    # ── 2b. The WHOLE tree must be read-only, not just its root ─────────────
+    assert_read_only(tree)
+
     # ── 3. Apply projection (via optimizer) ─────────────────────────────────
     if projection:
         tree = prune_projection(tree, projection)
@@ -473,36 +872,45 @@ def plan(
     if isinstance(raw_policies, dict):
         policies = raw_policies
 
-    injected_predicates: list[str] = []
-    for col_name, col_value in sorted(policies.items()):
-        # Dispatch to shape-aware builder: scalar→EQ, list→IN, dict→range band.
-        # All paths produce AST nodes — never string concatenation.
-        pred_nodes = _make_rls_predicates(col_name, col_value)
-        for pred_node in pred_nodes:
-            tree = tree.where(pred_node)
-            injected_predicates.append(pred_node.sql(dialect=dialect))
+    # Every query block that reads a base table gets the predicates — see
+    # inject_row_policies for why the outermost WHERE alone is not enough.
+    if policies:
+        tree = tree.copy()  # never mutate the cached parse tree
+    injected_predicates: list[str] = inject_row_policies(tree, policies, dialect)
 
-    # ── 6. Push LIMIT (M2-A; no-op when None) ───────────────────────────────
+    # ── 6. Inject dashboard filters (AST-level, scope-aware; see
+    #      apply_dashboard_filters for why this differs from RLS above) ──────
+    filter_predicates: list[str] = []
+    unresolved_filters: list[str] = []
+    if filters:
+        tree, filter_predicates, unresolved_filters = apply_dashboard_filters(
+            tree, filters, dialect=dialect, table_columns=filter_table_columns
+        )
+
+    # ── 7. Push LIMIT (M2-A; no-op when None) ───────────────────────────────
     if limit is not None:
         tree = push_limit(tree, limit)
 
-    # ── 7. Collect all predicates (original + extra + injected) ─────────────
+    # ── 8. Collect all predicates (original + extra + injected) ─────────────
+    # Dashboard filters may live in nested scopes the top-level WHERE walk
+    # cannot see, so their strings (already collected while injecting) are
+    # appended rather than re-derived from tree.args["where"].
     where_node = tree.args.get("where")
     all_predicates = _collect_predicates(
         where_node.this if where_node else None, dialect=dialect
-    )
+    ) + filter_predicates
 
-    # ── 8. Re-generate SQL ───────────────────────────────────────────────────
+    # ── 9. Re-generate SQL ───────────────────────────────────────────────────
     rewritten_sql: str = tree.sql(dialect=dialect)
 
-    # ── 9. Compute cache key from the FINAL SQL + params + RLS claims ────────
+    # ── 10. Compute cache key from the FINAL SQL + params + RLS claims ───────
     cache_key = compute_cache_key(
         sql=rewritten_sql,
         params=params,
         rls_claims=claims,
     )
 
-    # ── 10. Build and return the plan ────────────────────────────────────────
+    # ── 11. Build and return the plan ────────────────────────────────────────
     return PhysicalPlan(
         dialect=dialect,
         sql=rewritten_sql,
@@ -510,6 +918,7 @@ def plan(
         projection=projection,
         predicates=all_predicates,
         rls_claims=claims,
+        unresolved_filters=unresolved_filters,
         cache_key=cache_key,
     )
 

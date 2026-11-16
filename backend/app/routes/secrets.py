@@ -26,15 +26,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
 
 from app.audit import record_audit as _record_audit
 from app.auth.deps import current_user
-from app.auth.roles import require_writer_default
+from app.auth.roles import require_writer
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
-from app.routes._org import get_user_org as _get_user_org
+from app.routes._org import resolve_org_id as _resolve_org_id
 from app.secrets.store import get_secret_store
 
 # ---------------------------------------------------------------------------
@@ -88,9 +88,10 @@ def _serialize_secret(secret: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-@router.post("", status_code=201, dependencies=[Depends(require_writer_default)])
+@router.post("", status_code=201, dependencies=[Depends(require_writer)])
 async def set_secret(
     body: SetSecretIn,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -114,7 +115,7 @@ async def set_secret(
     if not body.value:
         raise AppError("bad_request", "Secret 'value' must not be empty.", 400)
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_secret_store()
     secret = await store.set_secret(
         org_id=org_id,
@@ -137,6 +138,7 @@ async def set_secret(
 
 @router.get("", status_code=200)
 async def list_secrets(
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> list[dict[str, Any]]:
@@ -150,15 +152,16 @@ async def list_secrets(
         Secrets sorted by name, each with keys:
         ``{id, org_id, name, created_by, created_at, updated_at}``.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_secret_store()
     secrets = await store.list_secrets(org_id)
     return [_serialize_secret(s) for s in secrets]
 
 
-@router.delete("/{name}", status_code=204, dependencies=[Depends(require_writer_default)])
+@router.delete("/{name}", status_code=204, dependencies=[Depends(require_writer)])
 async def delete_secret(
     name: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> Response:
@@ -171,7 +174,7 @@ async def delete_secret(
     AppError("not_found", 404)
         If no secret with *name* exists for the caller's org.
     """
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     store = get_secret_store()
     deleted = await store.delete_secret(org_id=org_id, name=name)
     if not deleted:

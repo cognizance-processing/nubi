@@ -192,3 +192,56 @@ class TestProposeMaterializedView:
         assert first["hits"] == 5
         assert first["est_bytes_saved"] == 5 * 1024
         assert "category" in first["dimensions"]
+
+
+# ---------------------------------------------------------------------------
+# Output caps
+#
+# A real registry holds thousands of queries: unfiltered, _get_context
+# serialised to ~433 KB and _list_dashboards to ~101 KB, which blows the
+# context window of the agent these tools exist to ground.  Both now cap by
+# default.
+# ---------------------------------------------------------------------------
+
+
+class TestOutputCaps:
+    """Tests for the default output caps on the listing/discovery tools."""
+
+    def test_list_dashboards_respects_limit(self) -> None:
+        from nubi_mcp.server import _LIST_DASHBOARDS_DEFAULT_LIMIT
+
+        assert len(_list_dashboards()) <= _LIST_DASHBOARDS_DEFAULT_LIMIT
+        assert len(_list_dashboards(limit=2)) <= 2
+
+    def test_list_dashboards_clamps_absurd_limit(self) -> None:
+        from nubi_mcp.server import _LIST_DASHBOARDS_MAX_LIMIT
+
+        assert len(_list_dashboards(limit=10**9)) <= _LIST_DASHBOARDS_MAX_LIMIT
+
+    def test_list_dashboards_name_contains_filters(self) -> None:
+        everything = _list_dashboards(limit=1000)
+        if not everything:
+            pytest.skip("empty registry")
+        needle = everything[0]["id"][:4].casefold()
+        filtered = _list_dashboards(name_contains=needle, limit=1000)
+        assert len(filtered) <= len(everything)
+        for item in filtered:
+            haystack = (item["id"] + (item["name"] or "")).casefold()
+            assert needle in haystack
+
+    def test_get_context_caps_and_reports_truncation(self) -> None:
+        from nubi_mcp.server import _CONTEXT_DEFAULT_LIMIT, _get_context
+
+        ctx = _get_context()
+        assert len(ctx["queries"]) <= _CONTEXT_DEFAULT_LIMIT
+        assert ctx["returned"] == len(ctx["queries"])
+        # `total_matched` must stay truthful so the caller knows what it is
+        # NOT seeing.
+        assert ctx["total_matched"] >= ctx["returned"]
+        assert ctx["truncated"] == (ctx["total_matched"] > ctx["returned"])
+
+    def test_get_context_small_limit_is_honoured(self) -> None:
+        from nubi_mcp.server import _get_context
+
+        ctx = _get_context(limit=1)
+        assert len(ctx["queries"]) <= 1

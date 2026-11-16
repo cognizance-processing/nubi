@@ -7,6 +7,26 @@ const APP_VERSION = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
 ).version
 
+// package → vendor chunk (see build.rollupOptions.output.manualChunks)
+const VENDOR_CHUNKS = {
+  // React gets its own chunk; otherwise Rollup pulls it into the first manual chunk that depends on it.
+  react: 'react', 'react-dom': 'react', scheduler: 'react', 'use-sync-external-store': 'react',
+  echarts: 'echarts', zrender: 'echarts',
+  reactflow: 'reactflow', '@reactflow/core': 'reactflow', '@reactflow/background': 'reactflow',
+  '@reactflow/controls': 'reactflow', '@reactflow/minimap': 'reactflow', '@reactflow/node-resizer': 'reactflow',
+  '@reactflow/node-toolbar': 'reactflow',
+  'apache-arrow': 'arrow',
+  '@duckdb/duckdb-wasm': 'duckdb',
+  '@monaco-editor/react': 'monaco', '@monaco-editor/loader': 'monaco',
+  // Shared by the landing page and the docs figures; app routes never import it.
+  three: 'three',
+  // Landing-only: the story stage (R3F), its scroll timeline (GSAP) and smooth scroll (Lenis).
+  // Reached only through the landing's lazy import(), so /login, /register and the app never fetch them.
+  '@react-three/fiber': 'r3f', '@react-three/drei': 'r3f',
+  gsap: 'gsap', '@gsap/react': 'gsap',
+  lenis: 'lenis',
+}
+
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd())
@@ -17,6 +37,12 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    resolve: {
+      // The landing stage imports R3F through this id, typed locally (src/pages/landing/stage/r3f.d.ts), so
+      // TypeScript never loads R3F's global JSX augmentation (it turns polymorphic `as: ElementType` props
+      // across the app into `never`). Same module at runtime.
+      alias: [{ find: /^@nubi\/r3f$/, replacement: '@react-three/fiber' }],
+    },
     build: {
       rollupOptions: {
         output: {
@@ -24,12 +50,12 @@ export default defineConfig(({ mode }) => {
           // cached independently and only fetched by the lazy routes that use
           // them (charts, flow canvas, in-browser SQL, code editor) — never on
           // the public landing path.
-          manualChunks: {
-            echarts: ['echarts'],
-            reactflow: ['reactflow'],
-            arrow: ['apache-arrow'],
-            duckdb: ['@duckdb/duckdb-wasm'],
-            monaco: ['@monaco-editor/react'],
+          // A function, not the object form: the object form also pulls each package's dependencies into its
+          // chunk, so shared modules (react/jsx-runtime, scheduler) landed in `r3f` and every route statically
+          // imported it — and with it three.js. Only the named packages' own files are assigned here.
+          manualChunks(id) {
+            const m = /node_modules\/((?:@[^/]+\/)?[^/]+)\//.exec(id)
+            return m ? VENDOR_CHUNKS[m[1]] : undefined
           },
         },
       },
@@ -77,7 +103,29 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           secure: false,
         },
+        // OAuth discovery for remote MCP clients (docs/mcp.md § 4), so one
+        // public tunnel to this dev server can serve the whole connect flow.
+        '/.well-known': {
+          target: env.VITE_BACKEND_URL || 'http://localhost:8000',
+          changeOrigin: true,
+          secure: false,
+        },
       },
-    }
+      // Extra hostnames this dev server answers to, e.g. a tunnel
+      // (VITE_ALLOWED_HOSTS=my-tunnel.ngrok-free.dev). Comma-separated.
+      allowedHosts: (env.VITE_ALLOWED_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean),
+    },
+    // `vite preview` (serving the production build locally) needs the same
+    // /api proxy as the dev server — preview does NOT inherit server.proxy.
+    preview: {
+      port: 4173,
+      proxy: {
+        '/api': {
+          target: env.VITE_BACKEND_URL || 'http://localhost:8000',
+          changeOrigin: true,
+          secure: false,
+        },
+      },
+    },
   }
 })

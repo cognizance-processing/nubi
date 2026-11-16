@@ -20,14 +20,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from app.auth.deps import current_user
-from app.auth.roles import require_writer_default
+from app.auth.roles import require_writer
 from app.errors import AppError
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
-from app.routes._org import get_user_org as _get_user_org
+from app.routes._org import resolve_org_id as _resolve_org_id
 from app.webhooks.events import ALL_EVENT_TYPES
 from app.webhooks.schemas import WebhookCreate, WebhookUpdate
 
@@ -58,21 +58,25 @@ def _validate_webhook_url(url: str) -> None:
     _guard_url(url)
 
 
-@router.get("/")
+@router.get("")
+@router.get("/", include_in_schema=False)
 async def list_webhooks(
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> list[dict[str, Any]]:
     """Return all webhook endpoints for the caller's org (never includes secrets)."""
     from app.webhooks.models import get_webhook_store  # noqa: PLC0415
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     return await get_webhook_store().list_for_org(org_id)
 
 
-@router.post("/", status_code=201, dependencies=[Depends(require_writer_default)])
+@router.post("", status_code=201, dependencies=[Depends(require_writer)])
+@router.post("/", status_code=201, dependencies=[Depends(require_writer)], include_in_schema=False)
 async def create_webhook(
     body: WebhookCreate,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -82,7 +86,7 @@ async def create_webhook(
     _validate_event_types(body.event_types)
     _validate_webhook_url(body.url)
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     return await get_webhook_store().create(
         org_id=org_id,
         name=body.name,
@@ -97,23 +101,25 @@ async def create_webhook(
 @router.get("/{endpoint_id}")
 async def get_webhook(
     endpoint_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Return a single webhook endpoint by id (never includes the secret)."""
     from app.webhooks.models import get_webhook_store  # noqa: PLC0415
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     row = await get_webhook_store().get_by_id(endpoint_id, org_id)
     if row is None:
         raise AppError("webhook_not_found", "Webhook endpoint not found.", 404)
     return row
 
 
-@router.put("/{endpoint_id}", dependencies=[Depends(require_writer_default)])
+@router.put("/{endpoint_id}", dependencies=[Depends(require_writer)])
 async def update_webhook(
     endpoint_id: str,
     body: WebhookUpdate,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
@@ -125,7 +131,7 @@ async def update_webhook(
     if body.url is not None:
         _validate_webhook_url(body.url)
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     row = await get_webhook_store().update(
         endpoint_id,
         org_id,
@@ -141,17 +147,18 @@ async def update_webhook(
 
 
 @router.delete(
-    "/{endpoint_id}", status_code=204, dependencies=[Depends(require_writer_default)]
+    "/{endpoint_id}", status_code=204, dependencies=[Depends(require_writer)]
 )
 async def delete_webhook(
     endpoint_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> None:
     """Delete a webhook endpoint."""
     from app.webhooks.models import get_webhook_store  # noqa: PLC0415
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     deleted = await get_webhook_store().delete(endpoint_id, org_id)
     if not deleted:
         raise AppError("webhook_not_found", "Webhook endpoint not found.", 404)

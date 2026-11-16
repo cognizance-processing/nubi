@@ -366,7 +366,7 @@ async def webhook_api_client():
 
     from main import app  # noqa: PLC0415
     from app.auth.deps import current_user  # noqa: PLC0415
-    from app.auth.roles import require_writer_default  # noqa: PLC0415
+    from app.auth.roles import require_writer  # noqa: PLC0415
     from app.routes import _org as org_mod  # noqa: PLC0415
     from httpx import ASGITransport, AsyncClient  # noqa: PLC0415
 
@@ -383,12 +383,9 @@ async def webhook_api_client():
         return _org_id
 
     app.dependency_overrides[current_user] = _fake_user
-    app.dependency_overrides[require_writer_default] = _fake_writer
+    app.dependency_overrides[require_writer] = _fake_writer
     _orig = org_mod.get_user_org
     org_mod.get_user_org = _fake_get_org
-    import app.webhooks.router as wh_router  # noqa: PLC0415
-
-    wh_router._get_user_org = _fake_get_org
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
@@ -396,9 +393,8 @@ async def webhook_api_client():
             yield ac
     finally:
         app.dependency_overrides.pop(current_user, None)
-        app.dependency_overrides.pop(require_writer_default, None)
+        app.dependency_overrides.pop(require_writer, None)
         org_mod.get_user_org = _orig
-        wh_router._get_user_org = _orig
         set_webhook_store(None)
 
 

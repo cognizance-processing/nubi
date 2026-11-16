@@ -487,9 +487,9 @@ def test_planner_rls_from_verified_token_policies():
     token = _mint_embed_token(
         scope=["read:query"],
         policies={"tenant_id": "acme"},
-        embed_origin=None,  # skip origin check in this unit test
+        embed_origin=None,  # no per-token origin; the issuer allow-list still applies
     )
-    identity = verify_token(token, expected_origin=None)
+    identity = verify_token(token, expected_origin=_EMBED_ORIGIN)
 
     assert identity.kind == "embed"
     assert identity.policies == {"tenant_id": "acme"}
@@ -511,7 +511,7 @@ def test_planner_rls_from_verified_token_policies():
         policies={"tenant_id": "globex"},
         embed_origin=None,
     )
-    identity_globex = verify_token(token_globex, expected_origin=None)
+    identity_globex = verify_token(token_globex, expected_origin=_EMBED_ORIGIN)
     claims_globex = {"policies": identity_globex.policies}
     plan_globex = plan("SELECT id FROM demo", claims=claims_globex)
 

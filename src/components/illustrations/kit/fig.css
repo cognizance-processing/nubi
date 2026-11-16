@@ -1,0 +1,78 @@
+/* Nubi figure kit — one drawing system for every illustration.
+   Rules: 1.5px ink strokes (2px for the single spine), square caps and mitre
+   joins, three ink weights (100 / 55 / 20 %), ONE accent element per figure,
+   Geist Mono 10-11px labels, `FIG 0x / NAME` caption. Colour comes only from
+   currentColor + the global tokens, so both themes flip with no extra work.
+   The parent's text colour is the ink; default is --ink (zero specificity, so
+   a `text-*` utility on the svg or its parent wins). */
+:where(.fig) { color: var(--ink); }
+.fig {
+  display: block; width: 100%; height: auto; overflow: visible;
+  --fig-ink: currentColor;
+  --fig-mid: color-mix(in srgb, currentColor 55%, transparent);
+  --fig-faint: color-mix(in srgb, currentColor 20%, transparent);
+  --fig-accent: var(--accent);
+  --fig-paper: var(--surface);
+  --fig-tone-l: color-mix(in srgb, currentColor 7%, var(--fig-paper));
+  --fig-tone-r: color-mix(in srgb, currentColor 15%, var(--fig-paper));
+  --fig-sunk: color-mix(in srgb, currentColor 5%, var(--fig-paper));
+  --fig-acc-top: color-mix(in srgb, var(--fig-accent) 72%, white);
+  --fig-acc-l: var(--fig-accent);
+  --fig-acc-r: color-mix(in srgb, var(--fig-accent) 72%, black);
+  font-family: var(--font-mono, 'Geist Mono', ui-monospace, monospace);
+  container: fig / inline-size;
+}
+/* Small renders (docs cards, thumbnails): mono labels would be unreadably tiny, so the
+   figure falls back to the pure drawing. Needs no prop and no JS. */
+@container fig (max-width: 360px) {
+  .fig text, .fig .fcap, .fig .lead { display: none; }
+  /* Opt-in `keep` labels stay, re-sized in viewBox units so they render at >= ~10px on a phone. */
+  .fig text.keep { display: block; font-size: 16px; letter-spacing: .02em; }
+}
+/* Shapes: stroke-only, square caps, mitre joins. Zero specificity so any kit
+   class below overrides. */
+:where(.fig) :is(path, line, polyline, polygon, rect, circle, ellipse) {
+  fill: none; stroke: var(--fig-ink); stroke-width: 1.5; stroke-linecap: square; stroke-linejoin: miter; stroke-miterlimit: 10;
+  vector-effect: non-scaling-stroke;
+}
+/* stroke weight / tone */
+.fig .k1 { stroke: var(--fig-ink); }
+.fig .k2 { stroke: var(--fig-mid); }
+.fig .k3 { stroke: var(--fig-faint); }
+.fig .ka { stroke: var(--fig-accent); }
+.fig .w1 { stroke-width: 1; }
+.fig .w2 { stroke-width: 2; }
+.fig .w3 { stroke-width: 3; }
+.fig .dd { stroke-dasharray: 5 4; stroke-linecap: butt; }
+.fig .dt { stroke-dasharray: 1 4; stroke-linecap: butt; }
+.fig .ns { stroke: none; }
+/* fills */
+.fig .fp { fill: var(--fig-paper); }
+.fig .fl { fill: var(--fig-tone-l); }
+.fig .fr { fill: var(--fig-tone-r); }
+.fig .fs { fill: var(--fig-sunk); }
+.fig .fi { fill: var(--fig-ink); }
+.fig .fm { fill: var(--fig-mid); }
+.fig .ff { fill: var(--fig-faint); }
+.fig .fa { fill: var(--fig-accent); }
+.fig .fat { fill: var(--fig-acc-top); }
+.fig .fal { fill: var(--fig-acc-l); }
+.fig .far { fill: var(--fig-acc-r); }
+/* text: mono labels, uppercase unless `.lc` (code) */
+.fig text {
+  font-family: var(--font-mono, 'Geist Mono', ui-monospace, monospace);
+  font-size: 10px; letter-spacing: .06em; text-transform: uppercase; font-variant-numeric: tabular-nums;
+  fill: var(--fig-mid); stroke: none; user-select: none;
+}
+.fig text.t1 { fill: var(--fig-ink); }
+.fig text.ta { fill: var(--fig-accent); }
+.fig text.lc { text-transform: none; letter-spacing: 0; }
+.fig text.big { font-size: 13px; letter-spacing: .02em; }
+.fig text.hd { font-family: var(--font-ui, 'Instrument Sans', sans-serif); text-transform: none; letter-spacing: -.01em; font-weight: 600; }
+.fig .fcap text { font-size: 10px; }
+/* Gallery / empty-state helper: an empty-state svg sits inside a box whose
+   text colour is already the ink, so nothing else is needed. */
+.fig tspan.t1 { fill: var(--fig-ink); }
+.fig tspan.ta { fill: var(--fig-accent); }
+.fig text.tp, .fig tspan.tp { fill: var(--fig-paper); }
+.fig .dg { stroke: var(--fig-faint); stroke-width: 2; stroke-dasharray: 0.01 20; stroke-linecap: butt; }

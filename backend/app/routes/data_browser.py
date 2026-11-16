@@ -24,27 +24,44 @@ automatically — do NOT edit main.py.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from typing import Any
 
 import pyarrow as pa
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.encoders import jsonable_encoder
 
 from app.auth.deps import current_user
-from app.auth.roles import require_writer_default
+from app.auth.roles import require_raw_data_author, require_raw_data_read, require_writer
 from app.connectors.arrow_io import ipc_stream_from_bytes, table_to_ipc_bytes
-from app.connectors.duckdb_conn import DuckDBConnector, open_duckdb_readonly, setup_s3_httpfs
+from app.connectors.duckdb_conn import (  # noqa: F401
+    DuckDBConnector,
+    connect_duckdb_datastore,
+    open_duckdb_readonly,
+    setup_s3_httpfs,
+)
+from app.connectors.introspect import (
+    SYSTEM_SCHEMAS as _SYSTEM_SCHEMAS,
+    introspect_tables as _introspect_tables_shared,
+    pick_col as _pick_col,
+    resolve_table_ref as _resolve_table_ref,
+)
 from app.connectors.plan import PhysicalPlan
 from app.errors import AppError
 from app.repos.provider import get_repo, Repo
 from app.routes import api_router
-from app.routes._org import get_user_org as _get_user_org
+from app.routes._org import resolve_org_id as _resolve_org_id
 
 # ---------------------------------------------------------------------------
 # Sub-router
 # ---------------------------------------------------------------------------
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["data-browser"])
 
@@ -166,7 +183,7 @@ def _build_view_sql_from_s3_views(s3_views: dict[str, str]) -> str:
     return ";\n".join(stmts)
 
 
-def _build_duckdb_connector(cfg: dict[str, Any]) -> DuckDBConnector:
+def _build_duckdb_connector(cfg: dict[str, Any], org_id: str | None = None) -> DuckDBConnector:
     """Build a DuckDB connector from datastore config (read-only file or memory).
 
     Supported config shapes
@@ -192,48 +209,8 @@ def _build_duckdb_connector(cfg: dict[str, Any]) -> DuckDBConnector:
     variables before any view SQL is executed.
     Local ``/path/to/file`` paths continue to work without any changes.
     """
-    db_path = cfg.get("database") or cfg.get("path")
-    if db_path and db_path != ":memory:" and not db_path.startswith("s3://"):
-        return DuckDBConnector(open_duckdb_readonly(db_path))
-
-    # In-memory path (also used for s3:// Parquet datasets and multi-table views):
-    # 1. Create a fresh in-memory connection.
-    # 2. If any s3:// references are present, install httpfs + register SECRET.
-    # 3. Build / execute all view SQL statements so every table is visible for
-    #    introspection and row-sampling.
-    import duckdb as _duckdb_mem
-
-    _conn = _duckdb_mem.connect(database=":memory:")
-
-    if _cfg_references_s3(cfg):
-        try:
-            setup_s3_httpfs(_conn, cfg)
-        except Exception:
-            pass  # best-effort; let the view_sql fail with a clear error
-
-    # --- Collect all view SQL statements -----------------------------------
-    # Priority: s3_views dict > view_sql string.
-    # When both are present, s3_views takes precedence and view_sql is ignored
-    # to avoid registering stale / conflicting views.
-    _s3_views: dict[str, str] | None = cfg.get("s3_views")
-    if isinstance(_s3_views, dict) and _s3_views:
-        _view_sql_combined = _build_view_sql_from_s3_views(_s3_views)
-    else:
-        _view_sql_combined = cfg.get("view_sql") or ""
-
-    # Execute each semicolon-delimited statement individually.  This means a
-    # failure on one view does not silently prevent subsequent views from being
-    # registered (important for the multi-table demo connector).
-    if _view_sql_combined:
-        for _stmt in _view_sql_combined.split(";"):
-            _stmt = _stmt.strip()
-            if _stmt:
-                try:
-                    _conn.execute(_stmt)
-                except Exception:
-                    pass  # best-effort; introspection will surface any gap
-
-    return DuckDBConnector(_conn)
+    # All opening, validation and hardening lives in the shared helper.
+    return DuckDBConnector(connect_duckdb_datastore(cfg, org_id))
 
 
 def _make_plan(sql: str) -> PhysicalPlan:
@@ -254,30 +231,13 @@ def _safe_identifier(name: str) -> bool:
 
 
 def _introspect_tables_duckdb(connector: DuckDBConnector) -> list[dict[str, Any]]:
-    """Return [{schema, name}] for all user tables in a DuckDB connector."""
-    plan = _make_plan(
-        "SELECT table_schema, table_name FROM information_schema.tables "
-        "WHERE table_schema NOT IN ('information_schema', 'pg_catalog') "
-        "ORDER BY table_schema, table_name"
-    )
-    try:
-        tbl = connector.execute(plan)
-        rows = tbl.to_pydict()
-        schemas = rows.get("table_schema", [])
-        names = rows.get("table_name", [])
-        return [{"schema": s, "name": n} for s, n in zip(schemas, names)]
-    except Exception:
-        # Fallback: SHOW TABLES (DuckDB in-memory with registered Arrow views)
-        plan2 = _make_plan("SHOW TABLES")
-        try:
-            tbl2 = connector.execute(plan2)
-            d = tbl2.to_pydict()
-            # Column may be 'name' or 'Name' depending on DuckDB version
-            col = next((k for k in d if k.lower() == "name"), None)
-            names_list = d.get(col, []) if col else []
-            return [{"schema": "main", "name": n} for n in names_list]
-        except Exception:
-            return []
+    """Return [{schema, name}] for every user table reachable through *connector*.
+
+    Thin alias for :func:`app.connectors.introspect.introspect_tables` — the
+    single shared implementation. Kept as a module-local name because the write
+    paths and tests already reference it.
+    """
+    return _introspect_tables_shared(connector)
 
 
 def _introspect_columns_duckdb(
@@ -310,9 +270,9 @@ def _introspect_columns_duckdb(
     try:
         tbl = connector.execute(plan)
         d = tbl.to_pydict()
-        names_col = d.get("column_name", [])
-        types_col = d.get("data_type", [])
-        nullable_col = d.get("is_nullable", [])
+        names_col = _pick_col(d, "column_name")
+        types_col = _pick_col(d, "data_type")
+        nullable_col = _pick_col(d, "is_nullable")
         return [
             {
                 "name": n,
@@ -330,9 +290,9 @@ def _introspect_columns_duckdb(
         try:
             tbl2 = connector.execute(plan2)
             d2 = tbl2.to_pydict()
-            col_names = d2.get("column_name", d2.get("Field", []))
-            col_types = d2.get("column_type", d2.get("Type", []))
-            nullables = d2.get("null", d2.get("Null", ["YES"] * len(col_names)))
+            col_names = _pick_col(d2, "column_name", "Field")
+            col_types = _pick_col(d2, "column_type", "Type")
+            nullables = _pick_col(d2, "null", "Null") or ["YES"] * len(col_names)
             return [
                 {
                     "name": n,
@@ -445,7 +405,7 @@ def _table_type_duckdb(connector: DuckDBConnector, table_name: str) -> str | Non
     )
     try:
         d = connector.execute(plan).to_pydict()
-        types = d.get("table_type", [])
+        types = _pick_col(d, "table_type")
         return str(types[0]).upper() if types else None
     except Exception:
         return None
@@ -473,8 +433,8 @@ def _detect_row_identity_duckdb(
         d = connector.execute(plan).to_pydict()
     except Exception:
         return []
-    ctypes = d.get("constraint_type", [])
-    ccols = d.get("constraint_column_names", [])
+    ctypes = _pick_col(d, "constraint_type")
+    ccols = _pick_col(d, "constraint_column_names")
     pk: list[str] = []
     unique_single: list[str] = []
     for ctype, cols in zip(ctypes, ccols):
@@ -513,18 +473,25 @@ async def _resolve_connector_and_tables(
     datastore_id: str | None,
     user: dict[str, Any],
     repo: Repo,
-) -> tuple[DuckDBConnector, list[dict[str, Any]]]:
-    """Return (connector, tables) — works for demo (None) and real connectors."""
+    request: Request,
+) -> tuple[DuckDBConnector, list[dict[str, Any]], Callable[[], None]]:
+    """Return ``(connector, tables, net_cleanup)``.
+
+    Works for demo (``None`` / ``__demo__``) and real connectors.  ``net_cleanup``
+    tears down any ephemeral bridge tunnel and MUST be called by the caller in a
+    ``finally`` — use :func:`_browse_connector`, which does it for you.
+    """
     # The virtual "Demo data" connector (id "__demo__") resolves to the same
     # in-process demo connector as the no-datastore path; the dataset is shared
     # across orgs and never copied per org.
     from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_CONNECTOR_ID
+    _noop: Callable[[], None] = lambda: None  # noqa: E731
     if datastore_id is None or datastore_id == _DEMO_CONNECTOR_ID:
         connector = _get_demo_connector()
-        tables = _introspect_tables_duckdb(connector)
-        return connector, tables
+        tables = await asyncio.to_thread(_introspect_tables_duckdb, connector)
+        return connector, tables, _noop
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     ds = await repo.get("datastores", org_id, datastore_id)
     if ds is None:
         raise AppError("not_found", f"Datastore {datastore_id!r} not found.", 404)
@@ -533,25 +500,31 @@ async def _resolve_connector_and_tables(
     ctype = cfg.get("connector_type") or cfg.get("type") or "duckdb"
 
     if ctype == "duckdb":
-        connector = _build_duckdb_connector(cfg)
-        tables = _introspect_tables_duckdb(connector)
-        return connector, tables
+        connector = await asyncio.to_thread(_build_duckdb_connector, cfg, org_id)
+        tables = await asyncio.to_thread(_introspect_tables_duckdb, connector)
+        return connector, tables, _noop
 
     # Non-DuckDB connectors (postgres/bigquery/snowflake/…): build the connector
     # generically through the shared connector-build path (registry + secret /
     # network resolution) and introspect its tables through the SAME
     # information_schema query used for DuckDB.  The connector only needs to
     # expose ``.execute(plan)`` — every SQL connector does.
-    connector = await _build_remote_connector(datastore_id, org_id, repo)
-    tables = _introspect_tables_duckdb(connector)
-    return connector, tables
+    connector, cleanup = await _build_remote_connector(datastore_id, org_id, repo)
+    try:
+        tables = await asyncio.to_thread(_introspect_tables_duckdb, connector)
+    except BaseException:
+        # Introspection failed — release the tunnel now; no caller will get the
+        # cleanup handle back through the raised exception.
+        _safe_cleanup(cleanup)
+        raise
+    return connector, tables, cleanup
 
 
 async def _build_remote_connector(
     datastore_id: str,
     org_id: str | None,
     repo: Repo,
-) -> Any:
+) -> tuple[Any, Callable[[], None]]:
     """Build a non-DuckDB connector for read-only browsing.
 
     Reuses ``routes.query._build_connector_for_plan`` — the single place that
@@ -559,17 +532,49 @@ async def _build_remote_connector(
     injection + network-mode resolution).  A policy-free plan is passed so no
     RLS predicate is required (browse never carries policies here).
 
-    The bridge-tunnel cleanup returned by that helper is a no-op in the default
-    ``direct`` network mode used by OSS self-host, so it is intentionally not
-    threaded back through the browse routes.
+    Returns ``(connector, net_cleanup)``.  ``net_cleanup`` tears down any
+    ephemeral bridge tunnel and MUST be called by the caller in a ``finally``.
+    It is a no-op in the default ``direct`` network mode, but in
+    ``network_mode: "bridge"`` it releases the per-request tunnel — dropping it
+    leaks a tunnel (and its broker slot) on every browse request.
     """
     from app.routes.query import _build_connector_for_plan  # noqa: PLC0415
 
     plan = _make_plan("")  # empty rls_claims → no policy-bearing browse
-    connector, _kind, _cleanup = await _build_connector_for_plan(
+    connector, _kind, cleanup = await _build_connector_for_plan(
         plan, datastore_id, org_id, None, repo
     )
-    return connector
+    return connector, cleanup
+
+
+def _safe_cleanup(cleanup: Callable[[], None]) -> None:
+    """Run *cleanup*, swallowing errors so it can never mask the real result."""
+    try:
+        cleanup()
+    except Exception:  # noqa: BLE001 — cleanup must never mask the response/error.
+        pass
+
+
+@asynccontextmanager
+async def _browse_connector(
+    datastore_id: str | None,
+    user: dict[str, Any],
+    repo: Repo,
+    request: Request,
+) -> AsyncIterator[tuple[DuckDBConnector, list[dict[str, Any]]]]:
+    """Yield ``(connector, tables)`` and always release the bridge tunnel.
+
+    Every read path in this module goes through here so the ``net_cleanup``
+    contract of :func:`_build_remote_connector` is honoured exactly once per
+    request, on both the success and the error path.
+    """
+    connector, tables, cleanup = await _resolve_connector_and_tables(
+        datastore_id, user, repo, request
+    )
+    try:
+        yield connector, tables
+    finally:
+        _safe_cleanup(cleanup)
 
 
 # ---------------------------------------------------------------------------
@@ -580,25 +585,26 @@ async def _build_remote_connector(
 _TABLE_LIST_SENTINEL = "tables"  # distinguishes literal "tables" from a UUID
 
 
-@router.get("/data/tables")
+@router.get("/data/tables", dependencies=[Depends(require_raw_data_read)])
 async def list_demo_tables(
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     """List tables in the built-in demo connector."""
     connector = _get_demo_connector()
-    tables = _introspect_tables_duckdb(connector)
+    tables = await asyncio.to_thread(_introspect_tables_duckdb, connector)
     return {"tables": tables, "datastore_id": None}
 
 
-@router.get("/data/{datastore_id}/tables")
+@router.get("/data/{datastore_id}/tables", dependencies=[Depends(require_raw_data_author)])
 async def list_tables(
     datastore_id: str,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """List tables (and schemas) for the given connector via introspection."""
-    connector, tables = await _resolve_connector_and_tables(datastore_id, user, repo)
-    return {"tables": tables, "datastore_id": datastore_id}
+    async with _browse_connector(datastore_id, user, repo, request) as (_conn, tables):
+        return {"tables": tables, "datastore_id": datastore_id}
 
 
 # ---------------------------------------------------------------------------
@@ -607,18 +613,18 @@ async def list_tables(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/data/tables/{table}/columns")
+@router.get("/data/tables/{table}/columns", dependencies=[Depends(require_raw_data_read)])
 async def list_demo_columns(
     table: str,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     """Return column names + types for a table in the demo connector."""
     connector = _get_demo_connector()
-    tables = _introspect_tables_duckdb(connector)
+    tables = await asyncio.to_thread(_introspect_tables_duckdb, connector)
     known = {t["name"] for t in tables}
     if table not in known:
         raise AppError("not_found", f"Table {table!r} not found.", 404)
-    columns = _introspect_columns_duckdb(connector, table)
+    columns = await asyncio.to_thread(_introspect_columns_duckdb, connector, table)
     # Demo connector is an in-memory parquet/Arrow view set — never writable.
     return {
         "table": table,
@@ -629,62 +635,69 @@ async def list_demo_columns(
     }
 
 
-@router.get("/data/{datastore_id}/tables/{table}/columns")
+@router.get("/data/{datastore_id}/tables/{table}/columns", dependencies=[Depends(require_raw_data_author)])
 async def list_columns(
     datastore_id: str,
     table: str,
+    request: Request,
+    schema: str | None = Query(default=None),
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Return column names + types for a table in the given connector."""
-    connector, tables = await _resolve_connector_and_tables(datastore_id, user, repo)
-    known = {t["name"] for t in tables}
-    if table not in known:
-        raise AppError("not_found", f"Table {table!r} not found in datastore {datastore_id!r}.", 404)
-    if not _safe_identifier(table):
-        raise AppError("invalid_identifier", f"Table name {table!r} is not a valid identifier.", 400)
-    from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_CONNECTOR_ID
-    cfg = (
-        await _datastore_cfg(datastore_id, user, repo)
-        if datastore_id != _DEMO_CONNECTOR_ID
-        else None
-    )
-    ctype = (
-        (cfg.get("connector_type") or cfg.get("type") or "duckdb") if cfg else "duckdb"
-    )
+    async with _browse_connector(datastore_id, user, repo, request) as (connector, tables):
+        known = {t["name"] for t in tables}
+        if table not in known:
+            raise AppError("not_found", f"Table {table!r} not found in datastore {datastore_id!r}.", 404)
+        if not _safe_identifier(table):
+            raise AppError("invalid_identifier", f"Table name {table!r} is not a valid identifier.", 400)
+        from app.routes.connectors import DEMO_CONNECTOR_ID as _DEMO_CONNECTOR_ID
+        cfg = (
+            await _datastore_cfg(datastore_id, user, repo, request)
+            if datastore_id != _DEMO_CONNECTOR_ID
+            else None
+        )
+        ctype = (
+            (cfg.get("connector_type") or cfg.get("type") or "duckdb") if cfg else "duckdb"
+        )
 
-    # Non-DuckDB connectors (postgres/bigquery/snowflake/…): derive columns from a
-    # zero-row Arrow probe through the resolved connector.  Remote SQL sources are
-    # browsed read-only, so writability is always False here.
-    if ctype != "duckdb":
-        columns = _introspect_columns_via_probe(connector, table)
+        # Non-DuckDB connectors (postgres/bigquery/snowflake/…): derive columns from a
+        # zero-row Arrow probe through the resolved connector.  Remote SQL sources are
+        # browsed read-only, so writability is always False here.
+        if ctype != "duckdb":
+            ref = _resolve_table_ref(table, tables, schema)
+            columns = await asyncio.to_thread(
+                _introspect_columns_via_probe, connector, ref
+            )
+            return {
+                "table": table,
+                "columns": columns,
+                "datastore_id": datastore_id,
+                "writable": False,
+                "primary_key": [],
+            }
+
+        columns = await asyncio.to_thread(_introspect_columns_duckdb, connector, table)
+        # Writability: native BASE TABLEs (on-disk file connectors) only.  The
+        # virtual demo connector and read_parquet views stay read-only — Nubi does
+        # not host a writable managed lakehouse.
+        writable = False
+        primary_key: list[str] = []
+        # A user-set read-only connector is never editable in the data grid — report
+        # writable=False up front so no edit affordances show (the write path also
+        # gates on this, but the UI should reflect it before a write is attempted).
+        read_only = bool(cfg and cfg.get("read_only"))
+        if datastore_id != _DEMO_CONNECTOR_ID and not read_only:
+            writable, primary_key = await asyncio.to_thread(
+                _writable_meta_duckdb, connector, table
+            )
         return {
             "table": table,
             "columns": columns,
             "datastore_id": datastore_id,
-            "writable": False,
-            "primary_key": [],
+            "writable": writable,
+            "primary_key": primary_key,
         }
-
-    columns = _introspect_columns_duckdb(connector, table)
-    # Writability: native BASE TABLEs (on-disk file connectors) only.  The
-    # virtual demo connector and read_parquet views stay read-only — Nubi does
-    # not host a writable managed lakehouse.
-    writable = False
-    primary_key: list[str] = []
-    # A user-set read-only connector is never editable in the data grid — report
-    # writable=False up front so no edit affordances show (the write path also
-    # gates on this, but the UI should reflect it before a write is attempted).
-    read_only = bool(cfg and cfg.get("read_only"))
-    if datastore_id != _DEMO_CONNECTOR_ID and not read_only:
-        writable, primary_key = _writable_meta_duckdb(connector, table)
-    return {
-        "table": table,
-        "columns": columns,
-        "datastore_id": datastore_id,
-        "writable": writable,
-        "primary_key": primary_key,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -710,7 +723,7 @@ def _rows_response(arrow_table: "pa.Table", fmt: str):
     )
 
 
-@router.get("/data/tables/{table}/rows")
+@router.get("/data/tables/{table}/rows", dependencies=[Depends(require_raw_data_read)])
 async def get_demo_rows(
     table: str,
     limit: int = Query(default=500, ge=1, le=5000),
@@ -720,35 +733,43 @@ async def get_demo_rows(
 ):
     """Fetch rows from a demo connector table (Arrow IPC, or JSON via format=json)."""
     connector = _get_demo_connector()
-    tables = _introspect_tables_duckdb(connector)
+    tables = await asyncio.to_thread(_introspect_tables_duckdb, connector)
     known = {t["name"] for t in tables}
     if table not in known:
         raise AppError("not_found", f"Table {table!r} not found.", 404)
     if not _safe_identifier(table):
         raise AppError("invalid_identifier", f"Table name {table!r} is not a valid identifier.", 400)
     plan = _make_plan(f"SELECT * FROM {table} LIMIT {int(limit)} OFFSET {int(offset)}")
-    return _rows_response(connector.execute(plan), format)
+    arrow_table = await asyncio.to_thread(connector.execute, plan)
+    return await asyncio.to_thread(_rows_response, arrow_table, format)
 
 
-@router.get("/data/{datastore_id}/tables/{table}/rows")
+@router.get("/data/{datastore_id}/tables/{table}/rows", dependencies=[Depends(require_raw_data_author)])
 async def get_rows(
     datastore_id: str,
     table: str,
+    request: Request,
     limit: int = Query(default=500, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
     format: str = Query(default="arrow"),
+    schema: str | None = Query(default=None),
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ):
     """Fetch rows from a connector table (Arrow IPC, or JSON via format=json)."""
-    connector, tables = await _resolve_connector_and_tables(datastore_id, user, repo)
-    known = {t["name"] for t in tables}
-    if table not in known:
-        raise AppError("not_found", f"Table {table!r} not found in datastore {datastore_id!r}.", 404)
-    if not _safe_identifier(table):
-        raise AppError("invalid_identifier", f"Table name {table!r} is not a valid identifier.", 400)
-    plan = _make_plan(f"SELECT * FROM {table} LIMIT {int(limit)} OFFSET {int(offset)}")
-    return _rows_response(connector.execute(plan), format)
+    async with _browse_connector(datastore_id, user, repo, request) as (connector, tables):
+        known = {t["name"] for t in tables}
+        if table not in known:
+            raise AppError("not_found", f"Table {table!r} not found in datastore {datastore_id!r}.", 404)
+        if not _safe_identifier(table):
+            raise AppError("invalid_identifier", f"Table name {table!r} is not a valid identifier.", 400)
+        ref = _resolve_table_ref(table, tables, schema)
+        plan = _make_plan(f"SELECT * FROM {ref} LIMIT {int(limit)} OFFSET {int(offset)}")
+        arrow_table = await asyncio.to_thread(connector.execute, plan)
+        # Serialise inside the tunnel's lifetime (``table_to_ipc_bytes`` is eager,
+        # so the StreamingResponse never touches the network after cleanup) and
+        # off the loop, since encoding a full result set is real CPU work.
+        return await asyncio.to_thread(_rows_response, arrow_table, format)
 
 
 # ---------------------------------------------------------------------------
@@ -771,7 +792,7 @@ async def get_rows(
 #
 # Security gates (all three):
 #   - tenant: datastore must belong to caller's org (404 otherwise, no leak)
-#   - role:   require_writer_default (viewers → 403)
+#   - role:   require_writer (header-aware, viewers → 403)
 #   - writable gate: non-writable table/connector → 409
 #   - identifiers (table + every column key): _safe_identifier allowlist AND
 #     membership in the table's introspected columns; PK keys must equal the
@@ -795,6 +816,7 @@ async def _datastore_cfg(
     datastore_id: str,
     user: dict[str, Any],
     repo: Repo,
+    request: Request,
 ) -> dict[str, Any] | None:
     """Return the org-scoped config dict for *datastore_id*, or ``None``.
 
@@ -806,7 +828,7 @@ async def _datastore_cfg(
 
     if datastore_id is None or datastore_id == _DEMO_CONNECTOR_ID:
         return None
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     ds = await repo.get("datastores", org_id, datastore_id)
     if ds is None:
         return None
@@ -838,6 +860,7 @@ async def _resolve_writable_connector(
     table: str,
     user: dict[str, Any],
     repo: Repo,
+    request: Request,
 ) -> _WriteTarget:
     """Resolve an org-scoped, write-capable target for *table*.
 
@@ -858,7 +881,7 @@ async def _resolve_writable_connector(
             409,
         )
 
-    org_id = await _get_user_org(str(user["id"]), repo)
+    org_id = await _resolve_org_id(str(user["id"]), repo, request)
     ds = await repo.get("datastores", org_id, datastore_id)
     if ds is None:
         raise AppError("not_found", f"Datastore {datastore_id!r} not found.", 404)
@@ -878,8 +901,8 @@ async def _resolve_writable_connector(
             409,
         )
 
-    connector = _build_writable_duckdb_connector(cfg)
-    tables = _introspect_tables_duckdb(connector)
+    connector = await asyncio.to_thread(_build_writable_duckdb_connector, cfg, org_id)
+    tables = await asyncio.to_thread(_introspect_tables_duckdb, connector)
     known = {t["name"] for t in tables}
     if table not in known:
         raise AppError(
@@ -898,7 +921,9 @@ async def _resolve_writable_connector(
     # writable shape: Nubi does not host a writable managed lakehouse, so
     # read_parquet views (including the old per-project editable demo) stay
     # read-only.
-    writable, primary_key = _writable_meta_duckdb(connector, table)
+    writable, primary_key = await asyncio.to_thread(
+        _writable_meta_duckdb, connector, table
+    )
     if writable:
         return _WriteTarget(connector, primary_key)
 
@@ -910,23 +935,15 @@ async def _resolve_writable_connector(
     )
 
 
-def _build_writable_duckdb_connector(cfg: dict[str, Any]) -> DuckDBConnector:
+def _build_writable_duckdb_connector(cfg: dict[str, Any], org_id: str | None = None) -> DuckDBConnector:
     """Build a DuckDB connector opened READ-WRITE for DML.
 
-    Only an on-disk DuckDB file (``database`` / ``path`` that is a real local
-    path, not ``:memory:`` / ``s3://``) yields a write-capable connector.  An
-    in-memory / view-only config produces a connector with no native tables,
-    so the writability gate downstream rejects every table on it.
+    Only an on-disk DuckDB file in a server-managed directory yields a
+    write-capable connector.  An in-memory / view-only config produces a
+    connector with no native tables, so the writability gate downstream
+    rejects every table on it.
     """
-    db_path = cfg.get("database") or cfg.get("path")
-    if db_path and db_path != ":memory:" and not str(db_path).startswith("s3://"):
-        import duckdb as _duckdb
-
-        conn = _duckdb.connect(database=db_path, read_only=False)
-        return DuckDBConnector(conn)
-    # No writable local store: fall back to the standard (view) builder so the
-    # table list resolves; the writability gate will then reject the table.
-    return _build_duckdb_connector(cfg)
+    return DuckDBConnector(connect_duckdb_datastore(cfg, org_id, read_only=False))
 
 
 def _validate_columns(
@@ -971,11 +988,12 @@ def _require_full_pk(provided: dict[str, Any], primary_key: list[str], table: st
 
 @router.patch(
     "/data/{datastore_id}/tables/{table}/rows",
-    dependencies=[Depends(require_writer_default)],
+    dependencies=[Depends(require_writer)],
 )
 async def update_row(
     datastore_id: str,
     table: str,
+    request: Request,
     body: dict[str, Any] = Body(...),
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
@@ -984,7 +1002,7 @@ async def update_row(
 
     Body ``{"pk": {col: val, ...}, "set": {col: val, ...}}``.
     """
-    target = await _resolve_writable_connector(datastore_id, table, user, repo)
+    target = await _resolve_writable_connector(datastore_id, table, user, repo, request)
     connector, primary_key = target.connector, target.primary_key
     pk = body.get("pk")
     set_vals = body.get("set")
@@ -993,7 +1011,9 @@ async def update_row(
     if not isinstance(set_vals, dict) or not set_vals:
         raise AppError("bad_request", "Body must include a non-empty 'set' object.", 400)
 
-    _validate_columns(connector, table, list(pk.keys()) + list(set_vals.keys()))
+    await asyncio.to_thread(
+        _validate_columns, connector, table, list(pk.keys()) + list(set_vals.keys())
+    )
     _require_full_pk(pk, primary_key, table)
     # Disallow mutating a PK column via SET (row identity must stay stable).
     pk_overlap = set(set_vals.keys()) & set(primary_key)
@@ -1018,7 +1038,10 @@ async def update_row(
         f"UPDATE {_quote_ident(table)} SET {set_clause} "
         f"WHERE {where_clause} RETURNING *"
     )
-    result = connector.execute(PhysicalPlan(sql=sql, params=params, cache_key="", rls_claims={}))
+    result = await asyncio.to_thread(
+        connector.execute,
+        PhysicalPlan(sql=sql, params=params, cache_key="", rls_claims={}),
+    )
     n = result.num_rows
     if n == 0:
         raise AppError("not_found", "No row matched the supplied primary key.", 404)
@@ -1031,23 +1054,24 @@ async def update_row(
 @router.post(
     "/data/{datastore_id}/tables/{table}/rows",
     status_code=201,
-    dependencies=[Depends(require_writer_default)],
+    dependencies=[Depends(require_writer)],
 )
 async def insert_row(
     datastore_id: str,
     table: str,
+    request: Request,
     body: dict[str, Any] = Body(...),
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Insert one row.  Body ``{"values": {col: val, ...}}``; returns the new row."""
-    target = await _resolve_writable_connector(datastore_id, table, user, repo)
+    target = await _resolve_writable_connector(datastore_id, table, user, repo, request)
     connector = target.connector
     values = body.get("values")
     if not isinstance(values, dict) or not values:
         raise AppError("bad_request", "Body must include a non-empty 'values' object.", 400)
 
-    _validate_columns(connector, table, list(values.keys()))
+    await asyncio.to_thread(_validate_columns, connector, table, list(values.keys()))
     cols = list(values.keys())
     params: list[Any] = [values[c] for c in cols]
     col_clause = ", ".join(_quote_ident(c) for c in cols)
@@ -1057,18 +1081,22 @@ async def insert_row(
         f"INSERT INTO {_quote_ident(table)} ({col_clause}) "
         f"VALUES ({placeholders}) RETURNING *"
     )
-    result = connector.execute(PhysicalPlan(sql=sql, params=params, cache_key="", rls_claims={}))
+    result = await asyncio.to_thread(
+        connector.execute,
+        PhysicalPlan(sql=sql, params=params, cache_key="", rls_claims={}),
+    )
     rows = result.to_pylist()
     return {"row": rows[0] if rows else None, "inserted": result.num_rows}
 
 
 @router.delete(
     "/data/{datastore_id}/tables/{table}/rows",
-    dependencies=[Depends(require_writer_default)],
+    dependencies=[Depends(require_writer)],
 )
 async def delete_row(
     datastore_id: str,
     table: str,
+    request: Request,
     body: dict[str, Any] = Body(...),
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
@@ -1077,13 +1105,13 @@ async def delete_row(
 
     Body ``{"pk": {col: val, ...}}``; returns ``{"deleted": 1}``.
     """
-    target = await _resolve_writable_connector(datastore_id, table, user, repo)
+    target = await _resolve_writable_connector(datastore_id, table, user, repo, request)
     connector, primary_key = target.connector, target.primary_key
     pk = body.get("pk")
     if not isinstance(pk, dict) or not pk:
         raise AppError("bad_request", "Body must include a non-empty 'pk' object.", 400)
 
-    _validate_columns(connector, table, list(pk.keys()))
+    await asyncio.to_thread(_validate_columns, connector, table, list(pk.keys()))
     _require_full_pk(pk, primary_key, table)
 
     pk_cols = list(pk.keys())
@@ -1095,7 +1123,10 @@ async def delete_row(
     sql = (
         f"DELETE FROM {_quote_ident(table)} WHERE {where_clause} RETURNING *"
     )
-    result = connector.execute(PhysicalPlan(sql=sql, params=params, cache_key="", rls_claims={}))
+    result = await asyncio.to_thread(
+        connector.execute,
+        PhysicalPlan(sql=sql, params=params, cache_key="", rls_claims={}),
+    )
     n = result.num_rows
     if n == 0:
         raise AppError("not_found", "No row matched the supplied primary key.", 404)

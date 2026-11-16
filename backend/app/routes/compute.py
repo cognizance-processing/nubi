@@ -237,70 +237,10 @@ async def _resolve_org_id(identity: VerifiedIdentity, request: Request) -> str |
 
 
 def _choose_runner():
-    """Return the appropriate runner based on current settings.
+    """Return the runner for this environment — see :mod:`app.compute.policy`."""
+    from app.compute.policy import choose_runner  # noqa: PLC0415
 
-    Priority
-    --------
-    1. If KERNEL_REMOTE_PROVIDER=='e2b' AND E2B_API_KEY is set
-       → E2BRunner (works in ANY env, including production).
-    2. Elif KERNEL_REMOTE_PROVIDER=='modal' AND MODAL_TOKEN_ID/SECRET are set
-       → ModalRunner stub (NOTE: ModalRunner.run() always raises 503 — this
-       path is a forward-compat skeleton only; do NOT use in production).
-    3. Elif ENV != 'production' AND KERNEL_LOCAL_ENABLED
-       → LocalSubprocessRunner (dev/test only).
-    4. Else → raise AppError("kernel_disabled", 503).
-
-    The remote runner takes precedence over local in all environments.  The
-    only production-viable remote provider is 'e2b'.
-
-    Raises
-    ------
-    AppError("kernel_disabled", 503)
-        When no runner is available (production without remote configured, or
-        local disabled).
-    """
-    from app.config import get_settings
-
-    settings = get_settings()
-    provider = (settings.KERNEL_REMOTE_PROVIDER or "").lower().strip()
-
-    # ── 1. E2B remote runner ──────────────────────────────────────────────────
-    if provider == "e2b" and settings.E2B_API_KEY:
-        from app.compute.remote_e2b import E2BRunner  # lazy import
-
-        # Plumb the custom attribution template explicitly (empty -> base image).
-        # E2BRunner also reads E2B_TEMPLATE from the env as a fallback, but the
-        # live path must not rely on that implicit behavior.
-        return E2BRunner(
-            api_key=settings.E2B_API_KEY,
-            timeout_s=30,
-            template=settings.E2B_TEMPLATE or None,
-        )
-
-    # ── 2. Modal remote runner ────────────────────────────────────────────────
-    if provider == "modal" and settings.MODAL_TOKEN_ID and settings.MODAL_TOKEN_SECRET:
-        from app.compute.remote_modal import ModalRunner  # lazy import
-
-        return ModalRunner(
-            token_id=settings.MODAL_TOKEN_ID,
-            token_secret=settings.MODAL_TOKEN_SECRET,
-            timeout_s=30,
-        )
-
-    # ── 3. Local subprocess runner (dev/test only) ────────────────────────────
-    # Explicitly blocked in production regardless of KERNEL_LOCAL_ENABLED flag.
-    if settings.KERNEL_LOCAL_ENABLED and settings.ENV != "production":
-        return LocalSubprocessRunner()
-
-    # ── 4. No runner available ────────────────────────────────────────────────
-    raise AppError(
-        "kernel_disabled",
-        "No kernel runner is configured.  "
-        "In production, set KERNEL_REMOTE_PROVIDER=e2b and E2B_API_KEY to "
-        "enable safe remote code execution via E2B Firecracker microVMs.  "
-        "For local development, set ENV=development and KERNEL_LOCAL_ENABLED=true.",
-        503,
-    )
+    return choose_runner()
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +312,22 @@ async def compute_run(
             "forbidden",
             "Token does not grant code-execution capability.  "
             "Required scope: exec:kernel (or edit:* / *).",
+            403,
+        )
+
+    # ── SECURITY: running code needs write access ─────────────────────────────
+    # A login session carries edit:* whatever the member's role, so the ROLE
+    # decides: a read-only member of the workspace cannot execute code.
+    from app.auth.roles import get_org_role, is_writer_role  # noqa: PLC0415
+    from app.repos.provider import get_repo as _get_repo  # noqa: PLC0415
+    from app.routes.query import _resolve_caller_org  # noqa: PLC0415
+
+    _repo = _get_repo()
+    _org_id, _ = await _resolve_caller_org(identity, _repo, request)
+    if _org_id and not is_writer_role(await get_org_role(identity.user_id, _org_id, _repo)):
+        raise AppError(
+            "forbidden",
+            "Running code needs write access to this workspace.",
             403,
         )
 

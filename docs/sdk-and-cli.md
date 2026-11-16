@@ -1,6 +1,6 @@
 # SDK & CLI
 
-![Build and automate with the @nubi/sdk and nubi CLI](illustration:ConnectorSdk)
+![The nubi CLI: log in, push boards as code, set a secret](illustration:CliTerminal)
 
 Two tools for building on Nubi programmatically: **`@nubi/sdk`** is a framework-agnostic JavaScript library for querying data, managing resources, and mounting embedded dashboards. **`nubi`** is a Python CLI for dashboards-as-code, flow management, and secrets.
 
@@ -321,14 +321,21 @@ Per-kind convenience wrappers over pull/push. Each takes `--dir/-d` (default: cw
 
 ### `nubi bridge ...`
 
-For connecting private, network-isolated data sources (VPC / on-prem) to Nubi
-through an outbound-only tunnel. See [Bridges](/docs/bridges) for the full model.
+Runs the **file-ingest** side of a bridge: it claims `file_ingest` tasks over
+an authenticated, outbound-only tunnel and streams local files to a short-TTL
+staging grant. It does **not** carry database connector query traffic — a
+connector with `network_mode: "bridge"` needs the separate query-tunnel agent,
+`python -m app.bridges.agent` (same bridge token, different process; see
+[Bridges](/docs/bridges)). Running `nubi bridge start` for a database
+connector will show the bridge as "online" while every query through it still
+fails, because this agent discards the binary tunnel frames the database
+proxy needs.
 
 | Command | What it does |
 |---|---|
 | `nubi bridge configure` | Write the local bridge config (endpoint + credentials). |
 | `nubi bridge status` | Show the bridge connection status. |
-| `nubi bridge start` | Start the bridge agent (outbound tunnel to Nubi). |
+| `nubi bridge start` | Start the file-ingest bridge agent (outbound tunnel to Nubi). |
 
 <a id="secret-model"></a>
 

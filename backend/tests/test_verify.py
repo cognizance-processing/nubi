@@ -426,16 +426,19 @@ def test_register_and_get_roundtrip():
 # ---------------------------------------------------------------------------
 
 
-def test_embed_token_without_embed_origin_skips_origin_check():
-    """If the token has no embed_origin claim, origin check is skipped."""
+def test_embed_token_without_embed_origin_still_honours_the_issuer_allow_list():
+    """With no embed_origin claim there is no per-token origin to compare, but
+    the issuer's own allowed_origins still applies."""
     from app.auth.verify import verify_token
+    from app.errors import AppError
 
     token = _mint_embed_jwt(embed_origin=None)
-    # Providing expected_origin should NOT cause a rejection since
-    # there is nothing to compare against.
-    identity = verify_token(token, expected_origin="https://any.example")
+    identity = verify_token(token, expected_origin=_HOST_ORIGIN)
     assert identity.kind == "embed"
     assert identity.embed_origin is None
+    with pytest.raises(AppError) as exc_info:
+        verify_token(token, expected_origin="https://any.example")
+    assert exc_info.value.status == 403
 
 
 def test_embed_token_origin_present_but_no_expected_origin_raises_403():
