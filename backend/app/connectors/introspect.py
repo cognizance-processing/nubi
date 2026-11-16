@@ -100,6 +100,25 @@ def introspect_tables(connector: Any) -> list[dict[str, Any]]:
         When both the ``information_schema`` query and the ``SHOW TABLES``
         fallback fail. An unreachable database is an error, not an empty schema.
     """
+    # Engines whose catalog is not reachable through a plain
+    # ``information_schema.tables`` query (BigQuery: INFORMATION_SCHEMA is only
+    # addressable per dataset or per region) expose the catalog directly.
+    native = getattr(connector, "list_tables", None)
+    if callable(native):
+        try:
+            return [
+                {"schema": str(t["schema"]), "name": str(t["name"])}
+                for t in native()
+            ]
+        except AppError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — classified for the caller
+            raise AppError(
+                "introspection_failed",
+                f"Could not list tables for this connector: {exc}",
+                502,
+            ) from exc
+
     first_error: Exception | None = None
     try:
         rows = connector.execute(
