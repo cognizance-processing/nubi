@@ -45,6 +45,8 @@ because the planner bakes those directly into the SQL sent to BigQuery.
 
 from __future__ import annotations
 
+import logging
+
 import json
 import re
 from typing import TYPE_CHECKING, Any, Iterator
@@ -62,6 +64,8 @@ SOURCE_TYPE = "bigquery"
 # dialect.  Captures the 1-based index.
 _PG_PLACEHOLDER_RE = re.compile(r"\$(\d+)")
 
+
+_log = logging.getLogger(__name__)
 
 def _import_bigquery() -> Any:
     """Import google-cloud-bigquery lazily; return the module or raise ``AppError``."""
@@ -288,6 +292,27 @@ class BigQueryConnector(Connector):
     # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------
+
+    def list_tables(self) -> list[dict[str, str]]:
+        """Return ``[{"schema": dataset, "name": table}, …]`` for the project.
+
+        BigQuery has no project-wide ``information_schema.tables`` (the view is
+        scoped to a dataset or a region) and no ``SHOW TABLES``, so tables are
+        listed through the metadata API: no query job, nothing billed.  A
+        dataset the credentials cannot read is skipped rather than failing the
+        whole listing.
+        """
+        client = self._build_client()
+        out: list[dict[str, str]] = []
+        for dataset in client.list_datasets():
+            dataset_id = dataset.dataset_id
+            try:
+                for table in client.list_tables(dataset.reference):
+                    out.append({"schema": dataset_id, "name": table.table_id})
+            except Exception:  # noqa: BLE001 — one unreadable dataset
+                _log.warning("could not list tables in dataset %s", dataset_id, exc_info=True)
+        out.sort(key=lambda t: (t["schema"], t["name"]))
+        return out
 
     def execute(self, plan: PhysicalPlan) -> "pa.Table":
         """Execute *plan* and return the full result as a PyArrow Table.
