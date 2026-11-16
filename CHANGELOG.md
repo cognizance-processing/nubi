@@ -28,7 +28,8 @@ Conventions:
   `barBorderWidth`, `barBorderColor`, `barFillOpacity`, `lineWidth`,
   `lineOpacity`) and honoured in-app, in embeds and in static exports.
   Grouped (colour-split) bars now honour `barMaxWidth` too. Unset keys keep
-  the existing look.
+  the existing look. The in-app **Default** bar width cap (40px, 28px grouped)
+  does not apply in static exports unless **Max width** is set explicitly.
 - **LiteLLM multi-provider AI + token-passthrough billing.** `LiteLLMProvider`
   is now the primary completion path for Anthropic/OpenAI/Gemini (`litellm`
   is a real dependency, not optional) — every metered call is priced via
@@ -90,6 +91,14 @@ Conventions:
   `config.yAxis.min/max` (then legacy `props.min/max`, `config.min/max`,
   0..100), the same order the in-app renderer uses, instead of guessing
   `value × 1.5`. The default needle also draws the same three theme bands.
+- **Bar and funnel styling (inspector and exports).** The chart inspector's
+  **Max width (px)** field no longer clamps on every keystroke (values commit on
+  blur or Enter). Unset stroke colour shows a neutral **Auto** swatch instead of
+  the gauge default blue. Static exports now honour funnel stroke the same way as
+  the app and embeds (default 1px theme border; stroke colour alone sets a 1px
+  border in that colour). Bar stroke colours in exports pass through `safeColor`.
+  New `scripts/render/chart-styling.test.mjs` guards SSR bar, line, and funnel
+  styling against drift from `embed/widgets/chart-options.ts`.
 - **Postgres connector Test and queries.** `PostgresConnector` (also used for
   Redshift, CockroachDB and Cloud SQL) now imports `adbc_driver_postgresql.dbapi`
   explicitly — the connector Test and every query failed with "module
