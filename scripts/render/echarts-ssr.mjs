@@ -258,30 +258,6 @@ function baseAxesOption(xData, isDark = false) {
   }
 }
 
-// Bar / line styling — mirrors barStyle / lineStyleOverrides in
-// embed/widgets/chart-options.ts. Each returns only the keys the author set,
-// so an unset config renders exactly as before. SSR bars have no default cap,
-// so barMaxWidth applies only when it's a number (null = no cap = today).
-function barStyle(color, config) {
-  const out = {}
-  const w = Number(config.barBorderWidth)
-  if (w > 0) { out.borderWidth = w; out.borderColor = config.barBorderColor || color }
-  if (typeof config.barFillOpacity === 'number') out.opacity = config.barFillOpacity
-  return out
-}
-
-function lineStyleOverrides(config) {
-  const out = {}
-  const w = Number(config.lineWidth)
-  if (w > 0) out.width = w
-  if (typeof config.lineOpacity === 'number') out.opacity = config.lineOpacity
-  return out
-}
-
-function barWidthProps(config) {
-  return typeof config.barMaxWidth === 'number' ? { barMaxWidth: config.barMaxWidth } : {}
-}
-
 function buildBar(colMap, xCol, yCol, colorCol, config = {}) {
   const xData = toStrings(colMap[xCol] || [])
   const yData = toNumbers(colMap[yCol] || [])
@@ -299,8 +275,7 @@ function buildBar(colMap, xCol, yCol, colorCol, config = {}) {
       return {
         type: 'bar', name: g.category,
         data: allCats.map((c) => (m.has(c) ? m.get(c) : 0)),
-        ...barWidthProps(config),
-        itemStyle: { color: palette[i % palette.length], ...barStyle(palette[i % palette.length], config) },
+        itemStyle: { color: palette[i % palette.length] },
       }
     })
     return { ...baseAxesOption(allCats), color: palette, series }
@@ -308,7 +283,7 @@ function buildBar(colMap, xCol, yCol, colorCol, config = {}) {
   return {
     ...baseAxesOption(xData),
     color: palette,
-    series: [{ type: 'bar', data: yData, ...barWidthProps(config), itemStyle: { color: palette[0], ...barStyle(palette[0], config) } }],
+    series: [{ type: 'bar', data: yData, itemStyle: { color: palette[0] } }],
   }
 }
 
@@ -327,7 +302,7 @@ function buildLine(colMap, xCol, yCol, area = false, colorCol, config = {}) {
       return {
         type: 'line', name: g.category,
         data: allCats.map((c) => (m.has(c) ? m.get(c) : null)),
-        itemStyle: { color: col }, lineStyle: { color: col, ...lineStyleOverrides(config) },
+        itemStyle: { color: col }, lineStyle: { color: col },
         areaStyle: area ? { opacity: 0.25, color: col } : undefined,
       }
     })
@@ -336,7 +311,7 @@ function buildLine(colMap, xCol, yCol, area = false, colorCol, config = {}) {
   const series = {
     type: 'line', data: yData,
     itemStyle: { color: palette[0] },
-    lineStyle: { color: palette[0], ...lineStyleOverrides(config) },
+    lineStyle: { color: palette[0] },
   }
   if (area) {
     series.areaStyle = { opacity: 0.25, color: palette[0] }
@@ -497,10 +472,6 @@ function buildFunnel(colMap, xCol, yCol, config = {}) {
       orient: config.orientation === 'horizontal' ? 'horizontal' : 'vertical',
       label: { fontSize: 10 },
       emphasis: { disabled: true },
-      // Outline only when the author set one (SSR funnels have none by default).
-      ...(Number(config.barBorderWidth) > 0
-        ? { itemStyle: { borderWidth: Number(config.barBorderWidth), borderColor: config.barBorderColor || '#2d3748' } }
-        : {}),
     }],
   }
 }
@@ -526,13 +497,13 @@ function buildWaterfall(colMap, xCol, yCol, config = {}) {
     ...baseAxesOption(cats),
     color: palette,
     series: [
-      { type: 'bar', stack: 'wf', silent: true, ...barWidthProps(config), itemStyle: { color: 'transparent' }, data: support },
+      { type: 'bar', stack: 'wf', silent: true, itemStyle: { color: 'transparent' }, data: support },
       {
-        type: 'bar', stack: 'wf', ...barWidthProps(config),
-        data: deltas.map((d, i) => {
-          const color = d >= 0 ? (palette[2] || '#10b981') : (palette[3] || '#ef4444')
-          return { value: bars[i], itemStyle: { color, ...barStyle(color, config) } }
-        }),
+        type: 'bar', stack: 'wf',
+        data: deltas.map((d, i) => ({
+          value: bars[i],
+          itemStyle: { color: d >= 0 ? (palette[2] || '#10b981') : (palette[3] || '#ef4444') },
+        })),
       },
     ],
   }
@@ -677,7 +648,7 @@ function buildFan(colMap, enc, config = {}) {
       },
     )
   }
-  series.push({ type: 'line', symbol: 'none', smooth: true, lineStyle: { width: 2, color: palette[0], ...lineStyleOverrides(config) }, data: mid })
+  series.push({ type: 'line', symbol: 'none', smooth: true, lineStyle: { width: 2, color: palette[0] }, data: mid })
   return { ...baseAxesOption(xs), color: palette, series }
 }
 
@@ -694,7 +665,7 @@ function buildHBar(colMap, xCol, yCol, config = {}) {
     xAxis: { type: 'value', axisLabel: { fontSize: 11 } },
     yAxis: { type: 'category', data: catData, axisLabel: { fontSize: 11 } },
     tooltip: { show: false },
-    series: [{ type: 'bar', data: valData, ...barWidthProps(config), itemStyle: { color: palette[0], ...barStyle(palette[0], config) } }],
+    series: [{ type: 'bar', data: valData, itemStyle: { color: palette[0] } }],
   }
 }
 
@@ -721,18 +692,17 @@ function buildCombo(colMap, enc, config = {}) {
   const barSeries = barCols.map((col, i) => ({
     type: 'bar', name: col, yAxisIndex: linesLeft ? 1 : 0,
     data: byPoint
-      ? toNumbers(colMap[col] || []).map((v, k) => ({ value: v, itemStyle: { color: palette[k % palette.length], ...barStyle(palette[k % palette.length], config) } }))
+      ? toNumbers(colMap[col] || []).map((v, k) => ({ value: v, itemStyle: { color: palette[k % palette.length] } }))
       : toNumbers(colMap[col] || []),
     stack: stacked ? 'total' : undefined,
-    ...barWidthProps(config),
-    itemStyle: { color: palette[i % palette.length], ...barStyle(palette[i % palette.length], config) },
+    itemStyle: { color: palette[i % palette.length] },
   }))
   const lineSeries = lineCols.map((col, i) => ({
     type: 'line', name: col, yAxisIndex: barCols.length && lineCols.length && !linesLeft ? 1 : 0,
     data: toNumbers(colMap[col] || []),
     itemStyle: { color: lineColor(i) },
     ...(config.symbolSize ? { symbol: 'circle', symbolSize: config.symbolSize } : {}),
-    lineStyle: { color: lineColor(i), width: 2, ...lineStyleOverrides(config) },
+    lineStyle: { color: lineColor(i), width: 2 },
   }))
 
   const option = {

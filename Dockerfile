@@ -2,9 +2,9 @@
 # Nubi combined image — FastAPI backend + embedded SPA in ONE image.
 # Build context: repo root (docker build -f Dockerfile .)
 #
-# This is the image deployed to Fly.io by the operator's deploy config (for
-# Nubi Cloud that's the private nubi-cloud repo: deploy/fly.toml). The same
-# image runs as two Fly processes:
+# Example platform config: deploy/fly/ (Fly.io). Nubi Cloud deploys this same
+# image from a private ops repo (see DEPLOY.md). The image runs as two
+# processes:
 #   app    — uvicorn serving the API *and* the built SPA (STATIC_DIR=/app/dist,
 #            see the static-SPA block in backend/main.py)
 #   worker — `python worker.py` (flows scheduler loop + worker pool)
@@ -95,7 +95,8 @@ COPY backend/seed.py /app/backend/seed.py
 COPY backend/seed_data_duckdb.py /app/backend/seed_data_duckdb.py
 COPY backend/seed_data/ /app/backend/seed_data/
 
-# Migrations (run on Fly via `release_command`, see fly.toml).
+# Migrations: run `python /app/database/migrate.py` before each rollout (e.g.
+# a Fly release_command, see deploy/fly/fly.toml, or a Cloud Run job).
 COPY database/ /app/database/
 
 # Built SPA — backend/main.py serves it when STATIC_DIR points here.
@@ -126,10 +127,10 @@ RUN mkdir -p /app/backend/storage_data \
     && chown -R appuser /app/backend/seed_data /app/backend/storage_data
 USER appuser
 
-# Both process commands (fly.toml [processes]) run from this directory.
+# Both process commands (app + worker, see deploy/fly/fly.toml) run from here.
 WORKDIR /app/backend
 
 EXPOSE 8000
-# Default command = the web process; fly.toml overrides per process.
-# Migrations are NOT run here — Fly's release_command handles them.
+# Default command = the web process; the platform overrides it for the worker.
+# Migrations are NOT run here — the deploy's release step handles them.
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
