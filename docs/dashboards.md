@@ -245,7 +245,6 @@ Open the **Display** section in Configure:
 - **Legend** — hidden, or positioned top / bottom / left / right.
 - **Data labels** — show the value on each element.
 - **Smooth curves** (line / area / fan).
-- **Bars & lines** — **Bar width** (bar / waterfall / combo): *Default*, *Auto (fill)* with no width cap, or *Max width* in px (6–500). **Stroke width** and colour draw an outline on bars (the colour defaults to each bar's own fill) and set the funnel border. **Fill opacity** fades bars. **Line width** and **Line opacity** (line / area / fan / combo lines) style the line stroke. Left unset, charts look as before. Applies in-app, in embeds and in static exports.
 - **Custom palette** — a comma-separated list of hex colors overrides the theme series colors.
 - **Title** and **Height (px)**.
 - **Max (gauge range)** — the top of a gauge's scale.
