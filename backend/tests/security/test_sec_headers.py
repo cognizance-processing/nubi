@@ -7,7 +7,7 @@ import hashlib
 
 import pytest
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.testclient import TestClient
 
 from tests.security import conftest_helpers  # noqa: F401  (env bootstrap)
@@ -32,6 +32,14 @@ def _app(tmp_path, env="production"):
     async def embed_demo():
         return "<html></html>"
 
+    @app.get("/assets/engine.worker.js")
+    async def worker_script():
+        return Response("self.onmessage = () => {}", media_type="text/javascript")
+
+    @app.get("/embed/nubi-embed.js")
+    async def embed_script():
+        return Response("void 0", media_type="text/javascript")
+
     @app.get("/", response_class=HTMLResponse)
     async def spa():
         return INDEX
@@ -47,6 +55,20 @@ def test_api_responses_are_locked_down(tmp_path):
     assert "max-age=" in h["strict-transport-security"]
     csp = h["content-security-policy"]
     assert "default-src 'none'" in csp and "frame-ancestors 'none'" in csp
+
+
+def test_script_files_can_run_as_workers_that_load_webassembly(tmp_path):
+    """A worker is governed by the policy on its own script response."""
+    client = _app(tmp_path)
+    csp = client.get("/assets/engine.worker.js").headers["content-security-policy"]
+    directives = dict(d.strip().split(" ", 1) for d in csp.split(";"))
+    assert "'wasm-unsafe-eval'" in directives["script-src"]
+    assert "'self'" in directives["connect-src"]
+    assert "'unsafe-inline'" not in directives["script-src"]
+    assert directives["frame-ancestors"] == "'none'"
+    # Embed scripts keep their own (host-loadable) policy.
+    embed = client.get("/embed/nubi-embed.js").headers["content-security-policy"]
+    assert embed == "default-src 'none'; base-uri 'none'"
 
 
 def test_app_document_gets_a_script_policy_that_allows_only_its_own_code(tmp_path):
