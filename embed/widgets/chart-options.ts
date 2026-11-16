@@ -55,17 +55,7 @@
  *                   defaults to the `index`-th segment's share (default 0 —
  *                   the first/meaningful slice of a value+remainder ring),
  *                   formatted via `format` (FormatSpec) or a plain "N.N%".
- *   barMaxWidth: number | null,           // bar/combo/waterfall: cap bar width (px); null = no cap
- *                   (auto/fill). Unset -> builder default (bar 40, grouped 28,
- *                   combo 24/28, waterfall none).
- *   barBorderWidth: number,               // bar/combo/waterfall/funnel: outline px; 0/unset = none
- *                   (funnel: unset keeps its 1px theme border)
- *   barBorderColor: string,               // outline colour; default = the bar's own fill
- *                   (funnel: theme border)
- *   barFillOpacity: number,               // bar/combo/waterfall: 0..1 itemStyle.opacity
- *                   (fades the outline with it)
- *   lineWidth: number,                    // line/area/fan/combo lines: stroke px
- *   lineOpacity: number,                  // line/area/fan/combo lines: 0..1 stroke opacity
+ *   barMaxWidth: number | null,           // bar/combo: cap bar width; null = no cap
  *   lineAxis:  'left' | 'right',          // combo: axis the lines read from (default right)
  *   lineColors: string[],                 // combo: line colours, independent of the bars
  *   symbolSize: number,                   // combo: size of the filled points on its lines
@@ -770,17 +760,14 @@ function buildBar(table, e, config, theme, locale) {
     const groups = groupByCategory(cats, vals, colorRaw)
     const allCats = Array.from(new Set(cats))
     catAxis.data = allCats
-    // Series colour comes from option.color (baseFrame's palette); read it
-    // here only so an outline can default to the bar's own colour.
-    const groupPalette = resolvePalette(config, theme)
-    series = groups.map((g, gi) => {
+    series = groups.map((g) => {
       const m = new Map(g.a.map((c, i) => [String(c), g.b[i]]))
       const data = allCats.map((c) => (m.has(c) ? m.get(c) : 0))
       return {
         type: 'bar', name: g.category, data,
         stack: stack ? 'total' : undefined,
-        barMaxWidth: barMaxWidthOr(config, 28),
-        itemStyle: { borderRadius: stack ? 0 : [2, 2, 0, 0], ...barStyle(groupPalette[gi % groupPalette.length], config) },
+        barMaxWidth: 28,
+        itemStyle: { borderRadius: stack ? 0 : [2, 2, 0, 0] },
       }
     })
     if (config.stack === 'percent') applyPercentStack(series)
@@ -791,17 +778,14 @@ function buildBar(table, e, config, theme, locale) {
     const radius = horizontal ? [0, 2, 2, 0] : [2, 2, 0, 0]
     if (config.colorByPoint) {
       series = [{
-        type: 'bar', name: humaniseColumn(e.y), barMaxWidth: barMaxWidthOr(config, 40),
-        data: vals.map((v, i) => {
-          const color = theme.palette[i % theme.palette.length]
-          return { value: v, itemStyle: { color, borderRadius: radius, ...barStyle(color, config) } }
-        }),
+        type: 'bar', name: humaniseColumn(e.y), barMaxWidth: config.barMaxWidth === undefined ? 40 : config.barMaxWidth ?? undefined,
+        data: vals.map((v, i) => ({ value: v, itemStyle: { color: theme.palette[i % theme.palette.length], borderRadius: radius } })),
       }]
     } else {
       series = [{
         type: 'bar', name: humaniseColumn(e.y), data: vals,
-        barMaxWidth: barMaxWidthOr(config, 40),
-        itemStyle: { color: theme.palette[0], borderRadius: radius, ...barStyle(theme.palette[0], config) },
+        barMaxWidth: config.barMaxWidth === undefined ? 40 : config.barMaxWidth ?? undefined,
+        itemStyle: { color: theme.palette[0], borderRadius: radius },
       }]
     }
   }
@@ -813,31 +797,6 @@ function buildBar(table, e, config, theme, locale) {
     yAxis: horizontal ? catAxis : valAxis,
     series,
   }
-}
-
-// Author bar outline / fill opacity (Keydash "marker" parity). Returns ONLY the
-// keys the author set, so an unset config leaves itemStyle exactly as before.
-// The outline defaults to the bar's own colour, not the theme border.
-function barStyle(color, config) {
-  const out: Record<string, any> = {}
-  const w = Number(config.barBorderWidth)
-  if (w > 0) { out.borderWidth = w; out.borderColor = config.barBorderColor || color }
-  if (typeof config.barFillOpacity === 'number') out.opacity = config.barFillOpacity
-  return out
-}
-
-// Author line stroke (width / opacity) — empty when unset.
-function lineStyleOverrides(config) {
-  const out: Record<string, any> = {}
-  const w = Number(config.lineWidth)
-  if (w > 0) out.width = w
-  if (typeof config.lineOpacity === 'number') out.opacity = config.lineOpacity
-  return out
-}
-
-// barMaxWidth: undefined -> the builder's default cap; null -> no cap.
-function barMaxWidthOr(config, fallback) {
-  return config.barMaxWidth === undefined ? fallback : config.barMaxWidth ?? undefined
 }
 
 function applyPercentStack(series) {
@@ -885,8 +844,6 @@ function buildLine(table, e, config, theme, locale, { area = false } = {}) {
     yAxes.push(y2)
   }
   const sampling = n > 5000 ? 'lttb' : undefined
-  const lineOv = lineStyleOverrides(config)
-  const lineSt = Object.keys(lineOv).length ? lineOv : undefined
   const colorRaw = e.color ? table.col(e.color) : null
   let series
   if (colorRaw && !isNumericArray(colorRaw)) {
@@ -898,7 +855,6 @@ function buildLine(table, e, config, theme, locale, { area = false } = {}) {
         smooth, sampling, showSymbol: n <= 60,
         stack: area && stack ? stack : undefined,
         areaStyle: area ? { opacity } : undefined,
-        ...(lineSt ? { lineStyle: lineSt } : {}),
       }))
     } else {
       // Long-format data ("day, metric, value") repeats each category once per
@@ -921,7 +877,6 @@ function buildLine(table, e, config, theme, locale, { area = false } = {}) {
           connectNulls: false,
           stack: area && stack ? stack : undefined,
           areaStyle: area ? { opacity } : undefined,
-          ...(lineSt ? { lineStyle: lineSt } : {}),
         }
       })
     }
@@ -931,7 +886,7 @@ function buildLine(table, e, config, theme, locale, { area = false } = {}) {
       type: 'line', name: humaniseColumn(e.y),
       data: xIsNumeric ? toNumbers(xRaw).map((x, i) => [x, yVals[i]]) : yVals,
       smooth, sampling, showSymbol: n <= 60,
-      itemStyle: { color: theme.palette[0] }, lineStyle: { color: theme.palette[0], ...lineOv },
+      itemStyle: { color: theme.palette[0] }, lineStyle: { color: theme.palette[0] },
       areaStyle: area ? { color: theme.palette[0], opacity } : undefined,
     }]
     if (hasY2) {
@@ -940,7 +895,7 @@ function buildLine(table, e, config, theme, locale, { area = false } = {}) {
         type: 'line', name: humaniseColumn(e.y2), yAxisIndex: 1,
         data: xIsNumeric ? toNumbers(xRaw).map((x, i) => [x, y2Vals[i]]) : y2Vals,
         smooth, showSymbol: n <= 60,
-        itemStyle: { color: theme.palette[1] }, lineStyle: { color: theme.palette[1], ...lineOv },
+        itemStyle: { color: theme.palette[1] }, lineStyle: { color: theme.palette[1] },
       })
     }
   }
@@ -1014,11 +969,11 @@ function buildCombo(table, e, config, theme, locale) {
   const barSeries = barCols.map((col, i) => ({
     type: 'bar', name: humaniseColumn(col), yAxisIndex: linesLeft ? 1 : 0,
     data: byPoint
-      ? toNumbers(table.col(col) || []).map((v, k) => ({ value: v, itemStyle: { color: palette[k % palette.length], ...barStyle(palette[k % palette.length], config) } }))
+      ? toNumbers(table.col(col) || []).map((v, k) => ({ value: v, itemStyle: { color: palette[k % palette.length] } }))
       : toNumbers(table.col(col) || []),
-    barMaxWidth: barMaxWidthOr(config, stacked ? 28 : 24),
+    barMaxWidth: config.barMaxWidth === undefined ? (stacked ? 28 : 24) : config.barMaxWidth ?? undefined,
     stack: stacked ? 'total' : undefined,
-    itemStyle: { color: palette[i % palette.length], borderRadius: stacked ? 0 : [2, 2, 0, 0], ...barStyle(palette[i % palette.length], config) },
+    itemStyle: { color: palette[i % palette.length], borderRadius: stacked ? 0 : [2, 2, 0, 0] },
   }))
   if (config.stack === 'percent') applyPercentStack(barSeries)
   const lineSeries = lineCols.map((col, i) => ({
@@ -1028,7 +983,7 @@ function buildCombo(table, e, config, theme, locale) {
     showSymbol: n <= 60,
     ...(config.symbolSize ? { symbol: 'circle', symbolSize: config.symbolSize } : {}),
     itemStyle: { color: lineColor(i) },
-    lineStyle: { color: lineColor(i), width: 2, ...lineStyleOverrides(config) },
+    lineStyle: { color: lineColor(i), width: 2 },
   }))
 
   const option: Record<string, any> = {
@@ -1330,8 +1285,7 @@ function buildFunnel(table, e, config, theme, locale) {
         show: config.dataLabels !== false, color: theme.fg, position: 'inside',
         formatter: fmt ? (p) => `${p.name}: ${fmt(p.value)}` : '{b}: {c}',
       },
-      // Outline only (no width/fill keys): unset keeps the 1px theme border.
-      itemStyle: { borderColor: config.barBorderColor || theme.border, borderWidth: config.barBorderWidth ?? 1 },
+      itemStyle: { borderColor: theme.border, borderWidth: 1 },
     }],
   }
 }
@@ -1359,19 +1313,15 @@ function buildWaterfall(table, e, config, theme, locale) {
     const rendered = base.map((b, i) => b + (typeof up[i] === 'number' ? up[i] : 0))
     yAxis.nameGap = estimateValueAxisNameGap([...base, ...rendered], yAxis)
   }
-  const upColor = theme.palette[2] || '#10b981'
-  const downColor = theme.palette[3] || '#ef4444'
-  // No default cap on a waterfall; set on all three so the stack stays aligned.
-  const wfWidth = config.barMaxWidth === undefined ? {} : { barMaxWidth: config.barMaxWidth ?? undefined }
 
   return {
     ...baseFrame(config, theme, locale, { trigger: 'axis' }),
     legend: config.legend === false ? undefined : legendConfig(config, theme),
     xAxis, yAxis,
     series: [
-      { type: 'bar', name: 'base', stack: 'wf', ...wfWidth, itemStyle: { color: 'transparent' }, emphasis: { itemStyle: { color: 'transparent' } }, data: base, silent: true, tooltip: { show: false } },
-      { type: 'bar', name: 'increase', stack: 'wf', ...wfWidth, itemStyle: { color: upColor, ...barStyle(upColor, config) }, data: up },
-      { type: 'bar', name: 'decrease', stack: 'wf', ...wfWidth, itemStyle: { color: downColor, ...barStyle(downColor, config) }, data: down },
+      { type: 'bar', name: 'base', stack: 'wf', itemStyle: { color: 'transparent' }, emphasis: { itemStyle: { color: 'transparent' } }, data: base, silent: true, tooltip: { show: false } },
+      { type: 'bar', name: 'increase', stack: 'wf', itemStyle: { color: theme.palette[2] || '#10b981' }, data: up },
+      { type: 'bar', name: 'decrease', stack: 'wf', itemStyle: { color: theme.palette[3] || '#ef4444' }, data: down },
     ],
   }
 }
@@ -1967,7 +1917,7 @@ function buildFan(table, e, config, theme, locale) {
   }
   series.push({
     name: e.y || 'forecast', type: 'line', smooth, symbol: 'none',
-    lineStyle: { color: accent, width: 2, ...lineStyleOverrides(config) }, itemStyle: { color: accent },
+    lineStyle: { color: accent, width: 2 }, itemStyle: { color: accent },
     data: xIsNumeric ? mid.map((v, i) => [cats[i], v]) : mid,
     z: 5,
   })
@@ -2046,9 +1996,6 @@ const INTERPRETED_KEYS = new Set([
   'gaugeStyle',
   // gauge arc colours — read by buildGauge, not raw ECharts keys.
   'gaugeArcGradient', 'gaugeArcStart', 'gaugeArcEnd', 'gaugeArcColor', 'gaugeArcCaps',
-  // bar / line styling + combo/bar options read by the builders, not raw ECharts keys.
-  'barMaxWidth', 'barBorderWidth', 'barBorderColor', 'barFillOpacity', 'lineWidth', 'lineOpacity',
-  'symbolSize', 'colorByPoint', 'lineAxis', 'lineColors',
 ])
 
 function stripInterpretedKeys(config) {
