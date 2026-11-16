@@ -80,6 +80,7 @@ import Input, { Select } from '../../components/ui/Input.jsx'
 import SegmentedControl from '../../components/ui/SegmentedControl.jsx'
 import Tooltip from '../../components/ui/Tooltip.jsx'
 import { Tabs, TabsList, TabsTrigger } from '../../components/ui/Tabs.jsx'
+import { toast } from '../../components/ui/Toast.jsx'
 import '../../components/app/appPatterns.css'
 import ChatPanel from '../../editor/ChatPanel.jsx'
 import MetricExposePanel from '../../components/app/MetricExposePanel.jsx'
@@ -94,7 +95,7 @@ import {
 import QueryCodeView from './QueryCodeView.jsx'
 import DataTable from '../../components/DataTable.jsx'
 import PythonCell from '../../components/PythonCell.jsx'
-import { runArrowQueryById, runArrowQuery, registerArrowTable, runLocalSqlForCell } from '../../lib/wasmRuntime.js'
+import { runArrowQueryById, runArrowQuery, shareArrowTable, runLocalSqlForCell } from '../../lib/wasmRuntime.js'
 import { get, post, registerQuery, renderQueryTemplate, listConnectors, listQueryWidgetUsages, fetchSchema } from '../../lib/api.js'
 import VisualQueryBuilder from '../../components/VisualQueryBuilder.jsx'
 import TableWidget from '../../dashboards/widgets/TableWidget.jsx'
@@ -148,6 +149,18 @@ function dialectForDatastore(datastores, datastoreId) {
 
 // Sentinel id of the built-in virtual demo connector (matches the backend).
 const DEMO_DATASTORE_ID = '__demo__'
+
+/**
+ * Tell the user the in-browser engine did not take a result. The rows are
+ * still shown; what is lost is other cells being able to query them. One
+ * notice at a time, however many cells hit the same failure.
+ */
+function notifyEngineFailure(err) {
+  toast.error(
+    `Your results are shown, but other cells can't query them yet. ${err?.message ?? 'The in-browser query engine could not start.'}`,
+    { id: 'query-engine-failure', duration: 12000 },
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Param panel logic (SQL placeholder extraction, auto-param reconciliation,
@@ -1285,7 +1298,7 @@ function CellControls({ collapsed, onToggle, onMoveUp, onMoveDown, onRemove, fir
 // ---------------------------------------------------------------------------
 // ScratchSqlCell — a session-only SQL exploration cell (ad-hoc run)
 //
-// Cross-cell flow: after successful run, registerArrowTable(cellRef, table) is
+// Cross-cell flow: after successful run, shareArrowTable([cellRef], table) is
 // called so subsequent cells can SELECT * FROM cell_2 etc.
 // The cell also attempts runLocalSqlForCell first if the SQL references any
 // cell_N table (heuristic: if no datastore and sql contains "cell_N").
@@ -1340,12 +1353,8 @@ function ScratchSqlCell({
       setResult(res)
       // Register result in DuckDB-WASM for downstream cells
       if (res?.table) {
-        try {
-          await registerArrowTable(cellRef, res.table)
-          onResult?.({ cellRef, table: res.table })
-        } catch (regErr) {
-          console.warn('[ScratchSqlCell] registerArrowTable failed:', regErr)
-        }
+        shareArrowTable([cellRef], res.table, notifyEngineFailure)
+        onResult?.({ cellRef, table: res.table })
       }
     } catch (err) {
       setRunError(err?.message ?? 'Query failed')
@@ -1907,19 +1916,12 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
         rowCount: res?.table?.numRows ?? null, elapsedMs: res?.elapsedMs ?? null,
       }))
 
-      // Register primary cell result as "cell_1" in DuckDB-WASM for cross-cell flow
+      // Share the result with the in-browser engine as "cell_1" (plus the
+      // query's id and name) for cross-cell flow. Not awaited: the rows are
+      // already on screen, and the run must not wait on the engine starting.
       if (res?.table) {
-        try {
-          await registerArrowTable('cell_1', res.table)
-          // Also register under query id/name if available
-          if (query?.id) await registerArrowTable(query.id, res.table).catch(() => {})
-          if (query?.name) {
-            const safeName = query.name.replace(/[^a-z0-9_]/gi, '_').toLowerCase()
-            if (safeName) await registerArrowTable(safeName, res.table).catch(() => {})
-          }
-        } catch (regErr) {
-          console.warn('[QueryWorkspace] registerArrowTable cell_1 failed:', regErr)
-        }
+        const safeName = query?.name ? query.name.replace(/[^a-z0-9_]/gi, '_').toLowerCase() : ''
+        shareArrowTable(['cell_1', query?.id, safeName], res.table, notifyEngineFailure)
       }
     } catch (err) {
       setRunError(err?.message ?? 'Query failed')
