@@ -100,6 +100,16 @@ Conventions:
 
 ### Changed
 
+- **Faster boards: load what is on screen, remember recent results.** On the
+  board view, tables, charts, pivots and KPI/metric tiles now wait until they
+  are within ~600px of the screen before they mount and run their query
+  (filters, text, images and the editor canvas are unchanged). Successful
+  widget results and filter option lists are remembered in the browser for 10
+  minutes, keyed by user, workspace, query, params, filters, limit and the
+  board refresh tick, so returning to a tab is instant; identical in-flight
+  requests share one call. Failed results are never kept; saving a query and
+  logging out clear the memory; the query editor never uses it. Whole-board
+  PNG/PDF export loads every deferred widget first.
 - Doc/comment consistency pass so alert-delivery descriptions across
   `notify`, `chat`, `flows`, and `ai/watch` reflect the email-only reality.
 

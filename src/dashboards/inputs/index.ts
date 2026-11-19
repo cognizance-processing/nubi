@@ -16,6 +16,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
+import { useQueryCacheOpts } from '../RefreshContext.jsx'
 
 export { default as Popover } from './Popover.jsx'
 export { default as Combobox } from './Combobox.jsx'
@@ -114,6 +115,10 @@ export function useFilterOptions(widget, resolved = undefined) {
   // a refetch sees the latest upstream values without re-creating the callbacks.
   const resolvedRef = useRef(resolved)
   resolvedRef.current = resolved
+  // Remembered option lists make returning to a tab instant (board view only).
+  const cacheOpts = useQueryCacheOpts()
+  const cacheOptsRef = useRef(cacheOpts)
+  cacheOptsRef.current = cacheOpts
 
   const [options, setOptions] = useState([])
   const [loading, setLoading] = useState(false)
@@ -144,7 +149,7 @@ export function useFilterOptions(widget, resolved = undefined) {
     setLoading(true)
     try {
       const namedParams = buildParams(searchText)
-      const { table } = await runArrowQueryById(queryId, namedParams ? { namedParams } : undefined)
+      const { table } = await runArrowQueryById(queryId, { ...cacheOptsRef.current, namedParams })
       if (seq !== reqSeq.current) return  // a newer request superseded this one
       const opts = tableToOptions(table, p)
       for (const o of opts) labelCache.current.set(o.value, o.label)

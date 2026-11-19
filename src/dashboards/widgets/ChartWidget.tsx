@@ -63,7 +63,7 @@ import EChart from '../../viz/EChart.jsx'
 import { useResolvedParams, useResolvedFilters, useSetVariable } from '../VariableStore.jsx'
 import { useCrossFilter } from '../CrossFilterContext.jsx'
 import { useStepper } from '../StepperContext.jsx'
-import { useRefreshEpoch } from '../RefreshContext.jsx'
+import { useRefreshEpoch, useQueryCacheOpts } from '../RefreshContext.jsx'
 import Skeleton from '../../components/ui/Skeleton.jsx'
 import EmptyState from '../../components/ui/EmptyState.jsx'
 import WidgetError from '../../components/app/WidgetError.jsx'
@@ -148,6 +148,7 @@ export default function ChartWidget({ widget, providerTable = null }) {
   const resolvedParams = useResolvedParams(widgetParams)
   const resolvedFilters = useResolvedFilters(widgetFilters)
   const refreshEpoch = useRefreshEpoch()
+  const cacheOpts = useQueryCacheOpts()
 
   const [table, setTable] = useState(null)
   const rootRef = useRef(null)
@@ -196,9 +197,7 @@ export default function ChartWidget({ widget, providerTable = null }) {
           ? await runMetricQuery(metric)
           : await runArrowQueryById(
               query_id,
-              (hasParams || hasFilters)
-                ? { namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined }
-                : undefined,
+              { ...cacheOpts, namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined },
             )
         if (cancelled) return
         // A failed query surfaces its real reason and renders NO chart — never

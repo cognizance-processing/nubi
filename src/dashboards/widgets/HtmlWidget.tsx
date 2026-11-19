@@ -15,12 +15,14 @@
 import { useState, useEffect, useMemo } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { useResolvedParams, useResolvedFilters } from '../VariableStore.jsx'
+import { useQueryCacheOpts } from '../RefreshContext.jsx'
 import { renderWidgetHtml } from '../widgetHtml.js'
 
 export default function HtmlWidget({ widget }) {
   const { query_id, html, props: wProps = {}, encoding = {}, params: widgetParams, filters: widgetFilters } = widget
   const resolvedParams = useResolvedParams(widgetParams)
   const resolvedFilters = useResolvedFilters(widgetFilters)
+  const cacheOpts = useQueryCacheOpts()
 
   const [table, setTable] = useState(null)
   const [error, setError] = useState(null)
@@ -34,9 +36,7 @@ export default function HtmlWidget({ widget }) {
         const hasFilters = resolvedFilters.length > 0
         const { table: t } = await runArrowQueryById(
           query_id,
-          (hasParams || hasFilters)
-            ? { namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined }
-            : undefined,
+          { ...cacheOpts, namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined },
         )
         if (!cancelled) setTable(t)
       } catch (err) {

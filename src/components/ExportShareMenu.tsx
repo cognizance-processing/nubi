@@ -25,6 +25,7 @@ import Tooltip from './ui/Tooltip.jsx'
 import { fixedPanelStyle, placeDropdown, useAnchorTracking } from './ui/useFixedAnchor.js'
 import { get, post } from '../lib/api.js'
 import { widgetToCsv, elementToPNG, elementToPDF } from '../lib/exports.js'
+import { prepareBoardForCapture } from '../dashboards/lazyCapture.js'
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -105,6 +106,8 @@ export default function ExportShareMenu({ board, spec }) {
   async function exportPng() {
     setBusy('png'); setError(null)
     try {
+      // Widgets further down the board load only when scrolled to; load them all first.
+      await prepareBoardForCapture()
       await elementToPNG(dashboardNode(), `${name}.png`)
     } catch (e) { setError(e.message || 'PNG export failed.') } finally { setBusy(null) }
   }
@@ -112,6 +115,8 @@ export default function ExportShareMenu({ board, spec }) {
   async function exportPdf() {
     setBusy('pdf'); setError(null)
     try {
+      // Widgets further down the board load only when scrolled to; load them all first.
+      await prepareBoardForCapture()
       await elementToPDF(dashboardNode(), `${name}.pdf`, { title: spec?.title || 'Dashboard' })
     } catch (e) { setError(e.message || 'PDF export failed.') } finally { setBusy(null) }
   }

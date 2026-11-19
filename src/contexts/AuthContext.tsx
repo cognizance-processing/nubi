@@ -22,6 +22,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import * as api from '../lib/api.js'
 import { clearBoardThumbnailCache } from '../lib/boardThumbnail.js'
+import { clearQueryResultCache } from '../lib/queryResultCache.js'
 import { announceSession, shouldProbeSession, writeSessionHint } from './authSession.js'
 
 export interface AuthUser {
@@ -170,6 +171,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(null)
       // Rendered boards are cached per browser, not per user.
       void clearBoardThumbnailCache()
+      // Remembered query results belong to the user who loaded them.
+      clearQueryResultCache()
     }
   }
 
