@@ -20,8 +20,40 @@
  * On top of that the board must have finished loading, with no failed tile in
  * the part being captured.
  */
-import { authedFetch } from './api.js'
-import { forgetBoardThumbnail } from './boardThumbnail.js'
+import type { authedFetch as AuthedFetch } from './api.js'
+import type { forgetBoardThumbnail as ForgetBoardThumbnail } from './boardThumbnail.js'
+import type { captureElement as CaptureElement } from './domCapture.js'
+
+/**
+ * The network and drawing calls, loaded on first use: the capture only ever
+ * runs after a board has rendered, so these are never on the page's critical
+ * path, and tests can stand in for them (_setCaptureDeps) without a browser.
+ */
+type CaptureDeps = {
+  authedFetch: typeof AuthedFetch
+  captureElement: typeof CaptureElement
+  forgetBoardThumbnail: typeof ForgetBoardThumbnail
+}
+let _deps: CaptureDeps | null = null
+
+async function deps(): Promise<CaptureDeps> {
+  if (!_deps) {
+    const [api, dom, thumb] = await Promise.all([
+      import('./api.js'), import('./domCapture.js'), import('./boardThumbnail.js'),
+    ])
+    _deps = {
+      authedFetch: api.authedFetch,
+      captureElement: dom.captureElement,
+      forgetBoardThumbnail: thumb.forgetBoardThumbnail,
+    }
+  }
+  return _deps
+}
+
+/** Test seam. */
+export function _setCaptureDeps(d: CaptureDeps | null) {
+  _deps = d
+}
 
 /** Output size: the card's own 16:9 frame, at the width the render uses. */
 const OUT_WIDTH = 1000
@@ -66,16 +98,32 @@ export function _resetCaptureAttempts() {
   _attempted.clear()
 }
 
+/** Height of the slice of the board that becomes the picture. */
+function cropHeightOf(root: HTMLElement): number {
+  return Math.min(root.scrollHeight, Math.round(root.clientWidth / ASPECT))
+}
+
+/** True when el starts inside the top slice that becomes the picture. */
+function inCrop(root: HTMLElement, el: Element, cropHeight: number): boolean {
+  return el.getBoundingClientRect().top < root.getBoundingClientRect().top + cropHeight
+}
+
+/**
+ * Loading state inside the captured slice. Tiles below it do not count: with
+ * widgets mounted only when scrolled near (LazyMount), their placeholders stay
+ * busy until someone scrolls, and they are not in the picture anyway.
+ */
 function isBusy(root: HTMLElement): boolean {
-  if (root.querySelector('[aria-busy="true"], .animate-pulse, .nubi-skeleton, .nubi-skeleton-text, .nubi-shimmer')) return true
-  return Array.from(root.querySelectorAll('img')).some((img) => !img.complete)
+  const cropHeight = cropHeightOf(root)
+  const busy = root.querySelectorAll('[aria-busy="true"], .animate-pulse, .nubi-skeleton, .nubi-skeleton-text, .nubi-shimmer')
+  if (Array.from(busy).some((el) => inCrop(root, el, cropHeight))) return true
+  return Array.from(root.querySelectorAll('img')).some((img) => !img.complete && inCrop(root, img, cropHeight))
 }
 
 /** True when a failed tile falls inside the part of the board being captured. */
 function showsFailedTile(root: HTMLElement, cropHeight: number): boolean {
-  const limit = root.getBoundingClientRect().top + cropHeight
   return Array.from(root.querySelectorAll('[data-testid="widget-error"]'))
-    .some((el) => el.getBoundingClientRect().top < limit)
+    .some((el) => inCrop(root, el, cropHeight))
 }
 
 /** Resolve true once the board has shown no loading state for QUIET_MS. */
@@ -130,6 +178,7 @@ function markCaptured(boardId: string) {
 
 /** Does the server already hold a screenshot of this version of the board? */
 async function hasScreenshot(boardId: string): Promise<boolean> {
+  const { authedFetch } = await deps()
   const res = await authedFetch(`/boards/${boardId}/thumbnail?cached_only=1&theme=light`)
   return res.ok && res.headers.get('X-Nubi-Thumb-Kind') === 'shot'
 }
@@ -164,14 +213,14 @@ export async function captureBoardThumbnail(
 
     const width = root.clientWidth
     if (width < 320) return false
-    const cropHeight = Math.min(root.scrollHeight, Math.round(width / ASPECT))
+    const cropHeight = cropHeightOf(root)
 
     // A tile that failed to load is a fact about right now (a source that is
     // down, an expired credential), not about the board. Photographing it would
     // pin that on the card until the next edit; the rendered picture stays.
     if (showsFailedTile(root, cropHeight)) return false
 
-    const { captureElement } = await import('./domCapture.js')
+    const { authedFetch, captureElement, forgetBoardThumbnail } = await deps()
     // Scale 2, the same setting the PNG export uses: at scale 1 html2canvas
     // paints a card's box-shadow across the card's own interior. The extra
     // pixels also make for a cleaner downscale.
