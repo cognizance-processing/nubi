@@ -365,3 +365,69 @@ export function formatNumber(n) {
   }
   return n.toLocaleString('en-US', { maximumFractionDigits: 6 })
 }
+
+// ---------------------------------------------------------------------------
+// Report tables: which way a group column starts sorted
+// ---------------------------------------------------------------------------
+
+/** ISO-style date or month text ("2025-05", "2025-05-01", "2025/05/01 14:30"), which sorts correctly as text. */
+const ISO_DATE_TEXT = /^\d{4}[-/](0[1-9]|1[0-2])([-/](0[1-9]|[12]\d|3[01]))?([ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?Z?)?$/
+/** A column name that says it holds a year or a period. */
+const PERIOD_NAME = /year|yr|fy|month|period/i
+/** How many rows to look at when deciding what a column holds. */
+const DATE_SAMPLE_ROWS = 2000
+
+/** A whole number that reads as a year (2025) or a year and month (202505). */
+function isYearOrYearMonth(value: unknown): boolean {
+  const n = typeof value === 'bigint'
+    ? Number(value)
+    : typeof value === 'string' && /^\d{4}(\d{2})?$/.test(value.trim()) ? Number(value) : value
+  if (typeof n !== 'number' || !Number.isInteger(n)) return false
+  if (n >= 1900 && n <= 2100) return true
+  const month = n % 100
+  return n >= 190001 && n <= 210012 && month >= 1 && month <= 12
+}
+
+/**
+ * True when a column holds dates or months, so a report shows its latest
+ * period first.
+ *
+ * A date or timestamp column always counts. A text column counts when every
+ * sampled value is an ISO date or month. A number (or digits-only text) column
+ * counts only when its NAME says year or period AND every sampled value looks
+ * like 2025 or 202505, so ordinary counts and codes are never flipped.
+ *
+ * @param {string} key      the column's name
+ * @param {string} type     the column's semantic type ('date' | 'string' | 'number' | 'bool')
+ * @param {unknown[]} values the column's values (nulls and blanks are ignored)
+ */
+export function isDateLikeColumn(key: string, type: string | undefined, values: unknown[]): boolean {
+  if (type === 'date') return true
+  const sample = values.filter((v) => v != null && v !== '')
+  if (sample.length === 0) return false
+  if (sample.every((v) => typeof v === 'string' && ISO_DATE_TEXT.test(v.trim()))) return true
+  return PERIOD_NAME.test(key) && sample.every(isYearOrYearMonth)
+}
+
+/**
+ * The sort a report table opens with: by its group columns, as the legacy
+ * tables did. Dates and months come newest first (the period people look for
+ * is the latest one); everything else A→Z.
+ *
+ * @param {string[]} grouping the group columns, outermost first
+ * @param {{key: string, type?: string}[]} columns
+ * @param {Record<string, unknown>[]} rows
+ * @returns {{id: string, desc: boolean}[]}
+ */
+export function reportDefaultSorting(
+  grouping: string[] | undefined,
+  columns: { key: string; type?: string }[],
+  rows: Record<string, unknown>[],
+): { id: string; desc: boolean }[] {
+  if (!Array.isArray(grouping)) return []
+  const sample = rows.length > DATE_SAMPLE_ROWS ? rows.slice(0, DATE_SAMPLE_ROWS) : rows
+  return grouping.map((id) => ({
+    id,
+    desc: isDateLikeColumn(id, columns.find((c) => c.key === id)?.type, sample.map((r) => r?.[id])),
+  }))
+}

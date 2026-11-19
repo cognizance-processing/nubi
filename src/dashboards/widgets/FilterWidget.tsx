@@ -49,7 +49,7 @@
  */
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { useFilterRefire, useResolvedParams, useSetVariable, useVariable } from '../VariableStore.jsx'
+import { useFilterRefire, useResolvedParams, useSetVariable, useVariable, type VariableChangeMeta } from '../VariableStore.jsx'
 import { resolveTextColors } from '../textColors.js'
 import {
   Combobox,
@@ -250,9 +250,9 @@ export default function FilterWidget({ widget, options = [] }) {
     }
   }, [storeValue])
 
-  const handleChange = useCallback((newValue) => {
+  const handleChange = useCallback((newValue, meta?: VariableChangeMeta) => {
     setLocalValue(newValue)
-    if (target_var) setVariable(target_var, newValue)
+    if (target_var) setVariable(target_var, newValue, meta)
   }, [target_var, setVariable])
 
   // `auto_select_first` — land on the first option instead of on "All".
@@ -270,7 +270,10 @@ export default function FilterWidget({ widget, options = [] }) {
     const first = optionsForList[0]
     if (!first) return
     autoSelectedRef.current = true
-    handleChange(subtype === 'multiselect' ? [first.v] : first.v)
+    // `auto`: this is the board's own default view, not a reader's choice — it
+    // stays out of the URL, so the board still counts as unfiltered (and gets
+    // its gallery picture taken).
+    handleChange(subtype === 'multiselect' ? [first.v] : first.v, { auto: true })
   }, [wProps.auto_select_first, target_var, storeValue, optionsForList, subtype, handleChange])
 
   // CSS variables bridge per-widget style across the portal boundary (F1 caveat:

@@ -59,6 +59,13 @@ export { isExclude, valuesOf, modeOf, normMulti }
 // filter-option-queries when an upstream variable changes (country → city).
 import { buildFilterGraph, dirtySubgraph, staleOptionWidgetIds } from './filterGraph.js'
 
+/**
+ * Optional detail about a variable change, passed through to onVariableChange.
+ * `auto`: a filter chose this value itself (e.g. `auto_select_first` landing on
+ * the newest month), so it is the board's default view, not a person's choice.
+ */
+export type VariableChangeMeta = { auto?: boolean }
+
 // ---------------------------------------------------------------------------
 // Pure helper (exported for unit tests — no React required)
 // ---------------------------------------------------------------------------
@@ -165,7 +172,7 @@ const DEFAULT_CASCADE_DEBOUNCE_MS = 200
  *
  * @param {{
  *   initialValues?: Record<string, unknown>,
- *   onVariableChange?: (name: string, value: unknown) => void,
+ *   onVariableChange?: (name: string, value: unknown, meta?: VariableChangeMeta) => void,
  *   spec?: object,
  *   cascadeDebounceMs?: number,
  *   onFilterGraphError?: (err: Error) => void,
@@ -174,8 +181,10 @@ const DEFAULT_CASCADE_DEBOUNCE_MS = 200
  *
  * onVariableChange — optional callback fired whenever a variable is set.
  *   Used by DashboardViewPage to write changes back to the URL search params.
- *   The callback receives the variable name and new value.  Callers should
- *   use useCallback / a stable ref to avoid infinite re-renders.
+ *   The callback receives the variable name, the new value, and the `meta`
+ *   the setter passed (`{auto: true}` when a filter picked the value itself,
+ *   not a person). Callers should use useCallback / a stable ref to avoid
+ *   infinite re-renders.
  *
  * spec — optional dashboard spec. When provided, the provider builds the
  *   cascading-filter dependency graph (§W4-G) so that changing one variable
@@ -200,7 +209,7 @@ export function VariableProvider({
   children,
 }: {
   initialValues?: Record<string, any>
-  onVariableChange?: (name: string, value: any) => void
+  onVariableChange?: (name: string, value: any, meta?: VariableChangeMeta) => void
   spec?: Record<string, any>
   cascadeDebounceMs?: number
   onFilterGraphError?: (err: unknown) => void
@@ -286,7 +295,7 @@ export function VariableProvider({
   const variablesRef = useRef(variables)
   useEffect(() => { variablesRef.current = variables }, [variables])
 
-  const setVariable = useCallback((name, value) => {
+  const setVariable = useCallback((name, value, meta?: VariableChangeMeta) => {
     // Skip when value is unchanged — no state write, no side effects, no re-render.
     if (variablesRef.current[name] === value) return
 
@@ -298,7 +307,7 @@ export function VariableProvider({
 
     // Side effects live OUTSIDE the updater so they run exactly once per call.
     // Fire the external callback (e.g. URL write-back) after state is queued.
-    setTimeout(() => { onChangeRef.current?.(name, value) }, 0)
+    setTimeout(() => { onChangeRef.current?.(name, value, meta) }, 0)
     // Schedule any cascading option-query refires (no-op without a graph or deps).
     scheduleCascade(name)
   }, [scheduleCascade])
@@ -359,7 +368,7 @@ export function useVariableValues() {
  * Returns the stable `(name, value) => void` setter.
  * Components that only SET variables won't re-render when variable values change.
  *
- * @returns {(name: string, value: unknown) => void}
+ * @returns {(name: string, value: unknown, meta?: VariableChangeMeta) => void}
  */
 export function useSetVariable() {
   const actions = useContext(VariableActionsContext)
