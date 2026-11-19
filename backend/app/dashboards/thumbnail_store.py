@@ -61,7 +61,14 @@ def _storage_uri() -> str:
 
 
 def _creds() -> dict | None:
-    """S3 credentials from env, or None to use boto3's default chain."""
+    """S3 credentials from env, or None to use the backend's default chain.
+
+    Only an ``s3://`` URI takes these. Any other scheme (``gs://`` on Cloud Run,
+    ``file://`` locally) gets None so its client authenticates its own way
+    (ADC for GCS) instead of being handed boto3 keyword arguments.
+    """
+    if not _storage_uri().lower().startswith("s3://"):
+        return None
     endpoint = os.environ.get("NUBI_THUMBNAIL_S3_ENDPOINT", "").strip()
     access = os.environ.get("NUBI_THUMBNAIL_S3_ACCESS_KEY", "").strip()
     secret = os.environ.get("NUBI_THUMBNAIL_S3_SECRET_KEY", "").strip()
@@ -141,6 +148,41 @@ def save(board_id: str, spec_hash: str, theme: str, policy_fp: str, svg: str) ->
         return uri
     except Exception as exc:  # noqa: BLE001
         logger.warning("could not store thumbnail for board %s: %s", board_id, exc)
+        return None
+
+
+def shot_key(board_id: str, spec_hash: str, policy_fp: str) -> str:
+    """Key for a browser-captured screenshot of one version of a board.
+
+    No theme and no renderer fingerprint: a screenshot is a picture of the live
+    page, taken once in the light theme, and does not depend on the SVG
+    renderer. The policy fingerprint is the uploader's, for the same reason it
+    is in ``object_key`` — the pixels are data.
+    """
+    safe_fp = _safe(policy_fp)[:32] or "none"
+    return f"boards/{_safe(board_id)}/{_safe(spec_hash)}-shot-{safe_fp}.img"
+
+
+def load_shot(board_id: str, spec_hash: str, policy_fp: str) -> bytes | None:
+    """Return a stored screenshot's bytes, or None on any miss/failure."""
+    client = _client()
+    if client is None:
+        return None
+    try:
+        return client.download_bytes(shot_key(board_id, spec_hash, policy_fp)) or None
+    except Exception:  # noqa: BLE001 - a miss and an outage are the same to the caller
+        return None
+
+
+def save_shot(board_id: str, spec_hash: str, policy_fp: str, data: bytes) -> str | None:
+    """Store a screenshot. Returns the storage URI, or None if off/failed."""
+    client = _client()
+    if client is None:
+        return None
+    try:
+        return client.upload_bytes(data, shot_key(board_id, spec_hash, policy_fp))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not store screenshot for board %s: %s", board_id, exc)
         return None
 
 
