@@ -56,8 +56,29 @@ async def init_db() -> None:
         command_timeout=30,
         timeout=10.0,   # abort TCP handshake after 10 s; surfaces clear error instead of hanging
                         # (asyncpg's connect() param is `timeout`, not `connect_timeout`)
+        reset=_release_reset,
     )
     _pool_loop = asyncio.get_running_loop()
+
+
+async def _release_reset(conn: Connection) -> None:
+    """Run when a connection goes back to the pool: skip the reset round trip.
+
+    By default asyncpg sends ``SELECT pg_advisory_unlock_all(); CLOSE ALL;
+    UNLISTEN *; RESET ALL;`` on EVERY release, so every one-line lookup costs two
+    network round trips instead of one. With the database a region away from
+    the server (measured ~0.17 s per round trip on the hosted service) that is
+    half of all database time on the request path.
+
+    Nubi leaves no session state behind to undo: it never runs LISTEN or a
+    session-level SET, cursors only live inside transactions, and the one
+    advisory lock (the thumbnail backfill in routes/export_share.py) is released
+    explicitly in its ``finally``. Open transactions are still rolled back:
+    with a custom reset, asyncpg itself runs ``Connection._reset()`` (ROLLBACK
+    if a transaction is open, listener cleanup) before calling this function.
+    If a future change does add session state, put the cleanup here.
+    """
+    return None
 
 
 async def close_db() -> None:
