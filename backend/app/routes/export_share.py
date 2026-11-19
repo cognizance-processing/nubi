@@ -593,6 +593,9 @@ async def warm_board_thumbnails(
     # Drop superseded versions only once the new ones are safely written, so a
     # failed render never leaves the board with no stored thumbnail at all.
     if keep:
+        # A browser screenshot of this same version is not superseded by the
+        # render, and unlike the render it cannot be rebuilt here — keep it.
+        keep.add(thumbnail_store.shot_key(board_id, spec_hash, policy_fp))
         await asyncio.to_thread(thumbnail_store.prune_other_versions, board_id, keep)
     return stored
 
@@ -805,6 +808,146 @@ async def board_thumbnail_svg(
         media_type="image/svg+xml",
         headers={"Cache-Control": "private, max-age=300", "X-Nubi-Thumb-Cache": "miss"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Browser-captured screenshots
+# ---------------------------------------------------------------------------
+#
+# The SVG above is a re-drawing of the board by a second renderer, and it drifts
+# from the live page (filter controls, table styling, fonts). A screenshot is
+# the live page itself: a writer's browser captures the board it has already
+# rendered and uploads it here, and the card prefers it over the render.
+#
+# Same isolation as the render: stored under the uploader's policy fingerprint
+# and the spec hash, so it is only served for the same version of the board to
+# viewers under the same policies. Raster only — an uploaded SVG could carry
+# script, and nothing here needs one.
+
+_SHOT_MAX_BYTES = 512 * 1024
+# In-process copy: the only store when object storage is off (local dev), and a
+# read-through cache when it is on. board_id -> (spec_hash, policy_fp, bytes).
+_SHOT_CACHE: dict[str, tuple[str, str, bytes]] = {}
+_SHOT_CACHE_MAX = 256
+
+
+def _shot_media_type(data: bytes) -> str | None:
+    """The image type of *data* by its magic bytes; None if not WebP/PNG."""
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    return None
+
+
+def _remember_shot(board_id: str, spec_hash: str, policy_fp: str, data: bytes) -> None:
+    if len(_SHOT_CACHE) >= _SHOT_CACHE_MAX and board_id not in _SHOT_CACHE:
+        _SHOT_CACHE.pop(next(iter(_SHOT_CACHE)))
+    _SHOT_CACHE[board_id] = (spec_hash, policy_fp, data)
+
+
+async def _find_shot(board_id: str, spec_hash: str, policy_fp: str) -> bytes | None:
+    cached = _SHOT_CACHE.get(board_id)
+    if cached and cached[0] == spec_hash and cached[1] == policy_fp:
+        return cached[2]
+    data = await asyncio.to_thread(thumbnail_store.load_shot, board_id, spec_hash, policy_fp)
+    if data and _shot_media_type(data):
+        _remember_shot(board_id, spec_hash, policy_fp, data)
+        return data
+    return None
+
+
+def _same_instant(a: Any, b: Any) -> bool:
+    """True when two timestamps (datetime or ISO string) are the same moment."""
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    def _parse(v: Any) -> datetime | None:
+        if isinstance(v, datetime):
+            d = v
+        else:
+            try:
+                d = datetime.fromisoformat(str(v).strip().replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+    pa, pb = _parse(a), _parse(b)
+    return pa is not None and pb is not None and pa == pb
+
+
+@router.put("/{board_id}/thumbnail", status_code=204, dependencies=[Depends(require_writer)])
+async def put_board_thumbnail(
+    board_id: str,
+    request: Request,
+    updated_at: str | None = None,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> Response:
+    """Store a screenshot of the board, captured by the caller's browser.
+
+    ``updated_at`` is the board version the browser rendered; if the board has
+    been saved since, the picture is of an older board and is refused (409)
+    rather than filed under the new version.
+    """
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > _SHOT_MAX_BYTES:
+        raise AppError("thumbnail_too_large", "Thumbnail is too large.", 413)
+    data = await request.body()
+    if len(data) > _SHOT_MAX_BYTES:
+        raise AppError("thumbnail_too_large", "Thumbnail is too large.", 413)
+    if _shot_media_type(data) is None:
+        raise AppError("thumbnail_invalid", "Thumbnail must be a WebP or PNG image.", 415)
+
+    board = await _load_board(board_id, str(user["id"]), repo, request)
+    if updated_at and board.get("updated_at") and not _same_instant(updated_at, board["updated_at"]):
+        raise AppError("thumbnail_stale", "The board has changed since this picture was taken.", 409)
+
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    spec_dict = await resolve_board_spec(board, org_id, repo)
+    spec_hash = _spec_hash(spec_dict)
+    policy_fp = _policy_fingerprint(_collect_claims(user), org_id)
+
+    _remember_shot(board_id, spec_hash, policy_fp, data)
+    await asyncio.to_thread(thumbnail_store.save_shot, board_id, spec_hash, policy_fp, data)
+    return Response(status_code=204)
+
+
+@router.get("/{board_id}/thumbnail")
+async def board_thumbnail(
+    board_id: str,
+    request: Request,
+    theme: str | None = None,
+    cached_only: bool = False,
+    user: dict[str, Any] = Depends(current_user),
+    repo: Repo = Depends(get_repo),
+) -> Response:
+    """The board's card picture: its screenshot if one exists, else the render.
+
+    ``X-Nubi-Thumb-Kind`` says which (``shot`` / ``render``), so a browser that
+    could take a screenshot knows whether one is still needed.
+    """
+    board = await _load_board(board_id, str(user["id"]), repo, request)
+    org_id = await resolve_org_id(str(user["id"]), repo, request)
+    spec_dict = await resolve_board_spec(board, org_id, repo)
+    policy_fp = _policy_fingerprint(_collect_claims(user), org_id)
+
+    shot = await _find_shot(board_id, _spec_hash(spec_dict), policy_fp)
+    if shot:
+        return Response(
+            content=shot,
+            media_type=_shot_media_type(shot),
+            headers={
+                "Cache-Control": "private, max-age=300",
+                "X-Nubi-Thumb-Kind": "shot",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    response = await board_thumbnail_svg(
+        board_id, request, theme=theme, cached_only=cached_only, user=user, repo=repo,
+    )
+    response.headers["X-Nubi-Thumb-Kind"] = "render"
+    return response
 
 
 # ---------------------------------------------------------------------------

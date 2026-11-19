@@ -23,6 +23,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { useResolvedParams, useResolvedFilters } from '../VariableStore.jsx'
+import { useQueryCacheOpts } from '../RefreshContext.jsx'
 import WidgetError from '../../components/app/WidgetError.jsx'
 import Skeleton from '../../components/ui/Skeleton.jsx'
 
@@ -100,6 +101,7 @@ export default function PivotWidget({ widget, providerTable = null }) {
 
   const resolvedParams = useResolvedParams(widgetParams)
   const resolvedFilters = useResolvedFilters(widgetFilters)
+  const cacheOpts = useQueryCacheOpts()
 
   const [fetchedTable, setTable] = useState(null)
   const table = providerTable ?? fetchedTable
@@ -120,9 +122,7 @@ export default function PivotWidget({ widget, providerTable = null }) {
         const hasFilters = resolvedFilters.length > 0
         const { table: t, error: queryError } = await runArrowQueryById(
           query_id,
-          (hasParams || hasFilters)
-            ? { namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined }
-            : undefined,
+          { ...cacheOpts, namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined },
         )
         if (cancelled) return
         // Failed query → real reason, no pivot. Never substitute rows.

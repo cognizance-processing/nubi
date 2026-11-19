@@ -42,6 +42,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useParams, useLocation, Link, useSearchParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Pencil, Eye, Rocket, Sun, Moon, MoreVertical, Trash2, History, Undo2 } from 'lucide-react'
 import { get, del } from '../lib/api.js'
+import { canCapture, captureBoardThumbnail } from '../lib/boardThumbnailCapture.js'
 import DashboardView from '../dashboards/DashboardView.jsx'
 import SpecRenderer from '../dashboards/SpecRenderer.jsx'
 import { backgroundToCss } from '../dashboards/widgetHtml.js'
@@ -945,6 +946,31 @@ export default function DashboardViewPage({ edit = false }) {
     () => (isLive && spec && draftSpec ? summarizeSpecChanges(spec, draftSpec) : null),
     [isLive, spec, draftSpec],
   )
+
+  // The gallery card's picture: a screenshot of this page, taken here because
+  // this is where the board is already rendered for real (see
+  // lib/boardThumbnailCapture). Only the board as everyone first meets it is
+  // worth keeping — first tab, default filters, light theme — and only when the
+  // spec on screen is the draft row the card stands for: a never-pushed board,
+  // or a live version with no unpushed changes.
+  const firstTabId = spec?.tabs?.[0]?.id ?? null
+  const captureOk = !loading && renderMode === 'spec' && Boolean(boardId) && id !== 'sample' && canCapture({
+    canWrite,
+    theme: pageTheme,
+    isEditing: edit,
+    isEmbed: isEmbedView,
+    onFirstTab: activeTabId === firstTabId,
+    filtersUntouched: Object.keys(initialVariables).length === 0,
+    showsCardVersion: !isLive || changeSummary?.total === 0,
+  })
+  useEffect(() => {
+    if (!captureOk) return
+    const root = document.querySelector('[data-dashboard-root]')
+    if (!(root instanceof HTMLElement)) return
+    const ctl = new AbortController()
+    void captureBoardThumbnail({ boardId, updatedAt, root, signal: ctl.signal })
+    return () => ctl.abort()
+  }, [captureOk, boardId, updatedAt])
 
   // A viewer (or anyone) landing on /d/:id/edit for an uneditable board is sent
   // back to live rather than shown a broken half-editor. Waits for `loading` so

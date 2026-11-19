@@ -45,6 +45,7 @@ import { fetchRetryingRateLimit } from './rateLimitRetry.js'
 import * as arrow from 'apache-arrow'
 import { getAccessToken, tenantHeaders } from './api.js'
 import { descaleDecimalTable } from './arrowDecimal.js'
+import { approxTableBytes, buildCacheKey, cacheIdentity, cachedRun } from './queryResultCache.js'
 import { ENGINE_STALL_MS, createShareQueue, startEngine } from './engineStart.js'
 
 // DuckDB-WASM is ONLY needed for the local/demo query paths (initDuckDB below),
@@ -313,6 +314,97 @@ export async function runArrowQuery(sql: string, onBatch?: (rowsSoFar: number) =
 // runArrowQueryById — POST /api/v1/query with {query_id}
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// In-flight query tracking — lets a whole-board export wait until every widget
+// that was just asked to load has its data.
+// ---------------------------------------------------------------------------
+
+let _inflightQueries = 0
+const _idleWaiters: Array<() => void> = []
+
+function _queryStarted() { _inflightQueries += 1 }
+function _queryFinished() {
+  _inflightQueries = Math.max(0, _inflightQueries - 1)
+  if (_inflightQueries === 0) {
+    while (_idleWaiters.length) _idleWaiters.shift()?.()
+  }
+}
+
+/** Number of runArrowQueryById calls currently waiting on the server. */
+export function inflightQueryCount(): number {
+  return _inflightQueries
+}
+
+/**
+ * Resolve once no runArrowQueryById call is in flight, or after timeoutMs.
+ * Resolves true when idle was reached, false on timeout.
+ */
+export function waitForQueriesIdle(timeoutMs = 60000): Promise<boolean> {
+  if (_inflightQueries === 0) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    let done = false
+    const timer = setTimeout(() => { if (!done) { done = true; resolve(false) } }, timeoutMs)
+    _idleWaiters.push(() => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      resolve(true)
+    })
+  })
+}
+
+type RunByIdOpts = {
+  namedParams?: Record<string, unknown>
+  filters?: Array<{ column: string; value: unknown }>
+  onBatch?: (rowsSoFar: number) => void
+  isDemo?: boolean
+  datastoreId?: string
+  limit?: number
+  /**
+   * Remember a successful result in this browser for a few minutes (see
+   * lib/queryResultCache). Board widgets opt in; the query editor does not.
+   */
+  cache?: boolean
+  /** Part of the memory key: bump it (board refresh) to force fresh data. */
+  cacheEpoch?: number
+}
+
+/**
+ * Run a registered query by id (see _runArrowQueryByIdUncached for the full
+ * contract). With `{ cache: true }` a successful result is remembered for a
+ * few minutes and identical in-flight requests share one server call.
+ */
+export async function runArrowQueryById(
+  queryId: string,
+  opts?: RunByIdOpts | ((rowsSoFar: number) => void),
+): ReturnType<typeof _runArrowQueryByIdUncached> {
+  const tracked = async () => {
+    _queryStarted()
+    try {
+      return await _runArrowQueryByIdUncached(queryId, opts)
+    } finally {
+      _queryFinished()
+    }
+  }
+  if (!opts || typeof opts !== 'object' || opts.cache !== true) return tracked()
+  const identity = cacheIdentity(getAccessToken())
+  if (!identity) return tracked()
+  const key = buildCacheKey({
+    identity,
+    tenant: tenantHeaders(),
+    queryId,
+    namedParams: opts.namedParams && Object.keys(opts.namedParams).length > 0 ? opts.namedParams : null,
+    filters: Array.isArray(opts.filters) && opts.filters.length > 0 ? opts.filters : null,
+    datastoreId: opts.datastoreId ?? null,
+    limit: opts.limit ?? null,
+    epoch: opts.cacheEpoch ?? 0,
+  })
+  return cachedRun(key, tracked, {
+    isFailure: (r) => !r || !!r.error || r.cacheStatus === 'ERROR' || !r.table,
+    sizeOf: (r) => approxTableBytes(r?.table),
+  })
+}
+
 /**
  * POST /api/v1/query with {query_id} (a registered server-side query id).
  *
@@ -338,16 +430,9 @@ export async function runArrowQuery(sql: string, onBatch?: (rowsSoFar: number) =
  *
  * @param queryId  — Registered query id (e.g. "demo_all").
  */
-export async function runArrowQueryById(
+async function _runArrowQueryByIdUncached(
   queryId: string,
-  opts?: {
-    namedParams?: Record<string, unknown>
-    filters?: Array<{ column: string; value: unknown }>
-    onBatch?: (rowsSoFar: number) => void
-    isDemo?: boolean
-    datastoreId?: string
-    limit?: number
-  } | ((rowsSoFar: number) => void),
+  opts?: RunByIdOpts | ((rowsSoFar: number) => void),
 ): Promise<{
   table: any
   cacheStatus: string

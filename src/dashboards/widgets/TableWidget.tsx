@@ -67,7 +67,7 @@ import { runMetricQuery } from '../../lib/metricRuntime.js'
 import { evalRules, formatValue, resolveBarMax, resolveLinkHref, DELTA_COLORS } from './conditionalFormat.js'
 import { columnLabel } from '../columnLabels.js'
 import { useResolvedParams, useResolvedFilters, useSetVariable } from '../VariableStore.jsx'
-import { useRefreshEpoch } from '../RefreshContext.jsx'
+import { useRefreshEpoch, useQueryCacheOpts } from '../RefreshContext.jsx'
 import { useCrossFilter } from '../CrossFilterContext.jsx'
 import { useStepper } from '../StepperContext.jsx'
 import DataGrid from '../../components/DataGrid.jsx'
@@ -410,6 +410,7 @@ export default function TableWidget({ widget, providerTable = null }) {
 
   // Board-level auto-refresh epoch.
   const refreshEpoch = useRefreshEpoch()
+  const cacheOpts = useQueryCacheOpts()
 
   const [data, setData] = useState(null) // { cols, rows }
   const [loading, setLoading] = useState(false)
@@ -445,6 +446,7 @@ export default function TableWidget({ widget, providerTable = null }) {
         const { table, error: queryError } = metric
           ? await runMetricQuery(metric)
           : await runArrowQueryById(query_id, {
+            ...cacheOpts,
             namedParams: hasParams ? resolvedParams : undefined,
             filters: hasFilters ? resolvedFilters : undefined,
             // Fetch only what the table can show, plus one row to detect more.

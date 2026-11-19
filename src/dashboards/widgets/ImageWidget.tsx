@@ -46,7 +46,7 @@ import { resolveImageUrl } from '../../lib/api'
 import { safeImageSrc } from '../safeImageSrc.js'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { useResolvedParams, useResolvedFilters } from '../VariableStore.jsx'
-import { useRefreshEpoch } from '../RefreshContext.jsx'
+import { useRefreshEpoch, useQueryCacheOpts } from '../RefreshContext.jsx'
 import EmptyState from '../../components/ui/EmptyState.jsx'
 import WidgetError from '../../components/app/WidgetError.jsx'
 
@@ -71,6 +71,7 @@ export default function ImageWidget({ widget, providerTable = null }) {
   const resolvedParams = useResolvedParams(widget.params)
   const resolvedFilters = useResolvedFilters(widget.filters)
   const refreshEpoch = useRefreshEpoch()
+  const cacheOpts = useQueryCacheOpts()
 
   const [queryUrl, setQueryUrl] = useState('')
   const [loading, setLoading] = useState(false)
@@ -109,9 +110,7 @@ export default function ImageWidget({ widget, providerTable = null }) {
         const hasFilters = resolvedFilters.length > 0
         const { table, error } = await runArrowQueryById(
           widget.query_id,
-          (hasParams || hasFilters)
-            ? { namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined }
-            : undefined,
+          { ...cacheOpts, namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined },
         )
         if (cancelled) return
         if (error) {
