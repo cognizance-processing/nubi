@@ -174,6 +174,7 @@ These are committed to `docs/screenshots/` and served as GitHub-relative paths.
 |---|---|---|---|
 | `dashboards.png` | `/dashboards` | 1440×900 | Dashboard list page — card grid with search and sort |
 | `dashboard-editor.png` | `/dashboards/:id/edit` | 1440×900 | Editor — canvas with widgets, toolbar, configure panel |
+| `NEW-widget-palette.webp` | `/editor` (blank) | 1440×900 | Left **Widget library** rail — all 13 palette types (light + `-dark` variant) |
 | `dashboard-view.png` | `/d/:id` | 1440×900 | Published dashboard — KPI row + chart + table |
 
 > **Captured (standalone):** `dashboard.png` (dashboard list, 13 seeded boards) and
