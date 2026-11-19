@@ -38,7 +38,7 @@ import { textWidgetLook } from './textStyle.js'
 import { textQueryRow, textQueryValue } from './textQuery.js'
 import { runArrowQueryById } from '../../lib/wasmRuntime.js'
 import { useResolvedParams, useResolvedFilters } from '../VariableStore.jsx'
-import { useRefreshEpoch } from '../RefreshContext.jsx'
+import { useRefreshEpoch, useQueryCacheOpts } from '../RefreshContext.jsx'
 import WidgetError from '../../components/app/WidgetError.jsx'
 
 // Only show "Loading…" if a fetch is still running after this long.
@@ -61,6 +61,7 @@ export default function TextWidget({ widget, providerTable = null }) {
   const resolvedParams = useResolvedParams(widget.params)
   const resolvedFilters = useResolvedFilters(widget.filters)
   const refreshEpoch = useRefreshEpoch()
+  const cacheOpts = useQueryCacheOpts()
 
   // The raw cell; prefix/suffix are applied at render so editing them never
   // re-runs the query.
@@ -93,9 +94,7 @@ export default function TextWidget({ widget, providerTable = null }) {
         const hasFilters = resolvedFilters.length > 0
         const { table, error } = await runArrowQueryById(
           widget.query_id,
-          (hasParams || hasFilters)
-            ? { namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined }
-            : undefined,
+          { ...cacheOpts, namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined },
         )
         if (cancelled) return
         if (error) {

@@ -32,6 +32,8 @@
 
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import GridCanvas from './grid/GridCanvas.jsx'
+import LazyMount from './LazyMount.jsx'
+import { shouldLazyMount } from './lazyWidgets.js'
 import TabBar from './TabBar.jsx'
 import { tabBarConfig } from './tabBarConfig.js'
 import { getBreakpointFromWidth } from './grid/breakpoints.js'
@@ -53,7 +55,7 @@ import BreadcrumbWidget from './widgets/BreadcrumbWidget.jsx'
 import { VariableProvider, useSetVariable, useResolvedParams, useVariableValues } from './VariableStore.jsx'
 import { isFilterApplied } from './inputs/helpers.js'
 import { CrossFilterProvider } from './CrossFilterContext.jsx'
-import { RefreshContext } from './RefreshContext.jsx'
+import { RefreshContext, QueryCacheContext } from './RefreshContext.jsx'
 import { useAutoRefresh } from './useAutoRefresh.js'
 import { runArrowQueryById, prefetchDemoData } from '../lib/wasmRuntime.js'
 import { backgroundToCss, styleToCss } from './widgetHtml.js'
@@ -146,7 +148,9 @@ function FilterWidgetLoader({ widget, editMode = false }) {
 
     async function fetchOptions() {
       try {
-        const { table } = await runArrowQueryById(optionsQueryId)
+        // Only reached on the board view (edit mode returned above), so the
+        // option list may come from this browser's recent results.
+        const { table } = await runArrowQueryById(optionsQueryId, { cache: true })
         if (cancelled || !table || table.numRows === 0) return
 
         const opts = tableToOptions(table, widget.props)
@@ -702,13 +706,23 @@ function SpecRendererBody({
         ].filter(Boolean).join(' ')}
         style={customStyle}
       >
-        <WidgetComponent widget={widget} onOpenDrawer={setOpenDrawer} editMode={editMode} providerTable={providerTable} providerTables={widgetProviderTableMap} />
+        {shouldLazyMount(widget, editMode) ? (
+          // Data widgets below the fold wait until they are near the screen
+          // before mounting, so a tab's first paint only runs the queries the
+          // viewer can actually see.
+          <LazyMount>
+            <WidgetComponent widget={widget} onOpenDrawer={setOpenDrawer} editMode={editMode} providerTable={providerTable} providerTables={widgetProviderTableMap} />
+          </LazyMount>
+        ) : (
+          <WidgetComponent widget={widget} onOpenDrawer={setOpenDrawer} editMode={editMode} providerTable={providerTable} providerTables={widgetProviderTableMap} />
+        )}
       </ColorModeScope>
     )
   }, [visibleWidgetsById, editMode, setOpenDrawer, widgetProviderTableMap, dashboardPresetStyle, adaptCtx, boardBgHex, theme])
 
   return (
     <RefreshContext.Provider value={refreshEpoch}>
+    <QueryCacheContext.Provider value={!editMode}>
     <CrossFilterProviderWrapper onCrossFilter={onCrossFilter} onTabChange={setTab}>
     <ColorModeScope
       mode={boardMode}
@@ -866,6 +880,7 @@ function SpecRendererBody({
       providerTables={widgetProviderTableMap}
     />
     </CrossFilterProviderWrapper>
+    </QueryCacheContext.Provider>
     </RefreshContext.Provider>
   )
 }

@@ -59,7 +59,7 @@ import { runMetricQuery } from '../../lib/metricRuntime.js'
 import { useResolvedParams, useResolvedFilters } from '../VariableStore.jsx'
 import EChart from '../../viz/EChart.jsx'
 import { applySignal } from '../../viz/signals.js'
-import { useRefreshEpoch } from '../RefreshContext.jsx'
+import { useRefreshEpoch, useQueryCacheOpts } from '../RefreshContext.jsx'
 import Skeleton from '../../components/ui/Skeleton.jsx'
 import Badge from '../../components/ui/Badge.jsx'
 import WidgetError from '../../components/app/WidgetError.jsx'
@@ -230,6 +230,7 @@ export default function KpiWidget({ widget, providerTable = null }) {
 
   // Board-level refresh epoch for auto-refresh polling.
   const refreshEpoch = useRefreshEpoch()
+  const cacheOpts = useQueryCacheOpts()
 
   const [value, setValue] = useState(null)
   const [compareValue, setCompareValue] = useState(null)
@@ -307,9 +308,7 @@ export default function KpiWidget({ widget, providerTable = null }) {
           ? await runMetricQuery(metric)
           : await runArrowQueryById(
               query_id,
-              (hasParams || hasFilters)
-                ? { namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined }
-                : undefined,
+              { ...cacheOpts, namedParams: hasParams ? resolvedParams : undefined, filters: hasFilters ? resolvedFilters : undefined },
             )
         if (cancelled) return
         // Failed query → the real reason, not a headline number we invented.

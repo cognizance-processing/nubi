@@ -32,6 +32,8 @@
 // In production builds we use the absolute VITE_BACKEND_URL when it is set
 // to a *different* origin (e.g. api.example.com), otherwise assume the
 // frontend is served from the same origin as the backend.
+import { clearQueryResultCache } from './queryResultCache.js'
+
 const _backendUrl = import.meta.env.VITE_BACKEND_URL ?? ''
 const BASE = (import.meta.env.DEV || !_backendUrl) ? '/api/v1' : _backendUrl + '/api/v1'
 
@@ -601,7 +603,8 @@ export async function validateRegisteredQueries(
  * @returns {Promise<{ id: string, name: string, sql: string, params: Array }>}
  */
 export function registerQuery(body) {
-  return post('/query/registry', body)
+  // A saved query may now return different rows: forget remembered results.
+  return post('/query/registry', body).then((r) => { clearQueryResultCache(); return r })
 }
 
 /**
@@ -667,7 +670,7 @@ export async function listFilterableColumns(queryId) {
  * @returns {Promise<{ok: boolean, verified: boolean, applied: boolean, sql?: string, column_expr?: string, reason?: string, warnings?: string[], options_query?: {id?: string, name?: string, sql: string, source?: string, created?: boolean} | null}>}
  */
 export function parameterizeQuery(queryId, body) {
-  return post(`/queries/${encodeURIComponent(queryId)}/parameterize`, body)
+  return post(`/queries/${encodeURIComponent(queryId)}/parameterize`, body).then((r) => { clearQueryResultCache(); return r })
 }
 
 /**
