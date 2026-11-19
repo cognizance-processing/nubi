@@ -395,7 +395,7 @@ function CrossFilterProviderWrapper({ onCrossFilter, onTabChange, children }) {
  * @param {{
  *   spec: object,
  *   initialVariables?: Record<string, unknown>,
- *   onVariableChange?: (name: string, value: unknown) => void,
+ *   onVariableChange?: (name: string, value: unknown, meta?: { auto?: boolean }) => void,
  *   onCrossFilter?: (event: { type: string, var: string|null, value: unknown, tabId: string|null }) => void,
  * }} props
  *
@@ -893,7 +893,7 @@ function SpecRendererBody({
  * @param {{
  *   spec: object,
  *   initialVariables?: Record<string, unknown>,
- *   onVariableChange?: (name: string, value: unknown) => void,
+ *   onVariableChange?: (name: string, value: unknown, meta?: { auto?: boolean }) => void,
  *   onCrossFilter?: (event: { type: string, var: string|null, value: unknown, tabId: string|null }) => void,
  * }} props
  *
