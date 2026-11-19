@@ -130,6 +130,7 @@ from app.queries.registry import (
 )
 from app.vars.store import get_var_store
 from app.repos.provider import get_repo
+from app.request_memo import memoized
 from app.routes import api_router
 
 # ---------------------------------------------------------------------------
@@ -630,6 +631,19 @@ async def _resolve_effective_datastore_id(
     return effective_datastore_id
 
 
+async def _datastore_row(repo, org_id: str, datastore_id: str) -> dict | None:
+    """The datastore row, fetched once per request.
+
+    Both the dialect resolution (``_resolve_target_dialect``) and the execute
+    path need it; without the memo every board query read the same row twice.
+    The row is handed out as a copy (see app/request_memo.py).
+    """
+    return await memoized(
+        ("datastore", str(org_id), str(datastore_id)),
+        lambda: repo.get("datastores", org_id, datastore_id),
+    )
+
+
 async def _resolve_target_dialect(
     effective_datastore_id: str | None,
     identity: VerifiedIdentity,
@@ -653,7 +667,7 @@ async def _resolve_target_dialect(
         org_id, _ = await _resolve_caller_org(identity, get_repo(), request)
         if not org_id:
             return DEFAULT_DIALECT
-        ds = await get_repo().get("datastores", org_id, effective_datastore_id)
+        ds = await _datastore_row(get_repo(), org_id, effective_datastore_id)
         if ds is None:
             return DEFAULT_DIALECT
         cfg: dict = dict(ds.get("config") or {})
@@ -1286,7 +1300,7 @@ async def query(
         if org_id is None and _org_lookup_error is not None:
             raise _org_lookup_error
 
-        ds = await repo.get("datastores", org_id, effective_datastore_id)
+        ds = await _datastore_row(repo, org_id, effective_datastore_id)
         if ds is None:
             raise _AppError(
                 "datastore_not_found",
