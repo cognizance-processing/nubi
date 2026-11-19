@@ -105,7 +105,7 @@ _AUDITED_READS: tuple[tuple["re.Pattern[str]", str, str], ...] = (
     (re.compile(r"\A/api/v1/boards/([^/]+)/export\.(csv|json|pdf)\Z"), "board.export", "board"),
     (re.compile(r"\A/api/v1/export/[^/]+/([^/]+)\Z"), "resource.export", "export"),
     (re.compile(r"\A/api/v1/projects/([^/]+)/export\Z"), "project.export", "project"),
-    (re.compile(r"\A/api/v1/boards/([^/]+)/thumbnail\.svg\Z"), "board.thumbnail", "board"),
+    (re.compile(r"\A/api/v1/boards/([^/]+)/thumbnail(?:\.svg)?\Z"), "board.thumbnail", "board"),
     (re.compile(r"\A/api/v1/embed/config/([^/]+)\Z"), "embed.config", "board"),
     (re.compile(r"\A/api/v1/query/registry()\Z"), "query_registry.list", "query_registry"),
 )
