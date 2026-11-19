@@ -217,6 +217,19 @@ export function get(path: string) {
  * @param {string} path
  * @returns {Promise<Blob>}
  */
+/**
+ * An authenticated fetch that hands back the raw Response, for the few callers
+ * that need response headers or send a binary body. No JSON handling, no
+ * retry: check `response.ok` yourself.
+ */
+export async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers ?? {})
+  if (_accessToken) headers.set('Authorization', `Bearer ${_accessToken}`)
+  if (_activeOrgId) headers.set('X-Org-Id', _activeOrgId)
+  if (_activeProjectId) headers.set('X-Project-Id', _activeProjectId)
+  return fetch(`${BASE}${path}`, { ...init, headers, credentials: 'include' })
+}
+
 export async function getBlob(path: string): Promise<Blob> {
   const headers = new Headers()
   if (_accessToken) headers.set('Authorization', `Bearer ${_accessToken}`)

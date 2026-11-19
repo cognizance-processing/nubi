@@ -93,6 +93,12 @@ export type CaptureOptions = {
   background?: string
   /** Extra elements to leave out, on top of the standard chrome. */
   ignore?: (el: Element) => boolean
+  /**
+   * Capture only the top `cropHeight` CSS pixels of the element. Charts that
+   * start below the line are not re-rendered, so a preview of a long board
+   * costs its first screen rather than every widget on it.
+   */
+  cropHeight?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -231,8 +237,13 @@ function renderChartOffscreen(
  * A canvas that isn't an ECharts instance (the WebGL/2D scatter fallback) is
  * copied straight off the live bitmap, which is the best we can do for it.
  */
-async function snapshotCharts(root: HTMLElement, scale: number): Promise<Map<string, ChartShot>> {
+async function snapshotCharts(
+  root: HTMLElement,
+  scale: number,
+  cropHeight?: number,
+): Promise<Map<string, ChartShot>> {
   const shots = new Map<string, ChartShot>()
+  const cutoff = cropHeight ? root.getBoundingClientRect().top + cropHeight : Infinity
   let echarts: any = null
   try { echarts = await import('echarts') } catch { echarts = null }
 
@@ -252,7 +263,7 @@ async function snapshotCharts(root: HTMLElement, scale: number): Promise<Map<str
       try { live = echarts.getInstanceByDom(host) } catch { live = null }
       if (!live || live.isDisposed?.()) continue
       const rect = host.getBoundingClientRect()
-      if (rect.width < 1 || rect.height < 1) continue
+      if (rect.width < 1 || rect.height < 1 || rect.top >= cutoff) continue
 
       let url = renderChartOffscreen(echarts, live, rect.width, rect.height, scale)
       if (!url) {
@@ -271,7 +282,7 @@ async function snapshotCharts(root: HTMLElement, scale: number): Promise<Map<str
   for (const canvas of Array.from(root.querySelectorAll('canvas'))) {
     if (claimed.has(canvas)) continue
     const rect = canvas.getBoundingClientRect()
-    if (rect.width < 1 || rect.height < 1) continue
+    if (rect.width < 1 || rect.height < 1 || rect.top >= cutoff) continue
     try {
       shots.set(stamp(canvas), { url: canvas.toDataURL('image/png'), width: rect.width, height: rect.height })
     } catch {
@@ -371,13 +382,14 @@ export async function captureElement(
   const background = opts.background ?? themeBackground(el)
 
   const restoreLayout = withUnscaledLayout(el)
-  const shots = await snapshotCharts(el, scale)
+  const shots = await snapshotCharts(el, scale, opts.cropHeight)
   const labels = markNonOverflowingLabels(el)
 
   try {
     const { default: html2canvas } = await import('html2canvas')
     return await html2canvas(el, {
       scale,
+      ...(opts.cropHeight ? { height: Math.min(opts.cropHeight, el.scrollHeight) } : {}),
       backgroundColor: background,
       useCORS: true,
       logging: false,

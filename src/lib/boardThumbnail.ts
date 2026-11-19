@@ -95,7 +95,7 @@ const MEMORY_MAX = 300
 /** Keys already revalidated this session — one background check per picture. */
 const _revalidated = new Set<string>()
 
-const CACHE_NAME = 'nubi-board-thumbnails-v1'
+const CACHE_NAME = 'nubi-board-thumbnails-v2'
 
 function _key(boardId: string, theme: Theme, version?: string | null) {
   return `${boardId}|${theme}|${version ?? ''}`
@@ -147,7 +147,7 @@ async function _writePersisted(boardId: string, theme: Theme, version: string | 
   try {
     // One entry per board+theme: drop the superseded versions first.
     for (const old of await cache.keys(url, { ignoreSearch: true })) await cache.delete(old)
-    await cache.put(url, new Response(blob, { headers: { 'Content-Type': 'image/svg+xml' } }))
+    await cache.put(url, new Response(blob, { headers: { 'Content-Type': blob.type || 'image/svg+xml' } }))
   } catch {
     /* quota or blocked storage — the memory cache still has it */
   }
@@ -161,6 +161,30 @@ export async function clearBoardThumbnailCache() {
   try {
     if (typeof caches !== 'undefined') await caches.delete(CACHE_NAME)
   } catch { /* nothing to clear */ }
+}
+
+/**
+ * Forget one board's cached pictures, so the next card fetch asks the server.
+ * Called after a new screenshot is uploaded: the board's version (and so the
+ * cache key) has not changed, but its picture has.
+ */
+export async function forgetBoardThumbnail(boardId: string) {
+  const prefix = `${boardId}|`
+  for (const [key, url] of Array.from(_memory.entries())) {
+    if (!key.startsWith(prefix)) continue
+    URL.revokeObjectURL(url)
+    _memory.delete(key)
+    _revalidated.delete(key)
+  }
+  const cache = await _openCache()
+  if (!cache) return
+  try {
+    for (const theme of ['light', 'dark'] as Theme[]) {
+      for (const old of await cache.keys(_cacheUrl(boardId, theme, ''), { ignoreSearch: true })) {
+        await cache.delete(old)
+      }
+    }
+  } catch { /* blocked storage: the memory cache is already clear */ }
 }
 
 /**
@@ -191,7 +215,9 @@ function _path(boardId: string, theme: Theme, cachedOnly: boolean) {
   // are styled with theme tokens (var(--surface)…) that only the browser can
   // resolve, so the server has to render for a chosen theme. Ask for ours.
   const q = `theme=${encodeURIComponent(theme)}${cachedOnly ? '&cached_only=1' : ''}`
-  return `/boards/${boardId}/thumbnail.svg?${q}`
+  // No extension: the server answers with a screenshot of the live board when
+  // one has been captured (see boardThumbnailCapture.ts), else its SVG render.
+  return `/boards/${boardId}/thumbnail?${q}`
 }
 
 /** The server's stored picture, or null when it has none yet (204 → empty blob). */
