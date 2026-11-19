@@ -26,6 +26,7 @@ from fastapi import Request
 from app.db import fetchrow
 from app.errors import AppError
 from app.repos.provider import Repo
+from app.request_memo import memoized
 
 if TYPE_CHECKING:
     from app.auth.verify import VerifiedIdentity
@@ -152,17 +153,24 @@ async def _user_is_member(user_id: str, org_id: str, repo: Repo) -> bool:
         key = f"{org_id}:{user_id}"
         return key in repo._org_members  # type: ignore[attr-defined]
 
-    row = await fetchrow(
-        """
-        SELECT 1 FROM org_members
-        WHERE user_id = $1::uuid
-          AND org_id  = $2::uuid
-        LIMIT 1
-        """,
-        user_id,
-        org_id,
-    )
-    return row is not None
+    async def _query() -> bool:
+        row = await fetchrow(
+            """
+            SELECT 1 FROM org_members
+            WHERE user_id = $1::uuid
+              AND org_id  = $2::uuid
+            LIMIT 1
+            """,
+            user_id,
+            org_id,
+        )
+        return row is not None
+
+    # Asked up to four times per board query while the org is resolved, so a
+    # "yes" is remembered for the rest of the request. A "no" is not: a request
+    # that adds the membership (signup, a new org, an accepted invite) must see
+    # it if it asks again.
+    return await memoized(("org_member", str(user_id), str(org_id)), _query, keep=bool)
 
 
 async def resolve_org_id(user_id: str, repo: Repo, request: Request) -> str:
