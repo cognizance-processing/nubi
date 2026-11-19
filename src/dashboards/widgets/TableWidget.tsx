@@ -768,6 +768,7 @@ export default function TableWidget({ widget, providerTable = null }) {
           toolbar={showToolbar}
           appearance={wProps.appearance}
           summaryRow={wProps.summaryRow === true}
+          wrapHeaders={wProps.wrapHeaders === true}
           truncated={data?.truncated === true}
           initialGrouping={initialGrouping}
           initialPinning={initialPinning}

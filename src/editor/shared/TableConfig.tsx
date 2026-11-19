@@ -628,6 +628,11 @@ export function TableConfig({ widget, onChange }) {
         <ToggleRow label="Summary row" hint="Totals under the last row, using each column's aggregation"
           checked={props.summaryRow === true}
           onChange={v => setProps('summaryRow', v ? true : undefined)} />
+        {props.appearance === 'report' && (
+          <ToggleRow label="Wrap headers at _" hint="Long column names may break after an underscore, so columns can be narrower"
+            checked={props.wrapHeaders === true}
+            onChange={v => setProps('wrapHeaders', v ? true : undefined)} />
+        )}
         <div>
           <FieldLabel>Header background</FieldLabel>
           <ColorField value={props.headerBackground} placeholder="theme default"

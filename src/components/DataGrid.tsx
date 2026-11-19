@@ -98,7 +98,7 @@ import {
 } from 'lucide-react'
 
 import { downloadCSV, downloadExcel } from './gridExport.js'
-import { aggregate } from './dataTableUtils.js'
+import { aggregate, reportDefaultSorting } from './dataTableUtils.js'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -119,6 +119,17 @@ const OP_LABELS = { eq: '=', ne: '≠', gt: '>', gte: '≥', lt: '<', lte: '≤'
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * A header label that may wrap after each underscore and nowhere else, so
+ * "Forecasted_Contri_Perc" can sit on two lines as "Forecasted_" / "Contri_Perc"
+ * instead of forcing its column as wide as the whole name. The text itself is
+ * unchanged (`<wbr>` is only a line-break opportunity).
+ */
+function breakAfterUnderscores(text: string) {
+  const parts = text.split('_')
+  return parts.flatMap((part, i) => (i < parts.length - 1 ? [`${part}_`, <wbr key={i} />] : [part]))
+}
 
 function formatNumber(n) {
   if (n == null) return ''
@@ -284,10 +295,33 @@ export default function DataGrid({
   // Adds a pinned bottom row with each aggregated column over all filtered rows.
   summaryRow = false,
   truncated = false,
+  // Report headers may break after an underscore ("Forecasted_Contri_Perc"),
+  // so a table of long raw column names can fit narrower columns. Off by
+  // default: a table without set widths would otherwise change shape.
+  wrapHeaders = false,
 }) {
   const report = appearance === 'report'
   // ── Local UI state ────────────────────────────────────────────────────────
-  const [sorting, setSorting] = useState(() => (report && Array.isArray(initialGrouping) ? initialGrouping.map((id) => ({ id, desc: false })) : []))
+  // A report opens sorted by its group columns, dates and months newest first
+  // (see reportDefaultSorting). The data usually arrives after the grid
+  // mounts, so the default is worked out again when it does, until the reader
+  // sorts the table themselves.
+  const groupingKey = report && Array.isArray(initialGrouping) ? initialGrouping.join('\u0000') : ''
+  const defaultSorting = useMemo(
+    () => (groupingKey ? reportDefaultSorting(initialGrouping, columnDescriptors, rows) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [groupingKey, columnDescriptors, rows],
+  )
+  const [sorting, setSorting] = useState(defaultSorting)
+  const sortedByReader = useRef(false)
+  useEffect(() => {
+    if (sortedByReader.current) return
+    setSorting((prev) => (JSON.stringify(prev) === JSON.stringify(defaultSorting) ? prev : defaultSorting))
+  }, [defaultSorting])
+  const handleSortingChange = useCallback((updater) => {
+    sortedByReader.current = true
+    setSorting(updater)
+  }, [])
   const [columnFilters, setColumnFilters] = useState([])
   const [globalFilter, setGlobalFilter] = useState('')
   const [columnVisibility, setColumnVisibility] = useState({})
@@ -394,7 +428,7 @@ export default function DataGrid({
       expanded,
       pagination: paginateProp ? pagination : undefined,
     },
-    onSortingChange: setSorting,
+    onSortingChange: handleSortingChange,
     onColumnFiltersChange: setColumnFilters,
     onGlobalFilterChange: setGlobalFilter,
     onColumnVisibilityChange: setColumnVisibility,
@@ -841,12 +875,32 @@ export default function DataGrid({
                           ].join(' ')}
                         >
                           <button
-                            className="flex items-center gap-1 min-w-0 hover:text-fg transition-colors"
+                            // Hovering a header changes nothing in a report, and
+                            // never repaints an authored header colour: white
+                            // text on a dark header used to fade to the theme's
+                            // dark ink.
+                            className={report || headerStyle?.color
+                              ? 'flex items-center gap-1 min-w-0'
+                              : 'flex items-center gap-1 min-w-0 hover:text-fg transition-colors'}
                             onClick={col.getToggleSortingHandler()}
                             title={`Sort by ${String(col.columnDef.header)}`}
                           >
-                            <span className={report ? 'text-left' : 'truncate'}>{flexRender(col.columnDef.header, header.getContext())}</span>
-                            <span data-export-hide className={sortDir ? 'shrink-0 text-fg' : `shrink-0 text-subtle opacity-40 group-hover:opacity-100${report ? ' hidden group-hover:inline' : ''}`}>
+                            <span className={report ? 'text-left' : 'truncate'}>
+                              {report && wrapHeaders && typeof col.columnDef.header === 'string'
+                                ? breakAfterUnderscores(col.columnDef.header)
+                                : flexRender(col.columnDef.header, header.getContext())}
+                            </span>
+                            {/* A report shows the arrow only once the column is
+                                sorted. An arrow that appeared on hover pushed the
+                                header text over, making it jump and re-wrap. */}
+                            <span
+                              data-export-hide
+                              className={report
+                                ? (sortDir ? 'shrink-0' : 'hidden')
+                                : sortDir
+                                  ? `shrink-0${headerStyle?.color ? '' : ' text-fg'}`
+                                  : 'shrink-0 text-subtle opacity-40 group-hover:opacity-100'}
+                            >
                               {sortDir === 'asc' && <ChevronUp size={12} style={report ? { color: 'inherit' } : undefined} />}
                               {sortDir === 'desc' && <ChevronDown size={12} style={report ? { color: 'inherit' } : undefined} />}
                               {!sortDir && <ChevronsUpDown size={11} />}
@@ -952,7 +1006,10 @@ export default function DataGrid({
                       data-index={vr.index}
                       ref={rowVirtualizer.measureElement}
                       className={[
-                        'group transition-colors',
+                        // No colour transitions in a report: opening a group
+                        // shifts the rows below it, their stripes swap, and
+                        // a transition made the whole table flicker.
+                        report ? 'group' : 'group transition-colors',
                         isGrouped && !report
                           ? 'bg-surface-2 font-medium'
                           // An explicit stripe colour replaces the token
@@ -985,7 +1042,7 @@ export default function DataGrid({
                           <td
                             key={cell.id}
                             className={[
-                              report ? 'text-fg transition-colors' : 'border-b border-border text-fg transition-colors',
+                              report ? 'text-fg' : 'border-b border-border text-fg transition-colors',
                               cellPx,
                               fontSize,
                               textAlign,
@@ -1013,7 +1070,7 @@ export default function DataGrid({
                           >
                             {cell.getIsGrouped() ? (
                               <button
-                                className={report ? 'flex items-center gap-4 hover:text-fg' : 'flex items-center gap-1 hover:text-fg'}
+                                className={report ? 'flex items-center gap-4' : 'flex items-center gap-1 hover:text-fg'}
                                 onClick={row.getToggleExpandedHandler()}
                               >
                                 <ChevronExpand
