@@ -93,6 +93,15 @@ function folderIdOf(config) {
   return config?.folderId || null
 }
 
+/**
+ * Move a board into (or out of) a folder. PUT replaces the whole config and the
+ * gallery's rows are card summaries, so this re-reads the full board first.
+ */
+async function setBoardFolder(boardId, folderId) {
+  const full = await api.get(`/boards/${boardId}`)
+  await api.put(`/boards/${boardId}`, { config: { ...(full?.config ?? {}), folderId: folderId || undefined } })
+}
+
 function formatDay(iso) {
   if (!iso) return null
   const d = new Date(iso)
@@ -688,7 +697,10 @@ export default function DashboardsPage() {
   }
 
   const { data: boardsData, loading, error, reload: reloadBoards } = useAsyncLoad(async () => {
-    const data = await api.get('/boards')
+    // view=card: each spec cut down to what a card draws (geometry + kind),
+    // a fraction of the full payload. These rows are partial — never PUT one
+    // back; setBoardFolder re-reads the full board first.
+    const data = await api.get('/boards?view=card')
     return Array.isArray(data) ? data : Array.isArray(data?.boards) ? data.boards : []
     // Wait for the project: lists are scoped by X-Project-Id, so firing before
     // it resolves sent this request twice (unscoped, then scoped).
@@ -711,7 +723,7 @@ export default function DashboardsPage() {
 
   const moveBoardToFolder = useCallback(async (board, folderId) => {
     try {
-      await api.put(`/boards/${board.id}`, { config: { ...board.config, folderId: folderId || undefined } })
+      await setBoardFolder(board.id, folderId)
       reloadBoards()
     } catch (err) {
       console.error('Move to folder failed:', err)
@@ -741,7 +753,7 @@ export default function DashboardsPage() {
       const affected = boards.filter(b => folderIdOf(b.config) === deleteFolderDialog.id)
       for (const board of affected) {
         try {
-          await api.put(`/boards/${board.id}`, { config: { ...board.config, folderId: undefined } })
+          await setBoardFolder(board.id, null)
         } catch (err) {
           console.error(`Failed to ungroup board ${board.id}:`, err)
         }
