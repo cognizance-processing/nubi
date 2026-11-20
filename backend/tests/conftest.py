@@ -373,6 +373,13 @@ def _reset_state():
         # ── FakeDB ────────────────────────────────────────────────────────────
         _fake_db.reset()
 
+        # ── Shared BigQuery clients (tests patch _build_client per instance) ──
+        try:
+            from app.connectors.bigquery import clear_client_cache
+            clear_client_cache()
+        except Exception:
+            pass
+
         # ── pydantic-settings lru_cache ───────────────────────────────────────
         try:
             from app.config import get_settings

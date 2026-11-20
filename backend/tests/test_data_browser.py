@@ -353,6 +353,91 @@ async def test_non_duckdb_unknown_table_returns_404(browser_client):
     assert resp.status_code == 404, resp.text
 
 
+_COUNTING_SQL_TYPE = "fake_sql_counting_test"
+_HAS_TABLE_SQL_TYPE = "fake_sql_has_table_test"
+
+
+class _CountingSQLConnector(_FakeSQLConnector):
+    """Fake SQL connector that counts full table listings."""
+
+    listings = 0
+
+    def execute(self, plan: PhysicalPlan) -> pa.Table:
+        if "information_schema.tables" in (plan.sql or "").lower():
+            type(self).listings += 1
+        return super().execute(plan)
+
+
+class _HasTableSQLConnector(_CountingSQLConnector):
+    """Like BigQuery: can check a single table without listing everything."""
+
+    listings = 0
+    checks: list[tuple[str, str]] = []
+
+    def has_table(self, schema: str, name: str) -> bool:
+        type(self).checks.append((schema, name))
+        return (schema, name) == ("main", "widgets")
+
+
+get_connector_registry().register(
+    _COUNTING_SQL_TYPE, lambda config: _CountingSQLConnector(config)
+)
+get_connector_registry().register(
+    _HAS_TABLE_SQL_TYPE, lambda config: _HasTableSQLConnector(config)
+)
+
+
+@pytest.mark.asyncio
+async def test_remote_listing_is_cached_across_browse_requests(browser_client):
+    """Opening a table must not re-list the whole source for columns and rows."""
+    ac, user_id, org_id, repo = browser_client
+    ds = await repo.create(
+        resource="datastores", org_id=org_id, created_by=user_id,
+        name="counting", config={"connector_type": _COUNTING_SQL_TYPE},
+    )
+    _CountingSQLConnector.listings = 0
+    h = _auth_headers(user_id)
+    base = f"/api/v1/data/{ds['id']}/tables"
+
+    assert (await ac.get(base, headers=h)).status_code == 200
+    assert (await ac.get(f"{base}/widgets/columns", headers=h)).status_code == 200
+    assert (await ac.get(f"{base}/widgets/rows?limit=5", headers=h)).status_code == 200
+    assert (await ac.get(f"{base}/nope/columns", headers=h)).status_code == 404
+    assert _CountingSQLConnector.listings == 1
+
+    # refresh=true re-lists.
+    assert (await ac.get(f"{base}?refresh=true", headers=h)).status_code == 200
+    assert _CountingSQLConnector.listings == 2
+
+
+@pytest.mark.asyncio
+async def test_remote_single_table_check_skips_full_listing(browser_client):
+    """With a schema and a connector that can check one table, nothing is listed."""
+    ac, user_id, org_id, repo = browser_client
+    ds = await repo.create(
+        resource="datastores", org_id=org_id, created_by=user_id,
+        name="has-table", config={"connector_type": _HAS_TABLE_SQL_TYPE},
+    )
+    _HasTableSQLConnector.listings = 0
+    _HasTableSQLConnector.checks = []
+    h = _auth_headers(user_id)
+    base = f"/api/v1/data/{ds['id']}/tables"
+
+    resp = await ac.get(f"{base}/widgets/columns?schema=main", headers=h)
+    assert resp.status_code == 200, resp.text
+    assert {c["name"] for c in resp.json()["columns"]} >= {"id", "name"}
+    assert (await ac.get(f"{base}/widgets/rows?schema=main&limit=5", headers=h)).status_code == 200
+    # A table the source does not have is still a 404, checked the same way.
+    assert (await ac.get(f"{base}/dim_customers/rows?schema=main", headers=h)).status_code == 404
+    # An unsafe schema never reaches the connector's check; it falls back to
+    # the full listing (which ignores the unsafe schema, as before).
+    assert (await ac.get(f"{base}/widgets/columns?schema=a;b", headers=h)).status_code == 200
+    assert ("main", "dim_customers") in _HasTableSQLConnector.checks
+    assert all(s != "a;b" for s, _ in _HasTableSQLConnector.checks)
+    # Only the unsafe-schema request fell back to a full listing.
+    assert _HasTableSQLConnector.listings == 1
+
+
 # ---------------------------------------------------------------------------
 # Unit tests: _build_view_sql_from_s3_views — SQL injection prevention
 # ---------------------------------------------------------------------------
