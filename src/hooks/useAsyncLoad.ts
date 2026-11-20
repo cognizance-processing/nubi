@@ -13,7 +13,13 @@
  */
 import { useState, useEffect, useCallback, useRef } from 'react'
 
-export function useAsyncLoad<T>(asyncFn: () => Promise<T>, deps: unknown[] = []) {
+/**
+ * @param enabled when false the load waits (stays `loading`, sends nothing)
+ *   and runs once it turns true. Use it to hold a request until the context it
+ *   depends on has resolved, instead of sending it twice — once without that
+ *   context and again with it.
+ */
+export function useAsyncLoad<T>(asyncFn: () => Promise<T>, deps: unknown[] = [], enabled = true) {
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(true)
   // Typed loosely (not `unknown`): callers read `.message`/`.status` off this
@@ -27,6 +33,7 @@ export function useAsyncLoad<T>(asyncFn: () => Promise<T>, deps: unknown[] = [])
   useEffect(() => { fnRef.current = asyncFn })
 
   useEffect(() => {
+    if (!enabled) return
     let ignore = false
     setLoading(true)
     setError(null)
@@ -46,7 +53,7 @@ export function useAsyncLoad<T>(asyncFn: () => Promise<T>, deps: unknown[] = [])
     })()
     return () => { ignore = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [...deps, reloadCounter])
+  }, [...deps, reloadCounter, enabled])
 
   const reload = useCallback(() => setReloadCounter(c => c + 1), [])
 

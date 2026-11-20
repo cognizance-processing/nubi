@@ -87,17 +87,31 @@ def _creds() -> dict | None:
     return creds or None
 
 
+_CLIENTS: dict[tuple, object] = {}
+
+
 def _client():
     """Return a StorageClient, or None if storage is off or unusable."""
     if not is_enabled():
         return None
+    # One client per (uri, credentials), reused across calls. Building one per
+    # lookup repeated credential discovery and a TLS handshake for every card
+    # in the gallery. Keyed on the live env values so a changed setting (or a
+    # test's monkeypatch) still gets its own client.
+    uri, creds = _storage_uri(), _creds()
+    key = (uri, tuple(sorted((creds or {}).items())))
+    client = _CLIENTS.get(key)
+    if client is not None:
+        return client
     try:
         from app.storage.base import get_storage_client  # noqa: PLC0415
 
-        return get_storage_client(_storage_uri(), _creds())
+        client = get_storage_client(uri, creds)
     except Exception as exc:  # noqa: BLE001 - decorative feature, never fatal
-        logger.warning("thumbnail storage unavailable (%s): %s", _storage_uri(), exc)
+        logger.warning("thumbnail storage unavailable (%s): %s", uri, exc)
         return None
+    _CLIENTS[key] = client
+    return client
 
 
 def _safe(value: str) -> str:

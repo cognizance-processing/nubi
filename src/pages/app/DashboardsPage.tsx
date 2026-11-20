@@ -38,7 +38,7 @@ import {
   X,
 } from 'lucide-react'
 import * as api from '../../lib/api.js'
-import { checkpoint, listEnvironments } from '../../lib/versions.js'
+import { checkpoint } from '../../lib/versions.js'
 import VersionHistoryDialog from '../../components/app/VersionHistoryDialog.jsx'
 import PromoteDialog from '../../components/app/PromoteDialog.jsx'
 import BoardThumbnail from '../../components/app/BoardThumbnail.jsx'
@@ -665,20 +665,15 @@ export default function DashboardsPage() {
   const noticeTimer = useRef(null)
   useEffect(() => () => clearTimeout(noticeTimer.current), [])
 
-  const { activeProject } = useProject()
+  const { activeProject, loading: projectsLoading } = useProject()
   const projectId = activeProject?.id
-
-  const [environments, setEnvironments] = useState(null)
-  useEffect(() => {
-    let cancelled = false
-    if (!projectId) { setEnvironments(null); return }
-    listEnvironments(projectId).then(envs => { if (!cancelled) setEnvironments(envs) })
-    return () => { cancelled = true }
-  }, [projectId])
 
   const canWrite = useCanWrite()
 
+  // EnvContext already loads this project's environments; fetching them again
+  // here was a second identical request on every visit.
   const { environments: envList, activeEnv } = useEnv()
+  const environments = envList
   const strictEnv = (Array.isArray(envList)
     && envList.find(e => e.key === activeEnv)?.protected)
     ? activeEnv
@@ -695,13 +690,15 @@ export default function DashboardsPage() {
   const { data: boardsData, loading, error, reload: reloadBoards } = useAsyncLoad(async () => {
     const data = await api.get('/boards')
     return Array.isArray(data) ? data : Array.isArray(data?.boards) ? data.boards : []
-  }, [projectId])
+    // Wait for the project: lists are scoped by X-Project-Id, so firing before
+    // it resolves sent this request twice (unscoped, then scoped).
+  }, [projectId], !projectsLoading)
   const boards = boardsData ?? []
 
   const { data: foldersData, reload: reloadFolders } = useAsyncLoad(async () => {
     const data = await api.get('/dashboard_folders')
     return Array.isArray(data) ? data : Array.isArray(data?.dashboard_folders) ? data.dashboard_folders : []
-  }, [projectId])
+  }, [projectId], !projectsLoading)
   const folders = foldersData ?? []
 
   // Clear a stale/deleted folder out of the URL so the grid doesn't silently

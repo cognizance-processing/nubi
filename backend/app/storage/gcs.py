@@ -83,14 +83,18 @@ class GCSStorageClient(StorageClient):
     def __init__(self, bucket: str, creds: dict | None = None) -> None:
         self._bucket_name = bucket
         self._creds = creds or {}
+        self._client = None
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _bucket(self):
-        client = _get_gcs_client(self._creds)
-        return client.bucket(self._bucket_name)
+        # Built once per storage client: constructing it re-runs credential
+        # discovery, which is a network call on Cloud Run.
+        if self._client is None:
+            self._client = _get_gcs_client(self._creds)
+        return self._client.bucket(self._bucket_name)
 
     def _blob(self, key: str):
         return self._bucket().blob(key.lstrip("/"))

@@ -21,6 +21,7 @@ from datetime import datetime
 from typing import Any
 
 import app.db as _db
+from app import request_memo
 
 # Upper bound on slug-clash retries before falling back to a random suffix —
 # guards against an existence probe that never returns None (see _unique_slug).
@@ -114,16 +115,24 @@ async def get_default_project(org_id: str) -> dict[str, Any] | None:
     ``X-Project-Id``. Returns ``None`` gracefully (rather than raising) so test
     doubles without a projects table do not break resource creation.
     """
-    row = await fetchrow(
-        """
-        SELECT * FROM projects
-        WHERE org_id = $1::uuid
-        ORDER BY created_at ASC
-        LIMIT 1
-        """,
-        org_id,
-    )
-    return _row_to_dict(row) if row is not None else None
+
+    async def _load() -> dict[str, Any] | None:
+        row = await fetchrow(
+            """
+            SELECT * FROM projects
+            WHERE org_id = $1::uuid
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            org_id,
+        )
+        return _row_to_dict(row) if row is not None else None
+
+    # Asked by several helpers within one request (project filter, demo
+    # checks). Only a found project is remembered, so a request that creates
+    # the org's first project still sees it. Each caller gets its own dict.
+    proj = await request_memo.memoized(("default_project", str(org_id)), _load)
+    return dict(proj) if proj is not None else None
 
 
 async def get_default_project_id(org_id: str) -> str | None:
@@ -136,12 +145,18 @@ async def get_default_project_id(org_id: str) -> str | None:
 
 async def project_belongs_to_org(project_id: str, org_id: str) -> bool:
     """Return True if *project_id* exists and belongs to *org_id*."""
-    row = await fetchrow(
-        "SELECT 1 FROM projects WHERE id = $1::uuid AND org_id = $2::uuid",
-        project_id,
-        org_id,
+
+    async def _load() -> bool | None:
+        row = await fetchrow(
+            "SELECT 1 FROM projects WHERE id = $1::uuid AND org_id = $2::uuid",
+            project_id,
+            org_id,
+        )
+        return True if row is not None else None
+
+    return bool(
+        await request_memo.memoized(("project_in_org", str(project_id), str(org_id)), _load)
     )
-    return row is not None
 
 
 async def count_projects(org_id: str) -> int:

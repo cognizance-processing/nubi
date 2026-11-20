@@ -47,6 +47,12 @@ COPY embed/ embed/
 COPY scripts/ scripts/
 
 RUN npm run build
+# Pre-compress the hashed assets so the server can hand out gzip without
+# compressing at runtime (see backend/app/static_assets.py). Source maps are
+# left alone: browsers only fetch them with devtools open.
+RUN find dist/assets -type f \( -name '*.js' -o -name '*.css' -o -name '*.wasm' \
+        -o -name '*.json' -o -name '*.svg' -o -name '*.mjs' \) -size +1k \
+        -exec gzip -k -9 {} +
 
 # Embed bundles (<nubi-dashboard> / <nubi-widgets> drop-in scripts) → dist-embed/.
 # Served by the backend at /embed/* (see the embed block in backend/main.py).

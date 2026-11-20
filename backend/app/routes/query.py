@@ -653,7 +653,9 @@ async def _resolve_target_dialect(
         org_id, _ = await _resolve_caller_org(identity, get_repo(), request)
         if not org_id:
             return DEFAULT_DIALECT
-        ds = await get_repo().get("datastores", org_id, effective_datastore_id)
+        from app.connectors.resolve import get_datastore as _get_datastore  # noqa: PLC0415
+
+        ds = await _get_datastore(get_repo(), org_id, effective_datastore_id)
         if ds is None:
             return DEFAULT_DIALECT
         cfg: dict = dict(ds.get("config") or {})
@@ -1286,7 +1288,9 @@ async def query(
         if org_id is None and _org_lookup_error is not None:
             raise _org_lookup_error
 
-        ds = await repo.get("datastores", org_id, effective_datastore_id)
+        from app.connectors.resolve import get_datastore as _get_datastore  # noqa: PLC0415
+
+        ds = await _get_datastore(repo, org_id, effective_datastore_id)
         if ds is None:
             raise _AppError(
                 "datastore_not_found",

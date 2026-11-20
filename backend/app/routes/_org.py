@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import Request
 
+from app import request_memo
 from app.db import fetchrow
 from app.errors import AppError
 from app.repos.provider import Repo
@@ -152,17 +153,25 @@ async def _user_is_member(user_id: str, org_id: str, repo: Repo) -> bool:
         key = f"{org_id}:{user_id}"
         return key in repo._org_members  # type: ignore[attr-defined]
 
-    row = await fetchrow(
-        """
-        SELECT 1 FROM org_members
-        WHERE user_id = $1::uuid
-          AND org_id  = $2::uuid
-        LIMIT 1
-        """,
-        user_id,
-        org_id,
-    )
-    return row is not None
+    # One request asks this several times (org resolution, role gates, the
+    # audit trail). A role already read for this pair proves membership too.
+    if request_memo.peek(("org_role", user_id, org_id)) is not None:
+        return True
+
+    async def _load() -> bool | None:
+        row = await fetchrow(
+            """
+            SELECT 1 FROM org_members
+            WHERE user_id = $1::uuid
+              AND org_id  = $2::uuid
+            LIMIT 1
+            """,
+            user_id,
+            org_id,
+        )
+        return True if row is not None else None
+
+    return bool(await request_memo.memoized(("org_member", user_id, org_id), _load))
 
 
 async def resolve_org_id(user_id: str, repo: Repo, request: Request) -> str:

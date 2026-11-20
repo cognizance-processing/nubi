@@ -37,6 +37,23 @@ _pool: Pool | None = None
 _pool_loop: asyncio.AbstractEventLoop | None = None
 
 
+async def _skip_session_reset(_conn: Connection) -> None:
+    """Pool-release hook that sends nothing to the server.
+
+    asyncpg's default release runs ``pg_advisory_unlock_all; CLOSE ALL;
+    UNLISTEN *; RESET ALL`` — a full extra round trip after EVERY statement,
+    which doubles the database time of each request when Postgres is in
+    another region. Nothing here keeps session state across a release: there
+    are no session ``SET``s, cursors or ``LISTEN``s, and the one advisory lock
+    (the thumbnail backfill) is released explicitly on the connection that
+    took it. asyncpg still rolls back a transaction left open before calling
+    this hook, so a leaked transaction cannot reach the next caller.
+
+    Code that DOES need session state must clean it up itself before the
+    connection goes back to the pool.
+    """
+
+
 async def init_db() -> None:
     """Create the asyncpg connection pool.
 
@@ -54,6 +71,7 @@ async def init_db() -> None:
         min_size=2,
         max_size=10,
         command_timeout=30,
+        reset=_skip_session_reset,
         timeout=10.0,   # abort TCP handshake after 10 s; surfaces clear error instead of hanging
                         # (asyncpg's connect() param is `timeout`, not `connect_timeout`)
     )

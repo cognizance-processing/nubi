@@ -652,6 +652,14 @@ def create_app() -> FastAPI:
         env=settings.ENV,
     )
 
+    # ── Request-scoped lookup memo ─────────────────────────────────────────────
+    # Added last so it is the outermost layer: every middleware and handler in
+    # one request shares one memo, and repeated membership / role / datastore
+    # reads cost a single database round trip. See app/request_memo.py.
+    from app.request_memo import RequestMemoMiddleware  # noqa: PLC0415
+
+    application.add_middleware(RequestMemoMiddleware)
+
     # ── Error handlers ────────────────────────────────────────────────────────
     register_handlers(application)
 

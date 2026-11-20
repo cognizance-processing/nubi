@@ -89,8 +89,10 @@ class PgSecretStore(SecretStore):
 
     async def put(self, datastore_id: str, org_id: str, secret: dict[str, Any]) -> None:
         """Encrypt *secret* and UPSERT into connector_secrets."""
+        from app import request_memo  # local import
         from app.db import execute  # local import to avoid circular at module load
 
+        request_memo.forget(("connector_secret", str(datastore_id), str(org_id)))
         ciphertext, nonce, key_version = encrypt_json(secret)
 
         await execute(
@@ -115,17 +117,24 @@ class PgSecretStore(SecretStore):
 
     async def get(self, datastore_id: str, org_id: str) -> dict[str, Any] | None:
         """Fetch and decrypt the secret; returns None if not found or org mismatch."""
+        from app import request_memo  # local import
         from app.db import fetchrow  # local import
 
-        row = await fetchrow(
-            """
-            SELECT ciphertext, nonce, key_version
-            FROM connector_secrets
-            WHERE datastore_id = $1::uuid
-              AND org_id       = $2::uuid
-            """,
-            datastore_id,
-            org_id,
+        # A connector test reads the same secret twice (to report which keys
+        # are set, then to build the connector). The ENCRYPTED row is what is
+        # shared within the request; each caller decrypts its own copy.
+        row = await request_memo.memoized(
+            ("connector_secret", str(datastore_id), str(org_id)),
+            lambda: fetchrow(
+                """
+                SELECT ciphertext, nonce, key_version
+                FROM connector_secrets
+                WHERE datastore_id = $1::uuid
+                  AND org_id       = $2::uuid
+                """,
+                datastore_id,
+                org_id,
+            ),
         )
         if row is None:
             return None
@@ -138,8 +147,10 @@ class PgSecretStore(SecretStore):
 
     async def delete(self, datastore_id: str, org_id: str) -> None:
         """Delete the secret row; no-op if it does not exist."""
+        from app import request_memo  # local import
         from app.db import execute  # local import
 
+        request_memo.forget(("connector_secret", str(datastore_id), str(org_id)))
         await execute(
             """
             DELETE FROM connector_secrets

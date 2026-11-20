@@ -42,6 +42,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useParams, useLocation, Link, useSearchParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Pencil, Eye, Rocket, Sun, Moon, MoreVertical, Trash2, History, Undo2 } from 'lucide-react'
 import { get, del } from '../lib/api.js'
+import { prefetchDemoData } from '../lib/wasmRuntime.js'
 import { canCapture, captureBoardThumbnail } from '../lib/boardThumbnailCapture.js'
 import DashboardView from '../dashboards/DashboardView.jsx'
 import SpecRenderer from '../dashboards/SpecRenderer.jsx'
@@ -733,6 +734,12 @@ export default function DashboardViewPage({ edit = false }) {
     if (orgLoading) return
 
     let cancelled = false
+
+    // Ask for the demo routing map NOW, alongside the board, not after it.
+    // Every unfiltered widget waits on that map before sending its query, and
+    // it used to be requested only once the board had arrived and the renderer
+    // mounted — a full extra request of dead time in front of every widget.
+    prefetchDemoData()
 
     async function load() {
       setLoading(true)

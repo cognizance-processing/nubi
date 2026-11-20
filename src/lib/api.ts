@@ -225,20 +225,45 @@ export function get(path: string) {
  * retry: check `response.ok` yourself.
  */
 export async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const headers = new Headers(init.headers ?? {})
-  if (_accessToken) headers.set('Authorization', `Bearer ${_accessToken}`)
-  if (_activeOrgId) headers.set('X-Org-Id', _activeOrgId)
-  if (_activeProjectId) headers.set('X-Project-Id', _activeProjectId)
-  return fetch(`${BASE}${path}`, { ...init, headers, credentials: 'include' })
+  return withSessionRetry(() => {
+    const headers = new Headers(init.headers ?? {})
+    if (_accessToken) headers.set('Authorization', `Bearer ${_accessToken}`)
+    if (_activeOrgId) headers.set('X-Org-Id', _activeOrgId)
+    if (_activeProjectId) headers.set('X-Project-Id', _activeProjectId)
+    return fetch(`${BASE}${path}`, { ...init, headers, credentials: 'include' })
+  })
+}
+
+/**
+ * Run a raw fetch, and if it comes back 401 renew the session once and run it
+ * again.
+ *
+ * The JSON helpers (`get`/`post`/…) already do this. The callers that need
+ * the raw Response — widget queries (Arrow streams) and card pictures (blobs)
+ * — did not, so fifteen minutes after sign-in every widget on an open board
+ * failed and every card fell back to its placeholder until a reload.
+ *
+ * `send` must read the access token when it is CALLED, not capture it earlier,
+ * so the second attempt carries the renewed one. It shares the single-flight
+ * refresh with `request()`: a board of widgets that 401 together triggers one
+ * refresh, not one each (parallel refreshes revoke the session family).
+ *
+ * A failed refresh hands back the original 401 for the caller to report.
+ */
+export async function withSessionRetry(send: () => Promise<Response>): Promise<Response> {
+  const response = await send()
+  if (response.status !== 401) return response
+  try {
+    const data = await _doRefresh()
+    setAccessToken(data.access_token)
+  } catch {
+    return response
+  }
+  return send()
 }
 
 export async function getBlob(path: string): Promise<Blob> {
-  const headers = new Headers()
-  if (_accessToken) headers.set('Authorization', `Bearer ${_accessToken}`)
-  if (_activeOrgId) headers.set('X-Org-Id', _activeOrgId)
-  if (_activeProjectId) headers.set('X-Project-Id', _activeProjectId)
-
-  const response = await fetch(`${BASE}${path}`, { method: 'GET', headers, credentials: 'include' })
+  const response = await authedFetch(path, { method: 'GET' })
   if (!response.ok) {
     const err: Error & { status?: number; payload?: any } = new Error(`Download failed: ${response.status} ${response.statusText}`)
     err.status = response.status

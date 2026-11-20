@@ -521,6 +521,13 @@ class PgEnvStore:
         """
         from app.db import execute as db_execute  # noqa: PLC0415
 
+        # Read first: this runs on every environments list (every page load),
+        # and the pair exists for all but a brand-new project. Two no-op
+        # INSERTs per page view were two wasted round trips.
+        existing = await self.list_environments(project_id)
+        if {"dev", "prod"} <= {e["key"] for e in existing}:
+            return existing
+
         await db_execute(
             """
             INSERT INTO environments (project_id, key, name, is_default, protected, position, git_branch)
