@@ -36,6 +36,7 @@ Public API
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from app.demo_bundle import (
@@ -59,22 +60,52 @@ _SAMPLE_TABLES = ("boards", "queries", "datastores")
 
 # ── Idempotency helpers ─────────────────────────────────────────────────────────
 
-async def _find_sample(
-    repo: Repo, table: str, org_id: str, sample_id: str, project_id: str | None
-) -> dict[str, Any] | None:
-    """Return the existing bundle row for *sample_id* in the TARGET project, or ``None``.
+# Seeding runs inside signup, where each Postgres round trip can cost ~170 ms
+# (app and database in different regions). Independent writes therefore go out
+# a few at a time instead of one after another; the cap leaves pool
+# connections free for other requests.
+_SEED_CONCURRENCY = 6
+
+
+async def _gather_bounded(coros: list[Any], limit: int = _SEED_CONCURRENCY) -> list[Any]:
+    """Await *coros* with at most *limit* in flight; results keep input order."""
+    sem = asyncio.Semaphore(limit)
+
+    async def _one(c: Any) -> Any:
+        async with sem:
+            return await c
+
+    return list(await asyncio.gather(*(_one(c) for c in coros)))
+
+
+async def _sample_index(
+    repo: Repo, table: str, org_id: str, project_id: str | None
+) -> dict[str, dict[str, Any]]:
+    """Return ``{sample_id: row}`` for the bundle rows already in the TARGET project.
 
     Idempotency is scoped per (org, project): every project owns its own copy of
     the demo bundle, so seeding a NEW project creates a fresh bundle there —
     including its own per-project demo-lakehouse connector — instead of silently
     reusing rows that live in another project.  ``project_id=None`` keeps the
     legacy org-wide match (project-less callers / test doubles).
+
+    One listing per table serves every upsert into it; the first match wins,
+    as it did when each upsert listed the table itself.
     """
+    out: dict[str, dict[str, Any]] = {}
     for row in await repo.list(table, org_id, project_id):
         cfg = row.get("config") or {}
-        if cfg.get("sample") is True and cfg.get("sample_id") == sample_id:
-            return row
-    return None
+        sid = cfg.get("sample_id")
+        if cfg.get("sample") is True and sid and sid not in out:
+            out[sid] = row
+    return out
+
+
+async def _find_sample(
+    repo: Repo, table: str, org_id: str, sample_id: str, project_id: str | None
+) -> dict[str, Any] | None:
+    """Return the existing bundle row for *sample_id* in the TARGET project, or ``None``."""
+    return (await _sample_index(repo, table, org_id, project_id)).get(sample_id)
 
 
 async def _upsert(
@@ -86,9 +117,17 @@ async def _upsert(
     config: dict[str, Any],
     sample_id: str,
     project_id: str | None,
+    existing_index: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], bool]:
-    """Create the row (tagged sample) if absent; return ``(row, created)``."""
-    existing = await _find_sample(repo, table, org_id, sample_id, project_id)
+    """Create the row (tagged sample) if absent; return ``(row, created)``.
+
+    Pass *existing_index* (from :func:`_sample_index`) to skip re-listing the
+    table for every row of a batch.
+    """
+    if existing_index is None:
+        existing = await _find_sample(repo, table, org_id, sample_id, project_id)
+    else:
+        existing = existing_index.get(sample_id)
     if existing is not None:
         return existing, False
     full_config = {**config, "sample": True, "sample_id": sample_id}
@@ -154,7 +193,8 @@ async def seed_sample_bundle(
     # even if no board references them directly.
     all_needed = set(needed) | {k for k, v in queries.items() if v.get("metric")}
 
-    idmap: dict[str, str] = {}
+    query_index = await _sample_index(repo, "queries", org_id, project_id)
+    query_jobs: list[tuple[str, Any]] = []
     for key in sorted(all_needed):
         q = queries.get(key)
         if q is None:
@@ -168,11 +208,16 @@ async def seed_sample_bundle(
         }
         if q.get("metric"):
             q_config["metric"] = q["metric"]
-        row, q_created = await _upsert(
+        query_jobs.append((key, _upsert(
             repo, "queries", org_id, created_by, q["name"],
             q_config,
             f"sample:query:{key}", project_id,
-        )
+            existing_index=query_index,
+        )))
+
+    idmap: dict[str, str] = {}
+    query_results = await _gather_bounded([job for _, job in query_jobs])
+    for (key, _job), (row, q_created) in zip(query_jobs, query_results):
         idmap[f"@{key}"] = str(row["id"])
         if q_created:
             created.append("queries")
@@ -181,13 +226,18 @@ async def seed_sample_bundle(
     idmap["@sample_datastore"] = datastore_id
 
     # ── 4. Dashboards — resolve @placeholders to real query UUIDs ─────────────
-    board_ids: list[str] = []
-    for b in boards:
-        spec = resolve_placeholders(b["spec"], idmap)
-        board, b_created = await _upsert(
+    board_index = await _sample_index(repo, "boards", org_id, project_id)
+    board_results = await _gather_bounded([
+        _upsert(
             repo, "boards", org_id, created_by, b["name"],
-            {"spec": spec}, f"sample:{b['seed_id']}", project_id,
+            {"spec": resolve_placeholders(b["spec"], idmap)},
+            f"sample:{b['seed_id']}", project_id,
+            existing_index=board_index,
         )
+        for b in boards
+    ])
+    board_ids: list[str] = []
+    for board, b_created in board_results:
         board_ids.append(str(board["id"]))
         if b_created:
             created.append("boards")
@@ -347,31 +397,15 @@ async def checkpoint_and_promote_bundle(
 
     counts = {"query": 0, "board": 0, "flow": 0}
 
-    async def _pin(kind: str, resource_id: str, config: dict[str, Any]) -> None:
-        version = await env_store.create_version(
-            org_id=str(org_id),
-            project_id=str(project_id),
-            kind=kind,
-            resource_id=str(resource_id),
-            config=config,
-            created_by=str(created_by),
-            message="Demo seed",
-        )
-        for env in targets:
-            await env_store.set_pointer(
-                kind, str(resource_id), env["id"], version["id"],
-                promoted_by=str(created_by),
-            )
-        counts[kind] += 1
-
     try:
+        items: list[tuple[str, str, dict[str, Any]]] = []
         # Queries + boards: the bundle rows are tagged config.sample = true.
         for kind, table in (("query", "queries"), ("board", "boards")):
             for row in await repo.list(table, org_id, project_id):
                 cfg = row.get("config") or {}
                 if cfg.get("sample") is not True:
                     continue
-                await _pin(kind, str(row["id"]), cfg)
+                items.append((kind, str(row["id"]), cfg))
 
         # Flows: snapshot the spec of every flow in the demo project.
         from app.flows.store import get_flow_store  # noqa: PLC0415
@@ -380,7 +414,20 @@ async def checkpoint_and_promote_bundle(
         for flow in await flow_store.list_flows(str(org_id)):
             if str(flow.get("project_id") or "") != str(project_id):
                 continue
-            await _pin("flow", str(flow["id"]), flow.get("spec") or {})
+            items.append(("flow", str(flow["id"]), flow.get("spec") or {}))
+
+        # One bulk write: this runs inside signup, where a version + two
+        # pointers per resource one at a time cost ~55 x 3 round trips.
+        await env_store.pin_many(
+            org_id=str(org_id),
+            project_id=str(project_id),
+            items=items,
+            environment_ids=[e["id"] for e in targets],
+            created_by=str(created_by),
+            message="Demo seed",
+        )
+        for kind, _, _ in items:
+            counts[kind] += 1
     except Exception as exc:  # noqa: BLE001 — never fail seeding on promote
         return {"skipped": f"checkpoint/promote failed: {exc}", "checkpointed": counts}
 

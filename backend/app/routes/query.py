@@ -130,7 +130,6 @@ from app.queries.registry import (
 )
 from app.vars.store import get_var_store
 from app.repos.provider import get_repo
-from app.request_memo import memoized
 from app.routes import api_router
 
 # ---------------------------------------------------------------------------
@@ -638,10 +637,10 @@ async def _datastore_row(repo, org_id: str, datastore_id: str) -> dict | None:
     path need it; without the memo every board query read the same row twice.
     The row is handed out as a copy (see app/request_memo.py).
     """
-    return await memoized(
-        ("datastore", str(org_id), str(datastore_id)),
-        lambda: repo.get("datastores", org_id, datastore_id),
-    )
+    from app.connectors.resolve import get_datastore  # noqa: PLC0415
+
+    # Same memo key as every other datastore lookup in the request.
+    return await get_datastore(repo, org_id, datastore_id)
 
 
 async def _resolve_target_dialect(

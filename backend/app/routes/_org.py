@@ -23,10 +23,10 @@ from typing import TYPE_CHECKING
 
 from fastapi import Request
 
+from app import request_memo
 from app.db import fetchrow
 from app.errors import AppError
 from app.repos.provider import Repo
-from app.request_memo import memoized
 
 if TYPE_CHECKING:
     from app.auth.verify import VerifiedIdentity
@@ -153,10 +153,16 @@ async def _user_is_member(user_id: str, org_id: str, repo: Repo) -> bool:
         key = f"{org_id}:{user_id}"
         return key in repo._org_members  # type: ignore[attr-defined]
 
-    async def _query() -> bool:
+    # One request asks this several times (org resolution, role gates, the
+    # audit trail). A role already read for this pair proves membership too.
+    if request_memo.peek(("org_role", user_id, org_id)) is not None:
+        return True
+
+    async def _load() -> bool | None:
+        # Read the role too: the role gates that follow then need no query.
         row = await fetchrow(
             """
-            SELECT 1 FROM org_members
+            SELECT role FROM org_members
             WHERE user_id = $1::uuid
               AND org_id  = $2::uuid
             LIMIT 1
@@ -164,13 +170,18 @@ async def _user_is_member(user_id: str, org_id: str, repo: Repo) -> bool:
             user_id,
             org_id,
         )
-        return row is not None
+        if row is None:
+            return None
+        try:
+            role = dict(row).get("role")
+        except (TypeError, ValueError):
+            role = None
+        if role:
+            request_memo.remember(("org_role", user_id, org_id), role, shared=True)
+        return True
 
-    # Asked up to four times per board query while the org is resolved, so a
-    # "yes" is remembered for the rest of the request. A "no" is not: a request
-    # that adds the membership (signup, a new org, an accepted invite) must see
-    # it if it asks again.
-    return await memoized(("org_member", str(user_id), str(org_id)), _query, keep=bool)
+    # Shared across requests (positive answers only); see app.request_memo.
+    return bool(await request_memo.shared_memoized(("org_member", user_id, org_id), _load))
 
 
 async def resolve_org_id(user_id: str, repo: Repo, request: Request) -> str:
@@ -362,3 +373,20 @@ def require_not_embed(identity: "VerifiedIdentity", action: str) -> None:
     """
     if identity.kind == "embed":
         raise AppError("forbidden", f"Embed tokens cannot {action}.", 403)
+
+
+def forget_membership(user_id: str | None = None, org_id: str | None = None) -> None:
+    """Drop cached membership/role answers after ``org_members`` changed.
+
+    Pass both ids for one membership, only *org_id* for a whole org (deleted),
+    or only *user_id* for every org of one user.
+    """
+
+    def _match(key: object) -> bool:
+        if not (isinstance(key, tuple) and len(key) == 3 and key[0] in ("org_member", "org_role")):
+            return False
+        return (user_id is None or str(key[1]) == str(user_id)) and (
+            org_id is None or str(key[2]) == str(org_id)
+        )
+
+    request_memo.forget_matching(_match)

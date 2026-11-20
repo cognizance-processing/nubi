@@ -31,7 +31,7 @@ from typing import Any
 
 from fastapi import Depends, Request
 
-from app import db
+from app import db, request_memo
 from app.auth.deps import current_user, verified_identity
 from app.auth.jwt import decode_access_token
 from app.auth.scopes import parse_scopes
@@ -64,12 +64,18 @@ async def get_org_role(user_id: str, org_id: str, repo: Repo) -> str | None:
     if hasattr(repo, "_org_members"):  # InMemoryRepo test double
         entry = repo._org_members.get(f"{org_id}:{user_id}")  # type: ignore[attr-defined]
         return entry["role"] if entry else None
-    row = await db.fetchrow(
-        "SELECT role FROM org_members WHERE user_id = $1::uuid AND org_id = $2::uuid",
-        user_id,
-        org_id,
-    )
-    return row["role"] if row else None
+
+    async def _load() -> str | None:
+        row = await db.fetchrow(
+            "SELECT role FROM org_members WHERE user_id = $1::uuid AND org_id = $2::uuid",
+            user_id,
+            org_id,
+        )
+        return row["role"] if row else None
+
+    # Asked more than once per request by layered gates; see app.request_memo.
+    # Shared across requests (members only); see app.request_memo.
+    return await request_memo.shared_memoized(("org_role", user_id, org_id), _load)
 
 
 def _forbid_viewer(role: str | None) -> None:

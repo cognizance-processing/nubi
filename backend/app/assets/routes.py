@@ -150,6 +150,9 @@ async def patch_me(
             f"WHERE id = {id_placeholder}::uuid",
             *values,
         )
+        from app.auth.deps import forget_user_row  # noqa: PLC0415
+
+        forget_user_row(user_id)
 
     # Re-fetch to return fresh data.
     row = await fetchrow(

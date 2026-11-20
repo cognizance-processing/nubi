@@ -60,6 +60,7 @@ NEVER broken by a failed audit write.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any
@@ -109,6 +110,12 @@ _AUDITED_READS: tuple[tuple["re.Pattern[str]", str, str], ...] = (
     (re.compile(r"\A/api/v1/embed/config/([^/]+)\Z"), "embed.config", "board"),
     (re.compile(r"\A/api/v1/query/registry()\Z"), "query_registry.list", "query_registry"),
 )
+
+#: POSTs that only read. Audited like any other, but not ahead of the response.
+_DETACHED_WRITES = frozenset({"/api/v1/query", "/api/v1/query/render"})
+
+#: Strong references to in-flight detached writes (asyncio keeps only weak ones).
+_pending_writes: "set[asyncio.Future[Any]]" = set()
 
 #: Mutations under an otherwise-skipped prefix that are still worth a row.
 _AUDITED_EXCEPTIONS = frozenset({("PATCH", "/api/v1/auth/me")})
@@ -280,11 +287,11 @@ class AuditMiddleware(BaseHTTPMiddleware):
         if (method, path) in _AUDITED_EXCEPTIONS:
             action, resource_type, resource_id = "profile.update", "user", actor_user_id
 
-        # Fire-and-forget audit write.  record_audit itself never raises.
+        # record_audit itself never raises.
         try:
             from app.audit import record_audit  # noqa: PLC0415
 
-            await record_audit(
+            write = record_audit(
                 org_id=org_id,
                 actor_user_id=actor_user_id,
                 actor_kind=actor_kind,
@@ -297,6 +304,17 @@ class AuditMiddleware(BaseHTTPMiddleware):
                     "status": response.status_code,
                 },
             )
+            if read_action is not None or path in _DETACHED_WRITES:
+                # High-volume reads: the row is written alongside the response
+                # instead of in front of it, so a board of twelve widgets does
+                # not wait on twelve audit inserts. Real mutations stay
+                # awaited below — their row must exist before the client
+                # hears "done".
+                task = asyncio.ensure_future(write)
+                _pending_writes.add(task)
+                task.add_done_callback(_pending_writes.discard)
+            else:
+                await write
         except Exception:  # noqa: BLE001 — must never break the response
             logger.debug("audit middleware: record_audit call failed", exc_info=True)
 

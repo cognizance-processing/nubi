@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     # ── JWT ─────────────────────────────────────────────────────────────────
     JWT_SECRET: str
     JWT_ACCESS_TTL_MIN: int = 15  # access token lifetime in minutes
+    # Seconds a worker may reuse an auth answer (token not revoked, user row,
+    # org membership/role) across requests. Bounds how long a logout, member
+    # removal or role change made on ANOTHER worker can lag; the worker that
+    # made the change drops its own copy at once. 0 disables the cache.
+    AUTH_CACHE_TTL_SECONDS: float = 30.0
 
     @field_validator("JWT_SECRET")
     @classmethod

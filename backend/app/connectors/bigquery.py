@@ -45,10 +45,13 @@ because the planner bakes those directly into the SQL sent to BigQuery.
 
 from __future__ import annotations
 
-import logging
-
+import hashlib
 import json
+import logging
 import re
+import threading
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Iterator
 
 if TYPE_CHECKING:
@@ -66,6 +69,52 @@ _PG_PLACEHOLDER_RE = re.compile(r"\$(\d+)")
 
 
 _log = logging.getLogger(__name__)
+
+# ── Shared clients ────────────────────────────────────────────────────────────
+# A ``bigquery.Client`` owns an authorised HTTP session: building one per query
+# means a fresh OAuth token exchange and a fresh TLS connection to Google on
+# every widget, which from a far-away region costs far more than the query
+# metadata calls themselves. Clients are therefore shared per distinct
+# connection config (endpoint, project, location, credentials) for the life of
+# the process. The client and its session are safe to use from several threads.
+# The key is a digest, so credentials are never used as a dict key in clear;
+# they already live in memory inside the client's credentials object.
+_CLIENTS: "OrderedDict[str, Any]" = OrderedDict()
+_CLIENTS_LOCK = threading.Lock()
+_MAX_CLIENTS = 32
+
+# Dataset listings fan out over this many threads (metadata calls only).
+_LIST_TABLES_WORKERS = 8
+
+
+def _client_cache_key(config: dict[str, Any]) -> str:
+    """Digest of every config field that changes which client is built."""
+    sa = config.get("service_account_json")
+    if isinstance(sa, str):
+        try:
+            sa = json.loads(sa)
+        except json.JSONDecodeError:
+            pass  # _build_client raises the typed error for bad JSON
+    material = {
+        "api_endpoint": (config.get("api_endpoint") or "").strip() or None,
+        "project": config.get("project") or config.get("project_id"),
+        "location": config.get("location"),
+        "service_account_json": sa,
+    }
+    blob = json.dumps(material, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def clear_client_cache() -> None:
+    """Drop every shared client (tests; credential rotation)."""
+    with _CLIENTS_LOCK:
+        clients = list(_CLIENTS.values())
+        _CLIENTS.clear()
+    for c in clients:
+        try:
+            c.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 def _import_bigquery() -> Any:
     """Import google-cloud-bigquery lazily; return the module or raise ``AppError``."""
@@ -175,8 +224,8 @@ class BigQueryConnector(Connector):
     Notes
     -----
     ``google-cloud-bigquery`` is imported lazily so the module loads without it.
-    A client is built per ``execute`` call (cheap; the heavy lifting is the
-    network job).  Pooling/caching of the client is deferred.
+    Clients are shared per connection config across connector instances
+    (see :meth:`_client`), so repeated queries reuse one authorised session.
     """
 
     def __init__(self, config: dict[str, Any]) -> None:
@@ -218,8 +267,34 @@ class BigQueryConnector(Connector):
     # Internal: build a BigQuery client
     # ------------------------------------------------------------------
 
+    def _client(self) -> Any:
+        """Return the process-wide shared client for this config, building it once."""
+        key = _client_cache_key(self._config)
+        with _CLIENTS_LOCK:
+            client = _CLIENTS.get(key)
+            if client is not None:
+                _CLIENTS.move_to_end(key)
+                return client
+        # Build outside the lock: constructing a client can do I/O (ADC lookup).
+        built = self._build_client()
+        with _CLIENTS_LOCK:
+            client = _CLIENTS.get(key)
+            if client is None:
+                _CLIENTS[key] = client = built
+                built = None
+                while len(_CLIENTS) > _MAX_CLIENTS:
+                    # Not closed: another thread may still be using it. Its
+                    # session is reclaimed once the last reference drops.
+                    _CLIENTS.popitem(last=False)
+        if built is not None:  # lost a build race; keep the cached one
+            built.close()
+        return client
+
     def _build_client(self) -> Any:
-        """Construct a ``bigquery.Client`` from config (emulator, service account, or ADC)."""
+        """Construct a new ``bigquery.Client`` from config (emulator, service account, or ADC).
+
+        Callers that run queries use :meth:`_client` (shared) instead.
+        """
         bigquery = _import_bigquery()
 
         project = self._config.get("project") or self._config.get("project_id")
@@ -302,17 +377,42 @@ class BigQueryConnector(Connector):
         dataset the credentials cannot read is skipped rather than failing the
         whole listing.
         """
-        client = self._build_client()
-        out: list[dict[str, str]] = []
-        for dataset in client.list_datasets():
+        client = self._client()
+        datasets = list(client.list_datasets())
+
+        def _tables_in(dataset: Any) -> list[dict[str, str]]:
             dataset_id = dataset.dataset_id
             try:
-                for table in client.list_tables(dataset.reference):
-                    out.append({"schema": dataset_id, "name": table.table_id})
+                return [
+                    {"schema": dataset_id, "name": table.table_id}
+                    for table in client.list_tables(dataset.reference)
+                ]
             except Exception:  # noqa: BLE001 — one unreadable dataset
                 _log.warning("could not list tables in dataset %s", dataset_id, exc_info=True)
+                return []
+
+        # One listing call per dataset; each is a full round trip to Google,
+        # so a project with dozens of datasets is listed side by side.
+        out: list[dict[str, str]] = []
+        if datasets:
+            workers = min(_LIST_TABLES_WORKERS, len(datasets))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                for tables in pool.map(_tables_in, datasets):
+                    out.extend(tables)
         out.sort(key=lambda t: (t["schema"], t["name"]))
         return out
+
+    def has_table(self, schema: str, name: str) -> bool:
+        """Return True if ``schema.name`` exists — one metadata call, no listing."""
+        client = self._client()
+        project = client.project
+        try:
+            client.get_table(f"{project}.{schema}.{name}")
+            return True
+        except Exception as exc:  # noqa: BLE001
+            if type(exc).__name__ == "NotFound":
+                return False
+            raise
 
     def execute(self, plan: PhysicalPlan) -> "pa.Table":
         """Execute *plan* and return the full result as a PyArrow Table.
@@ -329,7 +429,7 @@ class BigQueryConnector(Connector):
         """
         bigquery = _import_bigquery()
         sql, ordered = _translate_placeholders(plan.sql, plan.params)
-        client = self._build_client()
+        client = self._client()
         try:
             job_config = bigquery.QueryJobConfig(
                 query_parameters=self._build_query_params(ordered)
@@ -350,17 +450,6 @@ class BigQueryConnector(Connector):
                 f"BigQuery query failed: {exc}",
                 status=500,
             ) from exc
-        finally:
-            # _build_client() is called fresh per execute() (see docstring), so
-            # without this the client's underlying requests.Session (its own
-            # connection pool + kept-alive sockets) is only reclaimed whenever
-            # the GC gets to it. Under a boards-page burst of concurrent widget
-            # queries that's slow enough for unclosed sessions to pile up and
-            # exhaust the local emulator's connection capacity, wedging EVERY
-            # subsequent BigQuery query (including on unrelated datastores)
-            # until the whole backend process is restarted — reproduced via a
-            # 48-widget dashboard tab where every query hung indefinitely.
-            client.close()
 
     def estimate(self, plan: PhysicalPlan) -> "QueryEstimate | None":
         """Exact bytes-scanned via a BigQuery dry-run job (free, synchronous).
@@ -372,7 +461,7 @@ class BigQueryConnector(Connector):
         """
         bigquery = _import_bigquery()
         sql, ordered = _translate_placeholders(plan.sql, plan.params)
-        client = self._build_client()
+        client = self._client()
         try:
             job_config = bigquery.QueryJobConfig(
                 query_parameters=self._build_query_params(ordered),
@@ -387,8 +476,6 @@ class BigQueryConnector(Connector):
             )
         except Exception:  # noqa: BLE001 — advisory; never raise
             return None
-        finally:
-            client.close()
 
     def execute_stream(self, plan: PhysicalPlan) -> Iterator["pa.RecordBatch"]:
         """Execute *plan* and yield the result as a stream of RecordBatches.

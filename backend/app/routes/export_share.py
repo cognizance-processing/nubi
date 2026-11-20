@@ -65,6 +65,7 @@ Router wiring (for main.py owner)
 from __future__ import annotations
 
 import asyncio
+import copy
 import csv
 import hashlib
 import io
@@ -75,6 +76,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
 
+from app import request_memo
 from app.auth.deps import current_user
 from app.auth.roles import require_writer
 from app.config import get_settings
@@ -135,10 +137,16 @@ async def _load_board(board_id: str, user_id: str, repo: Repo, request: Request)
     simply not found.
     """
     org_id = await resolve_org_id(user_id, repo, request)
-    board = await repo.get("boards", org_id, board_id)
+    # The card-picture route loads the same board twice (screenshot lookup,
+    # then the render fallback). One read per request; each caller gets its
+    # own copy so neither can see the other's edits.
+    board = await request_memo.memoized(
+        ("board", str(org_id), str(board_id)),
+        lambda: repo.get("boards", org_id, board_id),
+    )
     if board is None:
         raise AppError("board_not_found", f"Board {board_id!r} not found.", 404)
-    return board
+    return copy.deepcopy(board)
 
 
 # ---------------------------------------------------------------------------

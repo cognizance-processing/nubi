@@ -43,7 +43,7 @@
 
 import { fetchRetryingRateLimit } from './rateLimitRetry.js'
 import * as arrow from 'apache-arrow'
-import { getAccessToken, tenantHeaders } from './api.js'
+import { getAccessToken, tenantHeaders, withSessionRetry } from './api.js'
 import { descaleDecimalTable } from './arrowDecimal.js'
 import { approxTableBytes, buildCacheKey, cacheIdentity, cachedRun } from './queryResultCache.js'
 import { ENGINE_STALL_MS, createShareQueue, startEngine } from './engineStart.js'
@@ -500,17 +500,21 @@ async function _runArrowQueryByIdUncached(
 
   const url = `${BACKEND_URL}/api/v1/query`
 
-  const headers = {
-    'Content-Type': 'application/json',
-    'Accept': 'application/vnd.apache.arrow.stream',
+  // Built per attempt, so a retry after a session refresh carries the renewed
+  // token instead of the expired one this call started with.
+  const buildHeaders = () => {
+    const headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/vnd.apache.arrow.stream',
+    }
+    const token = getAccessToken()
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`
+    }
+    // Scope to the workspace on screen, not the user's default org.
+    Object.assign(headers, tenantHeaders())
+    return headers
   }
-
-  const token = getAccessToken()
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
-  // Scope to the workspace on screen, not the user's default org.
-  Object.assign(headers, tenantHeaders())
 
   const t0 = performance.now()
 
@@ -525,12 +529,12 @@ async function _runArrowQueryByIdUncached(
 
   let response
   try {
-    response = await fetchRetryingRateLimit(() => fetch(url, {
+    response = await withSessionRetry(() => fetchRetryingRateLimit(() => fetch(url, {
       method: 'POST',
-      headers,
+      headers: buildHeaders(),
       credentials: 'include',
       body: JSON.stringify(reqBody),
-    }))
+    })))
   } catch (cause) {
     console.warn('[wasmRuntime] runArrowQueryById network error:', cause.message)
     return queryFailure(

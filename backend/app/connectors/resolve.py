@@ -100,6 +100,21 @@ def merge_connector_secret(cfg: dict, ctype: str | None, secret: dict) -> None:
             cfg[k] = v
 
 
+async def get_datastore(repo: Any, org_id: str | None, datastore_id: str) -> dict[str, Any] | None:
+    """Load a datastore row, at most once per request.
+
+    The query path reads the same row up to three times (dialect choice, RLS
+    setup, connector resolution). Callers treat the row as read-only — they
+    copy ``config`` before changing it — so sharing one dict is safe.
+    """
+    from app import request_memo  # noqa: PLC0415
+
+    return await request_memo.memoized(
+        ("datastore", str(org_id), str(datastore_id)),
+        lambda: repo.get("datastores", org_id, datastore_id),
+    )
+
+
 async def resolve_datastore_connector(
     physical_plan: Any,
     effective_datastore_id: str,
@@ -141,7 +156,7 @@ async def resolve_datastore_connector(
     _conn_kind = "unknown"
 
     if ds is None:
-        ds = await repo.get("datastores", org_id, effective_datastore_id)
+        ds = await get_datastore(repo, org_id, effective_datastore_id)
     if ds is None:
         raise AppError(
             "datastore_not_found",

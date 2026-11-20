@@ -150,7 +150,7 @@ export default function Spotlight() {
     if (!open) return
     requestAnimationFrame(() => inputRef.current?.focus())
     if (boards === null) {
-      api.get('/boards').then((d: any) => setBoards(listFrom(d, 'boards'))).catch(() => setBoards([]))
+      api.get('/boards?view=card').then((d: any) => setBoards(listFrom(d, 'boards'))).catch(() => setBoards([]))
     }
     if (queries === null) api.listRegisteredQueries().then((d: any) => setQueries(Array.isArray(d) ? d : [])).catch(() => setQueries([]))
     if (connectors === null) api.get('/connectors').then((d: any) => setConnectors(listFrom(d, 'connectors'))).catch(() => setConnectors([]))

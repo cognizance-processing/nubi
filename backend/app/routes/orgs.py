@@ -50,6 +50,7 @@ from app.errors import AppError
 from app.repos import projects as projects_repo
 from app.repos.provider import Repo, get_repo
 from app.routes import api_router
+from app.routes._org import forget_membership
 
 # ── Sub-router ────────────────────────────────────────────────────────────────
 async def _enforce_org_pin(request: Request) -> None:
@@ -657,6 +658,7 @@ async def delete_org(
         "DELETE FROM orgs WHERE id = $1::uuid",
         org_id,
     )
+    forget_membership(org_id=org_id)
 
 
 # ── Members ───────────────────────────────────────────────────────────────────
@@ -718,6 +720,7 @@ async def update_member_role(
         "UPDATE org_members SET role = $3 WHERE org_id = $1::uuid AND user_id = $2::uuid",
         org_id, member_id, body.role,
     )
+    forget_membership(member_id, org_id)
     if body.role not in ("owner", "admin"):
         # No longer allowed to manage bridges: the tokens they minted go too.
         await _revoke_member_bridge_tokens(member_id, org_id)
@@ -746,6 +749,7 @@ async def remove_member(
         "DELETE FROM org_members WHERE org_id = $1::uuid AND user_id = $2::uuid",
         org_id, member_id,
     )
+    forget_membership(member_id, org_id)
     await _revoke_member_credentials(member_id, org_id)
 
 

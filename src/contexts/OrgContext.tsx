@@ -1,8 +1,9 @@
 /**
  * OrgContext — manages the authenticated user's organisations.
  *
- * Fetches GET /api/v1/orgs on mount (requires a valid access token in the
- * api client). Shape: { orgs: [{ id, name, role }] }
+ * Loads the shell bootstrap on mount (GET /api/v1/bootstrap, falling back to
+ * GET /api/v1/orgs); requires a valid access token in the api client.
+ * Shape: { orgs: [{ id, name, role }] }
  *
  * Tolerates 404 / network errors gracefully — falls back to a single
  * default "Personal" org so the rest of the shell always has something to show.
@@ -31,6 +32,7 @@ import {
   type ReactNode,
 } from 'react'
 import * as api from '../lib/api.js'
+import { ACTIVE_ORG_KEY, getSavedOrgId, getSavedProjectId, loadBootstrap } from '../lib/bootstrap.js'
 
 export interface Org {
   id: string
@@ -61,17 +63,7 @@ export let currentActiveOrg: Org | null = null
 
 const OrgContext = createContext<OrgContextValue | null>(null)
 
-const ACTIVE_ORG_KEY = 'nubi-active-org-id'
-
 const DEFAULT_ORG: Org = { id: 'personal', name: 'Personal', role: 'owner' }
-
-function getSavedOrgId(): string | null {
-  try {
-    return localStorage.getItem(ACTIVE_ORG_KEY) ?? null
-  } catch {
-    return null
-  }
-}
 
 function saveOrgId(id: string) {
   try {
@@ -105,7 +97,12 @@ export function OrgProvider({ children }: { children: ReactNode }) {
 
     async function fetchOrgs() {
       try {
-        const data = await api.get('/orgs')
+        // One request for orgs + projects + environments + flags; the
+        // Project/Env providers take their slices from it. Falls back to
+        // GET /orgs when the bootstrap is unavailable.
+        const hintOrg = getSavedOrgId()
+        const boot = await loadBootstrap(hintOrg, hintOrg ? getSavedProjectId(hintOrg) : null)
+        const data = boot ?? (await api.get('/orgs'))
         const list: Org[] = Array.isArray(data?.orgs)
           ? data.orgs
           : Array.isArray(data)
@@ -131,6 +128,10 @@ export function OrgProvider({ children }: { children: ReactNode }) {
         const saved = list.find(o => o.id === savedId) ?? list[0]
         setActiveOrgState(saved)
         _applyActiveOrg(saved)
+        // Remember the resolved org even when it was only the default: it is
+        // the hint the next page load's bootstrap uses to load the org's
+        // projects and environments in parallel instead of in series.
+        if (saved.id !== savedId) saveOrgId(saved.id)
       } catch {
         // API unavailable or 404 — degrade gracefully
         if (!cancelled) {

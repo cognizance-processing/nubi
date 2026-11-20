@@ -208,11 +208,22 @@ export default function DataExplorerPage() {
   const [tablesError, setTablesError] = useState(null)
   const [tablesReloadKey, setTablesReloadKey] = useState(0)
   const [tableSearch, setTableSearch] = useState('')
-  const [selectedTable, setSelectedTable] = useState(null)
+  // The open table, remembered with the connector it was picked on. Deriving
+  // selectedTable from it means a connector switch can never pair the new
+  // connector with the old table, not even for the one render before the
+  // tables effect clears the selection (that render used to fire /columns and
+  // /rows for a table the new connector does not have → 404).
+  const [selection, setSelection] = useState<{
+    connectorId: string | null
+    table: string
+    schema: string | null
+  } | null>(null)
+  const selectionIsCurrent = selection !== null && selection.connectorId === selectedConnectorId
+  const selectedTable = selectionIsCurrent ? selection.table : null
   // Schema owning `selectedTable`. A connector can expose the same table name in
   // several schemas; without this the server falls back to the connection's
   // default schema and opens the wrong table (or none).
-  const [selectedSchema, setSelectedSchema] = useState(null)
+  const selectedSchema = selectionIsCurrent ? selection.schema : null
   // Datasets the user has collapsed in the rail, keyed by schema name.
   const [collapsedDatasets, setCollapsedDatasets] = useState(() => new Set())
 
@@ -274,8 +285,10 @@ export default function DataExplorerPage() {
   // ── Load tables when connector changes ────────────────────────────────────
   useEffect(() => {
     let cancelled = false
-    setSelectedTable(null)
-    setSelectedSchema(null)
+    setSelection(null)
+    // The previous connector's tables must not stay clickable while this
+    // connector's list loads.
+    setTables([])
     setCollapsedDatasets(new Set())
     setMeta(null)
     setRows([])
@@ -346,11 +359,10 @@ export default function DataExplorerPage() {
 
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleSelectTable = useCallback((name, schema = null) => {
-    setSelectedTable(name)
-    setSelectedSchema(schema ?? null)
+    setSelection({ connectorId: selectedConnectorId, table: name, schema: schema ?? null })
     setMainTab('data')
     setRailOpen(false)
-  }, [])
+  }, [selectedConnectorId])
 
   const refreshData = useCallback(() => setReloadKey((k) => k + 1), [])
 

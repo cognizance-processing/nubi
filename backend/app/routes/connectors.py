@@ -127,9 +127,16 @@ def _demo_connector_row(org_id: str) -> dict[str, Any]:
     }
 
 
-async def _find_demo_hidden_row(org_id: str, repo: Repo) -> dict[str, Any] | None:
-    """Return the per-org demo-hidden marker datastore row, or ``None``."""
-    rows = await repo.list("datastores", org_id)
+async def _find_demo_hidden_row(
+    org_id: str, repo: Repo, rows: list[dict[str, Any]] | None = None
+) -> dict[str, Any] | None:
+    """Return the per-org demo-hidden marker datastore row, or ``None``.
+
+    *rows* lets a caller that already holds the org's datastores (the list
+    route) skip a second read of the same table.
+    """
+    if rows is None:
+        rows = await repo.list("datastores", org_id)
     for row in rows:
         cfg = row.get("config")
         if isinstance(cfg, dict) and cfg.get("connector_type") == _DEMO_HIDDEN_MARKER:
@@ -137,9 +144,11 @@ async def _find_demo_hidden_row(org_id: str, repo: Repo) -> dict[str, Any] | Non
     return None
 
 
-async def _demo_is_hidden(org_id: str, repo: Repo) -> bool:
+async def _demo_is_hidden(
+    org_id: str, repo: Repo, rows: list[dict[str, Any]] | None = None
+) -> bool:
     """Return ``True`` if this org has removed the demo connector."""
-    return (await _find_demo_hidden_row(org_id, repo)) is not None
+    return (await _find_demo_hidden_row(org_id, repo, rows)) is not None
 
 
 def _is_editable_demo_row(row: dict[str, Any]) -> bool:
@@ -163,7 +172,10 @@ def _is_editable_demo_row(row: dict[str, Any]) -> bool:
 
 
 async def _has_editable_demo(
-    org_id: str, repo: Repo, project_id: str | None = None
+    org_id: str,
+    repo: Repo,
+    project_id: str | None = None,
+    rows: list[dict[str, Any]] | None = None,
 ) -> bool:
     """Return ``True`` if the org has a user-owned editable demo connector.
 
@@ -171,7 +183,12 @@ async def _has_editable_demo(
     project owns its own demo bundle, so only the active project's editable
     demo should suppress the virtual "Demo data" card there.
     """
-    for row in await repo.list("datastores", org_id, project_id):
+    if rows is None:
+        rows = await repo.list("datastores", org_id, project_id)
+    for row in rows:
+        # *rows* may be org-wide; apply the same project scope the query would.
+        if project_id is not None and str(row.get("project_id")) != str(project_id):
+            continue
         if _is_editable_demo_row(row):
             return True
     return False
@@ -678,8 +695,8 @@ async def list_connectors(
     # back on.
     if (
         await _in_demo_project(org_id, request)
-        and not await _demo_is_hidden(org_id, repo)
-        and not await _has_editable_demo(org_id, repo, active_project)
+        and not await _demo_is_hidden(org_id, repo, all_datastores)
+        and not await _has_editable_demo(org_id, repo, active_project, all_datastores)
     ):
         demo_row = _sanitise(_demo_connector_row(org_id))
         demo_row["status"] = demo_connector_status()

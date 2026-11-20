@@ -12,7 +12,8 @@
  *   updateUser(fields)                  — merge fields (e.g. a PATCH /auth/me
  *                                         response) into the current user
  *
- * On mount: calls refresh() then me() to silently restore an existing session,
+ * On mount: calls refresh() (which returns the user; me() only as a fallback)
+ * to silently restore an existing session,
  * unless this browser already learned there is none (see authSession.ts), so
  * anonymous visitors do not log a 401 on every page. A definitive 401/403 means
  * "logged out"; a network failure or 5xx means "unknown" and is retried, and
@@ -22,6 +23,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import * as api from '../lib/api.js'
 import { clearBoardThumbnailCache } from '../lib/boardThumbnail.js'
+import { bootstrapRefreshQuery, clearPrimedBootstrap, primeBootstrap } from '../lib/bootstrap.js'
 import { clearQueryResultCache } from '../lib/queryResultCache.js'
 import { announceSession, shouldProbeSession, writeSessionHint } from './authSession.js'
 
@@ -68,10 +70,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     async function attemptRestore() {
       // Exchange the HttpOnly refresh cookie for a new access token
-      const refreshData = await api.refresh()
+      // ...and carry the shell bootstrap with it, so the providers start
+      // without a second serial request.
+      const refreshData = await api.refresh(bootstrapRefreshQuery())
       api.setAccessToken(refreshData.access_token)
+      if (refreshData?.bootstrap) primeBootstrap(refreshData.bootstrap)
 
-      // Fetch the user profile with the new token
+      // The refresh response carries the user (same shape as /auth/me);
+      // an older backend that omits it costs the extra /auth/me call.
+      if (refreshData?.user) return { user: refreshData.user }
       return api.me()
     }
 
@@ -129,6 +136,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   /** Log in with email + password. */
   async function login({ email, password }: { email: string; password: string }) {
     const data = await api.login({ email, password })
+    clearPrimedBootstrap()
     api.setAccessToken(data.access_token)
     writeSessionHint('1')
     setUser(data.user)
@@ -151,6 +159,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     demo_project?: boolean
   }) {
     const data = await api.register({ email, password, name, org_name, project_name, demo_project })
+    clearPrimedBootstrap()
     api.setAccessToken(data.access_token)
     writeSessionHint('1')
     setUser(data.user)
@@ -173,6 +182,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       void clearBoardThumbnailCache()
       // Remembered query results belong to the user who loaded them.
       clearQueryResultCache()
+      // So does a refresh-delivered bootstrap the shell never consumed.
+      clearPrimedBootstrap()
     }
   }
 

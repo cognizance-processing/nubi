@@ -8,10 +8,9 @@
  *
  * Two consequences this module exists to handle:
  *
- *  1. A dashboards page with 13 cards must NOT fire 13 cold renders at once —
- *     each one is a Node subprocess plus that board's whole query set. So all
- *     requests funnel through a small concurrency gate and cards fill in
- *     progressively instead of stampeding the API.
+ *  1. The gallery must never trigger those renders: it asks only for the
+ *     server's stored picture (`cached_only=1`), through a small concurrency
+ *     gate. Pictures are produced out of band (see fetchBoardThumbnail).
  *  2. `<img src>` cannot send an Authorization header, and the endpoint is
  *     first-party authed. So we fetch through lib/api.js's `getBlob` (which
  *     attaches the bearer token + X-Org-Id/X-Project-Id) and hand the caller an
@@ -29,18 +28,9 @@
 import { getBlob } from './api.js'
 
 /**
- * Max cold renders in flight at once.
- *
- * 2 is deliberate, not tuned: the server's own Node-subprocess semaphore is the
- * real backstop, and the point here is to stop a scrolling gallery from queueing
- * dozens of board-wide query runs.
- */
-const MAX_CONCURRENT = 2
-
-/**
  * Max stored-picture lookups in flight. These are ~10ms reads from the server's
- * cache/object storage (`cached_only=1` never renders), so they must not wait
- * behind cold renders — 6 matches the browser's own per-host connection cap.
+ * cache/object storage (`cached_only=1` never renders); 6 matches the
+ * browser's own per-host connection cap.
  */
 const MAX_STORED_CONCURRENT = 6
 
@@ -57,7 +47,6 @@ interface Gate {
   limit: number
 }
 
-const _coldGate: Gate = { active: 0, queue: [], limit: MAX_CONCURRENT }
 const _storedGate: Gate = { active: 0, queue: [], limit: MAX_STORED_CONCURRENT }
 
 function _pump(gate: Gate) {
@@ -247,8 +236,8 @@ function _revalidate(boardId: string, theme: Theme, version: string | null | und
 /**
  * Fetch a board's rendered thumbnail as an object URL.
  *
- * Order: memory → Cache API → the server's stored picture (fast lane) → a cold
- * render (2-at-a-time lane). Cached hits are revalidated in the background.
+ * Order: memory → Cache API → the server's stored picture. Never a cold render
+ * (see the note in the body). Cached hits are revalidated in the background.
  *
  * @param version the board's `updated_at` — a saved board is a new picture.
  * @returns an object URL owned by this module, or null when the server has no
@@ -275,15 +264,15 @@ export async function fetchBoardThumbnail(
     return url
   }
 
-  let blob = await _fetchStored(boardId, theme, signal)
-  if (signal?.aborted) return null
-  if (!blob) {
-    blob = await _gate(_coldGate, async () => {
-      if (signal?.aborted) return null
-      return _get(_path(boardId, theme, false))
-    }, signal)
-    if (signal?.aborted || !blob) return null
-  }
+  // Only ever the STORED picture. The gallery no longer asks the server to
+  // render a board on the spot: in prod those renders took 47s at the median,
+  // 70% ended in a 503 anyway, and running a board's whole query set plus two
+  // Node processes inside a request is what pushed workers past their memory
+  // limit. Pictures are made out of band instead — a writer's screenshot when
+  // they view the board, and the server's own warm-up after every save — and a
+  // card without one keeps its layout miniature until then.
+  const blob = await _fetchStored(boardId, theme, signal)
+  if (signal?.aborted || !blob) return null
   // Fresh from the server: nothing to revalidate this session.
   _revalidated.add(key)
   void _writePersisted(boardId, theme, version, blob)
@@ -293,8 +282,6 @@ export async function fetchBoardThumbnail(
 /** Test seam: how many renders are in flight / waiting. */
 export function _thumbnailQueueState() {
   return {
-    active: _coldGate.active,
-    queued: _coldGate.queue.length,
     storedActive: _storedGate.active,
     storedQueued: _storedGate.queue.length,
   }

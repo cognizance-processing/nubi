@@ -38,15 +38,15 @@
  *   server independently verifies the token signature and re-enforces the lock.
  */
 
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { lazy, Suspense, useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useParams, useLocation, Link, useSearchParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Pencil, Eye, Rocket, Sun, Moon, MoreVertical, Trash2, History, Undo2 } from 'lucide-react'
 import { get, del } from '../lib/api.js'
+import { prefetchDemoData } from '../lib/wasmRuntime.js'
 import { canCapture, captureBoardThumbnail } from '../lib/boardThumbnailCapture.js'
 import DashboardView from '../dashboards/DashboardView.jsx'
 import SpecRenderer from '../dashboards/SpecRenderer.jsx'
 import { backgroundToCss } from '../dashboards/widgetHtml.js'
-import EditorShell from '../editor/EditorShell.jsx'
 import { useUi } from '../contexts/UiContext.jsx'
 import { useEnv } from '../contexts/EnvContext.jsx'
 import { pushToLive, resolveLiveEnvKey, resolveLiveRender, canPushToLive } from '../lib/liveBoard.js'
@@ -73,6 +73,11 @@ import { BoardHealthProvider, BoardErrorBanner } from '../dashboards/widgets/boa
 import { restoreVersion } from '../lib/versions.js'
 import { summarizeSpecChanges, describeChanges, describeBreakdown, relativeTime } from '../editor/boardMeta.js'
 import '../dashboards/widgets/chrome.css'
+
+// The editor (and the Monaco/code views it pulls in) is only needed in edit
+// mode, which most visits never enter: load it on first use instead of with
+// every board view.
+const EditorShell = lazy(() => import('../editor/EditorShell.jsx'))
 
 // ---------------------------------------------------------------------------
 // Built-in sample dashboard HTML
@@ -734,6 +739,12 @@ export default function DashboardViewPage({ edit = false }) {
 
     let cancelled = false
 
+    // Ask for the demo routing map NOW, alongside the board, not after it.
+    // Every unfiltered widget waits on that map before sending its query, and
+    // it used to be requested only once the board had arrived and the renderer
+    // mounted — a full extra request of dead time in front of every widget.
+    prefetchDemoData()
+
     async function load() {
       setLoading(true)
       setError(null)
@@ -1152,14 +1163,16 @@ export default function DashboardViewPage({ edit = false }) {
           data-testid="dashboard-edit-surface"
           aria-hidden={!isEdit}
         >
-          <EditorShell
-            key={editorKey}
-            boardId={boardId ?? id}
-            onDirtyChange={setDraftDirty}
-            onSaved={handleEditorSaved}
-            onSpecChange={setDraftSpec}
-            onSetSave={registerEditorSave}
-          />
+          <Suspense fallback={<div className="flex-1 p-6"><Skeleton className="h-full w-full" /></div>}>
+            <EditorShell
+              key={editorKey}
+              boardId={boardId ?? id}
+              onDirtyChange={setDraftDirty}
+              onSaved={handleEditorSaved}
+              onSpecChange={setDraftSpec}
+              onSetSave={registerEditorSave}
+            />
+          </Suspense>
         </div>
       )}
 

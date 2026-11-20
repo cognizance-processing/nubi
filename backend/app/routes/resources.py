@@ -263,6 +263,13 @@ async def list_resources(
         from app.environments.store import attach_pinned_envs  # noqa: PLC0415
 
         await attach_pinned_envs(kind, rows)
+
+    # ``?view=card``: boards with the spec cut down to what a gallery card
+    # draws. Rows are marked ``config_partial`` and must not be PUT back.
+    if resource == "boards" and request.query_params.get("view") == "card":
+        from app.dashboards.card_summary import card_summary_rows  # noqa: PLC0415
+
+        return card_summary_rows(rows)
     return rows
 
 
@@ -297,6 +304,9 @@ async def create_resource(
 
         guard_datastore_config(body.config, org_id)
     if resource == "boards" and body.config is not None:
+        from app.dashboards.card_summary import reject_card_summary  # noqa: PLC0415
+
+        reject_card_summary(body.config)
         # Stored boards never carry chart options that render as markup.
         from app.dashboards.spec import scrub_board_config  # noqa: PLC0415
 
@@ -408,6 +418,9 @@ async def update_resource(
         validate_query_metric_block(body.config)
 
     if resource == "boards" and body.config is not None:
+        from app.dashboards.card_summary import reject_card_summary  # noqa: PLC0415
+
+        reject_card_summary(body.config)
         # Stored boards never carry chart options that render as markup.
         from app.dashboards.spec import scrub_board_config  # noqa: PLC0415
 

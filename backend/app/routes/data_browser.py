@@ -56,6 +56,7 @@ from app.connectors.plan import PhysicalPlan
 from app.errors import AppError
 from app.repos.provider import get_repo, Repo
 from app.routes import api_router
+from app.connectors.resolve import get_datastore as _get_datastore
 from app.routes._org import resolve_org_id as _resolve_org_id
 
 # ---------------------------------------------------------------------------
@@ -470,13 +471,84 @@ def _writable_meta_duckdb(
 # ---------------------------------------------------------------------------
 
 
+# Remote table listings are cached per (org, datastore, config) for a few
+# minutes. Listing can be slow — BigQuery has no catalog-wide view, so it is one
+# metadata call per dataset (~45 s for a large project from a distant region) —
+# and every column/row request used to repeat it just to validate the table
+# name. ``GET /data/{id}/tables?refresh=true`` bypasses the cache.
+_TABLES_TTL_S = 300.0
+_TABLES_CACHE_MAX = 256
+_tables_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+
+
+def _tables_cache_key(org_id: str | None, datastore_id: str, cfg: dict[str, Any]) -> str:
+    import hashlib  # noqa: PLC0415
+    import json  # noqa: PLC0415
+
+    digest = hashlib.sha256(
+        json.dumps(cfg, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    return f"{org_id}:{datastore_id}:{digest}"
+
+
+def _tables_cache_get(key: str) -> list[dict[str, Any]] | None:
+    import time  # noqa: PLC0415
+
+    hit = _tables_cache.get(key)
+    if hit is None:
+        return None
+    if hit[0] < time.monotonic():
+        _tables_cache.pop(key, None)
+        return None
+    return hit[1]
+
+
+def _tables_cache_put(key: str, tables: list[dict[str, Any]]) -> None:
+    import time  # noqa: PLC0415
+
+    if len(_tables_cache) >= _TABLES_CACHE_MAX:
+        _tables_cache.pop(next(iter(_tables_cache)), None)
+    _tables_cache[key] = (time.monotonic() + _TABLES_TTL_S, tables)
+
+
+def _clear_tables_cache() -> None:
+    _tables_cache.clear()
+
+
+def _single_table_listing(
+    connector: Any, table: str, schema: str | None
+) -> list[dict[str, Any]] | None:
+    """Validate one table without listing the whole source, when the engine can.
+
+    Returns a one-entry listing for ``schema.table`` if it exists, ``[]`` if it
+    does not, or ``None`` when the connector has no cheap existence check (the
+    caller then lists every table). Only connectors exposing ``has_table`` take
+    this path, and only with an explicit, safe schema.
+    """
+    check = getattr(connector, "has_table", None)
+    if not callable(check) or not schema:
+        return None
+    if not (_safe_identifier(schema) and _safe_identifier(table)):
+        return None
+    return [{"schema": schema, "name": table}] if check(schema, table) else []
+
+
 async def _resolve_connector_and_tables(
     datastore_id: str | None,
     user: dict[str, Any],
     repo: Repo,
     request: Request,
+    *,
+    table: str | None = None,
+    schema: str | None = None,
+    refresh: bool = False,
 ) -> tuple[DuckDBConnector, list[dict[str, Any]], Callable[[], None]]:
     """Return ``(connector, tables, net_cleanup)``.
+
+    For a remote connector the listing comes from a short-lived cache when it
+    can. With a *table* (and *schema*) hint and no cached listing, a connector
+    with a cheap existence check validates just that table, so ``tables`` may
+    then hold only that one entry.
 
     Works for demo (``None`` / ``__demo__``) and real connectors.  ``net_cleanup``
     tears down any ephemeral bridge tunnel and MUST be called by the caller in a
@@ -493,7 +565,7 @@ async def _resolve_connector_and_tables(
         return connector, tables, _noop
 
     org_id = await _resolve_org_id(str(user["id"]), repo, request)
-    ds = await repo.get("datastores", org_id, datastore_id)
+    ds = await _get_datastore(repo, org_id, datastore_id)
     if ds is None:
         raise AppError("not_found", f"Datastore {datastore_id!r} not found.", 404)
 
@@ -511,8 +583,22 @@ async def _resolve_connector_and_tables(
     # information_schema query used for DuckDB.  The connector only needs to
     # expose ``.execute(plan)`` — every SQL connector does.
     connector, cleanup = await _build_remote_connector(datastore_id, org_id, repo)
+    cache_key = _tables_cache_key(org_id, datastore_id, cfg)
     try:
-        tables = await asyncio.to_thread(_introspect_tables_duckdb, connector)
+        cached = None if refresh else _tables_cache_get(cache_key)
+        if cached is not None:
+            tables = cached
+        else:
+            single = (
+                await asyncio.to_thread(_single_table_listing, connector, table, schema)
+                if table is not None
+                else None
+            )
+            if single is not None:
+                tables = single
+            else:
+                tables = await asyncio.to_thread(_introspect_tables_duckdb, connector)
+                _tables_cache_put(cache_key, tables)
     except BaseException:
         # Introspection failed — release the tunnel now; no caller will get the
         # cleanup handle back through the raised exception.
@@ -562,6 +648,7 @@ async def _browse_connector(
     user: dict[str, Any],
     repo: Repo,
     request: Request,
+    **hints: Any,
 ) -> AsyncIterator[tuple[DuckDBConnector, list[dict[str, Any]]]]:
     """Yield ``(connector, tables)`` and always release the bridge tunnel.
 
@@ -570,7 +657,7 @@ async def _browse_connector(
     request, on both the success and the error path.
     """
     connector, tables, cleanup = await _resolve_connector_and_tables(
-        datastore_id, user, repo, request
+        datastore_id, user, repo, request, **hints
     )
     try:
         yield connector, tables
@@ -600,11 +687,17 @@ async def list_demo_tables(
 async def list_tables(
     datastore_id: str,
     request: Request,
+    refresh: bool = Query(default=False),
     user: dict[str, Any] = Depends(current_user),
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
-    """List tables (and schemas) for the given connector via introspection."""
-    async with _browse_connector(datastore_id, user, repo, request) as (_conn, tables):
+    """List tables (and schemas) for the given connector via introspection.
+
+    Remote listings are cached for a few minutes; ``refresh=true`` re-lists.
+    """
+    async with _browse_connector(
+        datastore_id, user, repo, request, refresh=refresh
+    ) as (_conn, tables):
         return {"tables": tables, "datastore_id": datastore_id}
 
 
@@ -646,7 +739,9 @@ async def list_columns(
     repo: Repo = Depends(get_repo),
 ) -> dict[str, Any]:
     """Return column names + types for a table in the given connector."""
-    async with _browse_connector(datastore_id, user, repo, request) as (connector, tables):
+    async with _browse_connector(
+        datastore_id, user, repo, request, table=table, schema=schema
+    ) as (connector, tables):
         known = {t["name"] for t in tables}
         if table not in known:
             raise AppError("not_found", f"Table {table!r} not found in datastore {datastore_id!r}.", 404)
@@ -756,7 +851,9 @@ async def get_rows(
     repo: Repo = Depends(get_repo),
 ):
     """Fetch rows from a connector table (Arrow IPC, or JSON via format=json)."""
-    async with _browse_connector(datastore_id, user, repo, request) as (connector, tables):
+    async with _browse_connector(
+        datastore_id, user, repo, request, table=table, schema=schema
+    ) as (connector, tables):
         known = {t["name"] for t in tables}
         if table not in known:
             raise AppError("not_found", f"Table {table!r} not found in datastore {datastore_id!r}.", 404)
@@ -828,7 +925,7 @@ async def _datastore_cfg(
     if datastore_id is None or datastore_id == _DEMO_CONNECTOR_ID:
         return None
     org_id = await _resolve_org_id(str(user["id"]), repo, request)
-    ds = await repo.get("datastores", org_id, datastore_id)
+    ds = await _get_datastore(repo, org_id, datastore_id)
     if ds is None:
         return None
     cfg = ds.get("config")
@@ -881,7 +978,7 @@ async def _resolve_writable_connector(
         )
 
     org_id = await _resolve_org_id(str(user["id"]), repo, request)
-    ds = await repo.get("datastores", org_id, datastore_id)
+    ds = await _get_datastore(repo, org_id, datastore_id)
     if ds is None:
         raise AppError("not_found", f"Datastore {datastore_id!r} not found.", 404)
 

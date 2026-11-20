@@ -46,6 +46,7 @@ import {
   deleteEnvironment,
 } from '../lib/versions.js'
 import { useProject } from './ProjectContext.jsx'
+import { takeBootstrapEnvironments } from '../lib/bootstrap.js'
 import {
   envDotClass as envDotClassImpl,
   defaultEnvKey,
@@ -98,8 +99,12 @@ function saveEnv(projectId: string, key: string) {
 }
 
 export function EnvProvider({ children }: { children: ReactNode }) {
-  const { activeProject } = useProject()
+  const { activeProject, loading: projectLoading } = useProject()
   const projectId = activeProject?.id ?? null
+  // Only "no project yet, still loading" matters below; depending on
+  // projectLoading itself would reload envs for an unchanged project whenever
+  // the project list reloads (e.g. an org switch).
+  const waitingForProject = !projectId && projectLoading
 
   // null until loaded / when the API is unavailable (read helpers degrade).
   const [environments, setEnvironments] = useState<EnvRow[] | null>(null)
@@ -111,15 +116,19 @@ export function EnvProvider({ children }: { children: ReactNode }) {
     let cancelled = false
 
     async function fetchEnvs() {
-      setLoading(true)
       if (!projectId) {
+        // Still resolving the project: keep loading rather than flashing
+        // "no environments" and loading again a moment later.
+        if (waitingForProject) return
         setEnvironments(null)
         setActiveEnvState('prod')
         setLoading(false)
         return
       }
+      setLoading(true)
+      // First load: the shell bootstrap already has this project's envs.
       // listEnvironments() degrades to null on failure.
-      const list = await listEnvironments(projectId)
+      const list = takeBootstrapEnvironments(projectId) ?? (await listEnvironments(projectId))
       if (cancelled) return
 
       setEnvironments(list)
@@ -134,7 +143,7 @@ export function EnvProvider({ children }: { children: ReactNode }) {
 
     fetchEnvs()
     return () => { cancelled = true }
-  }, [projectId])
+  }, [projectId, waitingForProject])
 
   const setActiveEnv = useCallback(
     (key: string) => {
