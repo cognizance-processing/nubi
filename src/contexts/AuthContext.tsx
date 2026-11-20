@@ -23,6 +23,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import * as api from '../lib/api.js'
 import { clearBoardThumbnailCache } from '../lib/boardThumbnail.js'
+import { bootstrapRefreshQuery, clearPrimedBootstrap, primeBootstrap } from '../lib/bootstrap.js'
 import { clearQueryResultCache } from '../lib/queryResultCache.js'
 import { announceSession, shouldProbeSession, writeSessionHint } from './authSession.js'
 
@@ -69,8 +70,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     async function attemptRestore() {
       // Exchange the HttpOnly refresh cookie for a new access token
-      const refreshData = await api.refresh()
+      // ...and carry the shell bootstrap with it, so the providers start
+      // without a second serial request.
+      const refreshData = await api.refresh(bootstrapRefreshQuery())
       api.setAccessToken(refreshData.access_token)
+      if (refreshData?.bootstrap) primeBootstrap(refreshData.bootstrap)
 
       // The refresh response carries the user (same shape as /auth/me);
       // an older backend that omits it costs the extra /auth/me call.
@@ -132,6 +136,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   /** Log in with email + password. */
   async function login({ email, password }: { email: string; password: string }) {
     const data = await api.login({ email, password })
+    clearPrimedBootstrap()
     api.setAccessToken(data.access_token)
     writeSessionHint('1')
     setUser(data.user)
@@ -154,6 +159,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     demo_project?: boolean
   }) {
     const data = await api.register({ email, password, name, org_name, project_name, demo_project })
+    clearPrimedBootstrap()
     api.setAccessToken(data.access_token)
     writeSessionHint('1')
     setUser(data.user)
@@ -176,6 +182,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       void clearBoardThumbnailCache()
       // Remembered query results belong to the user who loaded them.
       clearQueryResultCache()
+      // So does a refresh-delivered bootstrap the shell never consumed.
+      clearPrimedBootstrap()
     }
   }
 

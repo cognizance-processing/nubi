@@ -8,30 +8,36 @@
  * org or project, refreshes) uses the regular endpoints. If the call fails,
  * every provider falls back to its regular endpoint, so an older backend
  * without /bootstrap keeps working.
+ *
+ * On a hard page load the session restore asks POST /auth/refresh to carry the
+ * same payload (bootstrapRefreshQuery + primeBootstrap), so the shell's first
+ * loadBootstrap is answered locally and GET /bootstrap is only the fallback.
  */
 import { get } from './api.js'
 import { awaitFeaturePrime, setEnabledFeatures } from './features.js'
+import { stashPrimedBootstrap, takePrimedBootstrap } from './bootstrapPrime.js'
 
-export interface BootstrapData {
-  orgs: any[]
-  active_org_id: string | null
-  projects: any[]
-  active_project_id: string | null
-  environments: any[] | null
-  features: string[]
-}
+export {
+  ACTIVE_ORG_KEY,
+  activeProjectKey,
+  bootstrapRefreshQuery,
+  clearPrimedBootstrap,
+  getSavedOrgId,
+  getSavedProjectId,
+} from './bootstrapPrime.js'
 
-/** localStorage key for a given org's active project id (shared with ProjectContext). */
-export function activeProjectKey(orgId: string | null): string {
-  return `nubi-active-project-id:${orgId ?? 'default'}`
-}
+export type { BootstrapData } from './bootstrapPrime.js'
+import type { BootstrapData } from './bootstrapPrime.js'
 
-export function getSavedProjectId(orgId: string | null): string | null {
-  try {
-    return localStorage.getItem(activeProjectKey(orgId)) ?? null
-  } catch {
-    return null
-  }
+/**
+ * Hand over the bootstrap that came back with POST /auth/refresh. The flags
+ * apply now; orgs/projects/environments are served to the next loadBootstrap
+ * call made with the same hints (once). Anything malformed is ignored and
+ * the shell fetches GET /bootstrap as before.
+ */
+export function primeBootstrap(data: any): void {
+  const primed = stashPrimedBootstrap(data)
+  if (primed && Array.isArray(primed.features)) setEnabledFeatures(primed.features)
 }
 
 let _inflight: Promise<BootstrapData | null> | null = null
@@ -52,6 +58,11 @@ export function loadBootstrap(
   _result = null
   _projectsTaken = false
   _envsTaken = false
+  const primed = takePrimedBootstrap(orgHint, projectHint)
+  if (primed) {
+    _result = primed
+    return Promise.resolve(_result)
+  }
   const qs = new URLSearchParams()
   if (orgHint) qs.set('org_id', orgHint)
   if (projectHint) qs.set('project_id', projectHint)

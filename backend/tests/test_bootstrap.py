@@ -116,3 +116,75 @@ async def test_no_orgs_returns_empty_shell(env_store, monkeypatch) -> None:
         "orgs": [], "active_org_id": None, "projects": [],
         "active_project_id": None, "environments": None, "features": ["billing"],
     }
+
+
+# ---------------------------------------------------------------------------
+# POST /auth/refresh?bootstrap=1 — same payload, same verification rules
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def refresh_env(env_store, monkeypatch):
+    import app.routes.auth as auth_mod
+
+    async def rotate(_raw, **_kw):
+        return "new-raw", "u1", None
+
+    async def me_payload(user_id):
+        return {"id": user_id, "email": "u1@example.com"}
+
+    monkeypatch.setattr(auth_mod, "rotate_refresh", rotate)
+    monkeypatch.setattr(auth_mod, "set_refresh_cookie", lambda *a, **k: None)
+    monkeypatch.setattr(auth_mod, "mint_access_token", lambda uid: f"tok-{uid}")
+    monkeypatch.setattr(auth_mod, "_me_payload", me_payload)
+    return auth_mod
+
+
+def _req():
+    return NS(headers={}, client=NS(host="127.0.0.1"))
+
+
+@pytest.mark.asyncio
+async def test_refresh_without_flag_has_no_bootstrap(refresh_env) -> None:
+    out = await refresh_env.refresh(
+        _req(), NS(), nubi_refresh="raw", bootstrap=False, org_id=None, project_id=None
+    )
+    assert out["access_token"] == "tok-u1"
+    assert out["user"]["id"] == "u1"
+    assert "bootstrap" not in out
+
+
+@pytest.mark.asyncio
+async def test_refresh_bootstrap_matches_get_bootstrap(refresh_env) -> None:
+    out = await refresh_env.refresh(
+        _req(), NS(), nubi_refresh="raw", bootstrap=True, org_id=ORG_B, project_id="pb-default"
+    )
+    direct = await bootstrap_mod.bootstrap(org_id=ORG_B, project_id="pb-default", user=USER)
+    assert out["bootstrap"] == direct
+    assert out["bootstrap"]["active_org_id"] == ORG_B
+
+
+@pytest.mark.asyncio
+async def test_refresh_bootstrap_ignores_foreign_hints(refresh_env, env_store) -> None:
+    out = await refresh_env.refresh(
+        _req(), NS(), nubi_refresh="raw", bootstrap=True, org_id=ORG_OTHER, project_id="p-foreign"
+    )
+    assert out["bootstrap"]["active_org_id"] == ORG_A
+    assert out["bootstrap"]["active_project_id"] == "pa-default"
+    assert "p-foreign" not in env_store.ensured
+
+
+@pytest.mark.asyncio
+async def test_refresh_bootstrap_failure_still_restores_session(refresh_env, monkeypatch) -> None:
+    import app.routes.orgs as orgs_mod
+
+    async def boom(_user):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(orgs_mod, "list_orgs", boom)
+    out = await refresh_env.refresh(
+        _req(), NS(), nubi_refresh="raw", bootstrap=True, org_id=None, project_id=None
+    )
+    assert out["access_token"] == "tok-u1"
+    assert out["user"]["id"] == "u1"
+    assert "bootstrap" not in out

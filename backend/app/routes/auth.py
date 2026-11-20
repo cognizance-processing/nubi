@@ -18,11 +18,13 @@ up automatically.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
+import logging
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Cookie, Depends, Request, Response
+from fastapi import APIRouter, Cookie, Depends, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr, field_validator
 
@@ -33,7 +35,7 @@ from app.auth.cookies import (
     set_refresh_cookie,
 )
 from app.auth.denylist import get_token_denylist
-from app.auth.deps import current_user, verified_identity
+from app.auth.deps import current_user, forget_user_row, verified_identity
 from app.auth.verify import VerifiedIdentity
 from app.auth.google import (
     build_authorize_url,
@@ -58,6 +60,8 @@ from app.routes._org import get_user_org, resolve_org_id
 _DUMMY_HASH: str = hash_password("nubi-dummy-constant-timing-sentinel")
 
 # ── Sub-router ────────────────────────────────────────────────────────────────
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 # ── Cookie names for PKCE state ───────────────────────────────────────────────
@@ -367,16 +371,25 @@ async def refresh(
     request: Request,
     response: Response,
     nubi_refresh: str | None = Cookie(default=None, alias=REFRESH_COOKIE_NAME),
+    bootstrap: bool = Query(default=False),
+    org_id: str | None = Query(default=None, max_length=64),
+    project_id: str | None = Query(default=None, max_length=64),
 ) -> dict[str, Any]:
     """Rotate the refresh cookie and return a new access token.
 
     On reuse of a consumed token the entire session family is revoked and
     the cookie is cleared.
 
+    With ``?bootstrap=1`` (plus optional ``org_id`` / ``project_id`` hints)
+    the response also carries ``bootstrap``: the ``GET /bootstrap`` payload,
+    built under the same verification rules, so restoring a session on a hard
+    page load is one request instead of refresh-then-bootstrap in series.
+
     Returns
     -------
-    200 {access_token, user}  (``user`` as in ``GET /auth/me``; omitted if it
-    could not be loaded)
+    200 {access_token, user, bootstrap?}  (``user`` as in ``GET /auth/me``;
+    ``user`` / ``bootstrap`` are omitted if they could not be loaded, and the
+    client falls back to ``GET /auth/me`` / ``GET /bootstrap``)
     """
     if not nubi_refresh:
         raise AppError("unauthorized", "No refresh token.", 401)
@@ -399,10 +412,34 @@ async def refresh(
     # load is one request instead of refresh-then-me in series. Best-effort:
     # a client that gets no user falls back to /auth/me.
     out: dict[str, Any] = {"access_token": access_token}
-    user_payload = await _me_payload(user_id)
+    if bootstrap:
+        user_payload, boot = await asyncio.gather(
+            _me_payload(user_id), _bootstrap_payload(user_id, org_id, project_id)
+        )
+        if user_payload is not None and boot is not None:
+            out["bootstrap"] = boot
+    else:
+        user_payload = await _me_payload(user_id)
     if user_payload is not None:
         out["user"] = user_payload
     return out
+
+
+async def _bootstrap_payload(
+    user_id: str, org_id: str | None, project_id: str | None
+) -> dict[str, Any] | None:
+    """The ``GET /bootstrap`` payload for a just-rotated session; ``None`` on failure.
+
+    The rotated refresh token proves *user_id*; the bootstrap then proves org
+    and project membership from it exactly as ``GET /bootstrap`` does.
+    """
+    from app.routes.bootstrap import build_bootstrap  # noqa: PLC0415
+
+    try:
+        return await build_bootstrap({"id": user_id}, org_id, project_id)
+    except Exception:  # noqa: BLE001 — best-effort; the client calls GET /bootstrap
+        logger.warning("refresh bootstrap failed", exc_info=True)
+        return None
 
 
 async def _me_payload(user_id: str) -> dict[str, Any] | None:
@@ -857,6 +894,7 @@ async def google_callback(
                         served_url,
                         user_id,
                     )
+                    forget_user_row(user_id)
             except Exception:  # noqa: BLE001 — best-effort, never break login
                 pass
 
@@ -883,6 +921,7 @@ async def google_callback(
                 served_url or picture,
                 user_id,
             )
+            forget_user_row(user_id)
 
     # ── First link: end any earlier password access to this account ──────────
     await _secure_account_on_first_provider_link(user_id, "google")
@@ -950,6 +989,7 @@ async def _secure_account_on_first_provider_link(user_id: str, provider: str) ->
         "WHERE id = $1::uuid",
         user_id,
     )
+    forget_user_row(user_id)
     from app.auth import sessions as _sessions  # noqa: PLC0415
     from app.auth.api_keys import get_api_key_store  # noqa: PLC0415
 

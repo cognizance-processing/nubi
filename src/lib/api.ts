@@ -457,10 +457,11 @@ export async function postStream(
  * log the user out.
  */
 let _refreshInFlight = null
-function _doRefresh() {
+function _doRefresh(query = '') {
   if (!_refreshInFlight) {
     // bypass the interceptor loop: pass _isRetry = true
-    _refreshInFlight = request('/auth/refresh', { method: 'POST' }, true).finally(() => {
+    const path = query ? `/auth/refresh?${query}` : '/auth/refresh'
+    _refreshInFlight = request(path, { method: 'POST' }, true).finally(() => {
       _refreshInFlight = null
     })
   }
@@ -496,11 +497,15 @@ export function login(body) {
  * Also rotates the refresh cookie. Shares the 401 interceptor's
  * single-flight so a boot-time refresh and interceptor refreshes can never
  * race each other (see _doRefresh).
- * @returns {Promise<{ access_token: string, user?: User }>} — `user` is the
- *   GET /auth/me payload, so session restore needs no second request.
+ * @param {string} [query] — extra query string, e.g. `bootstrap=1&org_id=…`
+ *   to have the response carry the GET /bootstrap payload. Ignored when a
+ *   refresh is already in flight (that one is shared instead).
+ * @returns {Promise<{ access_token: string, user?: User, bootstrap?: object }>}
+ *   — `user` is the GET /auth/me payload, so session restore needs no second
+ *   request.
  */
-export function refresh() {
-  return _doRefresh()
+export function refresh(query = '') {
+  return _doRefresh(query)
 }
 
 /**

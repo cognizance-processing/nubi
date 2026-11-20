@@ -11,6 +11,10 @@ hints are loaded speculatively, side by side with the org list, and only
 returned when the org list proves the caller belongs to that org and the
 project list proves the project belongs to it; otherwise the first org and its
 first (default) project are used, the same defaults the providers apply.
+
+``POST /auth/refresh?bootstrap=1`` returns the same payload (built by
+:func:`build_bootstrap`) so a hard page load needs no second request; this
+endpoint stays as the fallback for an already-restored session.
 """
 
 from __future__ import annotations
@@ -45,6 +49,19 @@ async def bootstrap(
 
     ``environments`` is ``None`` when there is no active project, matching the
     shell's "not loaded" value.
+    """
+    return await build_bootstrap(user, org_id, project_id)
+
+
+async def build_bootstrap(
+    user: dict[str, Any],
+    org_id: str | None,
+    project_id: str | None,
+) -> dict[str, Any]:
+    """Build the bootstrap payload for *user* (needs at least ``user["id"]``).
+
+    The hints are untrusted: they only select among orgs and projects the
+    membership-proving lists already contain.
     """
     from app.routes.features import list_features  # noqa: PLC0415
     from app.routes.orgs import list_orgs  # noqa: PLC0415
