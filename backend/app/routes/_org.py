@@ -177,10 +177,11 @@ async def _user_is_member(user_id: str, org_id: str, repo: Repo) -> bool:
         except (TypeError, ValueError):
             role = None
         if role:
-            request_memo.remember(("org_role", user_id, org_id), role)
+            request_memo.remember(("org_role", user_id, org_id), role, shared=True)
         return True
 
-    return bool(await request_memo.memoized(("org_member", user_id, org_id), _load))
+    # Shared across requests (positive answers only); see app.request_memo.
+    return bool(await request_memo.shared_memoized(("org_member", user_id, org_id), _load))
 
 
 async def resolve_org_id(user_id: str, repo: Repo, request: Request) -> str:
@@ -372,3 +373,20 @@ def require_not_embed(identity: "VerifiedIdentity", action: str) -> None:
     """
     if identity.kind == "embed":
         raise AppError("forbidden", f"Embed tokens cannot {action}.", 403)
+
+
+def forget_membership(user_id: str | None = None, org_id: str | None = None) -> None:
+    """Drop cached membership/role answers after ``org_members`` changed.
+
+    Pass both ids for one membership, only *org_id* for a whole org (deleted),
+    or only *user_id* for every org of one user.
+    """
+
+    def _match(key: object) -> bool:
+        if not (isinstance(key, tuple) and len(key) == 3 and key[0] in ("org_member", "org_role")):
+            return False
+        return (user_id is None or str(key[1]) == str(user_id)) and (
+            org_id is None or str(key[2]) == str(org_id)
+        )
+
+    request_memo.forget_matching(_match)

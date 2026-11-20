@@ -118,7 +118,10 @@ class PgTokenDenylist(TokenDenylist):
             )
             return row is not None
 
-        return bool(await request_memo.memoized(("jti_revoked", jti), _load))
+        # Shared across requests for AUTH_CACHE_TTL_SECONDS: a logout on
+        # another worker reaches this one within the window (this worker's
+        # own revoke() forgets it at once).
+        return bool(await request_memo.shared_memoized(("jti_revoked", jti), _load))
 
     async def purge_expired(self) -> int:
         """Delete all rows whose expires_at is in the past; return row count."""

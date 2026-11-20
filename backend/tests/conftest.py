@@ -373,6 +373,13 @@ def _reset_state():
         # ── FakeDB ────────────────────────────────────────────────────────────
         _fake_db.reset()
 
+        # ── Cross-request auth cache (request_memo shared layer) ─────────────
+        try:
+            from app.request_memo import clear_shared
+            clear_shared()
+        except Exception:
+            pass
+
         # ── Shared BigQuery clients (tests patch _build_client per instance) ──
         try:
             from app.connectors.bigquery import clear_client_cache

@@ -136,14 +136,7 @@ async def current_user(
     if key_row is not False:
         if key_row is None:
             raise AppError("unauthorized", "Authentication required.", 401)
-        user_row = await fetchrow(
-            """
-            SELECT id, email, name, avatar_url, email_verified, created_at
-            FROM users
-            WHERE id = $1::uuid
-            """,
-            str(key_row["user_id"]),
-        )
+        user_row = await load_user_row(str(key_row["user_id"]))
         if user_row is None:
             raise AppError("unauthorized", "Authentication required.", 401)
         user = dict(user_row)
@@ -170,19 +163,44 @@ async def current_user(
         # through rather than causing an outage.  Log in production environments.
         pass
 
-    row = await fetchrow(
-        """
-        SELECT id, email, name, avatar_url, email_verified, created_at
-        FROM users
-        WHERE id = $1::uuid
-        """,
-        user_id,
-    )
+    row = await load_user_row(user_id)
 
     if row is None:
         raise AppError("unauthorized", "Authentication required.", 401)
 
     return dict(row)
+
+
+async def load_user_row(user_id: str) -> dict[str, Any] | None:
+    """The ``current_user`` row for *user_id*, or ``None`` if there is no such user.
+
+    Shared across requests for ``AUTH_CACHE_TTL_SECONDS`` (see
+    ``app.request_memo``): a deleted user or profile edit made on another
+    worker shows up here within the window. Writers of these columns call
+    :func:`forget_user_row`. Callers get their own copy to mutate.
+    """
+    from app import request_memo  # noqa: PLC0415
+
+    async def _load() -> dict[str, Any] | None:
+        row = await fetchrow(
+            """
+            SELECT id, email, name, avatar_url, email_verified, created_at
+            FROM users
+            WHERE id = $1::uuid
+            """,
+            user_id,
+        )
+        return None if row is None else dict(row)
+
+    row = await request_memo.shared_memoized(("user_row", str(user_id)), _load)
+    return None if row is None else dict(row)
+
+
+def forget_user_row(user_id: str) -> None:
+    """Drop the cached user row after the ``users`` row was updated or deleted."""
+    from app import request_memo  # noqa: PLC0415
+
+    request_memo.forget(("user_row", str(user_id)))
 
 
 # ---------------------------------------------------------------------------

@@ -74,7 +74,8 @@ async def get_org_role(user_id: str, org_id: str, repo: Repo) -> str | None:
         return row["role"] if row else None
 
     # Asked more than once per request by layered gates; see app.request_memo.
-    return await request_memo.memoized(("org_role", user_id, org_id), _load)
+    # Shared across requests (members only); see app.request_memo.
+    return await request_memo.shared_memoized(("org_role", user_id, org_id), _load)
 
 
 def _forbid_viewer(role: str | None) -> None:
