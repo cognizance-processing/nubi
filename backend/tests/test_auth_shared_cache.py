@@ -152,3 +152,20 @@ async def test_user_row_copy_is_private(monkeypatch) -> None:
     assert "_api_key_org_id" not in again
     deps.forget_user_row("u")
     assert request_memo._shared_get(("user_row", "u")) is None
+
+
+@pytest.mark.asyncio
+async def test_values_deepcopy_refuses_are_handed_out_as_is() -> None:
+    """asyncpg Records cannot be deep-copied; the memo must not raise on them."""
+
+    class _RecordLike:
+        def __deepcopy__(self, _memo):
+            raise TypeError("cannot pickle Record")
+
+    rec = _RecordLike()
+    tok = _new_request()
+    try:
+        assert await request_memo.memoized(("connector_secret", "d", "o"), _Loader(rec)) is rec
+        assert await request_memo.memoized(("connector_secret", "d", "o"), _Loader(None)) is rec
+    finally:
+        request_memo._memo.reset(tok)

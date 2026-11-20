@@ -899,7 +899,12 @@ export default function DashboardViewPage({ edit = false }) {
   // functional updater); only the shareable link lost them. So coalesce: merge
   // pending writes into a ref and flush them in a single update.
   const pendingVarWrites = useRef(null)
-  const handleVariableChange = useCallback((name, value) => {
+  const handleVariableChange = useCallback((name, value, meta?: { auto?: boolean }) => {
+    // A value a filter picked for itself (auto_select_first) is the board's
+    // default view: keep it out of the URL. A link then always opens on the
+    // current default, and the board still counts as "filters untouched" for
+    // its gallery picture (see captureOk below).
+    if (meta?.auto) return
     if (pendingVarWrites.current) {
       // A flush is already scheduled — just join this write to it.
       pendingVarWrites.current.push([name, value])

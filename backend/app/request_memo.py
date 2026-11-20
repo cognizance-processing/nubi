@@ -10,8 +10,11 @@ so nothing here can serve a stale answer to a *later* request. Outside a
 request — background jobs, scripts, unit tests that call helpers directly —
 there is no memo and every call goes to the loader, unchanged.
 
-Only positive answers are kept unless ``keep_none=True``: a request that adds
-a membership and then checks it must see the new row.
+Only positive answers are kept unless ``keep_none=True`` (or a ``keep``
+predicate says otherwise): a request that adds a membership and then checks it
+must see the new row. A failed load is not remembered. Values are handed out
+as deep copies, so a caller that mutates its row can never change what the
+next caller (in this request, or a later one via the shared layer) sees.
 
 Shared layer (``shared_memoized``)
 ----------------------------------
@@ -30,6 +33,7 @@ cache either: background jobs and scripts always read the database.
 from __future__ import annotations
 
 import contextvars
+import copy
 import time
 from typing import Any, Awaitable, Callable, Hashable
 
@@ -41,19 +45,38 @@ _memo: contextvars.ContextVar[dict[Hashable, Any] | None] = contextvars.ContextV
 async def memoized(
     key: Hashable,
     loader: Callable[[], Awaitable[Any]],
+    keep: Callable[[Any], bool] | None = None,
     *,
     keep_none: bool = False,
 ) -> Any:
-    """Return the request's cached value for *key*, loading it on first use."""
+    """Return the request's cached value for *key*, loading it on first use.
+
+    By default only non-``None`` values are remembered (``keep_none=True``
+    keeps ``None`` too); a *keep* predicate replaces that rule.
+    """
     memo = _memo.get()
     if memo is None:
         return await loader()
     if key in memo:
-        return memo[key]
+        return _copy(memo[key])
     value = await loader()
-    if value is not None or keep_none:
+    if keep(value) if keep is not None else (value is not None or keep_none):
         memo[key] = value
-    return value
+    return _copy(value)
+
+
+def _copy(value: Any) -> Any:
+    """A private copy of a remembered value.
+
+    asyncpg ``Record`` rows (and anything else deepcopy refuses) are
+    immutable or treated as such, so they are handed out as they are.
+    """
+    if value is None or isinstance(value, (bool, int, float, str, bytes)):
+        return value
+    try:
+        return copy.deepcopy(value)
+    except Exception:  # noqa: BLE001 — e.g. TypeError: cannot pickle Record
+        return value
 
 
 # ── Shared (cross-request, per-worker) layer ───────────────────────────────
@@ -101,13 +124,13 @@ async def shared_memoized(key: Hashable, loader: Callable[[], Awaitable[Any]]) -
 
     Only non-``None`` answers are kept. Use it solely for answers whose
     staleness is bounded by ``AUTH_CACHE_TTL_SECONDS`` by design (see module
-    docstring); callers must not mutate the returned value.
+    docstring). Callers get a copy.
     """
     memo = _memo.get()
     if memo is None:
         return await loader()
     if key in memo:
-        return memo[key]
+        return _copy(memo[key])
     value = _shared_get(key)
     if value is None:
         generation = _generation
@@ -116,7 +139,7 @@ async def shared_memoized(key: Hashable, loader: Callable[[], Awaitable[Any]]) -
             _shared_put(key, value, generation)
     if value is not None:
         memo[key] = value
-    return value
+    return _copy(value)
 
 
 def clear_shared() -> None:
@@ -186,3 +209,8 @@ class RequestMemoMiddleware:
             await self.app(scope, receive, send)
         finally:
             _memo.reset(token)
+
+
+def register_request_memo(application: Any) -> None:
+    """Install the middleware (outermost, so every route sees the memo)."""
+    application.add_middleware(RequestMemoMiddleware)
