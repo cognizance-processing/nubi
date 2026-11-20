@@ -359,6 +359,32 @@ class InMemoryEnvStore:
         self._pointers[(kind, str(resource_id), str(environment_id))] = pointer
         return deepcopy(pointer)
 
+    async def pin_many(
+        self,
+        org_id: str,
+        project_id: str | None,
+        items: list[tuple[str, str, dict[str, Any]]],
+        environment_ids: list[str],
+        created_by: str | None,
+        message: str | None = None,
+    ) -> int:
+        """Snapshot each ``(kind, resource_id, config)`` and point every env at it.
+
+        Same result as :meth:`create_version` then :meth:`set_pointer` per
+        environment, for each item. Returns the number of items pinned.
+        """
+        for kind, resource_id, config in items:
+            version = await self.create_version(
+                org_id=org_id, project_id=project_id, kind=kind,
+                resource_id=resource_id, config=config,
+                created_by=created_by, message=message,
+            )
+            for env_id in environment_ids:
+                await self.set_pointer(
+                    kind, resource_id, env_id, version["id"], promoted_by=created_by
+                )
+        return len(items)
+
     async def get_pointer(
         self, kind: str, resource_id: str, environment_id: str
     ) -> Pointer | None:
@@ -839,6 +865,89 @@ class PgEnvStore:
         if row is None:  # pragma: no cover
             raise RuntimeError("UPSERT INTO resource_environments returned no row.")
         return _row_to_pointer(row)
+
+    async def pin_many(
+        self,
+        org_id: str,
+        project_id: str | None,
+        items: list[tuple[str, str, dict[str, Any]]],
+        environment_ids: list[str],
+        created_by: str | None,
+        message: str | None = None,
+    ) -> int:
+        """Snapshot each ``(kind, resource_id, config)`` and point every env at it.
+
+        Same result as :meth:`create_version` then :meth:`set_pointer` per
+        environment, for each item — including the dedupe (an item whose
+        config matches its latest version re-uses that version) and the
+        parent-version lineage — but in ONE statement instead of three round
+        trips per item. Returns the number of items pinned.
+        """
+        from app.db import fetchrow as db_fetchrow  # noqa: PLC0415
+
+        if not items or not environment_ids:
+            return 0
+        kinds = [k for k, _, _ in items]
+        rids = [str(r) for _, r, _ in items]
+        configs = [json.dumps(c) for _, _, c in items]
+        hashes = [config_hash(c) for _, _, c in items]
+        await db_fetchrow(
+            """
+            WITH input AS (
+                SELECT * FROM unnest($1::text[], $2::uuid[], $3::text[], $4::text[])
+                    AS t(kind, resource_id, config, config_hash)
+            ),
+            latest AS (
+                SELECT DISTINCT ON (rv.kind, rv.resource_id)
+                       rv.kind, rv.resource_id, rv.id, rv.version, rv.config_hash
+                FROM resource_versions rv
+                JOIN input i ON i.kind = rv.kind AND i.resource_id = rv.resource_id
+                ORDER BY rv.kind, rv.resource_id, rv.version DESC
+            ),
+            ins AS (
+                INSERT INTO resource_versions
+                    (org_id, project_id, kind, resource_id, version,
+                     config, config_hash, message, parent_version_id, created_by)
+                SELECT $5::uuid, $6::uuid, i.kind, i.resource_id,
+                       COALESCE(l.version, 0) + 1, i.config::jsonb, i.config_hash,
+                       $7, l.id, $8::uuid
+                FROM input i
+                LEFT JOIN latest l ON l.kind = i.kind AND l.resource_id = i.resource_id
+                WHERE l.config_hash IS DISTINCT FROM i.config_hash
+                RETURNING kind, resource_id, id
+            ),
+            chosen AS (
+                SELECT kind, resource_id, id FROM ins
+                UNION ALL
+                SELECT l.kind, l.resource_id, l.id
+                FROM latest l
+                JOIN input i ON i.kind = l.kind AND i.resource_id = l.resource_id
+                WHERE l.config_hash = i.config_hash
+            ),
+            pointed AS (
+                INSERT INTO resource_environments
+                    (kind, resource_id, environment_id, version_id, promoted_by)
+                SELECT c.kind, c.resource_id, e.id, c.id, $8::uuid
+                FROM chosen c CROSS JOIN unnest($9::uuid[]) AS e(id)
+                ON CONFLICT (kind, resource_id, environment_id)
+                DO UPDATE SET version_id  = EXCLUDED.version_id,
+                              promoted_by = EXCLUDED.promoted_by,
+                              promoted_at = now()
+                RETURNING 1
+            )
+            SELECT count(*) FROM pointed
+            """,
+            kinds,
+            rids,
+            configs,
+            hashes,
+            org_id,
+            project_id,
+            message,
+            created_by,
+            [str(e) for e in environment_ids],
+        )
+        return len(items)
 
     async def get_pointer(
         self, kind: str, resource_id: str, environment_id: str
