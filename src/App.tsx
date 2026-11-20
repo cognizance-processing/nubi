@@ -12,7 +12,8 @@
  *   /compare        → ComparePage
  *
  *   AUTHENTICATED (AppShell — sidebar + topbar + chat panel)
- *   Wrapped in ProtectedRoute > UiProvider > OrgProvider
+ *   Wrapped in WorkspaceProviders (ProtectedRoute > Org > Project > Env,
+ *   shared with /d/:id) > UiProvider > RequireOrg
  *
  *   /home               → HomePage (single workspace landing page — absorbed
  *                         Overview + Workqueue; /overview and /workqueue
@@ -52,7 +53,7 @@
  */
 
 import { Suspense, createElement, lazy } from 'react'
-import { Navigate, Routes, Route, useLocation, useParams } from 'react-router-dom'
+import { Navigate, Outlet, Routes, Route, useLocation, useParams } from 'react-router-dom'
 import BrandLoader from './components/ui/BrandLoader.jsx'
 import { AppErrorBoundary } from './shell/ErrorBoundary.jsx'
 import { AuthProvider } from './contexts/AuthContext.jsx'
@@ -212,18 +213,35 @@ function RequireOrg({ children }) {
   return children
 }
 
+/**
+ * Workspace data providers, shared by the app shell AND the full-viewport
+ * board routes (`/d/:id`). As a parent layout route they stay mounted when you
+ * move between the two, so org/project/environment state is loaded once per
+ * visit instead of again on every crossing.
+ *
+ * UiProvider stays per route: it holds page-owned UI state (topbar slot,
+ * crumb label, chat ownership) that each surface sets up for itself.
+ */
+function WorkspaceProviders() {
+  return (
+    <ProtectedRoute>
+      <OrgProvider>
+        <ProjectProvider>
+          <EnvProvider>
+            <Outlet />
+          </EnvProvider>
+        </ProjectProvider>
+      </OrgProvider>
+    </ProtectedRoute>
+  )
+}
+
 function AppShellWithProviders() {
   return (
     <UiProvider>
-      <OrgProvider>
-        <RequireOrg>
-          <ProjectProvider>
-            <EnvProvider>
-              <AppShell />
-            </EnvProvider>
-          </ProjectProvider>
-        </RequireOrg>
-      </OrgProvider>
+      <RequireOrg>
+        <AppShell />
+      </RequireOrg>
     </UiProvider>
   )
 }
@@ -277,22 +295,15 @@ function LegacyEditorRedirect() {
  *
  * Full-viewport (no AppShell), but still needs org/project context: the page
  * calls useCanWrite() and board fetches need the X-Org-Id / X-Project-Id headers
- * the providers install. UiProvider is required too — in edit mode the embedded
- * editor portals its toolbar into the page header through UiContext's topbarSlot.
+ * the providers install — those come from the parent WorkspaceProviders route.
+ * UiProvider is required too — in edit mode the embedded editor portals its
+ * toolbar into the page header through UiContext's topbarSlot.
  */
 function dashboardRoute({ edit = false } = {}) {
   return (
-    <ProtectedRoute>
-      <UiProvider>
-        <OrgProvider>
-          <ProjectProvider>
-            <EnvProvider>
-              <DashboardViewPage edit={edit} />
-            </EnvProvider>
-          </ProjectProvider>
-        </OrgProvider>
-      </UiProvider>
-    </ProtectedRoute>
+    <UiProvider>
+      <DashboardViewPage edit={edit} />
+    </UiProvider>
   )
 }
 
@@ -324,13 +335,8 @@ export default function App() {
         <Route path="register" element={<Register />} />
 
         {/* ── Authenticated app shell — sidebar + topbar + chat ─────────── */}
-        <Route
-          element={
-            <ProtectedRoute>
-              <AppShellWithProviders />
-            </ProtectedRoute>
-          }
-        >
+        <Route element={<WorkspaceProviders />}>
+        <Route element={<AppShellWithProviders />}>
           {/* Redirect legacy /dashboard → /home */}
           <Route path="dashboard" element={<Navigate to="/home" replace />} />
 
@@ -404,6 +410,19 @@ export default function App() {
           />
         </Route>
 
+        {/* A board lives at ONE url with two modes. `/d/:id` is the live view;
+            `/d/:id/edit` is the same page in edit mode (canWrite only — the page
+            itself redirects viewers back to live). Kept as a path segment rather
+            than ?mode=edit because this route's query string is already the
+            user's namespace (variables, _tab, _token, _embed).
+
+            Full-viewport (no AppShell), inside the shared WorkspaceProviders so
+            opening a board from the shell does not reload org/project state.
+            Both modes share `dashboardRoute()` — they are the same page. */}
+        <Route path="d/:id" element={dashboardRoute()} />
+        <Route path="d/:id/edit" element={dashboardRoute({ edit: true })} />
+        </Route>
+
         {/* ── Full-viewport authenticated routes (no AppShell) ─────────── */}
         {/* An AI app (claude.ai, ChatGPT) sends the user here to approve a
             connection. Outside the shell: it's a sign-in-style screen, and it
@@ -427,17 +446,6 @@ export default function App() {
             </ProtectedRoute>
           }
         />
-        {/* A board lives at ONE url with two modes. `/d/:id` is the live view;
-            `/d/:id/edit` is the same page in edit mode (canWrite only — the page
-            itself redirects viewers back to live). Kept as a path segment rather
-            than ?mode=edit because this route's query string is already the
-            user's namespace (variables, _tab, _token, _embed).
-
-            Both share the identical provider stack via `dashboardRoute()` — they
-            are the same page, so drifting providers between them would be a bug
-            waiting to happen. */}
-        <Route path="d/:id" element={dashboardRoute()} />
-        <Route path="d/:id/edit" element={dashboardRoute({ edit: true })} />
         {/* ── Dev only ─────────────────────────────────────────────────── */}
         {IllustrationGallery && <Route path="dev/illustrations" element={<IllustrationGallery />} />}
 

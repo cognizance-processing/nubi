@@ -183,6 +183,11 @@ from app.routes.features import router as features_router  # noqa: E402
 
 api_router.include_router(features_router)
 
+# Shell bootstrap (orgs + projects + environments + features in one response).
+from app.routes.bootstrap import router as bootstrap_router  # noqa: E402
+
+api_router.include_router(bootstrap_router)
+
 # Query authoring tools (validate / complete / schema) — standalone router,
 # included explicitly. Registered before the /{resource} catch-all.
 from app.routes.query_tools import router as query_tools_router  # noqa: E402

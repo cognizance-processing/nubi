@@ -496,7 +496,8 @@ export function login(body) {
  * Also rotates the refresh cookie. Shares the 401 interceptor's
  * single-flight so a boot-time refresh and interceptor refreshes can never
  * race each other (see _doRefresh).
- * @returns {Promise<{ access_token: string }>}
+ * @returns {Promise<{ access_token: string, user?: User }>} — `user` is the
+ *   GET /auth/me payload, so session restore needs no second request.
  */
 export function refresh() {
   return _doRefresh()

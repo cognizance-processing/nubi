@@ -32,6 +32,7 @@ import {
 } from 'react'
 import * as api from '../lib/api.js'
 import { useOrg } from './OrgContext.jsx'
+import { activeProjectKey, getSavedProjectId, takeBootstrapProjects } from '../lib/bootstrap.js'
 
 export interface Project {
   id: string
@@ -56,19 +57,6 @@ export interface ProjectContextValue {
 
 const ProjectContext = createContext<ProjectContextValue | null>(null)
 
-/** localStorage key for a given org's active project id. */
-function activeProjectKey(orgId: string | null): string {
-  return `nubi-active-project-id:${orgId ?? 'default'}`
-}
-
-function getSavedProjectId(orgId: string | null): string | null {
-  try {
-    return localStorage.getItem(activeProjectKey(orgId)) ?? null
-  } catch {
-    return null
-  }
-}
-
 function saveProjectId(orgId: string | null, id: string) {
   try {
     localStorage.setItem(activeProjectKey(orgId), id)
@@ -83,8 +71,11 @@ function _applyActiveProject(project: Project | null) {
 }
 
 export function ProjectProvider({ children }: { children: ReactNode }) {
-  const { activeOrg } = useOrg()
+  const { activeOrg, loading: orgLoading } = useOrg()
   const orgId = activeOrg?.id ?? null
+  // Only "no org yet, still loading" matters below; depending on orgLoading
+  // itself would re-run the load for an unchanged org.
+  const waitingForOrg = !orgId && orgLoading
 
   const [projects, setProjects] = useState<Project[]>([])
   const [activeProject, setActiveProjectState] = useState<Project | null>(null)
@@ -95,9 +86,20 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     let cancelled = false
 
     async function fetchProjects() {
+      if (!orgId) {
+        // Wait for the org: listing now would go out without X-Org-Id and be
+        // repeated as soon as the org arrives.
+        if (waitingForOrg) return
+        setProjects([])
+        setActiveProjectState(null)
+        _applyActiveProject(null)
+        setLoading(false)
+        return
+      }
       setLoading(true)
+      // First load: the shell bootstrap already has this org's projects.
       // listProjects() degrades to [] on failure.
-      const list = await api.listProjects()
+      const list = takeBootstrapProjects(orgId) ?? (await api.listProjects())
       if (cancelled) return
 
       setProjects(list)
@@ -117,7 +119,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
     fetchProjects()
     return () => { cancelled = true }
-  }, [orgId])
+  }, [orgId, waitingForOrg])
 
   const setActiveProject = useCallback(
     (id: string) => {

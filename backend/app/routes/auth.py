@@ -375,7 +375,8 @@ async def refresh(
 
     Returns
     -------
-    200 {access_token}
+    200 {access_token, user}  (``user`` as in ``GET /auth/me``; omitted if it
+    could not be loaded)
     """
     if not nubi_refresh:
         raise AppError("unauthorized", "No refresh token.", 401)
@@ -394,7 +395,33 @@ async def refresh(
     set_refresh_cookie(response, new_raw, new_expires)
     access_token = mint_access_token(user_id)
 
-    return {"access_token": access_token}
+    # The same user payload as GET /auth/me, so restoring a session on page
+    # load is one request instead of refresh-then-me in series. Best-effort:
+    # a client that gets no user falls back to /auth/me.
+    out: dict[str, Any] = {"access_token": access_token}
+    user_payload = await _me_payload(user_id)
+    if user_payload is not None:
+        out["user"] = user_payload
+    return out
+
+
+async def _me_payload(user_id: str) -> dict[str, Any] | None:
+    """Return the ``/auth/me`` user shape (incl. ``is_superadmin``) in one query."""
+    try:
+        row = await fetchrow(
+            """
+            SELECT id, email, name, avatar_url, email_verified, created_at, is_superadmin
+            FROM users WHERE id = $1::uuid
+            """,
+            user_id,
+        )
+    except Exception:  # noqa: BLE001 — e.g. a pre-migration DB without is_superadmin
+        return None
+    if row is None:
+        return None
+    payload = _serialize_user(row)
+    payload["is_superadmin"] = bool(dict(row).get("is_superadmin"))
+    return payload
 
 
 @router.post("/logout", status_code=204)

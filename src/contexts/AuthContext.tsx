@@ -12,7 +12,8 @@
  *   updateUser(fields)                  — merge fields (e.g. a PATCH /auth/me
  *                                         response) into the current user
  *
- * On mount: calls refresh() then me() to silently restore an existing session,
+ * On mount: calls refresh() (which returns the user; me() only as a fallback)
+ * to silently restore an existing session,
  * unless this browser already learned there is none (see authSession.ts), so
  * anonymous visitors do not log a 401 on every page. A definitive 401/403 means
  * "logged out"; a network failure or 5xx means "unknown" and is retried, and
@@ -71,7 +72,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const refreshData = await api.refresh()
       api.setAccessToken(refreshData.access_token)
 
-      // Fetch the user profile with the new token
+      // The refresh response carries the user (same shape as /auth/me);
+      // an older backend that omits it costs the extra /auth/me call.
+      if (refreshData?.user) return { user: refreshData.user }
       return api.me()
     }
 

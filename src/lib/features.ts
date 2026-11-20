@@ -32,7 +32,7 @@
  */
 
 import { useState, useEffect } from 'react'
-import { get } from './api.js'
+import { get, getAccessToken } from './api.js'
 
 // ---------------------------------------------------------------------------
 // Known commercial feature names — disabled by default in OSS
@@ -52,6 +52,32 @@ let _fetchPromise = null
 
 /** @type {Array<() => void>} — listeners notified on updates */
 const _listeners = []
+
+/** In-flight shell bootstrap that will carry the flags (see bootstrap.ts). */
+let _pendingPrime: Promise<unknown> | null = null
+
+/**
+ * Tell the store a request that carries the flags is on its way (the shell's
+ * GET /bootstrap), so it waits for that instead of sending GET /features too.
+ */
+export function awaitFeaturePrime(p: Promise<unknown>) {
+  _pendingPrime = p
+  p.finally(() => {
+    if (_pendingPrime === p) _pendingPrime = null
+  })
+}
+
+/** Resolve on the next feature-set update. */
+function _nextUpdate(): Promise<void> {
+  return new Promise((resolve) => {
+    const cb = () => {
+      const idx = _listeners.indexOf(cb)
+      if (idx !== -1) _listeners.splice(idx, 1)
+      resolve()
+    }
+    _listeners.push(cb)
+  })
+}
 
 /**
  * Returns true when the named feature is in the current enabled set.
@@ -101,6 +127,17 @@ async function _ensureLoaded() {
 
   _fetchPromise = (async () => {
     try {
+      // The shell's /bootstrap carries the flags: wait for it, don't race it.
+      if (_pendingPrime) await _pendingPrime.catch(() => {})
+      if (_features !== null) return _features
+      if (!getAccessToken()) {
+        // Signed out, or the session is still being restored. Asking now
+        // only earns a 401 and a second request after the refresh; the
+        // bootstrap that follows sign-in sets the flags. Until then the OSS
+        // defaults apply.
+        await _nextUpdate()
+        return _features ?? new Set()
+      }
       const data = await get('/features')
       const list = Array.isArray(data?.features) ? data.features : []
       // Start from OSS open-core defaults (all non-commercial features enabled)

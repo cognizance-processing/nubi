@@ -1,8 +1,9 @@
 /**
  * OrgContext — manages the authenticated user's organisations.
  *
- * Fetches GET /api/v1/orgs on mount (requires a valid access token in the
- * api client). Shape: { orgs: [{ id, name, role }] }
+ * Loads the shell bootstrap on mount (GET /api/v1/bootstrap, falling back to
+ * GET /api/v1/orgs); requires a valid access token in the api client.
+ * Shape: { orgs: [{ id, name, role }] }
  *
  * Tolerates 404 / network errors gracefully — falls back to a single
  * default "Personal" org so the rest of the shell always has something to show.
@@ -31,6 +32,7 @@ import {
   type ReactNode,
 } from 'react'
 import * as api from '../lib/api.js'
+import { getSavedProjectId, loadBootstrap } from '../lib/bootstrap.js'
 
 export interface Org {
   id: string
@@ -105,7 +107,12 @@ export function OrgProvider({ children }: { children: ReactNode }) {
 
     async function fetchOrgs() {
       try {
-        const data = await api.get('/orgs')
+        // One request for orgs + projects + environments + flags; the
+        // Project/Env providers take their slices from it. Falls back to
+        // GET /orgs when the bootstrap is unavailable.
+        const hintOrg = getSavedOrgId()
+        const boot = await loadBootstrap(hintOrg, hintOrg ? getSavedProjectId(hintOrg) : null)
+        const data = boot ?? (await api.get('/orgs'))
         const list: Org[] = Array.isArray(data?.orgs)
           ? data.orgs
           : Array.isArray(data)
