@@ -88,6 +88,7 @@ class PgTokenDenylist(TokenDenylist):
 
     async def revoke(self, jti: str, expires_at: datetime) -> None:
         """Insert *jti* into the denylist (idempotent via ON CONFLICT DO NOTHING)."""
+        from app import request_memo  # local import
         from app.db import execute  # local import to avoid circular at module load
 
         await execute(
@@ -99,16 +100,25 @@ class PgTokenDenylist(TokenDenylist):
             jti,
             expires_at,
         )
+        request_memo.forget(("jti_revoked", jti))
 
     async def is_revoked(self, jti: str) -> bool:
-        """Return True if a row with this jti exists in the table."""
+        """Return True if a row with this jti exists in the table.
+
+        Answered at most once per request: the identity check and the user
+        lookup both ask, back to back (see ``app.request_memo``).
+        """
+        from app import request_memo  # local import
         from app.db import fetchrow  # local import
 
-        row = await fetchrow(
-            "SELECT jti FROM revoked_tokens WHERE jti = $1",
-            jti,
-        )
-        return row is not None
+        async def _load() -> bool:
+            row = await fetchrow(
+                "SELECT jti FROM revoked_tokens WHERE jti = $1",
+                jti,
+            )
+            return row is not None
+
+        return bool(await request_memo.memoized(("jti_revoked", jti), _load))
 
     async def purge_expired(self) -> int:
         """Delete all rows whose expires_at is in the past; return row count."""

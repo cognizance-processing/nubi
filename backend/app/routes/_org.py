@@ -159,9 +159,10 @@ async def _user_is_member(user_id: str, org_id: str, repo: Repo) -> bool:
         return True
 
     async def _load() -> bool | None:
+        # Read the role too: the role gates that follow then need no query.
         row = await fetchrow(
             """
-            SELECT 1 FROM org_members
+            SELECT role FROM org_members
             WHERE user_id = $1::uuid
               AND org_id  = $2::uuid
             LIMIT 1
@@ -169,7 +170,15 @@ async def _user_is_member(user_id: str, org_id: str, repo: Repo) -> bool:
             user_id,
             org_id,
         )
-        return True if row is not None else None
+        if row is None:
+            return None
+        try:
+            role = dict(row).get("role")
+        except (TypeError, ValueError):
+            role = None
+        if role:
+            request_memo.remember(("org_role", user_id, org_id), role)
+        return True
 
     return bool(await request_memo.memoized(("org_member", user_id, org_id), _load))
 
