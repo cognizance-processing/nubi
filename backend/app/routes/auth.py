@@ -39,6 +39,7 @@ from app.auth.cookies import (
     clear_refresh_cookie,
     set_refresh_cookie,
 )
+from app.auth.credential_mint import credential_mint
 from app.auth.denylist import get_token_denylist
 from app.auth.deps import current_user, forget_user_row, verified_identity
 from app.auth.verify import VerifiedIdentity
@@ -488,6 +489,11 @@ async def _send_password_reset(email: str) -> None:
                 )
                 if live is not None and int(live["n"]) >= _RESET_MAX_LIVE_LINKS:
                     return
+                await conn.execute(
+                    "DELETE FROM password_reset_tokens "
+                    "WHERE user_id = $1::uuid AND expires_at <= now()",
+                    user_id,
+                )
                 await conn.execute(
                     """
                     INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
@@ -946,9 +952,10 @@ async def create_api_key(
     user_id = str(user["id"])
     org_id = await resolve_org_id(user_id, repo, request)
 
-    raw, row = await get_api_key_store().create(
-        user_id, org_id, (body.name or "CLI token")
-    )
+    async with credential_mint(request, user_id) as conn:
+        raw, row = await get_api_key_store().create(
+            user_id, org_id, (body.name or "CLI token"), conn
+        )
     from app.auth.api_keys import _public_row  # noqa: PLC0415
 
     return {"key": raw, "api_key": _public_row(row)}
