@@ -91,7 +91,8 @@ class EmailSender(Protocol):
         body:
             Plain-text body of the email.
         attachment_name:
-            Filename for the attachment (e.g. ``"report.csv"``).
+            Filename for the attachment (e.g. ``"report.csv"``); empty for a
+            plain email without one.
         attachment_data:
             The attachment bytes/str (CSV text or PDF bytes).
         """
@@ -177,9 +178,10 @@ class SmtpEmailSender:
         msg["To"] = to
         msg.set_content(body)
 
-        data = attachment_data.encode("utf-8") if isinstance(attachment_data, str) else attachment_data
-        maintype, subtype = ("application", "pdf") if attachment_name.endswith(".pdf") else ("application", "octet-stream")
-        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=attachment_name)
+        if attachment_name:
+            data = attachment_data.encode("utf-8") if isinstance(attachment_data, str) else attachment_data
+            maintype, subtype = ("application", "pdf") if attachment_name.endswith(".pdf") else ("application", "octet-stream")
+            msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=attachment_name)
 
         if self.port == 465:
             with smtplib.SMTP_SSL(self.host, self.port, timeout=self.timeout) as srv:

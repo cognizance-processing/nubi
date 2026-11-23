@@ -622,14 +622,30 @@ def consume_login_attempt(email: str) -> tuple[bool, int]:
     many addresses still hits this.  Returns ``(allowed, retry_after_seconds)``;
     always allowed when rate limiting is disabled.
     """
+    return _consume_for_account(email, "login-account", "NUBI_RATELIMIT_LOGIN_PER_ACCOUNT_RPM", 10)
+
+
+def consume_password_reset_request(email: str) -> tuple[bool, int]:
+    """Count one forgot-password request against *email*'s own allowance.
+
+    A separate bucket from sign-in, so requesting reset links cannot use up the
+    account's sign-in attempts.  Same return value as
+    :func:`consume_login_attempt`.
+    """
+    return _consume_for_account(
+        email, "password-reset", "NUBI_RATELIMIT_PASSWORD_RESET_PER_ACCOUNT_RPM", 3
+    )
+
+
+def _consume_for_account(
+    email: str, route_class: str, rpm_env: str, default_rpm: int
+) -> tuple[bool, int]:
+    """Take one token from *email*'s bucket for *route_class*."""
     if not _cfg.enabled:
         return True, 0
-    try:
-        rpm = max(1, int(os.environ.get("NUBI_RATELIMIT_LOGIN_PER_ACCOUNT_RPM", "10")))
-    except ValueError:
-        rpm = 10
+    rpm = max(1, _int_env(rpm_env, default_rpm))
     digest = hashlib.sha256(str(email or "").strip().lower().encode("utf-8")).hexdigest()[:32]
-    key = (f"acct:{digest}", "login-account")
+    key = (f"acct:{digest}", route_class)
     client = get_redis()
     if client is not None:
         try:
