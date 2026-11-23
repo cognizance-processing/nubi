@@ -138,6 +138,18 @@ enable it.
 | `S3_BUCKET` | `nubi` | S3 bucket for exports, datasets, and cache |
 | `S3_FORCE_PATH_STYLE` | `true` | Required for MinIO and most self-hosted S3 clones |
 
+### Password reset email
+
+**Forgot password?** on the sign-in page emails a reset link, so it needs outbound mail. Set `SMTP_HOST` (and the other [`SMTP_*` variables](exports-and-jobs.md#email-delivery)) and make sure `FRONTEND_URL` is the address people use to reach Nubi, because the link is built from it.
+
+Without `SMTP_HOST` the page answers the same way, but no email is sent and the backend logs a warning. Reset links are never written to the logs.
+
+A link works once and expires after 30 minutes; an account can be sent at most 3 per hour. Resetting a password signs the user out everywhere and revokes their API keys and connected apps (MCP/OAuth). Access tokens already issued expire on their own within `JWT_ACCESS_TTL_MIN` (15 minutes by default). Accounts that only sign in with Google have no password to reset.
+
+`NUBI_RATELIMIT_PASSWORD_RESET_PER_ACCOUNT_RPM` (default `3`) limits reset requests per address, separately from sign-in attempts.
+
+To try it locally, point Nubi at a mail catcher such as Mailpit or MailHog: `SMTP_HOST=localhost`, `SMTP_PORT=1025`, `SMTP_USE_TLS=false`.
+
 ### Connector key rotation
 
 For key rotation, supply a JSON map of version → base64-key and set the new key as the highest version:

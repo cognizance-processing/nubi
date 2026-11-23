@@ -55,6 +55,7 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 | Claim-native host-mode tenancy (org from JWT claim) | ✅ | issuer `host_mode`; tokens stripped to read-only | [embedding](docs/embedding.md) |
 | Scope-resolution endpoint (authorize host writes) | ✅ `GET /auth/scope` | resolves token policies → effective (hierarchy + grants), org-scoped, fail-closed | [governance](docs/governance.md) |
 | User→scope assignment store | ✅ `/access-grants` (optional — host may mint claims instead) | org-scoped CRUD, admin-gated, merged into `/auth/scope` | [governance](docs/governance.md) |
+| Self-service password reset | ✅ `POST /auth/forgot-password`, `POST /auth/reset-password` | same answer for any address; single-use 30-minute link; revokes sessions, API keys and OAuth grants; needs SMTP | [self-host](docs/self-host.md#password-reset-email) |
 | Policy cardinality cap | ✅ | `NUBI_RLS_MAX_POLICY_VALUES` (default 5000); over-cap IN-list/expansion fails closed (400) | [governance](docs/governance.md) |
 
 > Hosts can pass scalar/list/range **and** hierarchical (parent-value) RLS via

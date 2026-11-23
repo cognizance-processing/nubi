@@ -66,6 +66,12 @@ Conventions:
 
 ### Fixed
 
+- **Forgot password.** The sign-in page's **Forgot password?** link led to a
+  404. It now opens a reset flow: `POST /auth/forgot-password` emails a
+  single-use 30-minute link (same answer whether or not the account exists) and
+  `POST /auth/reset-password` sets the new password. A reset revokes the user's
+  sessions, API keys and OAuth (MCP) grants. Needs `SMTP_HOST`; apply migration
+  `0034_password_reset_tokens.sql` before deploying the API.
 - **Readable gauge scale labels.** A needle gauge's arc numbers no longer show
   raw floats such as `16.6666666667` when the tick count doesn't divide the
   range evenly. They are rounded to suit the tick spacing, or follow a new
