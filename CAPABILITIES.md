@@ -12,7 +12,7 @@ of carrying redundant local shims.
   and a matching entry is added to [CHANGELOG.md](./CHANGELOG.md). See
   [Keeping these current](#keeping-these-current).
 
-_Last reviewed: 2026-07-01 · branch `docs/full-coverage`._
+_Last reviewed: 2026-11-16 · gauge arc + chart bar/line styling rows._
 
 ---
 
@@ -126,6 +126,8 @@ emit a clean `error` SSE event; non-streaming `/ai/chat` returns HTTP 504). See
 | Per-viewer JWT (RS256/ES256), token-locked params | ✅ | `get-token` bridge | [embedding](docs/embedding.md) |
 | 25-token theme contract, cross-filter bus, scope gating | ✅ | `NubiContext` | [embed-api](docs/embed-api.md) |
 | **Per-org rate limiting + embed exemption** — token-bucket keyed by verified org; verified embed tokens exempt on metric/query read paths | ✅ | `middleware/ratelimit.py`; `NUBI_RATELIMIT_QUERY_RPM` (default 120) | [embedding](docs/embedding.md#rate-limiting-and-embed-exemption) |
+| **Gauge arc colours** — gradient (start/end), solid arc colour, arc end caps (needle + ring) | ✅ | optional `widget.config`: `gaugeArcGradient`, `gaugeArcStart`, `gaugeArcEnd`, `gaugeArcColor`, `gaugeArcCaps`; SPA, `<nubi-chart>`, static export | [dashboards § Chart types](docs/dashboards.md#chart-types-in-depth) |
+| **Chart bar & line styling** — bar width (default cap / auto fill / max px), bar stroke + fill opacity, line width + opacity | ✅ | optional `widget.config`: `barMaxWidth`, `barBorderWidth`, `barBorderColor`, `barFillOpacity`, `lineWidth`, `lineOpacity`; SPA, `<nubi-chart>`, static export (in-app default bar cap 40/28px does not apply in static export unless max px is set) | [dashboards § Chart types](docs/dashboards.md#chart-types-in-depth) |
 
 ## H. Audit & governance reads
 
