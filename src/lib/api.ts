@@ -517,6 +517,25 @@ export function logout() {
 }
 
 /**
+ * Ask for a password reset link. The answer is the same for every address.
+ * @param {string} email
+ * @returns {Promise<{ message: string }>}
+ */
+export function postForgotPassword(email: string) {
+  return post('/auth/forgot-password', { email })
+}
+
+/**
+ * Set a new password with the token from a reset link. Every failure is a 400
+ * (never a 401, which would be taken for a lapsed session).
+ * @param {{ token: string, password: string }} body
+ * @returns {Promise<{ ok: true }>}
+ */
+export function postResetPassword(body: { token: string; password: string }) {
+  return post('/auth/reset-password', body)
+}
+
+/**
  * Fetch the currently authenticated user.
  * Requires a valid in-memory access token (attaches Authorization header).
  * @returns {Promise<{ user: User }>}
