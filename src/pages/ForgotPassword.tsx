@@ -5,9 +5,9 @@
  * so the confirmation does too.
  */
 
-import { useState, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
-import { forgotPassword } from '../lib/api.js'
+import { forgotPassword, fetchAuthConfig } from '../lib/api.js'
 import AuthLayout from '../components/AuthLayout.jsx'
 import MarketingStyles from '../components/marketing/MarketingStyles.jsx'
 import {
@@ -20,7 +20,14 @@ export default function ForgotPassword() {
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
   const [sentTo, setSentTo] = useState<string | null>(null)
+  const [googleEnabled, setGoogleEnabled] = useState(false)
   const banner = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    let alive = true
+    fetchAuthConfig().then((c: any) => { if (alive) setGoogleEnabled(!!c.google_oauth) })
+    return () => { alive = false }
+  }, [])
 
   const emailErr = touched ? check(email, validators.email) : null
 
@@ -58,7 +65,8 @@ export default function ForgotPassword() {
           <div ref={banner}>
             <Banner kind="ok">
               If {sentTo} belongs to an account with a password, a reset link is on its way. It works once and
-              expires in 30 minutes. If you signed up with Google, use Continue with Google to sign in.
+              expires in 30 minutes.
+              {googleEnabled && ' If you signed up with Google, use Continue with Google to sign in.'}
             </Banner>
           </div>
         )}
