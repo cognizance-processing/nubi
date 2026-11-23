@@ -385,6 +385,85 @@ async def test_login_fails_if_the_password_changed_while_verifying(client, fake_
     assert len(fake_db.sessions) == sessions_before
 
 
+# ── A reset landing after ``current_user``, before the credential is stored ──
+
+
+def _change_password_during(fake_db, user_id, real):
+    """Wrap a step the route runs after authenticating."""
+
+    async def wrapped(*args, **kw):
+        fake_db.users[user_id]["password_changed_at"] = datetime.now(tz=timezone.utc)
+        return await real(*args, **kw)
+
+    return wrapped
+
+
+@pytest.mark.asyncio
+async def test_api_key_mint_rechecks_the_token_before_storing(client, fake_db):
+    from app.auth.api_keys import get_api_key_store
+
+    body = await _register(client)
+    user_id = body["user"]["id"]
+    resolve = AsyncMock(return_value=str(uuid.uuid4()))
+    with patch.object(
+        auth_routes, "resolve_org_id", _change_password_during(fake_db, user_id, resolve)
+    ):
+        resp = await client.post(
+            f"{API}/api-keys", json={}, headers={"Authorization": f"Bearer {body['access_token']}"}
+        )
+    assert resolve.await_count == 1, "refused before the route ran; nothing was tested"
+    assert resp.status_code == 401
+    assert get_api_key_store()._store == {}
+
+
+@pytest.mark.asyncio
+async def test_oauth_approval_rechecks_the_token_before_storing(client, fake_db):
+    import app.routes.oauth as oauth_routes
+    from app.auth.oauth import InMemoryOAuthStore, set_oauth_store_for_tests
+
+    body = await _register(client)
+    user_id = body["user"]["id"]
+    store = InMemoryOAuthStore()
+    set_oauth_store_for_tests(store)
+    try:
+        registered, _ = await store.register_client("app", ["https://app.example/cb"], "none")
+        request_id = await store.create_auth_request(
+            client_id=registered["id"], redirect_uri="https://app.example/cb",
+            code_challenge="c", scope="mcp", state="s", resource=None,
+        )
+        member = AsyncMock(return_value={"role": "owner"})
+        with patch.object(
+            oauth_routes, "_get_user_org_membership",
+            _change_password_during(fake_db, user_id, member),
+        ):
+            resp = await client.post(
+                f"/api/v1/oauth/requests/{request_id}/decision",
+                json={"approve": True, "org_id": str(uuid.uuid4())},
+                headers={"Authorization": f"Bearer {body['access_token']}"},
+            )
+        assert member.await_count == 1, "refused before the route ran; nothing was tested"
+        assert resp.status_code == 401
+        assert store.grants == {} and store.codes == {}
+    finally:
+        set_oauth_store_for_tests(None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("header", [None, "Basic abc", "Bearer ", "Bearer nubi_oat_x"])
+async def test_other_credentials_cannot_mint(app, fake_db, header):
+    from app.auth.credential_mint import credential_mint
+
+    user_id = str(uuid.uuid4())
+    fake_db.users[user_id] = {"id": user_id, "email": "x@example.com"}
+    request = _request("POST", "/api/v1/auth/api-keys")
+    if header is not None:
+        request.scope["headers"] = [(b"authorization", header.encode())]
+    with pytest.raises(AppError) as err:
+        async with credential_mint(request, user_id):
+            raise AssertionError("must not get here")
+    assert err.value.status == 401
+
+
 # ── The access-token check ──────────────────────────────────────────────────
 
 

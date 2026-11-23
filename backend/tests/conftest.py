@@ -234,7 +234,14 @@ class FakeDB:
                 }
                 return "INSERT 0 1"
             if q.startswith("DELETE"):
-                self.password_reset_tokens.pop(args[0], None)
+                if "EXPIRES_AT" in q:
+                    now = datetime.now(tz=timezone.utc)
+                    self.password_reset_tokens = {
+                        h: r for h, r in self.password_reset_tokens.items()
+                        if r["user_id"] != str(args[0]) or r["expires_at"] > now
+                    }
+                else:
+                    self.password_reset_tokens.pop(args[0], None)
                 return "DELETE 1"
             if q.startswith("UPDATE") and "WHERE USER_ID" in q:
                 for row in self.password_reset_tokens.values():

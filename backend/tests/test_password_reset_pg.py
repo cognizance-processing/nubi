@@ -468,3 +468,222 @@ async def test_refresh_still_rotates(client, pool, account):
     assert resp.status_code == 200
     assert await _me(client, resp.json()["access_token"]) == 200
     assert await _live_sessions(pool, account) == 1
+
+
+# ── Minting a long-lived credential during a reset ──────────────────────────
+# A request that passed ``current_user`` before the reset committed must not
+# store a credential after it: the reset has already revoked what it could see.
+
+
+async def _mint_key(client, credential: str):
+    return await client.post(
+        f"{API}/api-keys", json={}, headers={"Authorization": f"Bearer {credential}"}
+    )
+
+
+async def _live_keys(pool, acct: _Account) -> int:
+    return await pool.fetchval(
+        "SELECT count(*) FROM api_keys WHERE user_id = $1::uuid AND revoked_at IS NULL",
+        acct.user_id,
+    )
+
+
+async def _live_grants(pool, acct: _Account) -> int:
+    return await pool.fetchval(
+        "SELECT count(*) FROM oauth_grants WHERE user_id = $1::uuid AND revoked_at IS NULL",
+        acct.user_id,
+    )
+
+
+class _Consent:
+    """A parked OAuth authorization request waiting for the user's decision."""
+
+    def __init__(self, request_id: str, org_id: str) -> None:
+        self.request_id, self.org_id = request_id, org_id
+
+    async def approve(self, client, jwt: str):
+        return await client.post(
+            f"/api/v1/oauth/requests/{self.request_id}/decision",
+            json={"approve": True, "org_id": self.org_id},
+            headers={"Authorization": f"Bearer {jwt}"},
+        )
+
+
+@pytest_asyncio.fixture
+async def consent(pool, account):
+    from app.auth.oauth import get_oauth_store, set_oauth_store_for_tests
+
+    set_oauth_store_for_tests(None)  # the real store
+    store = get_oauth_store()
+    registered, _ = await store.register_client("app", ["https://app.example/cb"], "none")
+    request_id = await store.create_auth_request(
+        client_id=registered["id"], redirect_uri="https://app.example/cb", code_challenge="c",
+        scope="mcp", state="s", resource=None,
+    )
+    org_id = await pool.fetchval(
+        "SELECT org_id FROM org_members WHERE user_id = $1::uuid", account.user_id
+    )
+    yield _Consent(request_id, str(org_id))
+    await pool.execute("DELETE FROM oauth_clients WHERE id = $1", registered["id"])
+
+
+@pytest.mark.asyncio
+async def test_burst_of_key_mints_during_a_reset_leaves_none(client, pool, account, mail):
+    token = await _link(account, mail)
+    pause = _Pause()
+    with _pause_reset_after_password_update(pause):
+        reset = asyncio.create_task(_reset(client, token))
+        await pause.wait_reached()
+        # The change is uncommitted, so each of these passes ``current_user``.
+        mints = [asyncio.create_task(_mint_key(client, account.jwt)) for _ in range(5)]
+        done, _ = await asyncio.wait(mints, timeout=BLOCKED_S)
+        assert not done
+        pause.release.set()
+        assert (await reset).status_code == 200
+        assert [(await m).status_code for m in mints] == [401] * 5
+    assert await _live_keys(pool, account) == 0
+    assert (await _mint_key(client, account.jwt)).status_code == 401  # and afterwards
+
+
+@pytest.mark.asyncio
+async def test_key_mint_with_a_revoked_api_key_during_a_reset_is_refused(
+    client, pool, account, mail
+):
+    """An API key may mint others in its org; it has no ``iat`` to compare."""
+    api_key = (await _mint_key(client, account.jwt)).json()["key"]
+    token = await _link(account, mail)
+    pause = _Pause()
+    with _pause_reset_after_password_update(pause):
+        reset = asyncio.create_task(_reset(client, token))
+        await pause.wait_reached()
+        mint = asyncio.create_task(_mint_key(client, api_key))
+        await _assert_blocked(mint)
+        pause.release.set()
+        assert (await reset).status_code == 200
+        assert (await mint).status_code == 401
+    assert await _live_keys(pool, account) == 0
+
+
+@pytest.mark.asyncio
+async def test_key_mint_first_then_reset_revokes_it(client, pool, account, mail):
+    from app.auth.api_keys import PgApiKeyStore
+
+    token = await _link(account, mail)
+    pause = _Pause()
+    real = PgApiKeyStore.create
+
+    async def paused(self, *args, **kw):
+        out = await real(self, *args, **kw)
+        await pause.here()
+        return out
+
+    with pause.patching(PgApiKeyStore, "create", paused):
+        mint = asyncio.create_task(_mint_key(client, account.jwt))
+        await pause.wait_reached()
+        # Stored in the transaction that holds the lock, so not visible yet.
+        assert await _live_keys(pool, account) == 0
+        reset = asyncio.create_task(_reset(client, token))
+        await _assert_blocked(reset)
+        pause.release.set()
+        minted = await mint
+        assert (await reset).status_code == 200
+    assert minted.status_code == 201
+    assert await _live_keys(pool, account) == 0
+    assert await _me(client, minted.json()["key"]) == 401
+
+
+@pytest.mark.asyncio
+async def test_unsynchronised_burst_of_key_mints_leaves_none(client, pool, account, mail):
+    """No pauses: a holder of a stolen token hammering while the owner resets."""
+    token = await _link(account, mail)
+    stop = asyncio.Event()
+
+    async def hammer():
+        while not stop.is_set():
+            await _mint_key(client, account.jwt)
+
+    hammers = [asyncio.create_task(hammer()) for _ in range(4)]
+    await asyncio.sleep(0.2)
+    assert (await _reset(client, token)).status_code == 200
+    await asyncio.sleep(0.2)
+    stop.set()
+    await asyncio.gather(*hammers)
+    assert await pool.fetchval(
+        "SELECT count(*) FROM api_keys WHERE user_id = $1::uuid", account.user_id
+    ) > 0  # it did mint before the reset
+    assert await _live_keys(pool, account) == 0
+
+
+@pytest.mark.asyncio
+async def test_oauth_approval_during_a_reset_is_refused(client, pool, account, consent, mail):
+    token = await _link(account, mail)
+    pause = _Pause()
+    with _pause_reset_after_password_update(pause):
+        reset = asyncio.create_task(_reset(client, token))
+        await pause.wait_reached()
+        approve = asyncio.create_task(consent.approve(client, account.jwt))
+        await _assert_blocked(approve)
+        pause.release.set()
+        assert (await reset).status_code == 200
+        assert (await approve).status_code == 401
+    assert await pool.fetchval(
+        "SELECT count(*) FROM oauth_grants WHERE user_id = $1::uuid", account.user_id
+    ) == 0
+
+
+@pytest.mark.asyncio
+async def test_oauth_approval_after_a_reset_is_refused(client, pool, account, consent, mail):
+    assert (await _reset(client, await _link(account, mail))).status_code == 200
+    assert (await consent.approve(client, account.jwt)).status_code == 401
+    assert await _live_grants(pool, account) == 0
+
+
+@pytest.mark.asyncio
+async def test_oauth_approval_first_then_reset_revokes_it(client, pool, account, consent, mail):
+    from app.auth.oauth import PgOAuthStore
+
+    token = await _link(account, mail)
+    pause = _Pause()
+    real = PgOAuthStore.create_grant_and_code
+
+    async def paused(self, **kw):
+        out = await real(self, **kw)
+        await pause.here()
+        return out
+
+    with pause.patching(PgOAuthStore, "create_grant_and_code", paused):
+        approve = asyncio.create_task(consent.approve(client, account.jwt))
+        await pause.wait_reached()
+        assert await _live_grants(pool, account) == 0  # uncommitted
+        reset = asyncio.create_task(_reset(client, token))
+        await _assert_blocked(reset)
+        pause.release.set()
+        approved = await approve
+        assert (await reset).status_code == 200
+    assert approved.status_code == 200
+    assert await _live_grants(pool, account) == 0
+    code = re.search(r"code=([^&]+)", approved.json()["redirect_to"]).group(1)
+    assert await PgOAuthStore().redeem_code(code) is None
+
+
+@pytest.mark.asyncio
+async def test_minting_still_works(client, pool, account, consent):
+    key = await _mint_key(client, account.jwt)
+    assert key.status_code == 201
+    assert (await _mint_key(client, key.json()["key"])).status_code == 201
+    assert await _live_keys(pool, account) == 2
+    assert (await consent.approve(client, account.jwt)).status_code == 200
+    assert await _live_grants(pool, account) == 1
+
+
+@pytest.mark.asyncio
+async def test_expired_links_are_deleted_when_a_new_one_is_issued(pool, account, mail):
+    await _link(account, mail)
+    await pool.execute(
+        "UPDATE password_reset_tokens SET expires_at = now() - interval '1 second' "
+        "WHERE user_id = $1::uuid", account.user_id,
+    )
+    await _link(account, mail)
+    assert await pool.fetchval(
+        "SELECT count(*) FROM password_reset_tokens WHERE user_id = $1::uuid", account.user_id
+    ) == 1
