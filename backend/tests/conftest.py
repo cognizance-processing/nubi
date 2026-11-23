@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -84,6 +84,10 @@ class FakeDB:
         self.sessions: dict[str, dict[str, Any]] = {}
         self.orgs: dict[str, dict[str, Any]] = {}
         self.org_members: dict[str, dict[str, Any]] = {}
+        self.password_reset_tokens: dict[str, dict[str, Any]] = {}
+        # Rows are added by tests directly; only revocation is emulated.
+        self.api_keys: dict[str, dict[str, Any]] = {}
+        self.oauth_grants: dict[str, dict[str, Any]] = {}
 
     # ------------------------------------------------------------------
     # Index helpers
@@ -152,6 +156,23 @@ class FakeDB:
                 return self._session_by_token_hash(str(args[0]))
             if "WHERE PARENT_ID" in q:
                 return self._session_by_parent_id(str(args[0]))
+
+        if table == "password_reset_tokens":
+            now = datetime.now(tz=timezone.utc)
+            if "COUNT(*)" in q:
+                return {
+                    "n": sum(
+                        1 for t in self.password_reset_tokens.values()
+                        if t["user_id"] == str(args[0])
+                        and t["created_at"] > now - timedelta(hours=1)
+                    )
+                }
+            row = self.password_reset_tokens.get(str(args[0]))
+            if q.startswith("UPDATE"):  # claim … RETURNING
+                if row is None or row["used_at"] is not None or row["expires_at"] <= now:
+                    return None
+                row["used_at"] = now
+            return row
 
         # Health-check ping only: bare ``SELECT 1`` / ``SELECT 1 AS ping`` with no
         # table. A ``SELECT 1 FROM <table> WHERE ...`` is an *existence* probe
@@ -278,6 +299,34 @@ class FakeDB:
                         sess["revoked_at"] = datetime.now(tz=timezone.utc)
                         count += 1
                 return f"UPDATE {count}"
+
+        # ── UPDATE <table> SET … WHERE user_id (revoke / use everything) ───
+        if q.startswith("UPDATE") and "WHERE USER_ID" in q and table in (
+            "sessions", "api_keys", "oauth_grants", "password_reset_tokens"
+        ):
+            column = "used_at" if table == "password_reset_tokens" else "revoked_at"
+            for row in getattr(self, table).values():
+                if row["user_id"] == str(args[0]) and row[column] is None:
+                    row[column] = datetime.now(tz=timezone.utc)
+            return "UPDATE 1"
+
+        # ── INSERT password_reset_tokens ───────────────────────────────────
+        if q.startswith("INSERT") and table == "password_reset_tokens":
+            self.password_reset_tokens[str(args[0])] = {
+                "token_hash": str(args[0]),
+                "user_id": str(args[1]),
+                "expires_at": args[2],
+                "used_at": None,
+                "created_at": datetime.now(tz=timezone.utc),
+            }
+            return "INSERT 0 1"
+
+        # ── UPDATE users SET password_hash ─────────────────────────────────
+        if q.startswith("UPDATE USERS") and "SET PASSWORD_HASH" in q:
+            new_hash, user_id = (None, args[0]) if "PASSWORD_HASH = NULL" in q else args
+            if str(user_id) in self.users:
+                self.users[str(user_id)]["password_hash"] = new_hash
+            return "UPDATE 1"
 
         # ── UPDATE users SET avatar_url ────────────────────────────────────
         if q.startswith("UPDATE USERS") and "AVATAR_URL" in q:
@@ -613,6 +662,7 @@ async def app():
         patch("app.db.get_connection",        new=_fake_db.fake_get_connection),
         patch("app.routes.auth.fetchrow",     side_effect=_fake_db.fake_fetchrow),
         patch("app.routes.auth.execute",      side_effect=_fake_db.fake_execute),
+        patch("app.routes.auth.get_connection", new=_fake_db.fake_get_connection),
         patch("app.auth.sessions.fetchrow",   side_effect=_fake_db.fake_fetchrow),
         patch("app.auth.sessions.execute",    side_effect=_fake_db.fake_execute),
         patch("app.auth.sessions.get_connection", new=_fake_db.fake_get_connection),
