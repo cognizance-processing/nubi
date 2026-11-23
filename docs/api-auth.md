@@ -43,7 +43,8 @@ separately from sign-in attempts;
 
 The link is `FRONTEND_URL/reset-password#token=…`. It works once and expires
 after 30 minutes. An account has at most three usable links at a time; further
-requests send nothing until one is used or expires. Nothing is sent when
+requests send nothing until one is used or expires. Expired links are deleted
+when a new one is issued. Nothing is sent when
 `SMTP_HOST` is not set, or to an account that has no password (one that signs in
 with Google).
 
@@ -59,6 +60,9 @@ A reset voids the account's other links and revokes all of its sessions, API key
 and connected apps (OAuth grants), in every org. It does **not** revoke bridge
 tokens or drop bridge tunnels: if the account may have been compromised, rotate
 those in Settings as well. It does not change `email_verified`.
+
+Creating an API key or approving a connected app is serialised with a reset, so a
+request that was already under way cannot leave a new credential behind.
 
 Access tokens issued before the reset are refused. Requests that change something
 check this against the database; reads may accept an old token for up to

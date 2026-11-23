@@ -84,8 +84,9 @@ Conventions:
   account's password was reset (or cleared by a first Google sign-in) is refused.
   Requests that change something check the database; reads on other API workers
   can lag by up to `AUTH_CACHE_TTL_SECONDS`.
-- **Sign-in and session refresh are serialised with a password reset**, so
-  neither can leave behind a session the reset did not revoke.
+- **Sign-in, session refresh, API-key creation and connected-app approval are
+  serialised with a password reset**, so none can leave behind a session, key or
+  grant the reset did not revoke.
 
 ### Fixed
 
