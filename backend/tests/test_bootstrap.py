@@ -135,7 +135,7 @@ def refresh_env(env_store, monkeypatch):
 
     monkeypatch.setattr(auth_mod, "rotate_refresh", rotate)
     monkeypatch.setattr(auth_mod, "set_refresh_cookie", lambda *a, **k: None)
-    monkeypatch.setattr(auth_mod, "mint_access_token", lambda uid: f"tok-{uid}")
+    monkeypatch.setattr(auth_mod, "mint_access_token", lambda uid, **_kw: f"tok-{uid}")
     monkeypatch.setattr(auth_mod, "_me_payload", me_payload)
     return auth_mod
 

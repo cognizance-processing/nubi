@@ -84,6 +84,8 @@ class FakeDB:
         self.sessions: dict[str, dict[str, Any]] = {}
         self.orgs: dict[str, dict[str, Any]] = {}
         self.org_members: dict[str, dict[str, Any]] = {}
+        # keyed by token_hash
+        self.password_reset_tokens: dict[str, dict[str, Any]] = {}
 
     # ------------------------------------------------------------------
     # Index helpers
@@ -110,6 +112,13 @@ class FakeDB:
             if str(row.get("parent_id") or "") == parent_id:
                 return row
         return None
+
+    def _live_reset_tokens(self) -> list[dict[str, Any]]:
+        now = datetime.now(tz=timezone.utc)
+        return [
+            r for r in self.password_reset_tokens.values()
+            if r["used_at"] is None and r["expires_at"] > now
+        ]
 
     def _oauth_by_provider(self, provider: str, provider_account_id: str) -> dict[str, Any] | None:
         for row in self.oauth_accounts.values():
@@ -152,6 +161,17 @@ class FakeDB:
                 return self._session_by_token_hash(str(args[0]))
             if "WHERE PARENT_ID" in q:
                 return self._session_by_parent_id(str(args[0]))
+
+        if table == "password_reset_tokens":
+            if "COUNT(*)" in q:
+                return {"n": sum(1 for r in self._live_reset_tokens() if r["user_id"] == str(args[0]))}
+            if "WHERE TOKEN_HASH" in q:
+                row = next(
+                    (r for r in self._live_reset_tokens() if r["token_hash"] == args[0]), None
+                )
+                if row is not None and q.startswith("UPDATE"):
+                    row["used_at"] = datetime.now(tz=timezone.utc)
+                return row
 
         # Health-check ping only: bare ``SELECT 1`` / ``SELECT 1 AS ping`` with no
         # table. A ``SELECT 1 FROM <table> WHERE ...`` is an *existence* probe
@@ -200,8 +220,27 @@ class FakeDB:
                 row["name"] = args[3] if len(args) > 3 else None
                 row["avatar_url"] = None
                 row["email_verified"] = False
+            row["password_changed_at"] = None
             self.users[row["id"]] = row
             return "INSERT 0 1"
+
+        # ── password_reset_tokens ──────────────────────────────────────────
+        if table == "password_reset_tokens":
+            if q.startswith("INSERT"):
+                user_id, token_hash, expires_at = args
+                self.password_reset_tokens[token_hash] = {
+                    "id": token_hash, "user_id": str(user_id), "token_hash": token_hash,
+                    "expires_at": expires_at, "used_at": None,
+                }
+                return "INSERT 0 1"
+            if q.startswith("DELETE"):
+                self.password_reset_tokens.pop(args[0], None)
+                return "DELETE 1"
+            if q.startswith("UPDATE") and "WHERE USER_ID" in q:
+                for row in self.password_reset_tokens.values():
+                    if row["user_id"] == str(args[0]) and row["used_at"] is None:
+                        row["used_at"] = datetime.now(tz=timezone.utc)
+                return "UPDATE 1"
 
         # ── INSERT sessions ────────────────────────────────────────────────
         if q.startswith("INSERT") and table == "sessions":
@@ -278,6 +317,19 @@ class FakeDB:
                         sess["revoked_at"] = datetime.now(tz=timezone.utc)
                         count += 1
                 return f"UPDATE {count}"
+            if "WHERE USER_ID" in q:
+                for sess in self.sessions.values():
+                    if str(sess["user_id"]) == str(args[0]) and sess["revoked_at"] is None:
+                        sess["revoked_at"] = datetime.now(tz=timezone.utc)
+                return "UPDATE 1"
+
+        # ── UPDATE users SET password_hash (password reset) ────────────────
+        if q.startswith("UPDATE USERS") and "PASSWORD_HASH = $1" in q:
+            user = self.users.get(str(args[2]))
+            if user is not None:
+                user["password_hash"] = args[0]
+                user["password_changed_at"] = args[1]
+            return "UPDATE 1"
 
         # ── UPDATE users SET avatar_url ────────────────────────────────────
         if q.startswith("UPDATE USERS") and "AVATAR_URL" in q:
@@ -613,6 +665,7 @@ async def app():
         patch("app.db.get_connection",        new=_fake_db.fake_get_connection),
         patch("app.routes.auth.fetchrow",     side_effect=_fake_db.fake_fetchrow),
         patch("app.routes.auth.execute",      side_effect=_fake_db.fake_execute),
+        patch("app.routes.auth.get_connection", new=_fake_db.fake_get_connection),
         patch("app.auth.sessions.fetchrow",   side_effect=_fake_db.fake_fetchrow),
         patch("app.auth.sessions.execute",    side_effect=_fake_db.fake_execute),
         patch("app.auth.sessions.get_connection", new=_fake_db.fake_get_connection),

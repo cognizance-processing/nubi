@@ -114,6 +114,25 @@ enable it.
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret | Same |
 | `GOOGLE_REDIRECT_URI` | OAuth callback URL | `https://<your-domain>/api/v1/auth/google/callback` |
 
+### Optional: outbound email (password resets, reports)
+
+Without a mail server Nubi runs normally, but **Forgot password?** sends nothing
+(the page gives the same answer either way; the backend logs a warning).
+
+| Variable | Default | Description |
+|---|---|---|
+| `SMTP_HOST` | empty | Mail server. Empty disables outbound email. |
+| `SMTP_PORT` | `587` | `587` for STARTTLS, `465` for implicit TLS |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | empty | SMTP login, if the server needs one |
+| `SMTP_FROM` | empty | From address. **Set this**: when empty it falls back to a `nubi.io` billing address your server is not allowed to send for |
+| `SMTP_USE_TLS` | `true` | STARTTLS on ports other than 465 |
+| `SMTP_TLS_VERIFY` | `true` | Verify the server's certificate. Set `false` only for a relay with a self-signed certificate |
+
+Reset links point at `FRONTEND_URL`, so it must be the address your users open.
+
+To try it locally with [Mailpit](https://mailpit.axllent.org/): `SMTP_HOST=localhost`,
+`SMTP_PORT=1025`, `SMTP_USE_TLS=false`.
+
 ### Recommended for production
 
 | Variable | Description | How to generate |
@@ -131,7 +150,7 @@ enable it.
 |---|---|---|
 | `ENV` | `production` | Runtime label. `development` enables OpenAPI docs (`/docs`, `/redoc`) and the local subprocess kernel. |
 | `CORS_ORIGINS` | `http://localhost:8080` | Comma-separated allowed origins |
-| `FRONTEND_URL` | `http://localhost:8080` | Public URL used in OAuth redirects |
+| `FRONTEND_URL` | `http://localhost:8080` | Public URL used in OAuth redirects and password-reset links |
 | `UVICORN_WORKERS` | `2` | Uvicorn worker processes |
 | `FLOWS_WORKER_ENABLED` | `true` | Enable the in-process flows task worker |
 | `S3_ENDPOINT_URL` | `http://minio:9000` | S3-compatible endpoint |
@@ -296,6 +315,8 @@ make up   # rebuilds images and restarts services
 
 Migrations run automatically on each restart. To apply migrations without a full restart: `make migrate`.
 
+If you deploy the API separately from migrations, apply `0034_password_reset_tokens.sql` and `0035_users_password_changed_at.sql` (in that order) **before** starting this version: the API reads the new `users` column on every signed-in request.
+
 ---
 
 ## Backups
@@ -346,6 +367,10 @@ If that returns a non-200, check `docker compose logs frontend` for nginx errors
 **Python cells return `kernel_disabled` (503)**
 
 No server kernel is configured. Set `KERNEL_REMOTE_PROVIDER=e2b` and `E2B_API_KEY` for production, or set `ENV=development` and `KERNEL_LOCAL_ENABLED=true` for local development. SQL cells run in the browser (DuckDB-WASM) and never require a server kernel; only Python cells do.
+
+**Emails stopped after an upgrade (`CERTIFICATE_VERIFY_FAILED`)**
+
+SMTP certificates are now verified. For a relay with a self-signed certificate, set `SMTP_TLS_VERIFY=false`. This affects reports and invoices as well as password resets.
 
 **MinIO bucket not created**
 

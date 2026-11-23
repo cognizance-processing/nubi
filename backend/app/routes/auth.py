@@ -4,6 +4,8 @@ Endpoints
 ---------
 POST   /auth/register          Register a new user (email+password).
 POST   /auth/login             Authenticate with email+password.
+POST   /auth/forgot-password   Email a password-reset link (same answer for any address).
+POST   /auth/reset-password    Set a new password with the token from that link.
 POST   /auth/refresh           Rotate the refresh cookie → new access token.
 POST   /auth/logout            Revoke session family, clear cookie.
 GET    /auth/me                Return the current user (Bearer required).
@@ -19,14 +21,17 @@ up automatically.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import logging
+import secrets
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Cookie, Depends, Query, Request, Response
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.auth.api_keys import get_api_key_store
 from app.auth.cookies import (
@@ -45,9 +50,14 @@ from app.auth.google import (
 )
 from app.auth.jwt import decode_access_token, mint_access_token
 from app.auth.passwords import hash_password, verify_password
-from app.auth.sessions import issue_refresh, revoke_by_token, rotate_refresh
+from app.auth.sessions import (
+    issue_refresh,
+    issue_refresh_for_password,
+    revoke_by_token,
+    rotate_refresh,
+)
 from app.config import get_settings
-from app.db import execute, fetch, fetchrow
+from app.db import execute, fetch, fetchrow, get_connection
 from app.errors import AppError
 from app.repos import projects as projects_repo
 from app.repos.provider import Repo, get_repo
@@ -70,8 +80,22 @@ _OAUTH_VERIFIER_COOKIE = "nubi_oauth_verifier"
 _OAUTH_COOKIE_PATH = "/api/v1/auth/google"
 _OAUTH_COOKIE_MAX_AGE = 600  # 10 minutes; enough time to complete the flow
 
+# ── Password reset ────────────────────────────────────────────────────────────
+_RESET_LINK_TTL = timedelta(minutes=30)
+#: Unused, unexpired links one account may have at a time.
+_RESET_MAX_LIVE_LINKS = 3
+
+#: Strong references to running reset-email tasks (asyncio keeps only weak ones).
+_reset_email_tasks: set[asyncio.Task[None]] = set()
+
 
 # ── Pydantic request schemas ──────────────────────────────────────────────────
+
+def _check_password_length(value: str) -> str:
+    if len(value) < 8:
+        raise ValueError("Password must be at least 8 characters.")
+    return value
+
 
 class RegisterIn(BaseModel):
     """Request body for POST /auth/register."""
@@ -87,12 +111,7 @@ class RegisterIn(BaseModel):
     # project (no separate "Demo" project). Best-effort.
     demo_project: bool = False
 
-    @field_validator("password")
-    @classmethod
-    def _password_min_length(cls, value: str) -> str:
-        if len(value) < 8:
-            raise ValueError("Password must be at least 8 characters.")
-        return value
+    _password_min_length = field_validator("password")(_check_password_length)
 
 
 class LoginIn(BaseModel):
@@ -100,6 +119,21 @@ class LoginIn(BaseModel):
 
     email: EmailStr
     password: str
+
+
+class ForgotPasswordIn(BaseModel):
+    """Request body for POST /auth/forgot-password."""
+
+    email: EmailStr
+
+
+class ResetPasswordIn(BaseModel):
+    """Request body for POST /auth/reset-password."""
+
+    token: str = Field(max_length=256)
+    password: str
+
+    _password_min_length = field_validator("password")(_check_password_length)
 
 
 class ApiKeyCreateIn(BaseModel):
@@ -350,12 +384,20 @@ async def login(
         raise AppError("invalid_credentials", "Invalid email or password.", 401)
 
     user_id = str(user_row["id"])
-    access_token = mint_access_token(user_id)
-    raw_refresh, expires_at = await issue_refresh(
+    # Taken before the session is issued: a password reset that lands after
+    # that is later than this moment and so outdates the access token too.
+    issued_at = datetime.now(tz=timezone.utc)
+    issued = await issue_refresh_for_password(
         user_id,
+        stored_hash,
         user_agent=request.headers.get("user-agent"),
         ip=_client_ip(request),
     )
+    if issued is None:
+        # The password changed while this attempt was being verified.
+        raise AppError("invalid_credentials", "Invalid email or password.", 401)
+    raw_refresh, expires_at = issued
+    access_token = mint_access_token(user_id, issued_at=issued_at)
     set_refresh_cookie(response, raw_refresh, expires_at)
 
     # Login analytics — best-effort, never blocks login.
@@ -364,6 +406,216 @@ async def login(
     await record_login_event(user_id, request)
 
     return {"user": _serialize_user(user_row), "access_token": access_token}
+
+
+# ── Forgotten password ───────────────────────────────────────────────────────
+
+
+@router.post("/forgot-password")
+async def forgot_password(body: ForgotPasswordIn) -> dict[str, bool]:
+    """Email a password-reset link to the account with this address, if any.
+
+    The answer is the same whether or not the account exists, and the lookup
+    and the email happen after it is decided, so neither the body nor the
+    timing tells the two apart. The work is detached rather than a
+    ``BackgroundTasks`` job, which would hold the connection open for as long
+    as the mail server takes. The request limit counts every address alike.
+
+    Returns
+    -------
+    200 {ok: true}
+    """
+    email = str(body.email).lower()
+
+    from app.middleware.ratelimit import consume_password_reset_request  # noqa: PLC0415
+
+    allowed, retry_after = consume_password_reset_request(email)
+    if not allowed:
+        raise AppError(
+            "rate_limited",
+            f"Too many reset requests for this address. Try again in {retry_after} second(s).",
+            429,
+        )
+
+    task = asyncio.create_task(_send_password_reset(email))
+    _reset_email_tasks.add(task)
+    task.add_done_callback(_reset_email_tasks.discard)
+    return {"ok": True}
+
+
+def _hash_reset_token(raw: str) -> str:
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+async def _send_password_reset(email: str) -> None:
+    """Create a reset link for *email* and send it. Never raises.
+
+    Does nothing when outbound email is not configured, when there is no such
+    account, when the account has no password (it signs in with Google; a reset
+    does not add a first password), or when it already has
+    ``_RESET_MAX_LIVE_LINKS`` usable links. A link whose email could not be
+    sent is deleted, so it does not count towards that limit.
+    """
+    try:
+        from app.jobs.report import NullSender, get_default_sender  # noqa: PLC0415
+
+        sender = get_default_sender()
+        if isinstance(sender, NullSender):
+            logger.warning("password reset requested but SMTP_HOST is not set; no email sent")
+            return
+
+        user = await fetchrow("SELECT id, email, password_hash FROM users WHERE email = $1", email)
+        if user is None or user["password_hash"] is None:
+            return
+        user_id = str(user["id"])
+
+        token = secrets.token_urlsafe(32)
+        token_hash = _hash_reset_token(token)
+        async with get_connection() as conn:
+            async with conn.transaction():
+                # Serialises requests for one account, so the limit holds.
+                locked = await conn.fetchrow(
+                    "SELECT password_hash FROM users WHERE id = $1::uuid FOR UPDATE", user_id
+                )
+                if locked is None or locked["password_hash"] is None:
+                    return
+                live = await conn.fetchrow(
+                    """
+                    SELECT count(*) AS n FROM password_reset_tokens
+                    WHERE user_id = $1::uuid AND used_at IS NULL AND expires_at > now()
+                    """,
+                    user_id,
+                )
+                if live is not None and int(live["n"]) >= _RESET_MAX_LIVE_LINKS:
+                    return
+                await conn.execute(
+                    """
+                    INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
+                    VALUES ($1::uuid, $2, $3)
+                    """,
+                    user_id,
+                    token_hash,
+                    datetime.now(tz=timezone.utc) + _RESET_LINK_TTL,
+                )
+
+        # In the fragment, so the token is never sent to a server as part of a
+        # URL (access logs, Referer).
+        link = f"{get_settings().FRONTEND_URL.rstrip('/')}/reset-password#token={token}"
+        try:
+            await asyncio.to_thread(
+                sender.send,
+                to=str(user["email"]),
+                subject="Reset your Nubi password",
+                body=_reset_email_body(link),
+            )
+        except Exception:
+            logger.warning("password reset email failed for user %s", user_id, exc_info=True)
+            await execute("DELETE FROM password_reset_tokens WHERE token_hash = $1", token_hash)
+    except Exception:
+        logger.exception("password reset request failed")
+
+
+def _reset_email_body(link: str) -> str:
+    minutes = int(_RESET_LINK_TTL.total_seconds() // 60)
+    return (
+        "Someone asked to reset the password of the Nubi account with this email address.\n\n"
+        f"To choose a new password, open this link within {minutes} minutes:\n\n"
+        f"{link}\n\n"
+        "The link works once. If you did not ask for this, ignore this email; "
+        "your password has not changed.\n"
+    )
+
+
+@router.post("/reset-password")
+async def reset_password(body: ResetPasswordIn, response: Response) -> dict[str, bool]:
+    """Set a new password using the token from a reset email.
+
+    In one transaction: use up the link, set the password, void the account's
+    other links, and revoke its sessions, API keys and connected-app (OAuth)
+    grants. Access JWTs issued earlier are refused from then on (see
+    ``app.auth.deps``). Bridge tokens and tunnels are infrastructure
+    credentials and are left alone. ``email_verified`` does not change.
+
+    A bad token is a 400, not a 401: the client answers a 401 by refreshing its
+    session and retrying.
+
+    Returns
+    -------
+    200 {ok: true}
+    """
+    invalid = AppError(
+        "invalid_reset_token", "This reset link is invalid or has expired. Request a new one.", 400
+    )
+    token_hash = _hash_reset_token(body.token)
+
+    # Checked before hashing the password, so guesses cost nothing.
+    link = await fetchrow(
+        """
+        SELECT user_id FROM password_reset_tokens
+        WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
+        """,
+        token_hash,
+    )
+    if link is None:
+        raise invalid
+    user_id = str(link["user_id"])
+    new_hash = await asyncio.to_thread(hash_password, body.password)
+
+    async with get_connection() as conn:
+        async with conn.transaction():
+            # The user row first (see "Lock order" in app.auth.sessions).
+            user = await conn.fetchrow(
+                "SELECT password_hash FROM users WHERE id = $1::uuid FOR UPDATE", user_id
+            )
+            if user is None or user["password_hash"] is None:
+                raise invalid
+            used = await conn.fetchrow(
+                """
+                UPDATE password_reset_tokens SET used_at = now()
+                WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
+                RETURNING id
+                """,
+                token_hash,
+            )
+            if used is None:
+                raise invalid
+
+            # The application clock, like ``iat`` it is compared with, read
+            # while holding the lock.
+            await conn.execute(
+                """
+                UPDATE users
+                SET password_hash = $1, password_changed_at = $2, updated_at = now()
+                WHERE id = $3::uuid
+                """,
+                new_hash,
+                datetime.now(tz=timezone.utc),
+                user_id,
+            )
+            await conn.execute(
+                "UPDATE password_reset_tokens SET used_at = now() "
+                "WHERE user_id = $1::uuid AND used_at IS NULL",
+                user_id,
+            )
+            await conn.execute(
+                "UPDATE sessions SET revoked_at = now() "
+                "WHERE user_id = $1::uuid AND revoked_at IS NULL",
+                user_id,
+            )
+            await conn.execute(
+                "UPDATE api_keys SET revoked_at = now() "
+                "WHERE user_id = $1::uuid AND revoked_at IS NULL",
+                user_id,
+            )
+            await conn.execute(
+                "UPDATE oauth_grants SET revoked_at = now() "
+                "WHERE user_id = $1::uuid AND revoked_at IS NULL",
+                user_id,
+            )
+
+    forget_user_row(user_id)
+    clear_refresh_cookie(response)
+    return {"ok": True}
 
 
 @router.post("/refresh")
@@ -394,6 +646,8 @@ async def refresh(
     if not nubi_refresh:
         raise AppError("unauthorized", "No refresh token.", 401)
 
+    # Before the rotation, for the same reason as in ``login``.
+    issued_at = datetime.now(tz=timezone.utc)
     try:
         new_raw, user_id, new_expires = await rotate_refresh(
             nubi_refresh,
@@ -406,7 +660,7 @@ async def refresh(
         raise
 
     set_refresh_cookie(response, new_raw, new_expires)
-    access_token = mint_access_token(user_id)
+    access_token = mint_access_token(user_id, issued_at=issued_at)
 
     # The same user payload as GET /auth/me, so restoring a session on page
     # load is one request instead of refresh-then-me in series. Best-effort:
@@ -488,7 +742,6 @@ async def logout(
         try:
             claims = decode_access_token(raw_token)
             jti: str = claims["jti"]
-            from datetime import datetime, timezone
             # exp from PyJWT is an integer (epoch seconds) or datetime; normalise.
             raw_exp = claims["exp"]
             if isinstance(raw_exp, datetime):
@@ -604,8 +857,6 @@ async def my_invites(
     -------
     200 {invites: [{id, org_id, org_name, role, token?, created_at, expires_at}]}
     """
-    from datetime import datetime, timezone  # noqa: PLC0415
-
     email = str(user["email"]).strip().lower()
     verified = bool(user.get("email_verified"))
     rows = await fetch(
@@ -964,8 +1215,8 @@ async def _secure_account_on_first_provider_link(user_id: str, provider: str) ->
     Registration does not verify email, so an account with a password may
     have been created by someone who does not own the address. The first time
     a provider that HAS verified the address is linked, any password is
-    cleared and every existing session and API key is revoked — whoever set
-    them can no longer get in. Later sign-ins with the same provider, and
+    cleared, every existing session and API key is revoked and earlier access
+    JWTs are refused — whoever set them can no longer get in. Later sign-ins with the same provider, and
     accounts that never had a password, are left alone.
 
     Returns ``True`` when the account was locked down.
@@ -985,9 +1236,10 @@ async def _secure_account_on_first_provider_link(user_id: str, provider: str) ->
         return False
 
     await execute(
-        "UPDATE users SET password_hash = NULL, email_verified = true, updated_at = now() "
-        "WHERE id = $1::uuid",
+        "UPDATE users SET password_hash = NULL, password_changed_at = $2, "
+        "email_verified = true, updated_at = now() WHERE id = $1::uuid",
         user_id,
+        datetime.now(tz=timezone.utc),
     )
     forget_user_row(user_id)
     from app.auth import sessions as _sessions  # noqa: PLC0415

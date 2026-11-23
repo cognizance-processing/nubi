@@ -493,6 +493,27 @@ export function login(body) {
 }
 
 /**
+ * Ask for a password-reset email. Resolves the same way whether or not the
+ * address has an account.
+ * @param {{ email: string }} body
+ * @returns {Promise<{ ok: boolean }>}
+ */
+export function forgotPassword(body: { email: string }) {
+  return post('/auth/forgot-password', body)
+}
+
+/**
+ * Set a new password with the token from a reset email. Ends every session of
+ * the account and clears the refresh cookie. A bad link throws with status 400
+ * and code `invalid_reset_token`.
+ * @param {{ token: string, password: string }} body
+ * @returns {Promise<{ ok: boolean }>}
+ */
+export function resetPassword(body: { token: string; password: string }) {
+  return post('/auth/reset-password', body)
+}
+
+/**
  * Silently exchange the HttpOnly refresh cookie for a new access token.
  * Also rotates the refresh cookie. Shares the 401 interceptor's
  * single-flight so a boot-time refresh and interceptor refreshes can never
