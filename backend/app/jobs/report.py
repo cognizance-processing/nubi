@@ -53,11 +53,14 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import smtplib
 import ssl
 from email.message import EmailMessage
 from email.utils import formataddr
 from typing import Any, Protocol, runtime_checkable
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -211,12 +214,31 @@ class SmtpEmailSender:
         srv.send_message(msg)
 
 
-def get_default_sender(settings: Any | None = None) -> EmailSender:
-    """Return the configured email transport.
+#: What each outbound email is for. Every ``get_default_sender`` call names one,
+#: and ``EMAIL_ALLOWED_PURPOSES`` can limit an environment to some of them.
+EMAIL_PURPOSES: frozenset[str] = frozenset({"password_reset", "report", "invoice"})
+
+
+def allowed_email_purposes(settings: Any) -> frozenset[str] | None:
+    """Parse ``EMAIL_ALLOWED_PURPOSES``. ``None`` means every purpose is allowed."""
+    raw = (getattr(settings, "EMAIL_ALLOWED_PURPOSES", "") or "").strip()
+    if not raw:
+        return None
+    return frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
+
+
+def get_default_sender(settings: Any | None = None, *, purpose: str = "") -> EmailSender:
+    """Return the configured email transport for one kind of email.
 
     ``SmtpEmailSender`` when ``SMTP_HOST`` is set, otherwise a ``NullSender``
     (no real delivery — reports/invoices are still generated and recorded, so
     OSS builds and tests with no mail server keep working).
+
+    *purpose* says what the email is for (one of ``EMAIL_PURPOSES``). When
+    ``EMAIL_ALLOWED_PURPOSES`` is set, only the purposes it lists get the real
+    transport; any other purpose, or none, gets a ``NullSender``. A hosted
+    environment can then send password resets without ever delivering reports
+    or invoices.
     """
     if settings is None:
         from app.config import get_settings  # noqa: PLC0415
@@ -225,6 +247,14 @@ def get_default_sender(settings: Any | None = None) -> EmailSender:
 
     host = (getattr(settings, "SMTP_HOST", "") or "").strip()
     if not host:
+        return NullSender()
+
+    allowed = allowed_email_purposes(settings)
+    if allowed is not None and (purpose or "").strip().lower() not in allowed:
+        logger.info(
+            "email not sent: purpose %r is not in EMAIL_ALLOWED_PURPOSES",
+            purpose or "(none)",
+        )
         return NullSender()
 
     from_addr = (

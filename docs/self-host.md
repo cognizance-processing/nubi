@@ -127,6 +127,7 @@ Without a mail server Nubi runs normally, but **Forgot password?** sends nothing
 | `SMTP_FROM` | empty | From address. **Set this**: when empty it falls back to a `nubi.io` billing address your server is not allowed to send for |
 | `SMTP_USE_TLS` | `true` | STARTTLS on ports other than 465 |
 | `SMTP_TLS_VERIFY` | `true` | Verify the server's certificate. Set `false` only for a relay with a self-signed certificate |
+| `EMAIL_ALLOWED_PURPOSES` | empty | Which kinds of email may really be sent, comma-separated: `password_reset`, `report`, `invoice`. Empty sends all of them; anything not listed is dropped. `password_reset` sends reset links and nothing else |
 
 Reset links point at `FRONTEND_URL`, so it must be the address your users open.
 

@@ -276,9 +276,10 @@ def _run_report_job(target: dict[str, Any]) -> tuple[int, str]:
             404,
         )
 
-    # Use the configured email transport: real SMTP when SMTP_HOST is set,
-    # else a NullSender (no delivery) so dev/test/OSS builds still run.
-    sender = get_default_sender()
+    # Use the configured email transport: real SMTP when SMTP_HOST is set and
+    # EMAIL_ALLOWED_PURPOSES allows reports, else a NullSender (no delivery) so
+    # dev/test/OSS builds still run.
+    sender = get_default_sender(purpose="report")
 
     total_sent = 0
 
