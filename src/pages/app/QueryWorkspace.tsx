@@ -93,6 +93,8 @@ import {
   FILTER_PARAM_TYPES,
 } from './queryParams.logic.js'
 import QueryCodeView from './QueryCodeView.jsx'
+import QuerySizeEstimate from '../../components/app/QuerySizeEstimate.jsx'
+import { pickSelection, planQueryEstimate, usesFilterTags, SELECTION_FILTER_TAGS_RUN_ERROR } from './queryEstimate.logic.js'
 import DataTable from '../../components/DataTable.jsx'
 import PythonCell from '../../components/PythonCell.jsx'
 import { runArrowQueryById, runArrowQuery, shareArrowTable, runLocalSqlForCell } from '../../lib/wasmRuntime.js'
@@ -212,6 +214,31 @@ function isBlankParamValue(v) {
   if (Array.isArray(v)) return v.length === 0
   if (typeof v === 'object') return Object.values(v).every(x => x == null || x === '')
   return false
+}
+
+/**
+ * Filter values exactly as Run sends them for a saved query (also what the
+ * size line asks about). Blank means "use the query's declared default", so
+ * it is left out entirely rather than sending '' / [] / {from:'',to:''}.
+ * Numbers and booleans are typed by the param's declared type; daterange
+ * objects and multiselect arrays pass through as-is — the template engine
+ * expects the structure, not a stringification.
+ */
+function buildRunNamedParams(paramValues, params) {
+  const namedParams = {}
+  Object.entries(paramValues ?? {}).forEach(([k, v]) => {
+    if (isBlankParamValue(v)) return
+    const descriptor = params.find(p => p.name === k)
+    const ptype = descriptor?.type ?? 'text'
+    if (ptype === 'number' || ptype === 'integer' || ptype === 'float') {
+      namedParams[k] = Number(v)
+    } else if (ptype === 'boolean') {
+      namedParams[k] = v === 'true' || v === true
+    } else {
+      namedParams[k] = v
+    }
+  })
+  return namedParams
 }
 
 // ---------------------------------------------------------------------------
@@ -1649,6 +1676,14 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
   // Imperative handle onto the primary SqlEditor — lets "Add filter
   // parameter" drop a snippet at the cursor instead of appending blindly.
   const sqlEditorRef = useRef(null)
+  // The highlighted part of the SQL ('' when none): Run then runs just that
+  // part, and the size line sizes just that part.
+  const [selectedSql, setSelectedSql] = useState('')
+  // A saved query's SQL as last saved. Run runs a saved query by id (its
+  // saved copy), so the size line needs to know when the editor differs.
+  const [savedSql, setSavedSql] = useState(query?.sql ?? '')
+  // Goes up on every save / restore, so the size line checks again after Update.
+  const [savedVersion, setSavedVersion] = useState(0)
   // "Show rendered SQL" preview panel (POST /query/render — never executes).
   const [showRendered, setShowRendered] = useState(false)
   const [renderedPreview, setRenderedPreview] = useState(null)
@@ -1664,6 +1699,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
   // Sync the primary cell when the selected query changes.
   useEffect(() => {
     setSql(query?.sql ?? '')
+    setSavedSql(query?.sql ?? '')
     setParams(query?.params ?? [])
     setParamValues(initialParamValues(query?.params))
     // Re-parse the query's config.metric block into the panel draft; expand the
@@ -1860,32 +1896,31 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
   }, [])
 
   // ── Run (primary cell / cell_1) ──────────────────────────────────────────
-  const handleRun = useCallback(async () => {
+  // With part of the SQL highlighted, only that part runs (like BigQuery's
+  // "Run selection"); the highlight is read from the editor at run time.
+  // "Run all" passes { wholeQuery: true } to always run the whole query.
+  const handleRun = useCallback(async (opts) => {
     if (running || viewingVersion) return
+    const selection = opts?.wholeQuery === true
+      ? ''
+      : pickSelection(sqlEditorRef.current?.getSelectedText?.(), sql)
+    const ranSql = selection || sql
     setRunning(true)
     setRunError(null)
     setResult(null)
 
     try {
       let res
-      if (query?.id && !isNew) {
-        const namedParams = {}
-        Object.entries(paramValues).forEach(([k, v]) => {
-          // Blank means "use the query's declared default" — omit it entirely
-          // rather than sending '' / [] / {from:'',to:''}.
-          if (isBlankParamValue(v)) return
-          const descriptor = params.find(p => p.name === k)
-          const ptype = descriptor?.type ?? 'text'
-          if (ptype === 'number' || ptype === 'integer' || ptype === 'float') {
-            namedParams[k] = Number(v)
-          } else if (ptype === 'boolean') {
-            namedParams[k] = v === 'true' || v === true
-          } else {
-            // daterange objects and multiselect arrays pass through as-is —
-            // the template engine expects the structure, not a stringification.
-            namedParams[k] = v
-          }
-        })
+      if (selection) {
+        // A highlighted part runs as plain SQL. Only a SAVED query can fill in
+        // {{ }} / {% %} filter tags, and only for the whole query.
+        if (usesFilterTags(selection)) {
+          setRunError(SELECTION_FILTER_TAGS_RUN_ERROR)
+          return
+        }
+        res = await runArrowQuery(selection, undefined, { datastoreId: datastoreId || undefined })
+      } else if (query?.id && !isNew) {
+        const namedParams = buildRunNamedParams(paramValues, params)
         res = await runArrowQueryById(query.id, {
           namedParams: Object.keys(namedParams).length > 0 ? namedParams : undefined,
           datastoreId: datastoreId || undefined,
@@ -1907,34 +1942,53 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
       if (res?.error) {
         setRunError(res.error.message)
         setResult(null)
-        setSqlHistory(pushSqlHistory({ sql, queryName: query?.name, ok: false, error: res.error.message }))
+        setSqlHistory(pushSqlHistory({ sql: ranSql, queryName: query?.name, ok: false, error: res.error.message }))
         return
       }
       setResult(res)
       setSqlHistory(pushSqlHistory({
-        sql, queryName: query?.name, ok: true,
+        sql: ranSql, queryName: query?.name, ok: true,
         rowCount: res?.table?.numRows ?? null, elapsedMs: res?.elapsedMs ?? null,
       }))
 
       // Share the result with the in-browser engine as "cell_1" (plus the
       // query's id and name) for cross-cell flow. Not awaited: the rows are
       // already on screen, and the run must not wait on the engine starting.
-      if (res?.table) {
+      // Whole-query runs only: a highlighted part's rows aren't the query's.
+      if (res?.table && !selection) {
         const safeName = query?.name ? query.name.replace(/[^a-z0-9_]/gi, '_').toLowerCase() : ''
         shareArrowTable(['cell_1', query?.id, safeName], res.table, notifyEngineFailure)
       }
     } catch (err) {
       setRunError(err?.message ?? 'Query failed')
-      setSqlHistory(pushSqlHistory({ sql, queryName: query?.name, ok: false, error: err?.message ?? 'Query failed' }))
+      setSqlHistory(pushSqlHistory({ sql: ranSql, queryName: query?.name, ok: false, error: err?.message ?? 'Query failed' }))
     } finally {
       setRunning(false)
     }
   }, [running, viewingVersion, query, isNew, sql, paramValues, params, datastoreId])
 
+  // ── Size line ("This query will process X when run") — follows what's on
+  //    screen: the highlighted part, else a saved query by id with the filter
+  //    values on screen (or its unsaved changes), else the editor text. ───
+  const estimatePlan = useMemo(() => {
+    if (viewing) return null
+    const savedId = !isNew ? (query?.id ?? null) : null
+    return planQueryEstimate({
+      selection: pickSelection(selectedSql, sql),
+      sql,
+      savedSql: savedId ? savedSql : null,
+      queryId: savedId,
+      namedParams: savedId ? buildRunNamedParams(paramValues, params) : {},
+      hasParamValues: params.length > 0 && Object.values(paramValues).some(v => !isBlankParamValue(v)),
+      datastoreId,
+      savedVersion,
+    })
+  }, [viewing, isNew, query?.id, selectedSql, sql, savedSql, savedVersion, paramValues, params, datastoreId])
+
   // ── Run all (primary + scratch SQL cells, top to bottom) ────────────────
   const handleRunAll = useCallback(async () => {
     setRunAllLoading(true)
-    try { await handleRun() } catch { /* keep running the remaining cells */ }
+    try { await handleRun({ wholeQuery: true }) } catch { /* keep running the remaining cells */ }
     for (const cell of scratchCells) {
       if (cell.type !== 'sql') continue
       const runner = scratchRunners.current.get(cell.id)
@@ -2038,6 +2092,8 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
 
       const saved = await registerQuery(payload)
 
+      setSavedSql(saved.sql ?? sql)
+      setSavedVersion(v => v + 1)
       setSaveStatus('ok')
       onSaved?.({
         ...query,
@@ -2114,6 +2170,8 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
           ...(nextDs ? { datastore_id: nextDs } : {}),
           metric: restoredBlock,
         })
+        setSavedSql(saved.sql ?? nextSql)
+        setSavedVersion(v => v + 1)
         onSaved?.({
           ...query,
           id: saved.id,
@@ -2197,6 +2255,8 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
   const isRegistered = Boolean(query?.id) && !isNew
   const rowCount = result?.table?.numRows ?? 0
   const isEmptyPrimary = !sql.trim()
+  // Part of the SQL highlighted → Run runs just that part ("Run selection").
+  const runSelectionActive = !viewing && pickSelection(selectedSql, sql) !== ''
   // Has the primary query been run (or attempted) at least once? Drives
   // whether the results/preview row claims real vertical space or steps
   // aside so the SQL editor stays the dominant thing on screen — the same
@@ -2333,10 +2393,10 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
           disabled={running || viewing}
           loading={running}
           data-testid="query-run-btn"
-          title={`Run query (${MOD_KEY}+Enter)`}
+          title={runSelectionActive ? `Run only the highlighted part (${MOD_KEY}+Enter)` : `Run query (${MOD_KEY}+Enter)`}
         >
           {!running && <Play size={13} aria-hidden="true" />}
-          <span>{running ? 'Running' : 'Run'}</span>
+          <span>{running ? 'Running' : runSelectionActive ? 'Run selection' : 'Run'}</span>
           <kbd className="nubi-kbd hidden sm:inline-flex" style={{ background: 'transparent', color: 'inherit', borderColor: 'currentColor', opacity: .7 }}>{MOD_KEY} Enter</kbd>
         </Button>
 
@@ -2552,6 +2612,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                 value={viewing ? (typeof viewCfg.sql === 'string' ? viewCfg.sql : '') : sql}
                 onChange={viewing ? () => {} : handleSqlChange}
                 onRun={viewing ? undefined : handleRun}
+                onSelectionChange={setSelectedSql}
                 height={`${editorH}px`}
                 dialect={dialect}
                 onDialectChange={setDialect}
@@ -2564,6 +2625,7 @@ export default function QueryWorkspace({ query, onQueryChange, onSaved, isNew, t
                   type <span className="font-mono">{' {{param}} '}</span> to declare a bindable parameter.
                 </p>
               )}
+              <QuerySizeEstimate plan={estimatePlan} />
             </div>
 
             {/* Rendered SQL preview — POST /query/render, never executes.

@@ -23,6 +23,8 @@
  *   readOnly     {boolean}  — when true, editor is non-editable (default false)
  *   height       {string}   — CSS height string (default "200px")
  *   onRun        {function} — optional; called on Ctrl/Cmd+Enter
+ *   onSelectionChange {function} — optional; called with the highlighted
+ *                             text ('' when nothing is highlighted)
  *   toolbar      {boolean}  — when true, render the dialect + templates toolbar
  *                             (default true). Set false for a bare editor.
  *   dialect      {string}   — controlled dialect (optional); defaults to 'duckdb'
@@ -44,6 +46,8 @@
  *     replaces all of them — used by the "Add filter parameter" affordance
  *     in the query editor to drop a guarded {% if %} snippet without the
  *     presenter hand-typing Jinja.
+ *   getSelectedText() — the highlighted text right now ('' when none), so
+ *     Run can run just the highlighted part.
  */
 
 import { useRef, useCallback, useState, useEffect, useContext, forwardRef, useImperativeHandle } from 'react'
@@ -315,6 +319,7 @@ function SqlEditor({
   readOnly = false,
   height = '200px',
   onRun = undefined,
+  onSelectionChange = undefined,
   toolbar = true,
   dialect: dialectProp = undefined,
   onDialectChange = undefined,
@@ -366,6 +371,13 @@ function SqlEditor({
   // re-registering Monaco providers on every change.
   const schemaRef = useRef(schema)
   useEffect(() => { schemaRef.current = schema }, [schema])
+  // Monaco calls onMount once, so anything it binds there must go through a
+  // ref — otherwise Ctrl/Cmd+Enter would keep calling the first render's
+  // onRun (stale SQL / filter values).
+  const onRunRef = useRef(onRun)
+  useEffect(() => { onRunRef.current = onRun }, [onRun])
+  const onSelectionChangeRef = useRef(onSelectionChange)
+  useEffect(() => { onSelectionChangeRef.current = onSelectionChange }, [onSelectionChange])
   const dialectRef = useRef(dialect)
   useEffect(() => { dialectRef.current = dialect }, [dialect])
 
@@ -419,10 +431,17 @@ function SqlEditor({
     modelUriRef.current = editor.getModel()?.uri?.toString() ?? null
     setMonacoReady(true)
 
-    // Ctrl/Cmd+Enter → run
+    // Ctrl/Cmd+Enter → run (whatever onRun is now, not the one at mount)
     if (onRun) {
-      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => onRun())
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => onRunRef.current?.())
     }
+
+    // Report the highlighted text, so the page can run / size just that part.
+    editor.onDidChangeCursorSelection(() => {
+      const model = editor.getModel()
+      const sel = editor.getSelection()
+      onSelectionChangeRef.current?.(model && sel && !sel.isEmpty() ? model.getValueInRange(sel) : '')
+    })
 
     // Register a schema-aware (static) completion provider ONCE per monaco instance.
     if (!registeredProviders.has('completion')) {
@@ -559,6 +578,16 @@ function SqlEditor({
   // ── Imperative handle: insert a snippet at the cursor, multi-selecting
   //    every `<column>` placeholder it contains ───────────────────────────
   useImperativeHandle(ref, () => ({
+    getSelectedText() {
+      const editor = editorRef.current
+      if (editor) {
+        const model = editor.getModel()
+        const sel = editor.getSelection()
+        return model && sel && !sel.isEmpty() ? model.getValueInRange(sel) : ''
+      }
+      const ta = fallbackRef.current
+      return ta ? ta.value.slice(ta.selectionStart ?? 0, ta.selectionEnd ?? 0) : ''
+    },
     insertSnippetAtCursor(text) {
       const editor = editorRef.current
       const monaco = monacoRef.current
@@ -645,6 +674,10 @@ function SqlEditor({
               ref={fallbackRef}
               value={value}
               onChange={(e) => onChange?.(e.target.value)}
+              onSelect={(e) => {
+                const ta = e.currentTarget
+                onSelectionChangeRef.current?.(ta.value.slice(ta.selectionStart, ta.selectionEnd))
+              }}
               onKeyDown={(e) => {
                 if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); onRun?.() }
                 // Tab inserts two spaces instead of leaving the field (Esc then Tab moves on).
