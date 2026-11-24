@@ -77,6 +77,11 @@
     --radius-lg:   2px;
     --radius-xl:   3px;
     --radius-2xl:  4px;
+    /* Filter boxes (dashboard filter widgets) are the one rounded, outlined
+       and raised control, so readers spot a board's filters at a glance. */
+    --radius-filter: 11px;
+    --border-filter: #4b4b4b;
+    --shadow-filter: 0 2px 4px rgba(0,0,0,.1);
 
     /* Rules */
     --rule-strong: 2px solid var(--ink);
@@ -184,6 +189,8 @@
     --ring:        #7d9bff;
 
     --shadow-pop:  0 12px 32px -16px rgba(0,0,0,.6);
+    --border-filter: #8f949e; /* 6.0:1 on sheet */
+    --shadow-filter: 0 2px 4px rgba(0,0,0,.4);
     --scrim:       rgba(0,0,0,.6);
 
     --success:      #10b981;

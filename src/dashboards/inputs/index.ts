@@ -35,6 +35,7 @@ export {
   resolveDateRange,
   DEFAULT_PRESETS,
   PRESET_LABELS,
+  FILTER_BOX_CLS,
 } from './helpers.js'
 
 // ---------------------------------------------------------------------------
