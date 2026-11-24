@@ -53,10 +53,14 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import smtplib
+import ssl
 from email.message import EmailMessage
 from email.utils import formataddr
 from typing import Any, Protocol, runtime_checkable
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -77,10 +81,10 @@ class EmailSender(Protocol):
         to: str,
         subject: str,
         body: str,
-        attachment_name: str,
-        attachment_data: bytes | str,
+        attachment_name: str | None = None,
+        attachment_data: bytes | str | None = None,
     ) -> None:
-        """Send one email to *to* with the report as an attachment.
+        """Send one email to *to*, with an attachment when one is given.
 
         Parameters
         ----------
@@ -91,9 +95,10 @@ class EmailSender(Protocol):
         body:
             Plain-text body of the email.
         attachment_name:
-            Filename for the attachment (e.g. ``"report.csv"``).
+            Filename for the attachment (e.g. ``"report.csv"``), or ``None``
+            for a plain message.
         attachment_data:
-            The attachment bytes/str (CSV text or PDF bytes).
+            The attachment bytes/str (CSV text or PDF bytes), or ``None``.
         """
         ...
 
@@ -119,8 +124,8 @@ class NullSender:
         to: str,
         subject: str,
         body: str,
-        attachment_name: str,
-        attachment_data: bytes | str,
+        attachment_name: str | None = None,
+        attachment_data: bytes | str | None = None,
     ) -> None:
         """Record the send in ``self.sent`` (no actual sending)."""
         self.sent.append(
@@ -137,9 +142,10 @@ class NullSender:
 class SmtpEmailSender:
     """Synchronous SMTP sender implementing the :class:`EmailSender` protocol.
 
-    Used for both scheduled-report emails and billing invoice emails when
+    Used for scheduled-report, billing invoice and password-reset emails when
     ``settings.SMTP_HOST`` is configured.  Stdlib ``smtplib`` only — no
-    external dependencies.
+    external dependencies.  TLS connections verify the server certificate
+    unless ``tls_verify`` is off (self-signed relays).
     """
 
     def __init__(
@@ -150,6 +156,7 @@ class SmtpEmailSender:
         username: str = "",
         password: str = "",
         use_tls: bool = True,
+        tls_verify: bool = True,
         from_addr: str = "",
         from_name: str = "",
         timeout: float = 20.0,
@@ -159,6 +166,7 @@ class SmtpEmailSender:
         self.username = username
         self.password = password
         self.use_tls = use_tls
+        self.tls_verify = tls_verify
         self.from_addr = from_addr
         self.from_name = from_name
         self.timeout = timeout
@@ -168,8 +176,8 @@ class SmtpEmailSender:
         to: str,
         subject: str,
         body: str,
-        attachment_name: str,
-        attachment_data: bytes | str,
+        attachment_name: str | None = None,
+        attachment_data: bytes | str | None = None,
     ) -> None:
         msg = EmailMessage()
         msg["Subject"] = subject
@@ -177,18 +185,28 @@ class SmtpEmailSender:
         msg["To"] = to
         msg.set_content(body)
 
-        data = attachment_data.encode("utf-8") if isinstance(attachment_data, str) else attachment_data
-        maintype, subtype = ("application", "pdf") if attachment_name.endswith(".pdf") else ("application", "octet-stream")
-        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=attachment_name)
+        if attachment_name is not None and attachment_data is not None:
+            data = attachment_data.encode("utf-8") if isinstance(attachment_data, str) else attachment_data
+            maintype, subtype = ("application", "pdf") if attachment_name.endswith(".pdf") else ("application", "octet-stream")
+            msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=attachment_name)
 
         if self.port == 465:
-            with smtplib.SMTP_SSL(self.host, self.port, timeout=self.timeout) as srv:
+            with smtplib.SMTP_SSL(
+                self.host, self.port, timeout=self.timeout, context=self._tls_context()
+            ) as srv:
                 self._auth_and_send(srv, msg)
         else:
             with smtplib.SMTP(self.host, self.port, timeout=self.timeout) as srv:
                 if self.use_tls:
-                    srv.starttls()
+                    srv.starttls(context=self._tls_context())
                 self._auth_and_send(srv, msg)
+
+    def _tls_context(self) -> ssl.SSLContext:
+        context = ssl.create_default_context()
+        if not self.tls_verify:
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+        return context
 
     def _auth_and_send(self, srv: smtplib.SMTP, msg: EmailMessage) -> None:
         if self.username:
@@ -196,12 +214,31 @@ class SmtpEmailSender:
         srv.send_message(msg)
 
 
-def get_default_sender(settings: Any | None = None) -> EmailSender:
-    """Return the configured email transport.
+#: What each outbound email is for. Every ``get_default_sender`` call names one,
+#: and ``EMAIL_ALLOWED_PURPOSES`` can limit an environment to some of them.
+EMAIL_PURPOSES: frozenset[str] = frozenset({"password_reset", "report", "invoice"})
+
+
+def allowed_email_purposes(settings: Any) -> frozenset[str] | None:
+    """Parse ``EMAIL_ALLOWED_PURPOSES``. ``None`` means every purpose is allowed."""
+    raw = (getattr(settings, "EMAIL_ALLOWED_PURPOSES", "") or "").strip()
+    if not raw:
+        return None
+    return frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
+
+
+def get_default_sender(settings: Any | None = None, *, purpose: str = "") -> EmailSender:
+    """Return the configured email transport for one kind of email.
 
     ``SmtpEmailSender`` when ``SMTP_HOST`` is set, otherwise a ``NullSender``
     (no real delivery — reports/invoices are still generated and recorded, so
     OSS builds and tests with no mail server keep working).
+
+    *purpose* says what the email is for (one of ``EMAIL_PURPOSES``). When
+    ``EMAIL_ALLOWED_PURPOSES`` is set, only the purposes it lists get the real
+    transport; any other purpose, or none, gets a ``NullSender``. A hosted
+    environment can then send password resets without ever delivering reports
+    or invoices.
     """
     if settings is None:
         from app.config import get_settings  # noqa: PLC0415
@@ -210,6 +247,14 @@ def get_default_sender(settings: Any | None = None) -> EmailSender:
 
     host = (getattr(settings, "SMTP_HOST", "") or "").strip()
     if not host:
+        return NullSender()
+
+    allowed = allowed_email_purposes(settings)
+    if allowed is not None and (purpose or "").strip().lower() not in allowed:
+        logger.info(
+            "email not sent: purpose %r is not in EMAIL_ALLOWED_PURPOSES",
+            purpose or "(none)",
+        )
         return NullSender()
 
     from_addr = (
@@ -223,6 +268,7 @@ def get_default_sender(settings: Any | None = None) -> EmailSender:
         username=(getattr(settings, "SMTP_USERNAME", "") or "").strip(),
         password=getattr(settings, "SMTP_PASSWORD", "") or "",
         use_tls=bool(getattr(settings, "SMTP_USE_TLS", True)),
+        tls_verify=bool(getattr(settings, "SMTP_TLS_VERIFY", True)),
         from_addr=from_addr,
         from_name=(getattr(settings, "COMPANY_NAME", "") or "Nubi").strip(),
     )

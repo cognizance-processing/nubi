@@ -14,6 +14,19 @@ Conventions:
 
 ### Added
 
+- **Self-service password reset.** **Forgot password?** on the sign-in page now
+  works: it emails a single-use link (30 minutes, at most three usable at a time)
+  that opens a page to choose a new password. New endpoints
+  `POST /auth/forgot-password` and `POST /auth/reset-password`. A reset signs the
+  account out everywhere and revokes its API keys and connected apps; bridge
+  tokens and tunnels are not touched. Accounts that sign in with Google and have
+  no password get no link. Needs `SMTP_HOST` (and `SMTP_FROM`). **Apply
+  migrations 0034 and 0035 before starting the new API.**
+- **Email allow-list.** `EMAIL_ALLOWED_PURPOSES` limits which kinds of email an
+  environment really sends: `password_reset`, `report` and `invoice`,
+  comma-separated. Empty, the default, sends all of them as before. With
+  `password_reset` alone, reset links go out but report runs, report flow steps
+  and invoices send nothing.
 - **Gauge arc colours.** The chart inspector's gauge settings gain an **Arc
   gradient** toggle with **Start** / **End** colours (low→high), or a single
   **Arc color** when off, plus an **Arc ends** control (Auto / Flat / Round).
@@ -63,6 +76,22 @@ Conventions:
   internally — now use a relocated, neutrally-named
   `app/queries/sql_table_columns.py` and `app/queries/query_graph.py`, so
   those host features are unaffected.
+
+### Changed
+
+- **SMTP certificates are verified.** Outbound email (reports, invoices, password
+  resets) now checks the mail server's TLS certificate. For a relay with a
+  self-signed certificate set `SMTP_TLS_VERIFY=false`.
+
+### Security
+
+- **Access tokens end with the password.** An access token issued before the
+  account's password was reset (or cleared by a first Google sign-in) is refused.
+  Requests that change something check the database; reads on other API workers
+  can lag by up to `AUTH_CACHE_TTL_SECONDS`.
+- **Sign-in, session refresh, API-key creation and connected-app approval are
+  serialised with a password reset**, so none can leave behind a session, key or
+  grant the reset did not revoke.
 
 ### Fixed
 

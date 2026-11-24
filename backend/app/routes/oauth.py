@@ -47,6 +47,7 @@ from pydantic import BaseModel
 
 from app.audit import record_audit
 from app.auth import oauth as o
+from app.auth.credential_mint import credential_mint
 from app.auth.deps import current_user
 from app.config import get_settings
 from app.errors import AppError
@@ -354,11 +355,12 @@ async def decide_consent_request(
 
     # Single-use: delete before issuing so a double-submit can't mint two codes.
     await store.delete_auth_request(request_id)
-    code = await store.create_grant_and_code(
-        client_id=client["id"], user_id=str(user["id"]), org_id=body.org_id,
-        scope=req["scope"], redirect_uri=req["redirect_uri"],
-        code_challenge=req["code_challenge"],
-    )
+    async with credential_mint(request, str(user["id"])) as conn:
+        code = await store.create_grant_and_code(
+            client_id=client["id"], user_id=str(user["id"]), org_id=body.org_id,
+            scope=req["scope"], redirect_uri=req["redirect_uri"],
+            code_challenge=req["code_challenge"], conn=conn,
+        )
     await record_audit(
         org_id=body.org_id,
         actor_user_id=str(user["id"]),

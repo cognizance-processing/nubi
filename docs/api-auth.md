@@ -30,6 +30,45 @@ comparison. Also sets an HTTP-only refresh cookie.
 **Response `200`:** `{ "user": { id, email, name, ... }, "access_token": "<jwt>" }`
 **Errors:** `401 invalid_credentials` — unknown user or wrong password (same error for both).
 
+### `POST /auth/forgot-password`
+
+Email a password-reset link. The answer is the same whether or not the address
+has an account; the email is sent afterwards.
+
+**Body:** `{ "email" }`
+**Response `200`:** `{ "ok": true }`
+**Errors:** `429 rate_limited` — too many requests for this address (counted
+separately from sign-in attempts;
+`NUBI_RATELIMIT_PASSWORD_RESET_PER_ACCOUNT_RPM`, default 5).
+
+The link is `FRONTEND_URL/reset-password#token=…`. It works once and expires
+after 30 minutes. An account has at most three usable links at a time; further
+requests send nothing until one is used or expires. Expired links are deleted
+when a new one is issued. Nothing is sent when
+`SMTP_HOST` is not set, when `EMAIL_ALLOWED_PURPOSES` is set and leaves out
+`password_reset`, or to an account that has no password (one that signs in
+with Google).
+
+### `POST /auth/reset-password`
+
+Set a new password with the token from the link.
+
+**Body:** `{ "token", "password" }` — at least 8 characters.
+**Response `200`:** `{ "ok": true }`; also clears the refresh cookie.
+**Errors:** `400 invalid_reset_token` — unknown, used or expired link.
+
+A reset voids the account's other links and revokes all of its sessions, API keys
+and connected apps (OAuth grants), in every org. It does **not** revoke bridge
+tokens or drop bridge tunnels: if the account may have been compromised, rotate
+those in Settings as well. It does not change `email_verified`.
+
+Creating an API key or approving a connected app is serialised with a reset, so a
+request that was already under way cannot leave a new credential behind.
+
+Access tokens issued before the reset are refused. Requests that change something
+check this against the database; reads may accept an old token for up to
+`AUTH_CACHE_TTL_SECONDS` (30 s by default) on other API workers.
+
 ### `POST /auth/register`
 
 Create a new user account. **Response `201`.**

@@ -68,8 +68,17 @@ def generate_api_key() -> str:
 class ApiKeyStore:
     """Interface for API-key persistence (structural duck-typing, no ABC)."""
 
-    async def create(self, user_id: str, org_id: str, name: str) -> tuple[str, dict[str, Any]]:
-        """Mint a new key. Return ``(raw_key, row)``; *raw_key* is shown once."""
+    async def create(
+        self, user_id: str, org_id: str, name: str, conn: Any = None
+    ) -> tuple[str, dict[str, Any]]:
+        """Mint a new key. Return ``(raw_key, row)``; *raw_key* is shown once.
+
+        With *conn*, the row is written on that connection (inside the
+        caller's transaction, see ``app.auth.credential_mint``)."""
+        raise NotImplementedError
+
+    async def is_live(self, raw_key: str, conn: Any) -> bool:
+        """True if *raw_key* exists and is not revoked, read on *conn*."""
         raise NotImplementedError
 
     async def resolve(self, raw_key: str) -> dict[str, Any] | None:
@@ -118,14 +127,17 @@ def _public_row(row: dict[str, Any]) -> dict[str, Any]:
 class PgApiKeyStore(ApiKeyStore):
     """asyncpg-backed API-key store using the ``api_keys`` table."""
 
-    async def create(self, user_id: str, org_id: str, name: str) -> tuple[str, dict[str, Any]]:
+    async def create(
+        self, user_id: str, org_id: str, name: str, conn: Any = None
+    ) -> tuple[str, dict[str, Any]]:
         from app.db import fetchrow  # local import to avoid circular load
 
         raw = generate_api_key()
         token_hash = hash_api_key(raw)
         key_id = str(uuid.uuid4())
         last_four = raw[-4:]
-        row = await fetchrow(
+        run = conn.fetchrow if conn is not None else fetchrow
+        row = await run(
             """
             INSERT INTO api_keys (id, user_id, org_id, token_hash, name, last_four)
             VALUES ($1, $2, $3, $4, $5, $6)
@@ -140,6 +152,13 @@ class PgApiKeyStore(ApiKeyStore):
             last_four,
         )
         return raw, dict(row) if row is not None else {"id": key_id, "name": name}
+
+    async def is_live(self, raw_key: str, conn: Any) -> bool:
+        row = await conn.fetchrow(
+            "SELECT id FROM api_keys WHERE token_hash = $1 AND revoked_at IS NULL",
+            hash_api_key(raw_key),
+        )
+        return row is not None
 
     async def resolve(self, raw_key: str) -> dict[str, Any] | None:
         from app.db import execute, fetchrow  # local import
@@ -244,7 +263,9 @@ class InMemoryApiKeyStore(ApiKeyStore):
     def reset(self) -> None:
         self._store.clear()
 
-    async def create(self, user_id: str, org_id: str, name: str) -> tuple[str, dict[str, Any]]:
+    async def create(
+        self, user_id: str, org_id: str, name: str, conn: Any = None
+    ) -> tuple[str, dict[str, Any]]:
         raw = generate_api_key()
         key_id = str(uuid.uuid4())
         now = datetime.now(tz=timezone.utc)
@@ -261,6 +282,13 @@ class InMemoryApiKeyStore(ApiKeyStore):
         }
         self._store[key_id] = row
         return raw, dict(row)
+
+    async def is_live(self, raw_key: str, conn: Any) -> bool:
+        token_hash = hash_api_key(raw_key)
+        return any(
+            r["token_hash"] == token_hash and r["revoked_at"] is None
+            for r in self._store.values()
+        )
 
     async def resolve(self, raw_key: str) -> dict[str, Any] | None:
         token_hash = hash_api_key(raw_key)

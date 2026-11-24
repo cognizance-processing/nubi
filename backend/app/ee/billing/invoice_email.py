@@ -121,7 +121,7 @@ def send_invoice(
     if not invoice.customer_email:
         raise ValueError("invoice.customer_email is required to send an invoice")
 
-    sender = sender or get_default_sender(settings)
+    sender = sender or get_default_sender(settings, purpose="invoice")
     subject, body = _invoice_email_body(invoice)
     filename = invoice.pdf_filename or invoice_pdf_filename(invoice)
 

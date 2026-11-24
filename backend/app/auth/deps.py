@@ -10,6 +10,7 @@ current_user
     Raises ``AppError("unauthorized", 401)`` if:
     - The header is absent or malformed.
     - The JWT is invalid or expired.
+    - The JWT was issued before the user's password last changed.
     - The user no longer exists in the database.
 
 verified_identity
@@ -26,6 +27,9 @@ verified_identity
 from __future__ import annotations
 
 import contextvars
+import logging
+import re
+import uuid
 from typing import Any
 
 from fastapi import Depends, Request
@@ -36,6 +40,8 @@ from app.auth.jwt import decode_access_token
 from app.auth.verify import VerifiedIdentity, verify_token_async
 from app.db import fetchrow
 from app.errors import AppError
+
+logger = logging.getLogger(__name__)
 
 # HTTPBearer extracts ``Authorization: Bearer <token>`` automatically.
 # ``auto_error=False`` lets us emit a proper AppError instead of a generic 403.
@@ -140,6 +146,7 @@ async def current_user(
         if user_row is None:
             raise AppError("unauthorized", "Authentication required.", 401)
         user = dict(user_row)
+        user.pop("password_changed_at", None)
         user["_api_key_org_id"] = str(key_row["org_id"])
         # Pin org resolution for the rest of this request to the credential's org.
         from app.routes._org import api_key_org_pin
@@ -163,28 +170,105 @@ async def current_user(
         # through rather than causing an outage.  Log in production environments.
         pass
 
-    row = await load_user_row(user_id)
+    row = await load_user_row(user_id, fresh=_needs_fresh_user(request))
 
     if row is None:
         raise AppError("unauthorized", "Authentication required.", 401)
 
-    return dict(row)
+    require_token_after_password_change(claims, row)
+    user = dict(row)
+    # Only for the check above; not part of the user shape routes hand out.
+    user.pop("password_changed_at", None)
+    return user
 
 
-async def load_user_row(user_id: str) -> dict[str, Any] | None:
+# ── Access tokens issued before a password change ───────────────────────────
+# A password reset revokes sessions, API keys and OAuth grants in the database;
+# an access JWT lives on until it expires, so it is compared with the moment the
+# password last changed. Requests that change something read that moment from
+# the database, so an old token cannot (for example) mint an API key. Reads use
+# the shared row: on another worker an old token can read for up to
+# AUTH_CACHE_TTL_SECONDS more.
+
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+#: POST routes that are reads with a body, on the dashboard hot path. Exact
+#: routes only: e.g. POST /query/registry next to them is a write.
+_READ_SHAPED_POST = re.compile(
+    r"/api/v1/(?:"
+    r"query|query/(?:estimate|render|validate|complete)|query/registry/validate"
+    r"|metrics/[^/]+/(?:query|sql)"
+    r"|boards/[^/]+/providers/[^/]+/data"
+    r")/?"
+)
+
+
+def _needs_fresh_user(request: Request) -> bool:
+    """True when *request* may change something (see the note above)."""
+    method = request.method.upper()
+    if method in _SAFE_METHODS:
+        return False
+    return not (method == "POST" and _READ_SHAPED_POST.fullmatch(request.url.path))
+
+
+def require_token_after_password_change(
+    claims: dict[str, Any], user_row: dict[str, Any]
+) -> None:
+    """Refuse (401) an access token issued before the password last changed."""
+    changed_at = user_row.get("password_changed_at")
+    if changed_at is None:
+        return
+    if float(claims["iat"]) < changed_at.timestamp():
+        # The cached row may predate the change on this worker; drop it so
+        # reads refuse the token too.
+        forget_user_row(str(claims["sub"]))
+        raise AppError("unauthorized", "Authentication required.", 401)
+
+
+async def _require_current_access_token(request: Request, identity: VerifiedIdentity) -> None:
+    """Password-change check for a first-party token on ``verified_identity``.
+
+    That dependency does not otherwise need the user row, so a token whose
+    subject has none (the development embed-token helper accepts any ``sub``)
+    stays valid. If the lookup itself fails, a request that may change
+    something is refused and a read is let through, like the denylist check.
+    """
+    try:
+        uuid.UUID(identity.user_id)
+    except ValueError:
+        return
+    fresh = _needs_fresh_user(request)
+    try:
+        row = await load_user_row(identity.user_id, fresh=fresh)
+    except Exception:
+        if fresh:
+            logger.warning("user lookup failed; refusing a write", exc_info=True)
+            raise AppError(
+                "auth_unavailable", "Could not verify your session. Try again.", 503
+            ) from None
+        return
+    if row is not None:
+        require_token_after_password_change(identity.raw_claims, row)
+
+
+async def load_user_row(user_id: str, *, fresh: bool = False) -> dict[str, Any] | None:
     """The ``current_user`` row for *user_id*, or ``None`` if there is no such user.
 
     Shared across requests for ``AUTH_CACHE_TTL_SECONDS`` (see
     ``app.request_memo``): a deleted user or profile edit made on another
     worker shows up here within the window. Writers of these columns call
     :func:`forget_user_row`. Callers get their own copy to mutate.
+
+    ``fresh=True`` skips the shared answer: read from the database, at most
+    once per request.
     """
     from app import request_memo  # noqa: PLC0415
 
     async def _load() -> dict[str, Any] | None:
         row = await fetchrow(
             """
-            SELECT id, email, name, avatar_url, email_verified, created_at
+            SELECT id, email, name, avatar_url, email_verified, created_at,
+                   password_changed_at
             FROM users
             WHERE id = $1::uuid
             """,
@@ -192,7 +276,10 @@ async def load_user_row(user_id: str) -> dict[str, Any] | None:
         )
         return None if row is None else dict(row)
 
-    row = await request_memo.shared_memoized(("user_row", str(user_id)), _load)
+    if fresh:
+        row = await request_memo.memoized(("user_row_fresh", str(user_id)), _load)
+    else:
+        row = await request_memo.shared_memoized(("user_row", str(user_id)), _load)
     return None if row is None else dict(row)
 
 
@@ -200,7 +287,8 @@ def forget_user_row(user_id: str) -> None:
     """Drop the cached user row after the ``users`` row was updated or deleted."""
     from app import request_memo  # noqa: PLC0415
 
-    request_memo.forget(("user_row", str(user_id)))
+    keys = {("user_row", str(user_id)), ("user_row_fresh", str(user_id))}
+    request_memo.forget_matching(lambda key: key in keys)
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +486,10 @@ async def verified_identity(
         ``Origin`` header.
     AppError("forbidden", 403)
         If the token is a host-mode embed token missing the required org claim.
+    AppError("unauthorized", 401)
+        If a first-party token was issued before the password last changed.
+    AppError("auth_unavailable", 503)
+        If that could not be checked for a request that may change something.
     """
     if credentials is None:
         raise AppError("unauthorized", "Authentication required.", 401)
@@ -464,5 +556,8 @@ async def verified_identity(
                 # Fail-safe: if the denylist store raises unexpectedly, let the
                 # request through rather than causing an outage.
                 pass
+
+    if identity.kind == "access":
+        await _require_current_access_token(request, identity)
 
     return identity
