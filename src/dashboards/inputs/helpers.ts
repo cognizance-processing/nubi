@@ -241,3 +241,15 @@ export const FILTER_SHELL_CLS =
  */
 export const FILTER_LABEL_CLS =
   'shrink-0 text-[10.5px] font-semibold text-muted/80 uppercase tracking-[0.06em] leading-none truncate'
+
+/**
+ * Box classes for a filter control (select, multiselect, date range, text).
+ *
+ * Filter boxes are the one rounded, outlined and raised control on a board,
+ * so readers spot a board's filters at a glance. Radius, outline and shadow
+ * are theme tokens (--radius-filter, --border-filter, --shadow-filter in
+ * index.css). The outline stays the same once a value is picked: the dot,
+ * chips or text inside the box show that a filter is applied.
+ */
+export const FILTER_BOX_CLS =
+  'rounded-filter border border-filter bg-surface shadow-filter hover:border-fg'

@@ -112,14 +112,17 @@ export default {
 
       borderColor: {
         DEFAULT: 'var(--border)',
+        filter:  'var(--border-filter)',
       },
 
       // ── Elevation ─────────────────────────────────────────────────────────
       // Swiss: nothing has a shadow at rest. `pop` is the only real shadow
       // (popovers, menus, modals, toasts, Spotlight). nubi-sm/md resolve to
       // "no shadow"; nubi-lg/xl alias pop. Kept so existing classes keep working.
+      // The one exception at rest is `filter`: dashboard filter boxes (index.css).
       boxShadow: {
         'pop':      'var(--shadow-pop)',
+        'filter':   'var(--shadow-filter)',
         'nubi-sm':  'var(--shadow-sm)',
         'nubi-md':  'var(--shadow-md)',
         'nubi-lg':  'var(--shadow-lg)',
@@ -129,6 +132,7 @@ export default {
       // ── Border radius ──────────────────────────────────────────────────────
       // Swiss: square corners everywhere. The default scale is pinned to 2–4px
       // so every existing rounded-* utility follows; `full` stays for dots/avatars.
+      // The one exception is `filter`: dashboard filter boxes are rounded (index.css).
       borderRadius: {
         sm:        '2px',
         DEFAULT:   '2px',
@@ -139,6 +143,7 @@ export default {
         '3xl':     '4px',
         control:   'var(--radius-control)',
         sheet:     'var(--radius-sheet)',
+        filter:    'var(--radius-filter)',
         'nubi-sm':  'var(--radius-sm)',
         'nubi-md':  'var(--radius-md)',
         'nubi-lg':  'var(--radius-lg)',
