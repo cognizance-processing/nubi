@@ -7,7 +7,8 @@
  * pauses, asks POST /query/estimate: a dry run that never executes the query.
  * Answers are kept per request for a few minutes, so moving back to a query
  * or highlight already checked doesn't ask again. Shows nothing for
- * databases that can't estimate. Purely informational: never blocks Run.
+ * databases that can't estimate it says only BigQuery can, and a check with
+ * no answer gives up after a minute. Purely informational: never blocks Run.
  */
 
 import { useEffect, useState } from 'react'
@@ -24,6 +25,7 @@ import {
 const PAUSE_MS = 600 // wait for typing / highlighting to settle
 const REUSE_MS = 5 * 60_000 // reuse an answer for the same request this long
 const KEEP = 50 // answers remembered per editor
+const GIVE_UP_MS = 60_000 // stop the spinner if no answer comes back
 
 type Answer = { at: number; state: EstimateState }
 
@@ -37,6 +39,7 @@ export default function QuerySizeEstimate({ plan }: { plan: EstimatePlan }) {
     const known = answers[key]
     if (known && Date.now() - known.at < REUSE_MS) return
     let live = true
+    let giveUp: ReturnType<typeof setTimeout> | undefined
     const timer = setTimeout(() => {
       const remember = (state: EstimateState) => {
         if (!live) return
@@ -47,11 +50,13 @@ export default function QuerySizeEstimate({ plan }: { plan: EstimatePlan }) {
           return next
         })
       }
+      giveUp = setTimeout(() => remember({ status: 'failed', timedOut: true, detail: 'No answer after 60 seconds' }), GIVE_UP_MS)
       estimateQuery(bodyFromKey(key))
         .then((res) => remember(readEstimateResponse(res)))
         .catch((err) => remember({ status: 'failed', detail: err?.message }))
+        .finally(() => clearTimeout(giveUp))
     }, PAUSE_MS)
-    return () => { live = false; clearTimeout(timer) }
+    return () => { live = false; clearTimeout(timer); clearTimeout(giveUp) }
   }, [key, answers])
 
   const state: EstimateState = !key ? { status: 'idle' } : (answers[key]?.state ?? { status: 'checking' })

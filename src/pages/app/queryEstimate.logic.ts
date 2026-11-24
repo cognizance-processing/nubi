@@ -31,7 +31,7 @@ export type EstimateState =
   | { status: 'checking' }
   | { status: 'ok'; bytes: number }
   | { status: 'unsupported' }
-  | { status: 'failed'; detail?: string }
+  | { status: 'failed'; detail?: string; timedOut?: boolean }
 
 export interface EstimateMessage {
   tone: 'ok' | 'busy' | 'muted' | 'warn'
@@ -122,8 +122,8 @@ export function readEstimateResponse(res: unknown): EstimateState {
     return { status: 'ok', bytes: r.est_bytes_scanned }
   }
   // BigQuery can always dry-run, so "unsupported" from it means the dry run
-  // itself failed (usually the SQL has an error). Other databases that can't
-  // say how much they'd read just show nothing.
+  // itself failed (usually the SQL has an error). Other databases (DuckDB,
+  // demo data, Postgres, …) can't say how much they'd read: the line says so.
   if (r.connector_type === 'bigquery') return { status: 'failed' }
   return { status: 'unsupported' }
 }
@@ -166,6 +166,12 @@ export function estimateMessage(plan: EstimatePlan, state: EstimateState): Estim
     if (plan.scope === 'selection') return { tone: 'ok', text: `The highlighted part will process ${size} when run.`, title }
     if (plan.scope === 'edited') return { tone: 'ok', text: `With your unsaved changes, this query would process ${size}.`, title }
     return { tone: 'ok', text: `This query will process ${size} when run.`, title }
+  }
+  if (state.status === 'unsupported') {
+    return { tone: 'muted', text: 'Only BigQuery connectors can show how much data a query will process.' }
+  }
+  if (state.status === 'failed' && state.timedOut) {
+    return { tone: 'muted', text: 'The size check took too long to answer. Change the query or try again in a few minutes.', title: state.detail }
   }
   if (state.status === 'failed') {
     const text = plan.scope === 'selection'

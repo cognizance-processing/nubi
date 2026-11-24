@@ -137,7 +137,11 @@ test('estimateMessage wording', () => {
   assert.equal(estimateMessage(req('edited'), ok)?.text, 'With your unsaved changes, this query would process 4.71 GiB.')
   assert.deepEqual(estimateMessage(req('query'), { status: 'checking' }), { tone: 'busy', text: 'Checking the size…' })
   assert.equal(estimateMessage(req('query'), { status: 'failed' })?.tone, 'muted')
-  assert.equal(estimateMessage(req('query'), { status: 'unsupported' }), null)
+  assert.equal(
+    estimateMessage(req('query'), { status: 'unsupported' })?.text,
+    'Only BigQuery connectors can show how much data a query will process.',
+  )
+  assert.match(estimateMessage(req('query'), { status: 'failed', timedOut: true })?.text ?? '', /took too long/)
   assert.equal(estimateMessage(req('query'), { status: 'idle' }), null)
   assert.equal(estimateMessage(null, ok), null)
   assert.equal(estimateMessage({ kind: 'blocked', scope: 'selection', reason: 'filter-tags' }, { status: 'idle' })?.tone, 'warn')
