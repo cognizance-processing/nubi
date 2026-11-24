@@ -25,6 +25,7 @@ import {
   resolveDateRange,
   FILTER_SHELL_CLS,
   FILTER_LABEL_CLS,
+  FILTER_BOX_CLS,
 } from './helpers.js'
 
 const SIZES = {
@@ -102,7 +103,8 @@ export default function DateRangePicker({
           aria-expanded={open}
           onClick={() => setOpen(o => !o)}
           className={[
-            'w-full flex items-center justify-between gap-2 rounded-lg border border-border bg-surface text-fg',
+            'w-full flex items-center justify-between gap-2 text-fg',
+            FILTER_BOX_CLS,
             SIZES[size] ?? SIZES.md,
             'focus:outline-none focus:ring-2 focus:ring-brand-teal/40 cursor-pointer',
           ].join(' ')}

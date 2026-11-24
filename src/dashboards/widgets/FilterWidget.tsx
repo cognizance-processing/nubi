@@ -57,6 +57,7 @@ import {
   DateRangePicker,
   normOption,
   useFilterOptions,
+  FILTER_BOX_CLS,
 } from '../inputs/index.js'
 
 // ---------------------------------------------------------------------------
@@ -81,10 +82,11 @@ function TextFilter({ label, placeholder, value, onChange, size = 'md' }) {
         placeholder={placeholder ?? 'Filter…'}
         onChange={e => onChange(e.target.value)}
         className={[
-          'w-full rounded-lg border bg-surface text-fg transition-all duration-150',
+          'w-full text-fg transition-all duration-150',
+          FILTER_BOX_CLS,
           sizeCls,
           'focus:outline-none focus:ring-2 focus:ring-ring/50',
-          hasValue ? 'border-primary/60 font-medium' : 'border-border hover:border-ring/50',
+          hasValue ? 'font-medium' : '',
         ].join(' ')}
       />
     </div>

@@ -13,7 +13,7 @@
 import { useId, useMemo, useRef, useState } from 'react'
 import Popover from './Popover.jsx'
 import OptionList from './OptionList.jsx'
-import { FILTER_SHELL_CLS, FILTER_LABEL_CLS } from './helpers.js'
+import { FILTER_SHELL_CLS, FILTER_LABEL_CLS, FILTER_BOX_CLS } from './helpers.js'
 
 const SIZES = {
   sm: 'text-xs px-2.5 py-1.5',
@@ -144,14 +144,13 @@ export default function Combobox({
           onClick={() => (open ? setOpen(false) : openMenu())}
           onKeyDown={onTriggerKey}
           className={[
-            'w-full flex items-center justify-between gap-2 rounded-lg border bg-surface transition-all duration-150',
+            'w-full flex items-center justify-between gap-2 transition-all duration-150',
+            FILTER_BOX_CLS,
             SIZES[size] ?? SIZES.md,
             'focus:outline-none focus:ring-2 focus:ring-ring/50 cursor-pointer',
-            // Active state (a value is selected) — a primary rim + dot is the
-            // clearest "this filter is applied" cue; matches BI slicer convention.
-            hasValue
-              ? 'border-primary/60 text-fg font-medium hover:border-primary'
-              : 'border-border text-muted hover:border-ring/50',
+            // Active state (a value is selected): the primary dot below plus
+            // stronger text is the "this filter is applied" cue.
+            hasValue ? 'text-fg font-medium' : 'text-muted',
           ].join(' ')}
         >
           <span className="flex items-center gap-2 min-w-0">
