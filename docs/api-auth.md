@@ -45,7 +45,8 @@ The link is `FRONTEND_URL/reset-password#token=…`. It works once and expires
 after 30 minutes. An account has at most three usable links at a time; further
 requests send nothing until one is used or expires. Expired links are deleted
 when a new one is issued. Nothing is sent when
-`SMTP_HOST` is not set, or to an account that has no password (one that signs in
+`SMTP_HOST` is not set, when `EMAIL_ALLOWED_PURPOSES` is set and leaves out
+`password_reset`, or to an account that has no password (one that signs in
 with Google).
 
 ### `POST /auth/reset-password`

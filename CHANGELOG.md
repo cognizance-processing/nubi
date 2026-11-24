@@ -22,6 +22,11 @@ Conventions:
   tokens and tunnels are not touched. Accounts that sign in with Google and have
   no password get no link. Needs `SMTP_HOST` (and `SMTP_FROM`). **Apply
   migrations 0034 and 0035 before starting the new API.**
+- **Email allow-list.** `EMAIL_ALLOWED_PURPOSES` limits which kinds of email an
+  environment really sends: `password_reset`, `report` and `invoice`,
+  comma-separated. Empty, the default, sends all of them as before. With
+  `password_reset` alone, reset links go out but report runs, report flow steps
+  and invoices send nothing.
 - **Gauge arc colours.** The chart inspector's gauge settings gain an **Arc
   gradient** toggle with **Start** / **End** colours (low→high), or a single
   **Arc color** when off, plus an **Arc ends** control (Auto / Flat / Round).

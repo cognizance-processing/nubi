@@ -221,7 +221,7 @@ def handle(
     render_claims: dict[str, Any] = dict(claims or {})
 
     # ── 4. Render + deliver ───────────────────────────────────────────────────
-    sender = get_default_sender()
+    sender = get_default_sender(purpose="report")
     errors: list[str] = []
     emails_sent: int = 0
 

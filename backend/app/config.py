@@ -284,6 +284,10 @@ class Settings(BaseSettings):
     SMTP_USE_TLS: bool = True           # STARTTLS on port 587
     SMTP_TLS_VERIFY: bool = True        # verify the server certificate; false only for a self-signed relay
     SMTP_FROM: str = ""                 # From address; defaults to BILLING_EMAIL when empty
+    # Which kinds of email may really be sent, comma-separated: password_reset,
+    # report, invoice. Empty (the default) sends all of them; anything not
+    # listed gets the NullSender. "password_reset" sends reset links only.
+    EMAIL_ALLOWED_PURPOSES: str = ""
 
     # ── Business / billing entity (invoices + VAT) ───────────────────────────
     # These appear on generated invoice PDFs.  VAT is charged ONLY when

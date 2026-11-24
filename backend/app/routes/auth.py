@@ -460,9 +460,12 @@ async def _send_password_reset(email: str) -> None:
     try:
         from app.jobs.report import NullSender, get_default_sender  # noqa: PLC0415
 
-        sender = get_default_sender()
+        sender = get_default_sender(purpose="password_reset")
         if isinstance(sender, NullSender):
-            logger.warning("password reset requested but SMTP_HOST is not set; no email sent")
+            logger.warning(
+                "password reset requested but email is off (SMTP_HOST is not set, or "
+                "EMAIL_ALLOWED_PURPOSES leaves out password_reset); no email sent"
+            )
             return
 
         user = await fetchrow("SELECT id, email, password_hash FROM users WHERE email = $1", email)
