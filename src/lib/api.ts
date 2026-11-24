@@ -670,6 +670,24 @@ export function renderQueryTemplate(body) {
 }
 
 /**
+ * How much data a query would process — WITHOUT running it.
+ *
+ * POST /api/v1/query/estimate
+ *
+ * Same body and the SAME auth/scope/RLS gates as POST /query, but the query
+ * is only dry-run (for BigQuery: a free dry-run job), never executed or
+ * cached. The org is charged a small fraction of a run's compute quota.
+ * `supported` is false when the connector can't estimate (for BigQuery, when
+ * the dry run itself failed).
+ *
+ * @param {{ query_id?: string, sql?: string, named_params?: object, datastore_id?: string }} body
+ * @returns {Promise<{ supported: boolean, est_bytes_scanned: number|null, est_rows: number|null, mechanism: string, exact: boolean, connector_type: string }>}
+ */
+export function estimateQuery(body) {
+  return post('/query/estimate', body)
+}
+
+/**
  * Columns of a registered query a dashboard filter could be attached to.
  *
  * GET /api/v1/queries/{id}/filterable-columns
