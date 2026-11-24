@@ -140,8 +140,9 @@ class OAuthStore:
 
     async def create_grant_and_code(
         self, *, client_id: str, user_id: str, org_id: str, scope: str,
-        redirect_uri: str, code_challenge: str,
+        redirect_uri: str, code_challenge: str, conn: Any = None,
     ) -> str:
+        """With *conn*, write on that connection (the caller's transaction)."""
         raise NotImplementedError
 
     async def redeem_code(self, raw_code: str) -> dict[str, Any] | None:
@@ -247,9 +248,11 @@ class PgOAuthStore(OAuthStore):
         await execute("DELETE FROM oauth_auth_requests WHERE id = $1", request_id)
 
     async def create_grant_and_code(self, *, client_id, user_id, org_id, scope,
-                                    redirect_uri, code_challenge):
+                                    redirect_uri, code_challenge, conn=None):
         from app.db import execute, fetchrow  # noqa: PLC0415
 
+        if conn is not None:
+            execute, fetchrow = conn.execute, conn.fetchrow
         grant = await fetchrow(
             """
             INSERT INTO oauth_grants (client_id, user_id, org_id, scope)
@@ -461,7 +464,7 @@ class InMemoryOAuthStore(OAuthStore):
         self.requests.pop(request_id, None)
 
     async def create_grant_and_code(self, *, client_id, user_id, org_id, scope,
-                                    redirect_uri, code_challenge):
+                                    redirect_uri, code_challenge, conn=None):
         grant_id = str(uuid.uuid4())
         self.grants[grant_id] = {
             "id": grant_id, "client_id": client_id, "user_id": str(user_id),

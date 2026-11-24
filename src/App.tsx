@@ -7,6 +7,8 @@
  *   /               → LandingPage
  *   /login          → Login
  *   /register       → Register
+ *   /forgot-password → ForgotPassword
+ *   /reset-password → ResetPassword
  *   /docs           → DocsPage
  *   /docs/:slug     → DocsPage
  *   /compare        → ComparePage
@@ -72,6 +74,8 @@ import ProtectedRoute from './components/ProtectedRoute.jsx'
 // Public pages
 import Login from './pages/Login.jsx'
 import Register from './pages/Register.jsx'
+import ForgotPassword from './pages/ForgotPassword.jsx'
+import ResetPassword from './pages/ResetPassword.jsx'
 import OnboardingPage from './pages/OnboardingPage.jsx'
 import OAuthConsentPage from './pages/OAuthConsentPage.jsx'
 import OAuthReturn from './components/OAuthReturn.jsx'
@@ -333,6 +337,8 @@ export default function App() {
         {/* ── Auth routes — standalone full-viewport (no Navbar/Footer) ─── */}
         <Route path="login" element={<Login />} />
         <Route path="register" element={<Register />} />
+        <Route path="forgot-password" element={<ForgotPassword />} />
+        <Route path="reset-password" element={<ResetPassword />} />
 
         {/* ── Authenticated app shell — sidebar + topbar + chat ─────────── */}
         <Route element={<WorkspaceProviders />}>

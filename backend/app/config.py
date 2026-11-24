@@ -273,7 +273,7 @@ class Settings(BaseSettings):
     # Uses the NullSender (no real delivery) unless an SMTP/SES sender is wired.
     ALERT_EMAIL_RECIPIENT: str = ""     # Address to send alert emails to
 
-    # ── Outbound SMTP (invoices + report emails) ─────────────────────────────
+    # ── Outbound SMTP (invoices, report emails, password resets) ─────────────
     # Optional.  When SMTP_HOST is set the billing module sends invoice PDFs via
     # SMTP; otherwise it falls back to the NullSender (no real delivery — useful
     # in tests / local dev / OSS builds with no mail server).
@@ -282,6 +282,7 @@ class Settings(BaseSettings):
     SMTP_USERNAME: str = ""             # SMTP auth username (e.g. "apikey" for SendGrid)
     SMTP_PASSWORD: str = ""             # SMTP auth password / API key
     SMTP_USE_TLS: bool = True           # STARTTLS on port 587
+    SMTP_TLS_VERIFY: bool = True        # verify the server certificate; false only for a self-signed relay
     SMTP_FROM: str = ""                 # From address; defaults to BILLING_EMAIL when empty
 
     # ── Business / billing entity (invoices + VAT) ───────────────────────────

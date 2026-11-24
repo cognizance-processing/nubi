@@ -16,6 +16,10 @@ Public API
 issue_refresh(user_id, family_id=None, parent_id=None, user_agent, ip)
     -> (raw_token: str, expires_at: datetime)
 
+issue_refresh_for_password(user_id, password_hash, user_agent, ip)
+    -> (raw_token: str, expires_at: datetime) | None
+    Password sign-in: ``None`` if the stored hash is no longer *password_hash*.
+
 rotate_refresh(raw_token, user_agent, ip)
     -> (new_raw: str, user_id: str, expires_at: datetime)
     Raises AppError("refresh_reuse", 401) if reuse detected; revokes family.
@@ -25,6 +29,13 @@ revoke_family(family_id: str) -> None
 
 revoke_by_token(raw_token: str) -> None
     Revoke the specific session identified by raw_token (if found).
+
+Lock order
+----------
+A password reset locks the ``users`` row FOR UPDATE and then revokes the user's
+sessions. Anything that creates a session from an existing credential locks the
+same ``users`` row FIRST (KEY SHARE / SHARE) and inserts in that transaction, so
+it either commits before the reset (which then revokes it) or sees the reset.
 """
 
 from __future__ import annotations
@@ -34,6 +45,8 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+from asyncpg import Connection
 
 from app.db import execute, fetchrow, get_connection
 from app.errors import AppError
@@ -58,6 +71,7 @@ async def issue_refresh(
     parent_id: Optional[str] = None,
     user_agent: Optional[str] = None,
     ip: Optional[str] = None,
+    conn: Optional[Connection] = None,
 ) -> tuple[str, datetime]:
     """Issue a new refresh token and persist the session row.
 
@@ -73,6 +87,8 @@ async def issue_refresh(
         ``User-Agent`` header value from the request (stored for audit).
     ip:
         Client IP address (stored for audit).
+    conn:
+        Insert on this connection (inside the caller's transaction).
 
     Returns
     -------
@@ -85,7 +101,8 @@ async def issue_refresh(
     effective_family_id = family_id or str(uuid.uuid4())
     expires_at = datetime.now(tz=timezone.utc) + timedelta(days=_REFRESH_TTL_DAYS)
 
-    await execute(
+    run = conn.execute if conn is not None else execute
+    await run(
         """
         INSERT INTO sessions
             (id, user_id, token_hash, family_id, parent_id,
@@ -103,6 +120,30 @@ async def issue_refresh(
     )
 
     return raw, expires_at
+
+
+async def issue_refresh_for_password(
+    user_id: str,
+    password_hash: str,
+    *,
+    user_agent: Optional[str] = None,
+    ip: Optional[str] = None,
+) -> Optional[tuple[str, datetime]]:
+    """Issue a session for a sign-in that was verified against *password_hash*.
+
+    Verifying takes time, and the password may change meanwhile. The hash is
+    re-read under a lock that a password change conflicts with; ``None`` means
+    it is no longer the one that was verified and the sign-in must fail.
+    """
+    async with get_connection() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT password_hash FROM users WHERE id = $1::uuid FOR SHARE",
+                user_id,
+            )
+            if row is None or row["password_hash"] != password_hash:
+                return None
+            return await issue_refresh(user_id, user_agent=user_agent, ip=ip, conn=conn)
 
 
 async def rotate_refresh(
@@ -147,6 +188,17 @@ async def rotate_refresh(
 
     async with get_connection() as conn:
         async with conn.transaction():
+            # The user row first (see "Lock order" above): a password reset
+            # waits for this rotation, or this rotation waits for the reset.
+            await conn.fetchrow(
+                """
+                SELECT id FROM users
+                WHERE id = (SELECT user_id FROM sessions WHERE token_hash = $1)
+                FOR KEY SHARE
+                """,
+                token_hash,
+            )
+
             # Lock the row so a concurrent request with the same token blocks
             # until this transaction commits or rolls back.
             row = await conn.fetchrow(
@@ -198,15 +250,16 @@ async def rotate_refresh(
                 session_id,
             )
 
-        # Transaction committed — now issue the replacement token (outside the
-        # serialising transaction so we don't hold the row lock during hashing).
-    new_raw, new_expires_at = await issue_refresh(
-        user_id,
-        family_id=family_id,
-        parent_id=session_id,
-        user_agent=user_agent,
-        ip=ip,
-    )
+            # The replacement belongs to the same transaction: committed on its
+            # own, it could appear after a password reset revoked the rest.
+            new_raw, new_expires_at = await issue_refresh(
+                user_id,
+                family_id=family_id,
+                parent_id=session_id,
+                user_agent=user_agent,
+                ip=ip,
+                conn=conn,
+            )
 
     return new_raw, user_id, new_expires_at
 

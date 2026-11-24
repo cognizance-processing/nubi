@@ -29,6 +29,8 @@ _TOKEN_TYPE = "access"
 def mint_access_token(
     user_id: str,
     extra_claims: dict[str, Any] | None = None,
+    *,
+    issued_at: datetime | None = None,
 ) -> str:
     """Create a signed HS256 JWT access token.
 
@@ -40,6 +42,10 @@ def mint_access_token(
         Optional additional claims merged into the payload before signing.
         These must not override reserved claims (``sub``, ``iat``, ``exp``,
         ``typ``).
+    issued_at:
+        The moment to record as ``iat`` (default: now). A caller that proves
+        the session in the database passes the moment just BEFORE it did so:
+        a password change that lands in between then outdates the token.
 
     Returns
     -------
@@ -47,12 +53,14 @@ def mint_access_token(
         The signed JWT string.
     """
     settings = get_settings()
-    now = datetime.now(tz=timezone.utc)
+    now = issued_at or datetime.now(tz=timezone.utc)
     exp = now + timedelta(minutes=settings.JWT_ACCESS_TTL_MIN)
 
     payload: dict[str, Any] = {
         "sub": str(user_id),
-        "iat": now,
+        # Fractional seconds: PyJWT truncates a datetime to whole seconds, which
+        # would date a login made right after a password change before it.
+        "iat": now.timestamp(),
         "exp": exp,
         "typ": _TOKEN_TYPE,
         "jti": str(uuid.uuid4()),

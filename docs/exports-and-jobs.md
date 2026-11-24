@@ -200,6 +200,7 @@ Reports are delivered by email when `SMTP_HOST` is configured. The transport use
 | `SMTP_USERNAME` | `""` | SMTP auth username (e.g. `"apikey"` for SendGrid). |
 | `SMTP_PASSWORD` | `""` | SMTP auth password or API key. |
 | `SMTP_USE_TLS` | `true` | Enable STARTTLS (used when port is not 465). |
+| `SMTP_TLS_VERIFY` | `true` | Verify the server certificate on STARTTLS and implicit TLS. Set `false` only for a relay with a self-signed certificate. |
 | `SMTP_FROM` | `""` | From address. Falls back to `BILLING_EMAIL` then `COMPANY_EMAIL`. |
 
 When `SMTP_HOST` is not set, reports are generated and run records are written normally — emails are simply not sent. This means OSS/self-hosted deployments and development environments work without a mail server configured.

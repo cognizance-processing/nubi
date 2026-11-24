@@ -23,6 +23,7 @@ TOOLS = "tool calls are role-gated in the tool layer"
 EXEMPT: dict[tuple[str, str], str] = {
     # ── the caller's own account / session ──
     ("POST", "/auth/login"): PUBLIC, ("POST", "/auth/register"): PUBLIC,
+    ("POST", "/auth/forgot-password"): PUBLIC, ("POST", "/auth/reset-password"): PUBLIC,
     ("POST", "/auth/refresh"): PUBLIC, ("POST", "/auth/logout"): PUBLIC,
     ("PATCH", "/auth/me"): SELF, ("POST", "/auth/api-keys"): SELF, ("DELETE", "/auth/api-keys/{key_id}"): SELF,
     ("POST", "/notifications/read_all"): SELF, ("POST", "/notifications/{notification_id}/read"): SELF,
